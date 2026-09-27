@@ -178,7 +178,7 @@ Everything here can be edited later.
 | --- | --- |
 | Name, avatar | "Ada", a picture |
 | Role | Its identity: Senior Engineer by default, or Staff or Principal Engineer, Product Manager, UX Designer, QA, or a role you write yourself. Each role is an editable system prompt with default duties |
-| Engine | harness + model + account: Claude Code · Opus · "Claude Pro"; Gemini CLI · 3 Pro · "Google AI Pro"; OpenCode · qwen3 · "Local". One engine for everything by default, or one per duty (see "Engine per duty" below) |
+| Engine | harness + model + account: Claude Code · Opus · "Claude Pro"; Antigravity · Gemini 3.1 Pro · "Google AI Pro"; OpenCode · qwen3 · "Local". One engine for everything by default, or one per duty (see "Engine per duty" below) |
 | Fallback engines and switch rules | See "Engines and switching" below |
 | Usage caps | Per ticket, per day and per week. Tokens where the harness reports them; otherwise a share of the account's window, or hours |
 | Defaults | Effort level, and a review preference (for example, prefer a reviewer from another vendor) |
@@ -248,9 +248,12 @@ then writes project pages in its brain.
 
 ### Engines and switching: identity is memory
 
-Every machine has all the harnesses installed: Claude Code, Gemini CLI and OpenCode, each with its
-ACP adapter. The engine chosen for a session decides which harness runs and which account's
-credential i.inc injects.
+Every machine has all the harnesses installed: Claude Code, Antigravity and OpenCode, each speaking
+ACP. Claude Code goes through an adapter, Antigravity through its own ACP server, and OpenCode
+natively. The engine chosen for a session decides which harness runs and which account's
+credential i.inc injects. For Claude, that credential is a model-only token from `claude
+setup-token`, never a full login. A full login would also reach the owner's claude.ai connectors
+(mail, calendar, drive) from inside the machine.
 
 Switch rules are set per employee:
 
@@ -305,14 +308,19 @@ interface with a scripted fake in tests, like the ACP agent.
 
 ### Lenient permissions, hard walls
 
-- **Inside the machine** the harness runs in its bypass mode: Claude Code bypassPermissions, Gemini
-  CLI yolo, OpenCode allow-all. i.inc's ACP client also approves any permission request. The
-  employee can install anything, run servers, and use Docker if nested virtualization works.
+- **Inside the machine** the harness runs in its bypass mode: Claude Code bypassPermissions,
+  OpenCode allow-all, and Antigravity's equivalent. i.inc's ACP client also approves any
+  permission request. The
+  employee can install anything, run servers, and use Docker, which needs no nested
+  virtualization.
 - **Network:**
   - The employee has open outbound internet: packages, docs, web search, GitHub and model APIs. A
     PA is the exception: it has no internet at all (§7).
-  - It can't reach your LAN, your tailnet, or other services on the host. The exceptions are i.inc's
-    API and Ollama.
+  - It can't reach your LAN, your tailnet, other machines or other services on the host. The
+    exceptions are i.inc's API and Ollama, plus the DHCP and DNS every machine needs. Ollama stays
+    on loopback, and machines reach it through a relay on their gateway, so nothing outside the
+    machines can reach it. IPv6 is refused rather than walled off, because the LAN's prefix
+    changes.
   - Nothing can connect in from outside.
   - The host firewall (`pf` on the Mac mini) enforces this, and the domains each employee contacts
     are logged.
@@ -468,7 +476,8 @@ shorter loop:
 - **Local engines only.** Home data (mail, calendar, contacts and anything taken from them) is
   processed only by local engines. The planned model is qwen3.8 27B, set up later. i.inc refuses to
   give a PA a cloud engine, and its switch rules can only wait or move to another local engine,
-  never to a cloud one.
+  never to a cloud one. A PA's OpenCode is pinned to local providers, since OpenCode also offers
+  hosted models of its own.
 - **The PA never holds your credentials.** The daemon keeps the Google (or other) tokens and offers
   the PA a small set of **home tools**: search mail, read a thread, create a draft, propose an event,
   read free/busy, and file a web errand. Every call is logged.
@@ -517,10 +526,11 @@ Each kind of outgoing action has a setting, which you can tune per PA:
 **Accounts and token windows:**
 
 - **Claude:** Claude Code emits a `rate_limit_event` on its stream. It carries the status (allowed,
-  warning or rejected) and `resetsAt` for the 5-hour and weekly windows. We still have to confirm it
-  passes through the ACP adapter; the fallback is to read the reset time from the "limit reached"
-  error.
-- **Gemini:** 429 / RESOURCE_EXHAUSTED errors, and the daily reset.
+  warning or rejected) and `resetsAt` for the 5-hour and weekly windows. It passes through the ACP
+  adapter as a `usage_update` whose `_meta["_claude/rateLimit"]` also carries how much of each
+  window is used (confirmed in M1).
+- **Google AI Pro, through Antigravity:** its ACP server reports no usage, so its limits are learned
+  from its errors. Gemini CLI no longer serves Google AI Pro accounts (§13).
 - **Local:** busy or idle.
 
 "Out of tokens" is shown but doesn't send a push notification. Pushes go out only for Needs you,
@@ -704,19 +714,23 @@ per task, a Review column and a PR. Their READMEs don't mention these, which is 
 
 ## 12. Hardware
 
-The first host is the home Mac mini: macOS 26.2, 10 cores, 32 GB of RAM and about 309 GB of free
-disk. Ollama uses 6–10 GB while a model is loaded.
+The first host is the home Mac mini: macOS 26.2, an M4 with 10 cores, 32 GB of RAM and about 330
+GB of free disk. Before any machine, the host itself uses about 12 GB. Ollama uses 6–10 GB while a
+model is loaded (qwen3:8b at a 32k context: 8.1 GB).
 
-- **Machines:** at about 4 CPUs and 6 GB each (memory is used on demand), the mini can keep about 3
-  machines awake, with the rest asleep until needed.
+- **Machines:** about 4 CPUs and 6 GB each. A machine takes memory only as it needs it, but it
+  never gives any back until it restarts: 0.6 GB just after booting, 4.6 GB after a day of work.
+  So the mini keeps about 2 machines awake while a local model is loaded, or 3 without one. A
+  machine is stopped after each ticket, and it wakes in under a second.
 - **A Mac Studio**, if one is bought (96 GB), becomes a second or main host. It has room for more
   machines, macOS VMs, and a pool of local models (for example a 27B dense, a 30B MoE and a small
   classifier as a helper model). Models and machines share its RAM, and long coding contexts need
   large caches, so the pool may keep two models loaded and swap the third. Adding it changes the
   local account's pool, not the employees. M1–M2 will measure what we need first.
-- **Apple container** 1.0 (June 2026) runs one lightweight VM per container, and `container machine`
-  gives a persistent Linux VM with `home-mount=none`, CPU and memory settings. It isn't installed on
-  the mini yet.
+- **Apple container** (1.4.1 on the mini since M1) runs one lightweight VM per container.
+  `container machine` gives a persistent Linux VM with `home-mount=none`, CPU and memory settings.
+  Its home mount is read-write by default, and its memory is half the host's, so both are always
+  set.
 - **Fallback:** Colima and Docker are installed on the mini but stopped. They run in one shared VM, so
   the isolation is weaker.
 
@@ -743,6 +757,11 @@ disk. Ollama uses 6–10 GB while a model is loaded.
   SDK usage to a separate API-rate credit, then paused that on June 15, 2026. It could return.
   Several parallel employees on one plan also stretch "ordinary individual usage". The account strip
   keeps usage visible, and engines stay swappable.
+- **Google moved subscription use from Gemini CLI to Antigravity.** On June 18, 2026, Gemini CLI
+  stopped serving Google AI Pro, Ultra and free personal accounts. Only API keys and enterprise
+  licences still work there, and the CLI silently falls back to asking for an API key. So the
+  Google engine runs through Antigravity's ACP server instead. Vendors can move a subscription
+  again, which is one more reason engines stay swappable.
 - **Engine switches across harnesses** lose the session's in-context memory. The resume brief and the
   checkpoints must carry enough state; the M2 tests cover this.
 - **Linux machines can't build Mac or iOS apps.** Duet's app bundle builds stay in GitHub Actions, and
@@ -850,7 +869,10 @@ hosts.
 - Claude plan and Agent SDK billing (paused): https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan · https://zed.dev/blog/anthropic-subscription-changes
 - Claude Code rate limits: https://code.claude.com/docs/en/statusline · https://github.com/anthropics/claude-code/issues/26498
 - Apple container and `container machine`: https://github.com/apple/container/blob/main/docs/container-machine.md
-- Antigravity CLI and ACP: https://github.com/google-antigravity/antigravity-cli/issues/31
+- Antigravity CLI and ACP: https://github.com/google-antigravity/antigravity-cli/issues/31 · its ACP
+  server in the registry: https://github.com/agentclientprotocol/registry/tree/main/antigravity-acp
+- Gemini CLI stops serving individual accounts (June 18, 2026):
+  https://github.com/google-gemini/gemini-cli/discussions/28017
 - Paperclip: https://github.com/paperclipai/paperclip
 - saltbo/agent-kanban: https://github.com/saltbo/agent-kanban
 - Vibe Kanban: https://github.com/BloopAI/vibe-kanban

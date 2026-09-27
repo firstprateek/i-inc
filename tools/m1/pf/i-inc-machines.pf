@@ -1,0 +1,42 @@
+# M1 step 3 (docs/m1-runbook.md): the walls around employee machines.
+#
+# Machines run on Apple container's `default` vmnet network: 192.168.64.0/24 on the host interface
+# bridge100, with the host at 192.168.64.1. The rules are loaded into a sub-anchor of Apple's, which
+# /etc/pf.conf already evaluates, so that file stays untouched (tools/m1/pf/apply.sh):
+#   sudo pfctl -a com.apple/010.i-inc-machines -f i-inc-machines.pf
+# Unload them with tools/m1/pf/remove.sh.
+#
+# What the machines get:
+#   - the internet over IPv4, with each new connection logged to pflog0;
+#   - from the host, only DHCP, DNS and Ollama (through tools/m1/ollama-forward.mjs);
+#   - nothing on the LAN, the tailnet, other machines or the rest of the host;
+#   - no IPv6 beyond neighbour discovery, since the LAN's IPv6 prefix changes and can't be
+#     walled off by address;
+#   - no connections opened to them.
+# i.inc's API port joins Ollama's once the daemon exists (M3).
+
+machines_if = "bridge100"
+machines    = "192.168.64.0/24"
+gateway     = "192.168.64.1"
+ollama_port = "11434"
+
+# Everything that isn't the internet: private and link-local ranges (the LAN, the machines, the
+# host), the tailnet (100.64.0.0/10), loopback, multicast and reserved space.
+table <not_internet> const { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, \
+  172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 }
+
+# From the machines. DHCP, DNS and Ollama on the host come first, since the host is in
+# <not_internet>.
+pass in quick on $machines_if inet proto udp from any port 68 to { 255.255.255.255, $gateway } port 67
+pass in quick on $machines_if inet proto { udp, tcp } from $machines to $gateway port 53
+pass in log quick on $machines_if inet proto tcp from $machines to $gateway port $ollama_port
+block return in log quick on $machines_if inet from any to { <not_internet>, self }
+pass in log quick on $machines_if inet from $machines to any
+pass in quick on $machines_if inet6 proto icmp6 icmp6-type { routersol, neighbrsol, neighbradv }
+block return in log quick on $machines_if all
+
+# To the machines: the host's DHCP answers, router advertisements and neighbour discovery.
+# Replies to the machines' own connections match their state and never reach these rules.
+pass out quick on $machines_if inet proto udp from any port 67 to any port 68
+pass out quick on $machines_if inet6 proto icmp6
+block return out log quick on $machines_if all
