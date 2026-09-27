@@ -13,8 +13,8 @@ login.
 | ACP stdio works through the machine boundary | pending (step 5). Piped stdin and stdout already pass through `machine run -i` | step 2 |
 | Sign-in works inside the machine (each harness) | pending (step 4) | |
 | `rate_limit_event` passes through the Claude adapter | pending (step 5) | |
-| `pf` walls hold (internet ok; LAN, tailnet, host blocked; Ollama ok) | pending (step 3) | |
-| Ollama reachable from a machine | pending (step 3). Not as the host stands: Ollama listens on loopback only | step 1 |
+| `pf` walls hold (internet ok; LAN, tailnet, host blocked; Ollama ok) | Yes: 13 of 13 checks, nothing gets in, and connections are logged | step 3 |
+| Ollama reachable from a machine | Yes, through a relay on the machines' gateway. Ollama itself stays on loopback | step 3 |
 | Docker inside a machine | pending (step 7) | |
 | Resume on another engine from a brief | pending (step 6) | |
 | Machine memory idle / busy, and K for this host | Idle: 0.56 GB on the host. Busy and K: pending (step 7). Before any machine, the host uses 11.7 GB of 32 GB with no model loaded (17.4 GB until DisplayLink was stopped) | steps 1 and 2 |
@@ -219,6 +219,31 @@ answer the machines' DNS itself and refuse the tailnet's domain.
   only and pipes to Ollama on loopback. Ollama's own settings don't change, and nothing outside
   the machines can reach it.
 
+**With the walls** (loaded on 2026-09-27, with the owner typing the `sudo` password once):
+
+- **pf was already on.** Apple container's network had turned it on when the machine started. The
+  only other anchors were Apple's AirDrop and application firewall anchors, and ours sorts before
+  them.
+- **The relay** listens on 192.168.64.1:11434 only, while Ollama stays on 127.0.0.1. From the
+  machine, all six models show through it.
+- **The walls test: all 13 checks as wanted.** Internet over IPv4, DNS and Ollama work. The host's
+  SSH (on all three of its addresses) and AirPlay, the router, another LAN device, another
+  tailnet device, IPv6 and the metadata address are all refused.
+- **Nothing gets in.** Before the walls, the host could connect to a listener in the machine.
+  With them, the attempt is dropped and times out.
+- **The logs name what a machine contacts.** Over the 3-minute capture, the pf log has one line
+  per allowed connection (example.com's address on 443, the relay) and per refused attempt, each
+  with the rule that matched. The DNS capture on `bridge100` has the names looked up
+  (`example.com`, A and AAAA), which map those addresses back to domains.
+- **The host is unaffected.** Its internet, Ollama on loopback, SSH into it, and Duet's relay over
+  Tailscale all still answer. The rules only match traffic on `bridge100`.
+- **Not yet done:**
+  - The rules, pf's reference and the relay don't survive a reboot. The daemon's host setup
+    (M3) should load them at boot.
+  - The relay binds to an address that exists only while a machine runs, so the daemon should
+    start it with the first machine.
+  - Traffic between two machines is untested, since there's only one.
+
 ## What the spec should change
 
 Candidates so far. Those marked "to confirm" wait for the step named.
@@ -227,7 +252,12 @@ Candidates so far. Those marked "to confirm" wait for the step named.
 - **§9 and §12, "memory is used on demand":** that holds only until a machine has been busy. Guest
   memory isn't returned to macOS until the machine restarts. So an idle machine should be stopped,
   not left running, and waking takes under a second. To confirm, with K, in step 7.
-- **§5, the walls:** machines have IPv6 as well as IPv4, and use the host as their DNS resolver.
-  The `pf` rules must handle both. To confirm in step 3.
+- **§5, the walls:**
+  - From the host, machines need DHCP and DNS as well as i.inc's API and Ollama.
+  - IPv6 is refused rather than walled by address, because the LAN's prefix changes.
+  - Machines reach Ollama through a relay on their gateway, not by Ollama listening beyond
+    loopback. Once the daemon exists, its API can carry that, which leaves one host port open.
+  - The daemon should answer the machines' DNS itself, so it can log names per employee and
+    refuse the tailnet's names.
 - **§15, the base image:** a machine's user takes the host account's name and uid unless the image
   ships its own `/etc/machine/create-user.sh`. An employee's machine should use a user of its own.
