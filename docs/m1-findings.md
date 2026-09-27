@@ -1,7 +1,7 @@
 # M1 findings
 
-Started 2026-09-27. The mini (`<mini>` below) runs macOS 26.2 (25C56). Apple container: not
-installed yet (step 2).
+Started 2026-09-27. The mini (`<mini>` below) runs macOS 26.2 (25C56). Apple container 1.4.1,
+installed 2026-09-27 (step 2).
 
 M1 is run from a Claude Code session on the owner's Mac, over SSH to the mini, rather than from a
 session on the mini itself. Read-only steps run as `ssh <mini> 'bash -s' < script`. Steps that need
@@ -97,6 +97,38 @@ remaining lever is Ollama: by default it keeps up to 3 models loaded at once
 (`OLLAMA_MAX_LOADED_MODELS`), each for 5 minutes after its last request. Two large models loaded
 together would take all of that headroom. A cap on Ollama is a change to the host, so it waits for
 the owner.
+
+Also on the owner's request: Safari was quit, Logi Options+ and an unused agent gateway were
+removed, and Spotlight indexing was turned off for the system volume. For the data volume,
+`mdutil` over SSH fails with error -405, presumably because SSH sessions lack Full Disk Access. Memory in use was
+then 12.3 GB, including 0.7 GB for Apple container's API server (below).
+
+## 2. Apple container and one machine
+
+**Install.** The signed installer for 1.4.1 was downloaded to the mini and checked before
+installing:
+
+- its SHA-256 matched the release;
+- `pkgutil --check-signature` showed "Developer ID Installer: Apple Inc. - Containerization" and
+  Apple notarization.
+
+Then `sudo installer -pkg … -target /`, and `container system start --enable-kernel-install`.
+Starting took 29 s, including downloading the default kernel (kata-containers 3.32.0, a 697 MB
+archive, checked against its digest). `container system status` reports the service running.
+
+**The API server's memory.** With no containers, `container-apiserver` holds 714 MB, right after
+installing the kernel. To measure again after a restart, before the machine is created.
+
+**What the docs say** (1.4.1, `docs/container-machine.md` and `command-reference.md`), which the
+machine has to account for:
+
+- `machine create` mounts the host home directory read-write and gives the machine half the host's
+  memory unless told otherwise, so the flags `--home-mount none --cpus 4 --memory 6G` are needed.
+- It makes a Linux user named after the host account, and `machine run` runs as that user.
+- It has no network option, so a machine joins the `default` network, which carries IPv4 and IPv6.
+- Memory freed inside a VM isn't returned to macOS until the VM restarts
+  (`docs/technical-overview.md`). K has to count each awake machine at its full limit.
+- Nested virtualization needs `--virtualization` and a custom kernel with `CONFIG_KVM=y`.
 
 ## What the spec should change
 
