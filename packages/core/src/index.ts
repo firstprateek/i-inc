@@ -2,6 +2,7 @@ export * from "./brief.ts";
 export * from "./engines.ts";
 export * from "./events.ts";
 export * from "./model.ts";
+export * from "./outbound.ts";
 export * from "./ports.ts";
 export * from "./report.ts";
 export * from "./runner.ts";

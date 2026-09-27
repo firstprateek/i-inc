@@ -1,6 +1,6 @@
 // Fold a ticket's events into the state the pipeline decides from. Pure.
 import type { Finding, NeedsYou, TicketEvent } from "./events.ts";
-import type { Id } from "./model.ts";
+import type { Id, Proposal } from "./model.ts";
 import type { StageId } from "./stages.ts";
 
 export interface SessionRecord {
@@ -41,6 +41,7 @@ export interface TicketState {
   switches: { stage: StageId; from: Id; to: Id; reason: string }[];
   status: "running" | "paused" | "needs-you" | "ready" | "failed";
   failure: { stage: StageId; reason: string; tried: string[] } | null;
+  proposals: { auto: Proposal[]; ask: Proposal[]; off: Proposal[] } | null;
   startedAt: number | null;
   readyAt: number | null;
 }
@@ -67,6 +68,7 @@ export function emptyState(): TicketState {
     switches: [],
     status: "running",
     failure: null,
+    proposals: null,
     startedAt: null,
     readyAt: null,
   };
@@ -160,6 +162,10 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
         needsYou: null,
         lastAnswer: e.note === undefined ? { answer: e.answer } : { answer: e.answer, note: e.note },
       };
+    case "proposals-sorted":
+      return { ...s, interrupted: false, proposals: { auto: e.auto, ask: e.ask, off: e.off } };
+    case "proposals-decided":
+      return s;
     case "report-ready":
       return { ...s, status: "ready", readyAt: e.at, outputs: { ...s.outputs, report: e.summary } };
     case "failed":

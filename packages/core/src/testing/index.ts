@@ -106,6 +106,7 @@ function defaultOutcome(r: SessionRequest): SessionOutcome {
   if (r.duty === "review") return done(json({ approved: true, findings: [] }));
   if (r.stage === "review") return done(json({ disputed: null }));
   if (r.stage === "report") return done("What changed: refunds are subtracted from spending.");
+  if (r.stage === "work") return done(json({ proposals: [] }));
   return done("done");
 }
 
@@ -130,6 +131,8 @@ export class FakeHarness implements Harness {
 export class FakeCompany implements Company {
   private readonly employees = new Map<Id, Employee>();
   private readonly engines = new Map<Id, Engine>();
+  /** The owner's contacts, for outbound rules. */
+  readonly contacts: string[] = [];
 
   constructor(employees: Employee[], engines: Engine[]) {
     for (const e of employees) this.employees.set(e.id, e);
@@ -144,6 +147,9 @@ export class FakeCompany implements Company {
     const e = this.engines.get(id);
     if (!e) throw new Error(`no engine ${id}`);
     return e;
+  }
+  isContact(address: string): boolean {
+    return this.contacts.includes(address);
   }
   pickEmployee(duty: Duty, _ticket: Ticket, exclude: Id[]): Employee | undefined {
     return [...this.employees.values()].find((e) => e.duties.includes(duty) && !exclude.includes(e.id));

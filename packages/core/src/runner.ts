@@ -6,10 +6,11 @@
 import { brief } from "./brief.ts";
 import { engineAllowed, engineFor, nextFallback } from "./engines.ts";
 import type { Finding, NeedsYou, TicketEvent } from "./events.ts";
-import type { Duty, Employee, Id, Ticket } from "./model.ts";
+import type { Duty, Employee, Id, Proposal, Ticket } from "./model.ts";
+import { decideOutbound } from "./outbound.ts";
 import type { Ports } from "./ports.ts";
 import { assembleReport, type Report } from "./report.ts";
-import { type StageId, type StagePlan, stagePlans } from "./stages.ts";
+import { planFor, type StageId, type StagePlan } from "./stages.ts";
 import { fold, type TicketState } from "./state.ts";
 
 export type RunResult =
@@ -38,7 +39,7 @@ interface Step {
 }
 
 export async function runTicket(p: Ports, ticket: Ticket): Promise<RunResult> {
-  const plan = stagePlans[ticket.effort];
+  const plan = planFor(ticket);
   const builder = p.company.employee(ticket.assignee);
   const emit = (...events: TicketEvent[]) => p.store.append(ticket.id, events);
 
@@ -86,6 +87,52 @@ export async function answer(
 }
 
 const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
+  // An errand (spec §7): the PA works through the home tools and hands back proposals.
+  async work(c) {
+    const out = await session(
+      c,
+      "build",
+      c.builder,
+      'Do the errand with the home tools. Send nothing yourself. Reply as JSON: {"proposals":[{"action","summary","to"?,"invitesOthers"?}]}.',
+    );
+    if (out !== null) await c.emit(checkpoint(c, "work", out), finished(c, "work"));
+  },
+
+  async proposals(c) {
+    if (!c.s.proposals) {
+      const items = parseJson<{ proposals: Proposal[] }>(c.s.outputs.work ?? "")?.proposals;
+      if (!items) {
+        await c.emit(failed(c, "proposals", "the errand's proposals could not be read"));
+        return;
+      }
+      const isContact = (a: string) => c.p.company.isContact?.(a) ?? false;
+      const by = (d: string) =>
+        items.filter((p) => decideOutbound(p, c.builder.outbound ?? {}, isContact) === d);
+      await c.emit({
+        type: "proposals-sorted",
+        at: c.p.clock.now(),
+        auto: by("auto"),
+        ask: by("ask"),
+        off: by("off"),
+      });
+      return;
+    }
+    const { auto, ask, off } = c.s.proposals;
+    if (ask.length && !c.s.lastAnswer) {
+      await c.emit(needsYou(c, "proposals", { kind: "proposals", items: ask }));
+      return;
+    }
+    const approved = c.s.lastAnswer?.answer === "approve" ? ask : [];
+    const carryOut = [...auto, ...approved];
+    const declined = [...off, ...ask.filter((p) => !approved.includes(p))];
+    const summary = `${carryOut.length} to carry out (${auto.length} by rule), ${declined.length} declined`;
+    await c.emit(
+      { type: "proposals-decided", at: c.p.clock.now(), carryOut, declined },
+      finished(c, "proposals"),
+      { type: "report-ready", at: c.p.clock.now(), summary },
+    );
+  },
+
   async pickup(c) {
     await c.p.machines.ensureUp(c.ticket.assignee);
     await c.emit(finished(c, "pickup"));

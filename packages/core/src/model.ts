@@ -75,6 +75,38 @@ export interface Employee {
   standingOrders?: StandingOrder[];
   /** Absent means any time. */
   workingHours?: WorkingHours;
+  /** For a PA: how each kind of outgoing action is handled. Absent actions are Ask. */
+  outbound?: Partial<Record<OutboundAction, OutboundSetting>>;
+}
+
+/** Things a PA can propose that would leave the house in the owner's name (spec §7). */
+export type OutboundAction =
+  | "send-email"
+  | "accept-invite"
+  | "calendar-hold"
+  | "calendar-invite"
+  | "book"
+  | "pay"
+  | "delete-mail"
+  | "forward"
+  | "share-file"
+  | "account-settings";
+
+export interface OutboundRule {
+  /** Only when every recipient is in the owner's contacts. */
+  onlyToContacts?: boolean;
+  /** Only when nobody else is invited. */
+  noInvitees?: boolean;
+}
+
+export type OutboundSetting = { mode: "ask" } | { mode: "off" } | { mode: "rule"; rule: OutboundRule };
+
+/** One outgoing action a PA prepared: a draft reply, a calendar change, a booking to make. */
+export interface Proposal {
+  action: OutboundAction;
+  summary: string;
+  to?: string[];
+  invitesOthers?: boolean;
 }
 
 export type TicketType = "fix" | "feat" | "chore" | "errand";
