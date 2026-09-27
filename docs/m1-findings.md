@@ -244,6 +244,45 @@ answer the machines' DNS itself and refuse the tailnet's domain.
     start it with the first machine.
   - Traffic between two machines is untested, since there's only one.
 
+## 4. Harnesses and sign-in
+
+**Installed** in the machine with [`tools/m1/install-harnesses.sh`](../tools/m1/install-harnesses.sh),
+with pinned versions:
+
+- Node 24.21.0, checked against nodejs.org's SHA-256;
+- Claude Code 2.1.283, with Anthropic's native installer;
+- Claude's ACP adapter, `@agentclientprotocol/claude-agent-acp` 0.81.2;
+- OpenCode 1.18.32, whose ACP mode is `opencode acp`. It's pointed at Ollama through the relay
+  (`~/.config/opencode/opencode.json`).
+
+npm is kept in `~/.local`, so global installs need no `sudo`. Two things to know:
+
+- **npm 11 skips install scripts unless they're allowed.** OpenCode's `postinstall` and
+  `@github/keytar`'s native build were skipped. Both tools still ran. The base image should pass
+  `--allow-scripts`, or accept the skip deliberately.
+- **Commands run by `machine run` get a non-login shell**, so `~/.local/bin` isn't on its `PATH`.
+  Use `bash -l`, or absolute paths.
+
+**Claude:** sign-in without a browser works in principle. `claude` prints a link, and in SSH
+sessions and containers the browser page shows a code to paste back. The link is too long for the
+terminal, though: it wraps, and copying it breaks it. The credential lands in
+`~/.claude/.credentials.json`, mode 0600. For i.inc, `claude setup-token` fits better: it mints a
+one-year token that is only printed. The daemon would store that token and hand it to each session
+as `CLAUDE_CODE_OAUTH_TOKEN`, so no login lives in the machine.
+
+**Gemini CLI no longer serves Google AI Pro.** Google stopped serving personal Google AI Pro,
+Ultra and free accounts in Gemini CLI on June 18, 2026. "Sign in with Google" completes, then
+silently falls back to asking for an API key (google-gemini/gemini-cli#28717, open). An API key
+is billed and limited separately from the subscription, so the owner chose not to use one, and
+Gemini CLI was uninstalled.
+
+**Antigravity takes its place.** Google's replacement for Gemini CLI is Antigravity CLI (`agy`),
+and its ACP server is in the ACP registry (`antigravity-acp`, with a linux-arm64 build).
+[`tools/m1/install-antigravity.sh`](../tools/m1/install-antigravity.sh) installs both. On headless
+Linux, `agy` keeps its sign-in only in a Secret Service keyring. So the script also installs
+gnome-keyring, and a `with-keyring` wrapper that runs a command in a private D-Bus session with the
+keyring unlocked. Its password is empty, so like Claude's file, only file permissions protect it.
+
 ## What the spec should change
 
 Candidates so far. Those marked "to confirm" wait for the step named.
@@ -261,3 +300,10 @@ Candidates so far. Those marked "to confirm" wait for the step named.
     refuse the tailnet's names.
 - **§15, the base image:** a machine's user takes the host account's name and uid unless the image
   ships its own `/etc/machine/create-user.sh`. An employee's machine should use a user of its own.
+- **§5, §8 and §13, the Google engine (done in this PR):** Gemini CLI on Google AI Pro is replaced
+  by Antigravity's ACP server on Google AI Pro. There's a new risk entry on vendors moving
+  subscriptions. The core's `AgentHarness` type in `packages/core/src/model.ts` still lists
+  `"gemini-cli"` and should get `"antigravity"` instead; that's left to a core change.
+- **§5, credentials:** Claude's `setup-token` gives a one-year token the daemon can inject per
+  session. That matches "which account's credential i.inc injects" better than a login stored in
+  the machine.

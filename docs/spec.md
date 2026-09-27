@@ -178,7 +178,7 @@ Everything here can be edited later.
 | --- | --- |
 | Name, avatar | "Ada", a picture |
 | Role | Its identity: Senior Engineer by default, or Staff or Principal Engineer, Product Manager, UX Designer, QA, or a role you write yourself. Each role is an editable system prompt with default duties |
-| Engine | harness + model + account: Claude Code · Opus · "Claude Pro"; Gemini CLI · 3 Pro · "Google AI Pro"; OpenCode · qwen3 · "Local". One engine for everything by default, or one per duty (see "Engine per duty" below) |
+| Engine | harness + model + account: Claude Code · Opus · "Claude Pro"; Antigravity · Gemini 3.1 Pro · "Google AI Pro"; OpenCode · qwen3 · "Local". One engine for everything by default, or one per duty (see "Engine per duty" below) |
 | Fallback engines and switch rules | See "Engines and switching" below |
 | Usage caps | Per ticket, per day and per week. Tokens where the harness reports them; otherwise a share of the account's window, or hours |
 | Defaults | Effort level, and a review preference (for example, prefer a reviewer from another vendor) |
@@ -248,8 +248,9 @@ then writes project pages in its brain.
 
 ### Engines and switching: identity is memory
 
-Every machine has all the harnesses installed: Claude Code, Gemini CLI and OpenCode, each with its
-ACP adapter. The engine chosen for a session decides which harness runs and which account's
+Every machine has all the harnesses installed: Claude Code, Antigravity and OpenCode, each speaking
+ACP. Claude Code goes through an adapter, Antigravity through its own ACP server, and OpenCode
+natively. The engine chosen for a session decides which harness runs and which account's
 credential i.inc injects.
 
 Switch rules are set per employee:
@@ -305,8 +306,9 @@ interface with a scripted fake in tests, like the ACP agent.
 
 ### Lenient permissions, hard walls
 
-- **Inside the machine** the harness runs in its bypass mode: Claude Code bypassPermissions, Gemini
-  CLI yolo, OpenCode allow-all. i.inc's ACP client also approves any permission request. The
+- **Inside the machine** the harness runs in its bypass mode: Claude Code bypassPermissions,
+  OpenCode allow-all, and Antigravity's equivalent. i.inc's ACP client also approves any
+  permission request. The
   employee can install anything, run servers, and use Docker if nested virtualization works.
 - **Network:**
   - The employee has open outbound internet: packages, docs, web search, GitHub and model APIs. A
@@ -520,7 +522,8 @@ Each kind of outgoing action has a setting, which you can tune per PA:
   warning or rejected) and `resetsAt` for the 5-hour and weekly windows. We still have to confirm it
   passes through the ACP adapter; the fallback is to read the reset time from the "limit reached"
   error.
-- **Gemini:** 429 / RESOURCE_EXHAUSTED errors, and the daily reset.
+- **Google AI Pro, through Antigravity:** whatever quota errors and resets Antigravity reports,
+  still to be confirmed. Gemini CLI no longer serves Google AI Pro accounts (§13).
 - **Local:** busy or idle.
 
 "Out of tokens" is shown but doesn't send a push notification. Pushes go out only for Needs you,
@@ -743,6 +746,12 @@ disk. Ollama uses 6–10 GB while a model is loaded.
   SDK usage to a separate API-rate credit, then paused that on June 15, 2026. It could return.
   Several parallel employees on one plan also stretch "ordinary individual usage". The account strip
   keeps usage visible, and engines stay swappable.
+- **Google moved subscription use from Gemini CLI to Antigravity.** On June 18, 2026, Gemini CLI
+  stopped serving Google AI Pro, Ultra and free personal accounts. Only API keys and enterprise
+  licences still work there, and the CLI silently falls back to asking for an API key. So the
+  Google engine runs through Antigravity's ACP server instead. On headless Linux, Antigravity keeps
+  its sign-in only in a Secret Service keyring, so each machine needs one. Vendors can move a
+  subscription again, which is one more reason engines stay swappable.
 - **Engine switches across harnesses** lose the session's in-context memory. The resume brief and the
   checkpoints must carry enough state; the M2 tests cover this.
 - **Linux machines can't build Mac or iOS apps.** Duet's app bundle builds stay in GitHub Actions, and
@@ -850,7 +859,10 @@ hosts.
 - Claude plan and Agent SDK billing (paused): https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan · https://zed.dev/blog/anthropic-subscription-changes
 - Claude Code rate limits: https://code.claude.com/docs/en/statusline · https://github.com/anthropics/claude-code/issues/26498
 - Apple container and `container machine`: https://github.com/apple/container/blob/main/docs/container-machine.md
-- Antigravity CLI and ACP: https://github.com/google-antigravity/antigravity-cli/issues/31
+- Antigravity CLI and ACP: https://github.com/google-antigravity/antigravity-cli/issues/31 · its ACP
+  server in the registry: https://github.com/agentclientprotocol/registry/tree/main/antigravity-acp
+- Gemini CLI stops serving individual accounts (June 18, 2026):
+  https://github.com/google-gemini/gemini-cli/discussions/28017
 - Paperclip: https://github.com/paperclipai/paperclip
 - saltbo/agent-kanban: https://github.com/saltbo/agent-kanban
 - Vibe Kanban: https://github.com/BloopAI/vibe-kanban

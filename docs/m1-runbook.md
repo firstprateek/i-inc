@@ -53,8 +53,9 @@ in `tools/m1/pf/` with placeholders in place of real addresses, and record how t
 
 ### 4. Harnesses, adapters and sign-in
 
-Inside the machine, install Claude Code, Gemini CLI and OpenCode, and each one's ACP adapter (see
-https://agentclientprotocol.com/get-started/agents). Sign in to the owner's Claude Pro and Google
+Inside the machine, install Claude Code, Antigravity and OpenCode, and each one's ACP adapter or
+server (see https://agentclientprotocol.com/get-started/agents). Antigravity replaced Gemini CLI for
+Google AI Pro accounts on June 18, 2026 (spec §13). Sign in to the owner's Claude Pro and Google
 AI Pro accounts **inside the machine**, with the owner doing each login. Record whether a
 browser-less sign-in flow works, and where each tool stores its credential.
 
@@ -64,8 +65,8 @@ Write a small probe, `tools/m1/acp-probe.ts` (run with Node 22 or Bun), that sta
 **inside the machine** over stdio from the host (via the container tool's exec), and then:
 
 1. sends `initialize`, `session/new` and a short prompt;
-2. sets the harness's bypass mode (Claude Code `bypassPermissions`, Gemini CLI yolo, OpenCode
-   allow-all), and auto-approves any `session/request_permission`;
+2. sets the harness's bypass mode (Claude Code `bypassPermissions`, Antigravity's equivalent,
+   OpenCode allow-all), and auto-approves any `session/request_permission`;
 3. streams the updates, and logs every tool call;
 4. records whether Claude Code's `rate_limit_event` (status and `resetsAt`) comes through the
    adapter. If it doesn't, record what the "limit reached" error looks like instead.
