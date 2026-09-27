@@ -16,6 +16,11 @@ export function brief(ticket: Ticket, stage: StageId, state: TicketState, task: 
       "You are resuming this stage: a previous session stopped before finishing. Check the branch first.",
     );
   }
+  if (state.handedFrom) {
+    lines.push(
+      `You are taking this ticket over from ${state.handedFrom}: the branch, plan and notes are theirs.`,
+    );
+  }
   if (state.outputs.plan) lines.push("Plan:", state.outputs.plan);
   if (state.finished.length) lines.push(`Stages done: ${state.finished.join(", ")}`);
   if (state.lastChecks && !state.lastChecks.green) {

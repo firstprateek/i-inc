@@ -57,4 +57,5 @@ export type TicketEvent =
       awaitOwner: KnowledgeEdit[];
     }
   | { type: "closed"; at: number; outcome: "merged" | "rejected" | "done" }
+  | { type: "reassigned"; at: number; from: Id; to: Id }
   | { type: "failed"; at: number; stage: StageId; reason: string; tried: string[] };

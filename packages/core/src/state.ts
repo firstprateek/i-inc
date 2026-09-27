@@ -46,6 +46,9 @@ export interface TicketState {
   /** Employees who have proposed their retro edits. */
   retroBy: Id[];
   outcome: "merged" | "rejected" | "done" | null;
+  /** Set by a handoff; otherwise the ticket's own assignee builds. */
+  assignee: Id | null;
+  handedFrom: Id | null;
   failure: { stage: StageId; reason: string; tried: string[] } | null;
   proposals: { auto: Proposal[]; ask: Proposal[]; off: Proposal[] } | null;
   startedAt: number | null;
@@ -77,6 +80,8 @@ export function emptyState(): TicketState {
     ownerNote: null,
     retroBy: [],
     outcome: null,
+    assignee: null,
+    handedFrom: null,
     failure: null,
     proposals: null,
     startedAt: null,
@@ -202,6 +207,18 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
       return { ...s, status: "running", decision: e.decision };
     case "knowledge-proposed":
       return { ...s, interrupted: false, retroBy: [...s.retroBy, e.employeeId] };
+    case "reassigned":
+      return {
+        ...s,
+        assignee: e.to,
+        handedFrom: e.from,
+        engineOverride: null,
+        paused: null,
+        needsYou: null,
+        failure: null,
+        status: "running",
+        interrupted: s.active !== null,
+      };
     case "closed":
       return { ...s, status: "done", outcome: e.outcome };
     case "failed":

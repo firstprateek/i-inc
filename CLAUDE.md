@@ -7,9 +7,16 @@ source of truth for behavior, words and safety, so read it before changing anyth
 
 ## Status
 
-M2 has started: `packages/core` holds the pipeline engine (stages, events, engine per duty, switch rules,
-the report) with fakes for every port. Nothing runs on the Mac mini yet. The milestones are in the
-spec, §14.
+M2's core is in `packages/core`, tested against fakes for every port:
+- the In progress loop from an event log (stages per effort, checkpoints and resume, the report);
+- engines (engine per duty, switch rules, the home-data wall);
+- the scheduler (assignments, standing orders, working hours, caps, account headroom);
+- errands and outbound permissions;
+- the owner's decision, follow-ups, the retro and knowledge routing, and handoffs;
+- My desk's spend and bottleneck maths.
+
+Nothing runs on the Mac mini yet: M1 is next there ([docs/m1-runbook.md](docs/m1-runbook.md)). The
+milestones are in the spec, §14.
 
 ## Where work can happen
 

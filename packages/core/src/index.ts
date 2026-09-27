@@ -1,4 +1,5 @@
 export * from "./brief.ts";
+export * from "./desk.ts";
 export * from "./engines.ts";
 export * from "./events.ts";
 export * from "./model.ts";

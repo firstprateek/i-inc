@@ -39,14 +39,16 @@ interface Step {
   emit: (...events: TicketEvent[]) => Promise<void>;
 }
 
-export async function runTicket(p: Ports, ticket: Ticket): Promise<RunResult> {
-  const plan = planFor(ticket);
-  const builder = p.company.employee(ticket.assignee);
-  const emit = (...events: TicketEvent[]) => p.store.append(ticket.id, events);
+export async function runTicket(p: Ports, original: Ticket): Promise<RunResult> {
+  const plan = planFor(original);
+  const emit = (...events: TicketEvent[]) => p.store.append(original.id, events);
 
   for (let i = 0; i < maxSteps; i++) {
-    const s = fold(await p.store.read(ticket.id));
+    const s = fold(await p.store.read(original.id));
     const now = p.clock.now();
+    // A handoff changes who builds; the ticket, branch, plan and notes stay.
+    const ticket = s.assignee ? { ...original, assignee: s.assignee } : original;
+    const builder = p.company.employee(ticket.assignee);
 
     if (!s.created) {
       await emit({ type: "ticket-created", at: now, ticketId: ticket.id });
@@ -73,10 +75,21 @@ export async function runTicket(p: Ports, ticket: Ticket): Promise<RunResult> {
     }
     await stageSteps[stage]({ p, ticket, plan, s, builder, emit });
   }
-  throw new Error(`ticket ${ticket.id} made no progress in ${maxSteps} steps`);
+  throw new Error(`ticket ${original.id} made no progress in ${maxSteps} steps`);
 }
 
-/** The owner's answer to a Needs you card. Run the ticket again afterwards. */
+/**
+ * Hands a ticket to another employee (spec §6): it carries on from the same branch, plan and
+ * progress notes, with a resume brief. Used for a ticket paused on an empty account, or a stuck one.
+ */
+export async function handOff(p: Ports, ticketId: Id, to: Id): Promise<void> {
+  const s = fold(await p.store.read(ticketId));
+  if (s.status === "done" || s.status === "ready")
+    throw new Error(`ticket ${ticketId} is ${s.status}; nothing to hand off`);
+  const from = s.assignee ?? s.sessions.find((x) => x.stage === "build")?.employeeId ?? "";
+  await p.store.append(ticketId, [{ type: "reassigned", at: p.clock.now(), from, to }]);
+}
+
 /** The owner's decision on a ready ticket: approve (merge), request changes, or reject. */
 export async function decide(p: Ports, ticketId: Id, decision: Decision, note?: string): Promise<void> {
   const event: TicketEvent =
@@ -86,6 +99,7 @@ export async function decide(p: Ports, ticketId: Id, decision: Decision, note?: 
   await p.store.append(ticketId, [event]);
 }
 
+/** The owner's answer to a Needs you card. Run the ticket again afterwards. */
 export async function answer(
   p: Ports,
   ticketId: Id,
