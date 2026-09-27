@@ -21,6 +21,10 @@ M3 has started:
 - `apps/web`: the office, board, ticket, chat, My desk, hiring and inbox views as Lit components, light
   and dark.
 
+M4 has started: brains and the handbook as git repos on the host, edits applied from each retro,
+policy changes waiting for the owner, orientation as a new hire's first ticket, and a brain and
+handbook viewer.
+
 Real ACP sessions, machines and the GitHub App wait for M1's findings, so for now the daemon runs only
 in demo mode, with the scripted agent and helper model, and a morning's worth of tickets.
 

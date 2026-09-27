@@ -11,7 +11,9 @@ export function brief(ticket: Ticket, stage: StageId, state: TicketState, task: 
     ...ticket.doneWhen.map((d) => `- ${d}`),
     `Stage: ${stage}. Task: ${task}`,
   ];
-  if (state.interrupted || state.paused) {
+  if (state.interruptedByOwner) {
+    lines.push("The owner stopped your last session with an urgent message. Read it first, then carry on.");
+  } else if (state.interrupted || state.paused) {
     lines.push(
       "You are resuming this stage: a previous session stopped before finishing. Check the branch first.",
     );
@@ -43,9 +45,9 @@ export function brief(ticket: Ticket, stage: StageId, state: TicketState, task: 
   if (switched?.stage === stage) lines.push(`Engine switched from ${switched.from}: ${switched.reason}.`);
   if (state.lastAnswer?.note) lines.push(`Owner's note: ${state.lastAnswer.note}`);
   if (state.ownerNote) lines.push(`The owner asked for changes: ${state.ownerNote}`);
-  // Messages reach the employee at the next stage boundary (spec §10, "Chat").
+  // Messages reach the employee at the next stage boundary; urgent ones at the next session (spec §10, "Chat").
   const delivered = state.messages.filter(
-    (m) => state.stageStartedAt !== null && m.at <= state.stageStartedAt,
+    (m) => m.urgent || (state.stageStartedAt !== null && m.at <= state.stageStartedAt),
   );
   if (delivered.length)
     lines.push("Messages from the owner:", ...delivered.slice(-5).map((m) => `- ${m.text}`));

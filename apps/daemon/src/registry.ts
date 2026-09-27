@@ -1,6 +1,16 @@
 // The company's configuration, kept in SQLite: employees, engines, accounts, hosts, contacts and
 // settings. It is the Company port the core reads.
-import type { AccountCost, Company, Duty, Employee, Engine, HostCost, Id, Ticket } from "@i-inc/core";
+import {
+  type AccountCost,
+  type Company,
+  type Duty,
+  type Employee,
+  type Engine,
+  type HostCost,
+  type Id,
+  pickTint,
+  type Ticket,
+} from "@i-inc/core";
 import type { Db } from "./db.ts";
 
 export interface Settings {
@@ -41,8 +51,12 @@ export class Registry implements Company {
     return row ? (JSON.parse(row.body) as T) : undefined;
   }
 
+  /** Hires someone, or updates them. A new hire gets the least-worn avatar tint; an update keeps theirs. */
   hire(e: Employee): void {
-    this.put("employee", e.id, e);
+    const current = this.get<Employee>("employee", e.id);
+    const others = this.employees().filter((x) => x.id !== e.id);
+    const tint = e.tint ?? current?.tint ?? pickTint(others);
+    this.put("employee", e.id, { ...e, tint });
   }
   addEngine(e: Engine): void {
     this.put("engine", e.id, e);
@@ -60,8 +74,12 @@ export class Registry implements Company {
     this.put("settings", "company", { ...this.settings(), ...s });
   }
 
+  /** Everyone, in hiring order. Anyone hired before tints existed gets one here, the same each time. */
   employees(): Employee[] {
-    return this.list<Employee>("employee");
+    const all: Employee[] = [];
+    for (const e of this.list<Employee>("employee"))
+      all.push(e.tint === undefined ? { ...e, tint: pickTint(all) } : e);
+    return all;
   }
   engines(): Engine[] {
     return this.list<Engine>("engine");
@@ -77,7 +95,7 @@ export class Registry implements Company {
   }
 
   employee(id: Id): Employee {
-    const e = this.get<Employee>("employee", id);
+    const e = this.employees().find((x) => x.id === id);
     if (!e) throw new Error(`no employee ${id}`);
     return e;
   }

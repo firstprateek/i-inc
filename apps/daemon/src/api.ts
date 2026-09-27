@@ -10,8 +10,11 @@ import {
   handOff,
   hiringProblems,
   type Id,
+  knowledgeLog,
+  type ProposedEdit,
 } from "@i-inc/core";
 import type { Daemon, DaemonDeps } from "./daemon.ts";
+import type { Change, Repo } from "./knowledge.ts";
 import type { NewTicket } from "./tickets.ts";
 import { deskView, officeView, type TicketView, ticketView } from "./views.ts";
 
@@ -54,9 +57,13 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       async () => {
         const latest = d.chatLog.latest();
         return json({
-          threads: d.registry
-            .employees()
-            .map((e) => ({ id: e.id, name: e.name, role: e.role, last: latest.get(e.id) ?? null })),
+          threads: d.registry.employees().map((e) => ({
+            id: e.id,
+            name: e.name,
+            tint: e.tint ?? 0,
+            role: e.role,
+            last: latest.get(e.id) ?? null,
+          })),
         });
       },
     ],
@@ -67,7 +74,10 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       async (_, p) => {
         const e = d.registry.employees().find((x) => x.id === p.id);
         if (!e) return json({ error: "no such employee" }, 404);
-        return json({ employee: { id: e.id, name: e.name, role: e.role }, entries: d.chatLog.thread(e.id) });
+        return json({
+          employee: { id: e.id, name: e.name, tint: e.tint ?? 0, role: e.role },
+          entries: d.chatLog.thread(e.id),
+        });
       },
     ],
 
@@ -77,10 +87,15 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       async (req, p) => {
         const e = d.registry.employees().find((x) => x.id === p.id);
         if (!e) return json({ error: "no such employee" }, 404);
-        const { text } = (await req.json()) as { text?: string };
+        const { text, urgent } = (await req.json()) as { text?: string; urgent?: boolean };
         if (!text?.trim()) return json({ error: "say something" }, 400);
         const said = text.trim();
-        d.chatLog.add(e.id, { from: "owner", at: d.clock.now(), text: said });
+        d.chatLog.add(
+          e.id,
+          urgent
+            ? { from: "owner", at: d.clock.now(), text: said, urgent: true }
+            : { from: "owner", at: d.clock.now(), text: said },
+        );
 
         // What the employee is on now, and a few notes from its recent tickets.
         const mine = [];
@@ -130,11 +145,20 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           await daemon.tick();
         }
         if (out.kind === "note") {
-          await d.store.append(out.ticketId, [{ type: "owner-message", at, text: said }]);
+          await d.store.append(out.ticketId, [
+            urgent
+              ? { type: "owner-message", at, text: said, urgent: true }
+              : { type: "owner-message", at, text: said },
+          ]);
+          const stopped = urgent === true && daemon.interrupt(out.ticketId, e.id);
           d.chatLog.add(e.id, {
             from: "system",
             at,
-            text: `${e.name} will see this at the next stage boundary.`,
+            text: stopped
+              ? `${e.name} stopped to read this, and carries on from there.`
+              : urgent
+                ? `${e.name} will see this when their next session starts.`
+                : `${e.name} will see this at the next stage boundary.`,
           });
         }
         if (out.kind === "unavailable") d.chatLog.add(e.id, { from: "system", at, text: out.reason });
@@ -182,8 +206,23 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         const problems = hiringProblems(hire, d.registry.engines(), d.registry.employees());
         if (problems.length) return json({ error: problems.join("; "), problems }, 400);
         d.registry.hire(hire);
+        // A brain from the template, and orientation as the first ticket (spec §5, "Hiring").
+        d.knowledge.ensureBrain(hire);
+        const pa = hire.role === "Personal Assistant";
+        const orientation = d.tickets.create(
+          {
+            title: `Orientation for ${hire.name}`,
+            project: pa ? "Home" : (hire.projects?.[0] ?? "General"),
+            type: "orientation",
+            effort: "low",
+            doneWhen: ["the brain has a page for each project"],
+            assignee: hire.id,
+            priority: 100,
+          },
+          d.clock.now(),
+        );
         await daemon.tick();
-        return json({ employee: hire }, 201);
+        return json({ employee: d.registry.employee(hire.id), orientation: orientation.id }, 201);
       },
     ],
 
@@ -268,7 +307,116 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         return act(p.id, null, () => handOff(ports, p.id ?? "", to));
       },
     ],
+
+    // Brains and the handbook (spec §5, "The brain"): read, diff, revert; approve policy changes.
+    [
+      "GET",
+      "/api/knowledge/handbook",
+      async () => {
+        const repo: Repo = { kind: "handbook" };
+        return json({
+          pages: d.knowledge.pages(repo),
+          history: named(d.knowledge.history(repo)),
+          awaiting: (await awaiting()).map(proposal),
+        });
+      },
+    ],
+    [
+      "GET",
+      "/api/knowledge/brains/:id",
+      async (_, p) => {
+        const e = d.registry.employees().find((x) => x.id === p.id);
+        if (!e) return json({ error: "no such employee" }, 404);
+        const repo: Repo = { kind: "brain", id: e.id };
+        return json({
+          employee: { id: e.id, name: e.name, role: e.role, tint: e.tint ?? 0 },
+          pages: d.knowledge.pages(repo),
+          history: named(d.knowledge.history(repo)),
+        });
+      },
+    ],
+    [
+      "GET",
+      "/api/knowledge/recent",
+      async () => {
+        const all = [
+          ...d.knowledge.history({ kind: "handbook" }, 20).map((c) => ({ ...c, repo: "handbook" })),
+          ...d.registry
+            .employees()
+            .flatMap((e) =>
+              d.knowledge
+                .history({ kind: "brain", id: e.id }, 20)
+                .map((c) => ({ ...c, repo: `brain:${e.id}` })),
+            ),
+        ];
+        const learned = all.filter((c) => c.author && !c.revert).sort((a, b) => b.at - a.at);
+        return json({ changes: named(learned.slice(0, 8)) });
+      },
+    ],
+    [
+      "POST",
+      "/api/knowledge/:repo/revert",
+      async (req, p) => {
+        const repo = repoOf(p.repo ?? "");
+        if (!repo) return json({ error: "no such brain" }, 404);
+        const { commit } = (await req.json()) as { commit?: string };
+        try {
+          d.knowledge.revert(repo, commit ?? "");
+        } catch (e) {
+          return json({ error: e instanceof Error ? e.message : String(e) }, 400);
+        }
+        return json({ history: named(d.knowledge.history(repo)) });
+      },
+    ],
+    [
+      "POST",
+      "/api/knowledge/policies/:edit",
+      async (req, p) => {
+        const edit = (await awaiting()).find((x) => x.id === p.edit);
+        if (!edit) return json({ error: "no such proposal" }, 404);
+        const { approved } = (await req.json()) as { approved?: boolean };
+        if (typeof approved !== "boolean") return json({ error: "approved must be true or false" }, 400);
+        await d.store.append(edit.ticketId, [
+          { type: "policy-decided", at: d.clock.now(), editId: edit.id, approved },
+        ]);
+        daemon.applyKnowledge(edit.ticketId, await d.store.read(edit.ticketId));
+        return json({ ok: true });
+      },
+    ],
   ];
+
+  /** Policy changes waiting for the owner, oldest first. */
+  async function awaiting(): Promise<ProposedEdit[]> {
+    const out: ProposedEdit[] = [];
+    for (const r of d.tickets.all())
+      out.push(...knowledgeLog(r.ticket.id, await d.store.read(r.ticket.id)).awaiting);
+    return out.sort((a, b) => a.at - b.at);
+  }
+
+  function proposal(p: ProposedEdit) {
+    return {
+      id: p.id,
+      ticketId: p.ticketId,
+      author: nameOf(p.author),
+      at: p.at,
+      page: p.edit.page,
+      text: p.edit.text,
+    };
+  }
+
+  function nameOf(id: Id): string {
+    return d.registry.employees().find((e) => e.id === id)?.name ?? id;
+  }
+
+  function named<T extends Change>(changes: T[]) {
+    return changes.map((c) => ({ ...c, authorName: c.author ? nameOf(c.author) : null }));
+  }
+
+  function repoOf(key: string): Repo | null {
+    if (key === "handbook") return { kind: "handbook" };
+    const id = key.startsWith("brain:") ? key.slice(6) : null;
+    return id && d.registry.employees().some((e) => e.id === id) ? { kind: "brain", id } : null;
+  }
 
   /** Appends the owner's action if the ticket is in the right state, then runs the ticket on. */
   async function act(id: string | undefined, needs: "needs-you" | "ready" | null, fn: () => Promise<void>) {

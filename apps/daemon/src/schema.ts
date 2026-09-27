@@ -27,6 +27,10 @@ export function migrate(db: Db): void {
       body TEXT NOT NULL,
       PRIMARY KEY (employee_id, seq)
     );
+    CREATE TABLE IF NOT EXISTS knowledge_applied (
+      edit_id TEXT PRIMARY KEY,
+      at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS company (
       kind TEXT NOT NULL,
       id TEXT NOT NULL,

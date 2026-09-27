@@ -1,5 +1,5 @@
 // Fold a ticket's events into the state the pipeline decides from. Pure.
-import type { Decision, Finding, NeedsYou, TicketEvent } from "./events.ts";
+import type { Decision, Finding, HelperDuty, NeedsYou, TicketEvent } from "./events.ts";
 import type { Id, Proposal } from "./model.ts";
 import type { StageId } from "./stages.ts";
 
@@ -50,12 +50,18 @@ export interface TicketState {
   assignee: Id | null;
   handedFrom: Id | null;
   /** The owner's chat messages about this ticket. A session sees those sent before its stage began. */
-  messages: { at: number; text: string }[];
+  messages: { at: number; text: string; urgent?: boolean }[];
+  /** The last session was stopped by an urgent message. Cleared when the next session starts. */
+  interruptedByOwner: boolean;
   stageStartedAt: number | null;
   failure: { stage: StageId; reason: string; tried: string[] } | null;
   proposals: { auto: Proposal[]; ask: Proposal[]; off: Proposal[] } | null;
   startedAt: number | null;
   readyAt: number | null;
+  /** The reviewer and verifier the scheduler (or the runner) picked for this ticket. */
+  helpers: Partial<Record<HelperDuty, Id>>;
+  /** The stage waits for the scheduler to find a helper. */
+  waitingFor: { duty: HelperDuty; since: number } | null;
 }
 
 export function emptyState(): TicketState {
@@ -86,11 +92,14 @@ export function emptyState(): TicketState {
     assignee: null,
     handedFrom: null,
     messages: [],
+    interruptedByOwner: false,
     stageStartedAt: null,
     failure: null,
     proposals: null,
     startedAt: null,
     readyAt: null,
+    helpers: {},
+    waitingFor: null,
   };
 }
 
@@ -114,6 +123,7 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
         paused: null,
         status: "running",
         interrupted: true,
+        interruptedByOwner: false,
         sessions: [
           ...s.sessions,
           { stage: e.stage, employeeId: e.employeeId, engineId: e.engineId, resume: e.resume },
@@ -186,6 +196,7 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
     case "proposals-sorted":
       return { ...s, interrupted: false, proposals: { auto: e.auto, ask: e.ask, off: e.off } };
     case "proposals-decided":
+    case "policy-decided":
       return s;
     case "report-ready":
       return {
@@ -218,6 +229,7 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
         ...s,
         assignee: e.to,
         handedFrom: e.from,
+        helpers: Object.fromEntries(Object.entries(s.helpers).filter(([, id]) => id !== e.to)),
         engineOverride: null,
         paused: null,
         needsYou: null,
@@ -225,8 +237,20 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
         status: "running",
         interrupted: s.active !== null,
       };
+    case "helper-wanted":
+      return { ...s, waitingFor: { duty: e.duty, since: e.at } };
+    case "helper-assigned":
+      return { ...s, waitingFor: null, helpers: { ...s.helpers, [e.duty]: e.employeeId } };
     case "owner-message":
-      return { ...s, messages: [...s.messages, { at: e.at, text: e.text }] };
+      return {
+        ...s,
+        messages: [
+          ...s.messages,
+          e.urgent ? { at: e.at, text: e.text, urgent: true } : { at: e.at, text: e.text },
+        ],
+      };
+    case "session-interrupted":
+      return { ...s, interrupted: true, interruptedByOwner: true };
     case "closed":
       return { ...s, status: "done", outcome: e.outcome };
     case "failed":

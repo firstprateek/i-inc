@@ -2,6 +2,17 @@
 // before it builds the machine and the brain.
 import type { Employee, Engine } from "./model.ts";
 
+/** How many identity tints avatars can wear. The colours themselves belong to the web app. */
+export const tintCount = 7;
+
+/** The tint for a new hire: the one fewest employees wear, lowest first, so tints repeat only past seven. */
+export function pickTint(existing: Employee[]): number {
+  const worn = new Array<number>(tintCount).fill(0);
+  for (const e of existing)
+    if (e.tint !== undefined) worn[e.tint % tintCount] = (worn[e.tint % tintCount] ?? 0) + 1;
+  return worn.indexOf(Math.min(...worn));
+}
+
 /** Roles whose work is home data: they may only have local engines (spec §7). */
 export const homeRoles = ["Personal Assistant"];
 

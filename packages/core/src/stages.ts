@@ -12,6 +12,7 @@ export type StageId =
   | "report"
   | "work"
   | "proposals"
+  | "orient"
   | "retro";
 
 /** Who does a stage: an employee with a duty, or the harness (deterministic code, no tokens). */
@@ -26,6 +27,7 @@ export const stageDuty: Record<StageId, Duty | "harness"> = {
   report: "build",
   work: "build",
   proposals: "harness",
+  orient: "build",
   retro: "build",
 };
 
@@ -58,7 +60,16 @@ export const errandPlan: StagePlan = {
   planGate: "never",
 };
 
-/** Ticket kinds are data: code tickets follow their effort's plan, errands their own. */
+/** A new hire's orientation (spec §5, "Hiring"): read, then write the brain's first pages. */
+export const orientationPlan: StagePlan = {
+  stages: ["pickup", "orient"],
+  reviewRounds: 0,
+  planGate: "never",
+};
+
+/** Ticket kinds are data: code tickets follow their effort's plan, errands and orientation their own. */
 export function planFor(ticket: Ticket): StagePlan {
-  return ticket.type === "errand" ? errandPlan : stagePlans[ticket.effort];
+  if (ticket.type === "errand") return errandPlan;
+  if (ticket.type === "orientation") return orientationPlan;
+  return stagePlans[ticket.effort];
 }

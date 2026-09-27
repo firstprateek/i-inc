@@ -104,7 +104,7 @@ export function sessionHours(tickets: TicketEvent[][]): Record<Id, number> {
   return hours;
 }
 
-export type WaitReason = "tokens" | "owner-answer" | "owner-decision";
+export type WaitReason = "tokens" | "helper" | "owner-answer" | "owner-decision";
 
 export interface Wait {
   reason: WaitReason;
@@ -114,7 +114,7 @@ export interface Wait {
 
 /**
  * Where work waited, across tickets, longest first. The first entry is the bottleneck card:
- * tokens (an empty account), the owner's answers (gates, disagreements, proposals), or the owner's
+ * tokens (an empty account), a free reviewer or verifier, the owner's answers (gates, disagreements, proposals), or the owner's
  * decision on ready work.
  */
 export function waits(tickets: TicketEvent[][], now: number): Wait[] {
@@ -129,12 +129,18 @@ export function waits(tickets: TicketEvent[][], now: number): Wait[] {
   tickets.forEach((events, ticket) => {
     let tokensSince: number | null = null;
     let askedAt: number | null = null;
+    let helperSince: number | null = null;
     let readyAt: number | null = null;
     for (const e of events) {
       if (e.type === "out-of-tokens") tokensSince = e.at;
       if ((e.type === "session-started" || e.type === "engine-switched") && tokensSince !== null) {
         add("tokens", tokensSince, e.at, ticket);
         tokensSince = null;
+      }
+      if (e.type === "helper-wanted") helperSince = e.at;
+      if (e.type === "helper-assigned" && helperSince !== null) {
+        add("helper", helperSince, e.at, ticket);
+        helperSince = null;
       }
       if (e.type === "needs-you") askedAt = e.at;
       if (e.type === "owner-answered" && askedAt !== null) {
@@ -149,6 +155,7 @@ export function waits(tickets: TicketEvent[][], now: number): Wait[] {
     }
     // Still waiting now.
     if (tokensSince !== null) add("tokens", tokensSince, now, ticket);
+    if (helperSince !== null) add("helper", helperSince, now, ticket);
     if (askedAt !== null) add("owner-answer", askedAt, now, ticket);
     if (readyAt !== null) add("owner-decision", readyAt, now, ticket);
   });

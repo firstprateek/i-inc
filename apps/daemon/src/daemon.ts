@@ -4,6 +4,7 @@
 
 import {
   type Agent,
+  assignHelper,
   type BacklogItem,
   type ChatSession,
   type Clock,
@@ -11,16 +12,22 @@ import {
   type Harness,
   type HelperModel,
   type Id,
+  knowledgeLog,
   type MachineProvider,
+  occupancy,
+  type PendingDuty,
   type Ports,
   type RunResult,
   runTicket,
   type Snapshot,
   schedule,
+  type TicketEvent,
   type TicketState,
   type Waiting,
 } from "@i-inc/core";
 import type { ChatLog } from "./chat.ts";
+import type { Db } from "./db.ts";
+import type { KnowledgeStore } from "./knowledge.ts";
 import type { Registry } from "./registry.ts";
 import type { SqliteEventStore } from "./store.ts";
 import type { Tickets } from "./tickets.ts";
@@ -36,11 +43,15 @@ export interface DaemonDeps {
   helper: HelperModel;
   chat: ChatSession;
   chatLog: ChatLog;
+  knowledge: KnowledgeStore;
+  db: Db;
   log?: (msg: string) => void;
 }
 
 export class Daemon {
   private readonly running = new Map<Id, Promise<void>>();
+  /** The session each ticket is in now, so an urgent message can stop it. */
+  private readonly sessions = new Map<Id, { employeeId: Id; controller: AbortController }>();
   /** Why each ticket that didn't start is waiting, from the last tick. */
   waiting: Waiting[] = [];
 
@@ -55,23 +66,64 @@ export class Daemon {
     return fold(await this.d.store.read(id));
   }
 
-  /** One scheduling pass. Returns once everything it started is under way. */
-  async tick(): Promise<void> {
+  private chain: Promise<void> = Promise.resolve();
+  private queued: Promise<void> | null = null;
+
+  /**
+   * One scheduling pass. Returns once everything it started is under way. Passes never overlap, so
+   * a reviewer is never picked twice; a tick asked for while one is waiting to run joins it.
+   */
+  tick(): Promise<void> {
+    if (this.queued) return this.queued;
+    const next = this.chain.then(() => {
+      this.queued = null;
+      return this.pass();
+    });
+    this.queued = next;
+    this.chain = next.catch((e: unknown) => this.d.log?.(`tick failed: ${String(e)}`));
+    return next;
+  }
+
+  private async pass(): Promise<void> {
     const now = this.d.clock.now();
     const records = this.d.tickets.all();
     const states = new Map<Id, TicketState>();
-    for (const r of records) states.set(r.ticket.id, await this.state(r.ticket.id));
-
-    // Paused tickets: run again; the runner returns at once if the wait isn't over.
     for (const r of records) {
-      if (states.get(r.ticket.id)?.status === "paused") this.run(r.ticket.id);
+      const events = await this.d.store.read(r.ticket.id);
+      states.set(r.ticket.id, fold(events));
+      this.applyKnowledge(r.ticket.id, events);
     }
 
-    const active = (s: TicketState | undefined) =>
-      !!s?.created && (s.status === "running" || s.status === "paused" || s.status === "needs-you");
-    const busy = records
-      .filter((r) => active(states.get(r.ticket.id)))
-      .map((r) => states.get(r.ticket.id)?.assignee ?? r.ticket.assignee);
+    // Paused tickets run again (the runner returns at once if the wait isn't over), and so do running
+    // ones that nothing is driving, e.g. after a restart.
+    for (const r of records) {
+      const s = states.get(r.ticket.id);
+      if (s?.created && (s.status === "paused" || (s.status === "running" && !s.waitingFor)))
+        this.run(r.ticket.id);
+    }
+
+    const builderOf = (id: Id, fallback: Id) => states.get(id)?.assignee ?? fallback;
+    const { busy, holding } = occupancy(
+      records.flatMap((r) => {
+        const state = states.get(r.ticket.id);
+        return state ? [{ builder: builderOf(r.ticket.id, r.ticket.assignee), state }] : [];
+      }),
+      now,
+    );
+    const pending: PendingDuty[] = records.flatMap((r) => {
+      const w = states.get(r.ticket.id)?.waitingFor;
+      return w
+        ? [
+            {
+              ticketId: r.ticket.id,
+              duty: w.duty,
+              builder: builderOf(r.ticket.id, r.ticket.assignee),
+              exclude: [builderOf(r.ticket.id, r.ticket.assignee)],
+              since: w.since,
+            },
+          ]
+        : [];
+    });
 
     const accountsBlockedUntil: Record<Id, number> = {};
     for (const s of states.values()) {
@@ -100,18 +152,19 @@ export class Daemon {
       localHour: new Date(now + offset * 60_000).getUTCHours(),
       employees: this.d.registry.employees(),
       busy,
+      holding,
       accountsBlockedUntil,
       capReachedUntil: {},
       pickedUpToday: this.pickedUpToday(now),
-      pending: [],
+      pending,
       backlog,
     };
     const plan = schedule(snap, this.d.registry);
     this.waiting = plan.waiting;
 
     for (const start of plan.starts) {
-      if (start.as !== "build") continue; // Reviews and proofs run inside their ticket, for now.
-      if (start.by === "standing-order") this.d.tickets.assign(start.ticketId, start.employeeId, now);
+      if (start.as !== "build") await assignHelper(this.ports, start.ticketId, start.as, start.employeeId);
+      else if (start.by === "standing-order") this.d.tickets.assign(start.ticketId, start.employeeId, now);
       this.run(start.ticketId);
     }
   }
@@ -121,16 +174,78 @@ export class Daemon {
     if (this.running.has(id)) return;
     const record = this.d.tickets.get(id);
     if (!record) throw new Error(`no ticket ${id}`);
-    const done = runTicket(this.ports, record.ticket)
-      .then((r: RunResult) => this.d.log?.(`ticket ${id}: ${r.status}`))
+    const signal = (employeeId: Id) => {
+      const controller = new AbortController();
+      this.sessions.set(id, { employeeId, controller });
+      return controller.signal;
+    };
+    const done = runTicket(this.ports, record.ticket, { helpers: "scheduler", signal })
+      .then(async (r: RunResult) => {
+        this.d.log?.(`ticket ${id}: ${r.status}`);
+        this.applyKnowledge(id, await this.d.store.read(id));
+        // A stage finished or wants a helper: someone may be free now, or a reviewer is needed.
+        if (r.status !== "paused") void this.tick().catch(() => {});
+      })
       .catch((e: unknown) => this.d.log?.(`ticket ${id} stopped: ${String(e)}`))
-      .finally(() => this.running.delete(id));
+      .finally(() => {
+        this.running.delete(id);
+        this.sessions.delete(id);
+      });
     this.running.set(id, done);
+  }
+
+  /** The handbook, and a brain for everyone who works here (hiring makes one; this covers the rest). */
+  ensureKnowledge(): void {
+    this.d.knowledge.ensureHandbook();
+    for (const e of this.d.registry.employees()) this.d.knowledge.ensureBrain(e);
+  }
+
+  /** Applies a ticket's proposed edits that are due and not yet applied (spec §5, "The brain"). */
+  applyKnowledge(ticketId: Id, events: TicketEvent[]): void {
+    const due = knowledgeLog(ticketId, events).due;
+    if (!due.length) return;
+    const applied = new Set(
+      this.d.db
+        .all<{ edit_id: string }>(
+          "SELECT edit_id FROM knowledge_applied WHERE edit_id LIKE ?",
+          `${ticketId}:%`,
+        )
+        .map((r) => r.edit_id),
+    );
+    for (const p of due) {
+      if (applied.has(p.id)) continue;
+      try {
+        this.d.knowledge.apply(p, (id) => this.d.registry.employee(id));
+        this.d.db.run(
+          "INSERT OR IGNORE INTO knowledge_applied (edit_id, at) VALUES (?, ?)",
+          p.id,
+          this.d.clock.now(),
+        );
+      } catch (e) {
+        this.d.log?.(`knowledge edit ${p.id} not applied: ${String(e)}`);
+      }
+    }
+  }
+
+  /**
+   * Stops the employee's session on a ticket, if they're in one, so it starts again with the urgent
+   * message first. Returns whether a session was stopped.
+   */
+  interrupt(ticketId: Id, employeeId: Id): boolean {
+    const s = this.sessions.get(ticketId);
+    if (!s || s.employeeId !== employeeId || s.controller.signal.aborted) return false;
+    s.controller.abort("the owner sent an urgent message");
+    return true;
   }
 
   /** Resolves when nothing is running. For tests and a clean shutdown. */
   async idle(): Promise<void> {
-    while (this.running.size) await Promise.all(this.running.values());
+    // A ticket that finishes asks for a tick before it leaves `running`, so the chain covers it.
+    for (;;) {
+      await this.chain;
+      if (!this.running.size) return;
+      await Promise.all(this.running.values());
+    }
   }
 
   private pickedUpToday(now: number): Record<Id, number> {

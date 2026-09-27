@@ -28,7 +28,7 @@ screenshot, and reports:
 | Kind | Level | Meaning |
 | --- | --- | --- |
 | overlap | error | two visible text/icon/control elements intersect |
-| covered | error | another element paints over text |
+| covered | error | another element paints over text, or text is still under a fixed bar at the end of the page |
 | overflow | error / warn | text outside its box, or spilling into the padding (usually an unplanned wrap) |
 | contrast | error | text below WCAG AA (4.5:1, or 3:1 for large text) against its real background |
 | name | error | a button or link with no accessible name (CDP accessibility tree) |
@@ -37,11 +37,13 @@ screenshot, and reports:
 | sparse | warn | a card in a grid whose content ends before 60% of its height |
 | target | warn | a control smaller than 44 px both ways |
 | font | warn | a declared web font didn't load, so the render (and the check) used a fallback |
+| sideways | error | the page is wider than the viewport, so it scrolls sideways |
 
 Then **look at every screenshot yourself**. The checker can't see decorative shapes colliding (a
 monitor drawn over an avatar), awkward wrapping inside a box that still fits, or empty space that
 isn't in a grid. Report errors as blocking; judge warnings.
 
+- It checks inside open shadow roots, so Lit components are measured, not just the page shell.
 - Design artboards (`*.dc.html`) render as plain HTML; the viewport is sized to the artboard's
   fixed-width root. For the web app, pass the dev server's URL and `--size`, once per breakpoint
   (at least 390x844 and 1440x900).

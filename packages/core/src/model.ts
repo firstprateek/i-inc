@@ -77,6 +77,8 @@ export interface Employee {
   workingHours?: WorkingHours;
   /** For a PA: how each kind of outgoing action is handled. Absent actions are Ask. */
   outbound?: Partial<Record<OutboundAction, OutboundSetting>>;
+  /** Which identity tint the avatar wears, chosen at hiring so no two look alike (see `pickTint`). */
+  tint?: number;
 }
 
 /** Things a PA can propose that would leave the house in the owner's name (spec §7). */
@@ -119,7 +121,8 @@ export interface KnowledgeEdit {
   text: string;
 }
 
-export type TicketType = "fix" | "feat" | "chore" | "errand";
+/** An orientation is a new hire's first ticket: read the handbook and projects, write brain pages. */
+export type TicketType = "fix" | "feat" | "chore" | "errand" | "orientation";
 export type Effort = "low" | "medium" | "high";
 
 export interface Ticket {

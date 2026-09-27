@@ -5,7 +5,7 @@
 // an owner's answer, calling runTicket again carries on from the last event.
 import { brief } from "./brief.ts";
 import { engineAllowed, engineFor, nextFallback } from "./engines.ts";
-import type { Decision, Finding, NeedsYou, TicketEvent } from "./events.ts";
+import type { Decision, Finding, HelperDuty, NeedsYou, TicketEvent } from "./events.ts";
 import type { Duty, Employee, Id, KnowledgeEdit, Proposal, Ticket } from "./model.ts";
 import { decideOutbound } from "./outbound.ts";
 import type { Ports } from "./ports.ts";
@@ -17,6 +17,7 @@ export type RunResult =
   | { status: "ready"; report: Report }
   | { status: "paused"; until: number }
   | { status: "needs-you"; ask: NeedsYou }
+  | { status: "waiting"; duty: HelperDuty }
   | { status: "failed"; reason: string; tried: string[] }
   | { status: "done"; outcome: "merged" | "rejected" | "done" };
 
@@ -30,8 +31,23 @@ const maxGateConflicts = 2;
 /** Guards against a bug that makes no progress. A healthy ticket takes a few dozen steps. */
 const maxSteps = 500;
 
+export interface RunOptions {
+  /**
+   * Who picks the reviewer and the verifier. "runner" picks the first employee with the duty, at once.
+   * "scheduler" records that the stage wants one and returns "waiting": the daemon's scheduler picks a
+   * free employee, records it with `assignHelper`, and runs the ticket again (spec §6).
+   */
+  helpers?: "runner" | "scheduler";
+  /**
+   * A fresh signal for each session, so an urgent message can stop it (spec §10, "Chat"). Called with
+   * the employee who runs the session: only the builder's own sessions are interrupted.
+   */
+  signal?: (employeeId: Id) => AbortSignal | undefined;
+}
+
 interface Step {
   p: Ports;
+  opts: RunOptions;
   ticket: Ticket;
   plan: StagePlan;
   s: TicketState;
@@ -39,7 +55,7 @@ interface Step {
   emit: (...events: TicketEvent[]) => Promise<void>;
 }
 
-export async function runTicket(p: Ports, original: Ticket): Promise<RunResult> {
+export async function runTicket(p: Ports, original: Ticket, opts: RunOptions = {}): Promise<RunResult> {
   const plan = planFor(original);
   const emit = (...events: TicketEvent[]) => p.store.append(original.id, events);
 
@@ -60,8 +76,9 @@ export async function runTicket(p: Ports, original: Ticket): Promise<RunResult> 
       return { status: "failed", reason: s.failure.reason, tried: s.failure.tried };
     }
     if (s.status === "needs-you" && s.needsYou) return { status: "needs-you", ask: s.needsYou };
+    if (s.waitingFor) return { status: "waiting", duty: s.waitingFor.duty };
     if (s.paused && now < s.paused.until) {
-      if (await fallBackFromEmptyAccount({ p, ticket, plan, s, builder, emit })) continue;
+      if (await fallBackFromEmptyAccount({ p, opts, ticket, plan, s, builder, emit })) continue;
       return { status: "paused", until: s.paused.until };
     }
 
@@ -73,7 +90,7 @@ export async function runTicket(p: Ports, original: Ticket): Promise<RunResult> 
       await emit({ type: "stage-started", at: now, stage });
       continue;
     }
-    await stageSteps[stage]({ p, ticket, plan, s, builder, emit });
+    await stageSteps[stage]({ p, opts, ticket, plan, s, builder, emit });
   }
   throw new Error(`ticket ${original.id} made no progress in ${maxSteps} steps`);
 }
@@ -88,6 +105,11 @@ export async function handOff(p: Ports, ticketId: Id, to: Id): Promise<void> {
     throw new Error(`ticket ${ticketId} is ${s.status}; nothing to hand off`);
   const from = s.assignee ?? s.sessions.find((x) => x.stage === "build")?.employeeId ?? "";
   await p.store.append(ticketId, [{ type: "reassigned", at: p.clock.now(), from, to }]);
+}
+
+/** Records the reviewer or verifier the scheduler picked for a waiting ticket. Run the ticket again afterwards. */
+export async function assignHelper(p: Ports, ticketId: Id, duty: HelperDuty, employeeId: Id): Promise<void> {
+  await p.store.append(ticketId, [{ type: "helper-assigned", at: p.clock.now(), duty, employeeId }]);
 }
 
 /** The owner's decision on a ready ticket: approve (merge), request changes, or reject. */
@@ -158,6 +180,26 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     );
   },
 
+  // Orientation (spec §5, "Hiring"): the new hire reads, then proposes its brain's first pages.
+  async orient(c) {
+    const out = await session(
+      c,
+      "build",
+      c.builder,
+      `Read the handbook and each project's CLAUDE.md. Write what you will need as pages in your brain: one page per project under projects/, plus anything about the tools. ${pageRules} Reply as JSON: {"edits":[{"page","text"}]}.`,
+    );
+    if (out === null) return;
+    const edits = (parseJson<{ edits: Omit<KnowledgeEdit, "layer">[] }>(out)?.edits ?? []).map(
+      (e): KnowledgeEdit => ({ layer: "brain", page: e.page, text: e.text }),
+    );
+    const at = c.p.clock.now();
+    await c.emit(
+      { type: "knowledge-proposed", at, employeeId: c.builder.id, apply: edits, awaitOwner: [] },
+      finished(c, "orient"),
+      { type: "closed", at, outcome: "done" },
+    );
+  },
+
   async pickup(c) {
     await c.p.machines.ensureUp(c.ticket.assignee);
     await c.emit(finished(c, "pickup"));
@@ -218,11 +260,6 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
   },
 
   async prove(c) {
-    const verifier = c.p.company.pickEmployee("verify", c.ticket, [c.ticket.assignee]);
-    if (!verifier) {
-      await c.emit(finished(c, "prove", "no one on the team has the verify duty"));
-      return;
-    }
     if (c.s.fixDue) {
       if (c.s.proofFailures >= maxProofFailures) {
         await c.emit(failed(c, "prove", "done-when items still fail after a fix"));
@@ -232,6 +269,12 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
       if (out !== null) await c.emit(checkpoint(c, "prove", out));
       return;
     }
+    const verifier = await helper(c, "verify");
+    if (verifier === "none") {
+      await c.emit(finished(c, "prove", "no one on the team has the verify duty"));
+      return;
+    }
+    if (verifier === "wait") return;
     const out = await session(
       c,
       "verify",
@@ -249,12 +292,6 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
   },
 
   async review(c) {
-    const reviewer = c.p.company.pickEmployee("review", c.ticket, [c.ticket.assignee]);
-    if (!reviewer) {
-      await c.emit(finished(c, "review", "no one on the team has the review duty"));
-      return;
-    }
-    if (reviewer.id === c.ticket.assignee) throw new Error("the reviewer must never be the builder");
     const r = c.s.review;
 
     // The owner settled an open disagreement.
@@ -275,6 +312,13 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
 
     const needsVerdict = r.round === 0 || (r.addressed && r.round < c.plan.reviewRounds);
     if (needsVerdict) {
+      const reviewer = await helper(c, "review");
+      if (reviewer === "none") {
+        await c.emit(finished(c, "review", "no one on the team has the review duty"));
+        return;
+      }
+      if (reviewer === "wait") return;
+      if (reviewer.id === c.ticket.assignee) throw new Error("the reviewer must never be the builder");
       const out = await session(
         c,
         "review",
@@ -381,7 +425,7 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
         c,
         next.id === c.builder.id ? "build" : "review",
         next,
-        'Look back at this ticket. Propose at most 2 durable, non-obvious, reusable lessons. Reply as JSON: {"edits":[{"layer":"brain"|"fact"|"policy","page","text"}]}. "brain" is your own working style and duty lessons; "fact" is useful to every employee; "policy" changes how the company works.',
+        `Look back at this ticket. Propose at most 2 durable, non-obvious, reusable lessons. Reply as JSON: {"edits":[{"layer":"brain"|"fact"|"policy","page","text"}]}. "brain" is your own working style and duty lessons; "fact" is useful to every employee; "policy" changes how the company works. ${pageRules}`,
       );
       if (out === null) return;
       const edits = (parseJson<{ edits: KnowledgeEdit[] }>(out)?.edits ?? [])
@@ -400,6 +444,24 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     await c.emit(finished(c, "retro"), { type: "closed", at: c.p.clock.now(), outcome });
   },
 };
+
+/**
+ * The reviewer or verifier for this ticket: the one already assigned, or "none" when no one else has
+ * the duty. Otherwise "wait": the runner picked one itself, or asked the scheduler for one.
+ */
+async function helper(c: Step, duty: HelperDuty): Promise<Employee | "none" | "wait"> {
+  const assigned = c.s.helpers[duty];
+  if (assigned && assigned !== c.ticket.assignee) return c.p.company.employee(assigned);
+  const pick = c.p.company.pickEmployee(duty, c.ticket, [c.ticket.assignee]);
+  if (!pick) return "none";
+  const at = c.p.clock.now();
+  await c.emit(
+    c.opts.helpers === "scheduler"
+      ? { type: "helper-wanted", at, stage: c.s.active as StageId, duty }
+      : { type: "helper-assigned", at, duty, employeeId: pick.id },
+  );
+  return "wait";
+}
 
 /** Runs one session. Returns its output, or null when it paused, switched engine, escalated or failed. */
 async function session(c: Step, duty: Duty, employee: Employee, task: string): Promise<string | null> {
@@ -422,9 +484,22 @@ async function session(c: Step, duty: Duty, employee: Employee, task: string): P
     engineId,
     resume: c.s.interrupted || c.s.paused !== null,
   });
-  const out = await c.p.agent.run({ ticket: c.ticket, stage, duty, employee, engine, brief: text });
+  const signal = c.opts.signal?.(employee.id);
+  const out = await c.p.agent.run({
+    ticket: c.ticket,
+    stage,
+    duty,
+    employee,
+    engine,
+    brief: text,
+    ...(signal ? { signal } : {}),
+  });
 
   if (out.kind === "done") return out.output;
+  if (out.kind === "interrupted") {
+    await c.emit({ type: "session-interrupted", at: c.p.clock.now(), stage, reason: out.reason });
+    return null;
+  }
   if (out.kind === "out-of-tokens") {
     await c.emit({ type: "out-of-tokens", at: c.p.clock.now(), stage, engineId, resetsAt: out.resetsAt });
     return null;
@@ -495,6 +570,10 @@ function failed(c: Step, stage: StageId, reason: string): TicketEvent {
   ];
   return { type: "failed", at: c.p.clock.now(), stage, reason, tried };
 }
+
+/** How pages are named, so the daemon can file an edit (see pagePath in knowledge.ts). */
+const pageRules =
+  'Name brain pages "<folder>/<name>" with folder tools, patterns, projects, reference or duties (or "personality"), and handbook pages by a plain name; names are lowercase words joined by dashes.';
 
 /** Home data never reaches the shared handbook: an errand's lessons stay in the PA's own brain (spec §5). */
 function routed(ticket: Ticket, edit: KnowledgeEdit): KnowledgeEdit {

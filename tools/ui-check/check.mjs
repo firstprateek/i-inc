@@ -8,6 +8,8 @@
 //   covered     another element paints over text (probed with elementFromPoint)
 //   clipped     an element is cut off by an ancestor with overflow hidden
 //   overflow    text is wider than its box (not ellipsized), or taller than a fixed-height box
+//   covered     (also) text still under a fixed or sticky bar once the page is scrolled to the end
+//   sideways    the page is wider than the viewport, so it scrolls sideways (something spills out)
 //   sparse      a tall box whose content ends before 60% of its height
 //   near-miss   siblings whose edges are 1-3 px apart: almost aligned, so probably meant to be
 //   target      a button, link or input smaller than 44 px in both directions
@@ -95,6 +97,15 @@ for (const target of targets) {
 
   const findings = await page.evaluate(auditInPage);
   findings.push(...(await cdpChecks(page)));
+  findings.push(...(await page.evaluate(endOfPage)));
+  const wide = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  if (wide > 0) {
+    findings.push({
+      level: "error",
+      kind: "sideways",
+      msg: `the page is ${wide} px wider than the viewport, so it scrolls sideways`,
+    });
+  }
 
   const shot = `${outDir}/${basename(target).replace(/[^\w.-]+/g, "_")}${dark ? "-dark" : ""}.png`;
   await page.screenshot({ path: shot, fullPage: true });
@@ -117,12 +128,14 @@ async function cdpChecks(page) {
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("DOM.enable");
   await cdp.send("CSS.enable");
-  const { root } = await cdp.send("DOM.getDocument", { depth: -1 });
+  const { root } = await cdp.send("DOM.getDocument", { depth: -1, pierce: true });
 
   // Declared families vs the platform fonts Chrome really rendered with.
   const declared = await page.evaluate(() => {
     const fams = new Set();
-    for (const el of document.querySelectorAll("body *")) {
+    const deep = (root) =>
+      [...root.querySelectorAll("*")].flatMap((el) => [el, ...(el.shadowRoot ? deep(el.shadowRoot) : [])]);
+    for (const el of deep(document.body)) {
       const first = getComputedStyle(el).fontFamily.split(",")[0].trim().replace(/['"]/g, "");
       if (el.childNodes.length && [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()))
         fams.add(first);
@@ -130,7 +143,13 @@ async function cdpChecks(page) {
     return [...fams];
   });
   const used = new Set();
-  const { nodeIds } = await cdp.send("DOM.querySelectorAll", { nodeId: root.nodeId, selector: "body *" });
+  // Walk the tree, shadow roots included (Lit components render into them).
+  const nodeIds = [];
+  const walk = (n) => {
+    if (n.nodeType === 1) nodeIds.push(n.nodeId);
+    for (const k of [...(n.children ?? []), ...(n.shadowRoots ?? [])]) walk(k);
+  };
+  walk(root);
   for (const nodeId of nodeIds.slice(0, 1500)) {
     try {
       const { fonts } = await cdp.send("CSS.getPlatformFontsForNode", { nodeId });
@@ -159,6 +178,44 @@ async function cdpChecks(page) {
   return out;
 }
 
+// Runs inside the page: scrolled to the end, is anything still under a fixed bar? (Content may scroll
+// under a bar; the last of it must clear it.)
+function endOfPage() {
+  scrollTo(0, document.documentElement.scrollHeight);
+  const deep = (root) =>
+    [...root.querySelectorAll("*")].flatMap((el) => [el, ...(el.shadowRoot ? deep(el.shadowRoot) : [])]);
+  const parentOf = (el) => el.parentElement ?? el.getRootNode()?.host ?? null;
+  const fixedOf = (el) => {
+    for (let p = el; p; p = parentOf(p)) if (getComputedStyle(p).position === "fixed") return p;
+    return null;
+  };
+  const all = deep(document.body);
+  const bars = all.filter(
+    (el) => getComputedStyle(el).position === "fixed" && el.getBoundingClientRect().height > 2,
+  );
+  const out = [];
+  for (const bar of bars) {
+    const b = bar.getBoundingClientRect();
+    for (const el of all) {
+      if (fixedOf(el) || ![...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim())) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2 || getComputedStyle(el).visibility === "hidden") continue;
+      const w = Math.min(r.right, b.right) - Math.max(r.left, b.left);
+      const h = Math.min(r.bottom, b.bottom) - Math.max(r.top, b.top);
+      if (w > 2 && h > 2) {
+        const text = el.textContent.trim().replace(/\s+/g, " ").slice(0, 40);
+        out.push({
+          level: "error",
+          kind: "covered",
+          msg: `"${text}" stays under a fixed bar at the end of the page`,
+        });
+      }
+    }
+  }
+  scrollTo(0, 0);
+  return out;
+}
+
 // Runs inside the page.
 function auditInPage() {
   const out = [];
@@ -179,7 +236,35 @@ function auditInPage() {
       r.height > 2
     );
   };
-  const els = [...document.querySelectorAll("body *")].filter(
+  // Shadow roots are part of the page: Lit components render into them.
+  const deep = (root) =>
+    [...root.querySelectorAll("*")].flatMap((el) => [el, ...(el.shadowRoot ? deep(el.shadowRoot) : [])]);
+  const parentOf = (el) => el.parentElement ?? el.getRootNode()?.host ?? null;
+  const holds = (a, b) => {
+    for (let p = b; p; p = parentOf(p)) if (p === a) return true;
+    return false;
+  };
+  const upTo = (el, sel) => {
+    for (let p = el; p; p = parentOf(p)) if (p.matches?.(sel)) return p;
+    return null;
+  };
+  const kidsOf = (el) => [...el.children, ...(el.shadowRoot ? el.shadowRoot.children : [])];
+  // Fixed and sticky bars cover whatever scrolls under them; that's checked at the end of the page.
+  const pinned = (el) => {
+    for (let p = el; p; p = parentOf(p))
+      if (["fixed", "sticky"].includes(getComputedStyle(p).position)) return true;
+    return false;
+  };
+  const pointAt = (x, y) => {
+    let e = document.elementFromPoint(x, y);
+    while (e?.shadowRoot) {
+      const inner = e.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === e) break;
+      e = inner;
+    }
+    return e;
+  };
+  const els = deep(document.body).filter(
     (el) =>
       !["SCRIPT", "STYLE", "LINK", "HELMET"].includes(el.tagName) &&
       !el.closest("svg")?.parentElement?.closest("svg") &&
@@ -190,7 +275,8 @@ function auditInPage() {
   const isLeaf = (el) =>
     ownText(el) || ["IMG", "svg", "INPUT", "BUTTON", "SELECT", "TEXTAREA"].includes(el.tagName);
   const leaves = els.filter(
-    (el) => isLeaf(el) && !el.closest("svg:not(:scope)") && !el.parentElement.closest("button, svg"),
+    (el) =>
+      isLeaf(el) && !el.closest("svg:not(:scope)") && !(parentOf(el) && upTo(parentOf(el), "button, svg")),
   );
 
   // overlap: leaf elements that intersect and are not nested.
@@ -199,7 +285,7 @@ function auditInPage() {
     for (let j = i + 1; j < rects.length; j++) {
       const [a, ra] = rects[i];
       const [b, rb] = rects[j];
-      if (a.contains(b) || b.contains(a)) continue;
+      if (holds(a, b) || holds(b, a) || pinned(a) !== pinned(b)) continue;
       const w = Math.min(ra.right, rb.right) - Math.max(ra.left, rb.left);
       const h = Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top);
       if (w > 2 && h > 2)
@@ -217,8 +303,8 @@ function auditInPage() {
     ];
     for (const [x, y] of probes) {
       if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) continue;
-      const top = document.elementFromPoint(x, y);
-      if (top && top !== el && !el.contains(top) && !top.contains(el)) {
+      const top = pointAt(x, y);
+      if (top && top !== el && !holds(el, top) && !holds(top, el) && pinned(top) === pinned(el)) {
         add("error", "covered", el, `text is painted over by ${describe(top)}`);
         break;
       }
@@ -260,8 +346,9 @@ function auditInPage() {
 
     // sparse: a tall grid cell (a card in a grid) whose content ends before 60% of its height.
     // Columns and sidebars are allowed to be empty at the bottom.
-    if (r.height > 240 && el.children.length && getComputedStyle(el.parentElement).display.includes("grid")) {
-      const bottom = Math.max(...[...el.children].map((k) => k.getBoundingClientRect().bottom));
+    const up = parentOf(el);
+    if (r.height > 240 && kidsOf(el).length && up && getComputedStyle(up).display.includes("grid")) {
+      const bottom = Math.max(...kidsOf(el).map((k) => k.getBoundingClientRect().bottom));
       const used = (bottom - r.top) / r.height;
       if (used < 0.6 && !ownText(el))
         add(
@@ -273,7 +360,7 @@ function auditInPage() {
     }
 
     // clipped: cut off by an ancestor that hides overflow.
-    for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+    for (let p = parentOf(el); p && p !== document.body; p = parentOf(p)) {
       const ps = getComputedStyle(p);
       if (ps.overflow === "visible" && ps.overflowX === "visible" && ps.overflowY === "visible") continue;
       const pr = p.getBoundingClientRect();
@@ -317,8 +404,8 @@ function auditInPage() {
   // near-miss: siblings that are almost aligned. Stacked siblings should share a left edge;
   // side-by-side boxes of similar height should share a top edge. 1-3 px apart is probably a slip.
   const inFlow = (el) => !["absolute", "fixed"].includes(getComputedStyle(el).position);
-  for (const parent of new Set(els.map((el) => el.parentElement))) {
-    const kids = [...parent.children].filter((k) => els.includes(k) && inFlow(k) && k.tagName !== "svg");
+  for (const parent of new Set(els.map(parentOf).filter(Boolean))) {
+    const kids = kidsOf(parent).filter((k) => els.includes(k) && inFlow(k) && k.tagName !== "svg");
     for (let i = 0; i < kids.length; i++) {
       for (let j = i + 1; j < kids.length; j++) {
         const a = kids[i].getBoundingClientRect();
@@ -357,7 +444,7 @@ function auditInPage() {
   function backgroundOf(el) {
     let color = [255, 255, 255, 0];
     const stack = [];
-    for (let p = el; p; p = p.parentElement) {
+    for (let p = el; p; p = parentOf(p)) {
       const c = rgba(getComputedStyle(p).backgroundColor);
       if (c && c[3] > 0) {
         stack.push(c);

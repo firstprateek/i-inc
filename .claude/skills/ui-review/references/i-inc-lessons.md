@@ -63,3 +63,23 @@ paths, branch names, structured briefs).
     environment's proxy, so the "no findings" for the app were about an error page. → The checker
     connects Chromium directly and fetches only HTTPS through the proxy, and it now fails loudly
     when a page doesn't load. Always look at the screenshot before trusting "no findings".
+14. **The checker couldn't see inside Lit components (tooling).** It listed elements with
+    `document.querySelectorAll`, which stops at shadow roots, so every "no findings" for the web
+    app measured only the page shell. Dark-theme tags at 1.47:1 (`--neutral-fg` had no dark value)
+    and a Send button pushed off the phone screen went unreported. → The checker walks open shadow
+    roots, and flags a page that scrolls sideways. Run it in dark as well as light, and when a
+    screenshot shows a problem the checker didn't report, fix the checker.
+15. **A new token without its dark value (theming).** A token defined only in `:root` keeps its
+    light value in the dark theme. → Every colour token gets a dark value in both dark blocks of
+    `tokens.css`, or a comment saying why it is the same in both.
+16. **Content under a fixed bar (layout).** The phone's tab bar is fixed; content may scroll under
+    it, but the end of the page must clear it. → Pad the page by the bar's height. The checker
+    ignores fixed bars while measuring overlap, then scrolls to the end and reports anything still
+    under one.
+17. **A button label wrapped (layout).** "✓ Urgent" broke onto two lines in a narrow form. →
+    Buttons never wrap (`white-space: nowrap` on `.btn`); let the input beside them shrink
+    (`min-width: 0`).
+18. **Two avatars in one tint (identity).** Tints came from a hash of the id, so Kit and Grace wore
+    the same rose; and slate, lilac and periwinkle side by side all read as lavender. → The tint is
+    chosen at hiring (the least-worn one) and stored on the employee. The palette is ordered so the
+    first hires get the most unlike tints; look at the office with the whole team, not one avatar.

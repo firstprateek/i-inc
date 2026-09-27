@@ -77,7 +77,7 @@ export class IncOffice extends Loader<Data> {
     const href = e.ticket ? `#/ticket/${e.ticket.id}` : "#/board";
     return html`<a class="card desk ${needs ? "waiting" : ""}" href=${href} aria-label="${e.name}: ${label}">
       <div class="scene" aria-hidden="true">
-        ${e.state === "off" ? "" : avatar(e.id, e.name, 52)}
+        ${e.state === "off" ? "" : avatar(e, 52)}
         <div class="top"></div>
         <div class="screen ${off ? "off" : ""}">${off ? "" : (e.ticket?.live ?? "")}</div>
       </div>

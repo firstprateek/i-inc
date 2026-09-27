@@ -83,14 +83,14 @@ describe("the scheduler", () => {
   it("puts a pending review ahead of a new build, and never picks the builder", () => {
     const plan = schedule(
       snap({
-        pending: [{ ticketId: "42", duty: "review", exclude: ["grace"], since: 0 }],
-        backlog: [item("50", { assignee: "grace" })],
+        pending: [{ ticketId: "42", duty: "review", builder: "grace", exclude: ["grace"], since: 0 }],
+        backlog: [item("50", { assignee: "ada" })],
         employees: [ada, grace, { ...kit, duties: ["build", "review"] }],
       }),
       company,
     );
     expect(plan.starts[0]).toEqual({ employeeId: "kit", ticketId: "42", as: "review" });
-    expect(plan.starts[1]).toEqual({ employeeId: "grace", ticketId: "50", as: "build", by: "assignment" });
+    expect(plan.starts[1]).toEqual({ employeeId: "ada", ticketId: "50", as: "build", by: "assignment" });
   });
 
   it("gives each employee one thing at a time, highest priority first", () => {

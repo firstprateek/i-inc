@@ -1,11 +1,14 @@
 // The phone inbox (spec §10): what needs you and what's ready, each answerable in one tap.
 import { css, html } from "lit";
-import { api, refreshNow, type TicketView } from "../api.ts";
+import { api, type PolicyProposal, refreshNow, type TicketView } from "../api.ts";
 import { Loader } from "./loader.ts";
 import { avatar, base } from "./shared.ts";
 
-export class IncInbox extends Loader<TicketView[]> {
-  protected fetch = () => api.board();
+export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyProposal[] }> {
+  protected fetch = async () => ({
+    tickets: await api.board(),
+    policies: (await api.handbook()).awaiting ?? [],
+  });
 
   private async act(fn: () => Promise<unknown>) {
     try {
@@ -37,19 +40,20 @@ export class IncInbox extends Loader<TicketView[]> {
   override render() {
     if (this.error) return html`<p role="alert">${this.error}</p>`;
     if (!this.data) return html`<p class="muted">Loading your inbox…</p>`;
-    const needs = this.data.filter((t) => t.status === "needs-you");
-    const ready = this.data.filter((t) => t.status === "ready");
-    const n = needs.length;
+    const needs = this.data.tickets.filter((t) => t.status === "needs-you");
+    const ready = this.data.tickets.filter((t) => t.status === "ready");
+    const policies = this.data.policies;
+    const n = needs.length + policies.length;
     return html`
       <h1>${n ? `${n} ${n === 1 ? "thing needs" : "things need"} you` : "Nothing needs you"}</h1>
-      <div class="list">${needs.map((t) => this.ask(t))}</div>
+      <div class="list">${needs.map((t) => this.ask(t))}${policies.map((p) => this.policy(p))}</div>
       ${ready.length ? html`<h2>Ready for you</h2><div class="list">${ready.map((t) => this.ready(t))}</div>` : ""}
       ${!n && !ready.length ? html`<p class="empty">The team is working. Reports will land here.</p>` : ""}
     `;
   }
 
   private header(t: TicketView, what: string) {
-    return html`<div class="who">${t.assignee ? avatar(t.assignee.id, t.assignee.name, 28) : ""}
+    return html`<div class="who">${t.assignee ? avatar(t.assignee, 28) : ""}
       <span><b>${t.assignee?.name ?? "Unassigned"}</b> · ${what} · ${t.project}</span></div>`;
   }
 
@@ -71,6 +75,16 @@ export class IncInbox extends Loader<TicketView[]> {
                 <div class="actions">${btn("Approve all", () => api.answer(t.id, "approve"))}${btn("Decline", () => api.answer(t.id, "reject"), true)}</div>`
             : html`<div class="q">${a.reason}</div>`;
     return html`<div class="card item waiting">${this.header(t, a.kind.replace("-", " "))}${body}</div>`;
+  }
+
+  private policy(p: PolicyProposal) {
+    return html`<div class="card item waiting">
+      <div class="who"><span><b>${p.author}</b> · handbook policy · ${p.page}</span></div>
+      <div class="q">${p.text}</div>
+      <div class="actions">
+        <button class="btn" @click=${() => this.act(() => api.decidePolicy(p.id, true))}>Approve</button>
+        <button class="btn ghost" @click=${() => this.act(() => api.decidePolicy(p.id, false))}>Decline</button>
+      </div></div>`;
   }
 
   private ready(t: TicketView) {

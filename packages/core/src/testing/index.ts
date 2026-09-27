@@ -52,7 +52,8 @@ export class Crash extends Error {
   }
 }
 
-export type Scripted = SessionOutcome | { kind: "crash" };
+/** "hang" keeps the session going until its signal aborts, like a long build the owner interrupts. */
+export type Scripted = SessionOutcome | { kind: "crash" } | { kind: "hang" };
 
 export interface Match {
   ticket?: Id;
@@ -80,6 +81,7 @@ export class FakeAgent implements Agent {
     const script = this.scripts.find((s) => s.queue.length > 0 && matches(s.match, request));
     const next = script?.queue.shift() ?? defaultOutcome(request);
     if (next.kind === "crash") throw new Crash();
+    if (next.kind === "hang") return hang(request.signal);
     return next;
   }
 
@@ -87,6 +89,15 @@ export class FakeAgent implements Agent {
   callsFor(employee: Id, stage?: StageId): SessionRequest[] {
     return this.calls.filter((c) => c.employee.id === employee && (!stage || c.stage === stage));
   }
+}
+
+function hang(signal: AbortSignal | undefined): Promise<SessionOutcome> {
+  if (!signal) throw new Error("a hanging session needs a signal, or it never ends");
+  return new Promise((resolve) => {
+    const stop = () => resolve({ kind: "interrupted", reason: String(signal.reason ?? "interrupted") });
+    if (signal.aborted) stop();
+    else signal.addEventListener("abort", stop, { once: true });
+  });
 }
 
 function matches(m: Match, r: SessionRequest): boolean {
@@ -112,6 +123,13 @@ function defaultOutcome(r: SessionRequest): SessionOutcome {
   if (r.stage === "report") return done("What changed: refunds are subtracted from spending.");
   if (r.stage === "work") return done(json({ proposals: [] }));
   if (r.stage === "retro") return done(json({ edits: [] }));
+  if (r.stage === "orient") {
+    return done(
+      json({
+        edits: [{ page: `projects/${r.ticket.project.toLowerCase()}`, text: "Read the CLAUDE.md first." }],
+      }),
+    );
+  }
   return done("done");
 }
 

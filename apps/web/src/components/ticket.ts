@@ -148,7 +148,7 @@ export class IncTicket extends Loader<Data> {
         <p class="muted">Tried: ${t.failure.tried.join(", ") || "nothing yet"}</p></div>`;
     }
     if (t.status === "done") return html`<p><span class="chip done">${t.outcome}</span></p>`;
-    return html`<p class="muted">${t.status === "queued" ? (t.waiting ?? "Queued") : t.live}</p>`;
+    return html`<p class="muted">${t.waiting ?? (t.status === "queued" ? "Queued" : t.live)}</p>`;
   }
 
   private line(e: TicketEvent) {
