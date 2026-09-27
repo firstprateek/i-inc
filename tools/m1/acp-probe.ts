@@ -12,9 +12,11 @@
 //
 // Run it on the host (Node 22.6+ runs .ts directly):
 //   node tools/m1/acp-probe.ts <claude|antigravity|opencode> [machine]
-// Every message is also written to /tmp/m1/acp-<agent>.jsonl.
+//     [--prompt-file <file on the host>] [--cwd <directory in the machine>] [--label <name>]
+// With --prompt-file it runs a real stage (step 6) instead of the built-in check.
+// Every message is also written to /tmp/m1/acp-<agent>[-<label>].jsonl.
 import { spawn } from "node:child_process";
-import { createWriteStream, mkdirSync } from "node:fs";
+import { createWriteStream, mkdirSync, readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 type Json = Record<string, unknown>;
@@ -24,22 +26,34 @@ const launchers: Record<string, string> = {
   antigravity: "acp-antigravity",
   opencode: "acp-opencode",
 };
-const agent = process.argv[2] ?? "";
-const machine = process.argv[3] ?? "m1-test";
+const args = process.argv.slice(2);
+const flag = (name: string): string | undefined => {
+  const at = args.indexOf(`--${name}`);
+  return at >= 0 ? args[at + 1] : undefined;
+};
+const agent = args[0] ?? "";
+const machine = args[1] && !args[1].startsWith("--") ? args[1] : "m1-test";
 const launcher = launchers[agent];
 if (!launcher) {
-  console.error("usage: node tools/m1/acp-probe.ts <claude|antigravity|opencode> [machine]");
+  console.error(
+    "usage: node tools/m1/acp-probe.ts <claude|antigravity|opencode> [machine] " +
+      "[--prompt-file file] [--cwd dir] [--label name]",
+  );
   process.exit(2);
 }
 
-const PROMPT =
-  "In the current directory, create a file named hello.txt that contains the word hi, " +
-  "then run `ls -l` and tell me in one sentence what you see.";
+const promptFile = flag("prompt-file");
+const PROMPT = promptFile
+  ? readFileSync(promptFile, "utf8").trim()
+  : "In the current directory, create a file named hello.txt that contains the word hi, " +
+    "then run `ls -l` and tell me in one sentence what you see.";
+const CWD = flag("cwd") ?? "/tmp/acp-probe";
+const label = flag("label");
 // Long enough for a person to finish a sign-in, if the agent asks for one.
 const TIMEOUT_MS = 15 * 60_000;
 
 mkdirSync("/tmp/m1", { recursive: true });
-const transcript = createWriteStream(`/tmp/m1/acp-${agent}.jsonl`);
+const transcript = createWriteStream(`/tmp/m1/acp-${agent}${label ? `-${label}` : ""}.jsonl`);
 const started = Date.now();
 const say = (line: string) => console.log(`${((Date.now() - started) / 1000).toFixed(1).padStart(6)}s  ${line}`);
 
@@ -171,7 +185,7 @@ async function main(): Promise<void> {
   say(`initialize  protocol ${init.protocolVersion}, agent ${short(init.agentInfo ?? "(unnamed)")}`);
   say(`            capabilities ${short(init.agentCapabilities)}, auth ${short(init.authMethods ?? [])}`);
 
-  const newSession = { cwd: "/tmp/acp-probe", mcpServers: [] };
+  const newSession = { cwd: CWD, mcpServers: [] };
   let created = await request("session/new", newSession);
   const authMethods = ((init.authMethods ?? []) as Json[]).map((method) => String(method.id));
   if ((created.error as Json | undefined)?.code === -32000 && authMethods.length > 0) {
@@ -195,12 +209,12 @@ async function main(): Promise<void> {
     say("set_mode    no bypass mode offered; the probe approves every permission request instead");
   }
 
-  say(`prompt      ${PROMPT}`);
+  say(`prompt      ${short(PROMPT.replace(/\s+/g, " "), 300)}`);
   const result = check(
     await request("session/prompt", { sessionId, prompt: [{ type: "text", text: PROMPT }] }),
     "session/prompt",
   );
-  say(`reply       ${short(reply.trim(), 400)}`);
+  say(`reply       ${promptFile ? reply.trim() : short(reply.trim(), 400)}`);
   say(`done        stop reason ${result.stopReason}; ${counts.toolCalls} tool calls, ${counts.permissions} permission requests,`);
   say(`            ${counts.usageUpdates} usage updates, ${counts.rateLimits} rate-limit entries`);
   child.stdin.end();

@@ -16,7 +16,7 @@ login.
 | `pf` walls hold (internet ok; LAN, tailnet, host blocked; Ollama ok) | Yes: 13 of 13 checks, nothing gets in, and connections are logged | step 3 |
 | Ollama reachable from a machine | Yes, through a relay on the machines' gateway. Ollama itself stays on loopback | step 3 |
 | Docker inside a machine | pending (step 7) | |
-| Resume on another engine from a brief | pending (step 6) | |
+| Resume on another engine from a brief | Yes. Claude planned, then Gemini through Antigravity built from the brief alone, to draft PR firstprateek/duet#7, and CI passed | step 6 |
 | Machine memory idle / busy, and K for this host | Idle: 0.56 GB on the host. Busy and K: pending (step 7). Before any machine, the host uses 11.7 GB of 32 GB with no model loaded (17.4 GB until DisplayLink was stopped) | steps 1 and 2 |
 | Host power idle / busy (W) | pending (step 7) | |
 
@@ -363,6 +363,62 @@ should get.
 **OpenCode lists hosted models.** Next to the local models, it offers its own free hosted ones
 ("OpenCode Zen"). A PA's machine must pin OpenCode to local providers only, or a mistake could send
 home data out.
+
+## 6. A real ticket, then an engine switch
+
+**The ticket** ([`tools/m1/step6/ticket-1.md`](../tools/m1/step6/ticket-1.md)): on Duet, list
+`pnpm lint` and `pnpm typecheck` under the README's Development section. The owner chose a trivial
+ticket for this test.
+
+**Access.** A fine-grained token, limited to Duet with Contents and Pull requests write, was pasted
+by the owner into `gh auth login` inside the machine:
+
+- `gh` keeps it in `~/.config/gh/hosts.yml`, since the machine has no keyring;
+- git pushes through `gh`'s credential helper;
+- commits carry a neutral identity, "Test employee (i.inc)".
+
+**Stage A, Plan: Claude Code over ACP, 29 s, 4 tool calls.** It cloned Duet, made the branch
+`inc/1-readme-dev-commands`, and wrote `~/work/inc-1/plan.md` and `notes.md`. The plan has the
+exact two lines, where they go (the `#` aligned at column 16), where each command comes from
+(package.json, CI, CLAUDE.md), four checks, and the risks. As told, it edited and committed
+nothing.
+
+**The switch.** The Claude session ended.
+[`tools/m1/step6/brief.sh`](../tools/m1/step6/brief.sh) built the resume brief from the machine:
+the ticket, the plan, the notes, `git log` and status, and the last error (none), followed by
+[the build steps](../tools/m1/step6/build-steps.md).
+
+**Stage B, Build and Checks: Gemini 3.8 Flash through Antigravity, 110 s, 31 tool calls.** It
+started from the brief alone, in `yolo` mode, with no permission requests. It then:
+
+1. made the planned edit;
+2. ran the plan's checks: only README.md changed, with 2 insertions; every comment sits at column
+   16; both scripts exist;
+3. committed `docs: list lint and typecheck under Development`;
+4. pushed the branch;
+5. opened the draft PR firstprateek/duet#7;
+6. added to the notes.
+
+GitHub CI ran on the draft PR, and lint, types and tests passed.
+
+**What the second engine got right:** everything the ticket asked for. It placed, aligned and
+worded the lines exactly as planned, and ran every planned check.
+
+**What it lost:**
+
+- Nothing material on a ticket this size.
+- Re-orienting took about 20 s and 8 tool calls. It re-read the plan and notes, although the
+  brief already quoted them.
+- The plan's optional `pnpm lint && pnpm typecheck` failed, because the machine has no pnpm. The
+  brief has no facts about the machine, so neither engine knew. CI covered it.
+- The PR shows the owner's account as its author, because the fine-grained token is the owner's.
+  The bot identity comes with the GitHub App (M3).
+
+**For the resume brief:**
+
+- It should say what the machine has and lacks, such as package managers, and whether the checks
+  ran.
+- It can point to files instead of quoting them, since the new engine reads them anyway.
 
 ## What the spec should change
 
