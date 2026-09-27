@@ -17,7 +17,7 @@ spec, §14.
   pipeline core. The core is pure TypeScript, tested against fakes.
 - **Anything that touches the Mac mini** needs a session on the owner's Mac. The mini is on the home
   tailnet, and cloud sessions can't reach it. That includes M1: Apple container, the `pf` rules,
-  sign-ins, and the daemon's host setup.
+  sign-ins, and the daemon's host setup. The steps are in [docs/m1-runbook.md](docs/m1-runbook.md).
 
 ## Planned layout
 
