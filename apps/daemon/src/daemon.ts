@@ -12,6 +12,7 @@ import {
   type Harness,
   type HelperModel,
   type Id,
+  knowledgeLog,
   type MachineProvider,
   occupancy,
   type PendingDuty,
@@ -20,10 +21,13 @@ import {
   runTicket,
   type Snapshot,
   schedule,
+  type TicketEvent,
   type TicketState,
   type Waiting,
 } from "@i-inc/core";
 import type { ChatLog } from "./chat.ts";
+import type { Db } from "./db.ts";
+import type { KnowledgeStore } from "./knowledge.ts";
 import type { Registry } from "./registry.ts";
 import type { SqliteEventStore } from "./store.ts";
 import type { Tickets } from "./tickets.ts";
@@ -39,6 +43,8 @@ export interface DaemonDeps {
   helper: HelperModel;
   chat: ChatSession;
   chatLog: ChatLog;
+  knowledge: KnowledgeStore;
+  db: Db;
   log?: (msg: string) => void;
 }
 
@@ -82,7 +88,11 @@ export class Daemon {
     const now = this.d.clock.now();
     const records = this.d.tickets.all();
     const states = new Map<Id, TicketState>();
-    for (const r of records) states.set(r.ticket.id, await this.state(r.ticket.id));
+    for (const r of records) {
+      const events = await this.d.store.read(r.ticket.id);
+      states.set(r.ticket.id, fold(events));
+      this.applyKnowledge(r.ticket.id, events);
+    }
 
     // Paused tickets run again (the runner returns at once if the wait isn't over), and so do running
     // ones that nothing is driving, e.g. after a restart.
@@ -170,8 +180,9 @@ export class Daemon {
       return controller.signal;
     };
     const done = runTicket(this.ports, record.ticket, { helpers: "scheduler", signal })
-      .then((r: RunResult) => {
+      .then(async (r: RunResult) => {
         this.d.log?.(`ticket ${id}: ${r.status}`);
+        this.applyKnowledge(id, await this.d.store.read(id));
         // A stage finished or wants a helper: someone may be free now, or a reviewer is needed.
         if (r.status !== "paused") void this.tick().catch(() => {});
       })
@@ -181,6 +192,39 @@ export class Daemon {
         this.sessions.delete(id);
       });
     this.running.set(id, done);
+  }
+
+  /** The handbook, and a brain for everyone who works here (hiring makes one; this covers the rest). */
+  ensureKnowledge(): void {
+    this.d.knowledge.ensureHandbook();
+    for (const e of this.d.registry.employees()) this.d.knowledge.ensureBrain(e);
+  }
+
+  /** Applies a ticket's proposed edits that are due and not yet applied (spec §5, "The brain"). */
+  applyKnowledge(ticketId: Id, events: TicketEvent[]): void {
+    const due = knowledgeLog(ticketId, events).due;
+    if (!due.length) return;
+    const applied = new Set(
+      this.d.db
+        .all<{ edit_id: string }>(
+          "SELECT edit_id FROM knowledge_applied WHERE edit_id LIKE ?",
+          `${ticketId}:%`,
+        )
+        .map((r) => r.edit_id),
+    );
+    for (const p of due) {
+      if (applied.has(p.id)) continue;
+      try {
+        this.d.knowledge.apply(p, (id) => this.d.registry.employee(id));
+        this.d.db.run(
+          "INSERT OR IGNORE INTO knowledge_applied (edit_id, at) VALUES (?, ?)",
+          p.id,
+          this.d.clock.now(),
+        );
+      } catch (e) {
+        this.d.log?.(`knowledge edit ${p.id} not applied: ${String(e)}`);
+      }
+    }
   }
 
   /**

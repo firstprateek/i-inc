@@ -196,6 +196,7 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
     case "proposals-sorted":
       return { ...s, interrupted: false, proposals: { auto: e.auto, ask: e.ask, off: e.off } };
     case "proposals-decided":
+    case "policy-decided":
       return s;
     case "report-ready":
       return {

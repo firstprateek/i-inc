@@ -28,6 +28,7 @@ const agent = new FakeAgent();
 const harness = new FakeHarness();
 const app = await createApp({
   dbPath: join(home, "demo.db"),
+  knowledgeDir: join(home, "knowledge"),
   clock: { now: () => Date.now() },
   machines: new FakeMachines(),
   agent,
@@ -40,8 +41,20 @@ const app = await createApp({
 
 if (app.deps.registry.employees().length === 0) {
   seedDemo(app.deps.registry);
+  app.daemon.ensureKnowledge();
   seedDemoTickets(app.deps.tickets, agent, harness, Date.now());
   await app.daemon.tick();
+  await app.daemon.idle();
+  await app.handle(
+    new Request("http://i.inc/api/tickets/1/decide", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(process.env.I_INC_TOKEN ? { authorization: `Bearer ${process.env.I_INC_TOKEN}` } : {}),
+      },
+      body: JSON.stringify({ decision: "approve" }),
+    }),
+  );
   await app.daemon.idle();
   seedDemoLater(app.deps.tickets, agent, Date.now());
 }

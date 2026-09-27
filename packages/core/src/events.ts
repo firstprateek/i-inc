@@ -60,6 +60,8 @@ export type TicketEvent =
       awaitOwner: KnowledgeEdit[];
     }
   | { type: "closed"; at: number; outcome: "merged" | "rejected" | "done" }
+  /** The owner approved or declined a proposed handbook policy change (see knowledge.ts for ids). */
+  | { type: "policy-decided"; at: number; editId: string; approved: boolean }
   | { type: "reassigned"; at: number; from: Id; to: Id }
   | { type: "owner-message"; at: number; text: string; urgent?: boolean }
   /** The owner stopped a session with an urgent message; the stage starts again with it. */

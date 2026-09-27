@@ -180,6 +180,26 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     );
   },
 
+  // Orientation (spec §5, "Hiring"): the new hire reads, then proposes its brain's first pages.
+  async orient(c) {
+    const out = await session(
+      c,
+      "build",
+      c.builder,
+      `Read the handbook and each project's CLAUDE.md. Write what you will need as pages in your brain: one page per project under projects/, plus anything about the tools. ${pageRules} Reply as JSON: {"edits":[{"page","text"}]}.`,
+    );
+    if (out === null) return;
+    const edits = (parseJson<{ edits: Omit<KnowledgeEdit, "layer">[] }>(out)?.edits ?? []).map(
+      (e): KnowledgeEdit => ({ layer: "brain", page: e.page, text: e.text }),
+    );
+    const at = c.p.clock.now();
+    await c.emit(
+      { type: "knowledge-proposed", at, employeeId: c.builder.id, apply: edits, awaitOwner: [] },
+      finished(c, "orient"),
+      { type: "closed", at, outcome: "done" },
+    );
+  },
+
   async pickup(c) {
     await c.p.machines.ensureUp(c.ticket.assignee);
     await c.emit(finished(c, "pickup"));
@@ -405,7 +425,7 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
         c,
         next.id === c.builder.id ? "build" : "review",
         next,
-        'Look back at this ticket. Propose at most 2 durable, non-obvious, reusable lessons. Reply as JSON: {"edits":[{"layer":"brain"|"fact"|"policy","page","text"}]}. "brain" is your own working style and duty lessons; "fact" is useful to every employee; "policy" changes how the company works.',
+        `Look back at this ticket. Propose at most 2 durable, non-obvious, reusable lessons. Reply as JSON: {"edits":[{"layer":"brain"|"fact"|"policy","page","text"}]}. "brain" is your own working style and duty lessons; "fact" is useful to every employee; "policy" changes how the company works. ${pageRules}`,
       );
       if (out === null) return;
       const edits = (parseJson<{ edits: KnowledgeEdit[] }>(out)?.edits ?? [])
@@ -550,6 +570,10 @@ function failed(c: Step, stage: StageId, reason: string): TicketEvent {
   ];
   return { type: "failed", at: c.p.clock.now(), stage, reason, tried };
 }
+
+/** How pages are named, so the daemon can file an edit (see pagePath in knowledge.ts). */
+const pageRules =
+  'Name brain pages "<folder>/<name>" with folder tools, patterns, projects, reference or duties (or "personality"), and handbook pages by a plain name; names are lowercase words joined by dashes.';
 
 /** Home data never reaches the shared handbook: an errand's lessons stay in the PA's own brain (spec §5). */
 function routed(ticket: Ticket, edit: KnowledgeEdit): KnowledgeEdit {

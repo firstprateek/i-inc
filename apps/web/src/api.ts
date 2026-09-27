@@ -1,8 +1,25 @@
 // A small typed client for the daemon's API. The view types come straight from the daemon.
 import type { Employee, Engine, TicketEvent } from "@i-inc/core";
-import type { DeskEntry, DeskView, TicketView } from "@i-inc/daemon/views";
+import type {
+  DeskEntry,
+  DeskView,
+  KnowledgeView,
+  NamedChange,
+  Page,
+  PolicyProposal,
+  TicketView,
+} from "@i-inc/daemon/views";
 
-export type { DeskEntry, DeskView, TicketEvent, TicketView };
+export type {
+  DeskEntry,
+  DeskView,
+  KnowledgeView,
+  NamedChange,
+  Page,
+  PolicyProposal,
+  TicketEvent,
+  TicketView,
+};
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
@@ -24,6 +41,12 @@ export const api = {
     call("POST", `/api/tickets/${id}/answer`, note ? { answer, note } : { answer }),
   engines: () => call<{ engines: Engine[] }>("GET", "/api/engines").then((r) => r.engines),
   hire: (e: Partial<Employee>) => call<{ employee: Employee }>("POST", "/api/employees", e),
+  handbook: () => call<KnowledgeView>("GET", "/api/knowledge/handbook"),
+  brain: (id: string) => call<KnowledgeView>("GET", `/api/knowledge/brains/${id}`),
+  learned: () => call<{ changes: NamedChange[] }>("GET", "/api/knowledge/recent").then((r) => r.changes),
+  revert: (repo: string, commit: string) => call("POST", `/api/knowledge/${repo}/revert`, { commit }),
+  decidePolicy: (id: string, approved: boolean) =>
+    call("POST", `/api/knowledge/policies/${encodeURIComponent(id)}`, { approved }),
   decide: (id: string, decision: "approve" | "changes" | "reject", note?: string) =>
     call("POST", `/api/tickets/${id}/decide`, note ? { decision, note } : { decision }),
 };

@@ -89,7 +89,7 @@ export function seedDemo(r: Registry): void {
 export function seedDemoTickets(tickets: Tickets, agent: FakeAgent, harness: FakeHarness, now: number): void {
   const add = (t: Parameters<Tickets["create"]>[0]) => tickets.create(t, now).id;
 
-  add({
+  const refunds = add({
     title: "Refunds are counted as spending",
     project: "Duet",
     type: "fix",
@@ -97,6 +97,47 @@ export function seedDemoTickets(tickets: Tickets, agent: FakeAgent, harness: Fak
     doneWhen: ["August drops by the refund", "a test covers it"],
     assignee: "ada",
   });
+  // Merged in demo mode (main.ts decides it), so its retro fills the handbook and two brains.
+  agent.on(
+    { ticket: refunds, stage: "retro", duty: "build" },
+    {
+      kind: "done",
+      output: json({
+        edits: [
+          {
+            layer: "fact",
+            page: "duet-money",
+            text: "Duet stores amounts as signed cents: refunds are negative, never a category.",
+          },
+          {
+            layer: "brain",
+            page: "tools/vitest",
+            text: "Run one file with `pnpm vitest run path` before the whole suite.",
+          },
+        ],
+      }),
+    },
+  );
+  agent.on(
+    { ticket: refunds, stage: "retro", duty: "review" },
+    {
+      kind: "done",
+      output: json({
+        edits: [
+          {
+            layer: "brain",
+            page: "duties/review",
+            text: "The owner flags money maths without a test; ask for one.",
+          },
+          {
+            layer: "policy",
+            page: "money",
+            text: "Any change to money maths needs a test with a refund in it.",
+          },
+        ],
+      }),
+    },
+  );
 
   const csv = add({
     title: "CSV import",

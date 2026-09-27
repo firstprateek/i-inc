@@ -363,8 +363,11 @@ Knowledge is routed by scope:
   employees on cloud engines.
 
 Employees don't write the handbook or their brain directly. At the retro they propose edits, and
-the daemon applies them, so a prompt-injected session can't quietly rewrite shared knowledge. Each
-machine sees the handbook read-only, plus its own brain.
+the daemon applies them, so a prompt-injected session can't quietly rewrite shared knowledge. An
+edit names a page as a known folder and a plain name (`tools/vitest`, `duet-money`); the daemon
+refuses anything else, so an edit can't reach outside its brain or the handbook. Each applied edit
+is one commit that records who proposed it and from which ticket, and applying it again changes
+nothing. Each machine sees the handbook read-only, plus its own brain.
 
 Your review feedback is the richest material for learning. A Reviewer learns what you care about
 from your Request changes notes, so over time it catches what you would have caught. You can read,

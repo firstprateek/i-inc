@@ -121,7 +121,8 @@ export interface KnowledgeEdit {
   text: string;
 }
 
-export type TicketType = "fix" | "feat" | "chore" | "errand";
+/** An orientation is a new hire's first ticket: read the handbook and projects, write brain pages. */
+export type TicketType = "fix" | "feat" | "chore" | "errand" | "orientation";
 export type Effort = "low" | "medium" | "high";
 
 export interface Ticket {

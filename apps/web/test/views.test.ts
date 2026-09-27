@@ -30,7 +30,7 @@ const view = (over: Partial<TicketView>): TicketView => ({
 
 let calls: { method: string; url: string; body: unknown }[] = [];
 
-function serve(tickets: TicketView[]) {
+function serve(tickets: TicketView[], handbook: unknown = { pages: [], history: [], awaiting: [] }) {
   calls = [];
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     calls.push({
@@ -38,7 +38,8 @@ function serve(tickets: TicketView[]) {
       url,
       body: init?.body ? JSON.parse(String(init.body)) : undefined,
     });
-    const body = url === "/api/board" ? { tickets } : { ok: true };
+    const body =
+      url === "/api/board" ? { tickets } : url === "/api/knowledge/handbook" ? handbook : { ok: true };
     return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
   });
 }
@@ -127,6 +128,33 @@ describe("the inbox", () => {
       method: "POST",
       url: "/api/tickets/1/decide",
       body: { decision: "approve" },
+    });
+  });
+
+  it("puts a proposed handbook policy with the rest, and approves it in one tap", async () => {
+    serve([view({})], {
+      pages: [],
+      history: [],
+      awaiting: [
+        {
+          id: "4:9:p0",
+          ticketId: "4",
+          author: "Grace",
+          at: 0,
+          page: "merging",
+          text: "Squash-merge every PR.",
+        },
+      ],
+    });
+    const root = await mount("inc-inbox");
+    expect(root.querySelector("h1")?.textContent).toBe("1 thing needs you");
+    expect(root.textContent).toContain("Squash-merge every PR.");
+    [...root.querySelectorAll("button")].find((b) => b.textContent === "Approve")?.click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).toContainEqual({
+      method: "POST",
+      url: "/api/knowledge/policies/4%3A9%3Ap0",
+      body: { approved: true },
     });
   });
 

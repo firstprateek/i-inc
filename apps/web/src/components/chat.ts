@@ -147,7 +147,12 @@ export class IncChat extends LitElement {
         )}
       </nav>
       <section class="card thread" aria-label="Chat with ${me?.name ?? "the team"}">
-        ${me ? html`<div class="head">${avatar(me, 44)}<div><h2>${me.name}</h2><span class="muted" style="font-size:13px">${me.role}</span></div></div>` : ""}
+        ${
+          me
+            ? html`<div class="head">${avatar(me, 44)}<div><h2>${me.name}</h2><span class="muted" style="font-size:13px">${me.role}</span></div>
+          <span style="flex-grow:1"></span><a class="btn ghost" href="#/brain/${me.id}" style="display:inline-flex;align-items:center;text-decoration:none">Brain</a></div>`
+            : ""
+        }
         <div class="msgs">
           ${this.entries.length ? this.entries.map((e) => this.entry(e)) : html`<p class="empty">Ask ${me?.name ?? "them"} anything, or ask for something new.</p>`}
           ${this.error ? html`<p role="alert">${this.error}</p>` : ""}

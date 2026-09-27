@@ -9,9 +9,11 @@ import "./desk.ts";
 import "./inbox.ts";
 import "./hiring.ts";
 import "./chat.ts";
+import "./knowledge.ts";
 
 type Route =
-  | { view: "office" | "board" | "desk" | "inbox" | "hiring" }
+  | { view: "office" | "board" | "desk" | "inbox" | "hiring" | "handbook" }
+  | { view: "brain"; id: string }
   | { view: "ticket"; id: string }
   | { view: "chat"; id: string };
 
@@ -19,7 +21,9 @@ function parse(hash: string): Route {
   const [, view, id] = hash.split("/");
   if (view === "ticket" && id) return { view: "ticket", id };
   if (view === "chat") return { view: "chat", id: id ?? "" };
-  if (view === "board" || view === "desk" || view === "inbox" || view === "hiring") return { view };
+  if (view === "brain" && id) return { view: "brain", id };
+  if (view === "board" || view === "desk" || view === "inbox" || view === "hiring" || view === "handbook")
+    return { view };
   // Phones start at the inbox; desktops at the office (spec §10).
   return { view: matchMedia("(max-width: 700px)").matches ? "inbox" : "office" };
 }
@@ -98,7 +102,8 @@ export class IncApp extends LitElement {
         <nav aria-label="Views">
           ${link("office", "Office", v === "office")} ${link("board", "Board", v === "board" || v === "ticket")}
           ${link("chat", "Chat", v === "chat")}
-          ${link("desk", "My desk", v === "desk")} ${link("hiring", "Hiring", v === "hiring")}
+          ${link("desk", "My desk", v === "desk")} ${link("handbook", "Handbook", v === "handbook" || v === "brain")}
+          ${link("hiring", "Hiring", v === "hiring")}
           ${link("inbox", "Inbox", v === "inbox")}
         </nav>
         <span class="spacer"></span>
@@ -132,6 +137,10 @@ export class IncApp extends LitElement {
         return html`<inc-chat .employeeId=${this.route.id}></inc-chat>`;
       case "ticket":
         return html`<inc-ticket .ticketId=${this.route.id}></inc-ticket>`;
+      case "handbook":
+        return html`<inc-knowledge repo="handbook"></inc-knowledge>`;
+      case "brain":
+        return html`<inc-knowledge .repo=${this.route.id}></inc-knowledge>`;
     }
   }
 }

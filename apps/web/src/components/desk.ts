@@ -1,6 +1,7 @@
 // My desk (spec §10): the bottleneck, this month's spend, and what shipped.
 import { css, html } from "lit";
-import { api, type DeskView } from "../api.ts";
+import { api, type DeskView, type NamedChange } from "../api.ts";
+import { describe } from "./knowledge.ts";
 import { Loader } from "./loader.ts";
 import { base } from "./shared.ts";
 
@@ -22,8 +23,8 @@ const waitNames: Record<string, string> = {
 const hours = (h: number) => (h < 1 ? `${Math.round(h * 60)} min` : `${h.toFixed(1)} h`);
 const money = (n: number) => `$${n.toFixed(n < 10 ? 2 : 0)}`;
 
-export class IncDesk extends Loader<DeskView> {
-  protected fetch = () => api.desk();
+export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
+  protected fetch = async () => ({ ...(await api.desk()), learned: await api.learned() });
 
   static override styles = [
     base,
@@ -39,6 +40,11 @@ export class IncDesk extends Loader<DeskView> {
       .panel { grid-column: span 6; padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; }
       .bars { display: grid; grid-template-columns: 150px minmax(0, 1fr) 64px; gap: 10px; align-items: center; font-size: 13px; }
       .bar { height: 12px; border-radius: 0 4px 4px 0; background: var(--bar); min-width: 2px; }
+      .learned { display: flex; flex-direction: column; }
+      .learned a { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line);
+        text-decoration: none; font-size: 14px; }
+      .learned a:first-child { border-top: none; }
+      .learned small { color: var(--ink-2); white-space: nowrap; }
       .num { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
       @media (max-width: 900px) { .grid > * { grid-column: 1 / -1 !important; } }
     `,
@@ -83,6 +89,18 @@ export class IncDesk extends Loader<DeskView> {
                 <div class="bar" style="width:${Math.round((w.hours / top) * 100)}%"></div><span class="num">${hours(w.hours)}</span>`;
               })}</div>`
             : html`<span class="note">No waits this month.</span>`
+        }
+      </section>
+      <section class="card panel">
+        <h2>What the team learned</h2>
+        ${
+          d.learned.length
+            ? html`<div class="learned">${d.learned.map(
+                (c) => html`<a href="#/${c.repo === "handbook" ? "handbook" : `brain/${c.repo?.slice(6)}`}">
+                  <span>${describe(c.subject)}${c.reverted ? " (reverted)" : ""}</span>
+                  <small>${c.authorName} · ${c.repo === "handbook" ? "handbook" : "own brain"}</small></a>`,
+              )}</div>`
+            : html`<span class="note">Nothing yet. Lessons arrive at each ticket's retro.</span>`
         }
       </section>
     </div>`;
