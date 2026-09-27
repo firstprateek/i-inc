@@ -75,10 +75,12 @@ export class IncBoard extends Loader<TicketView[]> {
               )}
             </div>`
       }
-      <div class="live">${t.status === "queued" ? (t.waiting ?? "Queued") : t.live}</div>
+      <div class="live">${t.waiting ? capital(t.waiting) : t.status === "queued" ? "Queued" : t.live}</div>
       ${t.assignee ? html`<div class="who">${avatar(t.assignee.id, t.assignee.name, 24)} ${t.assignee.name}</div>` : ""}
     </a>`;
   }
 }
+
+const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 customElements.define("inc-board", IncBoard);

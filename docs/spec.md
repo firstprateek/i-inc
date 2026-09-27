@@ -425,6 +425,10 @@ reviews it.
   picked up in priority order when that employee is free and has tokens. Mark a ticket Hold to keep
   it for yourself.
 - Each employee does one thing at a time.
+- Reviewers and verifiers are scheduled like any other work. When a ticket reaches Prove or
+  Review, it waits for a free employee with that duty, and the card says who it waits for. A
+  builder whose own ticket is waiting may review someone else's work meanwhile; their own ticket
+  then waits for them in turn.
 - A pending review goes ahead of starting a new build.
 - The reviewer is never the builder. A reviewer from another vendor is optional.
 - A paused ticket can be handed to another employee, using its branch, plan and progress notes.

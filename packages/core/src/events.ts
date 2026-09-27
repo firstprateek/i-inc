@@ -9,6 +9,9 @@ export type NeedsYou =
   | { kind: "stuck"; reason: string }
   | { kind: "proposals"; items: Proposal[] };
 
+/** Duties done for another employee's ticket. */
+export type HelperDuty = "review" | "verify";
+
 /** The owner's decision on a ready ticket (spec §6, stage 10). */
 export type Decision = "approve" | "changes" | "reject";
 
@@ -59,4 +62,7 @@ export type TicketEvent =
   | { type: "closed"; at: number; outcome: "merged" | "rejected" | "done" }
   | { type: "reassigned"; at: number; from: Id; to: Id }
   | { type: "owner-message"; at: number; text: string }
+  /** The stage needs another employee, and the scheduler will pick one (spec §6, "Assignment and scheduling"). */
+  | { type: "helper-wanted"; at: number; stage: StageId; duty: HelperDuty }
+  | { type: "helper-assigned"; at: number; duty: HelperDuty; employeeId: Id }
   | { type: "failed"; at: number; stage: StageId; reason: string; tried: string[] };

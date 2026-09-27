@@ -103,6 +103,8 @@ export function liveLine(events: TicketEvent[], registry: Registry): string {
         return e.outcome === "merged" ? "Merged" : e.outcome === "rejected" ? "Rejected" : "Done";
       case "session-started":
         return `${capitalize(e.stage)} · ${nameOf(registry, e.employeeId)} on ${registry.engine(e.engineId).model}`;
+      case "helper-wanted":
+        return `${capitalize(e.stage)} · waits for a ${e.duty === "review" ? "reviewer" : "verifier"}`;
       case "stage-started":
         return capitalize(e.stage);
     }
@@ -124,9 +126,23 @@ export function officeView(
     const engine = registry.engine(e.engines.default).model;
     const own = views.filter((v) => v.assignee?.id === e.id && v.column !== "done" && v.status !== "queued");
     const reviewing = [...states.entries()].find(
-      ([, s]) => s.active === "review" && s.sessions.at(-1)?.employeeId === e.id,
+      ([, s]) =>
+        (s.active === "review" && s.helpers.review === e.id) ||
+        (s.active === "prove" && s.helpers.verify === e.id),
     );
-    const current = own.find((v) => v.column === "in-progress") ?? own[0];
+    // While their own ticket waits for a reviewer, a builder may be reviewing someone else's.
+    const current = (own.find((v) => v.column === "in-progress") ?? own[0]) as TicketView | undefined;
+    const reviewed = reviewing && views.find((v) => v.id === reviewing[0]);
+    if (reviewed && (!current || states.get(current.id)?.waitingFor)) {
+      return {
+        id: e.id,
+        name: e.name,
+        role: e.role,
+        engine,
+        state: "reviewing" as const,
+        ticket: { id: reviewed.id, title: reviewed.title, project: reviewed.project, live: reviewed.live },
+      };
+    }
     const off = e.workingHours && !withinHours(e.workingHours, localHour);
     let state: EmployeeState = "idle";
     if (reviewing) state = "reviewing";

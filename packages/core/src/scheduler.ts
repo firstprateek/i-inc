@@ -3,6 +3,7 @@
 // ("waits for Claude Pro at 3:40 pm").
 import type { Duty, Employee, Id, StandingOrder, TicketType, WorkingHours } from "./model.ts";
 import type { Company } from "./ports.ts";
+import type { TicketState } from "./state.ts";
 
 export interface BacklogItem {
   id: Id;
@@ -22,6 +23,8 @@ export interface BacklogItem {
 export interface PendingDuty {
   ticketId: Id;
   duty: Extract<Duty, "review" | "verify">;
+  /** The ticket's builder: once a helper is found, the ticket resumes and the builder is busy again. */
+  builder: Id;
   /** The builder, at least: the reviewer is never the builder. */
   exclude: Id[];
   since: number;
@@ -34,6 +37,11 @@ export interface Snapshot {
   employees: Employee[];
   /** Employees in the middle of something. Each employee does one thing at a time. */
   busy: Id[];
+  /**
+   * Employees with a ticket of their own under way, now waiting (for a reviewer, the owner or an
+   * account). They don't start another build, but they may review or verify meanwhile.
+   */
+  holding?: Id[];
   /** Accounts that are out of tokens, until when. */
   accountsBlockedUntil: Record<Id, number>;
   /** Employees whose own usage cap is reached, until when. */
@@ -62,10 +70,11 @@ export function schedule(snap: Snapshot, company: Pick<Company, "engine">): Plan
   const starts: Start[] = [];
   const waiting: Waiting[] = [];
   const taken = new Set(snap.busy);
+  const holding = new Set(snap.holding ?? []);
   const picked = { ...snap.pickedUpToday };
 
   const available = (e: Employee, duty: Duty): string | null => {
-    if (taken.has(e.id)) return `${e.name} is busy`;
+    if (taken.has(e.id) || (duty === "build" && holding.has(e.id))) return `${e.name} is busy`;
     if (e.workingHours && !withinHours(e.workingHours, snap.localHour)) {
       return `${e.name} is off until ${e.workingHours.from}:00`;
     }
@@ -81,16 +90,23 @@ export function schedule(snap: Snapshot, company: Pick<Company, "engine">): Plan
 
   // A pending review goes ahead of starting a new build.
   for (const p of [...snap.pending].sort((a, b) => a.since - b.since)) {
+    // The builder may be reviewing someone else's work meanwhile; their own ticket waits for them.
+    if (taken.has(p.builder)) {
+      const name = snap.employees.find((e) => e.id === p.builder)?.name ?? p.builder;
+      waiting.push({ ticketId: p.ticketId, reason: `${name} is busy` });
+      continue;
+    }
     const candidates = snap.employees.filter((e) => e.duties.includes(p.duty) && !p.exclude.includes(e.id));
     const free = candidates.find((e) => available(e, p.duty) === null);
     if (free) {
       taken.add(free.id);
+      taken.add(p.builder);
       starts.push({ employeeId: free.id, ticketId: p.ticketId, as: p.duty });
     } else {
       waiting.push({
         ticketId: p.ticketId,
-        reason: candidates.length
-          ? `no ${p.duty === "review" ? "reviewer" : "verifier"} is free`
+        reason: candidates[0]
+          ? `waits for a ${p.duty === "review" ? "reviewer" : "verifier"}: ${available(candidates[0], p.duty)}`
           : `no one else has the ${p.duty} duty`,
       });
     }
@@ -140,6 +156,32 @@ export function schedule(snap: Snapshot, company: Pick<Company, "engine">): Plan
   }
 
   return { starts, waiting };
+}
+
+/** One ticket as the scheduler sees it: who builds it, and its folded state. */
+export interface Underway {
+  builder: Id;
+  state: TicketState;
+}
+
+/**
+ * Who is busy and who is holding a waiting ticket. A builder is busy while their ticket is running
+ * (or its account has reset, so it resumes now), and only holding while it waits for a helper, the
+ * owner or an account. A reviewer or verifier is busy from being picked until their stage ends.
+ */
+export function occupancy(tickets: Underway[], now: number): { busy: Id[]; holding: Id[] } {
+  const busy = new Set<Id>();
+  const holding = new Set<Id>();
+  for (const { builder, state: s } of tickets) {
+    if (!s.created || s.status === "ready" || s.status === "done" || s.status === "failed") continue;
+    const resumes = s.status === "paused" && s.paused !== null && s.paused.until <= now;
+    if ((s.status === "running" && !s.waitingFor) || resumes) busy.add(builder);
+    else holding.add(builder);
+    const duty = s.active === "review" ? "review" : s.active === "prove" ? "verify" : null;
+    const helper = duty ? s.helpers[duty] : undefined;
+    if (helper && s.status !== "needs-you") busy.add(helper);
+  }
+  return { busy: [...busy], holding: [...holding].filter((id) => !busy.has(id)) };
 }
 
 export function withinHours(h: WorkingHours, hour: number): boolean {

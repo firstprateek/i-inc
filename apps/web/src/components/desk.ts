@@ -6,6 +6,7 @@ import { base } from "./shared.ts";
 
 const reasons: Record<string, (h: string, n: number) => string> = {
   tokens: (h, n) => `Tickets waited ${h} for tokens (${n} ${n === 1 ? "ticket" : "tickets"})`,
+  helper: (h, n) => `Tickets waited ${h} for a free reviewer (${n} ${n === 1 ? "ticket" : "tickets"})`,
   "owner-answer": (h, n) => `Questions waited ${h} for your answer (${n} ${n === 1 ? "ticket" : "tickets"})`,
   "owner-decision": (h, n) =>
     `Ready work waited ${h} for your decision (${n} ${n === 1 ? "ticket" : "tickets"})`,
@@ -13,6 +14,7 @@ const reasons: Record<string, (h: string, n: number) => string> = {
 
 const waitNames: Record<string, string> = {
   tokens: "Tokens",
+  helper: "Reviewers",
   "owner-answer": "Your answers",
   "owner-decision": "Your decisions",
 };

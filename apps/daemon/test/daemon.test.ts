@@ -22,6 +22,25 @@ describe("the event log in SQLite", () => {
   });
 });
 
+describe("a restart", () => {
+  it("resumes a ticket whose session died with the daemon", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "i-inc-")), "test.db");
+    const first = await testApp(path);
+    first.agent.on({ stage: "build" }, { kind: "crash" });
+    await first.call("POST", "/api/tickets", refunds);
+    await first.daemon.idle();
+    expect((await first.call("GET", "/api/tickets/1")).body.ticket.status).toBe("running");
+    first.db.close();
+
+    const second = await testApp(path);
+    await second.daemon.tick();
+    await second.daemon.idle();
+    const t = (await second.call("GET", "/api/tickets/1")).body.ticket;
+    expect(t.status).toBe("ready");
+    expect(second.agent.callsFor("ada", "build")).toHaveLength(1);
+  });
+});
+
 describe("the API", () => {
   it("takes a ticket from creation to a ready report on the board", async () => {
     const app = await testApp();
@@ -106,6 +125,50 @@ describe("the tick loop", () => {
     await app.daemon.tick();
     await app.daemon.idle();
     expect((await app.call("GET", "/api/tickets/1")).body.ticket.status).toBe("ready");
+  });
+
+  it("schedules a review like any other work: it waits for a free reviewer, then carries on", async () => {
+    const app = await testApp();
+    // Kit is the only other reviewer, and Kit's own build (on the local account) runs out of tokens.
+    const { registry } = app.deps;
+    registry.hire({ ...registry.employee("grace"), duties: ["plan"] });
+    registry.hire({ ...registry.employee("kit"), engines: { default: "qwen", fallbacks: [] } });
+    app.agent.on(
+      { employee: "kit", stage: "build" },
+      { kind: "out-of-tokens", resetsAt: app.clock.now() + 2 * 3_600_000 },
+    );
+    await app.call("POST", "/api/tickets", { ...refunds, title: "Kit's fix", assignee: "kit" });
+    await app.daemon.idle();
+    await app.call("POST", "/api/tickets", refunds);
+    await app.daemon.idle();
+
+    let ada = (await app.call("GET", "/api/tickets/2")).body.ticket;
+    expect(ada).toMatchObject({
+      status: "running",
+      waiting: "waits for a reviewer: Kit waits for local to reset",
+      live: "Review · waits for a reviewer",
+    });
+
+    // The account resets: Kit's build resumes first, and the review waits for Kit to finish it.
+    app.clock.advance(121);
+    await app.daemon.tick();
+    await app.daemon.idle();
+    ada = (await app.call("GET", "/api/tickets/2")).body.ticket;
+    expect(ada).toMatchObject({ status: "ready" });
+    expect(ada.report.byline).toBe("Ada (Claude Opus), reviewed by Kit, 1 round");
+    expect(app.agent.callsFor("kit", "review")[0]?.engine.id).toBe("qwen");
+
+    expect((await app.deps.store.read("2")).map((e) => e.type)).toContain("helper-wanted");
+    // Kit does one thing at a time: its own build resumes, then Ada's review while Kit's proof waits
+    // for Kit, then Kit's report once Ada has reviewed Kit's work in turn.
+    expect(app.agent.callsFor("kit").map((c) => `${c.ticket.id}:${c.stage}`)).toEqual([
+      "1:plan",
+      "1:build",
+      "1:build",
+      "2:review",
+      "1:report",
+    ]);
+    expect(app.agent.callsFor("ada", "review").map((c) => c.ticket.id)).toEqual(["1"]);
   });
 
   it("tells the board why a ticket is waiting", async () => {

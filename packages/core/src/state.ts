@@ -1,5 +1,5 @@
 // Fold a ticket's events into the state the pipeline decides from. Pure.
-import type { Decision, Finding, NeedsYou, TicketEvent } from "./events.ts";
+import type { Decision, Finding, HelperDuty, NeedsYou, TicketEvent } from "./events.ts";
 import type { Id, Proposal } from "./model.ts";
 import type { StageId } from "./stages.ts";
 
@@ -56,6 +56,10 @@ export interface TicketState {
   proposals: { auto: Proposal[]; ask: Proposal[]; off: Proposal[] } | null;
   startedAt: number | null;
   readyAt: number | null;
+  /** The reviewer and verifier the scheduler (or the runner) picked for this ticket. */
+  helpers: Partial<Record<HelperDuty, Id>>;
+  /** The stage waits for the scheduler to find a helper. */
+  waitingFor: { duty: HelperDuty; since: number } | null;
 }
 
 export function emptyState(): TicketState {
@@ -91,6 +95,8 @@ export function emptyState(): TicketState {
     proposals: null,
     startedAt: null,
     readyAt: null,
+    helpers: {},
+    waitingFor: null,
   };
 }
 
@@ -218,6 +224,7 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
         ...s,
         assignee: e.to,
         handedFrom: e.from,
+        helpers: Object.fromEntries(Object.entries(s.helpers).filter(([, id]) => id !== e.to)),
         engineOverride: null,
         paused: null,
         needsYou: null,
@@ -225,6 +232,10 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
         status: "running",
         interrupted: s.active !== null,
       };
+    case "helper-wanted":
+      return { ...s, waitingFor: { duty: e.duty, since: e.at } };
+    case "helper-assigned":
+      return { ...s, waitingFor: null, helpers: { ...s.helpers, [e.duty]: e.employeeId } };
     case "owner-message":
       return { ...s, messages: [...s.messages, { at: e.at, text: e.text }] };
     case "closed":
