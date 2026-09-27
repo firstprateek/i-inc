@@ -1,7 +1,18 @@
 // Stages are data, set per effort (spec §6, "Effort sets how far the loop goes").
-import type { Duty, Effort } from "./model.ts";
+import type { Duty, Effort, Ticket } from "./model.ts";
 
-export type StageId = "pickup" | "plan" | "build" | "checks" | "prove" | "review" | "gates" | "report";
+export type StageId =
+  | "pickup"
+  | "plan"
+  | "build"
+  | "checks"
+  | "prove"
+  | "review"
+  | "gates"
+  | "report"
+  | "work"
+  | "proposals"
+  | "retro";
 
 /** Who does a stage: an employee with a duty, or the harness (deterministic code, no tokens). */
 export const stageDuty: Record<StageId, Duty | "harness"> = {
@@ -13,6 +24,9 @@ export const stageDuty: Record<StageId, Duty | "harness"> = {
   review: "review",
   gates: "harness",
   report: "build",
+  work: "build",
+  proposals: "harness",
+  retro: "build",
 };
 
 export interface StagePlan {
@@ -36,3 +50,15 @@ export const stagePlans: Record<Effort, StagePlan> = {
     planGate: "always",
   },
 };
+
+/** An errand's shorter loop (spec §7): do the work, then sort its proposals by outbound permission. */
+export const errandPlan: StagePlan = {
+  stages: ["pickup", "work", "proposals", "retro"],
+  reviewRounds: 0,
+  planGate: "never",
+};
+
+/** Ticket kinds are data: code tickets follow their effort's plan, errands their own. */
+export function planFor(ticket: Ticket): StagePlan {
+  return ticket.type === "errand" ? errandPlan : stagePlans[ticket.effort];
+}

@@ -56,6 +56,8 @@ export interface Company {
   engine(id: Id): Engine;
   /** Picks the reviewer (or verifier) for a ticket. Never the builder. */
   pickEmployee(duty: Duty, ticket: Ticket, exclude: Id[]): Employee | undefined;
+  /** Whether an address is in the owner's contacts, for outbound rules. Unknown means no. */
+  isContact?(address: string): boolean;
 }
 
 export interface Ports {

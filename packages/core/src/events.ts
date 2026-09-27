@@ -1,12 +1,16 @@
 // A ticket's history is an append-only list of events (spec §9, "Durable state").
 // Everything the pipeline knows is folded from these, so a crash loses nothing that was appended.
-import type { Id } from "./model.ts";
+import type { Id, KnowledgeEdit, Proposal } from "./model.ts";
 import type { StageId } from "./stages.ts";
 
 export type NeedsYou =
   | { kind: "plan-gate"; plan: string }
   | { kind: "disagreement"; builder: string; reviewer: string }
-  | { kind: "stuck"; reason: string };
+  | { kind: "stuck"; reason: string }
+  | { kind: "proposals"; items: Proposal[] };
+
+/** The owner's decision on a ready ticket (spec §6, stage 10). */
+export type Decision = "approve" | "changes" | "reject";
 
 export interface Finding {
   severity: "blocking" | "should-fix" | "nit";
@@ -41,5 +45,17 @@ export type TicketEvent =
       answer: "approve" | "reject" | "builder" | "reviewer";
       note?: string;
     }
+  | { type: "proposals-sorted"; at: number; auto: Proposal[]; ask: Proposal[]; off: Proposal[] }
+  | { type: "proposals-decided"; at: number; carryOut: Proposal[]; declined: Proposal[] }
   | { type: "report-ready"; at: number; summary: string }
+  | { type: "owner-decided"; at: number; decision: Decision; note?: string }
+  | {
+      type: "knowledge-proposed";
+      at: number;
+      employeeId: Id;
+      apply: KnowledgeEdit[];
+      awaitOwner: KnowledgeEdit[];
+    }
+  | { type: "closed"; at: number; outcome: "merged" | "rejected" | "done" }
+  | { type: "reassigned"; at: number; from: Id; to: Id }
   | { type: "failed"; at: number; stage: StageId; reason: string; tried: string[] };

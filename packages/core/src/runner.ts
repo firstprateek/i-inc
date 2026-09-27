@@ -5,18 +5,20 @@
 // an owner's answer, calling runTicket again carries on from the last event.
 import { brief } from "./brief.ts";
 import { engineAllowed, engineFor, nextFallback } from "./engines.ts";
-import type { Finding, NeedsYou, TicketEvent } from "./events.ts";
-import type { Duty, Employee, Id, Ticket } from "./model.ts";
+import type { Decision, Finding, NeedsYou, TicketEvent } from "./events.ts";
+import type { Duty, Employee, Id, KnowledgeEdit, Proposal, Ticket } from "./model.ts";
+import { decideOutbound } from "./outbound.ts";
 import type { Ports } from "./ports.ts";
 import { assembleReport, type Report } from "./report.ts";
-import { type StageId, type StagePlan, stagePlans } from "./stages.ts";
+import { planFor, type StageId, type StagePlan } from "./stages.ts";
 import { fold, type TicketState } from "./state.ts";
 
 export type RunResult =
   | { status: "ready"; report: Report }
   | { status: "paused"; until: number }
   | { status: "needs-you"; ask: NeedsYou }
-  | { status: "failed"; reason: string; tried: string[] };
+  | { status: "failed"; reason: string; tried: string[] }
+  | { status: "done"; outcome: "merged" | "rejected" | "done" };
 
 /** A plan that touches these waits at the gate on Medium effort (spec §6, stage 2). */
 const riskyAreas = /\b(schema|migration|auth|public api|dependenc|ci\b|workflow)/i;
@@ -37,20 +39,23 @@ interface Step {
   emit: (...events: TicketEvent[]) => Promise<void>;
 }
 
-export async function runTicket(p: Ports, ticket: Ticket): Promise<RunResult> {
-  const plan = stagePlans[ticket.effort];
-  const builder = p.company.employee(ticket.assignee);
-  const emit = (...events: TicketEvent[]) => p.store.append(ticket.id, events);
+export async function runTicket(p: Ports, original: Ticket): Promise<RunResult> {
+  const plan = planFor(original);
+  const emit = (...events: TicketEvent[]) => p.store.append(original.id, events);
 
   for (let i = 0; i < maxSteps; i++) {
-    const s = fold(await p.store.read(ticket.id));
+    const s = fold(await p.store.read(original.id));
     const now = p.clock.now();
+    // A handoff changes who builds; the ticket, branch, plan and notes stay.
+    const ticket = s.assignee ? { ...original, assignee: s.assignee } : original;
+    const builder = p.company.employee(ticket.assignee);
 
     if (!s.created) {
       await emit({ type: "ticket-created", at: now, ticketId: ticket.id });
       continue;
     }
     if (s.status === "ready") return { status: "ready", report: assembleReport(ticket, s, p.company) };
+    if (s.status === "done" && s.outcome) return { status: "done", outcome: s.outcome };
     if (s.status === "failed" && s.failure) {
       return { status: "failed", reason: s.failure.reason, tried: s.failure.tried };
     }
@@ -60,7 +65,9 @@ export async function runTicket(p: Ports, ticket: Ticket): Promise<RunResult> {
       return { status: "paused", until: s.paused.until };
     }
 
-    const stage = s.active ?? plan.stages[s.finished.length];
+    // After the owner's decision on a code ticket, only the retro is left; errands have it in their plan.
+    const stage =
+      s.active ?? (s.decision && !s.finished.includes("retro") ? "retro" : plan.stages[s.finished.length]);
     if (!stage) throw new Error(`ticket ${ticket.id} ran out of stages without a report`);
     if (!s.active) {
       await emit({ type: "stage-started", at: now, stage });
@@ -68,7 +75,28 @@ export async function runTicket(p: Ports, ticket: Ticket): Promise<RunResult> {
     }
     await stageSteps[stage]({ p, ticket, plan, s, builder, emit });
   }
-  throw new Error(`ticket ${ticket.id} made no progress in ${maxSteps} steps`);
+  throw new Error(`ticket ${original.id} made no progress in ${maxSteps} steps`);
+}
+
+/**
+ * Hands a ticket to another employee (spec §6): it carries on from the same branch, plan and
+ * progress notes, with a resume brief. Used for a ticket paused on an empty account, or a stuck one.
+ */
+export async function handOff(p: Ports, ticketId: Id, to: Id): Promise<void> {
+  const s = fold(await p.store.read(ticketId));
+  if (s.status === "done" || s.status === "ready")
+    throw new Error(`ticket ${ticketId} is ${s.status}; nothing to hand off`);
+  const from = s.assignee ?? s.sessions.find((x) => x.stage === "build")?.employeeId ?? "";
+  await p.store.append(ticketId, [{ type: "reassigned", at: p.clock.now(), from, to }]);
+}
+
+/** The owner's decision on a ready ticket: approve (merge), request changes, or reject. */
+export async function decide(p: Ports, ticketId: Id, decision: Decision, note?: string): Promise<void> {
+  const event: TicketEvent =
+    note === undefined
+      ? { type: "owner-decided", at: p.clock.now(), decision }
+      : { type: "owner-decided", at: p.clock.now(), decision, note };
+  await p.store.append(ticketId, [event]);
 }
 
 /** The owner's answer to a Needs you card. Run the ticket again afterwards. */
@@ -86,6 +114,50 @@ export async function answer(
 }
 
 const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
+  // An errand (spec §7): the PA works through the home tools and hands back proposals.
+  async work(c) {
+    const out = await session(
+      c,
+      "build",
+      c.builder,
+      'Do the errand with the home tools. Send nothing yourself. Reply as JSON: {"proposals":[{"action","summary","to"?,"invitesOthers"?}]}.',
+    );
+    if (out !== null) await c.emit(checkpoint(c, "work", out), finished(c, "work"));
+  },
+
+  async proposals(c) {
+    if (!c.s.proposals) {
+      const items = parseJson<{ proposals: Proposal[] }>(c.s.outputs.work ?? "")?.proposals;
+      if (!items) {
+        await c.emit(failed(c, "proposals", "the errand's proposals could not be read"));
+        return;
+      }
+      const isContact = (a: string) => c.p.company.isContact?.(a) ?? false;
+      const by = (d: string) =>
+        items.filter((p) => decideOutbound(p, c.builder.outbound ?? {}, isContact) === d);
+      await c.emit({
+        type: "proposals-sorted",
+        at: c.p.clock.now(),
+        auto: by("auto"),
+        ask: by("ask"),
+        off: by("off"),
+      });
+      return;
+    }
+    const { auto, ask, off } = c.s.proposals;
+    if (ask.length && !c.s.lastAnswer) {
+      await c.emit(needsYou(c, "proposals", { kind: "proposals", items: ask }));
+      return;
+    }
+    const approved = c.s.lastAnswer?.answer === "approve" ? ask : [];
+    const carryOut = [...auto, ...approved];
+    const declined = [...off, ...ask.filter((p) => !approved.includes(p))];
+    await c.emit(
+      { type: "proposals-decided", at: c.p.clock.now(), carryOut, declined },
+      finished(c, "proposals"),
+    );
+  },
+
   async pickup(c) {
     await c.p.machines.ensureUp(c.ticket.assignee);
     await c.emit(finished(c, "pickup"));
@@ -296,6 +368,37 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     if (out === null) return;
     await c.emit(finished(c, "report", out), { type: "report-ready", at: c.p.clock.now(), summary: out });
   },
+
+  // The retro (spec §6, stage 11): builder and reviewer each propose 0-2 knowledge edits.
+  async retro(c) {
+    const reviewerId = c.s.sessions.find(
+      (x) => x.stage === "review" && x.employeeId !== c.builder.id,
+    )?.employeeId;
+    const people = [c.builder, ...(reviewerId ? [c.p.company.employee(reviewerId)] : [])];
+    const next = people.find((e) => !c.s.retroBy.includes(e.id));
+    if (next) {
+      const out = await session(
+        c,
+        next.id === c.builder.id ? "build" : "review",
+        next,
+        'Look back at this ticket. Propose at most 2 durable, non-obvious, reusable lessons. Reply as JSON: {"edits":[{"layer":"brain"|"fact"|"policy","page","text"}]}. "brain" is your own working style and duty lessons; "fact" is useful to every employee; "policy" changes how the company works.',
+      );
+      if (out === null) return;
+      const edits = (parseJson<{ edits: KnowledgeEdit[] }>(out)?.edits ?? [])
+        .slice(0, 2)
+        .map((e) => routed(c.ticket, e));
+      await c.emit({
+        type: "knowledge-proposed",
+        at: c.p.clock.now(),
+        employeeId: next.id,
+        apply: edits.filter((e) => e.layer !== "policy"),
+        awaitOwner: edits.filter((e) => e.layer === "policy"),
+      });
+      return;
+    }
+    const outcome = c.s.decision === "approve" ? "merged" : c.s.decision === "reject" ? "rejected" : "done";
+    await c.emit(finished(c, "retro"), { type: "closed", at: c.p.clock.now(), outcome });
+  },
 };
 
 /** Runs one session. Returns its output, or null when it paused, switched engine, escalated or failed. */
@@ -391,6 +494,11 @@ function failed(c: Step, stage: StageId, reason: string): TicketEvent {
     ),
   ];
   return { type: "failed", at: c.p.clock.now(), stage, reason, tried };
+}
+
+/** Home data never reaches the shared handbook: an errand's lessons stay in the PA's own brain (spec §5). */
+function routed(ticket: Ticket, edit: KnowledgeEdit): KnowledgeEdit {
+  return ticket.type === "errand" ? { ...edit, layer: "brain" } : edit;
 }
 
 function parseJson<T>(text: string): T | null {

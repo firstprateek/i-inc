@@ -289,7 +289,7 @@ describe("engines", () => {
       assignee: "pip",
     });
 
-    expect((await runTicket(p, errand)).status).toBe("ready");
+    expect((await runTicket(p, errand)).status).toBe("done");
     const engines = p.agent.callsFor("pip").map((c) => c.engine.id);
     expect(engines).not.toContain("gemini");
     expect(engines).toContain("qwen-moe");
