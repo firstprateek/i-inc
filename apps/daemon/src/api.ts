@@ -5,6 +5,8 @@ import {
   decide,
   defaultSwitchRules,
   type Employee,
+  fold,
+  handleMessage,
   handOff,
   hiringProblems,
   type Id,
@@ -46,6 +48,113 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     ["GET", "/api/board", async () => json({ tickets: await views() })],
 
     ["GET", "/api/engines", async () => json({ engines: d.registry.engines() })],
+    [
+      "GET",
+      "/api/chat",
+      async () => {
+        const latest = d.chatLog.latest();
+        return json({
+          threads: d.registry
+            .employees()
+            .map((e) => ({ id: e.id, name: e.name, role: e.role, last: latest.get(e.id) ?? null })),
+        });
+      },
+    ],
+
+    [
+      "GET",
+      "/api/chat/:id",
+      async (_, p) => {
+        const e = d.registry.employees().find((x) => x.id === p.id);
+        if (!e) return json({ error: "no such employee" }, 404);
+        return json({ employee: { id: e.id, name: e.name, role: e.role }, entries: d.chatLog.thread(e.id) });
+      },
+    ],
+
+    [
+      "POST",
+      "/api/chat/:id",
+      async (req, p) => {
+        const e = d.registry.employees().find((x) => x.id === p.id);
+        if (!e) return json({ error: "no such employee" }, 404);
+        const { text } = (await req.json()) as { text?: string };
+        if (!text?.trim()) return json({ error: "say something" }, 400);
+        const said = text.trim();
+        d.chatLog.add(e.id, { from: "owner", at: d.clock.now(), text: said });
+
+        // What the employee is on now, and a few notes from its recent tickets.
+        const mine = [];
+        for (const r of d.tickets.all()) {
+          const s = fold(await d.store.read(r.ticket.id));
+          if ((s.assignee ?? r.ticket.assignee) === e.id) mine.push({ r, s });
+        }
+        const current = mine.find(
+          ({ s }) => s.created && ["running", "paused", "needs-you"].includes(s.status),
+        );
+        const notes = mine
+          .slice(-3)
+          .map(
+            ({ r, s }) =>
+              `#${r.ticket.id} ${r.ticket.title}: ${s.status}${s.outputs.plan ? `. Plan: ${s.outputs.plan}` : ""}`,
+          )
+          .join("\n");
+        const out = await handleMessage(
+          said,
+          {
+            employee: e,
+            engine: d.registry.engine(e.engines.default),
+            current: current ? { ...current.r.ticket, assignee: e.id } : null,
+            notes,
+            defaultProject: e.projects?.[0] ?? mine.at(-1)?.r.ticket.project ?? "General",
+          },
+          d.helper,
+          d.chat,
+        );
+
+        const at = d.clock.now();
+        if (out.kind === "answer") d.chatLog.add(e.id, { from: "employee", at, text: out.text });
+        if (out.kind === "draft") {
+          const t = d.tickets.create({ ...out.ticket, hold: true }, at);
+          d.chatLog.add(e.id, {
+            from: "employee",
+            at,
+            kind: "draft",
+            ticketId: t.id,
+            title: t.title,
+            confirmed: false,
+          });
+        }
+        if (out.kind === "errand") {
+          const t = d.tickets.create(out.ticket, at);
+          d.chatLog.add(e.id, { from: "employee", at, kind: "errand", ticketId: t.id, title: t.title });
+          await daemon.tick();
+        }
+        if (out.kind === "note") {
+          await d.store.append(out.ticketId, [{ type: "owner-message", at, text: said }]);
+          d.chatLog.add(e.id, {
+            from: "system",
+            at,
+            text: `${e.name} will see this at the next stage boundary.`,
+          });
+        }
+        if (out.kind === "unavailable") d.chatLog.add(e.id, { from: "system", at, text: out.reason });
+        return json({ entries: d.chatLog.thread(e.id) });
+      },
+    ],
+
+    [
+      "POST",
+      "/api/chat/:id/drafts/:ticket",
+      async (_, p) => {
+        const r = d.tickets.get(p.ticket ?? "");
+        if (!r?.hold || r.ticket.assignee !== p.id) return json({ error: "no such draft" }, 404);
+        d.tickets.setHold(r.ticket.id, false);
+        d.chatLog.confirm(p.id ?? "", r.ticket.id);
+        await daemon.tick();
+        return json({ ok: true });
+      },
+    ],
+
     ["GET", "/api/employees", async () => json({ employees: d.registry.employees() })],
 
     [

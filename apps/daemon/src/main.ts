@@ -7,7 +7,7 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, normalize } from "node:path";
-import { FakeAgent, FakeHarness, FakeMachines } from "@i-inc/core/testing";
+import { FakeAgent, FakeChat, FakeHarness, FakeHelper, FakeMachines } from "@i-inc/core/testing";
 import { createApp } from "./app.ts";
 import { seedDemo, seedDemoLater, seedDemoTickets } from "./demo.ts";
 
@@ -32,6 +32,8 @@ const app = await createApp({
   machines: new FakeMachines(),
   agent,
   harness,
+  helper: new FakeHelper(),
+  chat: new FakeChat(),
   ...(process.env.I_INC_TOKEN ? { token: process.env.I_INC_TOKEN } : {}),
   log: (m) => console.log(new Date().toISOString(), m),
 });

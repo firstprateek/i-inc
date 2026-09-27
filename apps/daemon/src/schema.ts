@@ -20,6 +20,13 @@ export function migrate(db: Db): void {
       created_at INTEGER NOT NULL,
       picked_at INTEGER
     );
+    CREATE TABLE IF NOT EXISTS chat (
+      employee_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      at INTEGER NOT NULL,
+      body TEXT NOT NULL,
+      PRIMARY KEY (employee_id, seq)
+    );
     CREATE TABLE IF NOT EXISTS company (
       kind TEXT NOT NULL,
       id TEXT NOT NULL,

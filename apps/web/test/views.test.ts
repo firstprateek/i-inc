@@ -13,6 +13,7 @@ const view = (over: Partial<TicketView>): TicketView => ({
   assignee: { id: "ada", name: "Ada" },
   column: "in-progress",
   status: "running",
+  held: false,
   stages: [
     { id: "pickup", state: "done" },
     { id: "build", state: "current" },

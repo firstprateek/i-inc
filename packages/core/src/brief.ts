@@ -43,5 +43,11 @@ export function brief(ticket: Ticket, stage: StageId, state: TicketState, task: 
   if (switched?.stage === stage) lines.push(`Engine switched from ${switched.from}: ${switched.reason}.`);
   if (state.lastAnswer?.note) lines.push(`Owner's note: ${state.lastAnswer.note}`);
   if (state.ownerNote) lines.push(`The owner asked for changes: ${state.ownerNote}`);
+  // Messages reach the employee at the next stage boundary (spec §10, "Chat").
+  const delivered = state.messages.filter(
+    (m) => state.stageStartedAt !== null && m.at <= state.stageStartedAt,
+  );
+  if (delivered.length)
+    lines.push("Messages from the owner:", ...delivered.slice(-5).map((m) => `- ${m.text}`));
   return lines.join("\n");
 }

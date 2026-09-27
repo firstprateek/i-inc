@@ -1,5 +1,5 @@
 // A daemon over an in-memory (or temp-file) database, with the core's fakes and the spec's cast.
-import { FakeAgent, FakeClock, FakeHarness, FakeMachines } from "@i-inc/core/testing";
+import { FakeAgent, FakeChat, FakeClock, FakeHarness, FakeHelper, FakeMachines } from "@i-inc/core/testing";
 import { createApp } from "../src/app.ts";
 import { seedDemo } from "../src/demo.ts";
 
@@ -7,7 +7,9 @@ export async function testApp(dbPath = ":memory:") {
   const clock = new FakeClock();
   const agent = new FakeAgent();
   const harness = new FakeHarness();
-  const app = await createApp({ dbPath, clock, agent, harness, machines: new FakeMachines() });
+  const helper = new FakeHelper();
+  const chat = new FakeChat();
+  const app = await createApp({ dbPath, clock, agent, harness, helper, chat, machines: new FakeMachines() });
   if (app.deps.registry.employees().length === 0) seedDemo(app.deps.registry);
   const call = async (method: string, path: string, body?: unknown) => {
     const res = await app.handle(
@@ -22,7 +24,7 @@ export async function testApp(dbPath = ":memory:") {
     const data = (await res.json()) as Record<string, any>;
     return { status: res.status, body: data };
   };
-  return { ...app, clock, agent, harness, call };
+  return { ...app, clock, agent, harness, helper, chat, call };
 }
 
 export const refunds = {

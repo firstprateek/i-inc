@@ -45,6 +45,7 @@ export function ticketView(
     assignee,
     column: columnOf(s),
     status: s.created ? s.status : "queued",
+    held: r.hold,
     stages,
     live: liveLine(events, registry),
     needsYou: s.needsYou,

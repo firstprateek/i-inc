@@ -189,3 +189,58 @@ describe("hiring", () => {
     expect(res.body.error).toContain("may only use local engines, not flash");
   });
 });
+
+describe("chat", () => {
+  it("answers a question, and turns an ask into a draft the owner puts on the board", async () => {
+    const app = await testApp();
+    app.chat.outcomes.push({ kind: "done", output: "The sample files were all US format." });
+
+    const q = await app.call("POST", "/api/chat/kit", { text: "Why US dates?" });
+    expect(q.body.entries.at(-1)).toMatchObject({
+      from: "employee",
+      text: "The sample files were all US format.",
+    });
+
+    const ask = await app.call("POST", "/api/chat/kit", { text: "Also accept ISO dates." });
+    const draft = ask.body.entries.at(-1);
+    expect(draft).toMatchObject({ kind: "draft", title: "Also accept ISO dates", confirmed: false });
+
+    let card = (await app.call("GET", `/api/tickets/${draft.ticketId}`)).body.ticket;
+    expect(card).toMatchObject({ held: true, status: "queued" });
+
+    await app.call("POST", `/api/chat/kit/drafts/${draft.ticketId}`);
+    await app.daemon.idle();
+    card = (await app.call("GET", `/api/tickets/${draft.ticketId}`)).body.ticket;
+    expect(card).toMatchObject({ held: false, status: "ready" });
+    const thread = (await app.call("GET", "/api/chat/kit")).body.entries;
+    expect(thread.find((e: { kind?: string }) => e.kind === "draft").confirmed).toBe(true);
+  });
+
+  it("files a PA's ask as an errand straight away", async () => {
+    const app = await testApp();
+    const res = await app.call("POST", "/api/chat/pip", { text: "Find me flights to Bengaluru in December" });
+    const errand = res.body.entries.at(-1);
+    expect(errand).toMatchObject({ kind: "errand" });
+    await app.daemon.idle();
+    const t = (await app.call("GET", `/api/tickets/${errand.ticketId}`)).body.ticket;
+    expect(t).toMatchObject({ type: "errand", project: "Home", assignee: { id: "pip" } });
+  });
+
+  it("passes a note to the ticket in progress, for the next stage boundary", async () => {
+    const app = await testApp();
+    app.agent.on(
+      { employee: "ada", stage: "build" },
+      { kind: "out-of-tokens", resetsAt: app.clock.now() + 3_600_000 },
+    );
+    await app.call("POST", "/api/tickets", refunds);
+    await app.daemon.idle();
+
+    const res = await app.call("POST", "/api/chat/ada", { text: "Keep it behind a flag" });
+    expect(res.body.entries.at(-1)).toMatchObject({
+      from: "system",
+      text: "Ada will see this at the next stage boundary.",
+    });
+    const events = (await app.call("GET", "/api/tickets/1")).body.events;
+    expect(events.at(-1)).toMatchObject({ type: "owner-message", text: "Keep it behind a flag" });
+  });
+});

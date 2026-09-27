@@ -60,6 +60,19 @@ export interface Company {
   isContact?(address: string): boolean;
 }
 
+/**
+ * A helper model (spec §5): a small, fast local model the daemon's code asks yes/no questions. It
+ * is never an employee's engine and never works a ticket.
+ */
+export interface HelperModel {
+  yesNo(question: string, text: string): Promise<boolean>;
+}
+
+/** A short session outside any ticket, to answer the owner's question in chat. */
+export interface ChatSession {
+  answer(request: { employee: Employee; engine: Engine; brief: string }): Promise<SessionOutcome>;
+}
+
 export interface Ports {
   clock: Clock;
   store: EventStore;

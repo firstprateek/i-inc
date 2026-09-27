@@ -61,7 +61,7 @@ export class IncBoard extends Loader<TicketView[]> {
     return html`<a class="card t ${needs ? "waiting" : ""}" href="#/ticket/${t.id}">
       <div class="row">
         <span class="tag">${t.type}</span><span class="tag">${t.project}</span><span class="grow"></span>
-        ${needs ? html`<span class="chip needs">Needs you</span>` : ""}<span class="muted" style="font-size:12px;font-weight:700">#${t.id}</span>
+        ${needs ? html`<span class="chip needs">Needs you</span>` : ""}${t.held ? html`<span class="chip">On hold</span>` : ""}<span class="muted" style="font-size:12px;font-weight:700">#${t.id}</span>
       </div>
       <div class="title">${t.title}</div>
       ${

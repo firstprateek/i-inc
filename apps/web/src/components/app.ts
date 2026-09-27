@@ -8,12 +8,17 @@ import "./ticket.ts";
 import "./desk.ts";
 import "./inbox.ts";
 import "./hiring.ts";
+import "./chat.ts";
 
-type Route = { view: "office" | "board" | "desk" | "inbox" | "hiring" } | { view: "ticket"; id: string };
+type Route =
+  | { view: "office" | "board" | "desk" | "inbox" | "hiring" }
+  | { view: "ticket"; id: string }
+  | { view: "chat"; id: string };
 
 function parse(hash: string): Route {
   const [, view, id] = hash.split("/");
   if (view === "ticket" && id) return { view: "ticket", id };
+  if (view === "chat") return { view: "chat", id: id ?? "" };
   if (view === "board" || view === "desk" || view === "inbox" || view === "hiring") return { view };
   // Phones start at the inbox; desktops at the office (spec §10).
   return { view: matchMedia("(max-width: 700px)").matches ? "inbox" : "office" };
@@ -73,7 +78,7 @@ export class IncApp extends LitElement {
         header { padding: 10px 16px; gap: 12px; }
         nav { display: none; }
         main { padding: 0 16px 96px; }
-        .tabs { position: fixed; inset: auto 0 0 0; display: grid; grid-template-columns: repeat(3, 1fr);
+        .tabs { position: fixed; inset: auto 0 0 0; display: grid; grid-template-columns: repeat(4, 1fr);
           background: var(--surface); border-top: 1px solid var(--line); padding: 6px 8px calc(10px + env(safe-area-inset-bottom)); }
         .tabs a { display: flex; flex-direction: column; align-items: center; gap: 2px; min-height: 44px; justify-content: center;
           font-size: 12px; font-weight: 600; text-decoration: none; }
@@ -92,6 +97,7 @@ export class IncApp extends LitElement {
         <a class="mark" href="#/office">i.inc</a>
         <nav aria-label="Views">
           ${link("office", "Office", v === "office")} ${link("board", "Board", v === "board" || v === "ticket")}
+          ${link("chat", "Chat", v === "chat")}
           ${link("desk", "My desk", v === "desk")} ${link("hiring", "Hiring", v === "hiring")}
           ${link("inbox", "Inbox", v === "inbox")}
         </nav>
@@ -105,7 +111,7 @@ export class IncApp extends LitElement {
       <main>${this.view()}</main>
       <nav class="tabs" aria-label="Views">
         ${link("inbox", "Inbox", v === "inbox")} ${link("office", "Office", v === "office")}
-        ${link("board", "Board", v === "board" || v === "ticket")}
+        ${link("board", "Board", v === "board" || v === "ticket")} ${link("chat", "Chats", v === "chat")}
       </nav>
     `;
   }
@@ -122,6 +128,8 @@ export class IncApp extends LitElement {
         return html`<inc-inbox></inc-inbox>`;
       case "hiring":
         return html`<inc-hiring></inc-hiring>`;
+      case "chat":
+        return html`<inc-chat .employeeId=${this.route.id}></inc-chat>`;
       case "ticket":
         return html`<inc-ticket .ticketId=${this.route.id}></inc-ticket>`;
     }

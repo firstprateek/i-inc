@@ -1,12 +1,15 @@
 // The daemon's heartbeat-free loop (spec §4, principle 4): code schedules, agents work. Each tick
 // asks the scheduler what to start, runs those tickets, and re-runs paused ones whose wait may be
 // over. Tickets run concurrently; each is resumable from its event log, so a restart loses nothing.
+
 import {
   type Agent,
   type BacklogItem,
+  type ChatSession,
   type Clock,
   fold,
   type Harness,
+  type HelperModel,
   type Id,
   type MachineProvider,
   type Ports,
@@ -17,6 +20,7 @@ import {
   type TicketState,
   type Waiting,
 } from "@i-inc/core";
+import type { ChatLog } from "./chat.ts";
 import type { Registry } from "./registry.ts";
 import type { SqliteEventStore } from "./store.ts";
 import type { Tickets } from "./tickets.ts";
@@ -29,6 +33,9 @@ export interface DaemonDeps {
   machines: MachineProvider;
   agent: Agent;
   harness: Harness;
+  helper: HelperModel;
+  chat: ChatSession;
+  chatLog: ChatLog;
   log?: (msg: string) => void;
 }
 

@@ -1,7 +1,8 @@
 // Wires the daemon together over one database. main.ts calls this on the host; tests call it with
 // an in-memory database and the core's fakes.
-import type { Agent, Clock, Harness, MachineProvider } from "@i-inc/core";
+import type { Agent, ChatSession, Clock, Harness, HelperModel, MachineProvider } from "@i-inc/core";
 import { type ApiOptions, createApi } from "./api.ts";
+import { ChatLog } from "./chat.ts";
 import { Daemon, type DaemonDeps } from "./daemon.ts";
 import { openDb } from "./db.ts";
 import { Registry } from "./registry.ts";
@@ -15,6 +16,8 @@ export interface AppOptions extends ApiOptions {
   machines: MachineProvider;
   agent: Agent;
   harness: Harness;
+  helper: HelperModel;
+  chat: ChatSession;
   log?: (msg: string) => void;
 }
 
@@ -29,6 +32,9 @@ export async function createApp(o: AppOptions) {
     machines: o.machines,
     agent: o.agent,
     harness: o.harness,
+    helper: o.helper,
+    chat: o.chat,
+    chatLog: new ChatLog(db),
     ...(o.log ? { log: o.log } : {}),
   };
   const daemon = new Daemon(deps);

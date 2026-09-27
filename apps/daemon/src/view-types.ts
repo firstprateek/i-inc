@@ -12,6 +12,8 @@ export interface TicketView {
   assignee: { id: Id; name: string } | null;
   column: Column;
   status: TicketState["status"] | "queued";
+  /** Kept out of the queue: a draft from chat, or a ticket the owner holds. */
+  held: boolean;
   stages: { id: StageId; state: "done" | "current" | "todo" }[];
   /** One line of what's happening now, e.g. "Checks · 2 failing". */
   live: string;
