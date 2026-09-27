@@ -21,9 +21,9 @@ Docs only (M0); nothing is built yet. The milestones are in the spec, §14.
 
 | Path | What |
 | --- | --- |
-| `packages/core` | The company: tickets and errands, stages, employees, roles and duties, engines, accounts, scheduling, switch rules, outbound permissions, report assembly. Plain TypeScript, no I/O |
+| `packages/core` | The company: tickets and errands, stages, employees, roles and duties, engines, accounts, scheduling, switch rules, engine per duty, local model pools, the helper-model interface, outbound permissions, goals, report and My desk assembly. Plain TypeScript, no I/O |
 | `apps/daemon` | Runs on the host: the SQLite event log, ACP sessions, the machine provider (Apple container), the GitHub App, the home tools, the API, push |
-| `apps/web` | The office, board, chat, ticket, report and inbox views (a PWA built from Lit components, light with a dark theme) |
+| `apps/web` | The office, board, chat, My desk, ticket, report and inbox views (a PWA built from Lit components, light with a dark theme) |
 | `images/employee` | The base image every employee machine is built from |
 | `docs` | The spec, and later the design directions |
 
@@ -43,7 +43,8 @@ Docs only (M0); nothing is built yet. The milestones are in the spec, §14.
   - standing order, switch rule, usage cap;
   - ticket, stage, gate, privileged request;
   - brain, handbook;
-  - errand, home data, home tools, outbound permission, web errand.
+  - errand, home data, home tools, outbound permission, web errand;
+  - engine per duty, helper model, My desk, goal.
 
   The product is written "i.inc", and the repo is `i-inc`.
 - Keep the safety model intact. Employees are lenient inside their machine and walled outside it: no

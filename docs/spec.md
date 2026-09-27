@@ -65,6 +65,8 @@ questions, and approvals.
 | want the team to grow | hire, configure, re-engine or retire employees whenever you like | ✓ |
 | want to know what the team is up to | glance at the office to see who is doing what, and at the board for where the work stands | ✓ |
 | want to talk to one employee | chat with it: ask why, add context, or ask for something new | ✓ |
+| run the company | see this month's spend, output, quality, each employee's record, the roadmap, and the bottleneck, on My desk | ✓ |
+| upgrade the hardware | add a host or models to the local pool without re-hiring anyone | ✓ |
 | have a full inbox | wake up to it triaged, with draft replies waiting for your review | ✓, after the GitHub loop |
 | need a calendar change or a trip | ask your PA, and approve the event or pick from a flight shortlist | ✓, after the GitHub loop |
 | have a question rather than a change | get a research report with no PR | later |
@@ -176,7 +178,7 @@ Everything here can be edited later.
 | --- | --- |
 | Name, avatar | "Ada", a picture |
 | Role | Its identity: Senior Engineer by default, or Staff or Principal Engineer, Product Manager, UX Designer, QA, or a role you write yourself. Each role is an editable system prompt with default duties |
-| Engine | harness + model + account: Claude Code · Opus · "Claude Pro"; Gemini CLI · 3 Pro · "Google AI Pro"; OpenCode · qwen3 · "Local" |
+| Engine | harness + model + account: Claude Code · Opus · "Claude Pro"; Gemini CLI · 3 Pro · "Google AI Pro"; OpenCode · qwen3 · "Local". One engine for everything by default, or one per duty (see "Engine per duty" below) |
 | Fallback engines and switch rules | See "Engines and switching" below |
 | Usage caps | Per ticket, per day and per week. Tokens where the harness reports them; otherwise a share of the account's window, or hours |
 | Defaults | Effort level, and a review preference (for example, prefer a reviewer from another vendor) |
@@ -208,12 +210,29 @@ change.
 ### Accounts
 
 You add accounts separately, in any number: Claude Pro or Max, Google AI Pro or Ultra, API keys,
-and local Ollama.
+and local models.
 
 - i.inc assumes nothing about how large an account is. It learns each account's windows from what
   the harnesses report.
 - When an account runs out, the work pauses. Running out early on is expected and fine.
 - Two employees on the same account share its limits.
+- Each account has a **cost** you enter: a monthly fee, a price per token, or (for local) optional
+  electricity and hardware figures. My desk uses it (§10).
+
+**A local account is a pool of models on a host.** For example, a Mac Studio might serve a 27B dense
+model, a 30B MoE and a small classifier. Each model in the pool is its own engine. Its capacity is
+memory rather than a token window:
+
+- i.inc knows which models are loaded and how much memory they and the machines use. On one host,
+  models and machines compete for the same RAM.
+- Loading a large model takes a while, so the scheduler prefers engines whose model is already
+  loaded, and counts loading time as waiting.
+- Adding a host or a bigger machine adds models to the pool without changing any employee.
+
+The account kinds plug in, so a **private cloud** (a rented GPU running open models, reached over
+Tailscale, paid by the hour and started only when there's work) can be added later. It is not in v1.
+Home data stays on local engines; letting a private cloud process it would loosen a wall, so it would
+be an explicit opt-in per account.
 
 ### Hiring
 
@@ -249,6 +268,39 @@ memory.
 Switches are visible: the card and the report say, for example, "started on Claude Sonnet, finished
 on Gemini 3 Pro after 3 failed checks". Track records are kept per engine, so you learn which engine
 suits which role.
+
+### Engine per duty
+
+An employee can have one engine per duty instead of one for everything. For example:
+
+| Duty | Engine |
+| --- | --- |
+| Plan, build | Local 27B dense |
+| Review small changes, triage, summaries | Local 30B MoE |
+| Fallback | Wait, or Claude Sonnet |
+
+- The engine is chosen by code, at stage boundaries, by this table. No model routes work to another
+  model, and a session never changes model partway through a stage.
+- The card and the report show which engine did each stage, and track records stay per engine.
+- A single engine is the default, and hiring presets fill the table in for you.
+- Models are engines, not employees. Several employees can share one model, and one employee can use
+  several.
+
+### Helper models
+
+A **helper model** is a small, fast local model, such as a classifier, that the daemon's code calls
+for quick yes/no decisions. It is never an employee's engine and never works a ticket. It answers
+questions like:
+
+- is this chat message a question, or an ask for new work?
+- does this email need a reply, or is it a newsletter? (so the PA's larger model reads less)
+- does this ticket match a standing order?
+- does this transcript look stuck? (an input to switch rules)
+- does this web errand brief contain anything taken from home data?
+
+Helper models run locally, so they may see home data. Their answers only steer code paths; anything
+that matters still reaches you as a proposal or shows on the card. In the core, a helper model is an
+interface with a scripted fake in tests, like the ACP agent.
 
 ### Lenient permissions, hard walls
 
@@ -508,7 +560,8 @@ Qwen   Senior Eng · Local qwen3   ✓ Done           #11 Bump deps · fintrack 
 
 ## 10. Views, report, phone and design
 
-There are three main views. Each answers a different question, and each is a way into the others.
+There are three main views, plus My desk. Each answers a different question, and each is a way into
+the others.
 
 - **Office:** who is doing what, right now? It's the desktop home. Each employee has a desk and an
   avatar, and its monitor shows the live status line. Out of tokens reads as a coffee break ("back
@@ -526,6 +579,23 @@ There are three main views. Each answers a different question, and each is a way
     right away if you mark it urgent.
   - Everything that needs you also appears in that employee's chat. Answering in the chat or in the
     inbox resolves both.
+- **My desk:** how is the company doing, and what is holding it back? It's your corner office: the
+  running company seen as a CEO sees it. Every number on it points at something you can change.
+  - **The bottleneck**, at the top: where work waited longest this week and the lever for it, e.g.
+    "tickets waited 9 h for Claude Pro while Kit was idle: move Kit to Gemini, or add an account".
+    Often it's you: "plan gates waited 6 h for you".
+  - **Spend this month** by account (subscriptions spread over the month, API usage, and optional
+    electricity and hardware), cost per merged PR, and how much of each subscription was used.
+  - **Output:** merged PRs, releases and errands per project, with weekly trends.
+  - **Quality:** first-pass approval rate, review rounds, honest failures, reverts.
+  - **Your time:** minutes per merged PR, and how long Needs you waited for you.
+  - **Employees:** a scorecard per employee and per engine (tickets, first-pass rate, rounds, cost,
+    switches), showing counts next to rates so that small numbers don't mislead.
+  - **Roadmap:** each project's **goals** (a goal groups tickets) and their progress. A Product
+    Manager keeps goals up to date, and changes wait for you.
+
+  Everything on it is derived from the event log, plus the account costs you enter. The weekly
+  company report is a snapshot of My desk.
 - **Report:** it fits on one phone screen and is also the PR description.
   - The harness supplies the facts: checks, what the change touches, dependencies, schema, proof,
     engines used, time and usage.
@@ -597,8 +667,10 @@ disk. Ollama uses 6–10 GB while a model is loaded.
 - **Machines:** at about 4 CPUs and 6 GB each (memory is used on demand), the mini can keep about 3
   machines awake, with the rest asleep until needed.
 - **A Mac Studio**, if one is bought (96 GB), becomes a second or main host. It has room for more
-  machines, macOS VMs, and a local model strong enough to be a real engineer. M1–M2 will measure what
-  we need first.
+  machines, macOS VMs, and a pool of local models (for example a 27B dense, a 30B MoE and a small
+  classifier as a helper model). Models and machines share its RAM, and long coding contexts need
+  large caches, so the pool may keep two models loaded and swap the third. Adding it changes the
+  local account's pool, not the employees. M1–M2 will measure what we need first.
 - **Apple container** 1.0 (June 2026) runs one lightweight VM per container, and `container machine`
   gives a persistent Linux VM with `home-mount=none`, CPU and memory settings. It isn't installed on
   the mini yet.
@@ -685,6 +757,7 @@ hosts.
   - Ticket kinds and their deliverables as data, so errands (M6) fit without reworking the core.
 - **M3: the daemon and UI.**
   - The office, board, chat, ticket, report, hiring and inbox views, as Lit components.
+  - A first My desk: spend, output and the bottleneck card.
   - The PWA and push.
   - The GitHub App, the ruleset and privileged requests.
 - **M4: brains, the handbook and more roles.**
@@ -696,6 +769,8 @@ hosts.
   - Standing orders and usage caps.
   - Track records per engine.
   - The Release card and the weekly company report.
+  - The full My desk: scorecards, quality, your time, and goals for the roadmap.
+  - The local model pool, engine per duty, and helper models.
 - **M6: the Personal Assistant.** It starts once the GitHub loop is right, and v1 ends with it.
   - Errands, the Home lane and scheduled standing orders.
   - The home tools in the daemon (mail, calendar, contacts), holding the credentials.
@@ -724,6 +799,9 @@ hosts.
   the home tools need?
 - Which local model is good enough for a PA on the mini, and is it worth a Mac Studio?
 - Which outbound permissions should the hiring presets offer as rules?
+- Should My desk count hardware and electricity by default, or only what you pay each month?
+- Should goals live only in i.inc, or sync with GitHub milestones?
+- Which small model makes a good helper model, and how fast must it answer?
 - Should the PA's chat be kept forever, or trimmed after its facts reach the brain?
 
 ## Sources
