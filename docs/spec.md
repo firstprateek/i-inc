@@ -544,6 +544,11 @@ Qwen   Senior Eng · Local qwen3   ✓ Done           #11 Bump deps · fintrack 
   instead.
 - **Artifacts live on the host**, next to the event log: plans, reviews, and proof such as
   screenshots and test output. The report in i.inc shows them.
+- **Proof in the PR:** proof images are copied into the PR body, so the PR stands on its own. An
+  image that is private (the verifier marks it when it shows personal data or secrets, or the
+  project is set to keep proof private) stays on the host, and the PR gets a link that only works on
+  the tailnet. Repos may be public, so the default for a public repo errs towards private when in
+  doubt.
 - **Every kind of failure has a policy:**
 
   | Failure | What happens |
@@ -622,7 +627,8 @@ the others.
   - **Employees:** a scorecard per employee and per engine (tickets, first-pass rate, rounds, cost,
     switches), showing counts next to rates so that small numbers don't mislead.
   - **Roadmap:** each project's **goals** (a goal groups tickets) and their progress. A Product
-    Manager keeps goals up to date, and changes wait for you.
+    Manager keeps goals up to date, and changes wait for you. Goals live only in i.inc; they don't
+    sync with GitHub milestones in v1.
 
   Everything on it is derived from the event log, plus the account costs you enter. The weekly
   company report is a snapshot of My desk.
@@ -817,8 +823,6 @@ hosts.
 
 ## 15. Open questions
 
-- Proof images live on the host, and the report in i.inc shows them. Should the PR body get a copy
-  (it's public for public repos), or only a link that works on the tailnet?
 - What goes into the base image, and how is it updated?
 - Which usage units do the harnesses actually report through ACP: tokens, cost, or share of the
   window?
@@ -828,7 +832,6 @@ hosts.
 - Which mail and calendar providers come first (Gmail and Google Calendar?), and which API scopes do
   the home tools need?
 - Which outbound permissions should the hiring presets offer as rules?
-- Should goals live only in i.inc, or sync with GitHub milestones?
 - Which small model makes a good helper model, and how fast must it answer?
 - Should the PA's chat be kept forever, or trimmed after its facts reach the brain?
 
