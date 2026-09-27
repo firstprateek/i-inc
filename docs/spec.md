@@ -110,7 +110,7 @@ Each case is a short story followed by the rule it sets for the design.
    → *Follow-ups are cheap.*
 6. **Stuck, then revived.** Kit fails the checks on a CSV import three times. Kit's switch rule moves
    Kit from Claude Sonnet to Gemini 3 Pro for the rest of the stage, and Gemini picks up from the
-   same branch, plan and notes. The report says "started on Claude Sonnet, finished on Gemini 3 Pro".
+   same branch, plan and notes. The report says "started on Claude Sonnet; moved to Gemini 3 Pro for checks after 3 failed check runs".
    → *An employee is its memory; its engine can be swapped.*
 7. **Hiring.** You hire Juno as a UX Designer and set:
    - the engine: Gemini Flash on your Google AI Pro account;
@@ -265,8 +265,9 @@ A switch keeps the brain, the role, the machine, the worktree and branch, and th
 The new session starts with a resume brief, so the only thing lost is the old session's in-context
 memory.
 
-Switches are visible: the card and the report say, for example, "started on Claude Sonnet, finished
-on Gemini 3 Pro after 3 failed checks". Track records are kept per engine, so you learn which engine
+Switches are visible: the card and the report say, for example, "started on Claude Sonnet; moved to
+Gemini 3 Pro for checks after 3 failed check runs". A switch lasts for the rest of its stage, so the
+next stage starts on the employee's usual engine again. Track records are kept per engine, so you learn which engine
 suits which role.
 
 ### Engine per duty

@@ -7,7 +7,9 @@ source of truth for behavior, words and safety, so read it before changing anyth
 
 ## Status
 
-Docs only (M0); nothing is built yet. The milestones are in the spec, §14.
+M2 has started: `packages/core` holds the pipeline engine (stages, events, engine per duty, switch rules,
+the report) with fakes for every port. Nothing runs on the Mac mini yet. The milestones are in the
+spec, §14.
 
 ## Where work can happen
 
@@ -60,8 +62,9 @@ checker and look at the screenshots. Add new lessons there when a review finds a
 
 ## Commands
 
+- `pnpm install`, then `pnpm check` (Biome), `pnpm typecheck` and `pnpm test` (Vitest). CI runs all
+  three on every PR.
 - `node tools/ui-check/check.mjs [--out dir] [--size WxH] <file.html | url> ...`: render pages in
   Chromium and report overlap, covered text, overflow, contrast, near-miss alignment, missing
   accessible names and fonts that didn't load. Exits 1 on errors.
 
-The rest arrive with the first code.

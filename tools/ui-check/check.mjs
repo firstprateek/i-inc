@@ -119,7 +119,11 @@ async function cdpChecks(page) {
   for (const fam of declared) {
     if (generic.has(fam)) continue;
     if (![...used].some((u) => u.toLowerCase().startsWith(fam.toLowerCase())))
-      out.push({ level: "warn", kind: "font", msg: `"${fam}" is declared but Chrome rendered with ${[...used].join(", ")}` });
+      out.push({
+        level: "warn",
+        kind: "font",
+        msg: `"${fam}" is declared but Chrome rendered with ${[...used].join(", ")}`,
+      });
   }
 
   // Accessible names from the accessibility tree.
@@ -145,7 +149,13 @@ function auditInPage() {
     const s = getComputedStyle(el);
     const r = el.getBoundingClientRect();
     // Skip hidden elements and screen-reader-only ones (1 px boxes).
-    return s.visibility !== "hidden" && s.display !== "none" && Number(s.opacity) > 0.05 && r.width > 2 && r.height > 2;
+    return (
+      s.visibility !== "hidden" &&
+      s.display !== "none" &&
+      Number(s.opacity) > 0.05 &&
+      r.width > 2 &&
+      r.height > 2
+    );
   };
   const els = [...document.querySelectorAll("body *")].filter(
     (el) =>
@@ -157,7 +167,9 @@ function auditInPage() {
   const ownText = (el) => [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
   const isLeaf = (el) =>
     ownText(el) || ["IMG", "svg", "INPUT", "BUTTON", "SELECT", "TEXTAREA"].includes(el.tagName);
-  const leaves = els.filter((el) => isLeaf(el) && !el.closest("svg:not(:scope)") && !el.parentElement.closest("button, svg"));
+  const leaves = els.filter(
+    (el) => isLeaf(el) && !el.closest("svg:not(:scope)") && !el.parentElement.closest("button, svg"),
+  );
 
   // overlap: leaf elements that intersect and are not nested.
   const rects = leaves.map((el) => [el, textRect(el)]);
@@ -168,7 +180,8 @@ function auditInPage() {
       if (a.contains(b) || b.contains(a)) continue;
       const w = Math.min(ra.right, rb.right) - Math.max(ra.left, rb.left);
       const h = Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top);
-      if (w > 2 && h > 2) add("error", "overlap", a, `overlaps ${describe(b)} by ${Math.round(w)}x${Math.round(h)} px`);
+      if (w > 2 && h > 2)
+        add("error", "overlap", a, `overlaps ${describe(b)} by ${Math.round(w)}x${Math.round(h)} px`);
     }
   }
 
@@ -204,11 +217,23 @@ function auditInPage() {
         top: r.top + px(s.borderTopWidth) + px(s.paddingTop),
         bottom: r.bottom - px(s.borderBottomWidth) - px(s.paddingBottom),
       };
-      const past = Math.max(t.bottom - content.bottom, t.right - content.right, content.top - t.top, content.left - t.left);
+      const past = Math.max(
+        t.bottom - content.bottom,
+        t.right - content.right,
+        content.top - t.top,
+        content.left - t.left,
+      );
       const outside = Math.max(t.bottom - r.bottom, t.right - r.right);
       // Glyphs of tightly set large type poke out a little; allow for it.
-      if (outside > Math.max(1, px(s.fontSize) * 0.12)) add("error", "overflow", el, `text runs ${Math.round(outside)} px outside its box`);
-      else if (past > Math.max(1.5, px(s.fontSize) * 0.12)) add("warn", "overflow", el, `text runs ${Math.round(past)} px into the padding (it wrapped or is too big)`);
+      if (outside > Math.max(1, px(s.fontSize) * 0.12))
+        add("error", "overflow", el, `text runs ${Math.round(outside)} px outside its box`);
+      else if (past > Math.max(1.5, px(s.fontSize) * 0.12))
+        add(
+          "warn",
+          "overflow",
+          el,
+          `text runs ${Math.round(past)} px into the padding (it wrapped or is too big)`,
+        );
     }
 
     // sparse: a tall grid cell (a card in a grid) whose content ends before 60% of its height.
@@ -217,7 +242,12 @@ function auditInPage() {
       const bottom = Math.max(...[...el.children].map((k) => k.getBoundingClientRect().bottom));
       const used = (bottom - r.top) / r.height;
       if (used < 0.6 && !ownText(el))
-        add("warn", "sparse", el, `content fills only ${Math.round(used * 100)}% of its ${Math.round(r.height)} px height`);
+        add(
+          "warn",
+          "sparse",
+          el,
+          `content fills only ${Math.round(used * 100)}% of its ${Math.round(r.height)} px height`,
+        );
     }
 
     // clipped: cut off by an ancestor that hides overflow.
@@ -232,11 +262,20 @@ function auditInPage() {
     }
 
     // overflow: text wider than its box, unless ellipsized on purpose.
-    if (ownText(el) && el.scrollWidth > el.clientWidth + 1 && s.textOverflow !== "ellipsis" && s.overflow !== "visible")
+    if (
+      ownText(el) &&
+      el.scrollWidth > el.clientWidth + 1 &&
+      s.textOverflow !== "ellipsis" &&
+      s.overflow !== "visible"
+    )
       add("error", "overflow", el, `text is ${el.scrollWidth - el.clientWidth} px wider than its box`);
 
     // target: small interactive controls.
-    if (el.matches("button, a[href], input:not([type=checkbox]):not([type=radio]), select") && r.width < 44 && r.height < 44)
+    if (
+      el.matches("button, a[href], input:not([type=checkbox]):not([type=radio]), select") &&
+      r.width < 44 &&
+      r.height < 44
+    )
       add("warn", "target", el, `only ${Math.round(r.width)}x${Math.round(r.height)} px`);
 
     // contrast: text vs effective background.
@@ -271,7 +310,8 @@ function auditInPage() {
         if (!edge) continue;
         const at = (q) => (edge === "middle" ? q.top + q.height / 2 : q[edge]);
         const d = Math.abs(at(a) - at(b));
-        if (d >= 1 && d <= 3) add("warn", "near-miss", kids[i], `${edge} edge is ${d.toFixed(1)} px off ${describe(kids[j])}`);
+        if (d >= 1 && d <= 3)
+          add("warn", "near-miss", kids[i], `${edge} edge is ${d.toFixed(1)} px off ${describe(kids[j])}`);
       }
     }
   }
@@ -286,7 +326,10 @@ function auditInPage() {
   function rgba(str) {
     const m = str.match(/rgba?\(([^)]+)\)/);
     if (!m) return null;
-    const [r, g, b, a = 1] = m[1].split(/[ ,/]+/).filter(Boolean).map(Number);
+    const [r, g, b, a = 1] = m[1]
+      .split(/[ ,/]+/)
+      .filter(Boolean)
+      .map(Number);
     return [r, g, b, a];
   }
   function backgroundOf(el) {
@@ -307,7 +350,10 @@ function auditInPage() {
     return [r * a + R * (1 - a), g * a + G * (1 - a), b * a + B * (1 - a), 1];
   }
   function lum([r, g, b]) {
-    const f = (v) => ((v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+    const f = (v) => {
+      const c = v / 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    };
     return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
   }
   function contrast(a, b) {
