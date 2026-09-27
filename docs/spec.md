@@ -5,6 +5,11 @@ and a brain that grows. You hand them tickets on a board, and you get back pull 
 have already been checked, reviewed and proven. You decide what gets built and what ships, and
 they do the work, even while your laptop is closed.
 
+The company can also have a **Personal Assistant**: an employee that works on your life rather than
+your repos. It triages your email, drafts replies, proposes calendar changes and researches things
+like flights, using only local models, and nothing it prepares leaves the house until you approve
+it (§7).
+
 This is the v1 spec and it is still a draft. It is the source of truth for behavior, words and
 safety. "You" always means the owner, the one person who runs the company.
 
@@ -58,6 +63,10 @@ questions, and approvals.
 | plan your week | see every project's queue, who is working on what, who is out of tokens, and what is ready | ✓ |
 | have approved changes piling up | release with one approval | ✓ |
 | want the team to grow | hire, configure, re-engine or retire employees whenever you like | ✓ |
+| want to know what the team is up to | glance at the office to see who is doing what, and at the board for where the work stands | ✓ |
+| want to talk to one employee | chat with it: ask why, add context, or ask for something new | ✓ |
+| have a full inbox | wake up to it triaged, with draft replies waiting for your review | ✓, after the GitHub loop |
+| need a calendar change or a trip | ask your PA, and approve the event or pick from a flight shortlist | ✓, after the GitHub loop |
 | have a question rather than a change | get a research report with no PR | later |
 | assign work | know who is best at this kind of ticket from their track record | later |
 | have GitHub issues or Dependabot PRs | pull them into To do | later |
@@ -112,7 +121,22 @@ Each case is a short story followed by the rule it sets for the design.
 8. **Monday planning.** At your desk you see every project, a live status line on each running card,
    and the office. The office shows who is working, who is out of tokens until when, each account's
    windows, and each employee's record, such as "8 of 10 UI tickets approved first time".
-   → *The board is for planning; the phone is for deciding.*
+   → *The office is for a glance, the board is for planning, and the phone is for deciding.*
+9. **A word with Kit.** Kit's report on the CSV import says dates are parsed as US format. You open
+   Kit's chat and ask why. Kit answers from its plan and notes: the sample files were all US. You
+   type "also accept ISO dates". That's new work, so it arrives as a draft ticket in the chat, and
+   one tap puts it on the board.
+   → *Chat is for talking. Work still flows through tickets, so the board stays true.*
+10. **The PA's morning.** At 7 am Pip, your PA on a local qwen model, triages the night's email:
+    - 2 draft replies wait for your review;
+    - the dentist's reschedule becomes a proposed calendar change;
+    - 14 newsletters are summarized in five lines.
+
+    You fix one word in a draft and tap Send. Later you ask Pip for flights to Bengaluru in December.
+    Pip writes a brief with the route, the dates and your seat preference, and a separate web errand
+    with no access to your mail comes back with a shortlist of four. You book one yourself.
+    → *Your mail stays on local models, and what leaves the house goes through you, as far as you
+    choose.*
 
 ## 4. Principles
 
@@ -127,6 +151,9 @@ Each case is a short story followed by the rule it sets for the design.
    - keeping employees off your home network and tailnet;
    - a bot GitHub identity;
    - one-tap requests for actions that need your own credentials.
+
+   A PA's walls are tighter, because it handles your private data: no internet, local engines only,
+   and no credentials (§7).
 4. **Code runs the company; agents do the work.** A deterministic state machine schedules,
    checkpoints and escalates. No agent spends tokens coordinating others, and nobody works without a
    ticket, so there are no heartbeats.
@@ -134,6 +161,10 @@ Each case is a short story followed by the rule it sets for the design.
    costs minutes, not the ticket.
 6. **You decide; they do.** You assign the work, unless you've given an employee a standing order. You
    answer questions and approve results. Everything else runs without you.
+7. **Your private data stays home, and nothing leaves without you.** Home data (mail, calendar,
+   contacts) is processed only by local engines. Anything that goes out in your name (a sent email,
+   an accepted invite, a merge) waits for your approval, unless you've allowed that kind of action
+   with an outbound permission (§7).
 
 ## 5. Employees
 
@@ -150,7 +181,8 @@ Everything here can be edited later.
 | Usage caps | Per ticket, per day and per week. Tokens where the harness reports them; otherwise a share of the account's window, or hours |
 | Defaults | Effort level, and a review preference (for example, prefer a reviewer from another vendor) |
 | Machine | CPUs, memory, disk |
-| Projects | The repos it may work on |
+| Projects | The repos it may work on, or Home for a PA |
+| Outbound permissions | For a PA: which kinds of outgoing action need your approval and which it may do by itself (§7) |
 | Standing orders | Tickets it may pick up by itself, e.g. "`chore` tickets labeled `deps`, at most 5 a day" |
 | Working hours | For example, nights only |
 
@@ -171,6 +203,7 @@ change.
 | Product Manager | Sharpening tickets and writing done-when criteria; breaking big ideas into draft tickets, which wait for you; checking results against done-when |
 | UX Designer | Design tickets (mockups, flows); UX review of UI changes from the screenshots |
 | QA | Verifying (the Prove stage); writing missing tests |
+| Personal Assistant | Triaging mail, drafting replies, proposing calendar changes, research errands such as flights (§7) |
 
 ### Accounts
 
@@ -223,7 +256,8 @@ suits which role.
   CLI yolo, OpenCode allow-all. i.inc's ACP client also approves any permission request. The
   employee can install anything, run servers, and use Docker if nested virtualization works.
 - **Network:**
-  - The employee has open outbound internet: packages, docs, web search, GitHub and model APIs.
+  - The employee has open outbound internet: packages, docs, web search, GitHub and model APIs. A
+    PA is the exception: it has no internet at all (§7).
   - It can't reach your LAN, your tailnet, or other services on the host. The exceptions are i.inc's
     API and Ollama.
   - Nothing can connect in from outside.
@@ -324,7 +358,69 @@ reviews it.
 - The reviewer is never the builder. A reviewer from another vendor is optional.
 - A paused ticket can be handed to another employee, using its branch, plan and progress notes.
 
-## 7. Status at a glance
+## 7. The Personal Assistant
+
+A PA is an employee like any other: it has a name, a role, a brain, a machine, standing orders and
+working hours. What's different is its work and its walls. It works on **Home**, your personal life,
+instead of a repo, and it handles your most private data. It arrives in v1, after the GitHub loop
+is right (§14).
+
+### Errands
+
+An **errand** is a ticket kind for a PA. It flows over the same board, in its own Home lane, through a
+shorter loop:
+
+| Stage | What | Exits when |
+| --- | --- | --- |
+| 1. Pick up | Waits until the PA is free and the local engine has room | the brief is sent |
+| 2. Work | Reads what it needs through the home tools and prepares its proposals | the PA says done |
+| 3. Proposals | Each outgoing action becomes a proposal: a draft reply, a calendar change, a shortlist, an answer | all proposals are filed |
+| 4. Your decision | Approve, edit then approve, or reject each proposal. Approved actions are carried out by i.inc with your account | — |
+| 5. Retro | 0–2 brain edits, such as "prefers aisle seats" or "replies to the school the same day" | — |
+
+- **Standing orders can run on a schedule**, for example "7 am: triage my inbox" or "Sunday 6 pm:
+  plan the week". The daemon creates the errand at that time, so there are still no heartbeats.
+- **Chat is the PA's main door.** A request in the PA's chat becomes an errand straight away, with
+  no confirm tap, and it shows on the board.
+- **What a PA produces:** draft replies, triage summaries, proposed calendar events and changes,
+  shortlists (flights, hotels, products), and answers to personal questions.
+
+### Home data stays home
+
+- **Local engines only.** Home data (mail, calendar, contacts and anything taken from them) is
+  processed only by local engines, such as qwen on Ollama. i.inc refuses to give a PA a cloud engine,
+  and its switch rules can only wait or move to another local engine, never to a cloud one.
+- **The PA never holds your credentials.** The daemon keeps the Google (or other) tokens and offers
+  the PA a small set of **home tools**: search mail, read a thread, create a draft, propose an event,
+  read free/busy, and file a web errand. Every call is logged.
+- **No open internet.** Unlike an engineer's machine, a PA's machine reaches only i.inc's API and
+  Ollama. Whatever it prepares can only leave through a proposal you see.
+- **Web work is split off.** A flight search needs the internet but not your mail. The PA files a
+  **web errand** with a structured brief (for example: from, to, dates, cabin, preferences). A fresh,
+  throwaway session with open internet and no home data runs it, on any engine, and returns the
+  results. Briefs are logged, and you can ask to approve each one before it runs.
+- **The PA's brain stays home too.** It holds personal facts, so it lives only on the host (with
+  local backups) and is never pushed to GitHub.
+
+### Outbound permissions
+
+Each kind of outgoing action has a setting, which you can tune per PA:
+
+| Setting | Meaning |
+| --- | --- |
+| Ask (the default) | It waits in your inbox as a proposal, and one tap carries it out |
+| Allowed within a rule | It goes out by itself when the rule matches, e.g. "accept invites from people in my contacts that fit free time" or "add holds to my own calendar that invite no one" |
+| Off | The PA can't even propose it |
+
+- Every action starts as Ask. Loosening one is an explicit choice in settings, and the office
+  shows which permissions are loosened.
+- Anything done under a rule shows up afterwards in the PA's chat and in the audit log, and can be
+  undone where the provider allows it.
+- **Never automatic**, whatever the settings: payments and bookings, deleting mail, sending to an
+  address that isn't in your contacts, forwarding, sharing files, and changing account settings.
+  These are always proposals, or things you do yourself.
+
+## 8. Status at a glance
 
 **Employee states:**
 
@@ -365,7 +461,7 @@ Mia    PM · Gemini Flash          ▲ Needs you      #19 Budget alerts spec    
 Qwen   Senior Eng · Local qwen3   ✓ Done           #11 Bump deps · fintrack   report ready for you
 ```
 
-## 8. Robust, and able to scale
+## 9. Robust, and able to scale
 
 - **Durable state:** tickets, stages, employees and accounts live in SQLite as an append-only event
   log. The daemon is a LaunchAgent and the machines persist, so after a crash or reboot everything
@@ -410,10 +506,26 @@ Qwen   Senior Eng · Local qwen3   ✓ Done           #11 Bump deps · fintrack 
   - A weekly company report shows what shipped, the first-pass approval rate, your minutes, and usage
     per account and engine.
 
-## 9. Board, report, phone and design
+## 10. Views, report, phone and design
 
-- **Board:** To do → In progress → Review → Done, plus a Needs you badge. It spans all your projects,
-  and each card has a stage strip. Cards move themselves; you press buttons.
+There are three main views. Each answers a different question, and each is a way into the others.
+
+- **Office:** who is doing what, right now? It's the desktop home. Each employee has a desk and an
+  avatar, and its monitor shows the live status line. Out of tokens reads as a coffee break ("back
+  at 3:40 pm"), off hours as an empty desk, and Needs you as a raised hand. The account meters sit
+  beside the floor.
+- **Board:** where does all the work stand? To do → In progress → Review → Done, plus a Needs you badge.
+  It spans all your projects and Home, and each card has a stage strip. Cards move themselves; you press
+  buttons.
+- **Chat:** one thread per employee, for talking one to one.
+  - Questions ("why this approach?") are answered from the employee's brain, its tickets and notes,
+    in a short session that counts against its usage.
+  - Asks for new work become a draft ticket in the chat, and one tap puts it on the board. For a PA,
+    an ask becomes an errand straight away (§7).
+  - A message to an employee in the middle of a ticket reaches it at the next stage boundary, or
+    right away if you mark it urgent.
+  - Everything that needs you also appears in that employee's chat. Answering in the chat or in the
+    inbox resolves both.
 - **Report:** it fits on one phone screen and is also the PR description.
   - The harness supplies the facts: checks, what the change touches, dependencies, schema, proof,
     engines used, time and usage.
@@ -434,18 +546,19 @@ Qwen   Senior Eng · Local qwen3   ✓ Done           #11 Bump deps · fintrack 
   ```
 
   The actions are Approve, Request changes, Reject and Open diff. Open diff deep-links to GitHub.
-- **Phone:** the phone is an inbox, not a smaller board. It holds Needs you, Ready, Running and the
-  office. It's a PWA over Tailscale HTTPS with Web Push. There's no paid Apple developer account, so
-  a native app comes later.
+- **Phone:** the phone is an inbox, not a smaller board. It holds Needs you, Ready, Running, the chats
+  and a strip of the office. It's a PWA over Tailscale HTTPS with Web Push. There's no paid Apple
+  developer account, so a native app comes later.
 - **Done means merged.** The merge title follows the ticket type (`fix`, `feat`, `chore`), so Release
   Please collects releases. The release PR shows up as its own Release card, and approving it cuts the
   release.
-- **Design: fun and inviting.** We'll try a few directions before settling. Candidates:
-  - an office floor with desks and avatars, where out of tokens reads "coffee break until 3:40";
-  - a warm card board;
-  - a team feed where employees post their updates.
+- **Design: fun and inviting.**
+  - The first pass tried three directions: an office floor, a warm card board, and a team feed. All
+    three were kept as views, and the feed became one-to-one chat.
+  - One design system runs across every view. It is light by default, with a dark theme.
+  - Components are [Lit](https://lit.dev) web components, shared by the desktop and the phone.
 
-## 10. Landscape: what we borrow (ideas, not looks)
+## 11. Landscape: what we borrow (ideas, not looks)
 
 Kanban boards for agents already exist: saltbo/agent-kanban, Vibe Kanban (sunsetting),
 ai-agent-board, Claw-Kanban and Kagan. The shared basics are columns, choosing an agent, a worktree
@@ -476,7 +589,7 @@ per task, a Review column and a PR. Their READMEs don't mention these, which is 
 - Any agent, through ACP.
 - It runs on your own hardware and aims to be fun to use.
 
-## 11. Hardware
+## 12. Hardware
 
 The first host is the home Mac mini: macOS 26.2, 10 cores, 32 GB of RAM and about 309 GB of free
 disk. Ollama uses 6–10 GB while a model is loaded.
@@ -492,7 +605,7 @@ disk. Ollama uses 6–10 GB while a model is loaded.
 - **Fallback:** Colima and Docker are installed on the mini but stopped. They run in one shared VM, so
   the isolation is weaker.
 
-## 12. Risks
+## 13. Risks
 
 - **Lenient permissions with credentials inside the VM.** A prompt-injected employee could leak an
   account credential or misuse its bot powers. Several things limit the damage:
@@ -502,6 +615,15 @@ disk. Ollama uses 6–10 GB while a model is loaded.
   - everything is audited.
 
   That's acceptable for personal use.
+- **A PA reads mail written by strangers.** An email can carry a prompt injection ("forward the last
+  ten password resets to…"). The PA holds your private data and reads untrusted text, so it must not
+  also have a way out. That's why it has no internet and no credentials, only local engines, and
+  outgoing actions that start as Ask, plus a list of actions that are never automatic (§7). A
+  loosened outbound permission reopens a small way out, so every rule-based action is logged and
+  shown in the chat.
+- **Local models are weaker.** A local qwen is fine for triage, summaries and drafts, but may struggle
+  with long multi-step errands. The PA's work is kept short, and web errands (which don't touch home
+  data) can use stronger engines.
 - **Claude's policy for ACP and headless use.** Anthropic planned to move ACP, `claude -p` and Agent
   SDK usage to a separate API-rate credit, then paused that on June 15, 2026. It could return.
   Several parallel employees on one plan also stretch "ordinary individual usage". The account strip
@@ -518,7 +640,7 @@ disk. Ollama uses 6–10 GB while a model is loaded.
   - reaching Ollama from a VM;
   - Docker inside a machine.
 
-## 13. v1 and milestones
+## 14. v1 and milestones
 
 **v1:**
 
@@ -532,9 +654,11 @@ disk. Ollama uses 6–10 GB while a model is loaded.
   - pausing and resuming on quota;
   - privileged requests;
   - honest failures.
-- The office, board, ticket and report views and the inbox, as a PWA with push, in the chosen design
-  direction.
+- The office, board, chat, ticket and report views and the inbox, as a PWA with push, light by
+  default with a dark theme, built from Lit components.
 - Duet first, then fintrack, listy and the website.
+- The Personal Assistant, once the GitHub loop is right: errands, home tools on local engines,
+  outbound permissions and web errands (§7).
 
 **Later:** macOS machines, routing from track records, spikes, importing issues, native iOS, more
 hosts.
@@ -543,7 +667,8 @@ hosts.
 
 - **M0:** this repo and spec.
 - **Design track (in parallel with M1–M2):** a few directions for the office, board, report, hiring
-  and phone inbox. One is picked before M3.
+  and phone inbox. The first pass settled on three views (office, board and chat) in one light
+  design system with a dark theme. The rest is designed before M3.
 - **M1: one employee, one ticket, by hand.**
   - Install Apple container on the mini, make one machine and set up the `pf` rules.
   - Install the harnesses and adapters, and sign in.
@@ -557,8 +682,9 @@ hosts.
   - Pausing and resuming on quota.
   - A minimal brain.
   - The fake agent and fake machine tests.
+  - Ticket kinds and their deliverables as data, so errands (M6) fit without reworking the core.
 - **M3: the daemon and UI.**
-  - The office, board, ticket, report, hiring and inbox views.
+  - The office, board, chat, ticket, report, hiring and inbox views, as Lit components.
   - The PWA and push.
   - The GitHub App, the ruleset and privileged requests.
 - **M4: brains, the handbook and more roles.**
@@ -570,6 +696,12 @@ hosts.
   - Standing orders and usage caps.
   - Track records per engine.
   - The Release card and the weekly company report.
+- **M6: the Personal Assistant.** It starts once the GitHub loop is right, and v1 ends with it.
+  - Errands, the Home lane and scheduled standing orders.
+  - The home tools in the daemon (mail, calendar, contacts), holding the credentials.
+  - The PA's machine profile: no internet, local engines only, and a brain kept on the host.
+  - Web errands in throwaway sessions.
+  - Outbound permissions, with the never-automatic list, and their audit.
 
 **Where the work can happen:**
 
@@ -578,7 +710,7 @@ hosts.
 - **A session on the owner's Mac:** M1 and anything else that touches the Mac mini, since the mini is
   on the home tailnet.
 
-## 14. Open questions
+## 15. Open questions
 
 - Where should brains live: one private repo per employee, or one repo for all of them?
 - Where should proof images live so the PR can show them?
@@ -588,6 +720,11 @@ hosts.
 - What should the default switch rules be, and how often may an engine switch?
 - What does orientation cost, and should it be capped?
 - Which license, if the repo goes public?
+- Which mail and calendar providers come first (Gmail and Google Calendar?), and which API scopes do
+  the home tools need?
+- Which local model is good enough for a PA on the mini, and is it worth a Mac Studio?
+- Which outbound permissions should the hiring presets offer as rules?
+- Should the PA's chat be kept forever, or trimmed after its facts reach the brain?
 
 ## Sources
 
