@@ -17,7 +17,7 @@ login.
 | Ollama reachable from a machine | pending (step 3). Not as the host stands: Ollama listens on loopback only | step 1 |
 | Docker inside a machine | pending (step 7) | |
 | Resume on another engine from a brief | pending (step 6) | |
-| Machine memory idle / busy, and K for this host | pending (steps 2 and 7). The host already uses 17.4 GB of 32 GB with no model loaded | step 1 |
+| Machine memory idle / busy, and K for this host | pending (steps 2 and 7). Before any machine, the host uses 11.8 GB of 32 GB with no model loaded (17.4 GB until DisplayLink was stopped) | step 1, "Freeing memory" |
 | Host power idle / busy (W) | pending (step 7) | |
 
 ## 1. Host check (read only)
@@ -82,6 +82,21 @@ Duet's relay and sorter listen on loopback only, and so does Ollama. The applica
 off, and `/etc/pf.conf` is the stock file, with only Apple's anchors. Checking whether pf is enabled
 needs `sudo`, so step 3 does it. `bridge0` already exists (it's the Thunderbolt bridge), so the
 machines' interface will be a new one.
+
+## Freeing memory before step 2
+
+On the owner's request, DisplayLink was stopped on 2026-09-27. No DisplayLink device is attached,
+and the one display is driven by the M4 directly. Its restart helper and XPC service were unloaded
+(`launchctl bootout gui/<uid>/com.displaylink.CrashRestartHelper`, then `…XpcService`), and its app
+was quit. **Memory in use fell from 17.4 GB to 11.8 GB.** The app and its login-window agent are
+still installed, so DisplayLink starts again at the next login until they're removed.
+
+With 11.8 GB in use, 32 − 11.8 − (6 to 10) leaves 10–14 GB for machines, which is one or two at
+6 GB. What's left is mostly macOS (WindowServer alone is 1 GB) and Tailscale (0.6 GB). The largest
+remaining lever is Ollama: by default it keeps up to 3 models loaded at once
+(`OLLAMA_MAX_LOADED_MODELS`), each for 5 minutes after its last request. Two large models loaded
+together would take all of that headroom. A cap on Ollama is a change to the host, so it waits for
+the owner.
 
 ## What the spec should change
 
