@@ -109,6 +109,16 @@ export interface Proposal {
   invitesOthers?: boolean;
 }
 
+/**
+ * One thing an employee learned, proposed at the retro (spec §5, "The brain"). Brain edits and
+ * handbook facts apply at once; policy changes wait for the owner.
+ */
+export interface KnowledgeEdit {
+  layer: "brain" | "fact" | "policy";
+  page: string;
+  text: string;
+}
+
 export type TicketType = "fix" | "feat" | "chore" | "errand";
 export type Effort = "low" | "medium" | "high";
 

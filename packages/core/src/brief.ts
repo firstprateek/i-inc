@@ -37,5 +37,6 @@ export function brief(ticket: Ticket, stage: StageId, state: TicketState, task: 
   const switched = state.switches.at(-1);
   if (switched?.stage === stage) lines.push(`Engine switched from ${switched.from}: ${switched.reason}.`);
   if (state.lastAnswer?.note) lines.push(`Owner's note: ${state.lastAnswer.note}`);
+  if (state.ownerNote) lines.push(`The owner asked for changes: ${state.ownerNote}`);
   return lines.join("\n");
 }

@@ -84,14 +84,14 @@ describe("an errand", () => {
     });
 
     await answer(p, "e7", "approve");
-    expect((await runTicket(p, errand)).status).toBe("ready");
+    expect(await runTicket(p, errand)).toEqual({ status: "done", outcome: "done" });
 
     const events = await p.store.read("e7");
     expect(events.find((e) => e.type === "proposals-decided")).toMatchObject({
       carryOut: [replyToDentist, holdForTrip, bookFlight, replyToStranger],
       declined: [deleteSpam],
     });
-    expect(fold(events).finished).toEqual(["pickup", "work", "proposals"]);
+    expect(fold(events).finished).toEqual(["pickup", "work", "proposals", "retro"]);
     expect(p.agent.calls.every((c) => c.engine.local)).toBe(true);
   });
 
@@ -112,6 +112,6 @@ describe("an errand", () => {
 
   it("finishes without the owner when there's nothing to ask", async () => {
     const p = ports();
-    expect((await runTicket(p, errand)).status).toBe("ready");
+    expect(await runTicket(p, errand)).toEqual({ status: "done", outcome: "done" });
   });
 });

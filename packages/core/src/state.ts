@@ -1,5 +1,5 @@
 // Fold a ticket's events into the state the pipeline decides from. Pure.
-import type { Finding, NeedsYou, TicketEvent } from "./events.ts";
+import type { Decision, Finding, NeedsYou, TicketEvent } from "./events.ts";
 import type { Id, Proposal } from "./model.ts";
 import type { StageId } from "./stages.ts";
 
@@ -39,7 +39,13 @@ export interface TicketState {
   proofFailures: number;
   sessions: SessionRecord[];
   switches: { stage: StageId; from: Id; to: Id; reason: string }[];
-  status: "running" | "paused" | "needs-you" | "ready" | "failed";
+  status: "running" | "paused" | "needs-you" | "ready" | "failed" | "done";
+  decision: Decision | null;
+  /** The owner's requested changes, carried in every brief until the next report. */
+  ownerNote: string | null;
+  /** Employees who have proposed their retro edits. */
+  retroBy: Id[];
+  outcome: "merged" | "rejected" | "done" | null;
   failure: { stage: StageId; reason: string; tried: string[] } | null;
   proposals: { auto: Proposal[]; ask: Proposal[]; off: Proposal[] } | null;
   startedAt: number | null;
@@ -67,6 +73,10 @@ export function emptyState(): TicketState {
     sessions: [],
     switches: [],
     status: "running",
+    decision: null,
+    ownerNote: null,
+    retroBy: [],
+    outcome: null,
     failure: null,
     proposals: null,
     startedAt: null,
@@ -167,7 +177,33 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
     case "proposals-decided":
       return s;
     case "report-ready":
-      return { ...s, status: "ready", readyAt: e.at, outputs: { ...s.outputs, report: e.summary } };
+      return {
+        ...s,
+        status: "ready",
+        readyAt: e.at,
+        ownerNote: null,
+        outputs: { ...s.outputs, report: e.summary },
+      };
+    case "owner-decided":
+      if (e.decision === "changes") {
+        // A follow-up (spec §3, case 5): back to Build on the same branch, with the note first.
+        const beforeBuild = s.finished.slice(0, Math.max(0, s.finished.indexOf("build")));
+        return {
+          ...emptyState(),
+          created: true,
+          startedAt: s.startedAt,
+          sessions: s.sessions,
+          switches: s.switches,
+          finished: beforeBuild,
+          outputs: s.outputs.plan === undefined ? {} : { plan: s.outputs.plan },
+          ownerNote: e.note ?? "changes requested",
+        };
+      }
+      return { ...s, status: "running", decision: e.decision };
+    case "knowledge-proposed":
+      return { ...s, interrupted: false, retroBy: [...s.retroBy, e.employeeId] };
+    case "closed":
+      return { ...s, status: "done", outcome: e.outcome };
     case "failed":
       return { ...s, status: "failed", failure: { stage: e.stage, reason: e.reason, tried: e.tried } };
   }

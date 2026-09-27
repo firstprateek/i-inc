@@ -5,8 +5,8 @@
 // an owner's answer, calling runTicket again carries on from the last event.
 import { brief } from "./brief.ts";
 import { engineAllowed, engineFor, nextFallback } from "./engines.ts";
-import type { Finding, NeedsYou, TicketEvent } from "./events.ts";
-import type { Duty, Employee, Id, Proposal, Ticket } from "./model.ts";
+import type { Decision, Finding, NeedsYou, TicketEvent } from "./events.ts";
+import type { Duty, Employee, Id, KnowledgeEdit, Proposal, Ticket } from "./model.ts";
 import { decideOutbound } from "./outbound.ts";
 import type { Ports } from "./ports.ts";
 import { assembleReport, type Report } from "./report.ts";
@@ -17,7 +17,8 @@ export type RunResult =
   | { status: "ready"; report: Report }
   | { status: "paused"; until: number }
   | { status: "needs-you"; ask: NeedsYou }
-  | { status: "failed"; reason: string; tried: string[] };
+  | { status: "failed"; reason: string; tried: string[] }
+  | { status: "done"; outcome: "merged" | "rejected" | "done" };
 
 /** A plan that touches these waits at the gate on Medium effort (spec §6, stage 2). */
 const riskyAreas = /\b(schema|migration|auth|public api|dependenc|ci\b|workflow)/i;
@@ -52,6 +53,7 @@ export async function runTicket(p: Ports, ticket: Ticket): Promise<RunResult> {
       continue;
     }
     if (s.status === "ready") return { status: "ready", report: assembleReport(ticket, s, p.company) };
+    if (s.status === "done" && s.outcome) return { status: "done", outcome: s.outcome };
     if (s.status === "failed" && s.failure) {
       return { status: "failed", reason: s.failure.reason, tried: s.failure.tried };
     }
@@ -61,7 +63,9 @@ export async function runTicket(p: Ports, ticket: Ticket): Promise<RunResult> {
       return { status: "paused", until: s.paused.until };
     }
 
-    const stage = s.active ?? plan.stages[s.finished.length];
+    // After the owner's decision on a code ticket, only the retro is left; errands have it in their plan.
+    const stage =
+      s.active ?? (s.decision && !s.finished.includes("retro") ? "retro" : plan.stages[s.finished.length]);
     if (!stage) throw new Error(`ticket ${ticket.id} ran out of stages without a report`);
     if (!s.active) {
       await emit({ type: "stage-started", at: now, stage });
@@ -73,6 +77,15 @@ export async function runTicket(p: Ports, ticket: Ticket): Promise<RunResult> {
 }
 
 /** The owner's answer to a Needs you card. Run the ticket again afterwards. */
+/** The owner's decision on a ready ticket: approve (merge), request changes, or reject. */
+export async function decide(p: Ports, ticketId: Id, decision: Decision, note?: string): Promise<void> {
+  const event: TicketEvent =
+    note === undefined
+      ? { type: "owner-decided", at: p.clock.now(), decision }
+      : { type: "owner-decided", at: p.clock.now(), decision, note };
+  await p.store.append(ticketId, [event]);
+}
+
 export async function answer(
   p: Ports,
   ticketId: Id,
@@ -125,11 +138,9 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     const approved = c.s.lastAnswer?.answer === "approve" ? ask : [];
     const carryOut = [...auto, ...approved];
     const declined = [...off, ...ask.filter((p) => !approved.includes(p))];
-    const summary = `${carryOut.length} to carry out (${auto.length} by rule), ${declined.length} declined`;
     await c.emit(
       { type: "proposals-decided", at: c.p.clock.now(), carryOut, declined },
       finished(c, "proposals"),
-      { type: "report-ready", at: c.p.clock.now(), summary },
     );
   },
 
@@ -343,6 +354,37 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     if (out === null) return;
     await c.emit(finished(c, "report", out), { type: "report-ready", at: c.p.clock.now(), summary: out });
   },
+
+  // The retro (spec §6, stage 11): builder and reviewer each propose 0-2 knowledge edits.
+  async retro(c) {
+    const reviewerId = c.s.sessions.find(
+      (x) => x.stage === "review" && x.employeeId !== c.builder.id,
+    )?.employeeId;
+    const people = [c.builder, ...(reviewerId ? [c.p.company.employee(reviewerId)] : [])];
+    const next = people.find((e) => !c.s.retroBy.includes(e.id));
+    if (next) {
+      const out = await session(
+        c,
+        next.id === c.builder.id ? "build" : "review",
+        next,
+        'Look back at this ticket. Propose at most 2 durable, non-obvious, reusable lessons. Reply as JSON: {"edits":[{"layer":"brain"|"fact"|"policy","page","text"}]}. "brain" is your own working style and duty lessons; "fact" is useful to every employee; "policy" changes how the company works.',
+      );
+      if (out === null) return;
+      const edits = (parseJson<{ edits: KnowledgeEdit[] }>(out)?.edits ?? [])
+        .slice(0, 2)
+        .map((e) => routed(c.ticket, e));
+      await c.emit({
+        type: "knowledge-proposed",
+        at: c.p.clock.now(),
+        employeeId: next.id,
+        apply: edits.filter((e) => e.layer !== "policy"),
+        awaitOwner: edits.filter((e) => e.layer === "policy"),
+      });
+      return;
+    }
+    const outcome = c.s.decision === "approve" ? "merged" : c.s.decision === "reject" ? "rejected" : "done";
+    await c.emit(finished(c, "retro"), { type: "closed", at: c.p.clock.now(), outcome });
+  },
 };
 
 /** Runs one session. Returns its output, or null when it paused, switched engine, escalated or failed. */
@@ -438,6 +480,11 @@ function failed(c: Step, stage: StageId, reason: string): TicketEvent {
     ),
   ];
   return { type: "failed", at: c.p.clock.now(), stage, reason, tried };
+}
+
+/** Home data never reaches the shared handbook: an errand's lessons stay in the PA's own brain (spec §5). */
+function routed(ticket: Ticket, edit: KnowledgeEdit): KnowledgeEdit {
+  return ticket.type === "errand" ? { ...edit, layer: "brain" } : edit;
 }
 
 function parseJson<T>(text: string): T | null {

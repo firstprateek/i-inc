@@ -107,6 +107,7 @@ function defaultOutcome(r: SessionRequest): SessionOutcome {
   if (r.stage === "review") return done(json({ disputed: null }));
   if (r.stage === "report") return done("What changed: refunds are subtracted from spending.");
   if (r.stage === "work") return done(json({ proposals: [] }));
+  if (r.stage === "retro") return done(json({ edits: [] }));
   return done("done");
 }
 

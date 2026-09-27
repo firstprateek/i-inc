@@ -11,7 +11,8 @@ export type StageId =
   | "gates"
   | "report"
   | "work"
-  | "proposals";
+  | "proposals"
+  | "retro";
 
 /** Who does a stage: an employee with a duty, or the harness (deterministic code, no tokens). */
 export const stageDuty: Record<StageId, Duty | "harness"> = {
@@ -25,6 +26,7 @@ export const stageDuty: Record<StageId, Duty | "harness"> = {
   report: "build",
   work: "build",
   proposals: "harness",
+  retro: "build",
 };
 
 export interface StagePlan {
@@ -51,7 +53,7 @@ export const stagePlans: Record<Effort, StagePlan> = {
 
 /** An errand's shorter loop (spec §7): do the work, then sort its proposals by outbound permission. */
 export const errandPlan: StagePlan = {
-  stages: ["pickup", "work", "proposals"],
+  stages: ["pickup", "work", "proposals", "retro"],
   reviewRounds: 0,
   planGate: "never",
 };
