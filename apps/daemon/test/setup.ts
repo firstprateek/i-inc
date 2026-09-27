@@ -19,8 +19,8 @@ export async function testApp(dbPath = ":memory:") {
       }),
     );
     // biome-ignore lint/suspicious/noExplicitAny: tests read the API's JSON loosely, the way a client would.
-    const body = (await res.json()) as Record<string, any>;
-    return { status: res.status, body };
+    const data = (await res.json()) as Record<string, any>;
+    return { status: res.status, body: data };
   };
   return { ...app, clock, agent, harness, call };
 }
