@@ -26,21 +26,22 @@ export const base = css`
     font-family: var(--display); font-weight: 700; }
 `;
 
-// Identity tints: never a status colour (lessons 1-2).
+// Identity tints: never a status colour (lessons 1-2). An employee's tint is an index into this list,
+// chosen at hiring (pickTint in the core), so the order matters: neighbours are the most unlike.
 const tints: [string, string][] = [
   ["#DDE1E6", "#34404C"], // slate
   ["#F1DCE4", "#6B2B45"], // rose
-  ["#E6DDF0", "#4B3366"], // lilac
-  ["#E5E2DA", "#46423A"], // stone
   ["#EDE3D0", "#5A4524"], // sand
+  ["#E4D6F3", "#4A2B70"], // lilac
   ["#EADFD6", "#5B3E2E"], // clay
+  ["#E5E2DA", "#46423A"], // stone
   ["#E3E1EC", "#3D3A5C"], // periwinkle
 ];
 
-export function avatar(id: string, name: string, size = 36) {
-  let h = 0;
-  for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  const [bg, fg] = tints[h % tints.length] ?? tints[0] ?? ["#DDE1E6", "#34404C"];
+/** An employee's avatar, in the identity tint they were given at hiring. */
+export function avatar(p: { name: string; tint: number }, size = 36) {
+  const [bg, fg] = tints[p.tint % tints.length] ?? ["#DDE1E6", "#34404C"];
+  const name = p.name;
   return html`<span class="avatar" aria-hidden="true"
     style="width:${size}px;height:${size}px;background:${bg};color:${fg};font-size:${Math.round(size * 0.42)}px"
     >${name.charAt(0)}</span>`;

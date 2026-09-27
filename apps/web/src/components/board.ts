@@ -76,7 +76,7 @@ export class IncBoard extends Loader<TicketView[]> {
             </div>`
       }
       <div class="live">${t.waiting ? capital(t.waiting) : t.status === "queued" ? "Queued" : t.live}</div>
-      ${t.assignee ? html`<div class="who">${avatar(t.assignee.id, t.assignee.name, 24)} ${t.assignee.name}</div>` : ""}
+      ${t.assignee ? html`<div class="who">${avatar(t.assignee, 24)} ${t.assignee.name}</div>` : ""}
     </a>`;
   }
 }

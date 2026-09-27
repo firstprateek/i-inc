@@ -79,3 +79,7 @@ paths, branch names, structured briefs).
 17. **A button label wrapped (layout).** "✓ Urgent" broke onto two lines in a narrow form. →
     Buttons never wrap (`white-space: nowrap` on `.btn`); let the input beside them shrink
     (`min-width: 0`).
+18. **Two avatars in one tint (identity).** Tints came from a hash of the id, so Kit and Grace wore
+    the same rose; and slate, lilac and periwinkle side by side all read as lavender. → The tint is
+    chosen at hiring (the least-worn one) and stored on the employee. The palette is ordered so the
+    first hires get the most unlike tints; look at the office with the whole team, not one avatar.

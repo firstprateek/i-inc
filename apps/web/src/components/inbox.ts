@@ -49,7 +49,7 @@ export class IncInbox extends Loader<TicketView[]> {
   }
 
   private header(t: TicketView, what: string) {
-    return html`<div class="who">${t.assignee ? avatar(t.assignee.id, t.assignee.name, 28) : ""}
+    return html`<div class="who">${t.assignee ? avatar(t.assignee, 28) : ""}
       <span><b>${t.assignee?.name ?? "Unassigned"}</b> · ${what} · ${t.project}</span></div>`;
   }
 

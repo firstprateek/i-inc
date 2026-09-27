@@ -22,6 +22,20 @@ describe("the event log in SQLite", () => {
   });
 });
 
+describe("hiring", () => {
+  it("gives the demo team seven different avatar tints, and keeps a tint when someone is updated", async () => {
+    const app = await testApp();
+    const { registry } = app.deps;
+    expect(new Set(registry.employees().map((e) => e.tint)).size).toBe(7);
+    const kit = registry.employee("kit");
+    const { tint, ...untinted } = kit;
+    registry.hire({ ...untinted, role: "Staff Engineer" });
+    expect(registry.employee("kit").tint).toBe(tint);
+    const board = (await app.call("GET", "/api/office")).body.employees;
+    expect(board.find((e: { id: string }) => e.id === "kit").tint).toBe(tint);
+  });
+});
+
 describe("a restart", () => {
   it("resumes a ticket whose session died with the daemon", async () => {
     const path = join(mkdtempSync(join(tmpdir(), "i-inc-")), "test.db");

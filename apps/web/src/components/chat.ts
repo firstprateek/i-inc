@@ -15,6 +15,7 @@ type Entry =
 interface Thread {
   id: string;
   name: string;
+  tint: number;
   role: string;
   last: Entry | null;
 }
@@ -142,11 +143,11 @@ export class IncChat extends LitElement {
       <nav class="card" aria-label="Chats">
         ${this.threads.map(
           (t) => html`<a href="#/chat/${t.id}" aria-current=${t.id === this.employeeId ? "true" : "false"}>
-            ${avatar(t.id, t.name, 40)}<span><b>${t.name}</b><small>${this.preview(t.last) ?? t.role}</small></span></a>`,
+            ${avatar(t, 40)}<span><b>${t.name}</b><small>${this.preview(t.last) ?? t.role}</small></span></a>`,
         )}
       </nav>
       <section class="card thread" aria-label="Chat with ${me?.name ?? "the team"}">
-        ${me ? html`<div class="head">${avatar(me.id, me.name, 44)}<div><h2>${me.name}</h2><span class="muted" style="font-size:13px">${me.role}</span></div></div>` : ""}
+        ${me ? html`<div class="head">${avatar(me, 44)}<div><h2>${me.name}</h2><span class="muted" style="font-size:13px">${me.role}</span></div></div>` : ""}
         <div class="msgs">
           ${this.entries.length ? this.entries.map((e) => this.entry(e)) : html`<p class="empty">Ask ${me?.name ?? "them"} anything, or ask for something new.</p>`}
           ${this.error ? html`<p role="alert">${this.error}</p>` : ""}

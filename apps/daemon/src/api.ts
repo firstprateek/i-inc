@@ -54,9 +54,13 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       async () => {
         const latest = d.chatLog.latest();
         return json({
-          threads: d.registry
-            .employees()
-            .map((e) => ({ id: e.id, name: e.name, role: e.role, last: latest.get(e.id) ?? null })),
+          threads: d.registry.employees().map((e) => ({
+            id: e.id,
+            name: e.name,
+            tint: e.tint ?? 0,
+            role: e.role,
+            last: latest.get(e.id) ?? null,
+          })),
         });
       },
     ],
@@ -67,7 +71,10 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       async (_, p) => {
         const e = d.registry.employees().find((x) => x.id === p.id);
         if (!e) return json({ error: "no such employee" }, 404);
-        return json({ employee: { id: e.id, name: e.name, role: e.role }, entries: d.chatLog.thread(e.id) });
+        return json({
+          employee: { id: e.id, name: e.name, tint: e.tint ?? 0, role: e.role },
+          entries: d.chatLog.thread(e.id),
+        });
       },
     ],
 

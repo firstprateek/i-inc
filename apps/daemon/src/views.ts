@@ -12,9 +12,9 @@ import {
   withinHours,
 } from "@i-inc/core";
 import type { Registry } from "./registry.ts";
-import type { Column, DeskEntry, DeskView, EmployeeState, TicketView } from "./view-types.ts";
+import type { Column, DeskEntry, DeskView, EmployeeState, Person, TicketView } from "./view-types.ts";
 
-export type { Column, DeskEntry, DeskView, EmployeeState, TicketView };
+export type { Column, DeskEntry, DeskView, EmployeeState, Person, TicketView };
 
 import type { TicketRecord } from "./tickets.ts";
 
@@ -26,7 +26,7 @@ export function ticketView(
   waiting: string | null,
 ): TicketView {
   const assigneeId = s.assignee ?? r.ticket.assignee;
-  const assignee = assigneeId ? { id: assigneeId, name: nameOf(registry, assigneeId) } : null;
+  const assignee = assigneeId ? personOf(registry, assigneeId) : null;
   const plan = planFor(r.ticket).stages;
   const stages = plan.map((id) => ({
     id,
@@ -61,6 +61,15 @@ export function columnOf(s: TicketState): Column {
   if (s.status === "ready" || s.status === "failed") return "review";
   if (s.status === "done") return "done";
   return "in-progress";
+}
+
+function personOf(registry: Registry, id: Id): Person {
+  try {
+    const e = registry.employee(id);
+    return { id, name: e.name, tint: e.tint ?? 0 };
+  } catch {
+    return { id, name: id, tint: 0 };
+  }
 }
 
 function nameOf(registry: Registry, id: Id): string {
@@ -139,6 +148,7 @@ export function officeView(
       return {
         id: e.id,
         name: e.name,
+        tint: e.tint ?? 0,
         role: e.role,
         engine,
         state: "reviewing" as const,
@@ -165,7 +175,7 @@ export function officeView(
     const ticket = current
       ? { id: current.id, title: current.title, project: current.project, live: current.live }
       : null;
-    return { id: e.id, name: e.name, role: e.role, engine, state, ticket };
+    return { id: e.id, name: e.name, tint: e.tint ?? 0, role: e.role, engine, state, ticket };
   });
 }
 

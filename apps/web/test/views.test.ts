@@ -10,7 +10,7 @@ const view = (over: Partial<TicketView>): TicketView => ({
   project: "Duet",
   type: "fix",
   effort: "medium",
-  assignee: { id: "ada", name: "Ada" },
+  assignee: { id: "ada", name: "Ada", tint: 0 },
   column: "in-progress",
   status: "running",
   held: false,

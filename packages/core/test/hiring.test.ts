@@ -1,6 +1,6 @@
 // Hiring rules (spec §5 and §7).
 import { describe, expect, it } from "vitest";
-import { hiringProblems } from "../src/index.ts";
+import { type Employee, hiringProblems, pickTint, tintCount } from "../src/index.ts";
 import { ada, engines, pip, team } from "./fixtures.ts";
 
 describe("hiring", () => {
@@ -31,5 +31,16 @@ describe("hiring", () => {
     expect(
       hiringProblems({ ...cloudy, engines: { default: "qwen", fallbacks: ["qwen-moe"] } }, engines, team),
     ).toEqual([]);
+  });
+});
+
+describe("avatar tints", () => {
+  it("gives each new hire the tint fewest employees wear, so no two match until there are eight", () => {
+    const hired: Employee[] = [];
+    for (let i = 0; i < tintCount; i++) hired.push({ ...ada, id: `e${i}`, tint: pickTint(hired) });
+    expect(new Set(hired.map((e) => e.tint)).size).toBe(tintCount);
+    // The eighth repeats the first free-est tint; someone leaving frees theirs for the next hire.
+    expect(pickTint(hired)).toBe(0);
+    expect(pickTint(hired.filter((e) => e.tint !== 4))).toBe(4);
   });
 });

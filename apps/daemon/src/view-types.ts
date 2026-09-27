@@ -3,13 +3,20 @@ import type { Id, NeedsYou, Report, Spend, StageId, TicketState, Wait } from "@i
 
 export type Column = "todo" | "in-progress" | "review" | "done";
 
+/** Enough of an employee to draw their avatar. */
+export interface Person {
+  id: Id;
+  name: string;
+  tint: number;
+}
+
 export interface TicketView {
   id: Id;
   title: string;
   project: string;
   type: string;
   effort: string;
-  assignee: { id: Id; name: string } | null;
+  assignee: Person | null;
   column: Column;
   status: TicketState["status"] | "queued";
   /** Kept out of the queue: a draft from chat, or a ticket the owner holds. */
@@ -37,6 +44,7 @@ export type EmployeeState =
 export interface DeskEntry {
   id: Id;
   name: string;
+  tint: number;
   role: string;
   engine: string;
   state: EmployeeState;
