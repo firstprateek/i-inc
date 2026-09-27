@@ -5,5 +5,6 @@ export * from "./model.ts";
 export * from "./ports.ts";
 export * from "./report.ts";
 export * from "./runner.ts";
+export * from "./scheduler.ts";
 export * from "./stages.ts";
 export * from "./state.ts";

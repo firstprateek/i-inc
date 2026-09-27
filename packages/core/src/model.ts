@@ -49,6 +49,20 @@ export interface EmployeeEngines {
   fallbacks: Id[];
 }
 
+/** Tickets an employee may pick up by itself (spec §5), e.g. chore tickets labeled deps, 5 a day. */
+export interface StandingOrder {
+  types?: TicketType[];
+  labels?: string[];
+  projects?: string[];
+  maxPerDay: number;
+}
+
+/** Local hours, 0-23. `from` > `to` wraps past midnight: { from: 22, to: 7 } is nights only. */
+export interface WorkingHours {
+  from: number;
+  to: number;
+}
+
 export interface Employee {
   id: Id;
   name: string;
@@ -56,6 +70,11 @@ export interface Employee {
   duties: Duty[];
   engines: EmployeeEngines;
   switchRules: SwitchRules;
+  /** Projects it may work on; absent means all. */
+  projects?: string[];
+  standingOrders?: StandingOrder[];
+  /** Absent means any time. */
+  workingHours?: WorkingHours;
 }
 
 export type TicketType = "fix" | "feat" | "chore" | "errand";
@@ -69,4 +88,5 @@ export interface Ticket {
   effort: Effort;
   doneWhen: string[];
   assignee: Id;
+  labels?: string[];
 }
