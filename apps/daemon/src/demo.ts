@@ -9,8 +9,20 @@ export function seedDemo(r: Registry): void {
   const engines: Engine[] = [
     { id: "opus", harness: "claude-code", model: "Claude Opus", accountId: "claude-pro", local: false },
     { id: "sonnet", harness: "claude-code", model: "Claude Sonnet", accountId: "claude-pro", local: false },
-    { id: "gemini", harness: "antigravity", model: "Gemini 3.1 Pro", accountId: "google-ai-pro", local: false },
-    { id: "flash", harness: "antigravity", model: "Gemini 3.8 Flash", accountId: "google-ai-pro", local: false },
+    {
+      id: "gemini",
+      harness: "antigravity",
+      model: "Gemini 3.1 Pro",
+      accountId: "google-ai-pro",
+      local: false,
+    },
+    {
+      id: "flash",
+      harness: "antigravity",
+      model: "Gemini 3.8 Flash",
+      accountId: "google-ai-pro",
+      local: false,
+    },
     { id: "qwen", harness: "opencode", model: "qwen3", accountId: "local", local: true },
   ];
   for (const e of engines) r.addEngine(e);

@@ -28,7 +28,10 @@ handbook viewer.
 M1 has run on the Mac mini ([docs/m1-runbook.md](docs/m1-runbook.md)), and its answers are in
 [docs/m1-findings.md](docs/m1-findings.md). One test machine, the walls and the Ollama relay run
 there, loaded by hand, until the daemon (M3) sets them up at boot. Its scripts are in `tools/m1/`.
-Real ACP sessions, machines and the GitHub App build on those findings. Until then the daemon runs
+The daemon has the real ACP client (`apps/daemon/src/acp.ts`) and the Apple container machine
+provider (`apps/daemon/src/machines.ts`), tested against a scripted ACP server; they aren't wired
+into `main.ts` yet, and the provider's start and stop commands still need confirming on the mini.
+The GitHub App and a real harness for checks and gates come next. Until then the daemon runs
 only in demo mode, with the scripted agent and helper model, and a morning's worth of tickets. The
 milestones are in the spec, §14.
 

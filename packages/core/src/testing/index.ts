@@ -40,8 +40,12 @@ export class MemoryEventStore implements EventStore {
 
 export class FakeMachines implements MachineProvider {
   readonly started: Id[] = [];
+  readonly stopped: Id[] = [];
   async ensureUp(employeeId: Id): Promise<void> {
     this.started.push(employeeId);
+  }
+  async stop(employeeId: Id): Promise<void> {
+    this.stopped.push(employeeId);
   }
 }
 

@@ -16,6 +16,8 @@ export interface EventStore {
 /** Makes sure an employee's machine is up before a session runs on it. */
 export interface MachineProvider {
   ensureUp(employeeId: Id): Promise<void>;
+  /** Stops a machine whose employee has nothing running (spec §12: memory returns only on restart). */
+  stop?(employeeId: Id): Promise<void>;
 }
 
 export interface SessionRequest {

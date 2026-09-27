@@ -57,8 +57,17 @@ export class Daemon {
 
   constructor(private readonly d: DaemonDeps) {}
 
+  /** Employees whose machines are up, as far as this daemon knows. */
+  private readonly awake = new Set<Id>();
+
   private get ports(): Ports {
-    const { clock, store, machines, agent, harness, registry } = this.d;
+    const { clock, store, agent, harness, registry } = this.d;
+    const machines = {
+      ensureUp: async (id: Id) => {
+        await this.d.machines.ensureUp(id);
+        this.awake.add(id);
+      },
+    };
     return { clock, store, machines, agent, harness, company: registry };
   }
 
@@ -110,6 +119,12 @@ export class Daemon {
       }),
       now,
     );
+    // A builder waiting for a reviewer resumes within minutes, so their machine stays up; one waiting
+    // for the owner or an account may wait hours, so it sleeps.
+    const soon = records
+      .filter((r) => states.get(r.ticket.id)?.waitingFor)
+      .map((r) => builderOf(r.ticket.id, r.ticket.assignee));
+    await this.sleepIdle(new Set([...busy, ...soon]));
     const pending: PendingDuty[] = records.flatMap((r) => {
       const w = states.get(r.ticket.id)?.waitingFor;
       return w
@@ -192,6 +207,24 @@ export class Daemon {
         this.sessions.delete(id);
       });
     this.running.set(id, done);
+  }
+
+  /**
+   * Stops the machines of employees with nothing running (spec §12). A machine keeps what it has
+   * touched in memory until it restarts, and wakes in under a second, so idle ones are stopped.
+   */
+  private async sleepIdle(busy: Set<Id>): Promise<void> {
+    if (!this.d.machines.stop) return;
+    const inSession = new Set([...this.sessions.values()].map((s) => s.employeeId));
+    for (const id of [...this.awake]) {
+      if (busy.has(id) || inSession.has(id)) continue;
+      this.awake.delete(id);
+      try {
+        await this.d.machines.stop(id);
+      } catch (e) {
+        this.d.log?.(`machine for ${id} didn't stop: ${String(e)}`);
+      }
+    }
   }
 
   /** The handbook, and a brain for everyone who works here (hiring makes one; this covers the rest). */

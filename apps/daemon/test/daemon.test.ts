@@ -36,6 +36,21 @@ describe("hiring", () => {
   });
 });
 
+describe("machines", () => {
+  it("stops a machine once its employee has nothing running", async () => {
+    const app = await testApp();
+    const machines = app.deps.machines as unknown as { started: string[]; stopped: string[] };
+    await app.call("POST", "/api/tickets", refunds);
+    await app.daemon.idle();
+    expect(machines.started).toContain("ada");
+    // The ticket is ready: Ada and her reviewer have nothing running, so the next pass stops both.
+    await app.daemon.tick();
+    expect(machines.stopped.sort()).toEqual(["ada", "kit", "quinn"]);
+    await app.daemon.tick();
+    expect(machines.stopped).toHaveLength(3);
+  });
+});
+
 describe("a restart", () => {
   it("resumes a ticket whose session died with the daemon", async () => {
     const path = join(mkdtempSync(join(tmpdir(), "i-inc-")), "test.db");
