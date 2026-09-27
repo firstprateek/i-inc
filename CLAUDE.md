@@ -52,6 +52,16 @@ Docs only (M0); nothing is built yet. The milestones are in the spec, §14.
   only to local engines, the PA has no internet and no credentials, and what leaves goes through
   outbound permissions. Any change that weakens a wall needs the owner's explicit approval.
 
+## UI work
+
+Any UI change (the web app, design canvases, HTML mockups) goes through the `ui-review` skill in
+`.claude/skills/ui-review`: read it against the tells and our lessons, then render it with the
+checker and look at the screenshots. Add new lessons there when a review finds a new mistake.
+
 ## Commands
 
-None yet. They arrive with the first code.
+- `node tools/ui-check/check.mjs [--out dir] [--size WxH] <file.html | url> ...`: render pages in
+  Chromium and report overlap, covered text, overflow, contrast, near-miss alignment, missing
+  accessible names and fonts that didn't load. Exits 1 on errors.
+
+The rest arrive with the first code.
