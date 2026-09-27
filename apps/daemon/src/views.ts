@@ -3,42 +3,20 @@ import {
   assembleReport,
   type Employee,
   type Id,
-  type NeedsYou,
   planFor,
-  type Report,
-  type Spend,
-  type StageId,
   sessionHours,
   spend,
   type TicketEvent,
   type TicketState,
-  type Wait,
   waits,
   withinHours,
 } from "@i-inc/core";
 import type { Registry } from "./registry.ts";
+import type { Column, DeskEntry, DeskView, EmployeeState, TicketView } from "./view-types.ts";
+
+export type { Column, DeskEntry, DeskView, EmployeeState, TicketView };
+
 import type { TicketRecord } from "./tickets.ts";
-
-export type Column = "todo" | "in-progress" | "review" | "done";
-
-export interface TicketView {
-  id: Id;
-  title: string;
-  project: string;
-  type: string;
-  effort: string;
-  assignee: { id: Id; name: string } | null;
-  column: Column;
-  status: TicketState["status"] | "queued";
-  stages: { id: StageId; state: "done" | "current" | "todo" }[];
-  /** One line of what's happening now, e.g. "Checks · 2 failing". */
-  live: string;
-  needsYou: NeedsYou | null;
-  waiting: string | null;
-  report: Report | null;
-  failure: TicketState["failure"];
-  outcome: TicketState["outcome"];
-}
 
 export function ticketView(
   r: TicketRecord,
@@ -109,7 +87,13 @@ export function liveLine(events: TicketEvent[], registry: Registry): string {
           ? `Approved in round ${e.round}`
           : `Review round ${e.round} · ${e.findings.length} findings`;
       case "needs-you":
-        return "Needs you";
+        return e.ask.kind === "plan-gate"
+          ? "Plan gate: the plan waits for you"
+          : e.ask.kind === "disagreement"
+            ? "Disagreement: both sides wait for you"
+            : e.ask.kind === "proposals"
+              ? `${e.ask.items.length} ${e.ask.items.length === 1 ? "proposal waits" : "proposals wait"} for you`
+              : `Stuck: ${e.ask.reason}`;
       case "report-ready":
         return "Report ready";
       case "failed":
@@ -126,25 +110,6 @@ export function liveLine(events: TicketEvent[], registry: Registry): string {
 }
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
-
-export type EmployeeState =
-  | "idle"
-  | "working"
-  | "reviewing"
-  | "needs-you"
-  | "out-of-tokens"
-  | "done"
-  | "failed"
-  | "off";
-
-export interface DeskEntry {
-  id: Id;
-  name: string;
-  role: string;
-  engine: string;
-  state: EmployeeState;
-  ticket: { id: Id; title: string; project: string; live: string } | null;
-}
 
 /** The office: each employee's desk (spec §10). */
 export function officeView(
@@ -183,13 +148,6 @@ export function officeView(
       : null;
     return { id: e.id, name: e.name, role: e.role, engine, state, ticket };
   });
-}
-
-export interface DeskView {
-  spend: Spend;
-  waits: Wait[];
-  bottleneck: Wait | null;
-  merged: number;
 }
 
 /** My desk (spec §10): this month's spend and where work waited. */
