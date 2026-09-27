@@ -56,3 +56,10 @@ paths, branch names, structured briefs).
     caught one of them, because the others weren't grid cells or were just over its line. → Let
     rows size to their content (`align-items: start`), or fill them with real content from the
     spec; never stretch a card to match a taller neighbour. Look at the screenshot for this.
+12. **A container reused a chip's class (tell 2).** Waiting cards on the office, board and inbox
+    took the chip class `needs`, so every line of text inside turned the chip's brown. → Give
+    containers their own state class (`waiting`); a chip's colour pair belongs to the chip alone.
+13. **The checker measured the proxy's error page (tooling).** Chromium sent `127.0.0.1` through the
+    environment's proxy, so the "no findings" for the app were about an error page. → The checker
+    connects Chromium directly and fetches only HTTPS through the proxy, and it now fails loudly
+    when a page doesn't load. Always look at the screenshot before trusting "no findings".

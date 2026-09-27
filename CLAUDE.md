@@ -15,9 +15,14 @@ M2's core is in `packages/core`, tested against fakes for every port:
 - the owner's decision, follow-ups, the retro and knowledge routing, and handoffs;
 - My desk's spend and bottleneck maths.
 
-M3 has started in `apps/daemon`: the SQLite event log, the company registry, the tick loop that joins
-the scheduler to the runner, and the API. Real ACP sessions, machines and the GitHub App wait for
-M1's findings, so for now it runs only in demo mode, with the scripted agent.
+M3 has started:
+- `apps/daemon`: the SQLite event log, the company registry, the tick loop that joins the scheduler to
+  the runner, the API, and serving the web app;
+- `apps/web`: the office, board, ticket, My desk and inbox views as Lit components, light and dark.
+
+Real ACP sessions, machines and the GitHub App wait for M1's findings, so for now the daemon runs only
+in demo mode, with the scripted agent and a morning's worth of tickets. Chat and hiring need their
+own API next.
 
 Nothing runs on the Mac mini yet: M1 is next there ([docs/m1-runbook.md](docs/m1-runbook.md)). The
 milestones are in the spec, §14.
@@ -75,9 +80,10 @@ checker and look at the screenshots. Add new lessons there when a review finds a
 
 - `pnpm install`, then `pnpm check` (Biome), `pnpm typecheck` and `pnpm test` (Vitest). CI runs all
   three on every PR.
-- `I_INC_DEMO=1 pnpm --filter @i-inc/daemon start`: the daemon in demo mode on http://127.0.0.1:7420
-  (Bun; `bun:sqlite` on the host, `node:sqlite` in tests).
-- `node tools/ui-check/check.mjs [--out dir] [--size WxH] <file.html | url> ...`: render pages in
+- `pnpm --filter @i-inc/web build`, then `I_INC_DEMO=1 pnpm --filter @i-inc/daemon start`: the daemon
+  in demo mode on http://127.0.0.1:7420, serving the web app (Bun; `bun:sqlite` on the host,
+  `node:sqlite` in tests). `pnpm --filter @i-inc/web dev` runs the app with hot reload against it.
+- `node tools/ui-check/check.mjs [--out dir] [--size WxH] [--dark] <file.html | url> ...`: render pages in
   Chromium and report overlap, covered text, overflow, contrast, near-miss alignment, missing
   accessible names and fonts that didn't load. Exits 1 on errors.
 

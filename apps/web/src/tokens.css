@@ -1,0 +1,90 @@
+/* i.inc's tokens, by role (see .claude/skills/ui-review/references/i-inc-lessons.md).
+   Every colour has exactly one job. Light by default, with a dark theme. */
+:root {
+  --ground: #eef0ea;
+  --surface: #fbfbf8;
+  --sunken: #e7eae3;
+  --line: #d5d9d1;
+  --line-strong: #c4cac1;
+  --ink: #1e2421;
+  --ink-2: #4e5652;
+  --on-ink: #fbfbf8;
+
+  --working-bg: #dceedf;
+  --working-fg: #1d5234;
+  --reviewing-bg: #dde7f6;
+  --reviewing-fg: #1d4476;
+  --reviewing-mark: #3a68a8;
+  --needs-bg: #fce8b8;
+  --needs-fg: #5a3a00;
+  --needs-edge: #c48a12;
+  --needs-surface: #fff9ea;
+  --alarm: #c4452b;
+  --alarm-fg: #8a2b17;
+  --neutral-bg: #e6e8e3;
+  --neutral-fg: #3f4642;
+  --bar: #59625d;
+
+  --floor: #e6d7bc;
+  --desk: #cfaf82;
+  --desk-edge: #a98a5f;
+  --screen: #1e2421;
+  --screen-edge: #3a423e;
+  --screen-text: #e7eae3;
+
+  --display: "Bricolage Grotesque", system-ui, sans-serif;
+  --body: Figtree, system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+  --radius: 18px;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #141816;
+    --surface: #1e2320;
+    --sunken: #262c28;
+    --line: #323a35;
+    --line-strong: #46504a;
+    --ink: #eef0ea;
+    --ink-2: #b4bcb6;
+    --on-ink: #141816;
+    --needs-surface: #2a2415;
+    --floor: #2a2721;
+    --desk: #5b4a33;
+    --desk-edge: #3f3323;
+    --bar: #9aa39d;
+    --screen: #0c0f0d;
+    --screen-edge: #323a35;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #141816;
+  --surface: #1e2320;
+  --sunken: #262c28;
+  --line: #323a35;
+  --line-strong: #46504a;
+  --ink: #eef0ea;
+  --ink-2: #b4bcb6;
+  --on-ink: #141816;
+  --needs-surface: #2a2415;
+  --floor: #2a2721;
+  --desk: #5b4a33;
+  --desk-edge: #3f3323;
+  --bar: #9aa39d;
+  --screen: #0c0f0d;
+  --screen-edge: #323a35;
+  color-scheme: dark;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--body);
+}
+body {
+  min-height: 100vh;
+}

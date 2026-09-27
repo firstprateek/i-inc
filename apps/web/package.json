@@ -1,0 +1,21 @@
+{
+  "name": "@i-inc/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "lit": "^3.3.3"
+  },
+  "devDependencies": {
+    "@i-inc/core": "workspace:*",
+    "@i-inc/daemon": "workspace:*",
+    "happy-dom": "^20.14.5",
+    "vite": "^8.3.1"
+  }
+}

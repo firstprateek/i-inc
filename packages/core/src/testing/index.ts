@@ -53,6 +53,7 @@ export class Crash extends Error {
 export type Scripted = SessionOutcome | { kind: "crash" };
 
 export interface Match {
+  ticket?: Id;
   employee?: Id;
   stage?: StageId;
   duty?: Duty;
@@ -88,6 +89,7 @@ export class FakeAgent implements Agent {
 
 function matches(m: Match, r: SessionRequest): boolean {
   return (
+    (!m.ticket || m.ticket === r.ticket.id) &&
     (!m.employee || m.employee === r.employee.id) &&
     (!m.stage || m.stage === r.stage) &&
     (!m.duty || m.duty === r.duty) &&
@@ -119,9 +121,11 @@ export class FakeHarness implements Harness {
   readonly gates: GatesResult[] = [];
   checkRuns = 0;
   gateRuns = 0;
-  async runChecks(_: Ticket): Promise<ChecksResult> {
+  /** Results for one ticket only, used before the shared queue. */
+  readonly checksFor = new Map<Id, ChecksResult[]>();
+  async runChecks(ticket: Ticket): Promise<ChecksResult> {
     this.checkRuns++;
-    return this.checks.shift() ?? { green: true, failures: [] };
+    return this.checksFor.get(ticket.id)?.shift() ?? this.checks.shift() ?? { green: true, failures: [] };
   }
   async runGates(_: Ticket): Promise<GatesResult> {
     this.gateRuns++;

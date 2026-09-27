@@ -13,5 +13,8 @@
   },
   "devDependencies": {
     "@types/bun": "^1.4.2"
+  },
+  "exports": {
+    "./views": "./src/view-types.ts"
   }
 }
