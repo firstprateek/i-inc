@@ -98,7 +98,7 @@ describe("a quota pause", () => {
     expect(result.status).toBe("ready");
     if (result.status !== "ready") return;
     expect(result.report.engines).toBe(
-      "started on Claude Opus; moved to Gemini 3 Pro for build after Claude Opus ran out of tokens",
+      "started on Claude Opus; moved to Gemini 3.1 Pro for build after Claude Opus ran out of tokens",
     );
   });
 });
@@ -117,7 +117,7 @@ describe("an engine switch partway through a stage", () => {
     expect(result.status).toBe("ready");
     if (result.status !== "ready") return;
     expect(result.report.engines).toBe(
-      "started on Claude Sonnet; moved to Gemini 3 Pro for checks after 3 failed check runs",
+      "started on Claude Sonnet; moved to Gemini 3.1 Pro for checks after 3 failed check runs",
     );
 
     const afterSwitch = p.agent.calls.find((c) => c.employee.id === "kit" && c.engine.id === "gemini");
@@ -136,7 +136,7 @@ describe("an engine switch partway through a stage", () => {
     expect(result).toEqual({
       status: "failed",
       reason: "3 failed check runs",
-      tried: ["Claude Sonnet", "Gemini 3 Pro"],
+      tried: ["Claude Sonnet", "Gemini 3.1 Pro"],
     });
   });
 });

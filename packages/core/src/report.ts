@@ -9,7 +9,7 @@ export interface Report {
   title: string;
   /** e.g. "Ada (Claude Opus), reviewed by Grace, 1 round" */
   byline: string;
-  /** e.g. "started on Claude Sonnet; moved to Gemini 3 Pro for checks after 3 failed check runs", or null. */
+  /** e.g. "started on Claude Sonnet; moved to Gemini 3.1 Pro for checks after 3 failed check runs", or null. */
   engines: string | null;
   checks: string;
   minutes: number;

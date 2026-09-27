@@ -5,8 +5,8 @@ import { fakePorts } from "../src/testing/index.ts";
 export const engines: Engine[] = [
   { id: "opus", harness: "claude-code", model: "Claude Opus", accountId: "claude-pro", local: false },
   { id: "sonnet", harness: "claude-code", model: "Claude Sonnet", accountId: "claude-pro", local: false },
-  { id: "gemini", harness: "gemini-cli", model: "Gemini 3 Pro", accountId: "google-ai-pro", local: false },
-  { id: "flash", harness: "gemini-cli", model: "Gemini Flash", accountId: "google-ai-pro", local: false },
+  { id: "gemini", harness: "antigravity", model: "Gemini 3.1 Pro", accountId: "google-ai-pro", local: false },
+  { id: "flash", harness: "antigravity", model: "Gemini 3.8 Flash", accountId: "google-ai-pro", local: false },
   { id: "qwen", harness: "opencode", model: "qwen3", accountId: "local", local: true },
   { id: "qwen-moe", harness: "opencode", model: "qwen3 MoE", accountId: "local", local: true },
 ];
