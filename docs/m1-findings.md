@@ -15,10 +15,10 @@ login.
 | `rate_limit_event` passes through the Claude adapter | Yes, as `usage_update._meta["_claude/rateLimit"]`, with status, reset times and use of both windows. Antigravity reports nothing | step 5 |
 | `pf` walls hold (internet ok; LAN, tailnet, host blocked; Ollama ok) | Yes: 13 of 13 checks, nothing gets in, and connections are logged | step 3 |
 | Ollama reachable from a machine | Yes, through a relay on the machines' gateway. Ollama itself stays on loopback | step 3 |
-| Docker inside a machine | pending (step 7) | |
+| Docker inside a machine | Yes, with no nested virtualization. The walls hold for its containers too | step 7 |
 | Resume on another engine from a brief | Yes. Claude planned, then Gemini through Antigravity built from the brief alone, to draft PR firstprateek/duet#7, and CI passed | step 6 |
-| Machine memory idle / busy, and K for this host | Idle: 0.56 GB on the host. Busy and K: pending (step 7). Before any machine, the host uses 11.7 GB of 32 GB with no model loaded (17.4 GB until DisplayLink was stopped) | steps 1 and 2 |
-| Host power idle / busy (W) | pending (step 7) | |
+| Machine memory idle / busy, and K for this host | 0.56 GB just booted, 4.6 GB after a day of work (it keeps its file cache until restarted). K is 2 at 6 GB each while a local model is loaded, 3 without | steps 1, 2 and 7 |
+| Host power idle / busy (W) | Chip only: 0.1 W idle, 32.5 W busy (a machine burning 4 CPUs while qwen3:8b generates). The wall adds more | step 7 |
 
 ## 1. Host check (read only)
 
@@ -240,8 +240,8 @@ answer the machines' DNS itself and refuse the tailnet's domain.
 - **Not yet done:**
   - The rules, pf's reference and the relay don't survive a reboot. The daemon's host setup
     (M3) should load them at boot.
-  - The relay binds to an address that exists only while a machine runs, so the daemon should
-    start it with the first machine.
+  - The relay binds to the machines' gateway, which appears with the first machine. It survived a
+    machine restart (step 7), but the daemon should still bind it once the network is up.
   - Traffic between two machines is untested, since there's only one.
 
 ## 4. Harnesses and sign-in
@@ -420,32 +420,89 @@ worded the lines exactly as planned, and ran every planned check.
   ran.
 - It can point to files instead of quoting them, since the new engine reads them anyway.
 
+## 7. The remaining unknowns
+
+**Docker works inside a machine, with no nested virtualization.** Containers don't need KVM, only
+the machine kernel's container features. `/dev/kvm` is absent, as the docs say for the default
+kernel, and would only matter for tools that start VMs of their own. With Ubuntu's `docker.io`:
+
+- Docker 29.1.3 ran on kernel 6.18.35 with overlayfs and cgroup v2;
+- it pulled images, and an Alpine container reached the internet;
+- **the walls hold for containers too.** From inside one, the router, a LAN device, a tailnet
+  device and the host's SSH were blocked, and the Ollama relay was reachable.
+
+**Stop and restart keep everything.** Stopping took 11.1 s, and the first command after starting
+took 0.8 s. These all survived:
+
+- the worktree (branch and commit) and the notes in the home directory;
+- every sign-in: Claude, the Antigravity CLI, Antigravity's ACP token and GitHub;
+- Docker's images, and the Docker service, which came back up by itself;
+- even `/tmp`.
+
+The relay kept working as well: `bridge100` stayed up while the only machine restarted. Still
+untested: `container system stop`, and a host reboot.
+
+**Memory:**
+
+| When | The machine's cost on the host |
+| --- | --- |
+| Just booted | 0.56–0.71 GB |
+| After a day of work (installs, agents, Docker, Duet's checks) | 4.6 GB, mostly the guest's file cache (3.4 GB), up to its 6 GB limit |
+| After dropping caches inside | not possible: `/proc/sys` is read-only in a machine, even with `sudo` |
+| After a restart | 0.71 GB |
+
+Duet's checks (`pnpm install`, then `pnpm test`: 158 tests in 13 files) took 3 s and hardly moved
+the number. The cost comes from what a machine has ever touched, and only a restart gives it back.
+
+**K for this mini.** The host uses 11.7 GB before any machine, with Apple container running and
+DisplayLink gone. Ollama with qwen3:8b at a 32k context adds 8.1 GB. That leaves 12.2 GB, which is
+**2 machines at their 6 GB limit while a local model is loaded, or 3 without one**. Idle machines
+cost little. To stay within K, a machine should be stopped after each ticket, since it wakes in
+under a second.
+
+**Power, from `powermetrics`,** which covers the chip only (CPU, GPU and neural engine). At the
+wall, memory, storage, the fan and the power supply add to both figures, so a plug meter should set
+My desk's numbers.
+
+- Idle, with the machine idling: **0.1 W**.
+- Busy, with the machine burning 4 CPUs while qwen3:8b wrote 700 tokens at 19 tokens/s:
+  **32.5 W**.
+
 ## What the spec should change
 
-Candidates so far. Those marked "to confirm" wait for the step named.
+**Changed in this PR** (docs/spec.md):
 
-- **§12:** Apple container is at 1.4.1, not 1.0.
-- **§9 and §12, "memory is used on demand":** that holds only until a machine has been busy. Guest
-  memory isn't returned to macOS until the machine restarts. So an idle machine should be stopped,
-  not left running, and waking takes under a second. To confirm, with K, in step 7.
-- **§5, the walls:**
-  - From the host, machines need DHCP and DNS as well as i.inc's API and Ollama.
-  - IPv6 is refused rather than walled by address, because the LAN's prefix changes.
-  - Machines reach Ollama through a relay on their gateway, not by Ollama listening beyond
-    loopback. Once the daemon exists, its API can carry that, which leaves one host port open.
-  - The daemon should answer the machines' DNS itself, so it can log names per employee and
-    refuse the tailnet's names.
-- **§15, the base image:** a machine's user takes the host account's name and uid unless the image
-  ships its own `/etc/machine/create-user.sh`. An employee's machine should use a user of its own.
-- **§5, §8 and §13, the Google engine (done in this PR):** Gemini CLI on Google AI Pro is replaced
-  by Antigravity's ACP server on Google AI Pro. There's a new risk entry on vendors moving
-  subscriptions. The core's `AgentHarness` type in `packages/core/src/model.ts` still lists
-  `"gemini-cli"` and should get `"antigravity"` instead; that's left to a core change.
-- **§5, credentials (done in this PR):** Claude's credential for an employee is a model-only token
-  from `claude setup-token`, handed to each session. A full login stored in the machine would also
-  reach the owner's claude.ai connectors (mail, calendar, drive).
-- **§8, accounts (done in this PR):** `rate_limit_event` is confirmed to pass through the adapter,
-  with the use of each window. Antigravity's ACP server reports no usage, so Google AI Pro limits
-  are known only from its errors.
-- **§7, the PA:** its OpenCode must be pinned to local providers. OpenCode also offers hosted
-  models of its own.
+- **§5, §8 and §13, the Google engine:** Gemini CLI on Google AI Pro is replaced by Antigravity's
+  ACP server on Google AI Pro. A new risk entry covers vendors moving subscriptions.
+- **§5, credentials:** Claude's credential for an employee is a model-only token from
+  `claude setup-token`. A full login would also reach the owner's claude.ai connectors.
+- **§5, the walls:** machines also get DHCP and DNS from the host, and IPv6 is refused. Ollama
+  stays on loopback, behind a relay on the machines' gateway.
+- **§5, Docker:** it works in a machine without nested virtualization.
+- **§7, the PA:** its OpenCode is pinned to local providers.
+- **§8, accounts:** `rate_limit_event` passes through the adapter, with the use of each window.
+  Antigravity reports no usage.
+- **§12, hardware:**
+  - Apple container 1.4.1, whose defaults must be overridden.
+  - The host's own 12 GB, and 8.1 GB for a loaded qwen3:8b.
+  - Machine memory is only returned on restart, so K is 2 with a local model loaded and 3
+    without, and machines stop after each ticket.
+
+**Left for later:**
+
+- **The core and the daemon:** `AgentHarness` in `packages/core/src/model.ts` still lists
+  `"gemini-cli"`, and so do the test fixtures and the daemon's demo engines. They should list
+  `"antigravity"`.
+- **The daemon (M3):**
+  - It should answer the machines' DNS itself, to log names per employee and refuse the tailnet's
+    names.
+  - Its API can carry Ollama, which leaves one host port open.
+  - It should load the walls and the relay at boot.
+  - It should relay Antigravity's sign-in callback into the machine.
+- **§15, the base image:**
+  - It needs `systemd-sysv`, the harnesses, and its own `/etc/machine/create-user.sh`, so the
+    machine's user isn't named after the host account.
+  - It doesn't need gnome-keyring.
+  - The resume brief should say what the machine has and lacks, such as package managers.
+- **§10, My desk's electricity example (7 W idle, 60 W busy):** M1 measured the chip only, at
+  0.1 W idle and 32.5 W busy. A plug meter should set the two numbers before the example changes.

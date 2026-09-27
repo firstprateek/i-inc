@@ -25,10 +25,11 @@ M4 has started: brains and the handbook as git repos on the host, edits applied 
 policy changes waiting for the owner, orientation as a new hire's first ticket, and a brain and
 handbook viewer.
 
-Real ACP sessions, machines and the GitHub App wait for M1's findings, so for now the daemon runs only
-in demo mode, with the scripted agent and helper model, and a morning's worth of tickets.
-
-Nothing runs on the Mac mini yet: M1 is next there ([docs/m1-runbook.md](docs/m1-runbook.md)). The
+M1 has run on the Mac mini ([docs/m1-runbook.md](docs/m1-runbook.md)), and its answers are in
+[docs/m1-findings.md](docs/m1-findings.md). One test machine, the walls and the Ollama relay run
+there, loaded by hand, until the daemon (M3) sets them up at boot. Its scripts are in `tools/m1/`.
+Real ACP sessions, machines and the GitHub App build on those findings. Until then the daemon runs
+only in demo mode, with the scripted agent and helper model, and a morning's worth of tickets. The
 milestones are in the spec, §14.
 
 ## Where work can happen

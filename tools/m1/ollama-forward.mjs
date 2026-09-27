@@ -43,4 +43,6 @@ server.on("error", (error) => {
   log(`can't listen on ${listen.host}:${listen.port}: ${error.message}`);
   process.exit(1);
 });
-server.listen(listen, () => log(`forwarding ${listen.host}:${listen.port} to Ollama on ${ollama.host}:${ollama.port}`));
+server.listen(listen, () =>
+  log(`forwarding ${listen.host}:${listen.port} to Ollama on ${ollama.host}:${ollama.port}`),
+);

@@ -55,7 +55,8 @@ const TIMEOUT_MS = 15 * 60_000;
 mkdirSync("/tmp/m1", { recursive: true });
 const transcript = createWriteStream(`/tmp/m1/acp-${agent}${label ? `-${label}` : ""}.jsonl`);
 const started = Date.now();
-const say = (line: string) => console.log(`${((Date.now() - started) / 1000).toFixed(1).padStart(6)}s  ${line}`);
+const say = (line: string) =>
+  console.log(`${((Date.now() - started) / 1000).toFixed(1).padStart(6)}s  ${line}`);
 
 const child = spawn("/usr/local/bin/container", ["machine", "run", "-i", "-n", machine, "--", launcher], {
   stdio: ["pipe", "pipe", "pipe"],
@@ -86,7 +87,9 @@ function short(value: unknown, max = 140): string {
 function findRateLimits(value: unknown, path = ""): string[] {
   if (!value || typeof value !== "object") return [];
   return Object.entries(value as Json).flatMap(([key, inner]) =>
-    /rate.?limit/i.test(key) ? [`${path}${key} = ${short(inner, 300)}`] : findRateLimits(inner, `${path}${key}.`),
+    /rate.?limit/i.test(key)
+      ? [`${path}${key} = ${short(inner, 300)}`]
+      : findRateLimits(inner, `${path}${key}.`),
   );
 }
 
@@ -107,7 +110,9 @@ function onUpdate(params: Json): void {
       return;
     case "tool_call":
       counts.toolCalls++;
-      say(`tool call   ${short(update.title)} [${update.kind ?? "?"}] ${update.status ?? ""} ${short(update.rawInput ?? "", 100)}`);
+      say(
+        `tool call   ${short(update.title)} [${update.kind ?? "?"}] ${update.status ?? ""} ${short(update.rawInput ?? "", 100)}`,
+      );
       return;
     case "tool_call_update":
       if (update.status) say(`tool update ${short(update.title ?? update.toolCallId)} → ${update.status}`);
@@ -197,7 +202,9 @@ async function main(): Promise<void> {
   }
   const session = check(created, "session/new");
   const sessionId = String(session.sessionId);
-  const modes = (((session.modes as Json | undefined)?.availableModes ?? []) as Json[]).map((mode) => String(mode.id));
+  const modes = (((session.modes as Json | undefined)?.availableModes ?? []) as Json[]).map((mode) =>
+    String(mode.id),
+  );
   say(`session/new ${sessionId}, modes [${modes.join(", ")}]`);
   if (session.configOptions) say(`            config options ${short(session.configOptions, 300)}`);
 
@@ -215,7 +222,9 @@ async function main(): Promise<void> {
     "session/prompt",
   );
   say(`reply       ${promptFile ? reply.trim() : short(reply.trim(), 400)}`);
-  say(`done        stop reason ${result.stopReason}; ${counts.toolCalls} tool calls, ${counts.permissions} permission requests,`);
+  say(
+    `done        stop reason ${result.stopReason}; ${counts.toolCalls} tool calls, ${counts.permissions} permission requests,`,
+  );
   say(`            ${counts.usageUpdates} usage updates, ${counts.rateLimits} rate-limit entries`);
   child.stdin.end();
   setTimeout(() => child.kill(), 3000).unref();

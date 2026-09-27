@@ -311,12 +311,16 @@ interface with a scripted fake in tests, like the ACP agent.
 - **Inside the machine** the harness runs in its bypass mode: Claude Code bypassPermissions,
   OpenCode allow-all, and Antigravity's equivalent. i.inc's ACP client also approves any
   permission request. The
-  employee can install anything, run servers, and use Docker if nested virtualization works.
+  employee can install anything, run servers, and use Docker, which needs no nested
+  virtualization.
 - **Network:**
   - The employee has open outbound internet: packages, docs, web search, GitHub and model APIs. A
     PA is the exception: it has no internet at all (§7).
-  - It can't reach your LAN, your tailnet, or other services on the host. The exceptions are i.inc's
-    API and Ollama.
+  - It can't reach your LAN, your tailnet, other machines or other services on the host. The
+    exceptions are i.inc's API and Ollama, plus the DHCP and DNS every machine needs. Ollama stays
+    on loopback, and machines reach it through a relay on their gateway, so nothing outside the
+    machines can reach it. IPv6 is refused rather than walled off, because the LAN's prefix
+    changes.
   - Nothing can connect in from outside.
   - The host firewall (`pf` on the Mac mini) enforces this, and the domains each employee contacts
     are logged.
@@ -710,19 +714,23 @@ per task, a Review column and a PR. Their READMEs don't mention these, which is 
 
 ## 12. Hardware
 
-The first host is the home Mac mini: macOS 26.2, 10 cores, 32 GB of RAM and about 309 GB of free
-disk. Ollama uses 6–10 GB while a model is loaded.
+The first host is the home Mac mini: macOS 26.2, an M4 with 10 cores, 32 GB of RAM and about 330
+GB of free disk. Before any machine, the host itself uses about 12 GB. Ollama uses 6–10 GB while a
+model is loaded (qwen3:8b at a 32k context: 8.1 GB).
 
-- **Machines:** at about 4 CPUs and 6 GB each (memory is used on demand), the mini can keep about 3
-  machines awake, with the rest asleep until needed.
+- **Machines:** about 4 CPUs and 6 GB each. A machine takes memory only as it needs it, but it
+  never gives any back until it restarts: 0.6 GB just after booting, 4.6 GB after a day of work.
+  So the mini keeps about 2 machines awake while a local model is loaded, or 3 without one. A
+  machine is stopped after each ticket, and it wakes in under a second.
 - **A Mac Studio**, if one is bought (96 GB), becomes a second or main host. It has room for more
   machines, macOS VMs, and a pool of local models (for example a 27B dense, a 30B MoE and a small
   classifier as a helper model). Models and machines share its RAM, and long coding contexts need
   large caches, so the pool may keep two models loaded and swap the third. Adding it changes the
   local account's pool, not the employees. M1–M2 will measure what we need first.
-- **Apple container** 1.0 (June 2026) runs one lightweight VM per container, and `container machine`
-  gives a persistent Linux VM with `home-mount=none`, CPU and memory settings. It isn't installed on
-  the mini yet.
+- **Apple container** (1.4.1 on the mini since M1) runs one lightweight VM per container.
+  `container machine` gives a persistent Linux VM with `home-mount=none`, CPU and memory settings.
+  Its home mount is read-write by default, and its memory is half the host's, so both are always
+  set.
 - **Fallback:** Colima and Docker are installed on the mini but stopped. They run in one shared VM, so
   the isolation is weaker.
 
