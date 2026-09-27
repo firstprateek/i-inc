@@ -1,5 +1,5 @@
 // A small typed client for the daemon's API. The view types come straight from the daemon.
-import type { TicketEvent } from "@i-inc/core";
+import type { Employee, Engine, TicketEvent } from "@i-inc/core";
 import type { DeskEntry, DeskView, TicketView } from "@i-inc/daemon/views";
 
 export type { DeskEntry, DeskView, TicketEvent, TicketView };
@@ -22,6 +22,8 @@ export const api = {
   ticket: (id: string) => call<{ ticket: TicketView; events: TicketEvent[] }>("GET", `/api/tickets/${id}`),
   answer: (id: string, answer: "approve" | "reject" | "builder" | "reviewer", note?: string) =>
     call("POST", `/api/tickets/${id}/answer`, note ? { answer, note } : { answer }),
+  engines: () => call<{ engines: Engine[] }>("GET", "/api/engines").then((r) => r.engines),
+  hire: (e: Partial<Employee>) => call<{ employee: Employee }>("POST", "/api/employees", e),
   decide: (id: string, decision: "approve" | "changes" | "reject", note?: string) =>
     call("POST", `/api/tickets/${id}/decide`, note ? { decision, note } : { decision }),
 };

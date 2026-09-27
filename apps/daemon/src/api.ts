@@ -1,6 +1,14 @@
 // The daemon's HTTP API: plain Request -> Response (Bun.serve on the host, called directly in tests).
 // It's served only on the tailnet; a bearer token guards it as well.
-import { answer, decide, handOff, type Id } from "@i-inc/core";
+import {
+  answer,
+  decide,
+  defaultSwitchRules,
+  type Employee,
+  handOff,
+  hiringProblems,
+  type Id,
+} from "@i-inc/core";
 import type { Daemon, DaemonDeps } from "./daemon.ts";
 import type { NewTicket } from "./tickets.ts";
 import { deskView, officeView, type TicketView, ticketView } from "./views.ts";
@@ -36,6 +44,39 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
 
   const routes: [string, string, Handler][] = [
     ["GET", "/api/board", async () => json({ tickets: await views() })],
+
+    ["GET", "/api/engines", async () => json({ engines: d.registry.engines() })],
+    ["GET", "/api/employees", async () => json({ employees: d.registry.employees() })],
+
+    [
+      "POST",
+      "/api/employees",
+      async (req) => {
+        const body = (await req.json()) as Partial<Employee>;
+        const hire: Employee = {
+          id:
+            body.id ??
+            (body.name ?? "")
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, "-")
+              .replace(/^-|-$/g, ""),
+          name: body.name ?? "",
+          role: body.role ?? "Senior Engineer",
+          duties: body.duties ?? ["build", "review"],
+          engines: body.engines ?? { default: "", fallbacks: [] },
+          switchRules: body.switchRules ?? defaultSwitchRules,
+          ...(body.projects ? { projects: body.projects } : {}),
+          ...(body.standingOrders ? { standingOrders: body.standingOrders } : {}),
+          ...(body.workingHours ? { workingHours: body.workingHours } : {}),
+          ...(body.outbound ? { outbound: body.outbound } : {}),
+        };
+        const problems = hiringProblems(hire, d.registry.engines(), d.registry.employees());
+        if (problems.length) return json({ error: problems.join("; "), problems }, 400);
+        d.registry.hire(hire);
+        await daemon.tick();
+        return json({ employee: hire }, 201);
+      },
+    ],
 
     [
       "GET",

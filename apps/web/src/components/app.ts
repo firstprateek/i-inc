@@ -7,13 +7,14 @@ import "./board.ts";
 import "./ticket.ts";
 import "./desk.ts";
 import "./inbox.ts";
+import "./hiring.ts";
 
-type Route = { view: "office" | "board" | "desk" | "inbox" } | { view: "ticket"; id: string };
+type Route = { view: "office" | "board" | "desk" | "inbox" | "hiring" } | { view: "ticket"; id: string };
 
 function parse(hash: string): Route {
   const [, view, id] = hash.split("/");
   if (view === "ticket" && id) return { view: "ticket", id };
-  if (view === "board" || view === "desk" || view === "inbox") return { view };
+  if (view === "board" || view === "desk" || view === "inbox" || view === "hiring") return { view };
   // Phones start at the inbox; desktops at the office (spec §10).
   return { view: matchMedia("(max-width: 700px)").matches ? "inbox" : "office" };
 }
@@ -91,7 +92,8 @@ export class IncApp extends LitElement {
         <a class="mark" href="#/office">i.inc</a>
         <nav aria-label="Views">
           ${link("office", "Office", v === "office")} ${link("board", "Board", v === "board" || v === "ticket")}
-          ${link("desk", "My desk", v === "desk")} ${link("inbox", "Inbox", v === "inbox")}
+          ${link("desk", "My desk", v === "desk")} ${link("hiring", "Hiring", v === "hiring")}
+          ${link("inbox", "Inbox", v === "inbox")}
         </nav>
         <span class="spacer"></span>
         <button class="icon" type="button" aria-label="Switch theme" @click=${this.toggleTheme}>
@@ -118,6 +120,8 @@ export class IncApp extends LitElement {
         return html`<inc-desk></inc-desk>`;
       case "inbox":
         return html`<inc-inbox></inc-inbox>`;
+      case "hiring":
+        return html`<inc-hiring></inc-hiring>`;
       case "ticket":
         return html`<inc-ticket .ticketId=${this.route.id}></inc-ticket>`;
     }

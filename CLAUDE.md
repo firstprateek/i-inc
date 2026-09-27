@@ -18,11 +18,10 @@ M2's core is in `packages/core`, tested against fakes for every port:
 M3 has started:
 - `apps/daemon`: the SQLite event log, the company registry, the tick loop that joins the scheduler to
   the runner, the API, and serving the web app;
-- `apps/web`: the office, board, ticket, My desk and inbox views as Lit components, light and dark.
+- `apps/web`: the office, board, ticket, My desk, hiring and inbox views as Lit components, light and dark.
 
 Real ACP sessions, machines and the GitHub App wait for M1's findings, so for now the daemon runs only
-in demo mode, with the scripted agent and a morning's worth of tickets. Chat and hiring need their
-own API next.
+in demo mode, with the scripted agent and a morning's worth of tickets. Chat needs its own API next.
 
 Nothing runs on the Mac mini yet: M1 is next there ([docs/m1-runbook.md](docs/m1-runbook.md)). The
 milestones are in the spec, §14.

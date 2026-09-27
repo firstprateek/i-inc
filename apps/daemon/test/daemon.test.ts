@@ -162,3 +162,30 @@ describe("My desk", () => {
     expect(desk.spend.perMergedPR).toBeGreaterThan(0);
   });
 });
+
+describe("hiring", () => {
+  it("hires an engineer, who then shows up in the office", async () => {
+    const app = await testApp();
+    const res = await app.call("POST", "/api/employees", {
+      name: "Lin",
+      role: "Senior Engineer",
+      engines: { default: "sonnet", fallbacks: ["gemini"] },
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.employee).toMatchObject({ id: "lin", duties: ["build", "review"] });
+    const office = (await app.call("GET", "/api/office")).body.employees;
+    expect(office.map((e: { name: string }) => e.name)).toContain("Lin");
+  });
+
+  it("refuses a PA on a cloud engine", async () => {
+    const app = await testApp();
+    const res = await app.call("POST", "/api/employees", {
+      name: "Pip Two",
+      role: "Personal Assistant",
+      duties: ["build"],
+      engines: { default: "qwen", fallbacks: ["flash"] },
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("may only use local engines, not flash");
+  });
+});
