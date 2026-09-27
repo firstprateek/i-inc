@@ -7,7 +7,9 @@ source of truth for behavior, words and safety, so read it before changing anyth
 
 ## Status
 
-Docs only (M0); nothing is built yet. The milestones are in the spec, §13.
+M2 has started: `packages/core` holds the pipeline engine (stages, events, engine per duty, switch rules,
+the report) with fakes for every port. Nothing runs on the Mac mini yet. The milestones are in the
+spec, §14.
 
 ## Where work can happen
 
@@ -21,16 +23,17 @@ Docs only (M0); nothing is built yet. The milestones are in the spec, §13.
 
 | Path | What |
 | --- | --- |
-| `packages/core` | The company: tickets, stages, employees, roles and duties, engines, accounts, scheduling, switch rules, report assembly. Plain TypeScript, no I/O |
-| `apps/daemon` | Runs on the host: the SQLite event log, ACP sessions, the machine provider (Apple container), the GitHub App, the API, push |
-| `apps/web` | The office, board, ticket, report and inbox views (a PWA) |
+| `packages/core` | The company: tickets and errands, stages, employees, roles and duties, engines, accounts, scheduling, switch rules, engine per duty, local model pools, the helper-model interface, outbound permissions, goals, report and My desk assembly. Plain TypeScript, no I/O |
+| `apps/daemon` | Runs on the host: the SQLite event log, ACP sessions, the machine provider (Apple container), the GitHub App, the home tools, the API, push |
+| `apps/web` | The office, board, chat, My desk, ticket, report and inbox views (a PWA built from Lit components, light with a dark theme) |
 | `images/employee` | The base image every employee machine is built from |
 | `docs` | The spec, and later the design directions |
 
 ## Conventions
 
-- Use Duet's toolchain: a pnpm workspace, TypeScript, Biome and Vitest. Server code is plain
-  `Request`/`Response`, served by Bun on the host and by Node in tests.
+- Use Duet's toolchain: a pnpm workspace, TypeScript, Biome and Vitest. UI components are Lit web
+  components. Server code is plain `Request`/`Response`, served by Bun on the host and by Node in
+  tests.
 - The core has no I/O. It is tested against a scripted fake ACP agent and a fake machine provider, so
   the whole pipeline runs in tests without spending tokens.
 - Everything must build and test on Linux. Only the machine provider and the host setup are
@@ -41,13 +44,27 @@ Docs only (M0); nothing is built yet. The milestones are in the spec, §13.
   - employee, role, duty, engine, account;
   - standing order, switch rule, usage cap;
   - ticket, stage, gate, privileged request;
-  - brain, handbook.
+  - brain, handbook;
+  - errand, home data, home tools, outbound permission, web errand;
+  - engine per duty, helper model, My desk, goal.
 
   The product is written "i.inc", and the repo is `i-inc`.
 - Keep the safety model intact. Employees are lenient inside their machine and walled outside it: no
-  LAN, a bot GitHub identity, and only the owner merges. Any change that weakens a wall needs the
-  owner's explicit approval.
+  LAN, a bot GitHub identity, and only the owner merges. A PA's walls are tighter: home data goes
+  only to local engines, the PA has no internet and no credentials, and what leaves goes through
+  outbound permissions. Any change that weakens a wall needs the owner's explicit approval.
+
+## UI work
+
+Any UI change (the web app, design canvases, HTML mockups) goes through the `ui-review` skill in
+`.claude/skills/ui-review`: read it against the tells and our lessons, then render it with the
+checker and look at the screenshots. Add new lessons there when a review finds a new mistake.
 
 ## Commands
 
-None yet. They arrive with the first code.
+- `pnpm install`, then `pnpm check` (Biome), `pnpm typecheck` and `pnpm test` (Vitest). CI runs all
+  three on every PR.
+- `node tools/ui-check/check.mjs [--out dir] [--size WxH] <file.html | url> ...`: render pages in
+  Chromium and report overlap, covered text, overflow, contrast, near-miss alignment, missing
+  accessible names and fonts that didn't load. Exits 1 on errors.
+

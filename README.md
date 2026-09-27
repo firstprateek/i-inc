@@ -6,6 +6,9 @@ You hire agent employees, and each gets its own machine and a brain that grows. 
 tickets on a board and get back pull requests that are already checked, reviewed and proven. You
 decide what gets built and what ships. They do the work, even while your laptop is closed.
 
+A Personal Assistant can join the team too. It triages your mail, drafts replies and proposes
+calendar changes on local models only, and nothing leaves until you approve it.
+
 Employees can use Claude, Gemini or local models, all driven through the
 [Agent Client Protocol](https://agentclientprotocol.com). An employee's identity lives in its
 memory, so its model can be swapped when it gets stuck or runs out of tokens.
