@@ -50,7 +50,9 @@ export interface TicketState {
   assignee: Id | null;
   handedFrom: Id | null;
   /** The owner's chat messages about this ticket. A session sees those sent before its stage began. */
-  messages: { at: number; text: string }[];
+  messages: { at: number; text: string; urgent?: boolean }[];
+  /** The last session was stopped by an urgent message. Cleared when the next session starts. */
+  interruptedByOwner: boolean;
   stageStartedAt: number | null;
   failure: { stage: StageId; reason: string; tried: string[] } | null;
   proposals: { auto: Proposal[]; ask: Proposal[]; off: Proposal[] } | null;
@@ -90,6 +92,7 @@ export function emptyState(): TicketState {
     assignee: null,
     handedFrom: null,
     messages: [],
+    interruptedByOwner: false,
     stageStartedAt: null,
     failure: null,
     proposals: null,
@@ -120,6 +123,7 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
         paused: null,
         status: "running",
         interrupted: true,
+        interruptedByOwner: false,
         sessions: [
           ...s.sessions,
           { stage: e.stage, employeeId: e.employeeId, engineId: e.engineId, resume: e.resume },
@@ -237,7 +241,15 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
     case "helper-assigned":
       return { ...s, waitingFor: null, helpers: { ...s.helpers, [e.duty]: e.employeeId } };
     case "owner-message":
-      return { ...s, messages: [...s.messages, { at: e.at, text: e.text }] };
+      return {
+        ...s,
+        messages: [
+          ...s.messages,
+          e.urgent ? { at: e.at, text: e.text, urgent: true } : { at: e.at, text: e.text },
+        ],
+      };
+    case "session-interrupted":
+      return { ...s, interrupted: true, interruptedByOwner: true };
     case "closed":
       return { ...s, status: "done", outcome: e.outcome };
     case "failed":

@@ -38,6 +38,11 @@ export interface RunOptions {
    * free employee, records it with `assignHelper`, and runs the ticket again (spec §6).
    */
   helpers?: "runner" | "scheduler";
+  /**
+   * A fresh signal for each session, so an urgent message can stop it (spec §10, "Chat"). Called with
+   * the employee who runs the session: only the builder's own sessions are interrupted.
+   */
+  signal?: (employeeId: Id) => AbortSignal | undefined;
 }
 
 interface Step {
@@ -459,9 +464,22 @@ async function session(c: Step, duty: Duty, employee: Employee, task: string): P
     engineId,
     resume: c.s.interrupted || c.s.paused !== null,
   });
-  const out = await c.p.agent.run({ ticket: c.ticket, stage, duty, employee, engine, brief: text });
+  const signal = c.opts.signal?.(employee.id);
+  const out = await c.p.agent.run({
+    ticket: c.ticket,
+    stage,
+    duty,
+    employee,
+    engine,
+    brief: text,
+    ...(signal ? { signal } : {}),
+  });
 
   if (out.kind === "done") return out.output;
+  if (out.kind === "interrupted") {
+    await c.emit({ type: "session-interrupted", at: c.p.clock.now(), stage, reason: out.reason });
+    return null;
+  }
   if (out.kind === "out-of-tokens") {
     await c.emit({ type: "out-of-tokens", at: c.p.clock.now(), stage, engineId, resetsAt: out.resetsAt });
     return null;

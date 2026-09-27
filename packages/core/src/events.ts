@@ -61,7 +61,9 @@ export type TicketEvent =
     }
   | { type: "closed"; at: number; outcome: "merged" | "rejected" | "done" }
   | { type: "reassigned"; at: number; from: Id; to: Id }
-  | { type: "owner-message"; at: number; text: string }
+  | { type: "owner-message"; at: number; text: string; urgent?: boolean }
+  /** The owner stopped a session with an urgent message; the stage starts again with it. */
+  | { type: "session-interrupted"; at: number; stage: StageId; reason: string }
   /** The stage needs another employee, and the scheduler will pick one (spec §6, "Assignment and scheduling"). */
   | { type: "helper-wanted"; at: number; stage: StageId; duty: HelperDuty }
   | { type: "helper-assigned"; at: number; duty: HelperDuty; employeeId: Id }

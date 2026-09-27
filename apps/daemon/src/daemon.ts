@@ -44,6 +44,8 @@ export interface DaemonDeps {
 
 export class Daemon {
   private readonly running = new Map<Id, Promise<void>>();
+  /** The session each ticket is in now, so an urgent message can stop it. */
+  private readonly sessions = new Map<Id, { employeeId: Id; controller: AbortController }>();
   /** Why each ticket that didn't start is waiting, from the last tick. */
   waiting: Waiting[] = [];
 
@@ -162,15 +164,34 @@ export class Daemon {
     if (this.running.has(id)) return;
     const record = this.d.tickets.get(id);
     if (!record) throw new Error(`no ticket ${id}`);
-    const done = runTicket(this.ports, record.ticket, { helpers: "scheduler" })
+    const signal = (employeeId: Id) => {
+      const controller = new AbortController();
+      this.sessions.set(id, { employeeId, controller });
+      return controller.signal;
+    };
+    const done = runTicket(this.ports, record.ticket, { helpers: "scheduler", signal })
       .then((r: RunResult) => {
         this.d.log?.(`ticket ${id}: ${r.status}`);
         // A stage finished or wants a helper: someone may be free now, or a reviewer is needed.
         if (r.status !== "paused") void this.tick().catch(() => {});
       })
       .catch((e: unknown) => this.d.log?.(`ticket ${id} stopped: ${String(e)}`))
-      .finally(() => this.running.delete(id));
+      .finally(() => {
+        this.running.delete(id);
+        this.sessions.delete(id);
+      });
     this.running.set(id, done);
+  }
+
+  /**
+   * Stops the employee's session on a ticket, if they're in one, so it starts again with the urgent
+   * message first. Returns whether a session was stopped.
+   */
+  interrupt(ticketId: Id, employeeId: Id): boolean {
+    const s = this.sessions.get(ticketId);
+    if (!s || s.employeeId !== employeeId || s.controller.signal.aborted) return false;
+    s.controller.abort("the owner sent an urgent message");
+    return true;
   }
 
   /** Resolves when nothing is running. For tests and a clean shutdown. */

@@ -77,10 +77,15 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       async (req, p) => {
         const e = d.registry.employees().find((x) => x.id === p.id);
         if (!e) return json({ error: "no such employee" }, 404);
-        const { text } = (await req.json()) as { text?: string };
+        const { text, urgent } = (await req.json()) as { text?: string; urgent?: boolean };
         if (!text?.trim()) return json({ error: "say something" }, 400);
         const said = text.trim();
-        d.chatLog.add(e.id, { from: "owner", at: d.clock.now(), text: said });
+        d.chatLog.add(
+          e.id,
+          urgent
+            ? { from: "owner", at: d.clock.now(), text: said, urgent: true }
+            : { from: "owner", at: d.clock.now(), text: said },
+        );
 
         // What the employee is on now, and a few notes from its recent tickets.
         const mine = [];
@@ -130,11 +135,20 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           await daemon.tick();
         }
         if (out.kind === "note") {
-          await d.store.append(out.ticketId, [{ type: "owner-message", at, text: said }]);
+          await d.store.append(out.ticketId, [
+            urgent
+              ? { type: "owner-message", at, text: said, urgent: true }
+              : { type: "owner-message", at, text: said },
+          ]);
+          const stopped = urgent === true && daemon.interrupt(out.ticketId, e.id);
           d.chatLog.add(e.id, {
             from: "system",
             at,
-            text: `${e.name} will see this at the next stage boundary.`,
+            text: stopped
+              ? `${e.name} stopped to read this, and carries on from there.`
+              : urgent
+                ? `${e.name} will see this when their next session starts.`
+                : `${e.name} will see this at the next stage boundary.`,
           });
         }
         if (out.kind === "unavailable") d.chatLog.add(e.id, { from: "system", at, text: out.reason });

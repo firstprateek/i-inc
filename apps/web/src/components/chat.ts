@@ -6,7 +6,7 @@ import { refreshNow } from "../api.ts";
 import { avatar, base } from "./shared.ts";
 
 type Entry =
-  | { from: "owner"; at: number; text: string }
+  | { from: "owner"; at: number; text: string; urgent?: boolean }
   | { from: "employee"; at: number; text: string }
   | { from: "employee"; at: number; kind: "draft"; ticketId: string; title: string; confirmed: boolean }
   | { from: "employee"; at: number; kind: "errand"; ticketId: string; title: string }
@@ -37,6 +37,7 @@ export class IncChat extends LitElement {
     threads: { state: true },
     entries: { state: true },
     draft: { state: true },
+    urgent: { state: true },
     busy: { state: true },
     error: { state: true },
   };
@@ -44,6 +45,7 @@ export class IncChat extends LitElement {
   declare threads: Thread[];
   declare entries: Entry[];
   declare draft: string;
+  declare urgent: boolean;
   declare busy: boolean;
   declare error: string | null;
 
@@ -53,6 +55,7 @@ export class IncChat extends LitElement {
     this.threads = [];
     this.entries = [];
     this.draft = "";
+    this.urgent = false;
     this.busy = false;
     this.error = null;
   }
@@ -86,9 +89,13 @@ export class IncChat extends LitElement {
     this.busy = true;
     try {
       this.entries = (
-        await json<{ entries: Entry[] }>("POST", `/api/chat/${this.employeeId}`, { text })
+        await json<{ entries: Entry[] }>("POST", `/api/chat/${this.employeeId}`, {
+          text,
+          ...(this.urgent ? { urgent: true } : {}),
+        })
       ).entries;
       this.draft = "";
+      this.urgent = false;
       refreshNow();
     } catch (err) {
       this.error = err instanceof Error ? err.message : String(err);
@@ -120,9 +127,11 @@ export class IncChat extends LitElement {
       .ticket { align-self: flex-start; max-width: 620px; border: 2px dashed var(--line-strong); border-radius: 16px; padding: 14px;
         display: flex; flex-direction: column; gap: 8px; background: var(--surface); }
       form { padding: 12px 16px 16px; border-top: 1px solid var(--line); display: flex; gap: 10px; }
-      input { flex-grow: 1; font: 15px var(--body); min-height: 46px; padding: 0 16px; border-radius: 999px;
+      input { flex-grow: 1; min-width: 0; font: 15px var(--body); min-height: 46px; padding: 0 16px; border-radius: 999px;
         border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); }
       .empty { color: var(--ink-2); }
+      .me .tag { display: inline-block; margin-bottom: 4px; }
+      .urgent[aria-pressed="true"] { border: 2px solid var(--ink); padding: 0 17px; }
       @media (max-width: 800px) { .wrap { flex-direction: column; } nav { width: auto; flex-direction: row; overflow-x: auto; } nav small { display: none; } }
     `,
   ];
@@ -147,6 +156,11 @@ export class IncChat extends LitElement {
             @input=${(e: InputEvent) => {
               this.draft = (e.target as HTMLInputElement).value;
             }}>
+          <button class="btn ghost urgent" type="button" aria-pressed=${this.urgent ? "true" : "false"}
+            title=${me ? `Stop ${me.name}'s current session to read this now` : "Stop their current session to read this now"}
+            @click=${() => {
+              this.urgent = !this.urgent;
+            }}>${this.urgent ? "✓ Urgent" : "Urgent"}</button>
           <button class="btn" type="submit" ?disabled=${this.busy || !this.draft.trim()}>Send</button>
         </form>
       </section>
@@ -160,7 +174,9 @@ export class IncChat extends LitElement {
   }
 
   private entry(e: Entry) {
-    if (e.from === "owner") return html`<div class="me">${e.text}</div>`;
+    if (e.from === "owner") {
+      return html`<div class="me">${e.urgent ? html`<span class="tag">urgent</span><br>` : ""}${e.text}</div>`;
+    }
     if (e.from === "system") return html`<div class="sys">${e.text}</div>`;
     if ("kind" in e && e.kind === "draft") {
       return html`<div class="ticket">

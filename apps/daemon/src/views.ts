@@ -103,6 +103,8 @@ export function liveLine(events: TicketEvent[], registry: Registry): string {
         return e.outcome === "merged" ? "Merged" : e.outcome === "rejected" ? "Rejected" : "Done";
       case "session-started":
         return `${capitalize(e.stage)} · ${nameOf(registry, e.employeeId)} on ${registry.engine(e.engineId).model}`;
+      case "session-interrupted":
+        return `${capitalize(e.stage)} · starting again with your urgent message`;
       case "helper-wanted":
         return `${capitalize(e.stage)} · waits for a ${e.duty === "review" ? "reviewer" : "verifier"}`;
       case "stage-started":

@@ -254,6 +254,25 @@ describe("hiring", () => {
 });
 
 describe("chat", () => {
+  it("stops a session for an urgent message, and the stage starts again with it", async () => {
+    const app = await testApp();
+    app.agent.on({ employee: "ada", stage: "build" }, { kind: "hang" });
+    await app.call("POST", "/api/tickets", refunds);
+    while (!app.agent.callsFor("ada", "build").length) await new Promise((r) => setTimeout(r, 0));
+
+    const sent = await app.call("POST", "/api/chat/ada", {
+      text: "Keep it small: use the ledger's sign",
+      urgent: true,
+    });
+    expect(sent.body.entries.at(-1).text).toBe("Ada stopped to read this, and carries on from there.");
+    await app.daemon.idle();
+
+    const builds = app.agent.callsFor("ada", "build");
+    expect(builds).toHaveLength(2);
+    expect(builds[1]?.brief).toContain("- Keep it small: use the ledger's sign");
+    expect((await app.call("GET", "/api/tickets/1")).body.ticket.status).toBe("ready");
+  });
+
   it("answers a question, and turns an ask into a draft the owner puts on the board", async () => {
     const app = await testApp();
     app.chat.outcomes.push({ kind: "done", output: "The sample files were all US format." });

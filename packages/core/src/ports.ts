@@ -26,12 +26,15 @@ export interface SessionRequest {
   engine: Engine;
   /** Everything a fresh session needs: ticket, plan, progress, last error. See brief.ts. */
   brief: string;
+  /** Aborted when the owner sends an urgent message: stop at once and return "interrupted". */
+  signal?: AbortSignal;
 }
 
 export type SessionOutcome =
   | { kind: "done"; output: string }
   | { kind: "out-of-tokens"; resetsAt: number }
-  | { kind: "stuck"; reason: string };
+  | { kind: "stuck"; reason: string }
+  | { kind: "interrupted"; reason: string };
 
 /** Runs one ACP session to the end of its step. */
 export interface Agent {
