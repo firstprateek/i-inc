@@ -181,6 +181,43 @@ A build then takes 22–29 s, for 56 MB of packages and 227 MB installed.
   allow DNS to the gateway, or give machines another resolver.
 - A machine's IP changes on every boot (.7, .8, .10 so far), so the walls must target the subnet,
   not addresses.
+- `machine run` passes its command through a login shell, which splits quoted arguments again.
+  Scripts go in on stdin instead: `machine run -i -n m1-test -- bash -s < script`.
+
+## 3. The walls (`pf`)
+
+**Before the walls.** [`tools/m1/walls-test.sh`](../tools/m1/walls-test.sh) runs inside the
+machine. The targets are passed in when it runs, so no home address is written down. With no
+walls and no Ollama forwarder, 9 of its 13 checks came out wrong. The machine reached:
+
+- the host: SSH on the gateway, on its LAN address and on its tailnet address, and AirPlay;
+- the router: ping and DNS;
+- another LAN device;
+- another tailnet device, through the host's Tailscale.
+
+IPv4 internet and DNS worked. IPv6 internet didn't work at all, and Ollama wasn't reachable, since
+it listens on loopback only.
+
+**DNS leaks tailnet names.** Through the host's resolver, a machine can look up the tailnet's
+device names (MagicDNS answers for the host). `.local` names don't resolve. The walls stop
+connections to those addresses, but the names still leak. When the daemon exists, it should
+answer the machines' DNS itself and refuse the tailnet's domain.
+
+**The walls, as planned** (tools in [`tools/m1/pf/`](../tools/m1/pf)):
+
+- [`i-inc-machines.pf`](../tools/m1/pf/i-inc-machines.pf) is loaded into a sub-anchor of Apple's
+  (`com.apple/010.i-inc-machines`), so `/etc/pf.conf` stays untouched.
+  - Machines get the internet over IPv4, with each new connection logged to `pflog0`.
+  - From the host they get only DHCP, DNS and Ollama.
+  - Nothing on the LAN, the tailnet, other machines or the rest of the host.
+  - No IPv6 beyond neighbour discovery.
+  - No connections opened to them.
+- `apply.sh` checks and loads the rules, and turns pf on with a reference token of its own.
+  `remove.sh` undoes it. `capture.sh` records pf's log and the machines' DNS lookups, since pf
+  logs addresses and the lookups turn them into domains.
+- [`tools/m1/ollama-forward.mjs`](../tools/m1/ollama-forward.mjs) listens on the gateway address
+  only and pipes to Ollama on loopback. Ollama's own settings don't change, and nothing outside
+  the machines can reach it.
 
 ## What the spec should change
 
