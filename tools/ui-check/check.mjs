@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // ui-check: render pages in Chromium and report layout problems a screenshot hides.
 //
-//   node tools/ui-check/check.mjs [--out dir] [--size 1440x900] <file.html | url> ...
+//   node tools/ui-check/check.mjs [--out dir] [--size 1440x900] [--dark] <file.html | url> ...
 //
 // For each page it saves a full-page screenshot and prints findings:
 //   overlap     two visible leaf elements (text, images, icons, controls) intersect
@@ -24,7 +24,7 @@ import { basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 // Use the workspace's Playwright once there is one; until then, the global install.
-const { chromium } = await import("playwright").catch(() => {
+const { chromium, request } = await import("playwright").catch(() => {
   const root = execSync("npm root -g").toString().trim();
   return import(pathToFileURL(`${root}/playwright/index.mjs`).href);
 });
@@ -32,33 +32,54 @@ const { chromium } = await import("playwright").catch(() => {
 const args = process.argv.slice(2);
 let outDir = "ui-check-out";
 let size = null;
+let dark = false;
 const targets = [];
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--out") outDir = args[++i];
   else if (args[i] === "--size") size = args[++i];
+  else if (args[i] === "--dark") dark = true;
   else targets.push(args[i]);
 }
 if (targets.length === 0) {
-  console.error("usage: check.mjs [--out dir] [--size WxH] <file.html | url> ...");
+  console.error("usage: check.mjs [--out dir] [--size WxH] [--dark] <file.html | url> ...");
   process.exit(2);
 }
 mkdirSync(outDir, { recursive: true });
 
-// Web fonts come over the network, so route Chromium through the environment's proxy when there is one.
+// Chromium connects directly, so pages on localhost load. When the environment has an HTTPS proxy
+// (web fonts come over the network), HTTPS requests go through a Playwright request context that
+// uses the proxy from Node, where its CA is trusted (NODE_EXTRA_CA_CERTS): certificates stay verified.
 const proxy = process.env.HTTPS_PROXY || process.env.https_proxy;
-const browser = await chromium.launch({
-  ...(process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {}),
-  ...(proxy ? { proxy: { server: proxy } } : {}),
-});
+const browser = await chromium.launch(
+  process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {},
+);
+const outside = proxy ? await request.newContext({ proxy: { server: proxy } }) : null;
 let errors = 0;
 
 for (const target of targets) {
   const url = /^https?:|^file:/.test(target) ? target : pathToFileURL(resolve(target)).href;
-  const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
-  // Behind a TLS-re-terminating proxy, Chromium may not trust its CA while Node does
-  // (NODE_EXTRA_CA_CERTS). Fetch HTTPS from the Node side then, still verifying certificates.
-  if (proxy) await page.route(/^https:/, async (route) => route.fulfill({ response: await route.fetch() }));
-  await page.goto(url, { waitUntil: "networkidle" }).catch(() => {});
+  const page = await browser.newPage({
+    viewport: { width: 1600, height: 1000 },
+    colorScheme: dark ? "dark" : "light",
+  });
+  if (outside) {
+    await page.route(/^https:/, async (route) => {
+      const r = route.request();
+      const res = await outside
+        .fetch(r.url(), { method: r.method(), headers: r.headers() })
+        .catch(() => null);
+      await (res ? route.fulfill({ response: res }) : route.abort());
+    });
+  }
+  const res = await page.goto(url, { waitUntil: "networkidle" }).catch((e) => e);
+  if (res instanceof Error || (res && !res.ok() && !url.startsWith("file:"))) {
+    console.log(
+      `\n${target}\n  error load      the page didn't load: ${res instanceof Error ? res.message.split("\n")[0] : res.status()}`,
+    );
+    errors++;
+    await page.close();
+    continue;
+  }
   await page.evaluate(() => document.fonts.ready);
 
   // Size the viewport to the page's fixed root (design artboards) unless told otherwise.
@@ -75,7 +96,7 @@ for (const target of targets) {
   const findings = await page.evaluate(auditInPage);
   findings.push(...(await cdpChecks(page)));
 
-  const shot = `${outDir}/${basename(target).replace(/[^\w.-]+/g, "_")}.png`;
+  const shot = `${outDir}/${basename(target).replace(/[^\w.-]+/g, "_")}${dark ? "-dark" : ""}.png`;
   await page.screenshot({ path: shot, fullPage: true });
 
   const errs = findings.filter((f) => f.level === "error");
@@ -86,6 +107,7 @@ for (const target of targets) {
   await page.close();
 }
 
+await outside?.dispose();
 await browser.close();
 process.exit(errors > 0 ? 1 : 0);
 

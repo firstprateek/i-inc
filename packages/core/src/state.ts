@@ -49,6 +49,9 @@ export interface TicketState {
   /** Set by a handoff; otherwise the ticket's own assignee builds. */
   assignee: Id | null;
   handedFrom: Id | null;
+  /** The owner's chat messages about this ticket. A session sees those sent before its stage began. */
+  messages: { at: number; text: string }[];
+  stageStartedAt: number | null;
   failure: { stage: StageId; reason: string; tried: string[] } | null;
   proposals: { auto: Proposal[]; ask: Proposal[]; off: Proposal[] } | null;
   startedAt: number | null;
@@ -82,6 +85,8 @@ export function emptyState(): TicketState {
     outcome: null,
     assignee: null,
     handedFrom: null,
+    messages: [],
+    stageStartedAt: null,
     failure: null,
     proposals: null,
     startedAt: null,
@@ -97,6 +102,7 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
       return {
         ...s,
         active: e.stage,
+        stageStartedAt: e.at,
         engineOverride: null,
         checkFailures: 0,
         fixDue: false,
@@ -219,6 +225,8 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
         status: "running",
         interrupted: s.active !== null,
       };
+    case "owner-message":
+      return { ...s, messages: [...s.messages, { at: e.at, text: e.text }] };
     case "closed":
       return { ...s, status: "done", outcome: e.outcome };
     case "failed":

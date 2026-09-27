@@ -3,12 +3,14 @@ import type { TicketEvent } from "../events.ts";
 import type { Duty, Employee, Engine, Id, Ticket } from "../model.ts";
 import type {
   Agent,
+  ChatSession,
   ChecksResult,
   Clock,
   Company,
   EventStore,
   GatesResult,
   Harness,
+  HelperModel,
   MachineProvider,
   Ports,
   SessionOutcome,
@@ -53,6 +55,7 @@ export class Crash extends Error {
 export type Scripted = SessionOutcome | { kind: "crash" };
 
 export interface Match {
+  ticket?: Id;
   employee?: Id;
   stage?: StageId;
   duty?: Duty;
@@ -88,6 +91,7 @@ export class FakeAgent implements Agent {
 
 function matches(m: Match, r: SessionRequest): boolean {
   return (
+    (!m.ticket || m.ticket === r.ticket.id) &&
     (!m.employee || m.employee === r.employee.id) &&
     (!m.stage || m.stage === r.stage) &&
     (!m.duty || m.duty === r.duty) &&
@@ -119,13 +123,44 @@ export class FakeHarness implements Harness {
   readonly gates: GatesResult[] = [];
   checkRuns = 0;
   gateRuns = 0;
-  async runChecks(_: Ticket): Promise<ChecksResult> {
+  /** Results for one ticket only, used before the shared queue. */
+  readonly checksFor = new Map<Id, ChecksResult[]>();
+  async runChecks(ticket: Ticket): Promise<ChecksResult> {
     this.checkRuns++;
-    return this.checks.shift() ?? { green: true, failures: [] };
+    return this.checksFor.get(ticket.id)?.shift() ?? this.checks.shift() ?? { green: true, failures: [] };
   }
   async runGates(_: Ticket): Promise<GatesResult> {
     this.gateRuns++;
     return this.gates.shift() ?? { ok: true };
+  }
+}
+
+/**
+ * A scripted helper model. Queued answers first; otherwise a simple heuristic: an ask for work
+ * starts with an imperative ("add", "also", "fix", "find", ...), and a note mentions "this" or "it".
+ */
+export class FakeHelper implements HelperModel {
+  readonly asked: { question: string; text: string }[] = [];
+  readonly answers: boolean[] = [];
+  async yesNo(question: string, text: string): Promise<boolean> {
+    this.asked.push({ question, text });
+    const queued = this.answers.shift();
+    if (queued !== undefined) return queued;
+    const t = text.trim().toLowerCase();
+    if (question.includes("new work")) {
+      return /^(please )?(add|also|fix|make|build|find|book|draft|write|create|update)\b/.test(t);
+    }
+    return /\b(this|it|that)\b/.test(t) && !t.endsWith("?");
+  }
+}
+
+/** A scripted chat session: queued outcomes first, else a short answer. */
+export class FakeChat implements ChatSession {
+  readonly briefs: string[] = [];
+  readonly outcomes: SessionOutcome[] = [];
+  async answer(request: { employee: Employee; engine: Engine; brief: string }): Promise<SessionOutcome> {
+    this.briefs.push(request.brief);
+    return this.outcomes.shift() ?? { kind: "done", output: `${request.employee.name}: here's what I know.` };
   }
 }
 

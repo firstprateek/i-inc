@@ -58,4 +58,5 @@ export type TicketEvent =
     }
   | { type: "closed"; at: number; outcome: "merged" | "rejected" | "done" }
   | { type: "reassigned"; at: number; from: Id; to: Id }
+  | { type: "owner-message"; at: number; text: string }
   | { type: "failed"; at: number; stage: StageId; reason: string; tried: string[] };
