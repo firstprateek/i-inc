@@ -5,7 +5,7 @@ export type Id = string;
 /** What a stage asks an employee to do (spec §5, "Roles and duties"). */
 export type Duty = "plan" | "build" | "verify" | "review";
 
-export type AgentHarness = "claude-code" | "gemini-cli" | "opencode";
+export type AgentHarness = "claude-code" | "antigravity" | "opencode";
 
 /** harness + model + account. Swappable; the employee is its memory, not its engine. */
 export interface Engine {
