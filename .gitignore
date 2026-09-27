@@ -1,2 +1,23 @@
-ui-check-out/
 node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+
+# Local data
+*.db
+*.db-wal
+*.db-shm
+
+# Secrets that must never be committed
+*.key
+*.p12
+*.pem
+.env
+.env.*
+
+# Claude Code: per-person settings stay local
+.claude/settings.local.json
+
+# UI checker screenshots
+ui-check-out/
