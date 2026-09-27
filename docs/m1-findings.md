@@ -11,7 +11,7 @@ login.
 | Question | Answer | Evidence |
 | --- | --- | --- |
 | ACP stdio works through the machine boundary | pending (step 5). Piped stdin and stdout already pass through `machine run -i` | step 2 |
-| Sign-in works inside the machine (each harness) | pending (step 4) | |
+| Sign-in works inside the machine (each harness) | Yes for Claude Code and Antigravity: a link, then a code pasted back. OpenCode needs none. Gemini CLI no longer serves Google AI Pro | step 4 |
 | `rate_limit_event` passes through the Claude adapter | pending (step 5) | |
 | `pf` walls hold (internet ok; LAN, tailnet, host blocked; Ollama ok) | Yes: 13 of 13 checks, nothing gets in, and connections are logged | step 3 |
 | Ollama reachable from a machine | Yes, through a relay on the machines' gateway. Ollama itself stays on loopback | step 3 |
@@ -278,10 +278,30 @@ Gemini CLI was uninstalled.
 
 **Antigravity takes its place.** Google's replacement for Gemini CLI is Antigravity CLI (`agy`),
 and its ACP server is in the ACP registry (`antigravity-acp`, with a linux-arm64 build).
-[`tools/m1/install-antigravity.sh`](../tools/m1/install-antigravity.sh) installs both. On headless
-Linux, `agy` keeps its sign-in only in a Secret Service keyring. So the script also installs
-gnome-keyring, and a `with-keyring` wrapper that runs a command in a private D-Bus session with the
-keyring unlocked. Its password is empty, so like Claude's file, only file permissions protect it.
+[`tools/m1/install-antigravity.sh`](../tools/m1/install-antigravity.sh) installs both:
+
+- `agy` 1.2.12 comes from Google's installer, which checks the download against its SHA-512.
+- The ACP server 1.2.1 is a native binary: a 321 MB zip, 999 MB unpacked.
+
+**The keyring turned out not to be needed.** Reports say `agy` keeps its sign-in only in a Secret
+Service keyring on headless Linux, so gnome-keyring went in first. Two things went wrong with it:
+
+- It pulled in about 90 packages of GTK and desktop libraries, even without recommends.
+- With an empty password it wanted to confirm in a window, which a machine can't show.
+
+A random password kept in a 0600 file made it work. But `agy` 1.2.12 keeps its sign-in in
+`~/.gemini/antigravity-cli/antigravity-oauth-token` (0600, with a refresh token), and it answers
+in a fresh session with or without the keyring. The install script no longer installs one.
+
+| Harness | Sign-in without a browser | Where the credential lives | Check |
+| --- | --- | --- | --- |
+| Claude Code 2.1.283 | Yes: a link, then a code pasted back. The link wraps in the terminal, so copying it breaks it; opening it in a browser from the host worked | `~/.claude/.credentials.json`, 0600 | `claude -p` answers |
+| Antigravity 1.2.12 | Yes: a link, then a code pasted back. `SSH_CONNECTION` must be set, or it looks for a browser | `~/.gemini/antigravity-cli/antigravity-oauth-token`, 0600, with a refresh token | `agy -p` answers in a fresh session |
+| OpenCode 1.18.32 | Not needed: it uses the local models, through the relay | none | `opencode run` answers on qwen3:8b |
+| Gemini CLI 0.61.0 | Google sign-in no longer works for AI Pro. Uninstalled | none | none |
+
+Ollama loaded qwen3:8b for OpenCode with a 32k context: 8.1 GB, all on the GPU. That fits §12's
+"6–10 GB while a model is loaded".
 
 ## What the spec should change
 

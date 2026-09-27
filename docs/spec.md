@@ -749,9 +749,8 @@ disk. Ollama uses 6–10 GB while a model is loaded.
 - **Google moved subscription use from Gemini CLI to Antigravity.** On June 18, 2026, Gemini CLI
   stopped serving Google AI Pro, Ultra and free personal accounts. Only API keys and enterprise
   licences still work there, and the CLI silently falls back to asking for an API key. So the
-  Google engine runs through Antigravity's ACP server instead. On headless Linux, Antigravity keeps
-  its sign-in only in a Secret Service keyring, so each machine needs one. Vendors can move a
-  subscription again, which is one more reason engines stay swappable.
+  Google engine runs through Antigravity's ACP server instead. Vendors can move a subscription
+  again, which is one more reason engines stay swappable.
 - **Engine switches across harnesses** lose the session's in-context memory. The resume brief and the
   checkpoints must carry enough state; the M2 tests cover this.
 - **Linux machines can't build Mac or iOS apps.** Duet's app bundle builds stay in GitHub Actions, and
