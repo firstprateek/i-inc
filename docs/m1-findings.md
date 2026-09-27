@@ -10,9 +10,9 @@ login.
 
 | Question | Answer | Evidence |
 | --- | --- | --- |
-| ACP stdio works through the machine boundary | pending (step 5). Piped stdin and stdout already pass through `machine run -i` | step 2 |
+| ACP stdio works through the machine boundary | Yes, for Claude Code (adapter), Antigravity (its ACP server) and OpenCode, each with tool calls in bypass mode | step 5 |
 | Sign-in works inside the machine (each harness) | Yes for Claude Code and Antigravity: a link, then a code pasted back. OpenCode needs none. Gemini CLI no longer serves Google AI Pro | step 4 |
-| `rate_limit_event` passes through the Claude adapter | pending (step 5) | |
+| `rate_limit_event` passes through the Claude adapter | Yes, as `usage_update._meta["_claude/rateLimit"]`, with status, reset times and use of both windows. Antigravity reports nothing | step 5 |
 | `pf` walls hold (internet ok; LAN, tailnet, host blocked; Ollama ok) | Yes: 13 of 13 checks, nothing gets in, and connections are logged | step 3 |
 | Ollama reachable from a machine | Yes, through a relay on the machines' gateway. Ollama itself stays on loopback | step 3 |
 | Docker inside a machine | pending (step 7) | |
@@ -303,6 +303,67 @@ in a fresh session with or without the keyring. The install script no longer ins
 Ollama loaded qwen3:8b for OpenCode with a 32k context: 8.1 GB, all on the GPU. That fits §12's
 "6–10 GB while a model is loaded".
 
+## 5. Driving an employee over ACP
+
+[`tools/m1/acp-probe.ts`](../tools/m1/acp-probe.ts) runs on the host with Node's own TypeScript
+support.
+
+- **How it starts the agent:** through `container machine run -i -n m1-test -- acp-<agent>`. Those
+  are one-word launchers from [`tools/m1/acp-launchers.sh`](../tools/m1/acp-launchers.sh), because
+  `machine run` re-splits arguments.
+- **What it does:** speaks ACP JSON-RPC over the agent's stdio, and asks for a file to be created
+  and listed.
+- **What it gives the agent:** no file or terminal access on the host, so everything happens
+  inside the machine. Each run's messages go to `/tmp/m1/acp-<agent>.jsonl` on the host. They're
+  not in the repo, because they carry account details.
+
+| | Claude Code (adapter 0.81.2) | Antigravity (ACP server 1.2.1) | OpenCode 1.18.32 on qwen3:8b |
+| --- | --- | --- | --- |
+| ACP over the machine boundary | yes, protocol 1 | yes, protocol 1 | yes, protocol 1 |
+| Bypass mode | `bypassPermissions` (modes: default, acceptEdits, plan, auto, bypassPermissions) | `yolo` (modes: default, auto_edit, yolo) | none offered, but it asked for no permissions |
+| Tool calls, all logged | 2, no permission requests | 3, then 1 on the second run, no permission requests | 2, no permission requests |
+| Time for the prompt | 5 s | 7–9 s | 141 s, most of it before the first tool call |
+| Resumes a session (`loadSession`) | not advertised | yes | yes |
+| Usage and limits over ACP | a `usage_update` for each step, plus `rate_limit_event` (below) | none | none |
+
+**`rate_limit_event` comes through Claude's adapter.** It arrives as a `usage_update` whose
+`_meta["_claude/rateLimit"]` holds these fields:
+
+- `status` (for example `allowed`), `rateLimitType` (`five_hour`) and `resetsAt`;
+- the overage status;
+- `unifiedWindows`, with `utilization` and `resetsAt` for both the five-hour and the seven-day
+  window. This run showed 0.59 and 0.46.
+
+That's enough for the office's account meters without waiting for a "limit reached" error. The
+adapter only sends it once an answer has reported usage.
+
+**Antigravity's ACP server has a sign-in of its own.** It doesn't reuse the CLI's. On `session/new`
+it answers "Authentication required", and the client calls `authenticate` with `oauth-personal`.
+That prints a Google link whose callback is a server on `127.0.0.1` inside the machine, which no
+browser outside can reach:
+
+1. The owner signed in on the host's browser.
+2. The owner copied the failed `127.0.0.1:<port>/?code=…` address.
+3. The owner delivered it with `curl` from a shell in the machine.
+
+The daemon can do this relay itself later. The sign-in is kept in
+`~/.gemini/antigravity-acp/acp_token.json` (0600, with a refresh token), and the next session
+needed none.
+
+**Models on Google AI Pro, through Antigravity:** Gemini 3.8, 3.7 and 3.6 Flash (each high, medium
+or low), `gemini-pro-agent` and `gemini-3.1-pro-low`.
+
+**A full Claude login reaches the owner's claude.ai connectors.** In its reply, Claude mentioned
+the owner's Gmail, Google Calendar and Google Drive connectors. They weren't authorized, so it
+couldn't use them, but a full `/login` inside a machine exposes whatever connectors the account
+has. That would be a way from an engineering machine to home data. Tokens from `claude setup-token`
+"can only make model requests" and can't reach connectors, so they're the credential employees
+should get.
+
+**OpenCode lists hosted models.** Next to the local models, it offers its own free hosted ones
+("OpenCode Zen"). A PA's machine must pin OpenCode to local providers only, or a mistake could send
+home data out.
+
 ## What the spec should change
 
 Candidates so far. Those marked "to confirm" wait for the step named.
@@ -324,6 +385,11 @@ Candidates so far. Those marked "to confirm" wait for the step named.
   by Antigravity's ACP server on Google AI Pro. There's a new risk entry on vendors moving
   subscriptions. The core's `AgentHarness` type in `packages/core/src/model.ts` still lists
   `"gemini-cli"` and should get `"antigravity"` instead; that's left to a core change.
-- **§5, credentials:** Claude's `setup-token` gives a one-year token the daemon can inject per
-  session. That matches "which account's credential i.inc injects" better than a login stored in
-  the machine.
+- **§5, credentials (done in this PR):** Claude's credential for an employee is a model-only token
+  from `claude setup-token`, handed to each session. A full login stored in the machine would also
+  reach the owner's claude.ai connectors (mail, calendar, drive).
+- **§8, accounts (done in this PR):** `rate_limit_event` is confirmed to pass through the adapter,
+  with the use of each window. Antigravity's ACP server reports no usage, so Google AI Pro limits
+  are known only from its errors.
+- **§7, the PA:** its OpenCode must be pinned to local providers. OpenCode also offers hosted
+  models of its own.

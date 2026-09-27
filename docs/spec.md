@@ -251,7 +251,9 @@ then writes project pages in its brain.
 Every machine has all the harnesses installed: Claude Code, Antigravity and OpenCode, each speaking
 ACP. Claude Code goes through an adapter, Antigravity through its own ACP server, and OpenCode
 natively. The engine chosen for a session decides which harness runs and which account's
-credential i.inc injects.
+credential i.inc injects. For Claude, that credential is a model-only token from `claude
+setup-token`, never a full login. A full login would also reach the owner's claude.ai connectors
+(mail, calendar, drive) from inside the machine.
 
 Switch rules are set per employee:
 
@@ -470,7 +472,8 @@ shorter loop:
 - **Local engines only.** Home data (mail, calendar, contacts and anything taken from them) is
   processed only by local engines. The planned model is qwen3.8 27B, set up later. i.inc refuses to
   give a PA a cloud engine, and its switch rules can only wait or move to another local engine,
-  never to a cloud one.
+  never to a cloud one. A PA's OpenCode is pinned to local providers, since OpenCode also offers
+  hosted models of its own.
 - **The PA never holds your credentials.** The daemon keeps the Google (or other) tokens and offers
   the PA a small set of **home tools**: search mail, read a thread, create a draft, propose an event,
   read free/busy, and file a web errand. Every call is logged.
@@ -519,11 +522,11 @@ Each kind of outgoing action has a setting, which you can tune per PA:
 **Accounts and token windows:**
 
 - **Claude:** Claude Code emits a `rate_limit_event` on its stream. It carries the status (allowed,
-  warning or rejected) and `resetsAt` for the 5-hour and weekly windows. We still have to confirm it
-  passes through the ACP adapter; the fallback is to read the reset time from the "limit reached"
-  error.
-- **Google AI Pro, through Antigravity:** whatever quota errors and resets Antigravity reports,
-  still to be confirmed. Gemini CLI no longer serves Google AI Pro accounts (§13).
+  warning or rejected) and `resetsAt` for the 5-hour and weekly windows. It passes through the ACP
+  adapter as a `usage_update` whose `_meta["_claude/rateLimit"]` also carries how much of each
+  window is used (confirmed in M1).
+- **Google AI Pro, through Antigravity:** its ACP server reports no usage, so its limits are learned
+  from its errors. Gemini CLI no longer serves Google AI Pro accounts (§13).
 - **Local:** busy or idle.
 
 "Out of tokens" is shown but doesn't send a push notification. Pushes go out only for Needs you,
