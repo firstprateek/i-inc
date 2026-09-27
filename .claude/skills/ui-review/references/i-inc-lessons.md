@@ -48,3 +48,11 @@ paths, branch names, structured briefs).
    decorative shapes colliding.
 9. **Half-empty cards (layout).** Desk cards stretched to fill the grid row with content in the top
    half. → Size the content to the cell, or let rows size to content. The checker's `sparse` warns.
+10. **Passing checks painted in the Working green (tell 2).** The report showed "Tests 212/212" in
+    the Working status colour, so a finished ticket looked like it was still running. → Passing
+    checks are facts, not a status: neutral chips with a check mark.
+11. **Whole cards and page regions left empty (layout).** My desk's bottom cards and the hiring
+    page stretched to fill their rows with nothing in the lower half. The checker's `sparse` only
+    caught one of them, because the others weren't grid cells or were just over its line. → Let
+    rows size to their content (`align-items: start`), or fill them with real content from the
+    spec; never stretch a card to match a taller neighbour. Look at the screenshot for this.

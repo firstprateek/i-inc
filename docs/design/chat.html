@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chat with Kit</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&amp;family=Figtree:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@500&amp;display=swap">
+<style>
+body{margin:0;font-family:Figtree,system-ui,sans-serif;color:#1E2421;background:#EEF0EA}
+a{color:#1E2421;text-decoration:none}a:hover{text-decoration:underline}
+button{font-family:inherit}
+</style>
+</helmet>
+<div style="width: 1440px; height: 900px; box-sizing: border-box; background: #EEF0EA; display: flex; flex-direction: column; overflow: hidden">
+
+<header style="height: 68px; flex-shrink: 0; box-sizing: border-box; padding: 0 32px; display: flex; align-items: center; gap: 36px">
+<div style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 28px; letter-spacing: -0.5px">i.inc</div>
+<nav style="display: flex; gap: 6px; font-size: 15px; font-weight: 600">
+<a href="Office.dc.html" style="padding: 10px 14px; border-radius: 999px">Office</a>
+<a href="Board.dc.html" style="padding: 10px 14px; border-radius: 999px">Board</a>
+<a href="Chat.dc.html" style="padding: 10px 14px; border-radius: 999px; background: #1E2421; color: #EEF0EA">Chat</a>
+<a href="Desk.dc.html" style="padding: 10px 14px; border-radius: 999px">My desk</a>
+<a href="Hiring.dc.html" style="padding: 10px 14px; border-radius: 999px">Hiring</a>
+</nav>
+<div style="flex-grow: 1"></div>
+</header>
+
+<main style="flex-grow: 1; min-height: 0; display: flex; gap: 20px; padding: 4px 32px 28px">
+
+<nav aria-label="Chats" style="width: 290px; flex-shrink: 0; background: #FBFBF8; border: 1px solid #D5D9D1; border-radius: 22px; padding: 12px; display: flex; flex-direction: column; gap: 2px; box-sizing: border-box">
+<a href="#" style="display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 14px; background: #E3E7DF">
+<div style="width: 42px; height: 42px; flex-shrink: 0; border-radius: 50%; background: #DDE1E6; color: #34404C; display: flex; align-items: center; justify-content: center; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 18px">K</div>
+<div style="flex-grow: 1; min-width: 0"><div style="font-size: 15px; font-weight: 700">Kit</div><div style="font-size: 13px; color: #4E5652; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Drafted a ticket for ISO dates</div></div>
+</a>
+<a href="PipChat.dc.html" style="display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 14px">
+<div style="width: 42px; height: 42px; flex-shrink: 0; border-radius: 50%; background: #E3E1EC; color: #3D3A5C; display: flex; align-items: center; justify-content: center; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 18px">P</div>
+<div style="flex-grow: 1; min-width: 0"><div style="font-size: 15px; font-weight: 700">Pip</div><div style="font-size: 13px; color: #59625D; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">4 flights found, 2 drafts</div></div>
+<span style="min-width: 22px; height: 22px; border-radius: 11px; background: #FCE8B8; color: #5A3A00; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center">3</span>
+</a>
+<a href="#" style="display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 14px">
+<div style="width: 42px; height: 42px; flex-shrink: 0; border-radius: 50%; background: #E6DDF0; color: #4B3366; display: flex; align-items: center; justify-content: center; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 18px">M</div>
+<div style="flex-grow: 1; min-width: 0"><div style="font-size: 15px; font-weight: 700">Mia</div><div style="font-size: 13px; color: #59625D; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">3 drafts for Budget alerts</div></div>
+<span style="min-width: 22px; height: 22px; border-radius: 11px; background: #FCE8B8; color: #5A3A00; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center">1</span>
+</a>
+<a href="#" style="display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 14px">
+<div style="width: 42px; height: 42px; flex-shrink: 0; border-radius: 50%; background: #EDE3D0; color: #5A4524; display: flex; align-items: center; justify-content: center; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 18px">A</div>
+<div style="flex-grow: 1; min-width: 0"><div style="font-size: 15px; font-weight: 700">Ada</div><div style="font-size: 13px; color: #59625D; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Back at 3:40 pm</div></div>
+</a>
+<a href="#" style="display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 14px">
+<div style="width: 42px; height: 42px; flex-shrink: 0; border-radius: 50%; background: #F1DCE4; color: #6B2B45; display: flex; align-items: center; justify-content: center; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 18px">G</div>
+<div style="flex-grow: 1; min-width: 0"><div style="font-size: 15px; font-weight: 700">Grace</div><div style="font-size: 13px; color: #59625D; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Round 2 on Export video</div></div>
+</a>
+<a href="#" style="display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 14px">
+<div style="width: 42px; height: 42px; flex-shrink: 0; border-radius: 50%; background: #E5E2DA; color: #46423A; display: flex; align-items: center; justify-content: center; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 18px">Q</div>
+<div style="flex-grow: 1; min-width: 0"><div style="font-size: 15px; font-weight: 700">Qwen</div><div style="font-size: 13px; color: #59625D; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Report ready: Bump deps</div></div>
+</a>
+<a href="#" style="display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 14px">
+<div style="width: 42px; height: 42px; flex-shrink: 0; border-radius: 50%; background: #EADFD6; color: #5B3E2E; display: flex; align-items: center; justify-content: center; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 18px">J</div>
+<div style="flex-grow: 1; min-width: 0"><div style="font-size: 15px; font-weight: 700">Juno</div><div style="font-size: 13px; color: #59625D; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Off until 10 pm</div></div>
+</a>
+</nav>
+
+<section style="flex-grow: 1; min-width: 0; background: #FBFBF8; border: 1px solid #D5D9D1; border-radius: 22px; display: flex; flex-direction: column; overflow: hidden">
+<div style="padding: 16px 22px; border-bottom: 1px solid #E1E4DC; display: flex; align-items: center; gap: 12px">
+<div style="width: 44px; height: 44px; border-radius: 50%; background: #DDE1E6; color: #34404C; display: flex; align-items: center; justify-content: center; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 19px">K</div>
+<div><div style="font-family: 'Bricolage Grotesque', sans-serif; font-size: 22px; font-weight: 700">Kit</div><div style="font-size: 13px; color: #59625D">Senior Eng · Gemini 3 Pro · working on #18 CSV import</div></div>
+</div>
+
+<div style="flex-grow: 1; min-height: 0; overflow: hidden; padding: 20px 22px; display: flex; flex-direction: column; gap: 14px">
+<div style="align-self: center; font-size: 12px; font-weight: 600; color: #59625D">Today</div>
+
+<div style="display: flex; gap: 10px; max-width: 620px">
+<div style="width: 30px; height: 30px; flex-shrink: 0; border-radius: 50%; background: #DDE1E6; color: #34404C; display: flex; align-items: center; justify-content: center; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 13px">K</div>
+<div style="padding: 11px 14px; border-radius: 4px 16px 16px 16px; background: #E7EAE3; font-size: 15px; line-height: 1.45">Claude Sonnet ran out, so I switched to Gemini 3 Pro and picked up from the same branch. Checks show 3 failing tests in the date parser; fixing them now.</div>
+</div>
+
+<div style="align-self: flex-end; max-width: 520px; padding: 11px 14px; border-radius: 16px 4px 16px 16px; background: #1E2421; color: #EEF0EA; font-size: 15px; line-height: 1.45">Why do you parse dates as US format?</div>
+
+<div style="display: flex; gap: 10px; max-width: 620px">
+<div style="width: 30px; height: 30px; flex-shrink: 0; border-radius: 50%; background: #DDE1E6; color: #34404C; display: flex; align-items: center; justify-content: center; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 13px">K</div>
+<div style="display: flex; flex-direction: column; gap: 6px">
+<div style="padding: 11px 14px; border-radius: 4px 16px 16px 16px; background: #E7EAE3; font-size: 15px; line-height: 1.45">All the sample files in the ticket are US. Guessing isn't safe: 03/04 could be either. I noted it under Risk in my plan.</div>
+<div style="font-size: 12px; color: #59625D">from my plan and notes · answered on Gemini 3 Pro</div>
+</div>
+</div>
+
+<div style="align-self: flex-end; max-width: 520px; padding: 11px 14px; border-radius: 16px 4px 16px 16px; background: #1E2421; color: #EEF0EA; font-size: 15px; line-height: 1.45">Also accept ISO dates.</div>
+
+<div style="display: flex; gap: 10px; max-width: 620px">
+<div style="width: 30px; height: 30px; flex-shrink: 0; border-radius: 50%; background: #DDE1E6; color: #34404C; display: flex; align-items: center; justify-content: center; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 13px">K</div>
+<div style="display: flex; flex-direction: column; gap: 8px; flex-grow: 1">
+<div style="padding: 11px 14px; border-radius: 4px 16px 16px 16px; background: #E7EAE3; font-size: 15px; line-height: 1.45">That's new work, so I drafted a ticket rather than slipping it into #18.</div>
+<div style="border: 2px dashed #8A928C; border-radius: 16px; background: #FBFBF8; padding: 14px; display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; gap: 6px; font-size: 12px; font-weight: 700"><span style="padding: 2px 8px; border-radius: 6px; background: #E7EAE3; color: #3F4642">feat</span><span style="padding: 2px 8px; border-radius: 6px; background: #E7EAE3; color: #3F4642">fintrack</span><span style="padding: 2px 8px; border-radius: 6px; background: #E7EAE3; color: #3F4642">Medium</span><span style="flex-grow: 1"></span><span style="color: #59625D">draft</span></div>
+<div style="font-size: 16px; font-weight: 700">Accept ISO 8601 dates in CSV import</div>
+<div style="font-size: 14px; color: #4E5652">Done when: a file with 2026-08-03 imports as 3 August, and a test covers it.</div>
+<div style="display: flex; gap: 8px">
+<button type="button" style="height: 38px; padding: 0 16px; border-radius: 999px; border: none; background: #1E2421; color: #EEF0EA; font-size: 14px; font-weight: 700">Put on the board</button>
+<button type="button" style="height: 38px; padding: 0 14px; border-radius: 999px; border: 1px solid #C4CAC1; background: transparent; color: #1E2421; font-size: 14px; font-weight: 600">Edit</button>
+<button type="button" style="height: 38px; padding: 0 14px; border-radius: 999px; border: 1px solid #C4CAC1; background: transparent; color: #1E2421; font-size: 14px; font-weight: 600">After #18</button>
+</div>
+</div>
+</div>
+</div>
+</div>
+
+<div style="padding: 12px 16px 16px; border-top: 1px solid #E1E4DC; display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; align-items: center; gap: 10px">
+<label for="chat-msg" style="position: absolute; width: 1px; height: 1px; overflow: hidden">Message Kit</label>
+<input id="chat-msg" type="text" placeholder="Message Kit" style="flex-grow: 1; height: 46px; box-sizing: border-box; padding: 0 16px; border-radius: 999px; border: 1px solid #C4CAC1; background: #FFFFFF; color: #1E2421; font-family: inherit; font-size: 15px">
+<label style="display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600"><input type="checkbox" style="width: 18px; height: 18px; accent-color: #1E2421">Urgent</label>
+<button type="button" style="height: 46px; padding: 0 20px; border-radius: 999px; border: none; background: #1E2421; color: #FBFBF8; font-size: 15px; font-weight: 700">Send</button>
+</div>
+<div style="font-size: 12px; color: #59625D">Kit is in Checks. Your message reaches Kit at the next stage boundary, or right away if it's urgent.</div>
+</div>
+</section>
+
+<aside style="width: 330px; flex-shrink: 0; display: flex; flex-direction: column; gap: 16px">
+<div style="background: #FBFBF8; border: 1px solid #D5D9D1; border-radius: 20px; padding: 18px; display: flex; flex-direction: column; gap: 10px">
+<h2 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-size: 19px; font-weight: 700">On Kit's desk</h2>
+<div style="font-size: 15px; font-weight: 700">#18 CSV import · fintrack</div>
+<div style="display: flex; gap: 3px"><div style="flex-grow: 1; height: 6px; border-radius: 3px; background: #1E2421"></div><div style="flex-grow: 1; height: 6px; border-radius: 3px; background: #1E2421"></div><div style="flex-grow: 1; height: 6px; border-radius: 3px; background: #1E2421"></div><div style="flex-grow: 1; height: 6px; border-radius: 3px; background: #C4452B"></div><div style="flex-grow: 1; height: 6px; border-radius: 3px; background: #D5D9D1"></div><div style="flex-grow: 1; height: 6px; border-radius: 3px; background: #D5D9D1"></div><div style="flex-grow: 1; height: 6px; border-radius: 3px; background: #D5D9D1"></div><div style="flex-grow: 1; height: 6px; border-radius: 3px; background: #D5D9D1"></div><div style="flex-grow: 1; height: 6px; border-radius: 3px; background: #D5D9D1"></div></div>
+<div style="font-size: 13px; color: #4E5652">Checks · attempt 2 of 3 · started on Claude Sonnet</div>
+<a href="Board.dc.html" style="font-size: 14px; font-weight: 700; text-decoration: underline">Open the ticket</a>
+</div>
+<div style="background: #FBFBF8; border: 1px solid #D5D9D1; border-radius: 20px; padding: 18px; display: flex; flex-direction: column; gap: 10px">
+<h2 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-size: 19px; font-weight: 700">Kit's record</h2>
+<div style="font-size: 14px; color: #4E5652">No finished tickets yet.</div>
+</div>
+<div style="background: #FBFBF8; border: 1px solid #D5D9D1; border-radius: 20px; padding: 18px; display: flex; flex-direction: column; gap: 8px">
+<h2 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-size: 19px; font-weight: 700">Kit's brain</h2>
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.7; color: #4E5652">
+<div>projects/fintrack.md</div>
+<div>patterns/csv-parsing.md</div>
+<div>tools/vitest.md</div>
+</div>
+<a href="#" style="font-size: 14px; font-weight: 700; text-decoration: underline">Read what Kit learned</a>
+</div>
+</aside>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
