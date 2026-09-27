@@ -216,8 +216,8 @@ and local models.
   the harnesses report.
 - When an account runs out, the work pauses. Running out early on is expected and fine.
 - Two employees on the same account share its limits.
-- Each account has a **cost** you enter: a monthly fee, a price per token, or (for local) optional
-  electricity and hardware figures. My desk uses it (§10).
+- Each account has a **cost** you enter: a monthly fee or a price per token. Each host has a
+  purchase price and its power draw. My desk uses them (§10).
 
 **A local account is a pool of models on a host.** For example, a Mac Studio might serve a 27B dense
 model, a 30B MoE and a small classifier. Each model in the pool is its own engine. Its capacity is
@@ -339,14 +339,32 @@ The brain follows the conventions of the owner's own LLM wiki:
 - It is committed after each edit.
 - It is plain markdown, so any engine can load it through its global memory file
   (`~/.claude/CLAUDE.md`, `~/.gemini/GEMINI.md`, `AGENTS.md`).
-- It lives in git, outside the machine, so rebuilding the machine never loses it.
+- It lives in git on the host (the Mac mini), outside the machine, so rebuilding the machine never
+  loses it. Brains and the handbook are never pushed to GitHub, because project repos may be
+  public; they are backed up locally.
+
+Knowledge comes in two layers, shared and personal:
+
+- **The handbook** is the company's shared brain: facts useful to every employee, such as how a tool
+  behaves, a pattern that works, or where things are. It has two kinds of page:
+  - **facts**, which any employee adds at a task boundary; the edit applies at once, shows on My
+    desk, and you can revert it;
+  - **policies** (how the company works), whose changes wait for your approval.
+- **The brain** is the employee's own: its personality and working style, and lessons tied to its
+  role or duty, such as what you tend to flag in a review, or an engine's quirks.
 
 Knowledge is routed by scope:
 
-- A fact about one project goes into that repo's `CLAUDE.md`, in the PR.
-- A lesson that holds across projects becomes a proposal for the **company handbook**, a shared,
-  curated wiki whose changes you approve.
-- The employee's own working lessons go into its brain.
+- A fact about one project goes into that repo's `CLAUDE.md`, in the PR (so nothing private goes
+  there).
+- A fact useful to everyone goes into the handbook's facts.
+- The employee's own traits and duty lessons go into its brain.
+- A PA writes only to its own brain. Anything it learns is home data, and the handbook is read by
+  employees on cloud engines.
+
+Employees don't write the handbook or their brain directly. At the retro they propose edits, and
+the daemon applies them, so a prompt-injected session can't quietly rewrite shared knowledge. Each
+machine sees the handbook read-only, plus its own brain.
 
 Your review feedback is the richest material for learning. A Reviewer learns what you care about
 from your Request changes notes, so over time it catches what you would have caught. You can read,
@@ -366,7 +384,7 @@ diff or revert what any employee learned.
 | 8. Final gates | harness | Rebase on the latest `main`, full checks, GitHub CI green, every done-when ✓, a secret scan, diff-size and protected-path checks | all pass |
 | 9. Report | the builder drafts, the reviewer confirms, the harness fills in the facts | The one-page report becomes the PR body; the PR is marked ready, the ticket moves to Review, and you get a push notification | — |
 | 10. Your decision | you | Approve (the ruleset approval, then a squash-merge with a conventional title, then Release Please), Request changes (back to 7 with your note first), or Reject | — |
-| 11. Retro | builder and reviewer | 0–2 brain edits each, optional handbook proposals, track records updated | — |
+| 11. Retro | builder and reviewer | Each proposes 0–2 edits: brain edits and handbook facts apply at once, handbook policy changes wait for you. Track records are updated | — |
 
 **Effort sets how far the loop goes.**
 
@@ -441,8 +459,9 @@ shorter loop:
 ### Home data stays home
 
 - **Local engines only.** Home data (mail, calendar, contacts and anything taken from them) is
-  processed only by local engines, such as qwen on Ollama. i.inc refuses to give a PA a cloud engine,
-  and its switch rules can only wait or move to another local engine, never to a cloud one.
+  processed only by local engines. The planned model is qwen3.8 27B, set up later. i.inc refuses to
+  give a PA a cloud engine, and its switch rules can only wait or move to another local engine,
+  never to a cloud one.
 - **The PA never holds your credentials.** The daemon keeps the Google (or other) tokens and offers
   the PA a small set of **home tools**: search mail, read a thread, create a draft, propose an event,
   read free/busy, and file a web errand. Every call is logged.
@@ -523,6 +542,8 @@ Qwen   Senior Eng · Local qwen3   ✓ Done           #11 Bump deps · fintrack 
   the proof). Resuming, on the same engine or another, starts a fresh ACP session with a resume brief
   (ticket, plan, progress, git log, last error). Where the agent supports it, `session/load` is used
   instead.
+- **Artifacts live on the host**, next to the event log: plans, reviews, and proof such as
+  screenshots and test output. The report in i.inc shows them.
 - **Every kind of failure has a policy:**
 
   | Failure | What happens |
@@ -539,7 +560,7 @@ Qwen   Senior Eng · Local qwen3   ✓ Done           #11 Bump deps · fintrack 
   K machines at once, and the rest wait in the queue. K is a host setting that defaults to what the
   host's RAM allows. More hosts, such as a Mac Studio or cloud VMs, raise K.
 - **Machines can be rebuilt; brains are kept.** There's a reset button and a nightly base-image
-  update. Brains and the handbook are git repos with backups.
+  update. Brains and the handbook are git repos on the host, with local backups.
 - **Audit:** every stage keeps its full transcript, each ticket has a timeline, and brain changes are
   commits.
 - **Tests:** a scripted fake ACP agent and a fake machine provider cover these cases, and the tests run
@@ -585,8 +606,16 @@ the others.
   - **The bottleneck**, at the top: where work waited longest this week and the lever for it, e.g.
     "tickets waited 9 h for Claude Pro while Kit was idle: move Kit to Gemini, or add an account".
     Often it's you: "plan gates waited 6 h for you".
-  - **Spend this month** by account (subscriptions spread over the month, API usage, and optional
-    electricity and hardware), cost per merged PR, and how much of each subscription was used.
+  - **Spend this month** by account and host, cost per merged PR, and how much of each
+    subscription was used. It counts hardware and electricity by default, with deliberately simple
+    maths, an estimate you can trust rather than a meter:
+    - a subscription: its monthly fee;
+    - API usage: tokens × price, where the harness reports tokens;
+    - hardware: purchase price ÷ 36 months (you can change the months);
+    - electricity: (idle watts × idle hours + busy watts × busy hours) ÷ 1000 × your price per kWh.
+      Busy hours are the hours local engines or machines were working, from the event log; the rest
+      of the month is idle. You enter the two wattages once per host (for example 7 W idle and 60 W
+      busy for the mini).
   - **Output:** merged PRs, releases and errands per project, with weekly trends.
   - **Quality:** first-pass approval rate, review rounds, honest failures, reverts.
   - **Your time:** minutes per merged PR, and how long Needs you waited for you.
@@ -788,8 +817,8 @@ hosts.
 
 ## 15. Open questions
 
-- Where should brains live: one private repo per employee, or one repo for all of them?
-- Where should proof images live so the PR can show them?
+- Proof images live on the host, and the report in i.inc shows them. Should the PR body get a copy
+  (it's public for public repos), or only a link that works on the tailnet?
 - What goes into the base image, and how is it updated?
 - Which usage units do the harnesses actually report through ACP: tokens, cost, or share of the
   window?
@@ -798,9 +827,7 @@ hosts.
 - Which license, if the repo goes public?
 - Which mail and calendar providers come first (Gmail and Google Calendar?), and which API scopes do
   the home tools need?
-- Which local model is good enough for a PA on the mini, and is it worth a Mac Studio?
 - Which outbound permissions should the hiring presets offer as rules?
-- Should My desk count hardware and electricity by default, or only what you pay each month?
 - Should goals live only in i.inc, or sync with GitHub milestones?
 - Which small model makes a good helper model, and how fast must it answer?
 - Should the PA's chat be kept forever, or trimmed after its facts reach the brain?
