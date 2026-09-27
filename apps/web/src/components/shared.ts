@@ -9,7 +9,7 @@ export const base = css`
   .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
   .muted { color: var(--ink-2); }
   .btn {
-    font: 700 15px var(--body); min-height: 44px; padding: 0 18px; border-radius: 999px; cursor: pointer;
+    font: 700 15px var(--body); min-height: 44px; padding: 0 18px; border-radius: 999px; cursor: pointer; white-space: nowrap;
     border: none; background: var(--ink); color: var(--on-ink);
   }
   .btn.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line-strong); font-weight: 600; }

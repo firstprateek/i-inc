@@ -54,6 +54,8 @@
     --desk: #5b4a33;
     --desk-edge: #3f3323;
     --bar: #9aa39d;
+    --neutral-bg: #2e3531;
+    --neutral-fg: #c9cfc9;
     --screen: #0c0f0d;
     --screen-edge: #323a35;
     color-scheme: dark;
@@ -73,6 +75,8 @@
   --desk: #5b4a33;
   --desk-edge: #3f3323;
   --bar: #9aa39d;
+  --neutral-bg: #2e3531;
+  --neutral-fg: #c9cfc9;
   --screen: #0c0f0d;
   --screen-edge: #323a35;
   color-scheme: dark;
