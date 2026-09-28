@@ -15,6 +15,7 @@ Merged on `main`:
 | M3 (part) | `apps/daemon`: SQLite, registry, tick loop, API, urgent chat interrupts, brains and the handbook as git repos. `apps/web`: every view, light and dark. The daemon runs real employees by default (`real.ts`: ACP sessions in machines, the harness, credentials from `~/.config/i-inc/credentials.json`, projects and their recipes in the registry through `PUT /api/projects/:id`), or the scripted demo with `I_INC_DEMO=1` |
 | M3 adapters | `apps/daemon/src/acp.ts` (the real ACP client), `apps/daemon/src/harness.ts` (checks and gates in the machine), `apps/daemon/src/machines.ts` (Apple container, its commands checked on the mini) and `apps/daemon/src/github.ts` (the GitHub App's tokens, draft PRs and the bot's commit identity). They're tested against a scripted ACP server and a recording `fetch`, but **not wired into `main.ts` yet** |
 | M3 image | `images/employee/`: the base image, built on the mini and checked in a throwaway machine, with Duet's recipe green in it ([its README](../images/employee/README.md)). Everything in a machine runs as its user `employee` |
+| GitHub | The App **i.inc bot** is set up: its key and ids are on the mini in `~/.config/i-inc`, it's installed on Duet only, and Duet's `main` has the ruleset. `tools/github-app/check.mjs` passes. Nothing has pushed as the bot yet |
 | M4 (part) | Brain and handbook repos, edits applied from each retro, policies that wait for the owner, orientation, and the viewer |
 
 `pnpm check`, `pnpm typecheck` and `pnpm test` pass (137 tests). CI runs all three.
@@ -25,13 +26,10 @@ None right now.
 
 ## Next steps, in order
 
-Item 3 needs the mini, so it needs a session on the owner's Mac, over SSH as in M1. Ask the owner
+Item 2 needs the mini, so it needs a session on the owner's Mac, over SSH as in M1. Ask the owner
 before any `sudo` or change to the host. The other items can run anywhere.
 
-1. **The owner sets up the GitHub App** by following [github-app.md](github-app.md): the App, its
-   key on the mini, the ids in `~/.config/i-inc/github-app.json`, and a ruleset on Duet's `main`.
-   Then run the check at its end. Until then, the fine-grained token from M1 step 6 stands in.
-2. **The rest of GitHub in the loop.** Pick-up makes the worktree and branch in the builder's
+1. **The rest of GitHub in the loop.** Pick-up makes the worktree and branch in the builder's
    machine, starting it with an empty commit (GitHub opens no PR without one), and opens the draft
    PR (`workspace.ts`). Sessions get a token for the ticket's repo as `GH_TOKEN`. The gates push the
    rebased branch and wait for GitHub CI on it (`waitForCi`), and the report goes into the PR, which
@@ -46,7 +44,7 @@ before any `sudo` or change to the host. The other items can run anywhere.
      make their worktrees too.
    - Usage reports are in the registry (`registry.usage()`) but not on My desk yet, and the helper
      model and chat are still the fakes until they use Ollama through the relay.
-3. **The daemon's host setup at boot (mini).** Installed on 2026-09-28, from `tools/host/`:
+2. **The daemon's host setup at boot (mini).** Installed on 2026-09-28, from `tools/host/`:
    - the walls job, the LaunchDaemon `inc.i.walls`, which loads the `pf` walls at boot and every
      minute after, keeps `pf` on, and leaves `/var/run/i-inc-walls.ok` while they're up. The daemon
      fails closed: without the marker, no machine boots and no session or script starts
