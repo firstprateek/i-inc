@@ -324,12 +324,13 @@ interface with a scripted fake in tests, like the ACP agent.
   - Nothing can connect in from outside.
   - The host firewall (`pf` on the Mac mini) enforces this, and the domains each employee contacts
     are logged.
-- **GitHub** uses a bot identity: one GitHub App, "i.inc", installed on the repos you choose.
+- **GitHub** uses a bot identity: one GitHub App, "i.inc bot", installed on the repos you choose.
   - For each session it mints a 1-hour token. The token can push branches, open and update PRs, edit
     CI/CD workflows, run Actions, and manage issues and Pages.
   - Commits read as "Ada (i.inc)".
-  - A ruleset on `main` requires a PR and your approval, so GitHub itself enforces that only you
-    merge. Your Approve does the merge with your account.
+  - A ruleset on `main` lets only you update it, through a PR with your approval, so GitHub itself
+    enforces that only you merge ([github-app.md](github-app.md)). Your Approve does the merge with
+    your account.
 - **Privileged requests.** Sometimes an employee needs something beyond its powers, such as a deploy
   secret, a repo setting or a new repo. It then files a Needs you card naming the exact action. You
   tap Approve, and i.inc does it with your account. This way employees can still set up CI/CD from

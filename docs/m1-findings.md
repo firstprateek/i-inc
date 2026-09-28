@@ -524,9 +524,6 @@ like this.
 
 **Left for later:**
 
-- **The core and the daemon:** `AgentHarness` in `packages/core/src/model.ts` still lists
-  `"gemini-cli"`, and so do the test fixtures and the daemon's demo engines. They should list
-  `"antigravity"`.
 - **The daemon (M3):**
   - It should answer the machines' DNS itself, to log names per employee and refuse the tailnet's
     names.
