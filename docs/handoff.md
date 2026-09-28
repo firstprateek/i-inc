@@ -13,10 +13,10 @@ Merged on `main`:
 | M1 | Run on the mini. Answers are in [m1-findings.md](m1-findings.md) and scripts in `tools/m1/`. The walls, the Ollama relay and the machine `m1-test` still run there, set up by hand, so a reboot drops the walls and the relay |
 | M2 | `packages/core`: the pipeline, engines and switch rules, the scheduler (reviewers and verifiers are scheduled like builds), errands, outbound permissions, My desk maths, knowledge routing, orientation. 64 tests |
 | M3 (part) | `apps/daemon`: SQLite, registry, tick loop, API, urgent chat interrupts, brains and the handbook as git repos. `apps/web`: every view, light and dark. The daemon runs **only in demo mode** |
-| M3 adapters | `apps/daemon/src/acp.ts` (the real ACP client), `apps/daemon/src/harness.ts` (checks and gates in the machine) and `apps/daemon/src/machines.ts` (Apple container, its commands checked on the mini). They're tested against a scripted ACP server, but **not wired into `main.ts` yet** |
+| M3 adapters | `apps/daemon/src/acp.ts` (the real ACP client), `apps/daemon/src/harness.ts` (checks and gates in the machine), `apps/daemon/src/machines.ts` (Apple container, its commands checked on the mini) and `apps/daemon/src/github.ts` (the GitHub App's tokens, draft PRs and the bot's commit identity). They're tested against a scripted ACP server and a recording `fetch`, but **not wired into `main.ts` yet** |
 | M4 (part) | Brain and handbook repos, edits applied from each retro, policies that wait for the owner, orientation, and the viewer |
 
-`pnpm check`, `pnpm typecheck` and `pnpm test` pass (98 tests). CI runs all three.
+`pnpm check`, `pnpm typecheck` and `pnpm test` pass (115 tests). CI runs all three.
 
 ## Open questions for the owner
 
@@ -27,13 +27,9 @@ None right now.
 Items 2 and 4 need the mini, so they need a session on the owner's Mac, over SSH as in M1. Ask
 the owner before any `sudo` or change to the host. The other items can run anywhere.
 
-1. **The GitHub App** (spec §6, gates and privileged requests; §8).
-   - Write `docs/github-app.md`: the permissions (Contents and Pull requests read/write, Checks
-     read), a ruleset under which only the owner merges, and where the private key lives on the
-     host (never in the repo).
-   - Then build `apps/daemon/src/github.ts`. It mints installation tokens for pushes and draft PRs,
-     so commits come from the bot identity, not the owner. Until the App exists, a fine-grained
-     token (as in M1 step 6) can stand in.
+1. **The owner sets up the GitHub App** by following [github-app.md](github-app.md): the App, its
+   key on the mini, the ids in `~/.config/i-inc/github-app.json`, and a ruleset on Duet's `main`.
+   Then run the check at its end. Until then, the fine-grained token from M1 step 6 stands in.
 2. **The base image (mini).** Grow `tools/m1/machine/Dockerfile` into `images/employee/`:
    - `systemd-sysv`;
    - its own user, `employee`, whose home is `/home/employee`. `acp.ts` sessions run in
@@ -41,14 +37,23 @@ the owner before any `sudo` or change to the host. The other items can run anywh
    - Node, pnpm, the three harnesses, and the ACP launchers from `tools/m1/acp-launchers.sh`. The
      launchers must create `$I_INC_CWD` and start there;
    - `npm --allow-scripts`, and no gnome-keyring;
+   - git's credential helper set to `gh auth git-credential`, so git pushes with gh's token, as the
+     bot;
    - OpenCode pinned to local providers only, for a PA's machine.
 3. **Real mode in `main.ts`.** When `I_INC_DEMO` isn't set, use `AcpAgent` with `machineLaunch()`,
    `AppleMachines`, the real harness and GitHub.
    - Use `MachineHarness` (`apps/daemon/src/harness.ts`) with a check recipe per project, kept in
      the registry (Duet's: `pnpm install --frozen-lockfile`, `pnpm lint`, `pnpm typecheck`,
      `pnpm test`). It already ran green on Duet inside `m1-test`.
-   - Credentials come from a file on the host, outside the repo: the Claude token from
-     `claude setup-token`, and the GitHub App key.
+   - Credentials come from files on the host, outside the repo: the Claude token from
+     `claude setup-token`, and the GitHub App (`readGitHubAppConfig` in `github.ts`).
+   - Pick-up makes the branch and opens the draft PR (`PullRequests.openDraft`), which needs a port
+     in core; today it only boots the machine. Commits use `commitIdentity`, and stage 9 calls
+     `setBody` and `markReady`.
+   - An installation token lasts an hour, and a session can run longer, so don't fix one at launch.
+     Suggested: in the image, git's credential helper and a `gh` wrapper ask the daemon's API for a
+     fresh token (the walls already let machines reach the API), with a per-session key passed in
+     with `-e` so a machine only gets its own ticket's repo.
    - `onUsage` feeds the account meters.
    - The helper model and chat can use Ollama through the relay later. Until then, keep the fakes
      behind a flag.
