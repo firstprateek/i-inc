@@ -9,6 +9,7 @@
 // "notFound" for a missing one. `machine create` boots the new machine itself. `machine stop` also
 // succeeds on a machine that's already stopped.
 import { type ChildProcessWithoutNullStreams, execFile, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import type { Id, MachineProvider } from "@i-inc/core";
 import type { AgentProcess, Launch } from "./acp.ts";
 
@@ -21,6 +22,11 @@ export interface MachineSettings {
   user: string;
   cpus: number;
   memory: string;
+  /**
+   * A file the walls job leaves while the walls are up (tools/host/walls.sh). When it's set and the
+   * file is missing, no machine boots and nothing starts in one.
+   */
+  wallsMarker?: string;
 }
 
 export const defaultMachineSettings: MachineSettings = {
@@ -29,7 +35,15 @@ export const defaultMachineSettings: MachineSettings = {
   user: "employee",
   cpus: 4,
   memory: "6G",
+  wallsMarker: "/var/run/i-inc-walls.ok",
 };
+
+/** Fails closed: nothing runs in a machine unless the walls are up (spec §5). */
+export function assertWalls(s: MachineSettings): void {
+  if (s.wallsMarker && !existsSync(s.wallsMarker)) {
+    throw new Error(`the walls aren't up (${s.wallsMarker} is missing), so no machine runs: see tools/host`);
+  }
+}
 
 /** Where a ticket's worktree is in its machine, and so where its ACP sessions work. */
 export const workDir = (ticketId: Id, s: MachineSettings = defaultMachineSettings) => {
@@ -62,6 +76,7 @@ export class AppleMachines implements MachineProvider {
   ) {}
 
   async ensureUp(employeeId: Id): Promise<void> {
+    assertWalls(this.s);
     if (this.up.has(employeeId)) return;
     const name = machineName(employeeId);
     try {
@@ -125,6 +140,7 @@ export function machineLaunch(
   run: Spawn = spawnDefault,
 ): Launch {
   return ({ employeeId, engine, cwd, env }) => {
+    assertWalls(s);
     const launcher = launchers[engine.harness];
     if (!launcher) throw new Error(`no ACP launcher for ${engine.harness}`);
     const vars: Record<string, string> = { I_INC_CWD: cwd, ...env };

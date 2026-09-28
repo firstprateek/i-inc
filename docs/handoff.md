@@ -17,7 +17,7 @@ Merged on `main`:
 | M3 image | `images/employee/`: the base image, built on the mini and checked in a throwaway machine, with Duet's recipe green in it ([its README](../images/employee/README.md)). Everything in a machine runs as its user `employee` |
 | M4 (part) | Brain and handbook repos, edits applied from each retro, policies that wait for the owner, orientation, and the viewer |
 
-`pnpm check`, `pnpm typecheck` and `pnpm test` pass (130 tests). CI runs all three.
+`pnpm check`, `pnpm typecheck` and `pnpm test` pass (131 tests). CI runs all three.
 
 ## Open questions for the owner
 
@@ -44,11 +44,16 @@ before any `sudo` or change to the host. The other items can run anywhere.
      make their worktrees too.
    - Usage reports are in the registry (`registry.usage()`) but not on My desk yet, and the helper
      model and chat are still the fakes until they use Ollama through the relay.
-3. **The daemon's host setup at boot (mini).** A launchd job that loads the `pf` walls from
-   `tools/m1/pf/` and starts the Ollama relay (`tools/m1/ollama-forward.mjs`).
-   - Later, the daemon answers the machines' DNS itself, refusing tailnet names, and relays
-     Antigravity's sign-in callback into the machine.
-   - This changes the host's walls, so get the owner's explicit approval.
+3. **The daemon's host setup at boot (mini).** `tools/host/` has it, not installed yet, since it
+   changes the host's walls and needs the owner's approval and `sudo`:
+   - `walls.sh`, a LaunchDaemon that loads the `pf` walls at boot and every minute after, keeps `pf`
+     on, and leaves `/var/run/i-inc-walls.ok` while they're up. The daemon fails closed: without the
+     marker, no machine boots and no session or script starts (`assertWalls`).
+   - The Ollama relay as the owner's LaunchAgent. At boot it waits for the machines' gateway.
+   - `install-walls.sh` (with `sudo`) and `install-relay.sh` put them in place.
+   - Later: run the daemon itself at boot (a LaunchAgent for `bun apps/daemon/src/main.ts` from a
+     checkout on the mini, which needs Bun there), answer the machines' DNS in the daemon, refusing
+     tailnet names, and relay Antigravity's sign-in callback into the machine.
 4. **The resume brief** (from M1 step 6). Add what the machine has and lacks, such as package
    managers and whether checks ran. Point to the plan and notes files instead of quoting them.
 

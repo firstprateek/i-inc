@@ -11,10 +11,13 @@ import type { AgentProcess, LaunchRequest } from "../src/acp.ts";
 import { createApp } from "../src/app.ts";
 import { readCredentials } from "../src/config.ts";
 import { seedDemo } from "../src/demo.ts";
+import { defaultMachineSettings } from "../src/machines.ts";
 import { realPorts } from "../src/real.ts";
 import { testApp } from "./setup.ts";
 
 const tmp = (prefix: string) => mkdtempSync(join(tmpdir(), prefix));
+// The walls' marker exists only on the mini.
+const { wallsMarker: _, ...noWalls } = defaultMachineSettings;
 
 describe("credentials on the host", () => {
   it("reads each account's environment, from a file only its owner can read", () => {
@@ -54,6 +57,7 @@ describe("real mode", () => {
       clock: new FakeClock(),
       ...realPorts({
         credentials: { "claude-pro": { CLAUDE_CODE_OAUTH_TOKEN: "sk-x" } },
+        machine: noWalls,
         exec: async (_bin, args) => {
           exec.push(args);
           return "";
