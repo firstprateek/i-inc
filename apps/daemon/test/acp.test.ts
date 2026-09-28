@@ -233,17 +233,22 @@ describe("an ACP session", () => {
 });
 
 describe("Apple container machines", () => {
-  it("makes a missing machine with no home mount and fixed resources, then starts and stops it", async () => {
+  const boot = ["machine", "run", "-n", "inc-ada", "--", "true"];
+  // What container 1.4.1 prints for a missing machine.
+  const notFound =
+    'Error: failed to boot container machine (cause: "notFound: "container machine with ID inc-ada not found"")';
+
+  it("makes a missing machine with no home mount and fixed resources, then stops it", async () => {
     const calls: string[][] = [];
     const m = new AppleMachines(undefined, async (_bin, args) => {
       calls.push(args);
-      if (args[1] === "start" && calls.length === 1) throw new Error("machine not found");
+      if (args[1] === "run" && calls.length === 1) throw new Error(notFound);
       return "";
     });
     await m.ensureUp("ada");
     await m.ensureUp("ada");
     expect(calls).toEqual([
-      ["machine", "start", "inc-ada"],
+      boot,
       [
         "machine",
         "create",
@@ -257,10 +262,28 @@ describe("Apple container machines", () => {
         "none",
         "local/i-inc-employee:latest",
       ],
-      ["machine", "start", "inc-ada"],
     ]);
     await m.stop("ada");
     expect(calls.at(-1)).toEqual(["machine", "stop", "inc-ada"]);
+    expect(m.running()).toEqual([]);
+  });
+
+  it("boots an existing machine with `machine run`, since there is no `machine start`", async () => {
+    const calls: string[][] = [];
+    const m = new AppleMachines(undefined, async (_bin, args) => {
+      calls.push(args);
+      return "";
+    });
+    await m.ensureUp("ada");
+    expect(calls).toEqual([boot]);
+    expect(m.running()).toEqual(["ada"]);
+  });
+
+  it("passes on other failures instead of making a new machine", async () => {
+    const m = new AppleMachines(undefined, async () => {
+      throw new Error("XPC connection error: the container service isn't running");
+    });
+    await expect(m.ensureUp("ada")).rejects.toThrow("container service isn't running");
     expect(m.running()).toEqual([]);
   });
 
