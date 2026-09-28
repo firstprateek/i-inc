@@ -324,7 +324,7 @@ interface with a scripted fake in tests, like the ACP agent.
   - Nothing can connect in from outside.
   - The host firewall (`pf` on the Mac mini) enforces this, and the domains each employee contacts
     are logged.
-- **GitHub** uses a bot identity: one GitHub App, "i.inc", installed on the repos you choose.
+- **GitHub** uses a bot identity: one GitHub App, "i.inc bot", installed on the repos you choose.
   - For each session it mints a 1-hour token. The token can push branches, open and update PRs, edit
     CI/CD workflows, run Actions, and manage issues and Pages.
   - Commits read as "Ada (i.inc)".

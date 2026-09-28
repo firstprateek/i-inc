@@ -1,7 +1,7 @@
 # The GitHub App: i.inc's bot identity
 
 Employees push branches and open PRs as a bot, never as you (spec §5). The bot is a GitHub App
-called **i.inc**, on your personal account. For each session the daemon uses the App's private key
+called **i.inc bot**, on your personal account. For each session the daemon uses the App's private key
 to mint a 1-hour token that only works on the ticket's repo (`apps/daemon/src/github.ts`). A
 ruleset on each repo's `main` makes GitHub itself enforce that only you merge.
 
@@ -9,13 +9,26 @@ Setting it up takes about ten minutes in a browser signed in to GitHub. The key 
 the mini. It never goes into the repo, and neither do the App's ids. `<mini>` below is how you
 reach the mini over SSH, and `<owner>` is your GitHub account.
 
+## The quick way
+
+```bash
+node tools/github-app/create.mjs <mini>
+```
+
+It does steps 1 to 4 for you. It serves a page on 127.0.0.1:8765. Open it in any browser signed in
+to GitHub, and confirm the App there; then install it. GitHub hands back a one-time code, which the
+mini trades for the App's key, so the key never touches your Mac. The App's client and webhook
+secrets are dropped, since i.inc uses neither. Then do step 5 and run the check in step 6.
+
+The steps below are the same thing by hand.
+
 ## 1. Create the App
 
 Open **github.com/settings/apps/new** and fill in:
 
 | Field | Value |
 | --- | --- |
-| GitHub App name | `i.inc`. GitHub derives the slug `i-inc` from it (still free on 2026-09-28). If it refuses the name, use `i-inc` |
+| GitHub App name | `i.inc bot`, whose slug is `i-inc-bot`. Plain `i.inc` is refused: GitHub Apps share names with accounts, and an account called `i-inc` exists |
 | Homepage URL | this repo's URL |
 | Callback URL, Setup URL | leave empty |
 | Request user authorization (OAuth) during installation | off |
@@ -51,12 +64,12 @@ On the App's settings page:
 
 1. Note the **App ID**, under About.
 2. Under Private keys, click **Generate a private key**. Your browser downloads
-   `i-inc.<date>.private-key.pem`.
+   `i-inc-bot.<date>.private-key.pem`.
 
 Copy it to the mini in one step. Nobody else there can read it, even for a moment:
 
 ```bash
-ssh <mini> 'umask 077 && mkdir -p ~/.config/i-inc && chmod 700 ~/.config/i-inc && cat > ~/.config/i-inc/github-app.pem' < ~/Downloads/i-inc.*.private-key.pem
+ssh <mini> 'umask 077 && mkdir -p ~/.config/i-inc && chmod 700 ~/.config/i-inc && cat > ~/.config/i-inc/github-app.pem' < ~/Downloads/i-inc-bot.*.private-key.pem
 ```
 
 Then delete the downloaded copy, and empty the Trash if that's where it went. If the key ever
@@ -76,7 +89,7 @@ Replace the two placeholders, then run:
 
 ```bash
 ssh <mini> 'umask 077 && cat > ~/.config/i-inc/github-app.json' <<'EOF'
-{ "appId": "<App ID>", "installationId": "<installation ID>", "slug": "i-inc" }
+{ "appId": "<App ID>", "installationId": "<installation ID>", "slug": "i-inc-bot" }
 EOF
 ```
 
@@ -84,7 +97,14 @@ Neither id is a secret, but they're yours, so they stay out of the repo too.
 
 ## 5. A ruleset on `main`, in each of those repos
 
-In the repo, go to **Settings → Rules → Rulesets → New ruleset → New branch ruleset**:
+For Duet, one command does it, with your own GitHub sign-in:
+
+```bash
+gh api repos/<owner>/duet/rulesets --method POST --input tools/github-app/duet-ruleset.json
+```
+
+For another repo, copy that file and change its required checks. By hand, go to the repo's
+**Settings → Rules → Rulesets → New ruleset → New branch ruleset**:
 
 | Setting | Value |
 | --- | --- |
@@ -143,7 +163,7 @@ It mints one token to look at the repo, never prints it, and revokes it at the e
   bot. A token lasts an hour and a session can run longer, so real mode fetches a fresh one when
   it's needed rather than fixing one at launch.
 - `commitIdentity` gives commits the employee's name and the bot's noreply address, such as "Ada
-  (i.inc)" with `<id>+i-inc[bot]@users.noreply.github.com`, so GitHub shows them as the App's.
+  (i.inc)" with `<id>+i-inc-bot[bot]@users.noreply.github.com`, so GitHub shows them as the App's.
 - `PullRequests` opens the draft at stage 1. At stage 9 it writes the report into the body and marks
   the PR ready, which only GraphQL can do.
 - The merge is yours. When you tap Approve in i.inc, it approves and squash-merges with your account.

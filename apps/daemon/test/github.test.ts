@@ -107,7 +107,7 @@ describe("the GitHub App", () => {
     expect(readGitHubAppConfig(dir)).toEqual({
       appId: "123",
       installationId: "456",
-      slug: "i-inc",
+      slug: "i-inc-bot",
       privateKeyPath: join(dir, "github-app.pem"),
     });
     writeFileSync(join(dir, "github-app.json"), JSON.stringify({ appId: "i.inc", installationId: 456 }));
@@ -162,10 +162,10 @@ describe("pull requests, as the bot", () => {
 
   it("commits as the employee, with the bot's noreply address", async () => {
     const { calls, f } = recorder(() => ({ json: { id: 987654 } }));
-    expect(await commitIdentity("Ada", "i-inc", { fetch: f })).toEqual({
+    expect(await commitIdentity("Ada", "i-inc-bot", { fetch: f })).toEqual({
       name: "Ada (i.inc)",
-      email: "987654+i-inc[bot]@users.noreply.github.com",
+      email: "987654+i-inc-bot[bot]@users.noreply.github.com",
     });
-    expect(calls[0]?.url).toBe("https://api.github.com/users/i-inc%5Bbot%5D");
+    expect(calls[0]?.url).toBe("https://api.github.com/users/i-inc-bot%5Bbot%5D");
   });
 });

@@ -15,7 +15,7 @@ export interface TokenSource {
 export interface GitHubAppConfig {
   appId: string;
   installationId: string;
-  /** Its public name in URLs, `i-inc`, which the bot's commit address needs. */
+  /** Its public name in URLs, `i-inc-bot`, which the bot's commit address needs. */
   slug?: string;
   /** On the mini: ~/.config/i-inc/github-app.pem, readable only by the owner. Never in the repo. */
   privateKeyPath: string;
@@ -36,7 +36,7 @@ export function readGitHubAppConfig(dir = configDir()): GitHubAppConfig {
   return {
     appId: id("appId"),
     installationId: id("installationId"),
-    slug: typeof raw.slug === "string" ? raw.slug : "i-inc",
+    slug: typeof raw.slug === "string" ? raw.slug : "i-inc-bot",
     privateKeyPath: join(dir, "github-app.pem"),
   };
 }

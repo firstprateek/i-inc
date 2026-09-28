@@ -84,8 +84,8 @@ UX review, non-code tickets) and M5 (track records per engine, enforced usage ca
   - A session's credentials go into its machine with `container machine run -e NAME`, copied from
     the environment of that one `container` process. They're in no command line, never on the
     machine's disk, and gone when the session ends (m1-findings.md, "M3: credentials").
-  - The GitHub App is named **i.inc** (its slug `i-inc` was free on 2026-09-28), on the owner's
-    personal account. Its private key lives on the mini at `~/.config/i-inc/github-app.pem`, mode
+  - The GitHub App is named **i.inc bot** (slug `i-inc-bot`), on the owner's personal account.
+    Plain "i.inc" is refused: Apps share names with accounts, and an account `i-inc` exists. Its private key lives on the mini at `~/.config/i-inc/github-app.pem`, mode
     0600 in a 0700 folder, and never in the repo.
 - **Brains:**
   - They live on the mini and are never pushed.
