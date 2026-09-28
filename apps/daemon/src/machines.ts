@@ -4,7 +4,10 @@
 // stopped when its employee has nothing running, because it only returns memory on restart and
 // wakes in under a second.
 //
-// Commands marked "verify" weren't run in M1; the first run on the mini should confirm them.
+// The commands were checked on the mini with container 1.4.1 (m1-findings.md, "M3: machine
+// commands"). There is no `machine start`: `machine run` boots a stopped machine, and fails with
+// "notFound" for a missing one. `machine create` boots the new machine itself. `machine stop` also
+// succeeds on a machine that's already stopped.
 import { execFile, spawn } from "node:child_process";
 import type { Id, MachineProvider } from "@i-inc/core";
 import type { AgentProcess, Launch } from "./acp.ts";
@@ -53,9 +56,11 @@ export class AppleMachines implements MachineProvider {
     if (this.up.has(employeeId)) return;
     const name = machineName(employeeId);
     try {
-      await this.exec(this.s.bin, ["machine", "start", name]); // verify
-    } catch {
-      // No such machine yet: make it (the flags M1 used), then start it.
+      // Boots the machine if it's stopped (0.6 s), and does nothing if it's running.
+      await this.exec(this.s.bin, ["machine", "run", "-n", name, "--", "true"]);
+    } catch (err) {
+      if (!/notFound|not found/.test(err instanceof Error ? err.message : String(err))) throw err;
+      // No such machine yet: make it with the flags M1 used. Creating it also boots it.
       await this.exec(this.s.bin, [
         "machine",
         "create",
@@ -69,14 +74,13 @@ export class AppleMachines implements MachineProvider {
         "none",
         this.s.image,
       ]);
-      await this.exec(this.s.bin, ["machine", "start", name]); // verify
     }
     this.up.add(employeeId);
   }
 
   async stop(employeeId: Id): Promise<void> {
     if (!this.up.delete(employeeId)) return;
-    await this.exec(this.s.bin, ["machine", "stop", machineName(employeeId)]); // verify
+    await this.exec(this.s.bin, ["machine", "stop", machineName(employeeId)]);
   }
 
   /** Employees whose machines this daemon started and hasn't stopped. */
