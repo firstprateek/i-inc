@@ -1,0 +1,4 @@
+#!/bin/sh
+# OpenCode's ACP server, on local models only (its config is ~/.config/opencode/opencode.json).
+. /usr/local/lib/i-inc/acp-env.sh
+exec opencode acp "$@"
