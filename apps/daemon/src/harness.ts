@@ -3,17 +3,16 @@
 // because `machine run` re-splits its arguments (M1).
 import { spawn } from "node:child_process";
 import type { ChecksResult, GatesResult, Harness, Ticket } from "@i-inc/core";
-import { defaultMachineSettings, machineName } from "./machines.ts";
+import { defaultMachineSettings, type MachineSettings, machineName } from "./machines.ts";
 
 /** Runs a script in an employee's machine and resolves with its exit code and output. */
 export type RunScript = (employeeId: string, script: string) => Promise<{ code: number; output: string }>;
 
-export function machineScript(bin = defaultMachineSettings.bin): RunScript {
+export function machineScript(s: MachineSettings = defaultMachineSettings): RunScript {
   return (employeeId, script) =>
     new Promise((resolve, reject) => {
-      const child = spawn(bin, ["machine", "run", "-i", "-n", machineName(employeeId), "--", "bash", "-s"], {
-        stdio: ["pipe", "pipe", "pipe"],
-      });
+      const args = ["machine", "run", "-i", "-u", s.user, "-n", machineName(employeeId), "--", "bash", "-s"];
+      const child = spawn(s.bin, args, { stdio: ["pipe", "pipe", "pipe"] });
       let output = "";
       child.stdout.on("data", (chunk) => {
         output += chunk;

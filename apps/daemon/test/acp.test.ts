@@ -6,7 +6,7 @@ import { PassThrough } from "node:stream";
 import type { Engine, SessionRequest } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
 import { AcpAgent, type AgentProcess, type LaunchRequest, type UsageReport } from "../src/acp.ts";
-import { AppleMachines, machineLaunch } from "../src/machines.ts";
+import { AppleMachines, machineLaunch, workDir } from "../src/machines.ts";
 
 type Json = Record<string, unknown>;
 type Script = (method: string, params: Json, reply: (m: Json) => void, id: number | undefined) => void;
@@ -299,7 +299,7 @@ describe("Apple container machines", () => {
         kill: () => true,
       }) as unknown as ChildProcessWithoutNullStreams;
     const launch = machineLaunch(
-      { bin: "/usr/local/bin/container", image: "x", cpus: 1, memory: "1G" },
+      { bin: "/usr/local/bin/container", image: "x", user: "employee", cpus: 1, memory: "1G" },
       (bin, args, env) => {
         seen.push({ bin, args, env });
         return fakeChild();
@@ -318,6 +318,8 @@ describe("Apple container machines", () => {
       "machine",
       "run",
       "-i",
+      "-u",
+      "employee",
       "-n",
       "inc-ada",
       "-e",
@@ -342,5 +344,10 @@ describe("Apple container machines", () => {
     expect(() => launch({ employeeId: "../x", engine: claude, cwd: "/w", env: {} })).toThrow(
       "not an employee id",
     );
+  });
+
+  it("keeps each ticket's work in the employee's home", () => {
+    expect(workDir("t7")).toBe("/home/employee/work/inc-t7");
+    expect(() => workDir("../t7")).toThrow("not a ticket id");
   });
 });

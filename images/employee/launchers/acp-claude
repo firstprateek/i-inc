@@ -1,0 +1,5 @@
+#!/bin/sh
+# Claude Code's ACP server, through Anthropic's adapter. It reads CLAUDE_CODE_OAUTH_TOKEN, the
+# model-only token the daemon passes in.
+. /usr/local/lib/i-inc/acp-env.sh
+exec claude-agent-acp "$@"

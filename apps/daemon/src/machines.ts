@@ -15,8 +15,10 @@ import type { AgentProcess, Launch } from "./acp.ts";
 export interface MachineSettings {
   /** Path to the `container` CLI. */
   bin: string;
-  /** The employee base image. */
+  /** The employee base image (images/employee). */
   image: string;
+  /** The image's user that everything runs as, rather than the user that matches the host's. */
+  user: string;
   cpus: number;
   memory: string;
 }
@@ -24,8 +26,15 @@ export interface MachineSettings {
 export const defaultMachineSettings: MachineSettings = {
   bin: "/usr/local/bin/container",
   image: "local/i-inc-employee:latest",
+  user: "employee",
   cpus: 4,
   memory: "6G",
+};
+
+/** Where a ticket's worktree is in its machine, and so where its ACP sessions work. */
+export const workDir = (ticketId: Id, s: MachineSettings = defaultMachineSettings) => {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(ticketId)) throw new Error(`not a ticket id: ${ticketId}`);
+  return `/home/${s.user}/work/inc-${ticketId}`;
 };
 
 /** Runs a command and resolves with its output, or rejects with its error output. */
@@ -103,7 +112,7 @@ const spawnDefault: Spawn = (bin, args, env) => spawn(bin, args, { env, stdio: [
 
 /**
  * Starts a harness's ACP server in the employee's machine:
- * `container machine run -i -n <machine> -e I_INC_CWD -e <CREDENTIAL> -- acp-<harness>`.
+ * `container machine run -i -u employee -n <machine> -e I_INC_CWD -e <CREDENTIAL> -- acp-<harness>`.
  * The base image's launcher makes I_INC_CWD and starts there.
  *
  * Each variable goes in with `-e NAME`, which copies it from the environment of this one `container`
@@ -125,7 +134,7 @@ export function machineLaunch(
     const flags = Object.keys(vars).flatMap((name) => ["-e", name]);
     const child = run(
       s.bin,
-      ["machine", "run", "-i", "-n", machineName(employeeId), ...flags, "--", launcher],
+      ["machine", "run", "-i", "-u", s.user, "-n", machineName(employeeId), ...flags, "--", launcher],
       { ...process.env, ...vars },
     );
     const exited = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
