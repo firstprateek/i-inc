@@ -20,13 +20,7 @@ Merged on `main`:
 
 ## Open questions for the owner
 
-1. **The Claude token in the process list.** Each session gets `CLAUDE_CODE_OAUTH_TOKEN` in its
-   environment, through `container machine run … -- env K=V acp-claude`. It's never written to a
-   file, but it shows in the mini's process list while a session runs. Is that OK? If not, the
-   alternative is to write a file in the machine through `machine run -i` with stdin, then have the
-   launcher read it.
-2. **The GitHub App:** its name, the owner or org, and where its private key lives on the mini. The
-   owner creates the App; the session writes the steps (item 1 below).
+None right now.
 
 ## Next steps, in order
 
@@ -81,6 +75,13 @@ UX review, non-code tickets) and M5 (track records per engine, enforced usage ca
     owner's connectors.
   - Cloud engines stay. A private cloud is only noted for later.
   - Home data goes only to local models; the planned model is qwen3.8 27B, set up later.
+- **Credentials:**
+  - A session's credentials go into its machine with `container machine run -e NAME`, copied from
+    the environment of that one `container` process. They're in no command line, never on the
+    machine's disk, and gone when the session ends (m1-findings.md, "M3: credentials").
+  - The GitHub App is named **i.inc** (its slug `i-inc` was free on 2026-09-28), on the owner's
+    personal account. Its private key lives on the mini at `~/.config/i-inc/github-app.pem`, mode
+    0600 in a 0700 folder, and never in the repo.
 - **Brains:**
   - They live on the mini and are never pushed.
   - Shared facts go in the handbook; personality and duty lessons stay in each employee's brain.

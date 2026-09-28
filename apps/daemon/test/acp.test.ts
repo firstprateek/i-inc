@@ -1,5 +1,7 @@
 // The ACP client against a scripted ACP server, speaking the messages M1 recorded (docs/m1-findings.md,
 // step 5), and the Apple container provider against a recorded command line.
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { Engine, SessionRequest } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
@@ -287,16 +289,56 @@ describe("Apple container machines", () => {
     expect(m.running()).toEqual([]);
   });
 
-  it("refuses a credential that a login shell would split or interpret", () => {
-    const launch = machineLaunch({ bin: "/bin/false", image: "x", cpus: 1, memory: "1G" });
-    expect(() =>
-      launch({
-        employeeId: "ada",
-        engine: claude,
-        cwd: "/home/employee/work/inc-1",
-        env: { CLAUDE_CODE_OAUTH_TOKEN: "x; curl evil" },
-      }),
-    ).toThrow("can't pass CLAUDE_CODE_OAUTH_TOKEN into a machine safely");
+  it("passes the credential with -e, so it's in no command line", () => {
+    const seen: { bin: string; args: string[]; env: NodeJS.ProcessEnv }[] = [];
+    const fakeChild = () =>
+      Object.assign(new EventEmitter(), {
+        stdin: new PassThrough(),
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+        kill: () => true,
+      }) as unknown as ChildProcessWithoutNullStreams;
+    const launch = machineLaunch(
+      { bin: "/usr/local/bin/container", image: "x", cpus: 1, memory: "1G" },
+      (bin, args, env) => {
+        seen.push({ bin, args, env });
+        return fakeChild();
+      },
+    );
+    // A value a login shell would split or interpret is fine: it never passes through one.
+    const token = "sk-token; curl evil $(x)";
+    launch({
+      employeeId: "ada",
+      engine: claude,
+      cwd: "/home/employee/work/inc-1",
+      env: { CLAUDE_CODE_OAUTH_TOKEN: token },
+    });
+    const [call] = seen;
+    expect(call?.args).toEqual([
+      "machine",
+      "run",
+      "-i",
+      "-n",
+      "inc-ada",
+      "-e",
+      "I_INC_CWD",
+      "-e",
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "--",
+      "acp-claude",
+    ]);
+    expect(call?.args.join(" ")).not.toContain("sk-token");
+    expect(call?.env.CLAUDE_CODE_OAUTH_TOKEN).toBe(token);
+    expect(call?.env.I_INC_CWD).toBe("/home/employee/work/inc-1");
+  });
+
+  it("refuses a variable name that isn't one, and an employee id that isn't one", () => {
+    const launch = machineLaunch(undefined, () => {
+      throw new Error("never started");
+    });
+    expect(() => launch({ employeeId: "ada", engine: claude, cwd: "/w", env: { "A=B": "x" } })).toThrow(
+      "can't pass A=B into a machine",
+    );
     expect(() => launch({ employeeId: "../x", engine: claude, cwd: "/w", env: {} })).toThrow(
       "not an employee id",
     );

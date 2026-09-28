@@ -8,7 +8,7 @@
 // commands"). There is no `machine start`: `machine run` boots a stopped machine, and fails with
 // "notFound" for a missing one. `machine create` boots the new machine itself. `machine stop` also
 // succeeds on a machine that's already stopped.
-import { execFile, spawn } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, execFile, spawn } from "node:child_process";
 import type { Id, MachineProvider } from "@i-inc/core";
 import type { AgentProcess, Launch } from "./acp.ts";
 
@@ -96,28 +96,38 @@ export const launchers: Record<string, string> = {
   opencode: "acp-opencode",
 };
 
-/** `machine run` passes its command through a login shell, so values must survive re-splitting. */
-const safe = /^[A-Za-z0-9_./:+=@-]*$/;
+/** Starts the `container` CLI; a test can stand in for it. */
+export type Spawn = (bin: string, args: string[], env: NodeJS.ProcessEnv) => ChildProcessWithoutNullStreams;
+
+const spawnDefault: Spawn = (bin, args, env) => spawn(bin, args, { env, stdio: ["pipe", "pipe", "pipe"] });
 
 /**
- * Starts a harness's ACP server in the employee's machine: `container machine run -i -n <machine> --
- * env I_INC_CWD=<cwd> <credential> acp-<harness>`. The base image's launcher makes I_INC_CWD and
- * starts there. The credential rides in the environment of that one command, never in a file. It
- * does show in the host's process list while the session runs; the host is the owner's alone.
+ * Starts a harness's ACP server in the employee's machine:
+ * `container machine run -i -n <machine> -e I_INC_CWD -e <CREDENTIAL> -- acp-<harness>`.
+ * The base image's launcher makes I_INC_CWD and starts there.
+ *
+ * Each variable goes in with `-e NAME`, which copies it from the environment of this one `container`
+ * process. So a credential is in no command line on the host or in the machine, never on the
+ * machine's disk, and gone when the session ends (checked on the mini: m1-findings.md, "M3:
+ * credentials"). Values don't pass through the machine's login shell either, so any value is safe.
  */
-export function machineLaunch(s: MachineSettings = defaultMachineSettings): Launch {
+export function machineLaunch(
+  s: MachineSettings = defaultMachineSettings,
+  run: Spawn = spawnDefault,
+): Launch {
   return ({ employeeId, engine, cwd, env }) => {
     const launcher = launchers[engine.harness];
     if (!launcher) throw new Error(`no ACP launcher for ${engine.harness}`);
-    const vars = { I_INC_CWD: cwd, ...env };
-    for (const [k, v] of Object.entries(vars)) {
-      if (!/^[A-Z_][A-Z0-9_]*$/.test(k) || !safe.test(v))
-        throw new Error(`can't pass ${k} into a machine safely`);
+    const vars: Record<string, string> = { I_INC_CWD: cwd, ...env };
+    for (const name of Object.keys(vars)) {
+      if (!/^[A-Z_][A-Z0-9_]*$/.test(name)) throw new Error(`can't pass ${name} into a machine`);
     }
-    const command = ["env", ...Object.entries(vars).map(([k, v]) => `${k}=${v}`), launcher];
-    const child = spawn(s.bin, ["machine", "run", "-i", "-n", machineName(employeeId), "--", ...command], {
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const flags = Object.keys(vars).flatMap((name) => ["-e", name]);
+    const child = run(
+      s.bin,
+      ["machine", "run", "-i", "-n", machineName(employeeId), ...flags, "--", launcher],
+      { ...process.env, ...vars },
+    );
     const exited = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
     const proc: AgentProcess = {
       stdin: child.stdin,
