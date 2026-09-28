@@ -13,7 +13,7 @@ Merged on `main`:
 | M1 | Run on the mini. Answers are in [m1-findings.md](m1-findings.md) and scripts in `tools/m1/`. The walls, the Ollama relay and the machine `m1-test` still run there, set up by hand, so a reboot drops the walls and the relay |
 | M2 | `packages/core`: the pipeline, engines and switch rules, the scheduler (reviewers and verifiers are scheduled like builds), errands, outbound permissions, My desk maths, knowledge routing, orientation. 64 tests |
 | M3 (part) | `apps/daemon`: SQLite, registry, tick loop, API, urgent chat interrupts, brains and the handbook as git repos. `apps/web`: every view, light and dark. The daemon runs **only in demo mode** |
-| M3 adapters | `apps/daemon/src/acp.ts` (the real ACP client) and `apps/daemon/src/machines.ts` (Apple container, its commands checked on the mini). They're tested against a scripted ACP server, but **not wired into `main.ts` yet** |
+| M3 adapters | `apps/daemon/src/acp.ts` (the real ACP client), `apps/daemon/src/harness.ts` (checks and gates in the machine) and `apps/daemon/src/machines.ts` (Apple container, its commands checked on the mini). They're tested against a scripted ACP server, but **not wired into `main.ts` yet** |
 | M4 (part) | Brain and handbook repos, edits applied from each retro, policies that wait for the owner, orientation, and the viewer |
 
 `pnpm check`, `pnpm typecheck` and `pnpm test` pass (98 tests). CI runs all three.
@@ -26,30 +26,21 @@ Merged on `main`:
    alternative is to write a file in the machine through `machine run -i` with stdin, then have the
    launcher read it.
 2. **The GitHub App:** its name, the owner or org, and where its private key lives on the mini. The
-   owner creates the App; the session writes the steps (item 2 below).
+   owner creates the App; the session writes the steps (item 1 below).
 
 ## Next steps, in order
 
-Items 3 and 5 need the mini, so they need a session on the owner's Mac, over SSH as in M1. Ask
+Items 2 and 4 need the mini, so they need a session on the owner's Mac, over SSH as in M1. Ask
 the owner before any `sudo` or change to the host. The other items can run anywhere.
 
-1. **A real harness** (`Harness` port: `runChecks`, `runGates`). Use the same tooling as
-   `machines.ts`: `container machine run -i -n inc-<id> -- bash -s` with a script on stdin (M1:
-   `machine run` re-splits arguments).
-   - **Checks** run the project's recipe in the ticket's worktree, `~/work/inc-<ticket>`. The
-     recipe is a per-project setting in the registry, for example Duet's `pnpm install`, `pnpm
-     check`, `pnpm typecheck` and `pnpm test`.
-   - **Gates** fetch `main`, rebase, and rerun the checks. A conflict must come back as `{ ok:
-     false, conflict: true }`.
-   - Test it against a fake `Exec`, the way `acp.test.ts` tests the machine provider.
-2. **The GitHub App** (spec §6, gates and privileged requests; §8).
+1. **The GitHub App** (spec §6, gates and privileged requests; §8).
    - Write `docs/github-app.md`: the permissions (Contents and Pull requests read/write, Checks
      read), a ruleset under which only the owner merges, and where the private key lives on the
      host (never in the repo).
    - Then build `apps/daemon/src/github.ts`. It mints installation tokens for pushes and draft PRs,
      so commits come from the bot identity, not the owner. Until the App exists, a fine-grained
      token (as in M1 step 6) can stand in.
-3. **The base image (mini).** Grow `tools/m1/machine/Dockerfile` into `images/employee/`:
+2. **The base image (mini).** Grow `tools/m1/machine/Dockerfile` into `images/employee/`:
    - `systemd-sysv`;
    - its own user, `employee`, whose home is `/home/employee`. `acp.ts` sessions run in
      `/home/employee/work/inc-<id>` (see `cwdFor` where the agent is built);
@@ -57,19 +48,22 @@ the owner before any `sudo` or change to the host. The other items can run anywh
      launchers must create `$I_INC_CWD` and start there;
    - `npm --allow-scripts`, and no gnome-keyring;
    - OpenCode pinned to local providers only, for a PA's machine.
-4. **Real mode in `main.ts`.** When `I_INC_DEMO` isn't set, use `AcpAgent` with `machineLaunch()`,
+3. **Real mode in `main.ts`.** When `I_INC_DEMO` isn't set, use `AcpAgent` with `machineLaunch()`,
    `AppleMachines`, the real harness and GitHub.
+   - Use `MachineHarness` (`apps/daemon/src/harness.ts`) with a check recipe per project, kept in
+     the registry (Duet's: `pnpm install --frozen-lockfile`, `pnpm lint`, `pnpm typecheck`,
+     `pnpm test`). It already ran green on Duet inside `m1-test`.
    - Credentials come from a file on the host, outside the repo: the Claude token from
      `claude setup-token`, and the GitHub App key.
    - `onUsage` feeds the account meters.
    - The helper model and chat can use Ollama through the relay later. Until then, keep the fakes
      behind a flag.
-5. **The daemon's host setup at boot (mini).** A launchd job that loads the `pf` walls from
+4. **The daemon's host setup at boot (mini).** A launchd job that loads the `pf` walls from
    `tools/m1/pf/` and starts the Ollama relay (`tools/m1/ollama-forward.mjs`).
    - Later, the daemon answers the machines' DNS itself, refusing tailnet names, and relays
      Antigravity's sign-in callback into the machine.
    - This changes the host's walls, so get the owner's explicit approval.
-6. **The resume brief** (from M1 step 6). Add what the machine has and lacks, such as package
+5. **The resume brief** (from M1 step 6). Add what the machine has and lacks, such as package
    managers and whether checks ran. Point to the plan and notes files instead of quoting them.
 
 After these, M3 can take a real Duet ticket end to end. Then come the rest of M4 (PM ticket drafting,
