@@ -35,6 +35,9 @@ The GitHub App and a real harness for checks and gates come next. Until then the
 only in demo mode, with the scripted agent and helper model, and a morning's worth of tickets. The
 milestones are in the spec, §14.
 
+**Picking up the work?** Start with [docs/handoff.md](docs/handoff.md): what's done, the open
+questions, and the next steps in order.
+
 ## Where work can happen
 
 - **Cloud sessions** (claude.ai/code on this repo) can work on the spec, the design track, and M2's
