@@ -3,9 +3,9 @@
 // bot and never from the owner. A ruleset on main means only the owner merges. Setting it up:
 // docs/github-app.md. Until the App exists, a fine-grained token (M1 step 6) can stand in.
 import { createSign } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { configDir, readOwnerOnly } from "./config.ts";
 
 /** Where a session's GitHub token comes from. `repo` is "owner/name". */
 export interface TokenSource {
@@ -21,9 +21,6 @@ export interface GitHubAppConfig {
   privateKeyPath: string;
   api?: string;
 }
-
-/** Where the App's ids and key live on the host (docs/github-app.md). */
-export const configDir = () => join(homedir(), ".config", "i-inc");
 
 /** Reads `github-app.json` ({appId, installationId, slug}); the key sits next to it. */
 export function readGitHubAppConfig(dir = configDir()): GitHubAppConfig {
@@ -61,12 +58,7 @@ export function appJwt(appId: string, privateKey: string, nowMs: number): string
 }
 
 /** Reads the App's key, refusing one that anyone but its owner can read. */
-export function readPrivateKey(path: string): string {
-  if ((statSync(path).mode & 0o077) !== 0) {
-    throw new Error(`${path} must be readable only by its owner: chmod 600 it`);
-  }
-  return readFileSync(path, "utf8");
-}
+export const readPrivateKey = readOwnerOnly;
 
 async function call(f: typeof fetch, url: string, init: RequestInit): Promise<Record<string, unknown>> {
   const res = await f(url, {

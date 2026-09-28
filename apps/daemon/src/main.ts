@@ -1,45 +1,67 @@
 // The daemon on the host: `bun src/main.ts`. Serves the API and the web app on the tailnet, and
 // ticks the scheduler.
 //
-// Real ACP sessions, Apple container machines and the GitHub App arrive with M1's findings and M3.
-// Until then it runs only in demo mode (I_INC_DEMO=1), with the scripted fake agent and a morning's
-// worth of tickets, so the web app has something real to show.
+// By default it runs real employees: ACP sessions in Apple container machines, with credentials
+// from ~/.config/i-inc (config.ts). With I_INC_DEMO=1 it runs the scripted fake agent over a
+// morning's worth of tickets instead, so the web app has something to show anywhere.
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, normalize } from "node:path";
 import { FakeAgent, FakeChat, FakeHarness, FakeHelper, FakeMachines } from "@i-inc/core/testing";
 import { createApp } from "./app.ts";
+import { readCredentials } from "./config.ts";
 import { seedDemo, seedDemoLater, seedDemoTickets } from "./demo.ts";
+import { realPorts } from "./real.ts";
 
 const home = process.env.I_INC_HOME ?? join(homedir(), ".i-inc");
 const port = Number(process.env.PORT ?? 7420);
 const host = process.env.HOST ?? "127.0.0.1";
 const web = process.env.I_INC_WEB ?? join(import.meta.dir, "../../web/dist");
 
-if (process.env.I_INC_DEMO !== "1") {
-  console.error(
-    "i.inc: real employees need M1's adapters. Run with I_INC_DEMO=1 to try the daemon with a scripted agent.",
-  );
-  process.exit(1);
-}
-
-mkdirSync(home, { recursive: true });
-const agent = new FakeAgent();
-const harness = new FakeHarness();
-const app = await createApp({
-  dbPath: join(home, "demo.db"),
+const demo = process.env.I_INC_DEMO === "1";
+const log = (m: string) => console.log(new Date().toISOString(), m);
+const common = {
   knowledgeDir: join(home, "knowledge"),
   clock: { now: () => Date.now() },
-  machines: new FakeMachines(),
-  agent,
-  harness,
-  helper: new FakeHelper(),
-  chat: new FakeChat(),
   ...(process.env.I_INC_TOKEN ? { token: process.env.I_INC_TOKEN } : {}),
-  log: (m) => console.log(new Date().toISOString(), m),
-});
+  log,
+};
+mkdirSync(home, { recursive: true });
 
-if (app.deps.registry.employees().length === 0) {
+const credentials = demo ? {} : readCredentials();
+const agent = new FakeAgent();
+const harness = new FakeHarness();
+const app = demo
+  ? await createApp({
+      ...common,
+      dbPath: join(home, "demo.db"),
+      machines: new FakeMachines(),
+      agent,
+      harness,
+      helper: new FakeHelper(),
+      chat: new FakeChat(),
+    })
+  : await createApp({
+      ...common,
+      dbPath: join(home, "i-inc.db"),
+      ...realPorts({ credentials, log }),
+    });
+
+if (!demo) {
+  for (const e of app.deps.registry.engines()) {
+    if (e.harness === "claude-code" && !credentials[e.accountId]) {
+      log(
+        `engine ${e.id} has no credentials: add account ${e.accountId} to ~/.config/i-inc/credentials.json`,
+      );
+    }
+  }
+  if (app.deps.registry.projects().length === 0) {
+    log("no projects yet: PUT /api/projects/<id> with {repo, checks}");
+  }
+  log("the helper model and chat are the fakes until they use Ollama");
+}
+
+if (demo && app.deps.registry.employees().length === 0) {
   seedDemo(app.deps.registry);
   app.daemon.ensureKnowledge();
   seedDemoTickets(app.deps.tickets, agent, harness, Date.now());
@@ -76,5 +98,5 @@ Bun.serve({
     new URL(req.url).pathname.startsWith("/api/") || !existsSync(web) ? app.handle(req) : serveWeb(req),
 });
 console.log(
-  `i.inc daemon on http://${host}:${port} (demo mode)${existsSync(web) ? "" : " · build apps/web to serve the app"}`,
+  `i.inc daemon on http://${host}:${port}${demo ? " (demo mode)" : ""}${existsSync(web) ? "" : " · build apps/web to serve the app"}`,
 );

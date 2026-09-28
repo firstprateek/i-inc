@@ -51,6 +51,31 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     ["GET", "/api/board", async () => json({ tickets: await views() })],
 
     ["GET", "/api/engines", async () => json({ engines: d.registry.engines() })],
+
+    ["GET", "/api/projects", async () => json({ projects: d.registry.projects() })],
+
+    [
+      "PUT",
+      "/api/projects/:id",
+      async (req, { id = "" }) => {
+        const body = (await req.json()) as { repo?: unknown; checks?: unknown };
+        const checks = Array.isArray(body.checks) ? body.checks : [];
+        if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$/.test(id)) {
+          return json(
+            { error: "a project is named by up to 40 letters, digits, spaces, dots and dashes" },
+            400,
+          );
+        }
+        if (typeof body.repo !== "string" || !/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(body.repo)) {
+          return json({ error: "repo must be owner/name on GitHub" }, 400);
+        }
+        if (!checks.length || !checks.every((c) => typeof c === "string" && c.trim())) {
+          return json({ error: "checks must be the recipe's commands, in order" }, 400);
+        }
+        d.registry.addProject({ id, repo: body.repo, checks });
+        return json({ project: d.registry.project(id) });
+      },
+    ],
     [
       "GET",
       "/api/chat",
