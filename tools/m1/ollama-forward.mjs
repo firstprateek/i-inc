@@ -3,7 +3,7 @@
 // It listens on the machines' gateway only (192.168.64.1, which exists while a machine runs), so
 // nothing on the LAN or the tailnet can reach it, and pipes each connection to Ollama on
 // 127.0.0.1. It logs one line per connection: which machine, and how many bytes each way.
-// Run it on the host: node tools/m1/ollama-forward.mjs
+// Run it on the host: node tools/m1/ollama-forward.mjs, or as a LaunchAgent (tools/host/).
 import net from "node:net";
 
 const listen = {
@@ -39,10 +39,20 @@ const server = net.createServer((machine) => {
   log(`${from} connected`);
 });
 
+// The gateway address exists only while a machine runs, so at boot the relay waits for it. It
+// runs as a LaunchAgent (tools/host/install-relay.sh), which starts it again if it exits.
+let waiting = false;
 server.on("error", (error) => {
-  log(`can't listen on ${listen.host}:${listen.port}: ${error.message}`);
-  process.exit(1);
+  if (error.code !== "EADDRNOTAVAIL") {
+    log(`can't listen on ${listen.host}:${listen.port}: ${error.message}`);
+    process.exit(1);
+  }
+  if (!waiting) log(`${listen.host} isn't up yet; waiting for a machine to start`);
+  waiting = true;
+  setTimeout(() => server.listen(listen), 5000);
 });
-server.listen(listen, () =>
-  log(`forwarding ${listen.host}:${listen.port} to Ollama on ${ollama.host}:${ollama.port}`),
-);
+server.on("listening", () => {
+  waiting = false;
+  log(`forwarding ${listen.host}:${listen.port} to Ollama on ${ollama.host}:${ollama.port}`);
+});
+server.listen(listen);

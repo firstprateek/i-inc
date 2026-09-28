@@ -3,7 +3,7 @@
 // because `machine run` re-splits its arguments (M1).
 import { spawn } from "node:child_process";
 import type { ChecksResult, GatesResult, Harness, Ticket } from "@i-inc/core";
-import { defaultMachineSettings, type MachineSettings, machineName } from "./machines.ts";
+import { assertWalls, defaultMachineSettings, type MachineSettings, machineName } from "./machines.ts";
 
 /**
  * Runs a script in an employee's machine and resolves with its exit code and output. Variables in
@@ -18,6 +18,11 @@ export type RunScript = (
 export function machineScript(s: MachineSettings = defaultMachineSettings): RunScript {
   return (employeeId, script, env = {}) =>
     new Promise((resolve, reject) => {
+      try {
+        assertWalls(s);
+      } catch (err) {
+        return reject(err);
+      }
       const names = Object.keys(env);
       const bad = names.find((name) => !/^[A-Z_][A-Z0-9_]*$/.test(name));
       if (bad) return reject(new Error(`can't pass ${bad} into a machine`));

@@ -2,11 +2,18 @@
 // step 5), and the Apple container provider against a recorded command line.
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { Engine, SessionRequest } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
 import { AcpAgent, type AgentProcess, type LaunchRequest, type UsageReport } from "../src/acp.ts";
-import { AppleMachines, machineLaunch, workDir } from "../src/machines.ts";
+import { machineScript } from "../src/harness.ts";
+import { AppleMachines, defaultMachineSettings, machineLaunch, workDir } from "../src/machines.ts";
+
+// The defaults, without the walls' marker, which exists only on the mini (a test below covers it).
+const { wallsMarker: _, ...noWalls } = defaultMachineSettings;
 
 type Json = Record<string, unknown>;
 type Script = (method: string, params: Json, reply: (m: Json) => void, id: number | undefined) => void;
@@ -242,7 +249,7 @@ describe("Apple container machines", () => {
 
   it("makes a missing machine with no home mount and fixed resources, then stops it", async () => {
     const calls: string[][] = [];
-    const m = new AppleMachines(undefined, async (_bin, args) => {
+    const m = new AppleMachines(noWalls, async (_bin, args) => {
       calls.push(args);
       if (args[1] === "run" && calls.length === 1) throw new Error(notFound);
       return "";
@@ -272,7 +279,7 @@ describe("Apple container machines", () => {
 
   it("boots an existing machine with `machine run`, since there is no `machine start`", async () => {
     const calls: string[][] = [];
-    const m = new AppleMachines(undefined, async (_bin, args) => {
+    const m = new AppleMachines(noWalls, async (_bin, args) => {
       calls.push(args);
       return "";
     });
@@ -282,7 +289,7 @@ describe("Apple container machines", () => {
   });
 
   it("passes on other failures instead of making a new machine", async () => {
-    const m = new AppleMachines(undefined, async () => {
+    const m = new AppleMachines(noWalls, async () => {
       throw new Error("XPC connection error: the container service isn't running");
     });
     await expect(m.ensureUp("ada")).rejects.toThrow("container service isn't running");
@@ -335,7 +342,7 @@ describe("Apple container machines", () => {
   });
 
   it("refuses a variable name that isn't one, and an employee id that isn't one", () => {
-    const launch = machineLaunch(undefined, () => {
+    const launch = machineLaunch(noWalls, () => {
       throw new Error("never started");
     });
     expect(() => launch({ employeeId: "ada", engine: claude, cwd: "/w", env: { "A=B": "x" } })).toThrow(
@@ -349,5 +356,29 @@ describe("Apple container machines", () => {
   it("keeps each ticket's work in the employee's home", () => {
     expect(workDir("t7")).toBe("/home/employee/work/inc-t7");
     expect(() => workDir("../t7")).toThrow("not a ticket id");
+  });
+});
+
+describe("the walls", () => {
+  it("keep every machine down while their marker is missing", async () => {
+    const marker = join(mkdtempSync(join(tmpdir(), "inc-walls-")), "i-inc-walls.ok");
+    const s = { bin: "container", image: "x", user: "employee", cpus: 1, memory: "1G", wallsMarker: marker };
+    const exec: string[][] = [];
+    const machines = new AppleMachines(s, async (_bin, args) => {
+      exec.push(args);
+      return "";
+    });
+    await expect(machines.ensureUp("ada")).rejects.toThrow("the walls aren't up");
+    expect(() =>
+      machineLaunch(s, () => {
+        throw new Error("never started");
+      })({ employeeId: "ada", engine: claude, cwd: "/w", env: {} }),
+    ).toThrow("the walls aren't up");
+    await expect(machineScript(s)("ada", "true")).rejects.toThrow("the walls aren't up");
+    expect(exec).toEqual([]);
+
+    writeFileSync(marker, "");
+    await machines.ensureUp("ada");
+    expect(exec).toHaveLength(1);
   });
 });
