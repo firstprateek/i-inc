@@ -122,6 +122,29 @@ describe("the machine harness", () => {
     expect(git(origin, "rev-parse", "inc/t7-x").trim()).toBe(git(work, "rev-parse", "HEAD").trim());
   });
 
+  it("gates: then waits for CI on the pushed commit, and fails with its reason", async () => {
+    const work = repos("ours", "other");
+    const seen: string[] = [];
+    const redCi = new MachineHarness(
+      {
+        recipe: () => ["true"],
+        worktree: () => work,
+        github: async () => ({}),
+        ci: async (_ticket, sha) => {
+          seen.push(sha);
+          return { ok: false, reason: "CI failed: Lint, types and tests (failure)" };
+        },
+      },
+      localScript,
+    );
+    expect(await redCi.runGates(ticket)).toEqual({
+      ok: false,
+      conflict: false,
+      reason: "CI failed: Lint, types and tests (failure)",
+    });
+    expect(seen).toEqual([git(work, "rev-parse", "HEAD").trim()]);
+  });
+
   it("gates: checks that fail after the rebase are not a conflict", async () => {
     const work = repos("ours", "other");
     const result = await harness(work, ["false"]).runGates(ticket);

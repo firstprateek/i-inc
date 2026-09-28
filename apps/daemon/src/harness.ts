@@ -68,6 +68,8 @@ export interface HarnessSettings {
    * PR shows what passed the gates. Without it, the gates rebase locally only.
    */
   github?: (ticket: Ticket) => Promise<Record<string, string>>;
+  /** With GitHub: waits for CI on the pushed commit, the last of stage 8's gates. */
+  ci?: (ticket: Ticket, sha: string) => Promise<{ ok: true } | { ok: false; reason: string }>;
 }
 
 const safeId = /^[A-Za-z0-9_-]{1,64}$/;
@@ -110,7 +112,7 @@ export function rebaseScript(worktree: string): string {
 export function pushScript(worktree: string): string {
   return [
     `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
-    "git push --quiet --force-with-lease origin HEAD && echo @@pushed",
+    'git push --quiet --force-with-lease origin HEAD && echo "@@pushed $(git rev-parse HEAD)"',
   ].join("\n");
 }
 
@@ -190,13 +192,16 @@ export class MachineHarness implements Harness {
     }
     if (this.s.github) {
       const pushed = await this.run(ticket.assignee, pushScript(this.worktree(ticket)), env);
-      if (pushed.code !== 0 || !pushed.output.includes("@@pushed")) {
+      const sha = /^@@pushed ([0-9a-f]{40})$/m.exec(pushed.output)?.[1];
+      if (pushed.code !== 0 || !sha) {
         return {
           ok: false,
           conflict: false,
           reason: `couldn't push the rebased branch: ${pushed.output.trim().slice(-300)}`,
         };
       }
+      const ci = await this.s.ci?.(ticket, sha);
+      if (ci && !ci.ok) return { ok: false, conflict: false, reason: ci.reason };
     }
     return { ok: true };
   }

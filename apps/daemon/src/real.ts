@@ -8,7 +8,7 @@ import { FakeChat, FakeHelper } from "@i-inc/core/testing";
 import { AcpAgent, type Launch } from "./acp.ts";
 import type { AppOptions } from "./app.ts";
 import { type Credentials, credentialsFor } from "./config.ts";
-import { commitIdentity, PullRequests, type TokenSource } from "./github.ts";
+import { commitIdentity, PullRequests, type TokenSource, waitForCi } from "./github.ts";
 import { MachineHarness, machineScript, type RunScript } from "./harness.ts";
 import {
   AppleMachines,
@@ -80,6 +80,10 @@ export function realPorts(
                 github: async (ticket) => {
                   const repo = registry.project(ticket.project)?.repo;
                   return repo ? { GH_TOKEN: await github.tokens.token(repo) } : {};
+                },
+                ci: async (ticket, sha) => {
+                  const repo = registry.project(ticket.project)?.repo;
+                  return repo ? waitForCi(github.tokens, repo, sha) : { ok: true };
                 },
               }
             : {}),

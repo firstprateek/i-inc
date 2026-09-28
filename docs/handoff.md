@@ -17,7 +17,7 @@ Merged on `main`:
 | M3 image | `images/employee/`: the base image, built on the mini and checked in a throwaway machine, with Duet's recipe green in it ([its README](../images/employee/README.md)). Everything in a machine runs as its user `employee` |
 | M4 (part) | Brain and handbook repos, edits applied from each retro, policies that wait for the owner, orientation, and the viewer |
 
-`pnpm check`, `pnpm typecheck` and `pnpm test` pass (132 tests). CI runs all three.
+`pnpm check`, `pnpm typecheck` and `pnpm test` pass (137 tests). CI runs all three.
 
 ## Open questions for the owner
 
@@ -34,8 +34,10 @@ before any `sudo` or change to the host. The other items can run anywhere.
 2. **The rest of GitHub in the loop.** Pick-up makes the worktree and branch in the builder's
    machine, starting it with an empty commit (GitHub opens no PR without one), and opens the draft
    PR (`workspace.ts`). Sessions get a token for the ticket's repo as `GH_TOKEN`. The gates push the
-   rebased branch, and the report goes into the PR, which is then marked ready. Still to do:
-   - Stage 8 doesn't wait for GitHub CI yet: after the push, poll the PR's check runs.
+   rebased branch and wait for GitHub CI on it (`waitForCi`), and the report goes into the PR, which
+   is then marked ready. Still to do:
+   - Red CI at the gates fails the ticket honestly. It could get a fix session first, as failed
+     checks do at stage 4.
    - A token lasts an hour, and a session gets one at launch. For longer sessions: in the image,
      git's credential helper and a `gh` wrapper ask the daemon's API for a fresh token (the walls
      already let machines reach the API), with a per-session key passed in with `-e`, so a machine

@@ -211,6 +211,55 @@ export class PullRequests {
   }
 }
 
+export interface CiOptions {
+  fetch?: typeof fetch;
+  api?: string;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+  /** How long CI may take in all. */
+  timeoutMs?: number;
+  /** How long to wait for the first check to show up before deciding the repo has no CI. */
+  graceMs?: number;
+  pollMs?: number;
+}
+
+/**
+ * Stage 8's "GitHub CI green" (spec §6): waits until every check run on the commit has finished,
+ * and says which failed. A repo whose commits get no check runs within the grace period has no CI.
+ */
+export async function waitForCi(
+  tokens: TokenSource,
+  repo: string,
+  sha: string,
+  o: CiOptions = {},
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const f = o.fetch ?? fetch;
+  const now = o.now ?? Date.now;
+  const sleep = o.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  if (!/^[0-9a-f]{7,40}$/.test(sha)) throw new Error(`not a commit: ${sha}`);
+  const start = now();
+  for (;;) {
+    const body = await call(
+      f,
+      `${o.api ?? API}/repos/${checkRepo(repo)}/commits/${sha}/check-runs?per_page=100`,
+      { method: "GET", headers: { authorization: `Bearer ${await tokens.token(repo)}` } },
+    );
+    const runs = (Array.isArray(body.check_runs) ? body.check_runs : []) as Record<string, unknown>[];
+    const waited = now() - start;
+    if (runs.length === 0 && waited >= (o.graceMs ?? 120_000)) return { ok: true };
+    if (runs.length > 0 && runs.every((r) => r.status === "completed")) {
+      const failed = runs.filter((r) => !["success", "neutral", "skipped"].includes(String(r.conclusion)));
+      if (failed.length === 0) return { ok: true };
+      return {
+        ok: false,
+        reason: `CI failed: ${failed.map((r) => `${r.name} (${r.conclusion})`).join(", ")}`,
+      };
+    }
+    if (waited >= (o.timeoutMs ?? 45 * 60_000)) return { ok: false, reason: "CI didn't finish in time" };
+    await sleep(o.pollMs ?? 20_000);
+  }
+}
+
 /**
  * The git identity for an employee's commits: its own name, with the bot's noreply address, so GitHub
  * shows them as the App's ("Ada (i.inc)"). The address needs the bot account's id.
