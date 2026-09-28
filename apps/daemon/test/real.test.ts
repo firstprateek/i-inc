@@ -151,5 +151,11 @@ describe("real mode", () => {
     expect(scripts[0]?.employeeId).toBe("ada");
     expect(scripts[0]?.script).toContain("cd '/home/employee/work/inc-7'");
     expect(scripts[0]?.script).toContain("pnpm test");
+    // Briefs say what the machine has and which checks come.
+    const described = app.deps.harness.describe?.(ticket) ?? [];
+    expect(described[0]).toContain("Node 24, pnpm 10, git, gh and Docker");
+    expect(described[1]).toBe(
+      "After you build, the harness runs Duet's checks in your worktree, in order: `pnpm test`. Run them yourself before you say you're done.",
+    );
   });
 });

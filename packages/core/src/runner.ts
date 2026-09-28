@@ -503,7 +503,7 @@ async function session(c: Step, duty: Duty, employee: Employee, task: string): P
   }
 
   await c.p.machines.ensureUp(employee.id);
-  const text = brief(c.ticket, stage, c.s, task);
+  const text = brief(c.ticket, stage, c.s, task, c.p.harness.describe?.(c.ticket));
   await c.emit({
     type: "session-started",
     at: c.p.clock.now(),

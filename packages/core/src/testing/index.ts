@@ -176,6 +176,11 @@ export class FakeHarness implements Harness {
     this.gateRuns++;
     return this.gates.shift() ?? { ok: true };
   }
+  /** What briefs say about the machine and the checks. */
+  description: string[] = [];
+  describe(_: Ticket): string[] {
+    return this.description;
+  }
 }
 
 /**

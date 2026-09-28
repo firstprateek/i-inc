@@ -32,6 +32,10 @@ export interface RealOptions {
   runScript?: RunScript;
 }
 
+/** What the employee image has (images/employee/Dockerfile), for briefs. */
+const machine =
+  "Your machine runs Ubuntu 24.04. You're the user employee, with passwordless sudo. It has Node 24, pnpm 10, git, gh and Docker; install anything else you need.";
+
 export function realPorts(
   o: RealOptions,
 ): Pick<AppOptions, "machines" | "agent" | "harness" | "workspace" | "helper" | "chat"> {
@@ -70,6 +74,7 @@ export function realPorts(
         {
           recipe: (project) => registry.project(project)?.checks,
           worktree: (ticketId) => workDir(ticketId, s),
+          machine,
           ...(github
             ? {
                 github: async (ticket) => {

@@ -4,7 +4,13 @@ import type { Ticket } from "./model.ts";
 import type { StageId } from "./stages.ts";
 import type { TicketState } from "./state.ts";
 
-export function brief(ticket: Ticket, stage: StageId, state: TicketState, task: string): string {
+export function brief(
+  ticket: Ticket,
+  stage: StageId,
+  state: TicketState,
+  task: string,
+  machine: string[] = [],
+): string {
   const lines = [
     `Ticket #${ticket.id} [${ticket.type}] ${ticket.title} · ${ticket.project} · effort ${ticket.effort}`,
     "Done when:",
@@ -26,8 +32,10 @@ export function brief(ticket: Ticket, stage: StageId, state: TicketState, task: 
       `You are taking this ticket over from ${state.handedFrom}: the branch, plan and notes are theirs.`,
     );
   }
+  if (machine.length) lines.push("Your machine and the checks:", ...machine.map((m) => `- ${m}`));
   if (state.outputs.plan) lines.push("Plan:", state.outputs.plan);
   if (state.finished.length) lines.push(`Stages done: ${state.finished.join(", ")}`);
+  if (state.lastChecks?.green) lines.push("The last check run passed.");
   if (state.lastChecks && !state.lastChecks.green) {
     lines.push("Last check run failed:", ...state.lastChecks.failures.map((f) => `- ${f}`));
   }

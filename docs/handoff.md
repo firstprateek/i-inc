@@ -17,7 +17,7 @@ Merged on `main`:
 | M3 image | `images/employee/`: the base image, built on the mini and checked in a throwaway machine, with Duet's recipe green in it ([its README](../images/employee/README.md)). Everything in a machine runs as its user `employee` |
 | M4 (part) | Brain and handbook repos, edits applied from each retro, policies that wait for the owner, orientation, and the viewer |
 
-`pnpm check`, `pnpm typecheck` and `pnpm test` pass (131 tests). CI runs all three.
+`pnpm check`, `pnpm typecheck` and `pnpm test` pass (132 tests). CI runs all three.
 
 ## Open questions for the owner
 
@@ -54,8 +54,6 @@ before any `sudo` or change to the host. The other items can run anywhere.
    - Later: run the daemon itself at boot (a LaunchAgent for `bun apps/daemon/src/main.ts` from a
      checkout on the mini, which needs Bun there), answer the machines' DNS in the daemon, refusing
      tailnet names, and relay Antigravity's sign-in callback into the machine.
-4. **The resume brief** (from M1 step 6). Add what the machine has and lacks, such as package
-   managers and whether checks ran. Point to the plan and notes files instead of quoting them.
 
 After these, M3 can take a real Duet ticket end to end. Then come the rest of M4 (PM ticket drafting,
 UX review, non-code tickets) and M5 (track records per engine, enforced usage caps, K per host).
