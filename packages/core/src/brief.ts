@@ -11,6 +11,9 @@ export function brief(ticket: Ticket, stage: StageId, state: TicketState, task: 
     ...ticket.doneWhen.map((d) => `- ${d}`),
     `Stage: ${stage}. Task: ${task}`,
   ];
+  if (state.pr) {
+    lines.push(`Branch: ${state.pr.branch}, with draft PR ${state.pr.url}. Commit to it and push.`);
+  }
   if (state.interruptedByOwner) {
     lines.push("The owner stopped your last session with an urgent message. Read it first, then carry on.");
   } else if (state.interrupted || state.paused) {

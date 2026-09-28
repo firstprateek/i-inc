@@ -1,7 +1,7 @@
 // The core has no I/O. Everything outside it comes through these ports: the daemon plugs in ACP
 // sessions, Apple container machines and SQLite; tests plug in the fakes in ./testing.
 import type { TicketEvent } from "./events.ts";
-import type { Duty, Employee, Engine, Id, Ticket } from "./model.ts";
+import type { Duty, Employee, Engine, Id, PullRequestRef, Ticket } from "./model.ts";
 import type { StageId } from "./stages.ts";
 
 export interface Clock {
@@ -56,6 +56,16 @@ export interface Harness {
   runGates(ticket: Ticket): Promise<GatesResult>;
 }
 
+/**
+ * A code ticket's branch and pull request (spec §6). Pick-up makes the worktree and branch in the
+ * builder's machine and opens a draft PR, so CI runs from the start. The report then goes into the
+ * PR, which is marked ready for the owner. Both are safe to repeat after a crash.
+ */
+export interface Workspace {
+  open(ticket: Ticket, builder: Employee): Promise<PullRequestRef>;
+  ready(ticket: Ticket, pr: PullRequestRef, report: string): Promise<void>;
+}
+
 export interface Company {
   employee(id: Id): Employee;
   engine(id: Id): Engine;
@@ -85,4 +95,6 @@ export interface Ports {
   agent: Agent;
   harness: Harness;
   company: Company;
+  /** Absent in demo mode and in tests: tickets then run without a branch or PR. */
+  workspace?: Workspace;
 }

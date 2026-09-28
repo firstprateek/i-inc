@@ -24,6 +24,7 @@ import {
   type TicketEvent,
   type TicketState,
   type Waiting,
+  type Workspace,
 } from "@i-inc/core";
 import type { ChatLog } from "./chat.ts";
 import type { Db } from "./db.ts";
@@ -40,6 +41,7 @@ export interface DaemonDeps {
   machines: MachineProvider;
   agent: Agent;
   harness: Harness;
+  workspace?: Workspace;
   helper: HelperModel;
   chat: ChatSession;
   chatLog: ChatLog;
@@ -68,7 +70,8 @@ export class Daemon {
         this.awake.add(id);
       },
     };
-    return { clock, store, machines, agent, harness, company: registry };
+    const { workspace } = this.d;
+    return { clock, store, machines, agent, harness, company: registry, ...(workspace ? { workspace } : {}) };
   }
 
   async state(id: Id): Promise<TicketState> {

@@ -17,7 +17,7 @@ Merged on `main`:
 | M3 image | `images/employee/`: the base image, built on the mini and checked in a throwaway machine, with Duet's recipe green in it ([its README](../images/employee/README.md)). Everything in a machine runs as its user `employee` |
 | M4 (part) | Brain and handbook repos, edits applied from each retro, policies that wait for the owner, orientation, and the viewer |
 
-`pnpm check`, `pnpm typecheck` and `pnpm test` pass (120 tests). CI runs all three.
+`pnpm check`, `pnpm typecheck` and `pnpm test` pass (130 tests). CI runs all three.
 
 ## Open questions for the owner
 
@@ -31,18 +31,19 @@ before any `sudo` or change to the host. The other items can run anywhere.
 1. **The owner sets up the GitHub App** by following [github-app.md](github-app.md): the App, its
    key on the mini, the ids in `~/.config/i-inc/github-app.json`, and a ruleset on Duet's `main`.
    Then run the check at its end. Until then, the fine-grained token from M1 step 6 stands in.
-2. **GitHub in the loop.** Real mode runs, but pick-up only boots the machine.
-   - Pick-up makes the worktree at `workDir(ticketId)` and the branch `inc/<id>-<slug>`, and opens
-     the draft PR (`PullRequests.openDraft`). That needs a port in core. GitHub refuses a PR with
-     no commits, so the branch starts with an empty commit. Commits use `commitIdentity`.
-   - Stage 9 writes the report into the PR (`setBody`) and marks it ready (`markReady`).
-   - The GitHub token reaches the machine like the Claude token. An installation token lasts an
-     hour and a session can run longer, so don't fix one at launch. Suggested: in the image, git's
-     credential helper and a `gh` wrapper ask the daemon's API for a fresh token (the walls already
-     let machines reach the API), with a per-session key passed in with `-e`, so a machine only
-     gets its own ticket's repo.
-   - Later: usage reports are in the registry (`registry.usage()`) but not on My desk yet, and the
-     helper model and chat are still the fakes until they use Ollama through the relay.
+2. **The rest of GitHub in the loop.** Pick-up makes the worktree and branch in the builder's
+   machine, starting it with an empty commit (GitHub opens no PR without one), and opens the draft
+   PR (`workspace.ts`). Sessions get a token for the ticket's repo as `GH_TOKEN`. The gates push the
+   rebased branch, and the report goes into the PR, which is then marked ready. Still to do:
+   - Stage 8 doesn't wait for GitHub CI yet: after the push, poll the PR's check runs.
+   - A token lasts an hour, and a session gets one at launch. For longer sessions: in the image,
+     git's credential helper and a `gh` wrapper ask the daemon's API for a fresh token (the walls
+     already let machines reach the API), with a per-session key passed in with `-e`, so a machine
+     only gets its own ticket's repo.
+   - A reviewer or verifier checks out the branch in its own machine, from its brief. Pick-up could
+     make their worktrees too.
+   - Usage reports are in the registry (`registry.usage()`) but not on My desk yet, and the helper
+     model and chat are still the fakes until they use Ollama through the relay.
 3. **The daemon's host setup at boot (mini).** A launchd job that loads the `pf` walls from
    `tools/m1/pf/` and starts the Ollama relay (`tools/m1/ollama-forward.mjs`).
    - Later, the daemon answers the machines' DNS itself, refusing tailnet names, and relays

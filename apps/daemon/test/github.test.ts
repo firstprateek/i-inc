@@ -154,6 +154,26 @@ describe("pull requests, as the bot", () => {
     expect(calls).toHaveLength(3);
   });
 
+  it("finds a branch's open PR, and reads whether a PR is a draft", async () => {
+    const { calls, f } = recorder((call) =>
+      call.url.includes("?head=")
+        ? { json: [{ number: 3, html_url: "https://github.com/firstprateek/duet/pull/3", node_id: "PR_3" }] }
+        : { json: { draft: true } },
+    );
+    const prs = new PullRequests(new FineGrainedToken("t"), { fetch: f });
+    expect(await prs.find("firstprateek/duet", "inc/7-x")).toEqual({
+      number: 3,
+      url: "https://github.com/firstprateek/duet/pull/3",
+      nodeId: "PR_3",
+    });
+    expect(calls[0]?.url).toBe(
+      "https://api.github.com/repos/firstprateek/duet/pulls?head=firstprateek%3Ainc%2F7-x&state=open",
+    );
+    expect(await prs.isDraft("firstprateek/duet", 3)).toBe(true);
+    const none = recorder(() => ({ json: [] }));
+    expect(await new PullRequests(new FineGrainedToken("t"), { fetch: none.f }).find("o/r", "b")).toBeNull();
+  });
+
   it("fails loudly when GraphQL returns errors", async () => {
     const { f } = recorder(() => ({ json: { errors: [{ message: "not a draft" }] } }));
     const prs = new PullRequests(new FineGrainedToken("t"), { fetch: f });

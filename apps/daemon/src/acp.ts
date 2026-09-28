@@ -8,7 +8,7 @@
 // urgent message.
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
-import type { Agent, Engine, Id, SessionOutcome, SessionRequest } from "@i-inc/core";
+import type { Agent, Engine, Id, SessionOutcome, SessionRequest, Ticket } from "@i-inc/core";
 
 type Json = Record<string, unknown>;
 
@@ -43,8 +43,8 @@ export interface UsageReport {
 
 export interface AcpOptions {
   launch: Launch;
-  /** The environment carrying an engine's credential into its session. */
-  credentials: (engine: Engine) => Record<string, string>;
+  /** The environment carrying an engine's credential, and the ticket's GitHub token, into its session. */
+  credentials: (engine: Engine, ticket: Ticket) => Record<string, string> | Promise<Record<string, string>>;
   /** Where a ticket's worktree lives in the machine. */
   cwdFor: (ticketId: Id) => string;
   onUsage?: (u: UsageReport) => void;
@@ -69,7 +69,7 @@ export class AcpAgent implements Agent {
       employeeId: r.employee.id,
       engine: r.engine,
       cwd: this.o.cwdFor(r.ticket.id),
-      env: this.o.credentials(r.engine),
+      env: await this.o.credentials(r.engine, r.ticket),
     });
     const rpc = new Rpc(proc, this.o.log);
     let limit: { rejected: boolean; resetsAt: number | null } = { rejected: false, resetsAt: null };

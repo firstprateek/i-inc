@@ -123,6 +123,15 @@ export interface KnowledgeEdit {
 
 /** An orientation is a new hire's first ticket: read the handbook and projects, write brain pages. */
 export type TicketType = "fix" | "feat" | "chore" | "errand" | "orientation";
+
+/** A code ticket's pull request, as pick-up opened it (spec §6, stage 1). */
+export interface PullRequestRef {
+  number: number;
+  url: string;
+  /** GitHub's id for it, which marking it ready needs. */
+  nodeId: string;
+  branch: string;
+}
 export type Effort = "low" | "medium" | "high";
 
 export interface Ticket {

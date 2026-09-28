@@ -165,6 +165,26 @@ export class PullRequests {
     return { number: Number(body.number), url: String(body.html_url), nodeId: String(body.node_id) };
   }
 
+  /** The open PR for a branch, if there is one: pick-up after a crash finds the PR it opened. */
+  async find(repo: string, branch: string): Promise<DraftPr | null> {
+    const owner = checkRepo(repo).split("/")[0] ?? "";
+    const head = encodeURIComponent(`${owner}:${branch}`);
+    const list = (await call(this.f, `${this.api}/repos/${repo}/pulls?head=${head}&state=open`, {
+      method: "GET",
+      headers: await this.auth(repo),
+    })) as unknown as Record<string, unknown>[];
+    const [pr] = Array.isArray(list) ? list : [];
+    return pr ? { number: Number(pr.number), url: String(pr.html_url), nodeId: String(pr.node_id) } : null;
+  }
+
+  async isDraft(repo: string, number: number): Promise<boolean> {
+    const pr = await call(this.f, `${this.api}/repos/${checkRepo(repo)}/pulls/${number}`, {
+      method: "GET",
+      headers: await this.auth(repo),
+    });
+    return pr.draft === true;
+  }
+
   /** Stage 9: the report becomes the PR body. */
   async setBody(repo: string, number: number, body: string): Promise<void> {
     await call(this.f, `${this.api}/repos/${checkRepo(repo)}/pulls/${number}`, {

@@ -1,6 +1,6 @@
 // Fakes for every port, so the whole pipeline runs in tests without spending tokens.
 import type { TicketEvent } from "../events.ts";
-import type { Duty, Employee, Engine, Id, Ticket } from "../model.ts";
+import type { Duty, Employee, Engine, Id, PullRequestRef, Ticket } from "../model.ts";
 import type {
   Agent,
   ChatSession,
@@ -15,6 +15,7 @@ import type {
   Ports,
   SessionOutcome,
   SessionRequest,
+  Workspace,
 } from "../ports.ts";
 import type { StageId } from "../stages.ts";
 
@@ -46,6 +47,26 @@ export class FakeMachines implements MachineProvider {
   }
   async stop(employeeId: Id): Promise<void> {
     this.stopped.push(employeeId);
+  }
+}
+
+/** Records the branches it opens and the PRs it marks ready. Set `failOpen` to make pick-up fail. */
+export class FakeWorkspace implements Workspace {
+  readonly opened: Id[] = [];
+  readonly readied: { ticketId: Id; pr: PullRequestRef; report: string }[] = [];
+  failOpen: string | null = null;
+  async open(ticket: Ticket, builder: Employee): Promise<PullRequestRef> {
+    if (this.failOpen) throw new Error(this.failOpen);
+    this.opened.push(ticket.id);
+    return {
+      number: Number(ticket.id),
+      url: `https://github.com/owner/repo/pull/${ticket.id}`,
+      nodeId: `PR_${ticket.id}`,
+      branch: `inc/${ticket.id}-${builder.id}`,
+    };
+  }
+  async ready(ticket: Ticket, pr: PullRequestRef, report: string): Promise<void> {
+    this.readied.push({ ticketId: ticket.id, pr, report });
   }
 }
 
