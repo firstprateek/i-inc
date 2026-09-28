@@ -54,6 +54,11 @@ export type GatesResult = { ok: true } | { ok: false; conflict: boolean; reason:
 export interface Harness {
   runChecks(ticket: Ticket): Promise<ChecksResult>;
   runGates(ticket: Ticket): Promise<GatesResult>;
+  /**
+   * What a brief should say about the machine and the project's checks. In M1 neither engine knew
+   * the machine had no pnpm, because the brief said nothing about it.
+   */
+  describe?(ticket: Ticket): string[];
 }
 
 /**

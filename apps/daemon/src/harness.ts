@@ -61,6 +61,8 @@ export interface HarnessSettings {
   worktree: (ticketId: string) => string;
   /** How many lines of a failing step's output go back to the builder. */
   tailLines?: number;
+  /** What the machine has, for briefs: images/employee's tools. */
+  machine?: string;
   /**
    * With GitHub: the environment (GH_TOKEN) for fetching main and pushing the rebased branch, so the
    * PR shows what passed the gates. Without it, the gates rebase locally only.
@@ -140,6 +142,18 @@ export class MachineHarness implements Harness {
   private worktree(ticket: Ticket): string {
     if (!safeId.test(ticket.id)) throw new Error(`not a ticket id: ${ticket.id}`);
     return this.s.worktree(ticket.id);
+  }
+
+  describe(ticket: Ticket): string[] {
+    const recipe = this.s.recipe(ticket.project);
+    return [
+      ...(this.s.machine ? [this.s.machine] : []),
+      ...(recipe?.length
+        ? [
+            `After you build, the harness runs ${ticket.project}'s checks in your worktree, in order: ${recipe.map((c) => `\`${c}\``).join(", ")}. Run them yourself before you say you're done.`,
+          ]
+        : []),
+    ];
   }
 
   async runChecks(ticket: Ticket): Promise<ChecksResult> {
