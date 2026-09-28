@@ -40,7 +40,10 @@ const ticket: Ticket = {
 };
 
 function harness(worktree: string, recipe: string[]) {
-  return new MachineHarness({ recipes: { duet: recipe }, worktree: () => worktree }, localScript);
+  return new MachineHarness(
+    { recipe: (project) => (project === "duet" ? recipe : undefined), worktree: () => worktree },
+    localScript,
+  );
 }
 
 /** An origin with main, and a worktree on a ticket branch that changed `file` to `ours`. */

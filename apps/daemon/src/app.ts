@@ -11,14 +11,17 @@ import { migrate } from "./schema.ts";
 import { SqliteEventStore } from "./store.ts";
 import { Tickets } from "./tickets.ts";
 
+/** A port, or a way to make it from the registry (real mode's recipes and usage live there). */
+export type FromRegistry<T> = T | ((registry: Registry) => T);
+
 export interface AppOptions extends ApiOptions {
   dbPath: string;
   /** Where brains and the handbook live: git repos on the host, never pushed. */
   knowledgeDir: string;
   clock: Clock;
   machines: MachineProvider;
-  agent: Agent;
-  harness: Harness;
+  agent: FromRegistry<Agent>;
+  harness: FromRegistry<Harness>;
   helper: HelperModel;
   chat: ChatSession;
   log?: (msg: string) => void;
@@ -27,14 +30,17 @@ export interface AppOptions extends ApiOptions {
 export async function createApp(o: AppOptions) {
   const db = await openDb(o.dbPath);
   migrate(db);
+  const registry = new Registry(db);
+  const make = <T>(port: FromRegistry<T>): T =>
+    typeof port === "function" ? (port as (r: Registry) => T)(registry) : port;
   const deps: DaemonDeps = {
     clock: o.clock,
     store: new SqliteEventStore(db),
-    registry: new Registry(db),
+    registry,
     tickets: new Tickets(db),
     machines: o.machines,
-    agent: o.agent,
-    harness: o.harness,
+    agent: make(o.agent),
+    harness: make(o.harness),
     helper: o.helper,
     chat: o.chat,
     chatLog: new ChatLog(db),

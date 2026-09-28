@@ -27,8 +27,8 @@ export function machineScript(s: MachineSettings = defaultMachineSettings): RunS
 }
 
 export interface HarnessSettings {
-  /** The check recipe per project, in order: for Duet, pnpm install, check, typecheck and test. */
-  recipes: Record<string, string[]>;
+  /** A project's check recipe, in order: for Duet, pnpm install, lint, typecheck and test. */
+  recipe: (project: string) => string[] | undefined;
   /** The ticket's worktree in the machine; the same path the ACP session works in. */
   worktree: (ticketId: string) => string;
   /** How many lines of a failing step's output go back to the builder. */
@@ -91,7 +91,7 @@ export class MachineHarness implements Harness {
   ) {}
 
   private recipe(ticket: Ticket): string[] {
-    const recipe = this.s.recipes[ticket.project];
+    const recipe = this.s.recipe(ticket.project);
     if (!recipe?.length) throw new Error(`no check recipe for ${ticket.project}`);
     return recipe;
   }
