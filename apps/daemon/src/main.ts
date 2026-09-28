@@ -9,8 +9,9 @@ import { homedir } from "node:os";
 import { join, normalize } from "node:path";
 import { FakeAgent, FakeChat, FakeHarness, FakeHelper, FakeMachines } from "@i-inc/core/testing";
 import { createApp } from "./app.ts";
-import { readCredentials } from "./config.ts";
+import { configDir, readCredentials } from "./config.ts";
 import { seedDemo, seedDemoLater, seedDemoTickets } from "./demo.ts";
+import { GitHubApp, readGitHubAppConfig } from "./github.ts";
 import { realPorts } from "./real.ts";
 
 const home = process.env.I_INC_HOME ?? join(homedir(), ".i-inc");
@@ -29,6 +30,9 @@ const common = {
 mkdirSync(home, { recursive: true });
 
 const credentials = demo ? {} : readCredentials();
+// The GitHub App, once it's set up (docs/github-app.md). Without it, tickets run with no branch or PR.
+const appConfig =
+  !demo && existsSync(join(configDir(), "github-app.json")) ? readGitHubAppConfig() : undefined;
 const agent = new FakeAgent();
 const harness = new FakeHarness();
 const app = demo
@@ -44,7 +48,13 @@ const app = demo
   : await createApp({
       ...common,
       dbPath: join(home, "i-inc.db"),
-      ...realPorts({ credentials, log }),
+      ...realPorts({
+        credentials,
+        log,
+        ...(appConfig
+          ? { github: { tokens: new GitHubApp(appConfig), slug: appConfig.slug ?? "i-inc-bot" } }
+          : {}),
+      }),
     });
 
 if (!demo) {
@@ -55,6 +65,7 @@ if (!demo) {
       );
     }
   }
+  if (!appConfig) log("no GitHub App yet (docs/github-app.md): tickets get no branch or PR");
   if (app.deps.registry.projects().length === 0) {
     log("no projects yet: PUT /api/projects/<id> with {repo, checks}");
   }

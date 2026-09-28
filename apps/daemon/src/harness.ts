@@ -5,14 +5,37 @@ import { spawn } from "node:child_process";
 import type { ChecksResult, GatesResult, Harness, Ticket } from "@i-inc/core";
 import { defaultMachineSettings, type MachineSettings, machineName } from "./machines.ts";
 
-/** Runs a script in an employee's machine and resolves with its exit code and output. */
-export type RunScript = (employeeId: string, script: string) => Promise<{ code: number; output: string }>;
+/**
+ * Runs a script in an employee's machine and resolves with its exit code and output. Variables in
+ * `env`, such as GH_TOKEN, go in with `-e NAME`, like a session's credentials (machines.ts).
+ */
+export type RunScript = (
+  employeeId: string,
+  script: string,
+  env?: Record<string, string>,
+) => Promise<{ code: number; output: string }>;
 
 export function machineScript(s: MachineSettings = defaultMachineSettings): RunScript {
-  return (employeeId, script) =>
+  return (employeeId, script, env = {}) =>
     new Promise((resolve, reject) => {
-      const args = ["machine", "run", "-i", "-u", s.user, "-n", machineName(employeeId), "--", "bash", "-s"];
-      const child = spawn(s.bin, args, { stdio: ["pipe", "pipe", "pipe"] });
+      const names = Object.keys(env);
+      const bad = names.find((name) => !/^[A-Z_][A-Z0-9_]*$/.test(name));
+      if (bad) return reject(new Error(`can't pass ${bad} into a machine`));
+      const flags = names.flatMap((name) => ["-e", name]);
+      const args = [
+        "machine",
+        "run",
+        "-i",
+        "-u",
+        s.user,
+        "-n",
+        machineName(employeeId),
+        ...flags,
+        "--",
+        "bash",
+        "-s",
+      ];
+      const child = spawn(s.bin, args, { env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "pipe"] });
       let output = "";
       child.stdout.on("data", (chunk) => {
         output += chunk;
@@ -33,6 +56,11 @@ export interface HarnessSettings {
   worktree: (ticketId: string) => string;
   /** How many lines of a failing step's output go back to the builder. */
   tailLines?: number;
+  /**
+   * With GitHub: the environment (GH_TOKEN) for fetching main and pushing the rebased branch, so the
+   * PR shows what passed the gates. Without it, the gates rebase locally only.
+   */
+  github?: (ticket: Ticket) => Promise<Record<string, string>>;
 }
 
 const safeId = /^[A-Za-z0-9_-]{1,64}$/;
@@ -68,6 +96,14 @@ export function rebaseScript(worktree: string): string {
     "  exit 2",
     "fi",
     "echo @@rebased",
+  ].join("\n");
+}
+
+/** Pushes the rebased branch over the PR's, unless someone else pushed to it since the fetch. */
+export function pushScript(worktree: string): string {
+  return [
+    `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
+    "git push --quiet --force-with-lease origin HEAD && echo @@pushed",
   ].join("\n");
 }
 
@@ -108,7 +144,8 @@ export class MachineHarness implements Harness {
   }
 
   async runGates(ticket: Ticket): Promise<GatesResult> {
-    const rebased = await this.run(ticket.assignee, rebaseScript(this.worktree(ticket)));
+    const env = (await this.s.github?.(ticket)) ?? {};
+    const rebased = await this.run(ticket.assignee, rebaseScript(this.worktree(ticket)), env);
     if (rebased.code === 2) {
       const files = [...rebased.output.matchAll(/^@@conflict (.+)$/gm)].map((m) => m[1]);
       return {
@@ -125,12 +162,23 @@ export class MachineHarness implements Harness {
       };
     }
     const checks = await this.runChecks(ticket);
-    return checks.green
-      ? { ok: true }
-      : {
+    if (!checks.green) {
+      return {
+        ok: false,
+        conflict: false,
+        reason: `the checks fail after rebasing on main: ${checks.failures.join("; ")}`,
+      };
+    }
+    if (this.s.github) {
+      const pushed = await this.run(ticket.assignee, pushScript(this.worktree(ticket)), env);
+      if (pushed.code !== 0 || !pushed.output.includes("@@pushed")) {
+        return {
           ok: false,
           conflict: false,
-          reason: `the checks fail after rebasing on main: ${checks.failures.join("; ")}`,
+          reason: `couldn't push the rebased branch: ${pushed.output.trim().slice(-300)}`,
         };
+      }
+    }
+    return { ok: true };
   }
 }

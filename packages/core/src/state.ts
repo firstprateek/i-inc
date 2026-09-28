@@ -1,6 +1,6 @@
 // Fold a ticket's events into the state the pipeline decides from. Pure.
 import type { Decision, Finding, HelperDuty, NeedsYou, TicketEvent } from "./events.ts";
-import type { Id, Proposal } from "./model.ts";
+import type { Id, Proposal, PullRequestRef } from "./model.ts";
 import type { StageId } from "./stages.ts";
 
 export interface SessionRecord {
@@ -62,6 +62,8 @@ export interface TicketState {
   helpers: Partial<Record<HelperDuty, Id>>;
   /** The stage waits for the scheduler to find a helper. */
   waitingFor: { duty: HelperDuty; since: number } | null;
+  /** A code ticket's branch and draft PR, from pick-up. */
+  pr: PullRequestRef | null;
 }
 
 export function emptyState(): TicketState {
@@ -100,6 +102,7 @@ export function emptyState(): TicketState {
     readyAt: null,
     helpers: {},
     waitingFor: null,
+    pr: null,
   };
 }
 
@@ -198,6 +201,8 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
     case "proposals-decided":
     case "policy-decided":
       return s;
+    case "pr-opened":
+      return { ...s, pr: e.pr };
     case "report-ready":
       return {
         ...s,

@@ -107,6 +107,21 @@ describe("the machine harness", () => {
     expect(git(work, "branch", "--show-current").trim()).toBe("inc/t7-x");
   });
 
+  it("gates: with GitHub, pushes the rebased branch so the PR shows what passed", async () => {
+    const work = repos("ours", "other");
+    const origin = join(work, "..", "origin");
+    const withGitHub = new MachineHarness(
+      {
+        recipe: () => ["true"],
+        worktree: () => work,
+        github: async () => ({ GH_TOKEN: "unused-locally" }),
+      },
+      localScript,
+    );
+    expect(await withGitHub.runGates(ticket)).toEqual({ ok: true });
+    expect(git(origin, "rev-parse", "inc/t7-x").trim()).toBe(git(work, "rev-parse", "HEAD").trim());
+  });
+
   it("gates: checks that fail after the rebase are not a conflict", async () => {
     const work = repos("ours", "other");
     const result = await harness(work, ["false"]).runGates(ticket);

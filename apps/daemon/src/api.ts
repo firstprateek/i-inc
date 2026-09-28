@@ -33,6 +33,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     agent: d.agent,
     harness: d.harness,
     company: d.registry,
+    ...(d.workspace ? { workspace: d.workspace } : {}),
   };
 
   const views = async (): Promise<TicketView[]> => {

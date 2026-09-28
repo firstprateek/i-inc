@@ -6,10 +6,10 @@
 import { brief } from "./brief.ts";
 import { engineAllowed, engineFor, nextFallback } from "./engines.ts";
 import type { Decision, Finding, HelperDuty, NeedsYou, TicketEvent } from "./events.ts";
-import type { Duty, Employee, Id, KnowledgeEdit, Proposal, Ticket } from "./model.ts";
+import type { Duty, Employee, Id, KnowledgeEdit, Proposal, PullRequestRef, Ticket } from "./model.ts";
 import { decideOutbound } from "./outbound.ts";
 import type { Ports } from "./ports.ts";
-import { assembleReport, type Report } from "./report.ts";
+import { assembleReport, type Report, reportMarkdown } from "./report.ts";
 import { planFor, type StageId, type StagePlan } from "./stages.ts";
 import { fold, type TicketState } from "./state.ts";
 
@@ -202,6 +202,19 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
 
   async pickup(c) {
     await c.p.machines.ensureUp(c.ticket.assignee);
+    // A code ticket gets its branch and draft PR now, so CI runs from the start (spec §6).
+    const { workspace } = c.p;
+    if (workspace && c.plan.stages.includes("build") && !c.s.pr) {
+      let pr: PullRequestRef;
+      try {
+        pr = await workspace.open(c.ticket, c.builder);
+      } catch (err) {
+        await c.emit(failed(c, "pickup", `couldn't open the branch and draft PR: ${errorText(err)}`));
+        return;
+      }
+      await c.emit({ type: "pr-opened", at: c.p.clock.now(), pr }, finished(c, "pickup"));
+      return;
+    }
     await c.emit(finished(c, "pickup"));
   },
 
@@ -410,7 +423,22 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
       "Draft the report's judgment: what changed, why this way, risk, and the calls the owner might overrule.",
     );
     if (out === null) return;
-    await c.emit(finished(c, "report", out), { type: "report-ready", at: c.p.clock.now(), summary: out });
+    const at = c.p.clock.now();
+    // The report becomes the PR's body, and the PR comes out of draft for the owner.
+    if (c.p.workspace && c.s.pr) {
+      const report = assembleReport(
+        c.ticket,
+        { ...c.s, readyAt: at, outputs: { ...c.s.outputs, report: out } },
+        c.p.company,
+      );
+      try {
+        await c.p.workspace.ready(c.ticket, c.s.pr, reportMarkdown(report));
+      } catch (err) {
+        await c.emit(failed(c, "report", `couldn't mark the PR ready: ${errorText(err)}`));
+        return;
+      }
+    }
+    await c.emit(finished(c, "report", out), { type: "report-ready", at, summary: out });
   },
 
   // The retro (spec §6, stage 11): builder and reviewer each propose 0-2 knowledge edits.
@@ -562,6 +590,8 @@ function needsYou(c: Step, stage: StageId, ask: NeedsYou): TicketEvent {
 }
 
 /** An honest failure: what went wrong and which engines were tried. */
+const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
 function failed(c: Step, stage: StageId, reason: string): TicketEvent {
   const tried = [
     ...new Set(
