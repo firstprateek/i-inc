@@ -107,8 +107,9 @@ const server = createServer(async (req, res) => {
         `<button style="font:inherit;padding:.5rem 1rem">Create it on GitHub</button></form>`,
     );
   }
-  if (url.searchParams.get("state") !== state) return send(403, "<p>That link isn't from this run.</p>");
   if (url.pathname === "/created") {
+    // The code buys the App's key, so only this run's redirect may trade it.
+    if (url.searchParams.get("state") !== state) return send(403, "<p>That link isn't from this run.</p>");
     const code = url.searchParams.get("code") ?? "";
     if (!/^[A-Za-z0-9_-]{1,100}$/.test(code)) return send(400, "<p>GitHub sent no code.</p>");
     try {
@@ -128,6 +129,8 @@ const server = createServer(async (req, res) => {
     }
   }
   if (url.pathname === "/installed") {
+    // GitHub doesn't always pass the state back after an install. The id isn't a secret, and the
+    // check (check.mjs) proves it's this App's with the App's own key.
     const id = url.searchParams.get("installation_id") ?? "";
     if (!/^\d+$/.test(id)) return send(400, "<p>GitHub sent no installation id.</p>");
     try {
