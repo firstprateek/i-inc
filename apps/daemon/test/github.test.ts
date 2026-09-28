@@ -12,6 +12,7 @@ import {
   PullRequests,
   readGitHubAppConfig,
   readPrivateKey,
+  waitForCi,
 } from "../src/github.ts";
 
 const { privateKey, publicKey } = generateKeyPairSync("rsa", {
@@ -187,5 +188,55 @@ describe("pull requests, as the bot", () => {
       email: "987654+i-inc-bot[bot]@users.noreply.github.com",
     });
     expect(calls[0]?.url).toBe("https://api.github.com/users/i-inc-bot%5Bbot%5D");
+  });
+});
+
+describe("CI at the gates", () => {
+  const sha = "a".repeat(40);
+  function ci(replies: { name: string; status: string; conclusion: string | null }[][]) {
+    let clock = 0;
+    const slept: number[] = [];
+    const { calls, f } = recorder(() => ({ json: { check_runs: replies.shift() ?? [] } }));
+    const run = (o = {}) =>
+      waitForCi(new FineGrainedToken("t"), "firstprateek/duet", sha, {
+        fetch: f,
+        now: () => clock,
+        sleep: async (ms) => {
+          slept.push(ms);
+          clock += ms;
+        },
+        ...o,
+      });
+    return { run, calls, slept };
+  }
+  const done = (name: string, conclusion: string) => ({ name, status: "completed", conclusion });
+
+  it("waits for every check run on the commit, then passes when all passed", async () => {
+    const { run, calls, slept } = ci([
+      [{ name: "Lint, types and tests", status: "in_progress", conclusion: null }],
+      [done("Lint, types and tests", "success"), done("Sorting service (Python)", "skipped")],
+    ]);
+    expect(await run()).toEqual({ ok: true });
+    expect(slept).toEqual([20_000]);
+    expect(calls[0]?.url).toBe(
+      `https://api.github.com/repos/firstprateek/duet/commits/${sha}/check-runs?per_page=100`,
+    );
+  });
+
+  it("names the checks that failed", async () => {
+    const { run } = ci([[done("Lint, types and tests", "failure"), done("relay", "success")]]);
+    expect(await run()).toEqual({ ok: false, reason: "CI failed: Lint, types and tests (failure)" });
+  });
+
+  it("treats a repo with no check runs as having no CI, after a grace period", async () => {
+    const { run, slept } = ci([]);
+    expect(await run({ graceMs: 60_000 })).toEqual({ ok: true });
+    expect(slept).toEqual([20_000, 20_000, 20_000]);
+  });
+
+  it("gives up when CI takes too long", async () => {
+    const running = { name: "build", status: "queued", conclusion: null };
+    const { run } = ci(Array.from({ length: 10 }, () => [running]));
+    expect(await run({ timeoutMs: 100_000 })).toEqual({ ok: false, reason: "CI didn't finish in time" });
   });
 });
