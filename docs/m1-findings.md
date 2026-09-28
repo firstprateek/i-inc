@@ -486,6 +486,22 @@ machine that already exists. It now boots with `machine run -n <name> -- true`. 
 machine when that fails with "notFound", and it passes any other failure on. Called from Node's
 `execFile`, the boot works with or without `-i`.
 
+## M3: credentials
+
+How a session's credential reaches its machine, checked on the mini on 2026-09-28 with a random
+dummy value:
+
+| How it's passed | Reaches the machine | In a host command line (`ps -axww -o args`) |
+| --- | --- | --- |
+| `container machine run … -- env NAME=value acp-<harness>` | yes | yes |
+| `NAME=value container machine run … -e NAME -- acp-<harness>` | yes | no |
+
+`-e NAME` copies the variable from the environment of that one `container` process. The value is
+in no command line, isn't written to the machine's disk, and ends with the session. It also doesn't
+pass through the machine's login shell, so values with spaces or `;` are safe. Claude's ACP server
+started this way in `m1-test` and answered `initialize`. `machineLaunch` now passes every variable
+like this.
+
 ## What the spec should change
 
 **Changed in this PR** (docs/spec.md):
