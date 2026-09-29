@@ -1,9 +1,10 @@
-// The daemon on the host: `bun src/main.ts`. Serves the API and the web app on the tailnet, and
-// ticks the scheduler.
+// The daemon on the host: `bun src/main.ts`. Serves the API and the web app on HOST (127.0.0.1 by
+// default), and ticks the scheduler.
 //
-// By default it runs real employees: ACP sessions in Apple container machines, with credentials
-// from ~/.config/i-inc (config.ts). With I_INC_DEMO=1 it runs the scripted fake agent over a
-// morning's worth of tickets instead, so the web app has something to show anywhere.
+// By default it runs real employees: ACP sessions in Apple container machines, each signed in to its
+// harnesses once at hiring, with the GitHub App and any account tokens from ~/.config/i-inc
+// (config.ts). With I_INC_DEMO=1 it runs the scripted fake agent over a morning's worth of tickets
+// instead, so the web app has something to show anywhere.
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, normalize } from "node:path";
@@ -58,13 +59,6 @@ const app = demo
     });
 
 if (!demo) {
-  for (const e of app.deps.registry.engines()) {
-    if (e.harness === "claude-code" && !credentials[e.accountId]) {
-      log(
-        `engine ${e.id} has no credentials: add account ${e.accountId} to ~/.config/i-inc/credentials.json`,
-      );
-    }
-  }
   if (!appConfig) log("no GitHub App yet (docs/github-app.md): tickets get no branch or PR");
   if (app.deps.registry.projects().length === 0) {
     log("no projects yet: PUT /api/projects/<id> with {repo, checks}");

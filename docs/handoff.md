@@ -80,8 +80,10 @@ UX review, non-code tickets) and M5 (track records per engine, enforced usage ca
   - light by default with a dark theme, and Lit components.
 - **Engines:**
   - The Google engine is Antigravity; Gemini CLI no longer serves Google AI Pro.
-  - Employees get the model-only Claude token, never a full login, because a full login reaches the
-    owner's connectors.
+  - Each employee's machine signs in to Claude with the owner's subscription (`claude auth login`),
+    once, at hiring. The owner chose this on 2026-09-28 over the model-only token from `claude
+    setup-token`, accepting that a full login reaches the owner's claude.ai connectors. A token in
+    `~/.config/i-inc/credentials.json` still works for any account.
   - Cloud engines stay. A private cloud is only noted for later.
   - Home data goes only to local models; the planned model is qwen3.8 27B, set up later.
 - **Credentials:**

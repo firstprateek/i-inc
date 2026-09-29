@@ -84,7 +84,7 @@ export class AppleMachines implements MachineProvider {
       await this.exec(this.s.bin, ["machine", "run", "-n", name, "--", "true"]);
     } catch (err) {
       if (!/notFound|not found/.test(err instanceof Error ? err.message : String(err))) throw err;
-      // No such machine yet: make it with the flags M1 used. Creating it also boots it.
+      // No such machine yet: make it with the flags M1 used.
       await this.exec(this.s.bin, [
         "machine",
         "create",
@@ -98,6 +98,16 @@ export class AppleMachines implements MachineProvider {
         "none",
         this.s.image,
       ]);
+      // A new machine's first boot fails now and then with "Operation not supported by device", and
+      // the next one works (images/employee/README.md), so boot it here rather than in its first job.
+      for (let attempt = 1; ; attempt++) {
+        try {
+          await this.exec(this.s.bin, ["machine", "run", "-n", name, "--", "true"]);
+          break;
+        } catch (err) {
+          if (attempt === 3) throw err;
+        }
+      }
     }
     this.up.add(employeeId);
   }

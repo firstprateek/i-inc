@@ -10,13 +10,15 @@
 #     (spec §5). The daemon runs everything as `employee` (`machine run -u employee`), never as the
 #     user that matches the host's;
 #   - Node, pnpm, git, gh, and Docker, which starts on first use rather than at boot;
-#   - the harnesses: Claude's ACP adapter, which carries Claude Code's own binary, Antigravity's CLI
-#     and ACP server, and OpenCode, pinned to local models through the relay;
+#   - the harnesses: Claude's ACP adapter, which carries Claude Code's own binary (also `claude`, for
+#     signing the machine in), Antigravity's CLI and ACP server, and OpenCode, pinned to local
+#     models through the relay;
 #   - the launchers acp-claude, acp-antigravity and acp-opencode, one word each, because
 #     `machine run` re-splits its arguments. Each makes $I_INC_CWD and starts there.
 #
-# No credentials: they arrive per session with `machine run -e` (m1-findings.md, "M3: credentials").
-# No gnome-keyring either, since nothing here needs one.
+# No credentials: each machine signs in once at hiring, and GitHub's token arrives per session with
+# `machine run -e` (m1-findings.md, "M3: credentials"). No gnome-keyring either, since nothing here
+# needs one.
 FROM ubuntu:24.04
 
 # Pinned to what M1 ran on 2026-09-27 and 28, so builds repeat.
@@ -76,6 +78,15 @@ RUN npm install -g --no-fund --no-audit \
       "@agentclientprotocol/claude-agent-acp@$CLAUDE_ACP_VERSION" \
       "opencode-ai@$OPENCODE_VERSION" && \
     npm cache clean --force
+
+# `claude` is the Claude Code that Claude's adapter carries, for signing the machine in once
+# (`claude auth login`, tools/host/sign-in-claude.sh). Its sessions then run the same Claude Code.
+RUN claude=$(find /usr/local/lib/node_modules/@agentclientprotocol/claude-agent-acp \
+      -path '*claude-agent-sdk-linux-*/claude' -type f | head -1) && \
+    test -n "$claude" && \
+    ln -s "$claude" /usr/local/bin/claude && \
+    echo 'export DISABLE_AUTOUPDATER=1' >/etc/profile.d/i-inc.sh && \
+    claude --version
 
 # git pushes to GitHub through gh, which uses the session's GH_TOKEN (docs/github-app.md).
 RUN git config --system init.defaultBranch main && \
