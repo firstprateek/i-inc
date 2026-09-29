@@ -46,6 +46,34 @@ describe("projects", () => {
   });
 });
 
+describe("accounts and engines", () => {
+  it("adds an account, then an engine on it, and refuses an engine without one", async () => {
+    const app = await testApp();
+    const engine = {
+      harness: "claude-code",
+      model: "Claude (the subscription's default)",
+      accountId: "claude",
+    };
+    expect((await app.call("PUT", "/api/engines/claude", engine)).status).toBe(400);
+    const account = await app.call("PUT", "/api/accounts/claude", {
+      name: "Claude subscription",
+      monthlyFee: 100,
+    });
+    expect(account.body.account).toEqual({ id: "claude", name: "Claude subscription", monthlyFee: 100 });
+    expect((await app.call("PUT", "/api/engines/claude", engine)).body.engine).toEqual({
+      id: "claude",
+      ...engine,
+      local: false,
+    });
+    expect((await app.call("PUT", "/api/engines/claude", { ...engine, harness: "gemini-cli" })).status).toBe(
+      400,
+    );
+    expect((await app.call("GET", "/api/accounts")).body.accounts.map((a: { id: string }) => a.id)).toContain(
+      "claude",
+    );
+  });
+});
+
 describe("real mode", () => {
   async function realApp() {
     const exec: string[][] = [];
