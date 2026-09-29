@@ -18,7 +18,7 @@ Merged on `main`:
 | GitHub | The App **i.inc bot** is set up: its key and ids are on the mini in `~/.config/i-inc`, it's installed on Duet only, and Duet's `main` has the ruleset. `tools/github-app/check.mjs` passes. Nothing has pushed as the bot yet |
 | M4 (part) | Brain and handbook repos, edits applied from each retro, policies that wait for the owner, orientation, and the viewer |
 
-`pnpm check`, `pnpm typecheck` and `pnpm test` pass (137 tests). CI runs all three.
+`pnpm check`, `pnpm typecheck` and `pnpm test` pass (138 tests). CI runs all three.
 
 ## Open questions for the owner
 
@@ -52,10 +52,22 @@ before any `sudo` or change to the host. The other items can run anywhere.
    - the Ollama relay, the owner's LaunchAgent `inc.i.ollama-relay`, which waits for the machines'
      gateway at boot.
 
-   M1's wall tests pass from inside `m1-test` with them (13 of 13). Still to do: run the daemon
-   itself at boot (a LaunchAgent for `bun apps/daemon/src/main.ts` from a checkout on the mini,
-   which needs Bun there), answer the machines' DNS in the daemon, refusing tailnet names, and relay
-   Antigravity's sign-in callback into the machine.
+   M1's wall tests pass from inside `m1-test` with them (13 of 13).
+
+   The daemon runs there too, since 2026-09-28: the LaunchAgent `inc.i.daemon`
+   (`tools/host/install-daemon.sh`) runs `~/i-inc` (branch `m3-deploy` until the stack merges;
+   switch it to `main` then) with Bun and pnpm from Homebrew, on 127.0.0.1:7420. The web app sends
+   no token yet, and the tailnet has a device that isn't the owner's, so it isn't served there:
+   reach it with `ssh -L 7420:127.0.0.1:7420 <mini>`. The registry has the account `claude`, the
+   engine `claude` (Claude Code) and the project `Duet` with its recipe. The owner's Claude token
+   goes in with `tools/host/add-claude-token.sh claude`, then `launchctl kickstart -k
+   gui/$(id -u)/inc.i.daemon`.
+
+   Still to do:
+   - hire the first employee and run a real Duet ticket end to end (M1's README ticket, as the bot);
+   - a token for the web app, so the daemon can be served on the tailnet;
+   - answer the machines' DNS in the daemon, refusing tailnet names, and relay Antigravity's
+     sign-in callback into the machine.
 
 After these, M3 can take a real Duet ticket end to end. Then come the rest of M4 (PM ticket drafting,
 UX review, non-code tickets) and M5 (track records per engine, enforced usage caps, K per host).
