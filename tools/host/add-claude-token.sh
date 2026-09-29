@@ -11,18 +11,24 @@ umask 077
 mkdir -p "$dir"
 chmod 700 "$dir"
 
-# From a terminal it asks with echo off; from a pipe (a password manager, say) it just reads.
+# From a terminal it asks with echo off; from a pipe (a password manager, say) it just reads. A
+# long token copied from a terminal can come with line breaks where it wrapped, so lines are joined
+# and whitespace dropped.
 token=
 if [ -t 0 ]; then
-  printf "Paste the token from claude setup-token (it won't show), then press Enter: "
+  printf "Paste the token from claude setup-token, then press Enter twice (it won't show): "
   trap 'stty echo' EXIT INT TERM
   stty -echo
-  IFS= read -r token || true
+  while IFS= read -r line; do
+    [ -n "$line" ] || break
+    token="$token$line"
+  done
   stty echo
   echo
 else
-  IFS= read -r token || true
+  token=$(cat)
 fi
+token=$(printf '%s' "$token" | tr -d '[:space:]')
 case "$token" in
   sk-ant-*) ;;
   *) echo "that doesn't look like a Claude token" >&2; exit 1 ;;
