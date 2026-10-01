@@ -9,6 +9,11 @@ id=${1:?usage: sign-in-claude.sh <employee id>}
 case "$id" in *[!a-z0-9-]*) echo "not an employee id: $id" >&2; exit 64 ;; esac
 machine="inc-$id"
 c=/usr/local/bin/container
+# No machine starts without the walls (spec §5): the walls job keeps this marker under a minute old.
+[ -n "$(find /var/run/i-inc-walls.ok -mmin -2 2>/dev/null)" ] || {
+  echo "the walls aren't up (see tools/host), so no machine starts" >&2
+  exit 1
+}
 
 if ! $c machine inspect "$machine" >/dev/null 2>&1; then
   $c machine create --name "$machine" --cpus 4 --memory 6G --home-mount none local/i-inc-employee:latest

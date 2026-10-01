@@ -132,6 +132,10 @@ if (!/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
     if (checks.length) note(`required checks: ${checks.map((c) => c.context).join(", ")}`);
     for (const id of new Set([...types.values()].map((rule) => rule.ruleset_id))) {
       const set = await gh("GET", `/repos/${repo}/rulesets/${id}`, token);
+      if (set.status !== 200) {
+        fail(`can't read ruleset ${id} as the bot (${set.status}), so can't tell whether it can bypass it`);
+        continue;
+      }
       const bypass = set.json.current_user_can_bypass ?? "never";
       if (bypass === "never") pass(`the bot can't bypass ruleset "${set.json.name}"`);
       else fail(`the bot can bypass ruleset "${set.json.name}" (${bypass}); take it off the bypass list`);
