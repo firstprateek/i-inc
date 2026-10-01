@@ -98,21 +98,39 @@ export function checksScript(worktree: string, recipe: string[], tail: number): 
 export function rebaseScript(worktree: string): string {
   return [
     `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
+    // Uncommitted work would stop the rebase, and isn't a conflict.
+    `if [ -n "$(git status --porcelain)" ]; then git status --porcelain | head -20 | sed 's/^/@@dirty /'; exit 3; fi`,
+    "branch=$(git branch --show-current)",
     "git fetch --quiet origin main || { echo '@@fail git fetch'; exit 1; }",
+    // Whatever GitHub has on the branch must already be here, or the force-push would drop it. Its
+    // commit is the lease the push holds to.
+    `remote=$(git ls-remote origin "refs/heads/$branch" | cut -f1)`,
+    'if [ -n "$remote" ]; then',
+    "  git fetch --quiet origin \"refs/heads/$branch\" || { echo '@@fail git fetch'; exit 1; }",
+    '  git merge-base --is-ancestor "$remote" HEAD || { echo "@@diverged $remote"; exit 4; }',
+    "fi",
+    'echo "@@lease $remote"',
     "if ! git rebase --quiet origin/main >/dev/null 2>&1; then",
     "  git diff --name-only --diff-filter=U | sed 's/^/@@conflict /'",
     "  git rebase --abort",
     "  exit 2",
     "fi",
+    // Pick-up's empty commit alone isn't work.
+    "if git diff --quiet origin/main HEAD; then echo '@@empty'; exit 5; fi",
     "echo @@rebased",
   ].join("\n");
 }
 
-/** Pushes the rebased branch over the PR's, unless someone else pushed to it since the fetch. */
-export function pushScript(worktree: string): string {
+/**
+ * Pushes the rebased branch over the PR's, only if the PR's branch is still at `lease`, the commit
+ * the gates found there (empty: it didn't exist), so nobody else's push is dropped.
+ */
+export function pushScript(worktree: string, lease: string): string {
+  if (!/^([0-9a-f]{40})?$/.test(lease)) throw new Error(`not a commit: ${lease}`);
   return [
     `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
-    'git push --quiet --force-with-lease origin HEAD && echo "@@pushed $(git rev-parse HEAD)"',
+    "branch=$(git branch --show-current)",
+    `git push --quiet --force-with-lease="$branch:${lease}" origin HEAD && echo "@@pushed $(git rev-parse HEAD)"`,
   ].join("\n");
 }
 
@@ -175,13 +193,18 @@ export class MachineHarness implements Harness {
         reason: `rebasing on main conflicts in ${files.join(", ") || "some files"}`,
       };
     }
-    if (rebased.code !== 0) {
-      return {
-        ok: false,
-        conflict: false,
-        reason: `couldn't rebase on main: ${rebased.output.trim().slice(-300)}`,
-      };
+    const lines = (tag: string) =>
+      [...rebased.output.matchAll(new RegExp(`^@@${tag} ?(.*)$`, "gm"))].map((m) => m[1]);
+    const no = (reason: string): GatesResult => ({ ok: false, conflict: false, reason });
+    if (rebased.code === 3) return no(`the worktree has uncommitted changes: ${lines("dirty").join(", ")}`);
+    if (rebased.code === 4) {
+      return no(
+        `the PR's branch has commits the worktree hasn't (${lines("diverged")[0]}), so it wasn't pushed over`,
+      );
     }
+    if (rebased.code === 5) return no("the branch has no changes beyond main");
+    if (rebased.code !== 0) return no(`couldn't rebase on main: ${rebased.output.trim().slice(-300)}`);
+    const lease = lines("lease")[0] ?? "";
     const checks = await this.runChecks(ticket);
     if (!checks.green) {
       return {
@@ -191,7 +214,7 @@ export class MachineHarness implements Harness {
       };
     }
     if (this.s.github) {
-      const pushed = await this.run(ticket.assignee, pushScript(this.worktree(ticket)), env);
+      const pushed = await this.run(ticket.assignee, pushScript(this.worktree(ticket), lease), env);
       const sha = /^@@pushed ([0-9a-f]{40})$/m.exec(pushed.output)?.[1];
       if (pushed.code !== 0 || !sha) {
         return {

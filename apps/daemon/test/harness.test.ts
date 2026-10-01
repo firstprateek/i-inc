@@ -145,6 +145,47 @@ describe("the machine harness", () => {
     expect(seen).toEqual([git(work, "rev-parse", "HEAD").trim()]);
   });
 
+  it("gates: uncommitted work and a branch with no changes are named, not called conflicts", async () => {
+    const dirty = repos("ours", "other");
+    writeFileSync(join(dirty, "notes.txt"), "half done\n");
+    expect(await harness(dirty, ["true"]).runGates(ticket)).toEqual({
+      ok: false,
+      conflict: false,
+      reason: "the worktree has uncommitted changes: ?? notes.txt",
+    });
+    // Only pick-up's empty commit on the branch.
+    const empty = repos("ours", "other");
+    git(empty, "reset", "-q", "--hard", "origin/main");
+    git(empty, "commit", "-q", "--allow-empty", "-m", "chore: start work");
+    expect(await harness(empty, ["true"]).runGates(ticket)).toEqual({
+      ok: false,
+      conflict: false,
+      reason: "the branch has no changes beyond main",
+    });
+  });
+
+  it("gates: never push over a commit someone else put on the PR's branch", async () => {
+    const work = repos("ours", "other");
+    const origin = join(work, "..", "origin");
+    git(work, "push", "-q", "origin", "inc/t7-x");
+    // The owner adds a commit to the PR from another clone.
+    const owner = join(work, "..", "owner");
+    git(join(work, ".."), "clone", "-q", "-b", "inc/t7-x", origin, owner);
+    writeFileSync(join(owner, "owner.txt"), "a fix\n");
+    git(owner, "add", "owner.txt");
+    git(owner, "commit", "-q", "-m", "owner's fix");
+    git(owner, "push", "-q", "origin", "inc/t7-x");
+    const ownerSha = git(owner, "rev-parse", "HEAD").trim();
+    const gated = new MachineHarness(
+      { recipe: () => ["true"], worktree: () => work, github: async () => ({}) },
+      localScript,
+    );
+    const result = await gated.runGates(ticket);
+    expect(result).toMatchObject({ ok: false, conflict: false });
+    expect(result.ok ? "" : result.reason).toContain(ownerSha);
+    expect(git(origin, "rev-parse", "inc/t7-x").trim()).toBe(ownerSha);
+  });
+
   it("gates: checks that fail after the rebase are not a conflict", async () => {
     const work = repos("ours", "other");
     const result = await harness(work, ["false"]).runGates(ticket);
