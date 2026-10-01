@@ -26,6 +26,8 @@ const common = {
   knowledgeDir: join(home, "knowledge"),
   clock: { now: () => Date.now() },
   ...(process.env.I_INC_TOKEN ? { token: process.env.I_INC_TOKEN } : {}),
+  // The Host headers it answers: its own address, plus any in I_INC_HOSTS (comma-separated).
+  hosts: [`${host}:${port}`, `localhost:${port}`, ...(process.env.I_INC_HOSTS?.split(",") ?? [])],
   log,
 };
 mkdirSync(home, { recursive: true });
