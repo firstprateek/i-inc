@@ -99,6 +99,13 @@ export async function runTicket(p: Ports, original: Ticket, opts: RunOptions = {
  * Hands a ticket to another employee (spec §6): it carries on from the same branch, plan and
  * progress notes, with a resume brief. Used for a ticket paused on an empty account, or a stuck one.
  */
+/** Tries a failed ticket again from the stage it failed in, with a resume brief (spec §6). */
+export async function retry(p: Ports, ticketId: Id): Promise<void> {
+  const s = fold(await p.store.read(ticketId));
+  if (s.status !== "failed") throw new Error(`ticket ${ticketId} is ${s.status}, not failed`);
+  await p.store.append(ticketId, [{ type: "retried", at: p.clock.now() }]);
+}
+
 export async function handOff(p: Ports, ticketId: Id, to: Id): Promise<void> {
   const s = fold(await p.store.read(ticketId));
   if (s.status === "done" || s.status === "ready")
@@ -420,9 +427,10 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     const at = c.p.clock.now();
     // The report becomes the PR's body, and the PR comes out of draft for the owner.
     if (c.p.workspace && c.s.pr) {
+      const worked = c.s.workedMs + (c.s.lastAt !== null ? at - c.s.lastAt : 0);
       const report = assembleReport(
         c.ticket,
-        { ...c.s, readyAt: at, outputs: { ...c.s.outputs, report: out } },
+        { ...c.s, readyAt: at, workedMs: worked, outputs: { ...c.s.outputs, report: out } },
         c.p.company,
       );
       try {

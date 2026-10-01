@@ -53,6 +53,8 @@ export type TicketEvent =
   /** The branch is ready in `employeeId`'s machine (absent on events from before handoffs did this). */
   | { type: "pr-opened"; at: number; pr: PullRequestRef; employeeId?: Id }
   | { type: "report-ready"; at: number; summary: string }
+  /** The owner tries a failed ticket again, from the stage it failed in. */
+  | { type: "retried"; at: number }
   | { type: "owner-decided"; at: number; decision: Decision; note?: string }
   | {
       type: "knowledge-proposed";
