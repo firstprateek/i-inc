@@ -172,6 +172,11 @@ export class AcpAgent implements Agent {
               limit.resetsAt ?? resetFromText(text, now()) ?? now() + (this.o.unknownResetMs ?? 3_600_000),
           };
         }
+        // Claude Code says so when a hiccup should pass, such as a sign-in refresh clashing with
+        // another: try again shortly, rather than failing the ticket.
+        if (/usually transient|retry in a minute/i.test(text)) {
+          return { kind: "out-of-tokens", resetsAt: now() + 120_000 };
+        }
         return stuck(text);
       }
       const stop = String(((done.result ?? {}) as Json).stopReason ?? "end_turn");
