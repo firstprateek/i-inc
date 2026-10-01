@@ -16,9 +16,10 @@ Merged on `main`:
 | M3 adapters | `apps/daemon/src/acp.ts` (the real ACP client), `apps/daemon/src/harness.ts` (checks and gates in the machine), `apps/daemon/src/machines.ts` (Apple container, its commands checked on the mini) and `apps/daemon/src/github.ts` (the GitHub App's tokens, draft PRs and the bot's commit identity). They're tested against a scripted ACP server and a recording `fetch`, but **not wired into `main.ts` yet** |
 | M3 image | `images/employee/`: the base image, built on the mini and checked in a throwaway machine, with Duet's recipe green in it ([its README](../images/employee/README.md)). Everything in a machine runs as its user `employee` |
 | GitHub | The App **i.inc bot** is set up: its key and ids are on the mini in `~/.config/i-inc`, it's installed on Duet only, and Duet's `main` has the ruleset. `tools/github-app/check.mjs` passes. Nothing has pushed as the bot yet |
+| First real ticket | 2026-10-01, on the mini: Ada (Claude, signed in inside her machine) took M1's README ticket from pick-up to a ready PR as the bot, firstprateek/duet#8. Her branch was made in her machine, three required CI checks passed, the gates waited for them, and the report became the PR body. It took three fixes on the way: Claude's "session limit" now pauses a ticket until the reset; the `acp-claude` launcher refreshes an expired sign-in before the adapter's parallel queries race to; and only a session's final answer counts as its output |
 | M4 (part) | Brain and handbook repos, edits applied from each retro, policies that wait for the owner, orientation, and the viewer |
 
-`pnpm check`, `pnpm typecheck` and `pnpm test` pass (138 tests). CI runs all three.
+`pnpm check`, `pnpm typecheck` and `pnpm test` pass (140 tests). CI runs all three.
 
 ## Open questions for the owner
 
@@ -64,12 +65,17 @@ before any `sudo` or change to the host. The other items can run anywhere.
    gui/$(id -u)/inc.i.daemon`.
 
    Still to do:
-   - hire the first employee and run a real Duet ticket end to end (M1's README ticket, as the bot);
    - a token for the web app, so the daemon can be served on the tailnet;
    - answer the machines' DNS in the daemon, refusing tailnet names, and relay Antigravity's
      sign-in callback into the machine.
+3. **Lessons from the first real ticket.**
+   - A new image doesn't reach existing machines: Ada's new `acp-claude` was copied in by hand. The
+     daemon needs a way to update a machine's launchers, or to remake a machine and sign it in again.
+   - A failed ticket has no retry: handing it to the same employee (`POST
+     /api/tickets/:id/handoff`) works as one, but its brief then says it's taking over from itself.
+   - The report's minutes count the days the ticket sat failed (4213 minutes on Duet #8).
 
-After these, M3 can take a real Duet ticket end to end. Then come the rest of M4 (PM ticket drafting,
+M3 has taken a real Duet ticket end to end. Then come the rest of M4 (PM ticket drafting,
 UX review, non-code tickets) and M5 (track records per engine, enforced usage caps, K per host).
 
 ## Decisions already made (don't reopen)

@@ -420,7 +420,7 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
       c,
       "build",
       c.builder,
-      "Draft the report's judgment: what changed, why this way, risk, and the calls the owner might overrule.",
+      "Draft the report's judgment: what changed, why this way, risk, and the calls the owner might overrule. Reply with the report itself: i.inc puts it into the PR, so don't edit the PR.",
     );
     if (out === null) return;
     const at = c.p.clock.now();

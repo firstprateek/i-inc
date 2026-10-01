@@ -110,6 +110,9 @@ export class AcpAgent implements Agent {
     rpc.onNotice = (method, params) => {
       if (method !== "session/update") return;
       const u = (params.update ?? {}) as Json;
+      // The outcome is the final answer: the text after the last tool call. What comes before is
+      // the agent narrating its work ("Now I'm writing the report…"), which leaked into a PR body.
+      if (u.sessionUpdate === "tool_call") reply = "";
       if (u.sessionUpdate === "agent_message_chunk") {
         const c = u.content as Json | undefined;
         if (c?.type === "text") reply += String(c.text);

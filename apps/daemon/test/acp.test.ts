@@ -167,6 +167,18 @@ describe("an ACP session", () => {
     });
   });
 
+  it("returns only the final answer, not the narration before the last tool call", async () => {
+    const s = server(
+      claudeLike((reply, id) => {
+        reply(update("agent_message_chunk", { content: { type: "text", text: "Now I'm writing it." } }));
+        reply(update("tool_call", { toolCallId: "t1", title: "Edit README.md", status: "pending" }));
+        reply(update("agent_message_chunk", { content: { type: "text", text: "The report." } }));
+        setTimeout(() => reply({ id, result: { stopReason: "end_turn" } }), 5);
+      }),
+    );
+    expect(await agent(s).run(request())).toEqual({ kind: "done", output: "The report." });
+  });
+
   it("reads Claude's rate limits, and pauses until the reset when the account is out", async () => {
     const usage: UsageReport[] = [];
     const s = server(
