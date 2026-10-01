@@ -59,7 +59,10 @@ export interface AcpOptions {
 const bypassMode = /bypass|yolo|allow.?all|full.?access|dangerous/i;
 // Claude Code says "You've hit your session limit · resets 3:30am (UTC)" (seen on the mini).
 const limitError =
-  /rate.?limit|usage limit|session limit|weekly limit|hit your .{0,20}limit|quota|resource.?exhausted|\b429\b|too many requests|limit reached/i;
+  /rate.?limit|usage limit|session limit|weekly limit|hit your .{0,20}limit|(?<!disk )quota|resource.?exhausted|\b429\b|too many requests|limit reached/i;
+
+/** Transient errors in a row for one ticket before it counts as stuck. */
+const maxTransient = 3;
 
 const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 
@@ -69,6 +72,9 @@ const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "
  * UTC too. Null when the message names no time.
  */
 export function resetFromText(text: string, now: number): number | null {
+  // Machines run on UTC; a time in any other zone isn't read, and the caller falls back.
+  const zone = /\(([^)]+)\)/.exec(text.slice(text.search(/resets/i)))?.[1];
+  if (zone && !/^(utc|gmt|etc\/utc)$/i.test(zone.trim())) return null;
   const m =
     /resets\s+(?:([A-Za-z]{3})[a-z]*\s+(\d{1,2}),?\s+(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i.exec(
       text,
@@ -86,13 +92,18 @@ export function resetFromText(text: string, now: number): number | null {
     h,
     Number(minute),
   );
-  // A time without a date is the next one; a date that has passed is next year's.
+  // Just past means the reset is due now (a retry right at it): try again in a few minutes. Further
+  // past, a time without a date is the next one, and a date is next year's.
+  if (at <= now && now - at < 3_600_000) return now + 5 * 60_000;
   while (at <= now)
     at = month >= 0 ? new Date(at).setUTCFullYear(new Date(at).getUTCFullYear() + 1) : at + 86_400_000;
   return at;
 }
 
 export class AcpAgent implements Agent {
+  /** Transient errors in a row, per employee and ticket. */
+  private readonly transient = new Map<string, number>();
+
   constructor(private readonly o: AcpOptions) {}
 
   async run(r: SessionRequest): Promise<SessionOutcome> {
@@ -105,14 +116,19 @@ export class AcpAgent implements Agent {
     });
     const rpc = new Rpc(proc, this.o.log);
     let limit: { rejected: boolean; resetsAt: number | null } = { rejected: false, resetsAt: null };
+    // The outcome is the final answer: the last stretch of text between tool calls that has any.
+    // Earlier stretches are the agent narrating its work ("Now I'm writing the report…"), which
+    // leaked into a PR body; a trailing tool call after the answer mustn't erase it.
     let reply = "";
+    let answer = "";
 
     rpc.onNotice = (method, params) => {
       if (method !== "session/update") return;
       const u = (params.update ?? {}) as Json;
-      // The outcome is the final answer: the text after the last tool call. What comes before is
-      // the agent narrating its work ("Now I'm writing the report…"), which leaked into a PR body.
-      if (u.sessionUpdate === "tool_call") reply = "";
+      if (u.sessionUpdate === "tool_call") {
+        if (reply.trim()) answer = reply;
+        reply = "";
+      }
       if (u.sessionUpdate === "agent_message_chunk") {
         const c = u.content as Json | undefined;
         if (c?.type === "text") reply += String(c.text);
@@ -177,16 +193,23 @@ export class AcpAgent implements Agent {
         }
         // Claude Code says so when a hiccup should pass, such as a sign-in refresh clashing with
         // another: try again shortly, rather than failing the ticket.
+        const key = `${r.employee.id}/${r.ticket.id}`;
         if (/usually transient|retry in a minute/i.test(text)) {
-          return { kind: "out-of-tokens", resetsAt: now() + 120_000 };
+          const count = (this.transient.get(key) ?? 0) + 1;
+          this.transient.set(key, count);
+          if (count <= maxTransient) return { kind: "out-of-tokens", resetsAt: now() + 120_000 };
         }
+        this.transient.delete(key);
         return stuck(text);
       }
       const stop = String(((done.result ?? {}) as Json).stopReason ?? "end_turn");
       if (stop === "cancelled") return { kind: "interrupted", reason };
       if (limit.rejected) return { kind: "out-of-tokens", resetsAt: limit.resetsAt ?? now() + 3_600_000 };
       if (stop !== "end_turn") return stuck(`the session stopped early (${stop})`);
-      return { kind: "done", output: reply.trim() };
+      this.transient.delete(`${r.employee.id}/${r.ticket.id}`);
+      const output = (reply.trim() ? reply : answer).trim();
+      if (!output) return stuck("the session ended without an answer");
+      return { kind: "done", output };
     } catch (e) {
       return stuck(e instanceof Error ? e.message : String(e));
     } finally {
