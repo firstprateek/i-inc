@@ -2,4 +2,17 @@
 # Claude Code's ACP server, through Anthropic's adapter. It uses the machine's own sign-in
 # (`claude auth login`), or CLAUDE_CODE_OAUTH_TOKEN if the daemon passes a token for the account.
 . /usr/local/lib/i-inc/acp-env.sh
+
+# A sign-in's access token lasts 8 hours. Once it has run out, the adapter's parallel queries race
+# to refresh it: one fails the session, and the other, killed when the session closes, can leave a
+# lock behind (seen on the mini). So refresh it here first, with one small call, after clearing a
+# lock that no running Claude holds. Its output stays off stdout, which is the ACP channel.
+creds="$HOME/.claude/.credentials.json"
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -f "$creds" ]; then
+  expires=$(node -e 'try { console.log(require(process.argv[1]).claudeAiOauth.expiresAt || 0) } catch { console.log(0) }' "$creds")
+  if [ "$expires" -lt $(( $(date +%s) * 1000 + 600000 )) ]; then
+    pgrep -u "$(id -u)" -x claude >/dev/null || rmdir "$HOME/.claude/.oauth_refresh.lock" 2>/dev/null || true
+    (cd /tmp && timeout 120 claude -p "Reply with the single word OK" </dev/null >/dev/null 2>&1) || true
+  fi
+fi
 exec claude-agent-acp "$@"
