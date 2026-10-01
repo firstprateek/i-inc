@@ -43,18 +43,18 @@ Under **Repository permissions**, set these and leave everything else at No acce
 | Pull requests | Read and write | opens draft PRs, writes the report into them, and marks them ready |
 | Checks | Read-only | watches CI (stage 8) |
 | Metadata | Read-only | GitHub requires it |
-| Workflows | Read and write | changes files in `.github/workflows/`. Without it, GitHub rejects any push that touches them |
-| Actions | Read and write | reads CI logs and reruns jobs |
+| Actions | Read-only | reads CI logs |
 | Issues | Read and write | files and updates issues |
-| Pages | Read and write | sets up Pages |
 | Commit statuses | Read-only | reads CI that reports statuses instead of checks |
 
-The first four are needed. The other five are what spec §5 promises ("edit CI/CD workflows, run
-Actions, and manage issues and Pages"). You can leave any of them off until an employee needs it.
+The first four are needed; the other three are optional.
 
-Never grant **Administration**, **Secrets**, **Environments** or any account permission. The bot
-must not change settings (§13). Those go through privileged requests, which i.inc carries out with
-your account once you approve.
+Never grant **Workflows**, **Actions** write, **Pages**, **Administration**, **Secrets**,
+**Environments** or any account permission. A token that can edit or start workflows reaches the
+repo's Actions secrets (Duet's release signing keys, say) from GitHub's runners, which are outside
+the walls, and the bot must not change settings (§13). Those go through privileged requests, which
+i.inc carries out with your account once you approve. Without Workflows, GitHub also rejects any
+push of the bot's that touches `.github/workflows/`.
 
 Then click **Create GitHub App**.
 
@@ -103,7 +103,15 @@ For Duet, one command does it, with your own GitHub sign-in:
 gh api repos/<owner>/duet/rulesets --method POST --input tools/github-app/duet-ruleset.json
 ```
 
-For another repo, copy that file and change its required checks. By hand, go to the repo's
+Two more keep the bot to its own `inc/**` branches: one for every other branch and one for tags.
+You and GitHub Actions, which pushes Release Please's branch and tags, bypass them:
+
+```bash
+gh api repos/<owner>/duet/rulesets --method POST --input tools/github-app/duet-branches-ruleset.json
+gh api repos/<owner>/duet/rulesets --method POST --input tools/github-app/duet-tags-ruleset.json
+```
+
+For another repo, copy the files and change the required checks. By hand, go to the repo's
 **Settings → Rules → Rulesets → New ruleset → New branch ruleset**:
 
 | Setting | Value |
@@ -157,16 +165,17 @@ It mints one token to look at the repo, never prints it, and revokes it at the e
 
 - `readGitHubAppConfig` reads `~/.config/i-inc/github-app.json`, and `readPrivateKey` refuses a key
   that anyone else can read.
-- `GitHubApp.token(repo)` mints a token for the ticket's repo alone. It reuses the token until five
-  minutes before its hour is up.
+- `GitHubApp.token(repo)` mints a token for the ticket's repo alone: one that can push for the
+  builder, read-only for a reviewer or verifier. A session gets one with at least 50 minutes left.
 - In the machine, `gh`, and git through gh's credential helper, use that token, so they push as the
-  bot. A token lasts an hour and a session can run longer, so real mode fetches a fresh one when
-  it's needed rather than fixing one at launch.
+  bot. A session that runs past its token's hour loses push; fresh tokens mid-session are still to
+  come (the handoff).
 - `commitIdentity` gives commits the employee's name and the bot's noreply address, such as "Ada
   (i.inc)" with `<id>+i-inc-bot[bot]@users.noreply.github.com`, so GitHub shows them as the App's.
 - `PullRequests` opens the draft at stage 1. At stage 9 it writes the report into the body and marks
   the PR ready, which only GraphQL can do.
-- The merge is yours. When you tap Approve in i.inc, it approves and squash-merges with your account.
+- The merge is yours. For now, approve and squash-merge the PR on GitHub, then Approve in i.inc.
+  Approve doing both with your account (spec §5) is still to come.
 
 Until the App exists, a fine-grained token can stand in, as in M1 step 6 (`FineGrainedToken`).
 Limit it to the repos employees work on, with Contents and Pull requests read and write. It acts

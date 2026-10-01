@@ -179,6 +179,38 @@ describe("an ACP session", () => {
     expect(await agent(s).run(request())).toEqual({ kind: "done", output: "The report." });
   });
 
+  it("keeps the answer when a tool call follows it, and calls an empty answer stuck", async () => {
+    const trailing = server(
+      claudeLike((reply, id) => {
+        reply(update("agent_message_chunk", { content: { type: "text", text: "The report." } }));
+        reply(update("tool_call", { toolCallId: "t2", title: "TodoWrite", status: "pending" }));
+        setTimeout(() => reply({ id, result: { stopReason: "end_turn" } }), 5);
+      }),
+    );
+    expect(await agent(trailing).run(request())).toEqual({ kind: "done", output: "The report." });
+    const silent = server(
+      claudeLike((reply, id) => setTimeout(() => reply({ id, result: { stopReason: "end_turn" } }), 5)),
+    );
+    expect(await agent(silent).run(request())).toMatchObject({ kind: "stuck" });
+  });
+
+  it("retries a transient error a few times, then calls it stuck; a full disk isn't a quota", async () => {
+    const failing = (text: string) =>
+      claudeLike((reply, id) => setTimeout(() => reply({ id, error: { code: -32603, message: text } }), 5));
+    const transient = "Failed to refresh OAuth token. This is usually transient; retry in a minute";
+    // One agent, a fresh server for each try, as the daemon launches one per session.
+    const a = new AcpAgent({
+      launch: () => server(failing(transient)).proc,
+      credentials: () => ({}),
+      cwdFor: (id) => `/home/employee/work/inc-${id}`,
+      now: () => 1_000,
+    });
+    const outcomes: string[] = [];
+    for (let i = 0; i < 4; i++) outcomes.push((await a.run(request())).kind);
+    expect(outcomes).toEqual(["out-of-tokens", "out-of-tokens", "out-of-tokens", "stuck"]);
+    expect((await agent(server(failing("ENOSPC: Disk quota exceeded"))).run(request())).kind).toBe("stuck");
+  });
+
   it("reads Claude's rate limits, and pauses until the reset when the account is out", async () => {
     const usage: UsageReport[] = [];
     const s = server(
@@ -267,13 +299,17 @@ describe("Apple container machines", () => {
 
   it("makes a missing machine with no home mount and fixed resources, boots it, then stops it", async () => {
     const calls: string[][] = [];
-    const m = new AppleMachines(noWalls, async (_bin, args) => {
-      calls.push(args);
-      if (args[1] === "run" && calls.length === 1) throw new Error(notFound);
-      // The new machine's first boot fails, as it does now and then on the mini.
-      if (args[1] === "run" && calls.length === 3) throw new Error("Operation not supported by device");
-      return "";
-    });
+    const m = new AppleMachines(
+      noWalls,
+      async (_bin, args) => {
+        calls.push(args);
+        if (args[1] === "run" && calls.length === 1) throw new Error(notFound);
+        // The new machine's first boot fails, as it does now and then on the mini.
+        if (args[1] === "run" && calls.length === 3) throw new Error("Operation not supported by device");
+        return "";
+      },
+      async () => {},
+    );
     await m.ensureUp("ada");
     await m.ensureUp("ada");
     expect(calls).toEqual([
@@ -412,8 +448,46 @@ describe("limits named in error messages", () => {
     expect(resetFromText("You've hit your session limit · resets 3:30am (UTC)", now)).toBe(
       at("2026-09-29T03:30:00Z"),
     );
-    expect(resetFromText("resets 12am (UTC)", now)).toBe(at("2026-09-30T00:00:00Z"));
+    expect(resetFromText("resets 12am (UTC)", at("2026-09-29T22:00:00Z"))).toBe(at("2026-09-30T00:00:00Z"));
+    expect(resetFromText("resets 12pm (UTC)", now)).toBe(at("2026-09-29T12:00:00Z"));
+    // Read right at the reset, or just after: due now, so a retry in a few minutes, not tomorrow.
+    const justAfter = at("2026-09-29T03:30:20Z");
+    expect(resetFromText("resets 3:30am (UTC)", justAfter)).toBe(justAfter + 5 * 60_000);
+    expect(resetFromText("resets Oct 1, 3am (UTC)", at("2026-10-01T03:00:10Z"))).toBe(
+      at("2026-10-01T03:05:10Z"),
+    );
+    // Another zone isn't read as UTC.
+    expect(resetFromText("resets 3:30am (America/New_York)", now)).toBeNull();
     expect(resetFromText("weekly limit · resets Oct 3, 9pm (UTC)", now)).toBe(at("2026-10-03T21:00:00Z"));
     expect(resetFromText("rate limited, try later", now)).toBeNull();
+  });
+});
+
+describe("the walls' marker", () => {
+  it("counts only while the walls job keeps it fresh, and the daemon can stop every machine", async () => {
+    const { utimesSync } = await import("node:fs");
+    const { wallsUp } = await import("../src/machines.ts");
+    const marker = join(mkdtempSync(join(tmpdir(), "inc-walls-")), "i-inc-walls.ok");
+    const s = { ...noWalls, wallsMarker: marker };
+    expect(wallsUp(s)).toBe(false);
+    writeFileSync(marker, "");
+    expect(wallsUp(s)).toBe(true);
+    const old = (Date.now() - 5 * 60_000) / 1000;
+    utimesSync(marker, old, old);
+    expect(wallsUp(s)).toBe(false);
+
+    const calls: string[][] = [];
+    const listing = [
+      "NAME     CREATED              IP             CPUS  MEMORY  DISK  STATE    DEFAULT",
+      "m1-test  2026-09-27 16:10:08  192.168.64.13  4     6G      5.3G  running  *",
+      "inc-ada  2026-09-28 20:46:19  192.168.64.22  4     6G      3.6G  running",
+      "inc-kit  2026-09-28 20:46:19  -              4     6G      3.6G  stopped",
+    ].join("\n");
+    const m = new AppleMachines(noWalls, async (_bin, args) => {
+      calls.push(args);
+      return args[1] === "ls" ? listing : "";
+    });
+    expect(await m.stopAll()).toEqual(["inc-ada"]);
+    expect(calls.at(-1)).toEqual(["machine", "stop", "inc-ada"]);
   });
 });

@@ -19,7 +19,9 @@ const note = (msg) => console.log(`  ${msg}`);
 
 // What spec §5 gives the bot. `needed` must be there; `optional` may be; anything else is too much.
 const needed = { contents: "write", pull_requests: "write", checks: "read", metadata: "read" };
-const optional = { workflows: "write", actions: "write", issues: "write", pages: "write", statuses: "read" };
+// Not workflows, actions write or pages: a token that can edit or start workflows reaches the repo's
+// Actions secrets from GitHub's runners, outside the walls. Those are privileged requests.
+const optional = { actions: "read", issues: "write", statuses: "read" };
 
 async function gh(method, path, token, body) {
   const res = await fetch(`${process.env.GITHUB_API ?? "https://api.github.com"}${path}`, {
@@ -84,7 +86,8 @@ for (const [name, level] of Object.entries(needed)) {
     fail(`it needs ${name}: ${level}, and has ${perms[name] ?? "none"}`);
 }
 for (const [name, level] of Object.entries(perms)) {
-  if (!(name in needed) && !(name in optional)) fail(`it has ${name}: ${level}, which the bot mustn't`);
+  const allowed = needed[name] ?? optional[name];
+  if (!allowed || (rank[level] ?? 0) > rank[allowed]) fail(`it has ${name}: ${level}, which the bot mustn't`);
 }
 const without = Object.keys(optional).filter((name) => !(name in perms));
 if (without.length) note(`not granted (fine until an employee needs them): ${without.join(", ")}`);
@@ -132,6 +135,10 @@ if (!/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
     if (checks.length) note(`required checks: ${checks.map((c) => c.context).join(", ")}`);
     for (const id of new Set([...types.values()].map((rule) => rule.ruleset_id))) {
       const set = await gh("GET", `/repos/${repo}/rulesets/${id}`, token);
+      if (set.status !== 200) {
+        fail(`can't read ruleset ${id} as the bot (${set.status}), so can't tell whether it can bypass it`);
+        continue;
+      }
       const bypass = set.json.current_user_can_bypass ?? "never";
       if (bypass === "never") pass(`the bot can't bypass ruleset "${set.json.name}"`);
       else fail(`the bot can bypass ruleset "${set.json.name}" (${bypass}); take it off the bypass list`);

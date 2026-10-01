@@ -13,6 +13,7 @@ import { createApp } from "./app.ts";
 import { configDir, readCredentials } from "./config.ts";
 import { seedDemo, seedDemoLater, seedDemoTickets } from "./demo.ts";
 import { GitHubApp, readGitHubAppConfig } from "./github.ts";
+import { AppleMachines, defaultMachineSettings, wallsUp } from "./machines.ts";
 import { realPorts } from "./real.ts";
 
 const home = process.env.I_INC_HOME ?? join(homedir(), ".i-inc");
@@ -26,6 +27,8 @@ const common = {
   knowledgeDir: join(home, "knowledge"),
   clock: { now: () => Date.now() },
   ...(process.env.I_INC_TOKEN ? { token: process.env.I_INC_TOKEN } : {}),
+  // The Host headers it answers: its own address, plus any in I_INC_HOSTS (comma-separated).
+  hosts: [`${host}:${port}`, `localhost:${port}`, ...(process.env.I_INC_HOSTS?.split(",") ?? [])],
   log,
 };
 mkdirSync(home, { recursive: true });
@@ -87,6 +90,18 @@ if (demo && app.deps.registry.employees().length === 0) {
 }
 await app.daemon.tick();
 setInterval(() => void app.daemon.tick(), 30_000);
+
+// If the walls go down, nothing new starts (assertWalls), and the machines already running stop.
+if (!demo && app.deps.machines instanceof AppleMachines) {
+  const machines = app.deps.machines;
+  setInterval(() => {
+    if (wallsUp(defaultMachineSettings)) return;
+    void machines
+      .stopAll()
+      .then((stopped) => stopped.length && log(`the walls are down: stopped ${stopped.join(", ")}`))
+      .catch((err) => log(`the walls are down, and stopping the machines failed: ${err}`));
+  }, 30_000);
+}
 
 /** The web app's build, with index.html for every other path. */
 async function serveWeb(req: Request): Promise<Response> {

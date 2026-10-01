@@ -53,11 +53,14 @@ export class FakeMachines implements MachineProvider {
 /** Records the branches it opens and the PRs it marks ready. Set `failOpen` to make pick-up fail. */
 export class FakeWorkspace implements Workspace {
   readonly opened: Id[] = [];
+  /** Whose machine each open was for. */
+  readonly openedFor: Id[] = [];
   readonly readied: { ticketId: Id; pr: PullRequestRef; report: string }[] = [];
   failOpen: string | null = null;
   async open(ticket: Ticket, builder: Employee): Promise<PullRequestRef> {
     if (this.failOpen) throw new Error(this.failOpen);
     this.opened.push(ticket.id);
+    this.openedFor.push(builder.id);
     return {
       number: Number(ticket.id),
       url: `https://github.com/owner/repo/pull/${ticket.id}`,

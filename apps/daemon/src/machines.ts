@@ -9,7 +9,7 @@
 // "notFound" for a missing one. `machine create` boots the new machine itself. `machine stop` also
 // succeeds on a machine that's already stopped.
 import { type ChildProcessWithoutNullStreams, execFile, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { statSync } from "node:fs";
 import type { Id, MachineProvider } from "@i-inc/core";
 import type { AgentProcess, Launch } from "./acp.ts";
 
@@ -38,10 +38,22 @@ export const defaultMachineSettings: MachineSettings = {
   wallsMarker: "/var/run/i-inc-walls.ok",
 };
 
+/** Whether the walls job has confirmed the walls in the last two minutes (it runs every minute). */
+export function wallsUp(s: MachineSettings, now = Date.now()): boolean {
+  if (!s.wallsMarker) return true;
+  try {
+    return now - statSync(s.wallsMarker).mtimeMs < 120_000;
+  } catch {
+    return false;
+  }
+}
+
 /** Fails closed: nothing runs in a machine unless the walls are up (spec §5). */
 export function assertWalls(s: MachineSettings): void {
-  if (s.wallsMarker && !existsSync(s.wallsMarker)) {
-    throw new Error(`the walls aren't up (${s.wallsMarker} is missing), so no machine runs: see tools/host`);
+  if (!wallsUp(s)) {
+    throw new Error(
+      `the walls aren't up (${s.wallsMarker} is missing or stale), so no machine runs: see tools/host`,
+    );
   }
 }
 
@@ -73,6 +85,7 @@ export class AppleMachines implements MachineProvider {
   constructor(
     private readonly s: MachineSettings = defaultMachineSettings,
     private readonly exec: Exec = execDefault,
+    private readonly sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
   ) {}
 
   async ensureUp(employeeId: Id): Promise<void> {
@@ -81,7 +94,7 @@ export class AppleMachines implements MachineProvider {
     const name = machineName(employeeId);
     try {
       // Boots the machine if it's stopped (0.6 s), and does nothing if it's running.
-      await this.exec(this.s.bin, ["machine", "run", "-n", name, "--", "true"]);
+      await this.boot(name);
     } catch (err) {
       if (!/notFound|not found/.test(err instanceof Error ? err.message : String(err))) throw err;
       // No such machine yet: make it with the flags M1 used.
@@ -98,23 +111,52 @@ export class AppleMachines implements MachineProvider {
         "none",
         this.s.image,
       ]);
-      // A new machine's first boot fails now and then with "Operation not supported by device", and
-      // the next one works (images/employee/README.md), so boot it here rather than in its first job.
-      for (let attempt = 1; ; attempt++) {
-        try {
-          await this.exec(this.s.bin, ["machine", "run", "-n", name, "--", "true"]);
-          break;
-        } catch (err) {
-          if (attempt === 3) throw err;
-        }
-      }
+      // Boot it here rather than in its first job.
+      await this.boot(name);
     }
     this.up.add(employeeId);
+  }
+
+  /**
+   * Boots a machine. A boot fails now and then with "Operation not supported by device", most often
+   * a new machine's first, and a later one works (images/employee/README.md): try up to three times,
+   * a few seconds apart.
+   */
+  private async boot(name: string): Promise<void> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await this.exec(this.s.bin, ["machine", "run", "-n", name, "--", "true"]);
+        return;
+      } catch (err) {
+        const flaky = /Operation not supported by device/.test(
+          err instanceof Error ? err.message : String(err),
+        );
+        if (!flaky || attempt === 3) throw err;
+        await this.sleep(3000);
+      }
+    }
   }
 
   async stop(employeeId: Id): Promise<void> {
     if (!this.up.delete(employeeId)) return;
     await this.exec(this.s.bin, ["machine", "stop", machineName(employeeId)]);
+  }
+
+  /**
+   * Stops every running employee machine, including ones an earlier daemon started: what the daemon
+   * does when the walls go down. Returns the machines it stopped.
+   */
+  async stopAll(): Promise<string[]> {
+    const listing = await this.exec(this.s.bin, ["machine", "ls"]);
+    const names = listing
+      .split("\n")
+      .slice(1)
+      .map((line) => line.trim().split(/\s+/))
+      .filter((cols) => cols[0]?.startsWith("inc-") && cols.includes("running"))
+      .map((cols) => cols[0] as string);
+    for (const name of names) await this.exec(this.s.bin, ["machine", "stop", name]);
+    this.up.clear();
+    return names;
   }
 
   /** Employees whose machines this daemon started and hasn't stopped. */

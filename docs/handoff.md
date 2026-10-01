@@ -13,13 +13,13 @@ Merged on `main`:
 | M1 | Run on the mini. Answers are in [m1-findings.md](m1-findings.md) and scripts in `tools/m1/`. The machine `m1-test` still runs there. The walls and the Ollama relay now come back at boot (`tools/host/`, below) |
 | M2 | `packages/core`: the pipeline, engines and switch rules, the scheduler (reviewers and verifiers are scheduled like builds), errands, outbound permissions, My desk maths, knowledge routing, orientation. 64 tests |
 | M3 (part) | `apps/daemon`: SQLite, registry, tick loop, API, urgent chat interrupts, brains and the handbook as git repos. `apps/web`: every view, light and dark. The daemon runs real employees by default (`real.ts`: ACP sessions in machines, the harness, credentials from `~/.config/i-inc/credentials.json`, projects and their recipes in the registry through `PUT /api/projects/:id`), or the scripted demo with `I_INC_DEMO=1` |
-| M3 adapters | `apps/daemon/src/acp.ts` (the real ACP client), `apps/daemon/src/harness.ts` (checks and gates in the machine), `apps/daemon/src/machines.ts` (Apple container, its commands checked on the mini) and `apps/daemon/src/github.ts` (the GitHub App's tokens, draft PRs and the bot's commit identity). They're tested against a scripted ACP server and a recording `fetch`, but **not wired into `main.ts` yet** |
+| M3 adapters | `apps/daemon/src/acp.ts` (the real ACP client), `apps/daemon/src/harness.ts` (checks and gates in the machine), `apps/daemon/src/machines.ts` (Apple container, its commands checked on the mini) and `apps/daemon/src/github.ts` (the GitHub App's tokens, draft PRs and the bot's commit identity). Tested against a scripted ACP server and a recording `fetch`, and wired into real mode (`real.ts`) |
 | M3 image | `images/employee/`: the base image, built on the mini and checked in a throwaway machine, with Duet's recipe green in it ([its README](../images/employee/README.md)). Everything in a machine runs as its user `employee` |
-| GitHub | The App **i.inc bot** is set up: its key and ids are on the mini in `~/.config/i-inc`, it's installed on Duet only, and Duet's `main` has the ruleset. `tools/github-app/check.mjs` passes. Nothing has pushed as the bot yet |
+| GitHub | The App **i.inc bot** is set up: its key and ids are on the mini in `~/.config/i-inc`, it's installed on Duet only, and Duet's `main` has the ruleset. `tools/github-app/check.mjs` passes. The App still has the Workflows, Actions write and Pages permissions it was created with; the owner narrows them (below) |
 | First real ticket | 2026-10-01, on the mini: Ada (Claude, signed in inside her machine) took M1's README ticket from pick-up to a ready PR as the bot, firstprateek/duet#8. Her branch was made in her machine, three required CI checks passed, the gates waited for them, and the report became the PR body. It took three fixes on the way: Claude's "session limit" now pauses a ticket until the reset; the `acp-claude` launcher refreshes an expired sign-in before the adapter's parallel queries race to; and only a session's final answer counts as its output |
 | M4 (part) | Brain and handbook repos, edits applied from each retro, policies that wait for the owner, orientation, and the viewer |
 
-`pnpm check`, `pnpm typecheck` and `pnpm test` pass (140 tests). CI runs all three.
+`pnpm check`, `pnpm typecheck` and `pnpm test` pass (149 tests). CI runs all three.
 
 ## Open questions for the owner
 
@@ -68,7 +68,24 @@ before any `sudo` or change to the host. The other items can run anywhere.
    - a token for the web app, so the daemon can be served on the tailnet;
    - answer the machines' DNS in the daemon, refusing tailnet names, and relay Antigravity's
      sign-in callback into the machine.
-3. **Lessons from the first real ticket.**
+3. **After the adversarial review (2026-10-01).** A fresh-context review of the stack found 16
+   problems. Fixed in code: the API refuses cross-site writes and foreign Host headers; the CI wait
+   requires `main`'s required checks and reads every page; the gates refuse uncommitted work,
+   empty branches and pushing over others' commits; a handoff makes the worktree in the new
+   builder's machine; reviewers get read-only tokens and aren't told to push; sessions get tokens
+   with 50 minutes left; GitHub hiccups at pick-up retry; the final answer survives a trailing tool
+   call; transient errors retry three times; reset times just past mean "soon"; the walls marker
+   must be fresh, and machines stop when it isn't. The owner's part:
+   - narrow the App to the permissions in [github-app.md](github-app.md) (no Workflows, Actions
+     write or Pages), then accept the change on the installation;
+   - apply `duet-branches-ruleset.json` and `duet-tags-ruleset.json`;
+   - install the new `walls.sh` with `sudo sh tools/host/install-walls.sh`;
+   - move Duet's release secrets into an environment limited to `main`.
+
+   Still open from it: Approve doesn't merge yet (the owner merges on GitHub); stage 8's
+   protected-path, secret-scan and diff-size gates don't exist; there's no API token yet, so the
+   daemon stays off the tailnet; the report's byline names the engine's model.
+4. **Lessons from the first real ticket.**
    - A new image doesn't reach existing machines: Ada's new `acp-claude` was copied in by hand. The
      daemon needs a way to update a machine's launchers, or to remake a machine and sign it in again.
    - A failed ticket has no retry: handing it to the same employee (`POST

@@ -76,11 +76,18 @@ describe("the GitHub App", () => {
     const jwt = calls[0]?.headers.authorization?.replace("Bearer ", "") ?? "";
     expect(decode(jwt.split(".")[1] ?? "").iss).toBe("123");
 
-    now += 50 * 60_000; // 10 minutes left: reuse it
+    now += 5 * 60_000; // 55 minutes left: reuse it
     expect(await app.token("firstprateek/duet")).toBe("ghs_1");
-    now += 6 * 60_000; // 4 minutes left: mint a new one
+    now += 6 * 60_000; // 49 minutes left: too little for a session, so mint a new one
     expect(await app.token("firstprateek/duet")).toBe("ghs_2");
     expect(calls).toHaveLength(2);
+
+    // A reviewer's token can only read.
+    expect(await app.token("firstprateek/duet", "read")).toBe("ghs_3");
+    expect(calls[2]?.body).toEqual({
+      repositories: ["duet"],
+      permissions: { contents: "read", pull_requests: "read", metadata: "read", checks: "read" },
+    });
   });
 
   it("says what GitHub said when it refuses", async () => {
@@ -193,10 +200,31 @@ describe("pull requests, as the bot", () => {
 
 describe("CI at the gates", () => {
   const sha = "a".repeat(40);
-  function ci(replies: { name: string; status: string; conclusion: string | null }[][]) {
+  type Run = { name: string; status: string; conclusion: string | null };
+  const done = (name: string, conclusion: string): Run => ({ name, status: "completed", conclusion });
+  const running = (name: string): Run => ({ name, status: "in_progress", conclusion: null });
+  /** Each poll answers with the next list of runs; `required` are the checks main's rules name. */
+  function ci(polls: Run[][], required: string[] = []) {
     let clock = 0;
     const slept: number[] = [];
-    const { calls, f } = recorder(() => ({ json: { check_runs: replies.shift() ?? [] } }));
+    let current: Run[] = [];
+    const { calls, f } = recorder((call) => {
+      if (call.url.includes("/rules/branches/main")) {
+        return {
+          json: required.length
+            ? [
+                {
+                  type: "required_status_checks",
+                  parameters: { required_status_checks: required.map((context) => ({ context })) },
+                },
+              ]
+            : [],
+        };
+      }
+      const page = Number(new URL(call.url).searchParams.get("page"));
+      if (page === 1) current = polls.shift() ?? current;
+      return { json: { check_runs: current.slice((page - 1) * 100, page * 100) } };
+    });
     const run = (o = {}) =>
       waitForCi(new FineGrainedToken("t"), "firstprateek/duet", sha, {
         fetch: f,
@@ -209,34 +237,46 @@ describe("CI at the gates", () => {
       });
     return { run, calls, slept };
   }
-  const done = (name: string, conclusion: string) => ({ name, status: "completed", conclusion });
 
-  it("waits for every check run on the commit, then passes when all passed", async () => {
-    const { run, calls, slept } = ci([
-      [{ name: "Lint, types and tests", status: "in_progress", conclusion: null }],
-      [done("Lint, types and tests", "success"), done("Sorting service (Python)", "skipped")],
-    ]);
-    expect(await run()).toEqual({ ok: true });
-    expect(slept).toEqual([20_000]);
-    expect(calls[0]?.url).toBe(
-      `https://api.github.com/repos/firstprateek/duet/commits/${sha}/check-runs?per_page=100`,
+  it("waits for a required check that hasn't started, even when every run so far passed", async () => {
+    const { run, slept } = ci(
+      [
+        [done("build", "success")],
+        [done("build", "success"), running("Lint, types and tests")],
+        [done("build", "success"), done("Lint, types and tests", "success")],
+      ],
+      ["Lint, types and tests"],
     );
+    expect(await run()).toEqual({ ok: true });
+    expect(slept).toEqual([20_000, 20_000]);
   });
 
-  it("names the checks that failed", async () => {
-    const { run } = ci([[done("Lint, types and tests", "failure"), done("relay", "success")]]);
+  it("reads every page of check runs", async () => {
+    const many = Array.from({ length: 100 }, (_, i) => done(`job ${i}`, "success"));
+    const { run, calls } = ci([[...many, done("job 100", "failure")]]);
+    expect(await run()).toEqual({ ok: false, reason: "CI failed: job 100 (failure)" });
+    expect(calls.some((c) => c.url.endsWith("page=2"))).toBe(true);
+  });
+
+  it("names the checks that failed, without waiting for the rest", async () => {
+    const { run } = ci(
+      [[done("Lint, types and tests", "failure"), running("relay")]],
+      ["Lint, types and tests"],
+    );
     expect(await run()).toEqual({ ok: false, reason: "CI failed: Lint, types and tests (failure)" });
   });
 
-  it("treats a repo with no check runs as having no CI, after a grace period", async () => {
+  it("treats a repo that requires no checks and gets no runs as having no CI, after a grace period", async () => {
     const { run, slept } = ci([]);
     expect(await run({ graceMs: 60_000 })).toEqual({ ok: true });
     expect(slept).toEqual([20_000, 20_000, 20_000]);
   });
 
-  it("gives up when CI takes too long", async () => {
-    const running = { name: "build", status: "queued", conclusion: null };
-    const { run } = ci(Array.from({ length: 10 }, () => [running]));
-    expect(await run({ timeoutMs: 100_000 })).toEqual({ ok: false, reason: "CI didn't finish in time" });
+  it("never calls a repo with required checks CI-free, and says what it waited on", async () => {
+    const { run } = ci([], ["Lint, types and tests"]);
+    expect(await run({ timeoutMs: 100_000 })).toEqual({
+      ok: false,
+      reason: "CI didn't finish in time: waiting on Lint, types and tests",
+    });
   });
 });

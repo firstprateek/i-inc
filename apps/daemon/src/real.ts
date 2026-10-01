@@ -57,12 +57,14 @@ export function realPorts(
     agent: (registry) =>
       new AcpAgent({
         launch: o.launch ?? machineLaunch(s),
-        // The account's credential, and a token for the ticket's repo so the builder can push.
-        credentials: async (engine, ticket) => {
+        // The account's credential, and a token for the ticket's repo: one that pushes for the
+        // builder, read-only for a reviewer or verifier.
+        credentials: async (engine, ticket, duty) => {
           const repo = registry.project(ticket.project)?.repo;
+          const access = duty === "review" || duty === "verify" ? "read" : "write";
           return {
             ...account(engine),
-            ...(github && repo ? { GH_TOKEN: await github.tokens.token(repo) } : {}),
+            ...(github && repo ? { GH_TOKEN: await github.tokens.token(repo, access) } : {}),
           };
         },
         cwdFor: (ticketId) => workDir(ticketId, s),

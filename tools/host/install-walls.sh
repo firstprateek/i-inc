@@ -1,8 +1,8 @@
 #!/bin/sh
 # Installs the walls' boot job (walls.sh) as a LaunchDaemon. Run it on the mini as root, from a copy
 # of the repo's tools folder: sudo sh tools/host/install-walls.sh
-# Undo it: sudo launchctl bootout system/inc.i.walls, delete /Library/LaunchDaemons/inc.i.walls.plist
-# and /usr/local/lib/i-inc, then sudo sh tools/m1/pf/remove.sh.
+# Undo it: sudo launchctl bootout system/inc.i.walls, delete /Library/LaunchDaemons/inc.i.walls.plist,
+# /usr/local/lib/i-inc and /var/run/i-inc-walls.ok, then sudo sh tools/m1/pf/remove.sh.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 [ "$(id -u)" = 0 ] || { echo "run it with sudo" >&2; exit 1; }

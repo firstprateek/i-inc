@@ -9,8 +9,12 @@ import { configDir, readOwnerOnly } from "./config.ts";
 
 /** Where a session's GitHub token comes from. `repo` is "owner/name". */
 export interface TokenSource {
-  token(repo: string): Promise<string>;
+  /** "read" for a reviewer or verifier, who checks the branch out but never pushes. */
+  token(repo: string, access?: "write" | "read"): Promise<string>;
 }
+
+/** A session can run for most of an hour, so it gets a token with at least this long left. */
+const minLeftMs = 50 * 60_000;
 
 export interface GitHubAppConfig {
   appId: string;
@@ -100,9 +104,10 @@ export class GitHubApp implements TokenSource {
     this.readKey = deps.readKey ?? readPrivateKey;
   }
 
-  async token(repo: string): Promise<string> {
-    const cached = this.cache.get(repo);
-    if (cached && cached.expiresAt - this.now() > 5 * 60_000) return cached.token;
+  async token(repo: string, access: "write" | "read" = "write"): Promise<string> {
+    const key = `${repo} ${access}`;
+    const cached = this.cache.get(key);
+    if (cached && cached.expiresAt - this.now() > minLeftMs) return cached.token;
     const jwt = appJwt(this.config.appId, this.readKey(this.config.privateKeyPath), this.now());
     const body = await call(
       this.f,
@@ -110,13 +115,18 @@ export class GitHubApp implements TokenSource {
       {
         method: "POST",
         headers: { authorization: `Bearer ${jwt}` },
-        // Only the ticket's repo, with whatever the App was granted there.
-        body: JSON.stringify({ repositories: [checkRepo(repo).split("/")[1]] }),
+        // Only the ticket's repo: with whatever the App was granted there, or read-only.
+        body: JSON.stringify({
+          repositories: [checkRepo(repo).split("/")[1]],
+          ...(access === "read"
+            ? { permissions: { contents: "read", pull_requests: "read", metadata: "read", checks: "read" } }
+            : {}),
+        }),
       },
     );
     if (typeof body.token !== "string") throw new Error("GitHub sent no installation token");
     const token = body.token;
-    this.cache.set(repo, { token, expiresAt: Date.parse(String(body.expires_at)) });
+    this.cache.set(key, { token, expiresAt: Date.parse(String(body.expires_at)) });
     return token;
   }
 }
@@ -224,8 +234,11 @@ export interface CiOptions {
 }
 
 /**
- * Stage 8's "GitHub CI green" (spec §6): waits until every check run on the commit has finished,
- * and says which failed. A repo whose commits get no check runs within the grace period has no CI.
+ * Stage 8's "GitHub CI green" (spec §6). The checks `main`'s rules require must each have run on the
+ * commit and passed; every other check run that showed up must have finished without failing. A
+ * check that hasn't started yet has no run, so the required ones are what keep this from passing
+ * early. A repo whose `main` requires no checks and whose commit gets no runs in the grace period
+ * has no CI.
  */
 export async function waitForCi(
   tokens: TokenSource,
@@ -234,28 +247,52 @@ export async function waitForCi(
   o: CiOptions = {},
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const f = o.fetch ?? fetch;
+  const api = o.api ?? API;
   const now = o.now ?? Date.now;
   const sleep = o.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   if (!/^[0-9a-f]{7,40}$/.test(sha)) throw new Error(`not a commit: ${sha}`);
+  const get = async (url: string) =>
+    call(f, url, { method: "GET", headers: { authorization: `Bearer ${await tokens.token(repo)}` } });
+
+  const rules = (await get(`${api}/repos/${checkRepo(repo)}/rules/branches/main`)) as unknown;
+  const required = (Array.isArray(rules) ? (rules as Record<string, unknown>[]) : [])
+    .filter((r) => r.type === "required_status_checks")
+    .flatMap(
+      (r) =>
+        ((r.parameters as Record<string, unknown>)?.required_status_checks ?? []) as { context: string }[],
+    )
+    .map((c) => c.context);
+
+  const passed = (r: Record<string, unknown>) =>
+    ["success", "neutral", "skipped"].includes(String(r.conclusion));
   const start = now();
   for (;;) {
-    const body = await call(
-      f,
-      `${o.api ?? API}/repos/${checkRepo(repo)}/commits/${sha}/check-runs?per_page=100`,
-      { method: "GET", headers: { authorization: `Bearer ${await tokens.token(repo)}` } },
-    );
-    const runs = (Array.isArray(body.check_runs) ? body.check_runs : []) as Record<string, unknown>[];
-    const waited = now() - start;
-    if (runs.length === 0 && waited >= (o.graceMs ?? 120_000)) return { ok: true };
-    if (runs.length > 0 && runs.every((r) => r.status === "completed")) {
-      const failed = runs.filter((r) => !["success", "neutral", "skipped"].includes(String(r.conclusion)));
-      if (failed.length === 0) return { ok: true };
+    const runs: Record<string, unknown>[] = [];
+    for (let page = 1; ; page++) {
+      const body = await get(`${api}/repos/${repo}/commits/${sha}/check-runs?per_page=100&page=${page}`);
+      const batch = (Array.isArray(body.check_runs) ? body.check_runs : []) as Record<string, unknown>[];
+      runs.push(...batch);
+      if (batch.length < 100) break;
+    }
+    const failed = runs.filter((r) => r.status === "completed" && !passed(r));
+    if (failed.length) {
       return {
         ok: false,
         reason: `CI failed: ${failed.map((r) => `${r.name} (${r.conclusion})`).join(", ")}`,
       };
     }
-    if (waited >= (o.timeoutMs ?? 45 * 60_000)) return { ok: false, reason: "CI didn't finish in time" };
+    const waited = now() - start;
+    const allDone = runs.every((r) => r.status === "completed");
+    const requiredPassed = required.every((name) => runs.some((r) => r.name === name && passed(r)));
+    if (required.length ? requiredPassed && allDone : runs.length > 0 && allDone) return { ok: true };
+    if (!required.length && runs.length === 0 && waited >= (o.graceMs ?? 120_000)) return { ok: true };
+    if (waited >= (o.timeoutMs ?? 45 * 60_000)) {
+      const missing = required.filter((name) => !runs.some((r) => r.name === name && passed(r)));
+      return {
+        ok: false,
+        reason: `CI didn't finish in time${missing.length ? `: waiting on ${missing.join(", ")}` : ""}`,
+      };
+    }
     await sleep(o.pollMs ?? 20_000);
   }
 }

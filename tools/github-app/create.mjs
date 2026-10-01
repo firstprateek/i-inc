@@ -39,10 +39,8 @@ const manifest = {
     pull_requests: "write",
     checks: "read",
     metadata: "read",
-    workflows: "write",
-    actions: "write",
+    actions: "read",
     issues: "write",
-    pages: "write",
     statuses: "read",
   },
 };

@@ -61,6 +61,9 @@ export async function createApp(o: AppOptions) {
   };
   const daemon = new Daemon(deps);
   daemon.ensureKnowledge();
-  const handle = createApi(daemon, deps, o.token ? { token: o.token } : {});
+  const handle = createApi(daemon, deps, {
+    ...(o.token ? { token: o.token } : {}),
+    ...(o.hosts ? { hosts: o.hosts } : {}),
+  });
   return { db, deps, daemon, handle };
 }

@@ -187,3 +187,40 @@ describe("real mode", () => {
     );
   });
 });
+
+describe("the API's guard", () => {
+  it("answers only its own Host, takes writes only as JSON, and refuses other sites' writes", async () => {
+    const { FakeAgent, FakeChat, FakeHarness, FakeHelper, FakeMachines } = await import(
+      "@i-inc/core/testing"
+    );
+    const app = await createApp({
+      dbPath: ":memory:",
+      knowledgeDir: tmp("inc-knowledge-"),
+      clock: new FakeClock(),
+      machines: new FakeMachines(),
+      agent: new FakeAgent(),
+      harness: new FakeHarness(),
+      helper: new FakeHelper(),
+      chat: new FakeChat(),
+      hosts: ["127.0.0.1:7420"],
+    });
+    const send = (init: RequestInit & { host?: string }) =>
+      app.handle(
+        new Request("http://127.0.0.1:7420/api/accounts/x", {
+          method: "PUT",
+          body: JSON.stringify({ name: "X" }),
+          ...init,
+          headers: { host: init.host ?? "127.0.0.1:7420", ...(init.headers as Record<string, string>) },
+        }),
+      );
+    const json = { "content-type": "application/json" };
+    expect((await send({ headers: json })).status).toBe(200);
+    // DNS rebinding: the page's own name arrives as the Host.
+    expect((await send({ host: "evil.example:7420", headers: json })).status).toBe(421);
+    // A form or no-cors fetch from another site can't set a JSON content type.
+    expect((await send({ headers: { "content-type": "text/plain" } })).status).toBe(415);
+    expect((await send({ headers: {} })).status).toBe(415);
+    expect((await send({ headers: { ...json, origin: "https://evil.example" } })).status).toBe(403);
+    expect((await send({ headers: { ...json, origin: "http://127.0.0.1:7420" } })).status).toBe(200);
+  });
+});
