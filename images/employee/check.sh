@@ -23,7 +23,7 @@ try() {
 [ "$(id -un)" = employee ] && pass "runs as employee" || fail "runs as $(id -un)"
 [ "$HOME" = /home/employee ] && pass "HOME is /home/employee" || fail "HOME is $HOME"
 sudo -n true </dev/null 2>/dev/null && pass "sudo needs no password" || fail "sudo asks for a password"
-[ -z "$(ls /home/employee/.claude /home/employee/.gemini/antigravity-acp 2>/dev/null)" ] &&
+[ ! -e "$HOME/.claude/.credentials.json" ] && [ ! -e "$HOME/.gemini/antigravity-acp" ] &&
   pass "no credentials in the image" || fail "credentials in the image"
 
 try node node --version
@@ -34,6 +34,14 @@ try "Claude's ACP adapter" node -p \
   'require("/usr/local/lib/node_modules/@agentclientprotocol/claude-agent-acp/package.json").version'
 try opencode opencode --version
 try "the Antigravity CLI" "$HOME/.local/bin/agy" --version
+try "Claude Code, for the sign-in" claude --version
+# It exits 1 when signed out, so its output is read first (pipefail would count that as a failure).
+status=$(claude auth status </dev/null 2>/dev/null || true)
+if grep -q '"loggedIn": false' <<<"$status"; then
+  pass "Claude isn't signed in yet: once per machine, with tools/host/sign-in-claude.sh"
+else
+  fail "Claude is signed in already, in the image"
+fi
 [ -x "$HOME/.local/share/agy-acp-server/agy_acp_server.par" ] &&
   pass "Antigravity's ACP server is there" || fail "Antigravity's ACP server is missing"
 

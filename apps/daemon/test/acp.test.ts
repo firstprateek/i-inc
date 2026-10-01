@@ -247,11 +247,13 @@ describe("Apple container machines", () => {
   const notFound =
     'Error: failed to boot container machine (cause: "notFound: "container machine with ID inc-ada not found"")';
 
-  it("makes a missing machine with no home mount and fixed resources, then stops it", async () => {
+  it("makes a missing machine with no home mount and fixed resources, boots it, then stops it", async () => {
     const calls: string[][] = [];
     const m = new AppleMachines(noWalls, async (_bin, args) => {
       calls.push(args);
       if (args[1] === "run" && calls.length === 1) throw new Error(notFound);
+      // The new machine's first boot fails, as it does now and then on the mini.
+      if (args[1] === "run" && calls.length === 3) throw new Error("Operation not supported by device");
       return "";
     });
     await m.ensureUp("ada");
@@ -271,6 +273,8 @@ describe("Apple container machines", () => {
         "none",
         "local/i-inc-employee:latest",
       ],
+      boot,
+      boot,
     ]);
     await m.stop("ada");
     expect(calls.at(-1)).toEqual(["machine", "stop", "inc-ada"]);

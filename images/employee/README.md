@@ -42,6 +42,7 @@ Three quirks came up:
 - **`machine run -i` refuses SSH's own stdin** with "Inappropriate ioctl for device", as in
   `ssh <mini> 'container machine run -i … bash -s' < script`. Through `cat |` it works, and so does
   Node's `spawn`, which is how the daemon runs it.
-- **A machine recreated under a name that was just deleted didn't boot at first.** It stopped at
-  once, and `machine run` failed with "Operation not supported by device". The next `machine run`
-  booted it. `AppleMachines.ensureUp` boots with `machine run` anyway, so the daemon gets past this.
+- **A new machine's first boot fails now and then.** Right after `machine create`, the machine
+  stopped at once, and `machine run` failed with "Operation not supported by device". The next
+  `machine run` booted it. It happened twice, once with a name that had just been deleted and once
+  with a new one. So `AppleMachines.ensureUp` boots a new machine itself, trying up to three times.

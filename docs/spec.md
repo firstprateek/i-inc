@@ -250,10 +250,12 @@ then writes project pages in its brain.
 
 Every machine has all the harnesses installed: Claude Code, Antigravity and OpenCode, each speaking
 ACP. Claude Code goes through an adapter, Antigravity through its own ACP server, and OpenCode
-natively. The engine chosen for a session decides which harness runs and which account's
-credential i.inc injects. For Claude, that credential is a model-only token from `claude
-setup-token`, never a full login. A full login would also reach the owner's claude.ai connectors
-(mail, calendar, drive) from inside the machine.
+natively. The engine chosen for a session decides which harness runs on which account. Each
+employee's machine signs in to the owner's subscriptions once, at hiring: Claude Code with `claude
+auth login`, and Antigravity with its own sign-in. The owner chose this over Claude's model-only
+token (`claude setup-token`), accepting that a full Claude login also reaches the owner's claude.ai
+connectors (mail, calendar, drive) from inside the machine. A token can still be given to any
+account instead, and i.inc then injects it into each session.
 
 Switch rules are set per employee:
 

@@ -1,9 +1,9 @@
 // Real mode's configuration on the host, in ~/.config/i-inc and never in the repo:
-//   credentials.json  the environment each account's sessions get, such as
-//                     {"claude-max": {"CLAUDE_CODE_OAUTH_TOKEN": "…"}}, from `claude setup-token`
+//   credentials.json  optional: the environment an account's sessions get, such as
+//                     {"claude": {"CLAUDE_CODE_OAUTH_TOKEN": "…"}}, from `claude setup-token`
 //   github-app.json   the GitHub App's ids, with its key in github-app.pem (docs/github-app.md)
-// Both secret files must be readable only by their owner. Antigravity signs in inside each machine
-// and OpenCode runs on local models, so their accounts need no entry.
+// Both secret files must be readable only by their owner. By default each machine signs in to its
+// harnesses itself, once at hiring (tools/host/sign-in-claude.sh), so accounts need no entry here.
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
