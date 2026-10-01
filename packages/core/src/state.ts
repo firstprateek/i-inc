@@ -66,6 +66,10 @@ export interface TicketState {
   pr: PullRequestRef | null;
   /** Whose machine has the ticket's worktree; a handoff makes a new one in the new builder's. */
   prFor: Id | null;
+  /** Time spent running, leaving out time paused, failed or waiting on the owner. */
+  workedMs: number;
+  /** When the last event happened, for `workedMs`. */
+  lastAt: number | null;
 }
 
 export function emptyState(): TicketState {
@@ -106,6 +110,8 @@ export function emptyState(): TicketState {
     waitingFor: null,
     pr: null,
     prFor: null,
+    workedMs: 0,
+    lastAt: null,
   };
 }
 
@@ -204,6 +210,10 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
     case "proposals-decided":
     case "policy-decided":
       return s;
+    case "retried":
+      return s.status === "failed"
+        ? { ...s, status: "running", failure: null, interrupted: s.active !== null }
+        : s;
     case "pr-opened":
       return { ...s, pr: e.pr, prFor: e.employeeId ?? null };
     case "report-ready":
@@ -267,5 +277,9 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
 }
 
 export function fold(events: TicketEvent[]): TicketState {
-  return events.reduce(apply, emptyState());
+  return events.reduce((s, e) => {
+    const next = apply(s, e);
+    const worked = s.status === "running" && s.lastAt !== null ? e.at - s.lastAt : 0;
+    return { ...next, workedMs: s.workedMs + worked, lastAt: e.at };
+  }, emptyState());
 }

@@ -45,7 +45,8 @@ export function assembleReport(ticket: Ticket, s: TicketState, company: Company)
     byline,
     engines,
     checks: s.lastChecks?.green ? "checks green" : "checks not run",
-    minutes: s.startedAt !== null && s.readyAt !== null ? Math.round((s.readyAt - s.startedAt) / 60_000) : 0,
+    // Working time: the days a ticket sat failed or paused don't count.
+    minutes: Math.round(s.workedMs / 60_000),
     judgment: s.outputs.report ?? "",
     pr: s.pr?.url ?? null,
   };

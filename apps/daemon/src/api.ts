@@ -18,6 +18,7 @@ import {
   type Id,
   knowledgeLog,
   type ProposedEdit,
+  retry,
 } from "@i-inc/core";
 import type { Daemon, DaemonDeps } from "./daemon.ts";
 import type { Change, Repo } from "./knowledge.ts";
@@ -378,6 +379,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         return act(p.id, "ready", () => decide(ports, p.id ?? "", decision, note));
       },
     ],
+
+    ["POST", "/api/tickets/:id/retry", async (_req, p) => act(p.id, null, () => retry(ports, p.id ?? ""))],
 
     [
       "POST",

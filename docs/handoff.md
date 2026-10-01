@@ -19,7 +19,7 @@ Merged on `main`:
 | First real ticket | 2026-10-01, on the mini: Ada (Claude, signed in inside her machine) took M1's README ticket from pick-up to a ready PR as the bot, firstprateek/duet#8. Her branch was made in her machine, three required CI checks passed, the gates waited for them, and the report became the PR body. It took three fixes on the way: Claude's "session limit" now pauses a ticket until the reset; the `acp-claude` launcher refreshes an expired sign-in before the adapter's parallel queries race to; and only a session's final answer counts as its output |
 | M4 (part) | Brain and handbook repos, edits applied from each retro, policies that wait for the owner, orientation, and the viewer |
 
-`pnpm check`, `pnpm typecheck` and `pnpm test` pass (149 tests). CI runs all three.
+`pnpm check`, `pnpm typecheck` and `pnpm test` pass (150 tests). CI runs all three.
 
 ## Open questions for the owner
 
@@ -86,11 +86,11 @@ before any `sudo` or change to the host. The other items can run anywhere.
    protected-path, secret-scan and diff-size gates don't exist; there's no API token yet, so the
    daemon stays off the tailnet; the report's byline names the engine's model.
 4. **Lessons from the first real ticket.**
-   - A new image doesn't reach existing machines: Ada's new `acp-claude` was copied in by hand. The
-     daemon needs a way to update a machine's launchers, or to remake a machine and sign it in again.
-   - A failed ticket has no retry: handing it to the same employee (`POST
-     /api/tickets/:id/handoff`) works as one, but its brief then says it's taking over from itself.
-   - The report's minutes count the days the ticket sat failed (4213 minutes on Duet #8).
+   - A new image doesn't reach existing machines: `tools/host/update-machine.sh <employee>` copies
+     the image's launchers into one.
+   - A failed ticket can be tried again from the stage it failed in: `POST
+     /api/tickets/:id/retry`. The web app has no button for it yet.
+   - The report's minutes count working time only, not days a ticket sat failed or paused.
 
 M3 has taken a real Duet ticket end to end. Then come the rest of M4 (PM ticket drafting,
 UX review, non-code tickets) and M5 (track records per engine, enforced usage caps, K per host).
