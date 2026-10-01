@@ -76,11 +76,18 @@ describe("the GitHub App", () => {
     const jwt = calls[0]?.headers.authorization?.replace("Bearer ", "") ?? "";
     expect(decode(jwt.split(".")[1] ?? "").iss).toBe("123");
 
-    now += 50 * 60_000; // 10 minutes left: reuse it
+    now += 5 * 60_000; // 55 minutes left: reuse it
     expect(await app.token("firstprateek/duet")).toBe("ghs_1");
-    now += 6 * 60_000; // 4 minutes left: mint a new one
+    now += 6 * 60_000; // 49 minutes left: too little for a session, so mint a new one
     expect(await app.token("firstprateek/duet")).toBe("ghs_2");
     expect(calls).toHaveLength(2);
+
+    // A reviewer's token can only read.
+    expect(await app.token("firstprateek/duet", "read")).toBe("ghs_3");
+    expect(calls[2]?.body).toEqual({
+      repositories: ["duet"],
+      permissions: { contents: "read", pull_requests: "read", metadata: "read", checks: "read" },
+    });
   });
 
   it("says what GitHub said when it refuses", async () => {

@@ -9,8 +9,12 @@ import { configDir, readOwnerOnly } from "./config.ts";
 
 /** Where a session's GitHub token comes from. `repo` is "owner/name". */
 export interface TokenSource {
-  token(repo: string): Promise<string>;
+  /** "read" for a reviewer or verifier, who checks the branch out but never pushes. */
+  token(repo: string, access?: "write" | "read"): Promise<string>;
 }
+
+/** A session can run for most of an hour, so it gets a token with at least this long left. */
+const minLeftMs = 50 * 60_000;
 
 export interface GitHubAppConfig {
   appId: string;
@@ -100,9 +104,10 @@ export class GitHubApp implements TokenSource {
     this.readKey = deps.readKey ?? readPrivateKey;
   }
 
-  async token(repo: string): Promise<string> {
-    const cached = this.cache.get(repo);
-    if (cached && cached.expiresAt - this.now() > 5 * 60_000) return cached.token;
+  async token(repo: string, access: "write" | "read" = "write"): Promise<string> {
+    const key = `${repo} ${access}`;
+    const cached = this.cache.get(key);
+    if (cached && cached.expiresAt - this.now() > minLeftMs) return cached.token;
     const jwt = appJwt(this.config.appId, this.readKey(this.config.privateKeyPath), this.now());
     const body = await call(
       this.f,
@@ -110,13 +115,18 @@ export class GitHubApp implements TokenSource {
       {
         method: "POST",
         headers: { authorization: `Bearer ${jwt}` },
-        // Only the ticket's repo, with whatever the App was granted there.
-        body: JSON.stringify({ repositories: [checkRepo(repo).split("/")[1]] }),
+        // Only the ticket's repo: with whatever the App was granted there, or read-only.
+        body: JSON.stringify({
+          repositories: [checkRepo(repo).split("/")[1]],
+          ...(access === "read"
+            ? { permissions: { contents: "read", pull_requests: "read", metadata: "read", checks: "read" } }
+            : {}),
+        }),
       },
     );
     if (typeof body.token !== "string") throw new Error("GitHub sent no installation token");
     const token = body.token;
-    this.cache.set(repo, { token, expiresAt: Date.parse(String(body.expires_at)) });
+    this.cache.set(key, { token, expiresAt: Date.parse(String(body.expires_at)) });
     return token;
   }
 }

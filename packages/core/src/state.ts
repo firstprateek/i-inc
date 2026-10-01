@@ -64,6 +64,8 @@ export interface TicketState {
   waitingFor: { duty: HelperDuty; since: number } | null;
   /** A code ticket's branch and draft PR, from pick-up. */
   pr: PullRequestRef | null;
+  /** Whose machine has the ticket's worktree; a handoff makes a new one in the new builder's. */
+  prFor: Id | null;
 }
 
 export function emptyState(): TicketState {
@@ -103,6 +105,7 @@ export function emptyState(): TicketState {
     helpers: {},
     waitingFor: null,
     pr: null,
+    prFor: null,
   };
 }
 
@@ -202,7 +205,7 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
     case "policy-decided":
       return s;
     case "pr-opened":
-      return { ...s, pr: e.pr };
+      return { ...s, pr: e.pr, prFor: e.employeeId ?? null };
     case "report-ready":
       return {
         ...s,

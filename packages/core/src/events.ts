@@ -50,7 +50,8 @@ export type TicketEvent =
     }
   | { type: "proposals-sorted"; at: number; auto: Proposal[]; ask: Proposal[]; off: Proposal[] }
   | { type: "proposals-decided"; at: number; carryOut: Proposal[]; declined: Proposal[] }
-  | { type: "pr-opened"; at: number; pr: PullRequestRef }
+  /** The branch is ready in `employeeId`'s machine (absent on events from before handoffs did this). */
+  | { type: "pr-opened"; at: number; pr: PullRequestRef; employeeId?: Id }
   | { type: "report-ready"; at: number; summary: string }
   | { type: "owner-decided"; at: number; decision: Decision; note?: string }
   | {

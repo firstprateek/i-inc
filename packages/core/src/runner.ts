@@ -6,7 +6,7 @@
 import { brief } from "./brief.ts";
 import { engineAllowed, engineFor, nextFallback } from "./engines.ts";
 import type { Decision, Finding, HelperDuty, NeedsYou, TicketEvent } from "./events.ts";
-import type { Duty, Employee, Id, KnowledgeEdit, Proposal, PullRequestRef, Ticket } from "./model.ts";
+import type { Duty, Employee, Id, KnowledgeEdit, Proposal, Ticket } from "./model.ts";
 import { decideOutbound } from "./outbound.ts";
 import type { Ports } from "./ports.ts";
 import { assembleReport, type Report, reportMarkdown } from "./report.ts";
@@ -205,14 +205,8 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     // A code ticket gets its branch and draft PR now, so CI runs from the start (spec §6).
     const { workspace } = c.p;
     if (workspace && c.plan.stages.includes("build") && !c.s.pr) {
-      let pr: PullRequestRef;
-      try {
-        pr = await workspace.open(c.ticket, c.builder);
-      } catch (err) {
-        await c.emit(failed(c, "pickup", `couldn't open the branch and draft PR: ${errorText(err)}`));
-        return;
-      }
-      await c.emit({ type: "pr-opened", at: c.p.clock.now(), pr }, finished(c, "pickup"));
+      const pr = await openWorkspace(c, c.builder, "pickup");
+      if (pr) await c.emit(pr, finished(c, "pickup"));
       return;
     }
     await c.emit(finished(c, "pickup"));
@@ -503,7 +497,13 @@ async function session(c: Step, duty: Duty, employee: Employee, task: string): P
   }
 
   await c.p.machines.ensureUp(employee.id);
-  const text = brief(c.ticket, stage, c.s, task, c.p.harness.describe?.(c.ticket));
+  // After a handoff the new builder's machine has no worktree yet: make it before its first session.
+  if (isAssignee && c.p.workspace && c.s.pr && c.s.prFor !== employee.id) {
+    const pr = await openWorkspace(c, employee, stage);
+    if (!pr) return null;
+    await c.emit(pr);
+  }
+  const text = brief(c.ticket, stage, c.s, task, c.p.harness.describe?.(c.ticket), isAssignee);
   await c.emit({
     type: "session-started",
     at: c.p.clock.now(),
@@ -591,6 +591,27 @@ function needsYou(c: Step, stage: StageId, ask: NeedsYou): TicketEvent {
 
 /** An honest failure: what went wrong and which engines were tried. */
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/** GitHub or the network hiccuped: worth another try at the next tick, not a failed ticket. */
+const passing =
+  /failed: 5\d\d|fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|timed out|Could not resolve host|unable to access/i;
+
+/**
+ * Makes the ticket's worktree and branch in `employee`'s machine, with its draft PR. A passing
+ * hiccup is thrown, so the daemon tries again at its next tick; anything else fails the ticket.
+ */
+async function openWorkspace(c: Step, employee: Employee, stage: StageId): Promise<TicketEvent | null> {
+  const workspace = c.p.workspace;
+  if (!workspace) return null;
+  try {
+    const pr = await workspace.open(c.ticket, employee);
+    return { type: "pr-opened", at: c.p.clock.now(), pr, employeeId: employee.id };
+  } catch (err) {
+    if (passing.test(errorText(err))) throw err;
+    await c.emit(failed(c, stage, `couldn't open the branch and draft PR: ${errorText(err)}`));
+    return null;
+  }
+}
 
 function failed(c: Step, stage: StageId, reason: string): TicketEvent {
   const tried = [
