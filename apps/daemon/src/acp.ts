@@ -57,8 +57,40 @@ export interface AcpOptions {
 }
 
 const bypassMode = /bypass|yolo|allow.?all|full.?access|dangerous/i;
+// Claude Code says "You've hit your session limit · resets 3:30am (UTC)" (seen on the mini).
 const limitError =
-  /rate.?limit|usage limit|quota|resource.?exhausted|\b429\b|too many requests|limit reached/i;
+  /rate.?limit|usage limit|session limit|weekly limit|hit your .{0,20}limit|quota|resource.?exhausted|\b429\b|too many requests|limit reached/i;
+
+const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/**
+ * When a limit message says it resets ("resets 3:30am (UTC)", "resets Oct 3, 9pm (UTC)"), the time
+ * it names, as the next such moment after `now`. Machines run on UTC, so a time without a zone is
+ * UTC too. Null when the message names no time.
+ */
+export function resetFromText(text: string, now: number): number | null {
+  const m =
+    /resets\s+(?:([A-Za-z]{3})[a-z]*\s+(\d{1,2}),?\s+(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i.exec(
+      text,
+    );
+  if (!m) return null;
+  const [, mon, day, hour = "0", minute = "0", half = "am"] = m;
+  const h = (Number(hour) % 12) + (half.toLowerCase() === "pm" ? 12 : 0);
+  const d = new Date(now);
+  const month = mon ? months.indexOf(mon.toLowerCase()) : -1;
+  if (mon && month < 0) return null;
+  let at = Date.UTC(
+    d.getUTCFullYear(),
+    month >= 0 ? month : d.getUTCMonth(),
+    day ? Number(day) : d.getUTCDate(),
+    h,
+    Number(minute),
+  );
+  // A time without a date is the next one; a date that has passed is next year's.
+  while (at <= now)
+    at = month >= 0 ? new Date(at).setUTCFullYear(new Date(at).getUTCFullYear() + 1) : at + 86_400_000;
+  return at;
+}
 
 export class AcpAgent implements Agent {
   constructor(private readonly o: AcpOptions) {}
@@ -136,7 +168,8 @@ export class AcpAgent implements Agent {
         if (limit.rejected || limitError.test(text)) {
           return {
             kind: "out-of-tokens",
-            resetsAt: limit.resetsAt ?? now() + (this.o.unknownResetMs ?? 3_600_000),
+            resetsAt:
+              limit.resetsAt ?? resetFromText(text, now()) ?? now() + (this.o.unknownResetMs ?? 3_600_000),
           };
         }
         return stuck(text);

@@ -8,7 +8,13 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { Engine, SessionRequest } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
-import { AcpAgent, type AgentProcess, type LaunchRequest, type UsageReport } from "../src/acp.ts";
+import {
+  AcpAgent,
+  type AgentProcess,
+  type LaunchRequest,
+  resetFromText,
+  type UsageReport,
+} from "../src/acp.ts";
 import { machineScript } from "../src/harness.ts";
 import { AppleMachines, defaultMachineSettings, machineLaunch, workDir } from "../src/machines.ts";
 
@@ -384,5 +390,18 @@ describe("the walls", () => {
     writeFileSync(marker, "");
     await machines.ensureUp("ada");
     expect(exec).toHaveLength(1);
+  });
+});
+
+describe("limits named in error messages", () => {
+  const at = (iso: string) => Date.parse(iso);
+  it("reads when Claude's session limit resets", () => {
+    const now = at("2026-09-29T00:50:25Z");
+    expect(resetFromText("You've hit your session limit · resets 3:30am (UTC)", now)).toBe(
+      at("2026-09-29T03:30:00Z"),
+    );
+    expect(resetFromText("resets 12am (UTC)", now)).toBe(at("2026-09-30T00:00:00Z"));
+    expect(resetFromText("weekly limit · resets Oct 3, 9pm (UTC)", now)).toBe(at("2026-10-03T21:00:00Z"));
+    expect(resetFromText("rate limited, try later", now)).toBeNull();
   });
 });
