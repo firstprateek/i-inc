@@ -376,3 +376,189 @@ describe("usage caps and rate limit scheduling", () => {
     expect(ticket.waiting).toBe("Ada reached its usage cap");
   });
 });
+
+describe("POST /api/logout", () => {
+  async function guardedApp() {
+    const app = await testApp();
+    const handle = createApi(app.daemon, app.deps, {
+      token: "s3cret-token",
+      hosts: ["127.0.0.1:7420"],
+    });
+    const send = async (
+      method: string,
+      path: string,
+      body?: unknown,
+      headers: Record<string, string> = {},
+    ) => {
+      const res = await handle(
+        new Request(`http://127.0.0.1:7420${path}`, {
+          method,
+          ...(method === "GET"
+            ? { headers: { host: "127.0.0.1:7420", ...headers } }
+            : {
+                body: JSON.stringify(body ?? {}),
+                headers: {
+                  host: "127.0.0.1:7420",
+                  "content-type": "application/json",
+                  ...headers,
+                },
+              }),
+        }),
+      );
+      const data = (await res.json()) as Record<string, unknown>;
+      return { status: res.status, body: data, headers: res.headers };
+    };
+    return { app, send };
+  }
+
+  it("clears the session cookie on POST /api/logout even without bearer or cookie token", async () => {
+    const { send } = await guardedApp();
+    const res = await send("POST", "/api/logout", {});
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+    const cookie = res.headers.get("set-cookie") ?? "";
+    expect(cookie).toContain("i_inc=;");
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("SameSite=Strict");
+    expect(cookie).toContain("Path=/");
+    expect(cookie).toContain("Max-Age=0");
+  });
+});
+
+describe("GET /api/office with accounts and rate limits", () => {
+  it("returns accounts and rateLimits alongside employees", async () => {
+    const app = await testApp();
+    app.deps.registry.setAccountRateLimit("claude-pro", {
+      status: "allowed",
+      fiveHourUtilization: 0.42,
+      sevenDayUtilization: 0.65,
+      updatedAt: app.clock.now(),
+    });
+
+    const res = await app.call("GET", "/api/office");
+    expect(res.status).toBe(200);
+    expect(res.body.employees.length).toBeGreaterThan(0);
+    expect(res.body.accounts).toEqual(app.deps.registry.accounts());
+    expect(res.body.rateLimits["claude-pro"]).toMatchObject({
+      status: "allowed",
+      fiveHourUtilization: 0.42,
+      sevenDayUtilization: 0.65,
+    });
+  });
+});
+
+describe("releases API and one-click releases", () => {
+  it("rejects invalid autoRelease on PUT /api/projects/:id", async () => {
+    const app = await testApp();
+    const bad = await app.call("PUT", "/api/projects/Duet", {
+      repo: "firstprateek/duet",
+      checks: ["pnpm test"],
+      autoRelease: "yes",
+    });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toBe("autoRelease must be a boolean");
+  });
+
+  it("returns pending releases, handles validation and records project releases", async () => {
+    const app = await testApp();
+
+    const initial = await app.call("GET", "/api/releases");
+    expect(initial.status).toBe(200);
+    expect(initial.body.releases).toEqual([]);
+    const duetInitial = initial.body.pending.find((p: { project: string }) => p.project === "Duet");
+    expect(duetInitial.pendingTickets).toEqual([]);
+
+    const emptyCut = await app.call("POST", "/api/projects/Duet/release", {});
+    expect(emptyCut.status).toBe(400);
+    expect(emptyCut.body.error).toBe("no unreleased merged tickets");
+
+    const noProject = await app.call("POST", "/api/projects/Nonexistent/release", {});
+    expect(noProject.status).toBe(404);
+
+    const t1 = app.clock.now();
+    await app.deps.store.append("1", [
+      { type: "ticket-created", at: t1, ticketId: "1" },
+      { type: "pushed", at: t1 + 50, sha: "sha123" },
+      { type: "closed", at: t1 + 100, outcome: "merged" },
+    ]);
+    app.deps.tickets.create({ ...refunds, type: "fix", effort: "medium", title: "Fix refunds" }, t1);
+
+    const pendingRes = await app.call("GET", "/api/releases");
+    const duetPending = pendingRes.body.pending.find((p: { project: string }) => p.project === "Duet");
+    expect(duetPending?.pendingTickets).toEqual([{ id: "1", title: "Fix refunds", pushed: "sha123" }]);
+
+    app.clock.advance(10);
+    const cutRes = await app.call("POST", "/api/projects/Duet/release", {});
+    expect(cutRes.status).toBe(201);
+    const expectedDate = new Date(app.clock.now()).toISOString().slice(0, 10);
+    expect(cutRes.body.release).toEqual({
+      project: "Duet",
+      tag: `v${expectedDate}.1`,
+      at: app.clock.now(),
+      ticketIds: ["1"],
+      commits: ["sha123"],
+    });
+
+    const afterCut = await app.call("GET", "/api/releases");
+    expect(afterCut.body.releases).toHaveLength(1);
+    expect(afterCut.body.releases[0].tag).toBe(`v${expectedDate}.1`);
+    const duetAfter = afterCut.body.pending.find((p: { project: string }) => p.project === "Duet");
+    expect(duetAfter?.pendingTickets).toEqual([]);
+
+    const cutAgain = await app.call("POST", "/api/projects/Duet/release", {});
+    expect(cutAgain.status).toBe(400);
+
+    app.clock.advance(5);
+    const t2 = app.clock.now();
+    await app.deps.store.append("2", [
+      { type: "ticket-created", at: t2, ticketId: "2" },
+      { type: "pushed", at: t2 + 50, sha: "sha456" },
+      { type: "closed", at: t2 + 100, outcome: "merged" },
+    ]);
+    app.deps.tickets.create({ ...refunds, type: "fix", effort: "medium", title: "Feature X" }, t2);
+
+    const customCut = await app.call("POST", "/api/projects/Duet/release", { tag: "v2.0.0" });
+    expect(customCut.status).toBe(201);
+    expect(customCut.body.release.tag).toBe("v2.0.0");
+    expect(customCut.body.release.ticketIds).toEqual(["2"]);
+
+    const deskRes = await app.call("GET", "/api/desk");
+    expect(deskRes.status).toBe(200);
+    expect(deskRes.body.releases).toHaveLength(2);
+    expect(deskRes.body.pendingReleases).toBeDefined();
+  });
+});
+
+describe("autoRelease policy and automatic releases", () => {
+  it("automatically cuts a release during tick when autoRelease is enabled on project", async () => {
+    const app = await testApp();
+    const putRes = await app.call("PUT", "/api/projects/Duet", {
+      repo: "firstprateek/duet",
+      checks: ["pnpm test"],
+      autoRelease: true,
+    });
+    expect(putRes.status).toBe(200);
+    expect(putRes.body.policy.autoRelease).toBe(true);
+
+    const t0 = app.clock.now();
+    await app.deps.store.append("1", [
+      { type: "ticket-created", at: t0, ticketId: "1" },
+      { type: "pushed", at: t0 + 50, sha: "sha-auto-1" },
+      { type: "closed", at: t0 + 100, outcome: "merged" },
+    ]);
+    app.deps.tickets.create({ ...refunds, type: "fix", effort: "medium", title: "Auto release ticket" }, t0);
+
+    expect(app.deps.registry.releases()).toEqual([]);
+
+    await app.daemon.tick();
+
+    const releases = app.deps.registry.releases();
+    expect(releases).toHaveLength(1);
+    expect(releases[0]?.project).toBe("Duet");
+    expect(releases[0]?.ticketIds).toEqual(["1"]);
+    expect(releases[0]?.commits).toEqual(["sha-auto-1"]);
+
+    await app.daemon.tick();
+    expect(app.deps.registry.releases()).toHaveLength(1);
+  });
+});

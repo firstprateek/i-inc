@@ -1,5 +1,5 @@
 // The shapes the API returns, kept apart from the daemon's code so the web app can import them.
-import type { Id, NeedsYou, Report, Spend, StageId, TicketState, Wait } from "@i-inc/core";
+import type { Id, NeedsYou, ProjectRelease, Report, Spend, StageId, TicketState, Wait } from "@i-inc/core";
 
 export type Column = "todo" | "in-progress" | "review" | "done";
 
@@ -51,11 +51,34 @@ export interface DeskEntry {
   ticket: { id: Id; title: string; project: string; live: string } | null;
 }
 
+export interface PendingTicket {
+  id: Id;
+  title: string;
+  pushed?: string;
+}
+
+export interface PendingRelease {
+  project: Id;
+  id: Id;
+  repo: string;
+  pendingTickets: PendingTicket[];
+}
+
+export interface AccountRateLimit {
+  status?: string;
+  resetsAt?: number;
+  fiveHourUtilization?: number;
+  sevenDayUtilization?: number;
+  updatedAt: number;
+}
+
 export interface DeskView {
   spend: Spend;
   waits: Wait[];
   bottleneck: Wait | null;
   merged: number;
+  releases?: ProjectRelease[];
+  pendingReleases?: PendingRelease[];
 }
 
 /** A page of a brain or the handbook: plain markdown. */

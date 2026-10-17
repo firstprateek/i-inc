@@ -1,25 +1,38 @@
-// A small typed client for the daemon's API. The view types come straight from the daemon.
-import type { Employee, Engine, TicketEvent } from "@i-inc/core";
+import type { AccountCost, Employee, Engine, ProjectRelease, TicketEvent } from "@i-inc/core";
 import type {
+  AccountRateLimit,
   DeskEntry,
   DeskView,
   KnowledgeView,
   NamedChange,
   Page,
+  PendingRelease,
+  PendingTicket,
   PolicyProposal,
   TicketView,
 } from "@i-inc/daemon/views";
 
 export type {
+  AccountCost,
+  AccountRateLimit,
   DeskEntry,
   DeskView,
   KnowledgeView,
   NamedChange,
   Page,
+  PendingRelease,
+  PendingTicket,
   PolicyProposal,
+  ProjectRelease,
   TicketEvent,
   TicketView,
 };
+
+export interface OfficeResponse {
+  employees: DeskEntry[];
+  accounts?: AccountCost[];
+  rateLimits?: Record<string, AccountRateLimit>;
+}
 
 import { showLogin } from "./login.ts";
 
@@ -62,13 +75,30 @@ export async function login(username: string, password: string): Promise<{ ok: b
   return res.ok ? { ok: true } : { ok: false, ...(data.error ? { error: data.error } : {}) };
 }
 
+export async function logout(): Promise<void> {
+  await fetch("/api/logout", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  showLogin();
+}
+
 export const api = {
   authStatus,
   signup,
   login,
+  logout,
   board: () => call<{ tickets: TicketView[] }>("GET", "/api/board").then((r) => r.tickets),
-  office: () => call<{ employees: DeskEntry[] }>("GET", "/api/office").then((r) => r.employees),
+  office: () => call<OfficeResponse>("GET", "/api/office"),
   desk: () => call<DeskView>("GET", "/api/desk"),
+  releases: () => call<{ releases: ProjectRelease[]; pending: PendingRelease[] }>("GET", "/api/releases"),
+  cutRelease: (id: string, tag?: string) =>
+    call<{ release: ProjectRelease }>(
+      "POST",
+      `/api/projects/${encodeURIComponent(id)}/release`,
+      tag ? { tag } : {},
+    ),
   ticket: (id: string) => call<{ ticket: TicketView; events: TicketEvent[] }>("GET", `/api/tickets/${id}`),
   answer: (id: string, answer: "approve" | "reject" | "builder" | "reviewer", note?: string) =>
     call("POST", `/api/tickets/${id}/answer`, note ? { answer, note } : { answer }),

@@ -19,13 +19,21 @@ import {
   hiringProblems,
   type Id,
   knowledgeLog,
+  type ProjectRelease,
   type ProposedEdit,
   retry,
 } from "@i-inc/core";
 import type { Daemon, DaemonDeps } from "./daemon.ts";
 import type { Change, Repo } from "./knowledge.ts";
 import type { NewTicket } from "./tickets.ts";
-import { deskView, officeView, type TicketView, ticketView } from "./views.ts";
+import {
+  deskView,
+  officeView,
+  type PendingRelease,
+  type PendingTicket,
+  type TicketView,
+  ticketView,
+} from "./views.ts";
 
 export interface ApiOptions {
   /**
@@ -59,6 +67,45 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         ticketView(r, await daemon.state(r.ticket.id), events, d.registry, waiting.get(r.ticket.id) ?? null),
       );
     }
+    return out;
+  };
+
+  const pendingReleases = async (): Promise<PendingRelease[]> => {
+    const allReleases = d.registry.releases();
+    const allProjects = d.registry.projects();
+    const allTickets = d.tickets.all();
+    const out: PendingRelease[] = [];
+
+    for (const project of allProjects) {
+      const projectReleases = allReleases.filter((r) => r.project === project.id);
+      const releasedTicketIds = new Set(projectReleases.flatMap((r) => r.ticketIds));
+      const latestReleaseAt = projectReleases.length ? Math.max(...projectReleases.map((r) => r.at)) : null;
+
+      const projectTickets = allTickets.filter((r) => r.ticket.project === project.id);
+      const pendingTickets: PendingTicket[] = [];
+
+      for (const record of projectTickets) {
+        if (releasedTicketIds.has(record.ticket.id)) continue;
+        const events = await d.store.read(record.ticket.id);
+        const state = fold(events);
+        if (state.outcome !== "merged") continue;
+        if (latestReleaseAt !== null && (state.closedAt ?? 0) <= latestReleaseAt) continue;
+
+        pendingTickets.push({
+          id: record.ticket.id,
+          title: record.ticket.title,
+          ...(state.pushed ? { pushed: state.pushed } : {}),
+        });
+      }
+
+      out.push({
+        project: project.id,
+        id: project.id,
+        repo: project.repo,
+        pendingTickets,
+      });
+    }
+
     return out;
   };
 
@@ -193,6 +240,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           mode?: unknown;
           protectedPaths?: unknown;
           followUpsPerDay?: unknown;
+          autoRelease?: unknown;
         };
         const checks = Array.isArray(body.checks) ? body.checks : [];
         if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$/.test(id)) {
@@ -221,6 +269,9 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         if (perDay !== undefined && !(Number.isInteger(perDay) && (perDay as number) >= 0)) {
           return json({ error: "followUpsPerDay is a whole number" }, 400);
         }
+        if (body.autoRelease !== undefined && typeof body.autoRelease !== "boolean") {
+          return json({ error: "autoRelease must be a boolean" }, 400);
+        }
         d.registry.addProject({
           id,
           repo: body.repo,
@@ -228,6 +279,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           ...(body.mode ? { mode: body.mode } : {}),
           ...(paths ? { protectedPaths: paths as string[] } : {}),
           ...(perDay !== undefined ? { followUpsPerDay: perDay as number } : {}),
+          ...(body.autoRelease !== undefined ? { autoRelease: body.autoRelease } : {}),
         });
         return json({ project: d.registry.project(id), policy: d.registry.projectPolicy(id) });
       },
@@ -452,11 +504,79 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         );
         const offset = d.registry.settings().utcOffsetMinutes;
         const localHour = new Date(d.clock.now() + offset * 60_000).getUTCHours();
-        return json({ employees: officeView(d.registry.employees(), all, states, d.registry, localHour) });
+        return json({
+          employees: officeView(d.registry.employees(), all, states, d.registry, localHour),
+          accounts: d.registry.accounts(),
+          rateLimits: d.registry.accountRateLimits(),
+        });
       },
     ],
 
-    ["GET", "/api/desk", async () => json(deskView(await d.store.all(), d.registry, d.clock.now()))],
+    [
+      "GET",
+      "/api/desk",
+      async () => {
+        const view = deskView(await d.store.all(), d.registry, d.clock.now());
+        const pending = await pendingReleases();
+        return json({
+          ...view,
+          releases: d.registry.releases(),
+          pendingReleases: pending,
+        });
+      },
+    ],
+
+    [
+      "GET",
+      "/api/releases",
+      async () => {
+        const pending = await pendingReleases();
+        return json({ releases: d.registry.releases(), pending });
+      },
+    ],
+
+    [
+      "POST",
+      "/api/projects/:id/release",
+      async (req, { id = "" }) => {
+        const project = d.registry.project(id);
+        if (!project) return json({ error: "no such project" }, 404);
+
+        const pending = await pendingReleases();
+        const projectPending = pending.find((p) => p.project === id || p.id === id);
+        const pendingTickets = projectPending?.pendingTickets ?? [];
+        if (!pendingTickets.length) {
+          return json({ error: "no unreleased merged tickets" }, 400);
+        }
+
+        const body = (await req.json().catch(() => ({}))) as { tag?: unknown };
+        if (body.tag !== undefined && (typeof body.tag !== "string" || !body.tag.trim())) {
+          return json({ error: "tag must be a non-empty string" }, 400);
+        }
+
+        const now = d.clock.now();
+        const existing = d.registry.releases().filter((r) => r.project === id);
+        const count = existing.length + 1;
+        const defaultTag = `v${new Date(now).toISOString().slice(0, 10)}.${count}`;
+        const tag = (typeof body.tag === "string" && body.tag.trim()) || defaultTag;
+
+        const ticketIds = pendingTickets.map((t) => t.id);
+        const commits = pendingTickets
+          .map((t) => t.pushed)
+          .filter((c): c is string => typeof c === "string" && Boolean(c));
+
+        const release: ProjectRelease = {
+          project: id,
+          tag,
+          at: now,
+          ticketIds,
+          commits,
+        };
+
+        d.registry.recordRelease(release);
+        return json({ release }, 201);
+      },
+    ],
 
     [
       "POST",
@@ -662,7 +782,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     const authStatus = req.method === "GET" && path === "/api/auth";
     const signup = req.method === "POST" && path === "/api/signup";
     const login = req.method === "POST" && path === "/api/login";
-    if (opts.token && !authStatus && !signup && !login && !authorized(req, opts.token)) {
+    const logout = req.method === "POST" && path === "/api/logout";
+    if (opts.token && !authStatus && !signup && !login && !logout && !authorized(req, opts.token)) {
       return json({ error: "unauthorized" }, 401);
     }
     const host = req.headers.get("host") ?? "";
@@ -723,6 +844,15 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         return json({ error: "that's not the token" }, 401);
       }
       return jsonWithCookie({ ok: true }, 200, opts.token);
+    }
+    if (logout) {
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "set-cookie": "i_inc=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
+        },
+      });
     }
     const url = new URL(req.url);
     for (const [method, pattern, handler] of routes) {

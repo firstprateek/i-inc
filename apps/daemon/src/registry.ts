@@ -10,6 +10,7 @@ import {
   type HostCost,
   type Id,
   type ProjectPolicy,
+  type ProjectRelease,
   pickTint,
   type Ticket,
 } from "@i-inc/core";
@@ -50,13 +51,9 @@ export interface Settings {
 
 const defaultSettings: Settings = { utcOffsetMinutes: 0, pricePerKWh: 0, currency: "USD" };
 
-export interface AccountRateLimit {
-  status?: string;
-  resetsAt?: number;
-  fiveHourUtilization?: number;
-  sevenDayUtilization?: number;
-  updatedAt: number;
-}
+import type { AccountRateLimit } from "./view-types.ts";
+
+export type { AccountRateLimit };
 
 type Kind =
   | "employee"
@@ -68,7 +65,8 @@ type Kind =
   | "team"
   | "usage"
   | "settings"
-  | "rate_limit";
+  | "rate_limit"
+  | "release";
 
 export class Registry implements Company {
   constructor(private readonly db: Db) {}
@@ -136,6 +134,7 @@ export class Registry implements Company {
       mode: p?.mode ?? defaultProjectPolicy.mode,
       protectedPaths: p?.protectedPaths ?? defaultProjectPolicy.protectedPaths,
       followUpsPerDay: p?.followUpsPerDay ?? defaultProjectPolicy.followUpsPerDay,
+      autoRelease: p?.autoRelease ?? defaultProjectPolicy.autoRelease ?? false,
     };
   }
   /** The latest report on an account's limits, as its harness sent it (Claude's, for now). */
@@ -181,6 +180,12 @@ export class Registry implements Company {
   }
   project(id: Id): Project | undefined {
     return this.get<Project>("project", id);
+  }
+  releases(): ProjectRelease[] {
+    return this.list<ProjectRelease>("release");
+  }
+  recordRelease(r: ProjectRelease): void {
+    this.put("release", `${r.project}:${r.tag}`, r);
   }
   usage(): UsageReport[] {
     return this.list<UsageReport>("usage");

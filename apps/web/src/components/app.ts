@@ -1,6 +1,5 @@
-// The shell: navigation, a hash router, the theme toggle, and a gentle refresh while visible.
 import { css, html, LitElement } from "lit";
-import { refreshNow } from "../api.ts";
+import { logout, refreshNow } from "../api.ts";
 import { base } from "./shared.ts";
 import "./office.ts";
 import "./board.ts";
@@ -77,6 +76,7 @@ export class IncApp extends LitElement {
       .spacer { flex-grow: 1; }
       .icon { width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--line); background: transparent;
         color: var(--ink); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+      .sign-out { font-size: 13px; min-height: 36px; padding: 0 14px; }
       main { padding: 4px 32px 28px; }
       @media (max-width: 700px) {
         header { padding: 10px 16px; gap: 12px; }
@@ -112,6 +112,7 @@ export class IncApp extends LitElement {
             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"></path></svg>
         </button>
+        <button class="btn ghost sign-out" type="button" @click=${() => logout()}>Sign out</button>
       </header>
       <main>${this.view()}</main>
       <nav class="tabs" aria-label="Views">

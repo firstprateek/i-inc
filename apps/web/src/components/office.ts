@@ -1,18 +1,24 @@
-// The office (spec §10): a floor with a desk for each employee. The monitor shows the live line.
 import { css, html } from "lit";
-import { api, type DeskEntry, type TicketView } from "../api.ts";
+import { type AccountCost, type AccountRateLimit, api, type DeskEntry, type TicketView } from "../api.ts";
 import { Loader } from "./loader.ts";
 import { avatar, base, stateLabel } from "./shared.ts";
 
 interface Data {
   employees: DeskEntry[];
   tickets: TicketView[];
+  accounts?: AccountCost[];
+  rateLimits?: Record<string, AccountRateLimit>;
 }
 
 export class IncOffice extends Loader<Data> {
   protected async fetch(): Promise<Data> {
-    const [employees, tickets] = await Promise.all([api.office(), api.board()]);
-    return { employees, tickets };
+    const [office, tickets] = await Promise.all([api.office(), api.board()]);
+    return {
+      employees: office.employees,
+      tickets,
+      ...(office.accounts ? { accounts: office.accounts } : {}),
+      ...(office.rateLimits ? { rateLimits: office.rateLimits } : {}),
+    };
   }
 
   static override styles = [
@@ -42,6 +48,19 @@ export class IncOffice extends Loader<Data> {
       aside a { display: flex; flex-direction: column; gap: 2px; text-decoration: none; }
       aside a b { font-size: 14px; }
       .empty { font-size: 14px; color: var(--ink-2); }
+      .accounts-card { display: flex; flex-direction: column; gap: 12px; }
+      .accounts-list { display: flex; flex-direction: column; gap: 12px; }
+      .account-item { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid var(--line); }
+      .account-item:first-child { padding-top: 0; border-top: none; }
+      .account-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .account-name { font-weight: 700; font-size: 14px; }
+      .font-small { font-size: 12px; }
+      .quota-bars { display: flex; flex-direction: column; gap: 4px; }
+      .quota-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) 36px; gap: 8px; align-items: center; font-size: 12px; }
+      .quota-label { color: var(--ink-2); font-weight: 600; }
+      .quota-bar-track { height: 8px; border-radius: 4px; background: var(--sunken); overflow: hidden; }
+      .quota-bar { height: 100%; border-radius: 4px; background: var(--bar); min-width: 2px; }
+      .quota-val { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--ink-2); }
       @media (max-width: 1100px) { .wrap { flex-direction: column; } aside { width: 100%; } }
     `,
   ];
@@ -49,7 +68,8 @@ export class IncOffice extends Loader<Data> {
   override render() {
     if (this.error) return html`<p role="alert">The daemon isn't answering: ${this.error}</p>`;
     if (!this.data) return html`<p class="muted">Opening the office…</p>`;
-    const { employees, tickets } = this.data;
+    const employees = this.data.employees ?? [];
+    const tickets = this.data.tickets ?? [];
     const needs = tickets.filter((t) => t.status === "needs-you");
     const ready = tickets.filter((t) => t.status === "ready");
     return html`<div class="wrap">
@@ -66,7 +86,58 @@ export class IncOffice extends Loader<Data> {
           <h2>Ready for you</h2>
           ${ready.length ? ready.map((t) => this.link(t)) : html`<span class="empty">No reports yet.</span>`}
         </div>
+        ${this.data.accounts?.length ? this.accountsSection(this.data.accounts, this.data.rateLimits) : ""}
       </aside>
+    </div>`;
+  }
+
+  private accountsSection(accounts: AccountCost[], rateLimits?: Record<string, AccountRateLimit>) {
+    return html`<div class="card accounts-card">
+      <h2>Accounts & quotas</h2>
+      <div class="accounts-list">
+        ${accounts.map((a) => {
+          const rl = rateLimits?.[a.id];
+          const u5 =
+            rl?.fiveHourUtilization !== undefined ? Math.round((rl.fiveHourUtilization ?? 0) * 100) : null;
+          const u7 =
+            rl?.sevenDayUtilization !== undefined ? Math.round((rl.sevenDayUtilization ?? 0) * 100) : null;
+          return html`<div class="account-item">
+            <div class="account-header">
+              <span class="account-name">${a.name}</span>
+              ${a.monthlyCap !== undefined ? html`<span class="muted font-small">Cap: $${a.monthlyCap}</span>` : ""}
+              ${rl?.status ? html`<span class="chip ${rl.status === "allowed" ? "done" : "alarm"}">${rl.status}</span>` : ""}
+            </div>
+            ${
+              rl && (u5 !== null || u7 !== null)
+                ? html`<div class="quota-bars">
+                  ${
+                    u5 !== null
+                      ? html`<div class="quota-row">
+                        <span class="quota-label">5h</span>
+                        <div class="quota-bar-track">
+                          <div class="quota-bar" style="width: ${Math.min(100, Math.max(0, u5))}%"></div>
+                        </div>
+                        <span class="quota-val">${u5}%</span>
+                      </div>`
+                      : ""
+                  }
+                  ${
+                    u7 !== null
+                      ? html`<div class="quota-row">
+                        <span class="quota-label">7d</span>
+                        <div class="quota-bar-track">
+                          <div class="quota-bar" style="width: ${Math.min(100, Math.max(0, u7))}%"></div>
+                        </div>
+                        <span class="quota-val">${u7}%</span>
+                      </div>`
+                      : ""
+                  }
+                </div>`
+                : ""
+            }
+          </div>`;
+        })}
+      </div>
     </div>`;
   }
 
