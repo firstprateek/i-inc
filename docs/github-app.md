@@ -112,12 +112,14 @@ For a new repo, one command creates it, with your own GitHub sign-in:
 gh api repos/<owner>/duet/rulesets --method POST --input tools/github-app/duet-ruleset.json
 ```
 
-Two more keep the bot to its own `inc/**` branches: one for every other branch and one for tags.
-You and GitHub Actions, which pushes Release Please's branch and tags, bypass them:
+One more keeps the bot off every other branch: it can't create, change or delete any branch but its
+own `inc/**` ones. You bypass it. Release Please's branch is left out, because on a personal
+account GitHub won't put GitHub Actions on a ruleset's bypass list (it's refused with "must be part
+of the ruleset source or owner organization"). For the same reason there's no ruleset on tags: it
+would block Release Please's tags, and a tag alone releases nothing in Duet.
 
 ```bash
 gh api repos/<owner>/duet/rulesets --method POST --input tools/github-app/duet-branches-ruleset.json
-gh api repos/<owner>/duet/rulesets --method POST --input tools/github-app/duet-tags-ruleset.json
 ```
 
 For another repo, copy the files and change the required checks. By hand, go to the repo's
