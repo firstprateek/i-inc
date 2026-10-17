@@ -1,6 +1,6 @@
 // A ticket's history is an append-only list of events (spec §9, "Durable state").
 // Everything the pipeline knows is folded from these, so a crash loses nothing that was appended.
-import type { Id, KnowledgeEdit, Proposal } from "./model.ts";
+import type { Id, KnowledgeEdit, Proposal, PullRequestRef } from "./model.ts";
 import type { StageId } from "./stages.ts";
 
 export type NeedsYou =
@@ -50,7 +50,11 @@ export type TicketEvent =
     }
   | { type: "proposals-sorted"; at: number; auto: Proposal[]; ask: Proposal[]; off: Proposal[] }
   | { type: "proposals-decided"; at: number; carryOut: Proposal[]; declined: Proposal[] }
+  /** The branch is ready in `employeeId`'s machine (absent on events from before handoffs did this). */
+  | { type: "pr-opened"; at: number; pr: PullRequestRef; employeeId?: Id }
   | { type: "report-ready"; at: number; summary: string }
+  /** The owner tries a failed ticket again, from the stage it failed in. */
+  | { type: "retried"; at: number }
   | { type: "owner-decided"; at: number; decision: Decision; note?: string }
   | {
       type: "knowledge-proposed";

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "enabled_providers": ["ollama"],
+  "model": "ollama/qwen3:8b",
+  "share": "disabled",
+  "autoupdate": false,
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama on the host, through the relay on the machines' gateway",
+      "options": { "baseURL": "http://192.168.64.1:11434/v1" },
+      "models": {
+        "qwen3:8b": { "name": "qwen3 8B" },
+        "qwen2.5-coder:14b": { "name": "qwen2.5-coder 14B" }
+      }
+    }
+  }
+}

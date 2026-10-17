@@ -33,9 +33,10 @@ export async function testApp(
     const res = await app.handle(
       new Request(`http://i.inc${path}`, {
         method,
-        ...(body === undefined
+        // Like the web app: every write is JSON, which the API requires.
+        ...(method === "GET"
           ? {}
-          : { body: JSON.stringify(body), headers: { "content-type": "application/json" } }),
+          : { body: JSON.stringify(body ?? {}), headers: { "content-type": "application/json" } }),
       }),
     );
     // biome-ignore lint/suspicious/noExplicitAny: tests read the API's JSON loosely, the way a client would.

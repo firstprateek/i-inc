@@ -23,9 +23,9 @@ interface Thread {
 async function json<T>(method: string, url: string, body?: unknown): Promise<T> {
   const res = await fetch(url, {
     method,
-    ...(body === undefined
+    ...(method === "GET"
       ? {}
-      : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+      : { headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) }),
   });
   const data = (await res.json()) as T & { error?: string };
   if (!res.ok) throw new Error(data.error ?? `${res.status}`);

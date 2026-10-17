@@ -14,6 +14,8 @@ export interface Report {
   checks: string;
   minutes: number;
   judgment: string;
+  /** The ticket's pull request, when it has one. */
+  pr: string | null;
 }
 
 export function assembleReport(ticket: Ticket, s: TicketState, company: Company): Report {
@@ -43,7 +45,17 @@ export function assembleReport(ticket: Ticket, s: TicketState, company: Company)
     byline,
     engines,
     checks: s.lastChecks?.green ? "checks green" : "checks not run",
-    minutes: s.startedAt !== null && s.readyAt !== null ? Math.round((s.readyAt - s.startedAt) / 60_000) : 0,
+    // Working time: the days a ticket sat failed or paused don't count.
+    minutes: Math.round(s.workedMs / 60_000),
     judgment: s.outputs.report ?? "",
+    pr: s.pr?.url ?? null,
   };
+}
+
+/** The report as the PR's body: the facts first, then the builder's judgment. */
+export function reportMarkdown(r: Report): string {
+  const facts = [r.byline, r.checks, `${r.minutes} ${r.minutes === 1 ? "minute" : "minutes"}`].join(" · ");
+  return [`## ${r.title}`, "", facts, ...(r.engines ? ["", `Engines: ${r.engines}.`] : []), "", r.judgment]
+    .join("\n")
+    .trim();
 }

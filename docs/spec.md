@@ -250,10 +250,12 @@ then writes project pages in its brain.
 
 Every machine has all the harnesses installed: Claude Code, Antigravity and OpenCode, each speaking
 ACP. Claude Code goes through an adapter, Antigravity through its own ACP server, and OpenCode
-natively. The engine chosen for a session decides which harness runs and which account's
-credential i.inc injects. For Claude, that credential is a model-only token from `claude
-setup-token`, never a full login. A full login would also reach the owner's claude.ai connectors
-(mail, calendar, drive) from inside the machine.
+natively. The engine chosen for a session decides which harness runs on which account. Each
+employee's machine signs in to the owner's subscriptions once, at hiring: Claude Code with `claude
+auth login`, and Antigravity with its own sign-in. The owner chose this over Claude's model-only
+token (`claude setup-token`), accepting that a full Claude login also reaches the owner's claude.ai
+connectors (mail, calendar, drive) from inside the machine. A token can still be given to any
+account instead, and i.inc then injects it into each session.
 
 Switch rules are set per employee:
 
@@ -324,12 +326,15 @@ interface with a scripted fake in tests, like the ACP agent.
   - Nothing can connect in from outside.
   - The host firewall (`pf` on the Mac mini) enforces this, and the domains each employee contacts
     are logged.
-- **GitHub** uses a bot identity: one GitHub App, "i.inc", installed on the repos you choose.
-  - For each session it mints a 1-hour token. The token can push branches, open and update PRs, edit
-    CI/CD workflows, run Actions, and manage issues and Pages.
+- **GitHub** uses a bot identity: one GitHub App, "i.inc bot", installed on the repos you choose.
+  - For each session it mints a 1-hour token. The token can push branches, open and update PRs,
+    read CI, and manage issues; a reviewer's or verifier's can only read. Editing CI/CD workflows,
+    running Actions and Pages are privileged requests: a token that can do them reaches the repo's
+    Actions secrets from GitHub's runners, outside the walls.
   - Commits read as "Ada (i.inc)".
-  - A ruleset on `main` requires a PR and your approval, so GitHub itself enforces that only you
-    merge. Your Approve does the merge with your account.
+  - A ruleset on `main` lets only you update it, through a PR with your approval, so GitHub itself
+    enforces that only you merge ([github-app.md](github-app.md)). Your Approve does the merge with
+    your account.
 - **Privileged requests.** Sometimes an employee needs something beyond its powers, such as a deploy
   secret, a repo setting or a new repo. It then files a Needs you card naming the exact action. You
   tap Approve, and i.inc does it with your account. This way employees can still set up CI/CD from

@@ -9,7 +9,7 @@ import type { Decision, Finding, HelperDuty, NeedsYou, TicketEvent } from "./eve
 import type { Duty, Employee, Id, KnowledgeEdit, Proposal, Ticket } from "./model.ts";
 import { decideOutbound } from "./outbound.ts";
 import type { Ports } from "./ports.ts";
-import { assembleReport, type Report } from "./report.ts";
+import { assembleReport, type Report, reportMarkdown } from "./report.ts";
 import { planFor, type StageId, type StagePlan } from "./stages.ts";
 import { fold, type TicketState } from "./state.ts";
 
@@ -99,6 +99,13 @@ export async function runTicket(p: Ports, original: Ticket, opts: RunOptions = {
  * Hands a ticket to another employee (spec §6): it carries on from the same branch, plan and
  * progress notes, with a resume brief. Used for a ticket paused on an empty account, or a stuck one.
  */
+/** Tries a failed ticket again from the stage it failed in, with a resume brief (spec §6). */
+export async function retry(p: Ports, ticketId: Id): Promise<void> {
+  const s = fold(await p.store.read(ticketId));
+  if (s.status !== "failed") throw new Error(`ticket ${ticketId} is ${s.status}, not failed`);
+  await p.store.append(ticketId, [{ type: "retried", at: p.clock.now() }]);
+}
+
 export async function handOff(p: Ports, ticketId: Id, to: Id): Promise<void> {
   const s = fold(await p.store.read(ticketId));
   if (s.status === "done" || s.status === "ready")
@@ -202,6 +209,13 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
 
   async pickup(c) {
     await c.p.machines.ensureUp(c.ticket.assignee);
+    // A code ticket gets its branch and draft PR now, so CI runs from the start (spec §6).
+    const { workspace } = c.p;
+    if (workspace && c.plan.stages.includes("build") && !c.s.pr) {
+      const pr = await openWorkspace(c, c.builder, "pickup");
+      if (pr) await c.emit(pr, finished(c, "pickup"));
+      return;
+    }
     await c.emit(finished(c, "pickup"));
   },
 
@@ -407,10 +421,26 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
       c,
       "build",
       c.builder,
-      "Draft the report's judgment: what changed, why this way, risk, and the calls the owner might overrule.",
+      "Draft the report's judgment: what changed, why this way, risk, and the calls the owner might overrule. Reply with the report itself: i.inc puts it into the PR, so don't edit the PR.",
     );
     if (out === null) return;
-    await c.emit(finished(c, "report", out), { type: "report-ready", at: c.p.clock.now(), summary: out });
+    const at = c.p.clock.now();
+    // The report becomes the PR's body, and the PR comes out of draft for the owner.
+    if (c.p.workspace && c.s.pr) {
+      const worked = c.s.workedMs + (c.s.lastAt !== null ? at - c.s.lastAt : 0);
+      const report = assembleReport(
+        c.ticket,
+        { ...c.s, readyAt: at, workedMs: worked, outputs: { ...c.s.outputs, report: out } },
+        c.p.company,
+      );
+      try {
+        await c.p.workspace.ready(c.ticket, c.s.pr, reportMarkdown(report));
+      } catch (err) {
+        await c.emit(failed(c, "report", `couldn't mark the PR ready: ${errorText(err)}`));
+        return;
+      }
+    }
+    await c.emit(finished(c, "report", out), { type: "report-ready", at, summary: out });
   },
 
   // The retro (spec §6, stage 11): builder and reviewer each propose 0-2 knowledge edits.
@@ -475,7 +505,13 @@ async function session(c: Step, duty: Duty, employee: Employee, task: string): P
   }
 
   await c.p.machines.ensureUp(employee.id);
-  const text = brief(c.ticket, stage, c.s, task);
+  // After a handoff the new builder's machine has no worktree yet: make it before its first session.
+  if (isAssignee && c.p.workspace && c.s.pr && c.s.prFor !== employee.id) {
+    const pr = await openWorkspace(c, employee, stage);
+    if (!pr) return null;
+    await c.emit(pr);
+  }
+  const text = brief(c.ticket, stage, c.s, task, c.p.harness.describe?.(c.ticket), isAssignee);
   await c.emit({
     type: "session-started",
     at: c.p.clock.now(),
@@ -562,6 +598,29 @@ function needsYou(c: Step, stage: StageId, ask: NeedsYou): TicketEvent {
 }
 
 /** An honest failure: what went wrong and which engines were tried. */
+const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/** GitHub or the network hiccuped: worth another try at the next tick, not a failed ticket. */
+const passing =
+  /failed: 5\d\d|fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|timed out|Could not resolve host|unable to access/i;
+
+/**
+ * Makes the ticket's worktree and branch in `employee`'s machine, with its draft PR. A passing
+ * hiccup is thrown, so the daemon tries again at its next tick; anything else fails the ticket.
+ */
+async function openWorkspace(c: Step, employee: Employee, stage: StageId): Promise<TicketEvent | null> {
+  const workspace = c.p.workspace;
+  if (!workspace) return null;
+  try {
+    const pr = await workspace.open(c.ticket, employee);
+    return { type: "pr-opened", at: c.p.clock.now(), pr, employeeId: employee.id };
+  } catch (err) {
+    if (passing.test(errorText(err))) throw err;
+    await c.emit(failed(c, stage, `couldn't open the branch and draft PR: ${errorText(err)}`));
+    return null;
+  }
+}
+
 function failed(c: Step, stage: StageId, reason: string): TicketEvent {
   const tried = [
     ...new Set(

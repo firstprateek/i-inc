@@ -1,10 +1,25 @@
 // The ACP client against a scripted ACP server, speaking the messages M1 recorded (docs/m1-findings.md,
 // step 5), and the Apple container provider against a recorded command line.
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { Engine, SessionRequest } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
-import { AcpAgent, type AgentProcess, type LaunchRequest, type UsageReport } from "../src/acp.ts";
-import { AppleMachines, machineLaunch } from "../src/machines.ts";
+import {
+  AcpAgent,
+  type AgentProcess,
+  type LaunchRequest,
+  resetFromText,
+  type UsageReport,
+} from "../src/acp.ts";
+import { machineScript } from "../src/harness.ts";
+import { AppleMachines, defaultMachineSettings, machineLaunch, workDir } from "../src/machines.ts";
+
+// The defaults, without the walls' marker, which exists only on the mini (a test below covers it).
+const { wallsMarker: _, ...noWalls } = defaultMachineSettings;
 
 type Json = Record<string, unknown>;
 type Script = (method: string, params: Json, reply: (m: Json) => void, id: number | undefined) => void;
@@ -152,6 +167,50 @@ describe("an ACP session", () => {
     });
   });
 
+  it("returns only the final answer, not the narration before the last tool call", async () => {
+    const s = server(
+      claudeLike((reply, id) => {
+        reply(update("agent_message_chunk", { content: { type: "text", text: "Now I'm writing it." } }));
+        reply(update("tool_call", { toolCallId: "t1", title: "Edit README.md", status: "pending" }));
+        reply(update("agent_message_chunk", { content: { type: "text", text: "The report." } }));
+        setTimeout(() => reply({ id, result: { stopReason: "end_turn" } }), 5);
+      }),
+    );
+    expect(await agent(s).run(request())).toEqual({ kind: "done", output: "The report." });
+  });
+
+  it("keeps the answer when a tool call follows it, and calls an empty answer stuck", async () => {
+    const trailing = server(
+      claudeLike((reply, id) => {
+        reply(update("agent_message_chunk", { content: { type: "text", text: "The report." } }));
+        reply(update("tool_call", { toolCallId: "t2", title: "TodoWrite", status: "pending" }));
+        setTimeout(() => reply({ id, result: { stopReason: "end_turn" } }), 5);
+      }),
+    );
+    expect(await agent(trailing).run(request())).toEqual({ kind: "done", output: "The report." });
+    const silent = server(
+      claudeLike((reply, id) => setTimeout(() => reply({ id, result: { stopReason: "end_turn" } }), 5)),
+    );
+    expect(await agent(silent).run(request())).toMatchObject({ kind: "stuck" });
+  });
+
+  it("retries a transient error a few times, then calls it stuck; a full disk isn't a quota", async () => {
+    const failing = (text: string) =>
+      claudeLike((reply, id) => setTimeout(() => reply({ id, error: { code: -32603, message: text } }), 5));
+    const transient = "Failed to refresh OAuth token. This is usually transient; retry in a minute";
+    // One agent, a fresh server for each try, as the daemon launches one per session.
+    const a = new AcpAgent({
+      launch: () => server(failing(transient)).proc,
+      credentials: () => ({}),
+      cwdFor: (id) => `/home/employee/work/inc-${id}`,
+      now: () => 1_000,
+    });
+    const outcomes: string[] = [];
+    for (let i = 0; i < 4; i++) outcomes.push((await a.run(request())).kind);
+    expect(outcomes).toEqual(["out-of-tokens", "out-of-tokens", "out-of-tokens", "stuck"]);
+    expect((await agent(server(failing("ENOSPC: Disk quota exceeded"))).run(request())).kind).toBe("stuck");
+  });
+
   it("reads Claude's rate limits, and pauses until the reset when the account is out", async () => {
     const usage: UsageReport[] = [];
     const s = server(
@@ -238,13 +297,19 @@ describe("Apple container machines", () => {
   const notFound =
     'Error: failed to boot container machine (cause: "notFound: "container machine with ID inc-ada not found"")';
 
-  it("makes a missing machine with no home mount and fixed resources, then stops it", async () => {
+  it("makes a missing machine with no home mount and fixed resources, boots it, then stops it", async () => {
     const calls: string[][] = [];
-    const m = new AppleMachines(undefined, async (_bin, args) => {
-      calls.push(args);
-      if (args[1] === "run" && calls.length === 1) throw new Error(notFound);
-      return "";
-    });
+    const m = new AppleMachines(
+      noWalls,
+      async (_bin, args) => {
+        calls.push(args);
+        if (args[1] === "run" && calls.length === 1) throw new Error(notFound);
+        // The new machine's first boot fails, as it does now and then on the mini.
+        if (args[1] === "run" && calls.length === 3) throw new Error("Operation not supported by device");
+        return "";
+      },
+      async () => {},
+    );
     await m.ensureUp("ada");
     await m.ensureUp("ada");
     expect(calls).toEqual([
@@ -262,6 +327,8 @@ describe("Apple container machines", () => {
         "none",
         "local/i-inc-employee:latest",
       ],
+      boot,
+      boot,
     ]);
     await m.stop("ada");
     expect(calls.at(-1)).toEqual(["machine", "stop", "inc-ada"]);
@@ -270,7 +337,7 @@ describe("Apple container machines", () => {
 
   it("boots an existing machine with `machine run`, since there is no `machine start`", async () => {
     const calls: string[][] = [];
-    const m = new AppleMachines(undefined, async (_bin, args) => {
+    const m = new AppleMachines(noWalls, async (_bin, args) => {
       calls.push(args);
       return "";
     });
@@ -280,25 +347,147 @@ describe("Apple container machines", () => {
   });
 
   it("passes on other failures instead of making a new machine", async () => {
-    const m = new AppleMachines(undefined, async () => {
+    const m = new AppleMachines(noWalls, async () => {
       throw new Error("XPC connection error: the container service isn't running");
     });
     await expect(m.ensureUp("ada")).rejects.toThrow("container service isn't running");
     expect(m.running()).toEqual([]);
   });
 
-  it("refuses a credential that a login shell would split or interpret", () => {
-    const launch = machineLaunch({ bin: "/bin/false", image: "x", cpus: 1, memory: "1G" });
-    expect(() =>
-      launch({
-        employeeId: "ada",
-        engine: claude,
-        cwd: "/home/employee/work/inc-1",
-        env: { CLAUDE_CODE_OAUTH_TOKEN: "x; curl evil" },
-      }),
-    ).toThrow("can't pass CLAUDE_CODE_OAUTH_TOKEN into a machine safely");
+  it("passes the credential with -e, so it's in no command line", () => {
+    const seen: { bin: string; args: string[]; env: NodeJS.ProcessEnv }[] = [];
+    const fakeChild = () =>
+      Object.assign(new EventEmitter(), {
+        stdin: new PassThrough(),
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+        kill: () => true,
+      }) as unknown as ChildProcessWithoutNullStreams;
+    const launch = machineLaunch(
+      { bin: "/usr/local/bin/container", image: "x", user: "employee", cpus: 1, memory: "1G" },
+      (bin, args, env) => {
+        seen.push({ bin, args, env });
+        return fakeChild();
+      },
+    );
+    // A value a login shell would split or interpret is fine: it never passes through one.
+    const token = "sk-token; curl evil $(x)";
+    launch({
+      employeeId: "ada",
+      engine: claude,
+      cwd: "/home/employee/work/inc-1",
+      env: { CLAUDE_CODE_OAUTH_TOKEN: token },
+    });
+    const [call] = seen;
+    expect(call?.args).toEqual([
+      "machine",
+      "run",
+      "-i",
+      "-u",
+      "employee",
+      "-n",
+      "inc-ada",
+      "-e",
+      "I_INC_CWD",
+      "-e",
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "--",
+      "acp-claude",
+    ]);
+    expect(call?.args.join(" ")).not.toContain("sk-token");
+    expect(call?.env.CLAUDE_CODE_OAUTH_TOKEN).toBe(token);
+    expect(call?.env.I_INC_CWD).toBe("/home/employee/work/inc-1");
+  });
+
+  it("refuses a variable name that isn't one, and an employee id that isn't one", () => {
+    const launch = machineLaunch(noWalls, () => {
+      throw new Error("never started");
+    });
+    expect(() => launch({ employeeId: "ada", engine: claude, cwd: "/w", env: { "A=B": "x" } })).toThrow(
+      "can't pass A=B into a machine",
+    );
     expect(() => launch({ employeeId: "../x", engine: claude, cwd: "/w", env: {} })).toThrow(
       "not an employee id",
     );
+  });
+
+  it("keeps each ticket's work in the employee's home", () => {
+    expect(workDir("t7")).toBe("/home/employee/work/inc-t7");
+    expect(() => workDir("../t7")).toThrow("not a ticket id");
+  });
+});
+
+describe("the walls", () => {
+  it("keep every machine down while their marker is missing", async () => {
+    const marker = join(mkdtempSync(join(tmpdir(), "inc-walls-")), "i-inc-walls.ok");
+    const s = { bin: "container", image: "x", user: "employee", cpus: 1, memory: "1G", wallsMarker: marker };
+    const exec: string[][] = [];
+    const machines = new AppleMachines(s, async (_bin, args) => {
+      exec.push(args);
+      return "";
+    });
+    await expect(machines.ensureUp("ada")).rejects.toThrow("the walls aren't up");
+    expect(() =>
+      machineLaunch(s, () => {
+        throw new Error("never started");
+      })({ employeeId: "ada", engine: claude, cwd: "/w", env: {} }),
+    ).toThrow("the walls aren't up");
+    await expect(machineScript(s)("ada", "true")).rejects.toThrow("the walls aren't up");
+    expect(exec).toEqual([]);
+
+    writeFileSync(marker, "");
+    await machines.ensureUp("ada");
+    expect(exec).toHaveLength(1);
+  });
+});
+
+describe("limits named in error messages", () => {
+  const at = (iso: string) => Date.parse(iso);
+  it("reads when Claude's session limit resets", () => {
+    const now = at("2026-09-29T00:50:25Z");
+    expect(resetFromText("You've hit your session limit · resets 3:30am (UTC)", now)).toBe(
+      at("2026-09-29T03:30:00Z"),
+    );
+    expect(resetFromText("resets 12am (UTC)", at("2026-09-29T22:00:00Z"))).toBe(at("2026-09-30T00:00:00Z"));
+    expect(resetFromText("resets 12pm (UTC)", now)).toBe(at("2026-09-29T12:00:00Z"));
+    // Read right at the reset, or just after: due now, so a retry in a few minutes, not tomorrow.
+    const justAfter = at("2026-09-29T03:30:20Z");
+    expect(resetFromText("resets 3:30am (UTC)", justAfter)).toBe(justAfter + 5 * 60_000);
+    expect(resetFromText("resets Oct 1, 3am (UTC)", at("2026-10-01T03:00:10Z"))).toBe(
+      at("2026-10-01T03:05:10Z"),
+    );
+    // Another zone isn't read as UTC.
+    expect(resetFromText("resets 3:30am (America/New_York)", now)).toBeNull();
+    expect(resetFromText("weekly limit · resets Oct 3, 9pm (UTC)", now)).toBe(at("2026-10-03T21:00:00Z"));
+    expect(resetFromText("rate limited, try later", now)).toBeNull();
+  });
+});
+
+describe("the walls' marker", () => {
+  it("counts only while the walls job keeps it fresh, and the daemon can stop every machine", async () => {
+    const { utimesSync } = await import("node:fs");
+    const { wallsUp } = await import("../src/machines.ts");
+    const marker = join(mkdtempSync(join(tmpdir(), "inc-walls-")), "i-inc-walls.ok");
+    const s = { ...noWalls, wallsMarker: marker };
+    expect(wallsUp(s)).toBe(false);
+    writeFileSync(marker, "");
+    expect(wallsUp(s)).toBe(true);
+    const old = (Date.now() - 5 * 60_000) / 1000;
+    utimesSync(marker, old, old);
+    expect(wallsUp(s)).toBe(false);
+
+    const calls: string[][] = [];
+    const listing = [
+      "NAME     CREATED              IP             CPUS  MEMORY  DISK  STATE    DEFAULT",
+      "m1-test  2026-09-27 16:10:08  192.168.64.13  4     6G      5.3G  running  *",
+      "inc-ada  2026-09-28 20:46:19  192.168.64.22  4     6G      3.6G  running",
+      "inc-kit  2026-09-28 20:46:19  -              4     6G      3.6G  stopped",
+    ].join("\n");
+    const m = new AppleMachines(noWalls, async (_bin, args) => {
+      calls.push(args);
+      return args[1] === "ls" ? listing : "";
+    });
+    expect(await m.stopAll()).toEqual(["inc-ada"]);
+    expect(calls.at(-1)).toEqual(["machine", "stop", "inc-ada"]);
   });
 });

@@ -4,13 +4,28 @@ import type { Ticket } from "./model.ts";
 import type { StageId } from "./stages.ts";
 import type { TicketState } from "./state.ts";
 
-export function brief(ticket: Ticket, stage: StageId, state: TicketState, task: string): string {
+export function brief(
+  ticket: Ticket,
+  stage: StageId,
+  state: TicketState,
+  task: string,
+  machine: string[] = [],
+  /** The builder commits and pushes; a reviewer or verifier only checks the branch out. */
+  builds = true,
+): string {
   const lines = [
     `Ticket #${ticket.id} [${ticket.type}] ${ticket.title} · ${ticket.project} · effort ${ticket.effort}`,
     "Done when:",
     ...ticket.doneWhen.map((d) => `- ${d}`),
     `Stage: ${stage}. Task: ${task}`,
   ];
+  if (state.pr) {
+    lines.push(
+      builds
+        ? `Branch: ${state.pr.branch}, with draft PR ${state.pr.url}. Commit to it and push.`
+        : `Branch: ${state.pr.branch}, with draft PR ${state.pr.url}. Check it out in your machine; don't push to it.`,
+    );
+  }
   if (state.interruptedByOwner) {
     lines.push("The owner stopped your last session with an urgent message. Read it first, then carry on.");
   } else if (state.interrupted || state.paused) {
@@ -23,8 +38,10 @@ export function brief(ticket: Ticket, stage: StageId, state: TicketState, task: 
       `You are taking this ticket over from ${state.handedFrom}: the branch, plan and notes are theirs.`,
     );
   }
+  if (machine.length) lines.push("Your machine and the checks:", ...machine.map((m) => `- ${m}`));
   if (state.outputs.plan) lines.push("Plan:", state.outputs.plan);
   if (state.finished.length) lines.push(`Stages done: ${state.finished.join(", ")}`);
+  if (state.lastChecks?.green) lines.push("The last check run passed.");
   if (state.lastChecks && !state.lastChecks.green) {
     lines.push("Last check run failed:", ...state.lastChecks.failures.map((f) => `- ${f}`));
   }

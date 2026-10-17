@@ -10,69 +10,89 @@ Merged on `main`:
 
 | Milestone | What's there |
 | --- | --- |
-| M1 | Run on the mini. Answers are in [m1-findings.md](m1-findings.md) and scripts in `tools/m1/`. The walls, the Ollama relay and the machine `m1-test` still run there, set up by hand, so a reboot drops the walls and the relay |
+| M1 | Run on the mini. Answers are in [m1-findings.md](m1-findings.md) and scripts in `tools/m1/`. The machine `m1-test` still runs there. The walls and the Ollama relay now come back at boot (`tools/host/`, below) |
 | M2 | `packages/core`: the pipeline, engines and switch rules, the scheduler (reviewers and verifiers are scheduled like builds), errands, outbound permissions, My desk maths, knowledge routing, orientation. 64 tests |
-| M3 (part) | `apps/daemon`: SQLite, registry, tick loop, API, urgent chat interrupts, brains and the handbook as git repos. `apps/web`: every view, light and dark. The daemon runs **only in demo mode** |
-| M3 adapters | `apps/daemon/src/acp.ts` (the real ACP client) and `apps/daemon/src/machines.ts` (Apple container, its commands checked on the mini). They're tested against a scripted ACP server, but **not wired into `main.ts` yet** |
+| M3 (part) | `apps/daemon`: SQLite, registry, tick loop, API, urgent chat interrupts, brains and the handbook as git repos. `apps/web`: every view, light and dark. The daemon runs real employees by default (`real.ts`: ACP sessions in machines, the harness, credentials from `~/.config/i-inc/credentials.json`, projects and their recipes in the registry through `PUT /api/projects/:id`), or the scripted demo with `I_INC_DEMO=1` |
+| M3 adapters | `apps/daemon/src/acp.ts` (the real ACP client), `apps/daemon/src/harness.ts` (checks and gates in the machine), `apps/daemon/src/machines.ts` (Apple container, its commands checked on the mini) and `apps/daemon/src/github.ts` (the GitHub App's tokens, draft PRs and the bot's commit identity). Tested against a scripted ACP server and a recording `fetch`, and wired into real mode (`real.ts`) |
+| M3 image | `images/employee/`: the base image, built on the mini and checked in a throwaway machine, with Duet's recipe green in it ([its README](../images/employee/README.md)). Everything in a machine runs as its user `employee` |
+| GitHub | The App **i.inc bot** is set up: its key and ids are on the mini in `~/.config/i-inc`, it's installed on Duet only, and Duet's `main` has the ruleset. `tools/github-app/check.mjs` passes. The App still has the Workflows, Actions write and Pages permissions it was created with; the owner narrows them (below) |
+| First real ticket | 2026-10-01, on the mini: Ada (Claude, signed in inside her machine) took M1's README ticket from pick-up to a ready PR as the bot, firstprateek/duet#8. Her branch was made in her machine, three required CI checks passed, the gates waited for them, and the report became the PR body. It took three fixes on the way: Claude's "session limit" now pauses a ticket until the reset; the `acp-claude` launcher refreshes an expired sign-in before the adapter's parallel queries race to; and only a session's final answer counts as its output |
 | M4 (part) | Brain and handbook repos, edits applied from each retro, policies that wait for the owner, orientation, and the viewer |
 
-`pnpm check`, `pnpm typecheck` and `pnpm test` pass (98 tests). CI runs all three.
+`pnpm check`, `pnpm typecheck` and `pnpm test` pass (150 tests). CI runs all three.
 
 ## Open questions for the owner
 
-1. **The Claude token in the process list.** Each session gets `CLAUDE_CODE_OAUTH_TOKEN` in its
-   environment, through `container machine run … -- env K=V acp-claude`. It's never written to a
-   file, but it shows in the mini's process list while a session runs. Is that OK? If not, the
-   alternative is to write a file in the machine through `machine run -i` with stdin, then have the
-   launcher read it.
-2. **The GitHub App:** its name, the owner or org, and where its private key lives on the mini. The
-   owner creates the App; the session writes the steps (item 2 below).
+None right now.
 
 ## Next steps, in order
 
-Items 3 and 5 need the mini, so they need a session on the owner's Mac, over SSH as in M1. Ask
-the owner before any `sudo` or change to the host. The other items can run anywhere.
+Item 2 needs the mini, so it needs a session on the owner's Mac, over SSH as in M1. Ask the owner
+before any `sudo` or change to the host. The other items can run anywhere.
 
-1. **A real harness** (`Harness` port: `runChecks`, `runGates`). Use the same tooling as
-   `machines.ts`: `container machine run -i -n inc-<id> -- bash -s` with a script on stdin (M1:
-   `machine run` re-splits arguments).
-   - **Checks** run the project's recipe in the ticket's worktree, `~/work/inc-<ticket>`. The
-     recipe is a per-project setting in the registry, for example Duet's `pnpm install`, `pnpm
-     check`, `pnpm typecheck` and `pnpm test`.
-   - **Gates** fetch `main`, rebase, and rerun the checks. A conflict must come back as `{ ok:
-     false, conflict: true }`.
-   - Test it against a fake `Exec`, the way `acp.test.ts` tests the machine provider.
-2. **The GitHub App** (spec §6, gates and privileged requests; §8).
-   - Write `docs/github-app.md`: the permissions (Contents and Pull requests read/write, Checks
-     read), a ruleset under which only the owner merges, and where the private key lives on the
-     host (never in the repo).
-   - Then build `apps/daemon/src/github.ts`. It mints installation tokens for pushes and draft PRs,
-     so commits come from the bot identity, not the owner. Until the App exists, a fine-grained
-     token (as in M1 step 6) can stand in.
-3. **The base image (mini).** Grow `tools/m1/machine/Dockerfile` into `images/employee/`:
-   - `systemd-sysv`;
-   - its own user, `employee`, whose home is `/home/employee`. `acp.ts` sessions run in
-     `/home/employee/work/inc-<id>` (see `cwdFor` where the agent is built);
-   - Node, pnpm, the three harnesses, and the ACP launchers from `tools/m1/acp-launchers.sh`. The
-     launchers must create `$I_INC_CWD` and start there;
-   - `npm --allow-scripts`, and no gnome-keyring;
-   - OpenCode pinned to local providers only, for a PA's machine.
-4. **Real mode in `main.ts`.** When `I_INC_DEMO` isn't set, use `AcpAgent` with `machineLaunch()`,
-   `AppleMachines`, the real harness and GitHub.
-   - Credentials come from a file on the host, outside the repo: the Claude token from
-     `claude setup-token`, and the GitHub App key.
-   - `onUsage` feeds the account meters.
-   - The helper model and chat can use Ollama through the relay later. Until then, keep the fakes
-     behind a flag.
-5. **The daemon's host setup at boot (mini).** A launchd job that loads the `pf` walls from
-   `tools/m1/pf/` and starts the Ollama relay (`tools/m1/ollama-forward.mjs`).
-   - Later, the daemon answers the machines' DNS itself, refusing tailnet names, and relays
-     Antigravity's sign-in callback into the machine.
-   - This changes the host's walls, so get the owner's explicit approval.
-6. **The resume brief** (from M1 step 6). Add what the machine has and lacks, such as package
-   managers and whether checks ran. Point to the plan and notes files instead of quoting them.
+1. **The rest of GitHub in the loop.** Pick-up makes the worktree and branch in the builder's
+   machine, starting it with an empty commit (GitHub opens no PR without one), and opens the draft
+   PR (`workspace.ts`). Sessions get a token for the ticket's repo as `GH_TOKEN`. The gates push the
+   rebased branch and wait for GitHub CI on it (`waitForCi`), and the report goes into the PR, which
+   is then marked ready. Still to do:
+   - Red CI at the gates fails the ticket honestly. It could get a fix session first, as failed
+     checks do at stage 4.
+   - A token lasts an hour, and a session gets one at launch. For longer sessions: in the image,
+     git's credential helper and a `gh` wrapper ask the daemon's API for a fresh token (the walls
+     already let machines reach the API), with a per-session key passed in with `-e`, so a machine
+     only gets its own ticket's repo.
+   - A reviewer or verifier checks out the branch in its own machine, from its brief. Pick-up could
+     make their worktrees too.
+   - Usage reports are in the registry (`registry.usage()`) but not on My desk yet, and the helper
+     model and chat are still the fakes until they use Ollama through the relay.
+2. **The daemon's host setup at boot (mini).** Installed on 2026-09-28, from `tools/host/`:
+   - the walls job, the LaunchDaemon `inc.i.walls`, which loads the `pf` walls at boot and every
+     minute after, keeps `pf` on, and leaves `/var/run/i-inc-walls.ok` while they're up. The daemon
+     fails closed: without the marker, no machine boots and no session or script starts
+     (`assertWalls`);
+   - the Ollama relay, the owner's LaunchAgent `inc.i.ollama-relay`, which waits for the machines'
+     gateway at boot.
 
-After these, M3 can take a real Duet ticket end to end. Then come the rest of M4 (PM ticket drafting,
+   M1's wall tests pass from inside `m1-test` with them (13 of 13).
+
+   The daemon runs there too, since 2026-09-28: the LaunchAgent `inc.i.daemon`
+   (`tools/host/install-daemon.sh`) runs `~/i-inc` (branch `m3-deploy` until the stack merges;
+   switch it to `main` then) with Bun and pnpm from Homebrew, on 127.0.0.1:7420. The web app sends
+   no token yet, and the tailnet has a device that isn't the owner's, so it isn't served there:
+   reach it with `ssh -L 7420:127.0.0.1:7420 <mini>`. The registry has the account `claude`, the
+   engine `claude` (Claude Code) and the project `Duet` with its recipe. The owner's Claude token
+   goes in with `tools/host/add-claude-token.sh claude`, then `launchctl kickstart -k
+   gui/$(id -u)/inc.i.daemon`.
+
+   Still to do:
+   - a token for the web app, so the daemon can be served on the tailnet;
+   - answer the machines' DNS in the daemon, refusing tailnet names, and relay Antigravity's
+     sign-in callback into the machine.
+3. **After the adversarial review (2026-10-01).** A fresh-context review of the stack found 16
+   problems. Fixed in code: the API refuses cross-site writes and foreign Host headers; the CI wait
+   requires `main`'s required checks and reads every page; the gates refuse uncommitted work,
+   empty branches and pushing over others' commits; a handoff makes the worktree in the new
+   builder's machine; reviewers get read-only tokens and aren't told to push; sessions get tokens
+   with 50 minutes left; GitHub hiccups at pick-up retry; the final answer survives a trailing tool
+   call; transient errors retry three times; reset times just past mean "soon"; the walls marker
+   must be fresh, and machines stop when it isn't. The owner's part:
+   - narrow the App to the permissions in [github-app.md](github-app.md) (no Workflows, Actions
+     write or Pages), then accept the change on the installation;
+   - apply `duet-branches-ruleset.json` and `duet-tags-ruleset.json`;
+   - install the new `walls.sh` with `sudo sh tools/host/install-walls.sh`;
+   - move Duet's release secrets into an environment limited to `main`.
+
+   Still open from it: Approve doesn't merge yet (the owner merges on GitHub); stage 8's
+   protected-path, secret-scan and diff-size gates don't exist; there's no API token yet, so the
+   daemon stays off the tailnet; the report's byline names the engine's model.
+4. **Lessons from the first real ticket.**
+   - A new image doesn't reach existing machines: `tools/host/update-machine.sh <employee>` copies
+     the image's launchers into one.
+   - A failed ticket can be tried again from the stage it failed in: `POST
+     /api/tickets/:id/retry`. The web app has no button for it yet.
+   - The report's minutes count working time only, not days a ticket sat failed or paused.
+
+M3 has taken a real Duet ticket end to end. Then come the rest of M4 (PM ticket drafting,
 UX review, non-code tickets) and M5 (track records per engine, enforced usage caps, K per host).
 
 ## Decisions already made (don't reopen)
@@ -83,10 +103,19 @@ UX review, non-code tickets) and M5 (track records per engine, enforced usage ca
   - light by default with a dark theme, and Lit components.
 - **Engines:**
   - The Google engine is Antigravity; Gemini CLI no longer serves Google AI Pro.
-  - Employees get the model-only Claude token, never a full login, because a full login reaches the
-    owner's connectors.
+  - Each employee's machine signs in to Claude with the owner's subscription (`claude auth login`),
+    once, at hiring. The owner chose this on 2026-09-28 over the model-only token from `claude
+    setup-token`, accepting that a full login reaches the owner's claude.ai connectors. A token in
+    `~/.config/i-inc/credentials.json` still works for any account.
   - Cloud engines stay. A private cloud is only noted for later.
   - Home data goes only to local models; the planned model is qwen3.8 27B, set up later.
+- **Credentials:**
+  - A session's credentials go into its machine with `container machine run -e NAME`, copied from
+    the environment of that one `container` process. They're in no command line, never on the
+    machine's disk, and gone when the session ends (m1-findings.md, "M3: credentials").
+  - The GitHub App is named **i.inc bot** (slug `i-inc-bot`), on the owner's personal account.
+    Plain "i.inc" is refused: Apps share names with accounts, and an account `i-inc` exists. Its private key lives on the mini at `~/.config/i-inc/github-app.pem`, mode
+    0600 in a 0700 folder, and never in the repo.
 - **Brains:**
   - They live on the mini and are never pushed.
   - Shared facts go in the handbook; personality and duty lessons stay in each employee's brain.

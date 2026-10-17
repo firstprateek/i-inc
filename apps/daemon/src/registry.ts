@@ -1,5 +1,5 @@
-// The company's configuration, kept in SQLite: employees, engines, accounts, hosts, contacts and
-// settings. It is the Company port the core reads.
+// The company's configuration, kept in SQLite: employees, engines, accounts, hosts, contacts,
+// projects and settings, plus each account's latest usage. It is the Company port the core reads.
 import {
   type AccountCost,
   type Company,
@@ -11,7 +11,18 @@ import {
   pickTint,
   type Ticket,
 } from "@i-inc/core";
+import type { UsageReport } from "./acp.ts";
 import type { Db } from "./db.ts";
+
+/** A repo employees work on, and the checks its tickets must pass (spec §6, stages 4 and 8). */
+export interface Project {
+  /** The name tickets use, such as "Duet". */
+  id: Id;
+  /** "owner/name" on GitHub. */
+  repo: string;
+  /** The check recipe, in order: for Duet, install, lint, typecheck and test. */
+  checks: string[];
+}
 
 export interface Settings {
   /** The owner's offset from UTC, for working hours. */
@@ -22,7 +33,7 @@ export interface Settings {
 
 const defaultSettings: Settings = { utcOffsetMinutes: 0, pricePerKWh: 0, currency: "USD" };
 
-type Kind = "employee" | "engine" | "account" | "host" | "contact" | "settings";
+type Kind = "employee" | "engine" | "account" | "host" | "contact" | "project" | "usage" | "settings";
 
 export class Registry implements Company {
   constructor(private readonly db: Db) {}
@@ -70,6 +81,13 @@ export class Registry implements Company {
   addContact(address: string): void {
     this.put("contact", address.toLowerCase(), address);
   }
+  addProject(p: Project): void {
+    this.put("project", p.id, p);
+  }
+  /** The latest report on an account's limits, as its harness sent it (Claude's, for now). */
+  recordUsage(u: UsageReport): void {
+    this.put("usage", u.accountId, u);
+  }
   setSettings(s: Partial<Settings>): void {
     this.put("settings", "company", { ...this.settings(), ...s });
   }
@@ -89,6 +107,15 @@ export class Registry implements Company {
   }
   hosts(): HostCost[] {
     return this.list<HostCost>("host");
+  }
+  projects(): Project[] {
+    return this.list<Project>("project");
+  }
+  project(id: Id): Project | undefined {
+    return this.get<Project>("project", id);
+  }
+  usage(): UsageReport[] {
+    return this.list<UsageReport>("usage");
   }
   settings(): Settings {
     return { ...defaultSettings, ...this.get<Settings>("settings", "company") };

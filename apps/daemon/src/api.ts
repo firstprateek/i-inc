@@ -1,10 +1,16 @@
 // The daemon's HTTP API: plain Request -> Response (Bun.serve on the host, called directly in tests).
-// It's served only on the tailnet; a bearer token guards it as well.
+// It's served on 127.0.0.1, reached through an SSH tunnel. Other web pages the owner has open can
+// still send it requests, so: only known Host headers (no DNS rebinding), writes must be JSON (which
+// another site can't send without a CORS preflight, and none is ever allowed), and an Origin from
+// anywhere else is refused. A bearer token can guard it as well.
 import {
+  type AccountCost,
+  type AgentHarness,
   answer,
   decide,
   defaultSwitchRules,
   type Employee,
+  type Engine,
   fold,
   handleMessage,
   handOff,
@@ -12,6 +18,7 @@ import {
   type Id,
   knowledgeLog,
   type ProposedEdit,
+  retry,
 } from "@i-inc/core";
 import type { Daemon, DaemonDeps } from "./daemon.ts";
 import type { Change, Repo } from "./knowledge.ts";
@@ -21,6 +28,8 @@ import { deskView, officeView, type TicketView, ticketView } from "./views.ts";
 export interface ApiOptions {
   /** When set, every request needs `Authorization: Bearer <token>`. */
   token?: string;
+  /** The Host headers it answers, such as "127.0.0.1:7420". Unset: any (tests). */
+  hosts?: string[];
 }
 
 type Handler = (req: Request, params: Record<string, string>) => Promise<Response>;
@@ -33,6 +42,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     agent: d.agent,
     harness: d.harness,
     company: d.registry,
+    ...(d.workspace ? { workspace: d.workspace } : {}),
   };
 
   const views = async (): Promise<TicketView[]> => {
@@ -51,6 +61,82 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     ["GET", "/api/board", async () => json({ tickets: await views() })],
 
     ["GET", "/api/engines", async () => json({ engines: d.registry.engines() })],
+
+    [
+      "PUT",
+      "/api/engines/:id",
+      async (req, { id = "" }) => {
+        const b = (await req.json()) as Partial<Engine>;
+        const harnesses: AgentHarness[] = ["claude-code", "antigravity", "opencode"];
+        if (!/^[a-z0-9-]{1,40}$/.test(id))
+          return json({ error: "an engine id is lowercase letters, digits and dashes" }, 400);
+        if (!b.harness || !harnesses.includes(b.harness)) {
+          return json({ error: `harness must be one of ${harnesses.join(", ")}` }, 400);
+        }
+        if (typeof b.model !== "string" || !b.model.trim())
+          return json({ error: "model names the model" }, 400);
+        if (typeof b.accountId !== "string" || !d.registry.accounts().some((a) => a.id === b.accountId)) {
+          return json({ error: "accountId must be an account added with PUT /api/accounts/:id" }, 400);
+        }
+        d.registry.addEngine({
+          id,
+          harness: b.harness,
+          model: b.model,
+          accountId: b.accountId,
+          local: b.local === true,
+        });
+        return json({ engine: d.registry.engine(id) });
+      },
+    ],
+
+    ["GET", "/api/accounts", async () => json({ accounts: d.registry.accounts() })],
+
+    [
+      "PUT",
+      "/api/accounts/:id",
+      async (req, { id = "" }) => {
+        const b = (await req.json()) as Partial<AccountCost>;
+        if (!/^[a-z0-9-]{1,40}$/.test(id))
+          return json({ error: "an account id is lowercase letters, digits and dashes" }, 400);
+        if (typeof b.name !== "string" || !b.name.trim())
+          return json({ error: "name names the account" }, 400);
+        const money = (v: unknown) => typeof v === "number" && v >= 0;
+        d.registry.addAccount({
+          id,
+          name: b.name,
+          ...(money(b.monthlyFee) ? { monthlyFee: b.monthlyFee as number } : {}),
+          ...(money(b.pricePerMillionTokens)
+            ? { pricePerMillionTokens: b.pricePerMillionTokens as number }
+            : {}),
+        });
+        return json({ account: d.registry.accounts().find((a) => a.id === id) });
+      },
+    ],
+
+    ["GET", "/api/projects", async () => json({ projects: d.registry.projects() })],
+
+    [
+      "PUT",
+      "/api/projects/:id",
+      async (req, { id = "" }) => {
+        const body = (await req.json()) as { repo?: unknown; checks?: unknown };
+        const checks = Array.isArray(body.checks) ? body.checks : [];
+        if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$/.test(id)) {
+          return json(
+            { error: "a project is named by up to 40 letters, digits, spaces, dots and dashes" },
+            400,
+          );
+        }
+        if (typeof body.repo !== "string" || !/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(body.repo)) {
+          return json({ error: "repo must be owner/name on GitHub" }, 400);
+        }
+        if (!checks.length || !checks.every((c) => typeof c === "string" && c.trim())) {
+          return json({ error: "checks must be the recipe's commands, in order" }, 400);
+        }
+        d.registry.addProject({ id, repo: body.repo, checks });
+        return json({ project: d.registry.project(id) });
+      },
+    ],
     [
       "GET",
       "/api/chat",
@@ -294,6 +380,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       },
     ],
 
+    ["POST", "/api/tickets/:id/retry", async (_req, p) => act(p.id, null, () => retry(ports, p.id ?? ""))],
+
     [
       "POST",
       "/api/tickets/:id/handoff",
@@ -435,6 +523,21 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
   return async function handle(req: Request): Promise<Response> {
     if (opts.token && req.headers.get("authorization") !== `Bearer ${opts.token}`) {
       return json({ error: "unauthorized" }, 401);
+    }
+    const host = req.headers.get("host") ?? "";
+    if (opts.hosts && !opts.hosts.includes(host)) return json({ error: `not served as ${host}` }, 421);
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      const origin = req.headers.get("origin");
+      if (
+        origin &&
+        opts.hosts &&
+        !opts.hosts.some((h) => origin === `http://${h}` || origin === `https://${h}`)
+      ) {
+        return json({ error: "cross-site request refused" }, 403);
+      }
+      if (!(req.headers.get("content-type") ?? "").startsWith("application/json")) {
+        return json({ error: "writes must be application/json" }, 415);
+      }
     }
     const url = new URL(req.url);
     for (const [method, pattern, handler] of routes) {

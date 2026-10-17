@@ -22,10 +22,12 @@ export type {
 };
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+  // Every write is JSON, even an empty one: the daemon refuses anything else (api.ts).
+  const write = method !== "GET";
   const res = await fetch(path, {
     method,
-    headers: body === undefined ? {} : { "content-type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    headers: write ? { "content-type": "application/json" } : {},
+    ...(write ? { body: JSON.stringify(body ?? {}) } : {}),
   });
   const data = (await res.json()) as T & { error?: string };
   if (!res.ok) throw new Error(data.error ?? `${method} ${path}: ${res.status}`);
