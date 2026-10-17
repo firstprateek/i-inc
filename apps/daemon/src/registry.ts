@@ -4,10 +4,12 @@ import {
   type AccountCost,
   type Company,
   type Duty,
+  defaultProjectPolicy,
   type Employee,
   type Engine,
   type HostCost,
   type Id,
+  type ProjectPolicy,
   pickTint,
   type Ticket,
 } from "@i-inc/core";
@@ -15,7 +17,7 @@ import type { UsageReport } from "./acp.ts";
 import type { Db } from "./db.ts";
 
 /** A repo employees work on, and the checks its tickets must pass (spec §6, stages 4 and 8). */
-export interface Project {
+export interface Project extends Partial<ProjectPolicy> {
   /** The name tickets use, such as "Duet". */
   id: Id;
   /** "owner/name" on GitHub. */
@@ -23,6 +25,21 @@ export interface Project {
   /** The check recipe, in order: for Duet, install, lint, typecheck and test. */
   checks: string[];
 }
+
+/**
+ * A team shares one sandbox: one walled machine its members all work in, signed in once to each
+ * subscription (decided 2026-10-17). Its id names the machine: inc-<id>.
+ */
+export interface Team {
+  id: Id;
+  name: string;
+  members: Id[];
+  /** The sandbox's size. Default: 6 CPUs and 12G. */
+  sandbox?: { cpus: number; memory: string };
+}
+
+/** Where an employee works when no team claims it. */
+export const defaultTeam: Team = { id: "company", name: "Company", members: [] };
 
 export interface Settings {
   /** The owner's offset from UTC, for working hours. */
@@ -33,7 +50,16 @@ export interface Settings {
 
 const defaultSettings: Settings = { utcOffsetMinutes: 0, pricePerKWh: 0, currency: "USD" };
 
-type Kind = "employee" | "engine" | "account" | "host" | "contact" | "project" | "usage" | "settings";
+type Kind =
+  | "employee"
+  | "engine"
+  | "account"
+  | "host"
+  | "contact"
+  | "project"
+  | "team"
+  | "usage"
+  | "settings";
 
 export class Registry implements Company {
   constructor(private readonly db: Db) {}
@@ -83,6 +109,25 @@ export class Registry implements Company {
   }
   addProject(p: Project): void {
     this.put("project", p.id, p);
+  }
+  addTeam(t: Team): void {
+    this.put("team", t.id, t);
+  }
+  teams(): Team[] {
+    return this.list<Team>("team");
+  }
+  /** The team whose sandbox an employee works in. */
+  teamOf(employeeId: Id): Team {
+    return this.teams().find((t) => t.members.includes(employeeId)) ?? defaultTeam;
+  }
+  /** How a project's work reaches main: its own settings over the defaults (direct). */
+  projectPolicy(project: string): ProjectPolicy {
+    const p = this.project(project);
+    return {
+      mode: p?.mode ?? defaultProjectPolicy.mode,
+      protectedPaths: p?.protectedPaths ?? defaultProjectPolicy.protectedPaths,
+      followUpsPerDay: p?.followUpsPerDay ?? defaultProjectPolicy.followUpsPerDay,
+    };
   }
   /** The latest report on an account's limits, as its harness sent it (Claude's, for now). */
   recordUsage(u: UsageReport): void {

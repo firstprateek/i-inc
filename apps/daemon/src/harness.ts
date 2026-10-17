@@ -2,8 +2,8 @@
 // the builder's machine. Scripts go in on stdin through `container machine run -i … -- bash -s`,
 // because `machine run` re-splits its arguments (M1).
 import { spawn } from "node:child_process";
-import type { ChecksResult, GatesResult, Harness, Ticket } from "@i-inc/core";
-import { assertWalls, defaultMachineSettings, type MachineSettings, machineName } from "./machines.ts";
+import type { ChecksResult, GatesResult, Harness, ProjectPolicy, Ticket } from "@i-inc/core";
+import { assertWalls, defaultMachineSettings, type MachineSettings, machineOf } from "./machines.ts";
 
 /**
  * Runs a script in an employee's machine and resolves with its exit code and output. Variables in
@@ -34,7 +34,7 @@ export function machineScript(s: MachineSettings = defaultMachineSettings): RunS
         "-u",
         s.user,
         "-n",
-        machineName(employeeId),
+        machineOf(s, employeeId),
         ...flags,
         "--",
         "bash",
@@ -70,7 +70,54 @@ export interface HarnessSettings {
   github?: (ticket: Ticket) => Promise<Record<string, string>>;
   /** With GitHub: waits for CI on the pushed commit, the last of stage 8's gates. */
   ci?: (ticket: Ticket, sha: string) => Promise<{ ok: true } | { ok: false; reason: string }>;
+  /** How a project's work reaches main. Absent: owner-merges (rebase, and push the PR's branch). */
+  policy?: (project: string) => ProjectPolicy;
 }
+
+/** Direct mode: the files this ticket's work changes, against where it left main. */
+export function changedScript(worktree: string): string {
+  return [
+    `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
+    "git fetch --quiet origin main || { echo '@@fail git fetch'; exit 1; }",
+    "git diff --name-only \"$(git merge-base origin/main HEAD)\" | sed 's/^/@@changed /'",
+  ].join("\n");
+}
+
+/** Direct mode: pushes the rebased work to main, or says main moved since the rebase. */
+export function pushMainScript(worktree: string): string {
+  return [
+    `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
+    "if out=$(git push --quiet origin HEAD:main 2>&1); then",
+    '  echo "@@pushed $(git rev-parse HEAD)"',
+    "else",
+    '  echo "$out"',
+    '  case "$out" in *"fetch first"*|*non-fast-forward*|*rejected*) echo "@@behind"; exit 7 ;; esac',
+    "  exit 1",
+    "fi",
+  ].join("\n");
+}
+
+/** Direct mode: takes a commit back out of main, from a scratch worktree beside the ticket's. */
+export function revertScript(worktree: string, sha: string): string {
+  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`not a commit: ${sha}`);
+  return [
+    `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
+    "tmp=$(mktemp -d)",
+    "for attempt in 1 2 3; do",
+    "  git fetch --quiet origin main || continue",
+    '  rm -rf "$tmp"; git worktree add --quiet --detach "$tmp" origin/main || continue',
+    `  if (cd "$tmp" && git revert --no-edit ${sha} >/dev/null && git push --quiet origin HEAD:main); then`,
+    '    git worktree remove --force "$tmp"; echo @@reverted; exit 0',
+    "  fi",
+    '  git worktree remove --force "$tmp" 2>/dev/null',
+    "done",
+    "exit 1",
+  ].join("\n");
+}
+
+/** Whether a changed file falls under one of a project's protected paths (a prefix or an exact file). */
+export const isProtected = (file: string, paths: string[]) =>
+  paths.some((p) => (p.endsWith("/") ? file.startsWith(p) : file === p));
 
 const safeId = /^[A-Za-z0-9_-]{1,64}$/;
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -116,7 +163,7 @@ export function rebaseScript(worktree: string): string {
     "  exit 2",
     "fi",
     // Pick-up's empty commit alone isn't work.
-    "if git diff --quiet origin/main HEAD; then echo '@@empty'; exit 5; fi",
+    'if git diff --quiet origin/main HEAD; then echo "@@empty $(git rev-parse origin/main)"; exit 5; fi',
     "echo @@rebased",
   ].join("\n");
 }
@@ -182,7 +229,9 @@ export class MachineHarness implements Harness {
     return readChecks(code, output);
   }
 
-  async runGates(ticket: Ticket): Promise<GatesResult> {
+  async runGates(ticket: Ticket, opts: { ownerApproved?: boolean } = {}): Promise<GatesResult> {
+    const policy = this.s.policy?.(ticket.project);
+    if (policy?.mode === "direct") return this.directGates(ticket, policy, opts.ownerApproved === true);
     const env = (await this.s.github?.(ticket)) ?? {};
     const rebased = await this.run(ticket.assignee, rebaseScript(this.worktree(ticket)), env);
     if (rebased.code === 2) {
@@ -227,5 +276,81 @@ export class MachineHarness implements Harness {
       if (ci && !ci.ok) return { ok: false, conflict: false, reason: ci.reason };
     }
     return { ok: true };
+  }
+
+  /**
+   * Direct mode's gates (decided 2026-10-17): protected paths wait for the owner; then rebase on
+   * main, checks, and a push to main. If main moves in between, rebase and try again, up to 3 times.
+   */
+  private async directGates(
+    ticket: Ticket,
+    policy: ProjectPolicy,
+    ownerApproved: boolean,
+  ): Promise<GatesResult> {
+    const env = (await this.s.github?.(ticket)) ?? {};
+    const worktree = this.worktree(ticket);
+    const no = (reason: string): GatesResult => ({ ok: false, conflict: false, reason });
+
+    const changed = await this.run(ticket.assignee, changedScript(worktree), env);
+    if (changed.code !== 0) return no(`couldn't read the change: ${changed.output.trim().slice(-300)}`);
+    const files = [...changed.output.matchAll(/^@@changed (.+)$/gm)].map((m) => m[1] as string);
+    const touched = files.filter((f) => isProtected(f, policy.protectedPaths));
+    if (touched.length && !ownerApproved) {
+      return {
+        ok: false,
+        conflict: false,
+        reason: `it changes protected paths: ${touched.join(", ")}`,
+        protectedPaths: touched,
+      };
+    }
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const rebased = await this.run(ticket.assignee, rebaseScript(worktree), env);
+      const lines = (tag: string) =>
+        [...rebased.output.matchAll(new RegExp(`^@@${tag} ?(.*)$`, "gm"))].map((m) => m[1]);
+      if (rebased.code === 2) {
+        return {
+          ok: false,
+          conflict: true,
+          reason: `rebasing on main conflicts in ${lines("conflict").join(", ") || "some files"}`,
+        };
+      }
+      if (rebased.code === 3) return no(`the worktree has uncommitted changes: ${lines("dirty").join(", ")}`);
+      if (rebased.code === 5) {
+        // After the owner's OK, the owner may have pushed it already (push-for-owner.sh).
+        const main = lines("empty")[0];
+        if (ownerApproved && main && /^[0-9a-f]{40}$/.test(main)) return { ok: true, pushed: main };
+        return no("the branch has no changes beyond main");
+      }
+      if (rebased.code !== 0) return no(`couldn't rebase on main: ${rebased.output.trim().slice(-300)}`);
+      const checks = await this.runChecks(ticket);
+      if (!checks.green) return no(`the checks fail after rebasing on main: ${checks.failures.join("; ")}`);
+      const pushed = await this.run(ticket.assignee, pushMainScript(worktree), env);
+      const sha = /^@@pushed ([0-9a-f]{40})$/m.exec(pushed.output)?.[1];
+      if (sha) return { ok: true, pushed: sha };
+      if (pushed.code !== 7) {
+        // GitHub refuses the bot any change to workflows: that needs the owner's push.
+        const workflows = /workflow/i.test(pushed.output) && /refusing|permission/i.test(pushed.output);
+        return no(
+          workflows
+            ? "GitHub won't let the bot push changes to workflows: the owner pushes this one (tools/host/push-for-owner.sh)"
+            : `couldn't push to main: ${pushed.output.trim().slice(-300)}`,
+        );
+      }
+    }
+    return no("main kept moving while the gates ran; try again");
+  }
+
+  /** Direct mode: CI on the commit pushed to main. */
+  async watchCi(ticket: Ticket, sha: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+    return (await this.s.ci?.(ticket, sha)) ?? { ok: true };
+  }
+
+  /** Direct mode: reverts a commit on main that stayed red too long. */
+  async revert(ticket: Ticket, sha: string): Promise<void> {
+    const env = (await this.s.github?.(ticket)) ?? {};
+    const r = await this.run(ticket.assignee, revertScript(this.worktree(ticket), sha), env);
+    if (!r.output.includes("@@reverted"))
+      throw new Error(`couldn't revert ${sha}: ${r.output.trim().slice(-300)}`);
   }
 }

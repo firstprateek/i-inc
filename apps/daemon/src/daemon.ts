@@ -104,6 +104,7 @@ export class Daemon {
       const events = await this.d.store.read(r.ticket.id);
       states.set(r.ticket.id, fold(events));
       this.applyKnowledge(r.ticket.id, events);
+      this.fileFollowUps(r.ticket.id, events);
     }
 
     // Paused tickets run again (the runner returns at once if the wait isn't over), and so do running
@@ -200,7 +201,9 @@ export class Daemon {
     const done = runTicket(this.ports, record.ticket, { helpers: "scheduler", signal })
       .then(async (r: RunResult) => {
         this.d.log?.(`ticket ${id}: ${r.status}`);
-        this.applyKnowledge(id, await this.d.store.read(id));
+        const events = await this.d.store.read(id);
+        this.applyKnowledge(id, events);
+        this.fileFollowUps(id, events);
         // A stage finished or wants a helper: someone may be free now, or a reviewer is needed.
         if (r.status !== "paused") void this.tick().catch(() => {});
       })
@@ -234,6 +237,54 @@ export class Daemon {
   ensureKnowledge(): void {
     this.d.knowledge.ensureHandbook();
     for (const e of this.d.registry.employees()) this.d.knowledge.ensureBrain(e);
+  }
+
+  /**
+   * Files the tickets agents proposed for themselves (decided 2026-10-17), each once, while the
+   * project's daily budget allows. They go to the agent that proposed them, marked as its own.
+   */
+  fileFollowUps(ticketId: Id, events: TicketEvent[]): void {
+    const from = this.d.tickets.get(ticketId)?.ticket;
+    if (!from) return;
+    const now = this.d.clock.now();
+    const dayStart = now - (now % 86_400_000);
+    events.forEach((e, i) => {
+      if (e.type !== "follow-ups") return;
+      e.tickets.forEach((f, j) => {
+        const key = `followup:${ticketId}:${i}:${j}`;
+        const [done] = this.d.db.all<{ n: number }>(
+          "SELECT COUNT(*) AS n FROM knowledge_applied WHERE edit_id = ?",
+          key,
+        );
+        if (done?.n) return;
+        const filedToday = this.d.tickets
+          .all()
+          .filter(
+            (r) => r.ticket.project === from.project && r.ticket.createdBy && r.createdAt >= dayStart,
+          ).length;
+        if (filedToday >= this.d.registry.projectPolicy(from.project).followUpsPerDay) {
+          this.d.log?.(
+            `follow-up "${f.title}" from ${e.employeeId} not filed: ${from.project}'s budget for today is used`,
+          );
+        } else {
+          const t = this.d.tickets.create(
+            {
+              title: f.title,
+              project: from.project,
+              type: f.type,
+              effort: f.effort,
+              doneWhen: f.doneWhen,
+              assignee: e.employeeId,
+              createdBy: e.employeeId,
+              labels: ["follow-up"],
+            },
+            now,
+          );
+          this.d.log?.(`ticket ${t.id} filed by ${e.employeeId} as a follow-up of ${ticketId}: ${f.title}`);
+        }
+        this.d.db.run("INSERT OR IGNORE INTO knowledge_applied (edit_id, at) VALUES (?, ?)", key, now);
+      });
+    });
   }
 
   /** Applies a ticket's proposed edits that are due and not yet applied (spec §5, "The brain"). */

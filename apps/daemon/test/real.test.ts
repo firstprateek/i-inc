@@ -12,7 +12,7 @@ import { createApp } from "../src/app.ts";
 import { readCredentials } from "../src/config.ts";
 import { seedDemo } from "../src/demo.ts";
 import { defaultMachineSettings } from "../src/machines.ts";
-import { realPorts } from "../src/real.ts";
+import { portsFor, realPorts } from "../src/real.ts";
 import { testApp } from "./setup.ts";
 
 const tmp = (prefix: string) => mkdtempSync(join(tmpdir(), prefix));
@@ -38,11 +38,60 @@ describe("projects", () => {
   it("keeps each project's repo and check recipe, and refuses a bad one", async () => {
     const app = await testApp();
     const duet = { repo: "firstprateek/duet", checks: ["pnpm install --frozen-lockfile", "pnpm test"] };
-    expect((await app.call("PUT", "/api/projects/Duet", duet)).body.project).toEqual({ id: "Duet", ...duet });
-    expect((await app.call("GET", "/api/projects")).body.projects).toEqual([{ id: "Duet", ...duet }]);
+    const put = await app.call("PUT", "/api/projects/Ledger", duet);
+    expect(put.body.project).toEqual({ id: "Ledger", ...duet });
+    // Direct by default, with workflows and release settings protected.
+    expect(put.body.policy).toMatchObject({
+      mode: "direct",
+      protectedPaths: expect.arrayContaining([".github/"]),
+    });
+    const owner = await app.call("PUT", "/api/projects/Ledger", {
+      ...duet,
+      mode: "owner-merges",
+      followUpsPerDay: 0,
+    });
+    expect(owner.body.policy).toMatchObject({ mode: "owner-merges", followUpsPerDay: 0 });
+    expect((await app.call("GET", "/api/projects")).body.projects).toContainEqual({
+      id: "Ledger",
+      ...duet,
+      mode: "owner-merges",
+      followUpsPerDay: 0,
+    });
+    expect((await app.call("PUT", "/api/projects/Ledger", { ...duet, mode: "yolo" })).status).toBe(400);
     expect((await app.call("PUT", "/api/projects/Duet", { ...duet, repo: "duet" })).status).toBe(400);
     expect((await app.call("PUT", "/api/projects/Duet", { ...duet, checks: [] })).status).toBe(400);
     expect((await app.call("PUT", "/api/projects/..%2Fx", duet)).status).toBe(400);
+  });
+});
+
+describe("teams", () => {
+  it("puts employees in one team each, with a sandbox size", async () => {
+    const app = await testApp();
+    const eng = await app.call("PUT", "/api/teams/engineering", {
+      name: "Engineering",
+      members: ["ada", "kit"],
+      sandbox: { cpus: 6, memory: "12G" },
+    });
+    expect(eng.body.team).toEqual({
+      id: "engineering",
+      name: "Engineering",
+      members: ["ada", "kit"],
+      sandbox: { cpus: 6, memory: "12G" },
+    });
+    await app.call("PUT", "/api/teams/platform", { name: "Platform", members: ["kit"] });
+    expect(app.deps.registry.teamOf("kit").id).toBe("platform");
+    expect(app.deps.registry.teamOf("ada").id).toBe("engineering");
+    expect(app.deps.registry.teamOf("grace").id).toBe("company");
+    expect((await app.call("PUT", "/api/teams/x", { name: "X", members: ["nobody"] })).status).toBe(400);
+    expect(
+      (
+        await app.call("PUT", "/api/teams/x", {
+          name: "X",
+          members: [],
+          sandbox: { cpus: 6, memory: "lots" },
+        })
+      ).status,
+    ).toBe(400);
   });
 });
 
@@ -128,18 +177,22 @@ describe("real mode", () => {
   const ticket: Ticket = {
     id: "7",
     title: "x",
-    project: "Duet",
+    project: "Ledger",
     type: "fix",
     effort: "low",
     doneWhen: [],
     assignee: "ada",
   };
 
-  it("boots the employee's machine, and starts its session there with the account's credentials", async () => {
+  it("boots the team's sandbox, and starts the session there with the account's credentials", async () => {
     const { app, exec, launched } = await realApp();
     const { registry } = app.deps;
+    // No team claims Ada: she works in the company's sandbox.
     await app.deps.machines.ensureUp("ada");
-    expect(exec[0]).toEqual(["machine", "run", "-n", "inc-ada", "--", "true"]);
+    expect(exec[0]).toEqual(["machine", "run", "-n", "inc-company", "--", "true"]);
+    registry.addTeam({ id: "engineering", name: "Engineering", members: ["kit"] });
+    await app.deps.machines.ensureUp("kit");
+    expect(exec.at(-1)).toEqual(["machine", "run", "-n", "inc-engineering", "--", "true"]);
 
     const outcome = await app.deps.agent.run({
       ticket,
@@ -153,13 +206,13 @@ describe("real mode", () => {
     expect(launched[0]).toMatchObject({
       employeeId: "ada",
       cwd: "/home/employee/work/inc-7",
-      env: { CLAUDE_CODE_OAUTH_TOKEN: "sk-x" },
+      env: { CLAUDE_CODE_OAUTH_TOKEN: "sk-x", I_INC_PORTS: portsFor("7") },
     });
     expect(registry.usage()).toEqual([
       { accountId: "claude-pro", status: "allowed", resetsAt: 1_900_000_000_000, windows: [] },
     ]);
 
-    // Antigravity signs in inside the machine, so its account has no entry and its session gets none.
+    // Antigravity signs in inside the machine, so its account has no entry: its session gets only ports.
     await app.deps.agent.run({
       ticket,
       stage: "build",
@@ -168,13 +221,15 @@ describe("real mode", () => {
       engine: registry.engine("gemini"),
       brief: "b",
     });
-    expect(launched[1]?.env).toEqual({});
+    expect(launched[1]?.env).toEqual({ I_INC_PORTS: portsFor("7") });
+    expect(portsFor("7")).toMatch(/^\d{5}-\d{5}$/);
+    expect(portsFor("7")).not.toBe(portsFor("8"));
   });
 
   it("runs the project's recipe from the registry in the ticket's worktree", async () => {
     const { app, scripts } = await realApp();
-    await expect(app.deps.harness.runChecks(ticket)).rejects.toThrow("no check recipe for Duet");
-    app.deps.registry.addProject({ id: "Duet", repo: "firstprateek/duet", checks: ["pnpm test"] });
+    await expect(app.deps.harness.runChecks(ticket)).rejects.toThrow("no check recipe for Ledger");
+    app.deps.registry.addProject({ id: "Ledger", repo: "firstprateek/ledger", checks: ["pnpm test"] });
     expect(await app.deps.harness.runChecks(ticket)).toEqual({ green: true, failures: [] });
     expect(scripts[0]?.employeeId).toBe("ada");
     expect(scripts[0]?.script).toContain("cd '/home/employee/work/inc-7'");
@@ -183,7 +238,7 @@ describe("real mode", () => {
     const described = app.deps.harness.describe?.(ticket) ?? [];
     expect(described[0]).toContain("Node 24, pnpm 10, git, gh and Docker");
     expect(described[1]).toBe(
-      "After you build, the harness runs Duet's checks in your worktree, in order: `pnpm test`. Run them yourself before you say you're done.",
+      "After you build, the harness runs Ledger's checks in your worktree, in order: `pnpm test`. Run them yourself before you say you're done.",
     );
   });
 });

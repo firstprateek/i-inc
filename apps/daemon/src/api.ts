@@ -113,13 +113,62 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       },
     ],
 
+    ["GET", "/api/teams", async () => json({ teams: d.registry.teams() })],
+
+    [
+      "PUT",
+      "/api/teams/:id",
+      async (req, { id = "" }) => {
+        const b = (await req.json()) as { name?: unknown; members?: unknown; sandbox?: unknown };
+        if (!/^[a-z0-9-]{1,32}$/.test(id))
+          return json({ error: "a team id is lowercase letters, digits and dashes" }, 400);
+        if (typeof b.name !== "string" || !b.name.trim()) return json({ error: "name names the team" }, 400);
+        const members = Array.isArray(b.members) ? b.members : [];
+        const known = new Set(d.registry.employees().map((e) => e.id));
+        if (!members.every((m) => typeof m === "string" && known.has(m))) {
+          return json({ error: "members must be employees' ids" }, 400);
+        }
+        const box = b.sandbox as { cpus?: unknown; memory?: unknown } | undefined;
+        if (
+          box !== undefined &&
+          !(
+            Number.isInteger(box.cpus) &&
+            (box.cpus as number) > 0 &&
+            typeof box.memory === "string" &&
+            /^\d+G$/.test(box.memory)
+          )
+        ) {
+          return json({ error: 'sandbox is {"cpus": 6, "memory": "12G"}' }, 400);
+        }
+        // Someone joins one team at a time: joining this one takes them out of any other.
+        for (const t of d.registry.teams()) {
+          if (t.id !== id && t.members.some((m) => members.includes(m))) {
+            d.registry.addTeam({ ...t, members: t.members.filter((m) => !members.includes(m)) });
+          }
+        }
+        d.registry.addTeam({
+          id,
+          name: b.name,
+          members: members as string[],
+          ...(box ? { sandbox: { cpus: box.cpus as number, memory: box.memory as string } } : {}),
+        });
+        return json({ team: d.registry.teams().find((t) => t.id === id) });
+      },
+    ],
+
     ["GET", "/api/projects", async () => json({ projects: d.registry.projects() })],
 
     [
       "PUT",
       "/api/projects/:id",
       async (req, { id = "" }) => {
-        const body = (await req.json()) as { repo?: unknown; checks?: unknown };
+        const body = (await req.json()) as {
+          repo?: unknown;
+          checks?: unknown;
+          mode?: unknown;
+          protectedPaths?: unknown;
+          followUpsPerDay?: unknown;
+        };
         const checks = Array.isArray(body.checks) ? body.checks : [];
         if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$/.test(id)) {
           return json(
@@ -133,8 +182,29 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         if (!checks.length || !checks.every((c) => typeof c === "string" && c.trim())) {
           return json({ error: "checks must be the recipe's commands, in order" }, 400);
         }
-        d.registry.addProject({ id, repo: body.repo, checks });
-        return json({ project: d.registry.project(id) });
+        if (body.mode !== undefined && body.mode !== "direct" && body.mode !== "owner-merges") {
+          return json({ error: 'mode is "direct" or "owner-merges"' }, 400);
+        }
+        const paths = body.protectedPaths;
+        if (
+          paths !== undefined &&
+          !(Array.isArray(paths) && paths.every((x) => typeof x === "string" && x.trim()))
+        ) {
+          return json({ error: "protectedPaths is a list of paths" }, 400);
+        }
+        const perDay = body.followUpsPerDay;
+        if (perDay !== undefined && !(Number.isInteger(perDay) && (perDay as number) >= 0)) {
+          return json({ error: "followUpsPerDay is a whole number" }, 400);
+        }
+        d.registry.addProject({
+          id,
+          repo: body.repo,
+          checks,
+          ...(body.mode ? { mode: body.mode } : {}),
+          ...(paths ? { protectedPaths: paths as string[] } : {}),
+          ...(perDay !== undefined ? { followUpsPerDay: perDay as number } : {}),
+        });
+        return json({ project: d.registry.project(id), policy: d.registry.projectPolicy(id) });
       },
     ],
     [

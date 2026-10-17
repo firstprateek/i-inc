@@ -27,7 +27,7 @@ export interface AppOptions extends ApiOptions {
   /** Where brains and the handbook live: git repos on the host, never pushed. */
   knowledgeDir: string;
   clock: Clock;
-  machines: MachineProvider;
+  machines: FromRegistry<MachineProvider>;
   agent: FromRegistry<Agent>;
   harness: FromRegistry<Harness>;
   /** Branches and PRs on GitHub; absent in demo mode. */
@@ -48,7 +48,7 @@ export async function createApp(o: AppOptions) {
     store: new SqliteEventStore(db),
     registry,
     tickets: new Tickets(db),
-    machines: o.machines,
+    machines: make(o.machines),
     agent: make(o.agent),
     harness: make(o.harness),
     ...(o.workspace ? { workspace: make(o.workspace) } : {}),

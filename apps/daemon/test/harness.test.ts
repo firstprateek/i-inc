@@ -192,3 +192,71 @@ describe("the machine harness", () => {
     expect(result).toMatchObject({ ok: false, conflict: false });
   });
 });
+
+describe("the machine harness in direct mode", () => {
+  const policy = { mode: "direct" as const, protectedPaths: [".github/"], followUpsPerDay: 3 };
+  /** An origin that takes pushes to main, and a worktree on a ticket branch. */
+  function directRepos(file = "file") {
+    const work = repos("ours", "other");
+    const origin = join(work, "..", "origin");
+    git(origin, "config", "receive.denyCurrentBranch", "updateInstead");
+    if (file !== "file") {
+      execFileSync("mkdir", ["-p", join(work, file, "..")]);
+      writeFileSync(join(work, file), "changed\n");
+      git(work, "add", file);
+      git(work, "commit", "-q", "-m", "touch a protected path");
+    }
+    return { work, origin };
+  }
+  const direct = (work: string, recipe = ["true"]) =>
+    new MachineHarness(
+      { recipe: () => recipe, worktree: () => work, github: async () => ({}), policy: () => policy },
+      localScript,
+    );
+
+  it("rebases on main, runs the checks, and pushes to main", async () => {
+    const { work, origin } = directRepos();
+    const result = await direct(work).runGates(ticket);
+    const head = git(work, "rev-parse", "HEAD").trim();
+    expect(result).toEqual({ ok: true, pushed: head });
+    expect(git(origin, "rev-parse", "main").trim()).toBe(head);
+    expect(git(origin, "log", "--format=%s", "main").trim().split("\n")).toEqual(["ours", "theirs", "base"]);
+  });
+
+  it("holds a change to protected paths for the owner, and pushes it once approved", async () => {
+    const { work, origin } = directRepos(".github/workflows/ci.yml");
+    const before = git(origin, "rev-parse", "main").trim();
+    expect(await direct(work).runGates(ticket)).toMatchObject({
+      ok: false,
+      protectedPaths: [".github/workflows/ci.yml"],
+    });
+    expect(git(origin, "rev-parse", "main").trim()).toBe(before);
+    expect(await direct(work).runGates(ticket, { ownerApproved: true })).toMatchObject({ ok: true });
+  });
+
+  it("rebases and tries again when main moves while the checks run", async () => {
+    const { work, origin } = directRepos();
+    const other = join(work, "..", "other-clone");
+    git(join(work, ".."), "clone", "-q", origin, other);
+    const flag = join(work, "..", "moved");
+    // The first check run pushes someone else's commit to main, as another agent might.
+    const sneak = `[ -f ${flag} ] || (cd ${other} && echo late > late.txt && git add late.txt && git commit -qm late && git push -q origin main && touch ${flag})`;
+    const result = await direct(work, [sneak]).runGates(ticket);
+    expect(result).toMatchObject({ ok: true });
+    expect(git(origin, "log", "--format=%s", "main").trim().split("\n")).toEqual([
+      "ours",
+      "late",
+      "theirs",
+      "base",
+    ]);
+  });
+
+  it("reverts a pushed commit on main", async () => {
+    const { work, origin } = directRepos();
+    const result = await direct(work).runGates(ticket);
+    const sha = result.ok ? (result.pushed ?? "") : "";
+    await direct(work).revert(ticket, sha);
+    expect(git(origin, "log", "-1", "--format=%s", "main").trim()).toBe('Revert "ours"');
+    expect(git(origin, "show", "main:file").trim()).toBe("base");
+  });
+});

@@ -4,7 +4,7 @@
 // report stage writes the PR's body and takes it out of draft. Both are safe to repeat: a crash, a
 // handoff or a new machine finds the branch and the PR that are already there.
 import { dirname } from "node:path";
-import type { Employee, PullRequestRef, Ticket, Workspace } from "@i-inc/core";
+import type { Employee, ProjectPolicy, PullRequestRef, Ticket, Workspace } from "@i-inc/core";
 import type { PullRequests, TokenSource } from "./github.ts";
 import type { RunScript } from "./harness.ts";
 import type { Project } from "./registry.ts";
@@ -18,6 +18,8 @@ export interface WorkspaceOptions {
   /** The ticket's worktree in the machine: `workDir`. */
   worktree: (ticketId: string) => string;
   run: RunScript;
+  /** How a project's work reaches main. Absent: owner-merges, with a draft PR. */
+  policy?: (project: string) => ProjectPolicy;
   /** Where the repo is cloned from; tests use a local path. */
   remote?: (repo: string) => string;
 }
@@ -47,15 +49,17 @@ export function openScript(o: {
   name: string;
   email: string;
   message: string;
+  /** Owner-merges mode pushes the branch for a PR; direct mode keeps it local. Default: push. */
+  push?: boolean;
 }): string {
   if (!/^[A-Za-z0-9._/-]+$/.test(o.branch)) throw new Error(`not a branch name: ${o.branch}`);
   const [remote, repoDir, worktree, branch] = [o.remote, o.repoDir, o.worktree, o.branch].map(quote);
   return [
     "set -e",
-    `git config --global user.name ${quote(o.name)}`,
-    `git config --global user.email ${quote(o.email)}`,
     `if [ ! -d ${repoDir}/.git ]; then git clone --quiet ${remote} ${repoDir}; fi`,
     `cd ${repoDir}`,
+    // A team shares one machine, so each worktree carries its own author, not the global config.
+    "git config extensions.worktreeConfig true",
     "git fetch --quiet --prune origin",
     `if ! git -C ${worktree} rev-parse --is-inside-work-tree >/dev/null 2>&1; then`,
     `  if git show-ref --quiet --verify refs/remotes/origin/${o.branch}; then`,
@@ -65,9 +69,15 @@ export function openScript(o: {
     "  fi",
     "fi",
     `cd ${worktree}`,
-    `if [ -z "$(git rev-list origin/main..HEAD)" ]; then git commit --quiet --allow-empty -m ${quote(o.message)}; fi`,
-    `git push --quiet -u origin ${branch}`,
-    "echo @@pushed",
+    `git config --worktree user.name ${quote(o.name)}`,
+    `git config --worktree user.email ${quote(o.email)}`,
+    ...(o.push === false
+      ? ["echo @@ready"]
+      : [
+          `if [ -z "$(git rev-list origin/main..HEAD)" ]; then git commit --quiet --allow-empty -m ${quote(o.message)}; fi`,
+          `git push --quiet -u origin ${branch}`,
+          "echo @@pushed",
+        ]),
   ].join("\n");
 }
 
@@ -84,6 +94,7 @@ export class GitHubWorkspace implements Workspace {
     const { repo } = this.project(ticket);
     const branch = branchName(ticket);
     const worktree = this.o.worktree(ticket.id);
+    const direct = this.o.policy?.(ticket.project).mode === "direct";
     const [token, who] = await Promise.all([this.o.tokens.token(repo), this.o.identity(builder)]);
     const script = openScript({
       remote: this.o.remote?.(repo) ?? `https://github.com/${repo}.git`,
@@ -92,12 +103,15 @@ export class GitHubWorkspace implements Workspace {
       branch,
       ...who,
       message: `chore: start work on ${ticket.title}`,
+      push: !direct,
     });
     const r = await this.o.run(builder.id, script, { GH_TOKEN: token });
-    if (r.code !== 0 || !r.output.includes("@@pushed")) {
+    if (r.code !== 0 || !r.output.includes(direct ? "@@ready" : "@@pushed")) {
       const tail = r.output.trim().split("\n").slice(-5).join("\n");
       throw new Error(`git in ${builder.name}'s machine failed: ${tail}`);
     }
+    // Direct mode: a local branch; the reviewed work is pushed to main at the gates.
+    if (direct) return { branch };
     const pr =
       (await this.o.prs.find(repo, branch)) ??
       (await this.o.prs.openDraft(repo, {
@@ -117,6 +131,7 @@ export class GitHubWorkspace implements Workspace {
 
   async ready(ticket: Ticket, pr: PullRequestRef, report: string): Promise<void> {
     const { repo } = this.project(ticket);
+    if (pr.number === undefined || pr.nodeId === undefined) return; // direct mode: no PR
     await this.o.prs.setBody(repo, pr.number, report);
     if (await this.o.prs.isDraft(repo, pr.number)) await this.o.prs.markReady(repo, pr.nodeId);
   }

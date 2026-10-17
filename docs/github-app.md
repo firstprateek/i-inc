@@ -97,7 +97,16 @@ Neither id is a secret, but they're yours, so they stay out of the repo too.
 
 ## 5. A ruleset on `main`, in each of those repos
 
-For Duet, one command does it, with your own GitHub sign-in:
+Since 2026-10-17 projects default to **direct mode** ([architecture.md](architecture.md)): the bot
+pushes reviewed work straight to `main`, so `main`'s ruleset only blocks force-pushes and deletion.
+That's `duet-ruleset.json` now. The table further down is the **owner-merges** setup, for a project
+that wants every change to be a PR you merge. Change Duet's existing ruleset in place:
+
+```bash
+gh api repos/<owner>/duet/rulesets/<id> --method PUT --input tools/github-app/duet-ruleset.json
+```
+
+For a new repo, one command creates it, with your own GitHub sign-in:
 
 ```bash
 gh api repos/<owner>/duet/rulesets --method POST --input tools/github-app/duet-ruleset.json

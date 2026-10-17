@@ -15,6 +15,11 @@ safety. "You" always means the owner, the one person who runs the company.
 
 **Status:** design (M0). Nothing is built yet.
 
+**Redesigned on 2026-10-17:** a sandbox per team instead of a machine per employee, signed in once
+to each subscription, and reviewed work pushed straight to main by default instead of a pull
+request per ticket. [architecture.md](architecture.md) is the current picture, and wins where it
+differs from this spec; the sections affected (§5 and §6) say so.
+
 ## 1. Why
 
 Agents can now do most of the work on your projects. Getting that work shipped still costs too
@@ -310,6 +315,9 @@ interface with a scripted fake in tests, like the ACP agent.
 
 ### Lenient permissions, hard walls
 
+> Since 2026-10-17, "the machine" is a **team's sandbox**, shared by the team's employees and signed
+> in once to each subscription ([architecture.md](architecture.md)). The walls are unchanged.
+
 - **Inside the machine** the harness runs in its bypass mode: Claude Code bypassPermissions,
   OpenCode allow-all, and Antigravity's equivalent. i.inc's ACP client also approves any
   permission request. The
@@ -387,6 +395,11 @@ from your Request changes notes, so over time it catches what you would have cau
 diff or revert what any employee learned.
 
 ## 6. The In progress loop
+
+> Since 2026-10-17, projects default to **direct mode**: no draft PR, a fresh-context review of at
+> most 2 rounds for every ticket, a push to main at the gates, and CI on main afterwards, with no
+> owner decision (see [architecture.md](architecture.md)). The table below is the **owner-merges**
+> mode, which a project can still choose.
 
 | Stage | Who | What | Exits when |
 | --- | --- | --- | --- |

@@ -31,6 +31,10 @@ export function seedDemo(r: Registry): void {
   r.addAccount({ id: "local", name: "Local" });
   r.addHost({ id: "mini", name: "Mac mini", purchasePrice: 0, idleWatts: 7, busyWatts: 60 });
   r.addContact("dentist@example.com");
+  // The demo shows the owner-merges flow, with its decisions; real projects default to direct.
+  for (const id of ["Duet", "fintrack", "listy", "website", "General"]) {
+    r.addProject({ id, repo: `demo/${id.toLowerCase()}`, checks: ["pnpm test"], mode: "owner-merges" });
+  }
 
   const base = { switchRules: defaultSwitchRules };
   const team: Employee[] = [

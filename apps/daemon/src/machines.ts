@@ -27,14 +27,21 @@ export interface MachineSettings {
    * file is missing, no machine boots and nothing starts in one.
    */
   wallsMarker?: string;
+  /**
+   * The machine an employee works in: its team's shared sandbox, inc-<team> (decided 2026-10-17).
+   * Absent: one machine per employee, inc-<employee>.
+   */
+  machineFor?: (employeeId: Id) => string;
+  /** A machine's size, when its team sets one. Absent: `cpus` and `memory`. */
+  sizeFor?: (machine: string) => { cpus: number; memory: string } | undefined;
 }
 
 export const defaultMachineSettings: MachineSettings = {
   bin: "/usr/local/bin/container",
   image: "local/i-inc-employee:latest",
   user: "employee",
-  cpus: 4,
-  memory: "6G",
+  cpus: 6,
+  memory: "12G",
   wallsMarker: "/var/run/i-inc-walls.ok",
 };
 
@@ -79,8 +86,17 @@ export const machineName = (employeeId: Id) => {
   return `inc-${employeeId}`;
 };
 
+/** The machine an employee works in, under these settings. */
+export const machineOf = (s: MachineSettings, employeeId: Id): string => {
+  machineName(employeeId); // checks the id
+  const name = s.machineFor ? s.machineFor(employeeId) : `inc-${employeeId}`;
+  if (!/^inc-[a-z0-9-]{1,32}$/.test(name)) throw new Error(`not a machine name: ${name}`);
+  return name;
+};
+
 export class AppleMachines implements MachineProvider {
-  private readonly up = new Set<Id>();
+  /** The employees each running machine has working in it; a team's sandbox stops when none are. */
+  private readonly up = new Map<string, Set<Id>>();
 
   constructor(
     private readonly s: MachineSettings = defaultMachineSettings,
@@ -90,8 +106,13 @@ export class AppleMachines implements MachineProvider {
 
   async ensureUp(employeeId: Id): Promise<void> {
     assertWalls(this.s);
-    if (this.up.has(employeeId)) return;
-    const name = machineName(employeeId);
+    const name = machineOf(this.s, employeeId);
+    const working = this.up.get(name);
+    if (working) {
+      working.add(employeeId);
+      return;
+    }
+    const size = this.s.sizeFor?.(name) ?? { cpus: this.s.cpus, memory: this.s.memory };
     try {
       // Boots the machine if it's stopped (0.6 s), and does nothing if it's running.
       await this.boot(name);
@@ -104,9 +125,9 @@ export class AppleMachines implements MachineProvider {
         "--name",
         name,
         "--cpus",
-        String(this.s.cpus),
+        String(size.cpus),
         "--memory",
-        this.s.memory,
+        size.memory,
         "--home-mount",
         "none",
         this.s.image,
@@ -114,7 +135,7 @@ export class AppleMachines implements MachineProvider {
       // Boot it here rather than in its first job.
       await this.boot(name);
     }
-    this.up.add(employeeId);
+    this.up.set(name, new Set([employeeId]));
   }
 
   /**
@@ -137,9 +158,13 @@ export class AppleMachines implements MachineProvider {
     }
   }
 
+  /** Done with the machine for now; it stops once nobody else is working in it. */
   async stop(employeeId: Id): Promise<void> {
-    if (!this.up.delete(employeeId)) return;
-    await this.exec(this.s.bin, ["machine", "stop", machineName(employeeId)]);
+    const name = machineOf(this.s, employeeId);
+    const working = this.up.get(name);
+    if (!working?.delete(employeeId) || working.size > 0) return;
+    this.up.delete(name);
+    await this.exec(this.s.bin, ["machine", "stop", name]);
   }
 
   /**
@@ -161,7 +186,7 @@ export class AppleMachines implements MachineProvider {
 
   /** Employees whose machines this daemon started and hasn't stopped. */
   running(): Id[] {
-    return [...this.up];
+    return [...this.up.values()].flatMap((working) => [...working]);
   }
 }
 
@@ -202,7 +227,7 @@ export function machineLaunch(
     const flags = Object.keys(vars).flatMap((name) => ["-e", name]);
     const child = run(
       s.bin,
-      ["machine", "run", "-i", "-u", s.user, "-n", machineName(employeeId), ...flags, "--", launcher],
+      ["machine", "run", "-i", "-u", s.user, "-n", machineOf(s, employeeId), ...flags, "--", launcher],
       { ...process.env, ...vars },
     );
     const exited = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));

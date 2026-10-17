@@ -320,9 +320,9 @@ describe("Apple container machines", () => {
         "--name",
         "inc-ada",
         "--cpus",
-        "4",
+        "6",
         "--memory",
-        "6G",
+        "12G",
         "--home-mount",
         "none",
         "local/i-inc-employee:latest",
@@ -489,5 +489,38 @@ describe("the walls' marker", () => {
     });
     expect(await m.stopAll()).toEqual(["inc-ada"]);
     expect(calls.at(-1)).toEqual(["machine", "stop", "inc-ada"]);
+  });
+});
+
+describe("a team's sandbox", () => {
+  it("is one machine for the whole team, sized for it, and stops only when nobody is working in it", async () => {
+    const calls: string[][] = [];
+    const team = {
+      ...noWalls,
+      machineFor: () => "inc-engineering",
+      sizeFor: () => ({ cpus: 6, memory: "12G" }),
+    };
+    const m = new AppleMachines(
+      team,
+      async (_bin, args) => {
+        calls.push(args);
+        if (args[1] === "run" && calls.length === 1)
+          throw new Error("Error: notFound: machine inc-engineering");
+        return "";
+      },
+      async () => {},
+    );
+    await m.ensureUp("ada");
+    await m.ensureUp("kit");
+    expect(calls.map((c) => c.slice(0, 2).join(" "))).toEqual([
+      "machine run",
+      "machine create",
+      "machine run",
+    ]);
+    expect(calls[1]).toContain("inc-engineering");
+    await m.stop("ada");
+    expect(calls).toHaveLength(3);
+    await m.stop("kit");
+    expect(calls.at(-1)).toEqual(["machine", "stop", "inc-engineering"]);
   });
 });

@@ -9,7 +9,10 @@ import { configDir, readOwnerOnly } from "./config.ts";
 
 /** Where a session's GitHub token comes from. `repo` is "owner/name". */
 export interface TokenSource {
-  /** "read" for a reviewer or verifier, who checks the branch out but never pushes. */
+  /**
+   * "read" for a reviewer or verifier, who checks the branch out but never pushes. `repo` "*" asks
+   * for every repo the App is installed on: a team sandbox's shared sign-in.
+   */
   token(repo: string, access?: "write" | "read"): Promise<string>;
 }
 
@@ -117,7 +120,7 @@ export class GitHubApp implements TokenSource {
         headers: { authorization: `Bearer ${jwt}` },
         // Only the ticket's repo: with whatever the App was granted there, or read-only.
         body: JSON.stringify({
-          repositories: [checkRepo(repo).split("/")[1]],
+          ...(repo === "*" ? {} : { repositories: [checkRepo(repo).split("/")[1]] }),
           ...(access === "read"
             ? { permissions: { contents: "read", pull_requests: "read", metadata: "read", checks: "read" } }
             : {}),

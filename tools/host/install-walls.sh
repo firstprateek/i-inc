@@ -1,6 +1,7 @@
 #!/bin/sh
 # Installs the walls' boot job (walls.sh) as a LaunchDaemon. Run it on the mini as root, from a copy
 # of the repo's tools folder: sudo sh tools/host/install-walls.sh
+# It also installs inc.i.restart, a restart on the 1st of each month at 05:15.
 # Undo it: sudo launchctl bootout system/inc.i.walls, delete /Library/LaunchDaemons/inc.i.walls.plist,
 # /usr/local/lib/i-inc and /var/run/i-inc-walls.ok, then sudo sh tools/m1/pf/remove.sh.
 set -eu
@@ -12,6 +13,10 @@ install -d -o root -g wheel -m 755 /usr/local/lib/i-inc
 install -o root -g wheel -m 644 "$here/../m1/pf/i-inc-machines.pf" /usr/local/lib/i-inc/i-inc-machines.pf
 install -o root -g wheel -m 755 "$here/walls.sh" /usr/local/lib/i-inc/walls.sh
 install -o root -g wheel -m 644 "$here/inc.i.walls.plist" /Library/LaunchDaemons/inc.i.walls.plist
+# And a monthly restart, for the macOS uptime bug that ran the mini out of ports (inc.i.restart.plist).
+install -o root -g wheel -m 644 "$here/inc.i.restart.plist" /Library/LaunchDaemons/inc.i.restart.plist
+launchctl bootout system/inc.i.restart 2>/dev/null || true
+launchctl bootstrap system /Library/LaunchDaemons/inc.i.restart.plist
 
 launchctl bootout system/inc.i.walls 2>/dev/null || true
 launchctl bootstrap system /Library/LaunchDaemons/inc.i.walls.plist
