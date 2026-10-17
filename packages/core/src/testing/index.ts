@@ -23,6 +23,7 @@ import type {
   HelperModel,
   MachineProvider,
   Ports,
+  SandboxStatus,
   SessionOutcome,
   SessionRequest,
   Workspace,
@@ -53,6 +54,10 @@ export class FakeMachines implements MachineProvider {
   readonly started: Id[] = [];
   readonly stopped: Id[] = [];
   readonly callbacks: { teamId: Id; url: string }[] = [];
+  sandboxSignIns?: Record<Id, { claude: boolean; antigravity: boolean; github: boolean }>;
+  teamMembers?: Record<Id, Id[]> | ((team: Id) => Id[]);
+  sandboxStates?: Record<Id, "running" | "stopped" | "missing">;
+
   async ensureUp(employeeId: Id): Promise<void> {
     this.started.push(employeeId);
   }
@@ -61,6 +66,41 @@ export class FakeMachines implements MachineProvider {
   }
   async deliverCallback(teamId: Id, url: string): Promise<void> {
     this.callbacks.push({ teamId, url });
+  }
+
+  isUp(id: Id): boolean {
+    const starts = this.started.filter((x) => x === id).length;
+    const stops = this.stopped.filter((x) => x === id).length;
+    return starts > stops;
+  }
+
+  async inspectSandbox(team: Id, size: { cpus: number; memory: string }): Promise<SandboxStatus> {
+    const signedIn = this.sandboxSignIns?.[team] ?? {
+      claude: true,
+      antigravity: false,
+      github: true,
+    };
+    if (this.sandboxStates?.[team]) {
+      return {
+        team,
+        machine: `inc-${team}`,
+        state: this.sandboxStates[team],
+        cpus: size.cpus,
+        memory: size.memory,
+        signedIn,
+      };
+    }
+    const members =
+      typeof this.teamMembers === "function" ? this.teamMembers(team) : (this.teamMembers?.[team] ?? []);
+    const running = this.isUp(`inc-${team}`) || this.isUp(team) || members.some((m) => this.isUp(m));
+    return {
+      team,
+      machine: `inc-${team}`,
+      state: running ? "running" : "stopped",
+      cpus: size.cpus,
+      memory: size.memory,
+      signedIn,
+    };
   }
 }
 

@@ -562,3 +562,88 @@ describe("autoRelease policy and automatic releases", () => {
     expect(app.deps.registry.releases()).toHaveLength(1);
   });
 });
+
+describe("GET /api/sandboxes (contract C1)", () => {
+  it("returns empty sandboxes when no teams are registered", async () => {
+    const app = await testApp();
+    const res = await app.call("GET", "/api/sandboxes");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ sandboxes: [] });
+  });
+
+  it("returns sandbox status for each team with default and custom sizes", async () => {
+    const app = await testApp();
+    await app.call("PUT", "/api/teams/devs", { name: "Devs", members: ["ada"] });
+    await app.call("PUT", "/api/teams/infra", {
+      name: "Infra",
+      members: [],
+      sandbox: { cpus: 8, memory: "16G" },
+    });
+
+    const res = await app.call("GET", "/api/sandboxes");
+    expect(res.status).toBe(200);
+    expect(res.body.sandboxes).toHaveLength(2);
+    expect(res.body.sandboxes).toEqual([
+      {
+        team: "devs",
+        machine: "inc-devs",
+        state: "stopped",
+        cpus: 6,
+        memory: "12G",
+        signedIn: { claude: true, antigravity: false, github: true },
+      },
+      {
+        team: "infra",
+        machine: "inc-infra",
+        state: "stopped",
+        cpus: 8,
+        memory: "16G",
+        signedIn: { claude: true, antigravity: false, github: true },
+      },
+    ]);
+  });
+
+  it("reflects running state and custom sign-ins from FakeMachines", async () => {
+    const app = await testApp();
+    await app.call("PUT", "/api/teams/devs", { name: "Devs", members: ["ada"] });
+
+    const machines = app.deps.machines as FakeMachines;
+    machines.sandboxSignIns = {
+      devs: { claude: true, antigravity: true, github: true },
+    };
+    await machines.ensureUp("inc-devs");
+
+    const res = await app.call("GET", "/api/sandboxes");
+    expect(res.status).toBe(200);
+    expect(res.body.sandboxes).toEqual([
+      {
+        team: "devs",
+        machine: "inc-devs",
+        state: "running",
+        cpus: 6,
+        memory: "12G",
+        signedIn: { claude: true, antigravity: true, github: true },
+      },
+    ]);
+  });
+
+  it("falls back gracefully when machines does not implement inspectSandbox", async () => {
+    const app = await testApp();
+    await app.call("PUT", "/api/teams/devs", { name: "Devs", members: ["ada"] });
+
+    (app.deps.machines as { inspectSandbox?: unknown }).inspectSandbox = undefined;
+
+    const res = await app.call("GET", "/api/sandboxes");
+    expect(res.status).toBe(200);
+    expect(res.body.sandboxes).toEqual([
+      {
+        team: "devs",
+        machine: "inc-devs",
+        state: "stopped",
+        cpus: 6,
+        memory: "12G",
+        signedIn: { claude: false, antigravity: false, github: false },
+      },
+    ]);
+  });
+});

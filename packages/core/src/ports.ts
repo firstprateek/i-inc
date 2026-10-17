@@ -13,6 +13,15 @@ export interface EventStore {
   append(ticketId: Id, events: TicketEvent[]): Promise<void>;
 }
 
+export interface SandboxStatus {
+  team: Id;
+  machine: string;
+  state: "running" | "stopped" | "missing";
+  cpus: number;
+  memory: string;
+  signedIn: { claude: boolean; antigravity: boolean; github: boolean };
+}
+
 /** Makes sure an employee's machine is up before a session runs on it. */
 export interface MachineProvider {
   ensureUp(employeeId: Id): Promise<void>;
@@ -20,6 +29,8 @@ export interface MachineProvider {
   stop?(employeeId: Id): Promise<void>;
   /** Delivers an OAuth callback URL into a team's sandbox (e.g. Antigravity sign-in). */
   deliverCallback?(teamId: Id, url: string): Promise<void>;
+  /** Checks sandbox VM state and sign-ins for a team. */
+  inspectSandbox?(team: Id, size: { cpus: number; memory: string }): Promise<SandboxStatus>;
 }
 
 export interface SessionRequest {

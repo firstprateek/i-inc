@@ -22,6 +22,7 @@ import {
   type ProjectRelease,
   type ProposedEdit,
   retry,
+  type SandboxStatus,
 } from "@i-inc/core";
 import type { Daemon, DaemonDeps } from "./daemon.ts";
 import type { Change, Repo } from "./knowledge.ts";
@@ -171,6 +172,30 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     ],
 
     ["GET", "/api/teams", async () => json({ teams: d.registry.teams() })],
+
+    [
+      "GET",
+      "/api/sandboxes",
+      async () => {
+        const sandboxes: SandboxStatus[] = [];
+        for (const t of d.registry.teams()) {
+          const size = t.sandbox ?? { cpus: 6, memory: "12G" };
+          if (d.machines.inspectSandbox) {
+            sandboxes.push(await d.machines.inspectSandbox(t.id, size));
+          } else {
+            sandboxes.push({
+              team: t.id,
+              machine: `inc-${t.id}`,
+              state: "stopped",
+              cpus: size.cpus,
+              memory: size.memory,
+              signedIn: { claude: false, antigravity: false, github: false },
+            });
+          }
+        }
+        return json({ sandboxes });
+      },
+    ],
 
     [
       "PUT",
