@@ -69,7 +69,19 @@ export class IncKnowledge extends Loader<KnowledgeView> {
         flex-direction: column; gap: 10px; }
       .waiting blockquote { margin: 0; padding-left: 12px; border-left: 3px solid var(--line-strong); }
       .row { display: flex; gap: 8px; }
-      @media (max-width: 800px) { .wrap { grid-template-columns: 1fr; } nav { flex-direction: row; overflow-x: auto; } }
+      article, .change > span, .waiting blockquote { overflow-wrap: anywhere; }
+      @media (max-width: 800px) {
+        .head h1 { font-size: 26px; }
+        .wrap { grid-template-columns: 1fr; gap: 16px; }
+        nav { flex-direction: row; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
+        nav::-webkit-scrollbar { display: none; }
+        nav button { flex-shrink: 0; white-space: nowrap; }
+        article { padding: 18px; }
+        section.log { padding: 16px 18px; }
+        /* Links inside a page get a 44px row, so they're easy to hit. */
+        article li a, article p a { display: inline-flex; align-items: center; min-height: 44px; min-width: 44px; }
+        .waiting .row .btn { flex: 1; }
+      }
     `,
   ];
 

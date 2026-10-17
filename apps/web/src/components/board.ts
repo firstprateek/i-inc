@@ -25,7 +25,8 @@ export class IncBoard extends Loader<TicketView[]> {
       .t.waiting { background: var(--needs-surface); border: 2px solid var(--needs-edge); padding: 13px; }
       .row { display: flex; gap: 6px; align-items: center; }
       .grow { flex-grow: 1; }
-      .title { font-size: 15px; font-weight: 700; line-height: 1.3; }
+      .title { font-size: 15px; font-weight: 700; line-height: 1.3; overflow-wrap: anywhere; }
+      .row { flex-wrap: wrap; }
       .strip { display: flex; gap: 3px; }
       .strip i { flex-grow: 1; height: 6px; border-radius: 3px; background: var(--line); }
       .strip i.done { background: var(--ink); }

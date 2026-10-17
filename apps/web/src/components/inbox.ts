@@ -29,7 +29,7 @@ export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyPr
       .item.waiting { background: var(--needs-surface); border: 2px solid var(--needs-edge); padding: 13px 15px; }
       .who { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); }
       .who b { color: var(--ink); }
-      .q { font-size: 17px; font-weight: 700; line-height: 1.3; }
+      .q { font-size: 17px; font-weight: 700; line-height: 1.3; overflow-wrap: anywhere; }
       .actions { display: flex; gap: 8px; }
       .actions .btn:first-child { flex-grow: 1; }
       h2 { font-size: 20px; margin-top: 18px; }
