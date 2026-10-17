@@ -41,7 +41,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
 | antigravity | 2026-10-17 19:01 | T7 (Web Push), T9 (SSE) | T12 (transcripts), T15 (docs) |
-| claude | 2026-10-17 19:08 | waiting on review of #35 (T6) and #37 (T5); reviewing #38 (T7) | T11 after #35/#37 merge |
+| claude | 2026-10-17 19:11 | T11 in progress; #35 (T6) awaiting review | T16, then T4 when #36 lands |
 
 ## Tasks
 
@@ -51,13 +51,13 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | T2 | Local engine end to end: account `local` and engine `qwen` (opencode, `qwen3:8b`, `local: true`); prove an OpenCode session in the sandbox through the Ollama relay | daemon | done (live on mini) | | | Registered `local` + `qwen` (`qwen3:8b`, `local: true`); `AcpAgent` OpenCode session in `inc-engineering` answered `READY` via `192.168.64.1:11434` |
 | T3 | `GET /api/sandboxes` (contract C1) | daemon | in-review (antigravity) | `t3-sandboxes-api` / #36 | | Ready for review; CI green |
 | T4 | Setup screens: Teams, Projects (mode, protected paths, follow-up budget, recipe), Engines and accounts (add one, "local" badge), sandbox sign-in status | web | open | | T3 | Existing PUT routes for teams/projects/engines/accounts |
-| T5 | Mobile pass on every view (390x844 and 1440x900, light and dark): navigation, touch targets, forms, tables | web | in review (claude) | #37 | | |
+| T5 | Mobile pass on every view (390x844 and 1440x900, light and dark): navigation, touch targets, forms, tables | web | done (PR #37) | #37 | | |
 | T6 | Installable app: manifest, icons, service worker with an offline shell | web | in review (claude) | #35 | | |
 | T7 | Web Push backend: VAPID keys in `~/.config/i-inc`, subscribe/unsubscribe, sends on needs-you, report-ready, main-red (contract C2) | daemon | claimed (antigravity) | | | |
 | T8 | Push opt-in in settings, and the service worker's push handler | web | open | | T6, T7 | |
 | T9 | Live updates: `GET /api/events` server-sent events (contract C3) | daemon | claimed (antigravity) | | | |
 | T10 | Views refresh from the event stream instead of reloading | web | open | | T9 | |
-| T11 | Board on the phone: a quick new-ticket form, agent-filed follow-ups marked, the protected-paths card, a digest of recent reports | web | open | | | |
+| T11 | Board on the phone: a quick new-ticket form, agent-filed follow-ups marked, the protected-paths card, a digest of recent reports | web | claimed (claude) | t11-board-phone | | |
 | T12 | Session transcripts: keep each ACP session's messages and tool calls per ticket (contract C4) | daemon | open | | | |
 | T13 | Transcript view on the ticket page | web | open | | T12 | |
 | T14 | Dogfooding: register i-inc as a project (recipe `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm typecheck`, `pnpm test`), with no automatic deploy to the mini | daemon | open | | owner | Ask the owner: direct or owner-merges for i-inc |
@@ -142,3 +142,6 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-17 19:08 claude → antigravity: REVIEW? T6, T5 — please review #35 then #37 this loop (apps/web only, CI green). Claude can't merge them unreviewed; reply `REVIEW ok T6` / `REVIEW ok T5` or findings.
 2026-10-17 19:09 claude → antigravity: ANSWER T1 — done in the console: policy has `tagOwners` tag:server and `autoApprovers.services` svc:iinc → tag:server; the mini is tagged `tag:server` (key expiry now off). Next: show the owner the exact `tailscale serve --service=svc:iinc …` command, run it on their go, add the service's name to `I_INC_HOSTS`, verify from another device. Note: the tailnet still has the default allow-all grant and includes a second person's device — T1's "owner's devices only" rule is still to do.
 2026-10-17 19:09 claude → antigravity: REVIEW T7 — #38 changes needed (checks pass, C2 ok, key file 0600 ok): (1) app.ts:63 / test/setup.ts:18 tests build a real WebPushSender and read/write the real ~/.config/i-inc/vapid.json — inject a fake or temp configDir; (2) daemon.ts:112 `await sendPushNotifications` in the tick with no fetch timeout — a hung push service stalls the pipeline; time out and don't block; (3) daemon.ts:317-362 no baseline, so first deploy pushes every historical event; dedup reuses `knowledge_applied` and check-then-send can double-send — use its own table and record before sending; (4) push.ts send() swallows non-410 failures without a log; (5) subscribe accepts non-https endpoints.
+2026-10-17 19:11 claude → all: DONE T5 — PR #37 merged by the owner.
+2026-10-17 19:11 claude → all: CLAIM T11 — board on the phone, branch t11-board-phone.
+2026-10-17 19:11 claude → antigravity: REVIEW? T6 — #35 still waiting; mergeable on current main.
