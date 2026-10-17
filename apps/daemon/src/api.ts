@@ -119,7 +119,13 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       "PUT",
       "/api/projects/:id",
       async (req, { id = "" }) => {
-        const body = (await req.json()) as { repo?: unknown; checks?: unknown };
+        const body = (await req.json()) as {
+          repo?: unknown;
+          checks?: unknown;
+          mode?: unknown;
+          protectedPaths?: unknown;
+          followUpsPerDay?: unknown;
+        };
         const checks = Array.isArray(body.checks) ? body.checks : [];
         if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$/.test(id)) {
           return json(
@@ -133,8 +139,29 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         if (!checks.length || !checks.every((c) => typeof c === "string" && c.trim())) {
           return json({ error: "checks must be the recipe's commands, in order" }, 400);
         }
-        d.registry.addProject({ id, repo: body.repo, checks });
-        return json({ project: d.registry.project(id) });
+        if (body.mode !== undefined && body.mode !== "direct" && body.mode !== "owner-merges") {
+          return json({ error: 'mode is "direct" or "owner-merges"' }, 400);
+        }
+        const paths = body.protectedPaths;
+        if (
+          paths !== undefined &&
+          !(Array.isArray(paths) && paths.every((x) => typeof x === "string" && x.trim()))
+        ) {
+          return json({ error: "protectedPaths is a list of paths" }, 400);
+        }
+        const perDay = body.followUpsPerDay;
+        if (perDay !== undefined && !(Number.isInteger(perDay) && (perDay as number) >= 0)) {
+          return json({ error: "followUpsPerDay is a whole number" }, 400);
+        }
+        d.registry.addProject({
+          id,
+          repo: body.repo,
+          checks,
+          ...(body.mode ? { mode: body.mode } : {}),
+          ...(paths ? { protectedPaths: paths as string[] } : {}),
+          ...(perDay !== undefined ? { followUpsPerDay: perDay as number } : {}),
+        });
+        return json({ project: d.registry.project(id), policy: d.registry.projectPolicy(id) });
       },
     ],
     [

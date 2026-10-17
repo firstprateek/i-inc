@@ -104,10 +104,10 @@ describe("a quota pause", () => {
 });
 
 describe("an engine switch partway through a stage", () => {
-  it("moves a stuck builder to its fallback after 3 failed check runs, keeping the branch and plan", async () => {
+  it("moves a stuck builder to its fallback after 5 failed check runs, keeping the branch and plan", async () => {
     const p = ports();
     const red = { green: false, failures: ["csv.test.ts: parses 03/04/2026"] };
-    p.harness.checks.push(red, red, red);
+    p.harness.checks.push(red, red, red, red, red);
 
     const result = await runTicket(
       p,
@@ -117,12 +117,12 @@ describe("an engine switch partway through a stage", () => {
     expect(result.status).toBe("ready");
     if (result.status !== "ready") return;
     expect(result.report.engines).toBe(
-      "started on Claude Sonnet; moved to Gemini 3.1 Pro for checks after 3 failed check runs",
+      "started on Claude Sonnet; moved to Gemini 3.1 Pro for checks after 5 failed check runs",
     );
 
     const afterSwitch = p.agent.calls.find((c) => c.employee.id === "kit" && c.engine.id === "gemini");
     expect(afterSwitch?.stage).toBe("checks");
-    expect(afterSwitch?.brief).toContain("Engine switched from sonnet: 3 failed check runs.");
+    expect(afterSwitch?.brief).toContain("Engine switched from sonnet: 5 failed check runs.");
     expect(afterSwitch?.brief).toContain("Plan:");
     expect(afterSwitch?.brief).toContain("csv.test.ts: parses 03/04/2026");
   });
@@ -130,12 +130,12 @@ describe("an engine switch partway through a stage", () => {
   it("fails honestly, naming what was tried, when there is no fallback left", async () => {
     const p = ports();
     const red = { green: false, failures: ["lint: 2 errors"] };
-    p.harness.checks.push(red, red, red, red, red, red);
+    p.harness.checks.push(...Array.from({ length: 10 }, () => red));
 
     const result = await runTicket(p, refundsTicket({ assignee: "kit" }));
     expect(result).toEqual({
       status: "failed",
-      reason: "3 failed check runs",
+      reason: "5 failed check runs",
       tried: ["Claude Sonnet", "Gemini 3.1 Pro"],
     });
   });

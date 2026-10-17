@@ -27,7 +27,7 @@ export function ticketView(
 ): TicketView {
   const assigneeId = s.assignee ?? r.ticket.assignee;
   const assignee = assigneeId ? personOf(registry, assigneeId) : null;
-  const plan = planFor(r.ticket).stages;
+  const plan = planFor(r.ticket, registry.projectPolicy(r.ticket.project)).stages;
   const stages = plan.map((id) => ({
     id,
     state: s.finished.includes(id)
@@ -103,7 +103,9 @@ export function liveLine(events: TicketEvent[], registry: Registry): string {
             ? "Disagreement: both sides wait for you"
             : e.ask.kind === "proposals"
               ? `${e.ask.items.length} ${e.ask.items.length === 1 ? "proposal waits" : "proposals wait"} for you`
-              : `Stuck: ${e.ask.reason}`;
+              : e.ask.kind === "protected-paths"
+                ? `Protected paths wait for your OK: ${e.ask.paths.join(", ")}`
+                : `Stuck: ${e.ask.reason}`;
       case "report-ready":
         return "Report ready";
       case "failed":

@@ -1,10 +1,20 @@
 // Fakes for every port, so the whole pipeline runs in tests without spending tokens.
 import type { TicketEvent } from "../events.ts";
-import type { Duty, Employee, Engine, Id, PullRequestRef, Ticket } from "../model.ts";
+import {
+  type Duty,
+  defaultProjectPolicy,
+  type Employee,
+  type Engine,
+  type Id,
+  type ProjectPolicy,
+  type PullRequestRef,
+  type Ticket,
+} from "../model.ts";
 import type {
   Agent,
   ChatSession,
   ChecksResult,
+  CiResult,
   Clock,
   Company,
   EventStore,
@@ -175,9 +185,21 @@ export class FakeHarness implements Harness {
     this.checkRuns++;
     return this.checksFor.get(ticket.id)?.shift() ?? this.checks.shift() ?? { green: true, failures: [] };
   }
-  async runGates(_: Ticket): Promise<GatesResult> {
+  /** What each gates run was told: whether the owner approved protected paths. */
+  readonly gateOpts: { ownerApproved?: boolean }[] = [];
+  async runGates(_: Ticket, opts: { ownerApproved?: boolean } = {}): Promise<GatesResult> {
     this.gateRuns++;
+    this.gateOpts.push(opts);
     return this.gates.shift() ?? { ok: true };
+  }
+  /** CI results on commits pushed to main, in order; green when the queue is empty. */
+  readonly ci: CiResult[] = [];
+  async watchCi(_: Ticket, _sha: string): Promise<CiResult> {
+    return this.ci.shift() ?? { ok: true };
+  }
+  readonly reverted: string[] = [];
+  async revert(_: Ticket, sha: string): Promise<void> {
+    this.reverted.push(sha);
   }
   /** What briefs say about the machine and the checks. */
   description: string[] = [];
@@ -217,13 +239,24 @@ export class FakeChat implements ChatSession {
 
 export class FakeCompany implements Company {
   private readonly employees = new Map<Id, Employee>();
-  private readonly engines = new Map<Id, Engine>();
+  private readonly engineMap = new Map<Id, Engine>();
   /** The owner's contacts, for outbound rules. */
   readonly contacts: string[] = [];
+  /**
+   * Every project's policy. The fakes default to the owner-merges flow most tests were written for;
+   * direct-mode tests set `mode: "direct"`.
+   */
+  policy: ProjectPolicy = { ...defaultProjectPolicy, mode: "owner-merges" };
 
   constructor(employees: Employee[], engines: Engine[]) {
     for (const e of employees) this.employees.set(e.id, e);
-    for (const e of engines) this.engines.set(e.id, e);
+    for (const e of engines) this.engineMap.set(e.id, e);
+  }
+  projectPolicy(_project: string): ProjectPolicy {
+    return this.policy;
+  }
+  engines(): Engine[] {
+    return [...this.engineMap.values()];
   }
   employee(id: Id): Employee {
     const e = this.employees.get(id);
@@ -231,7 +264,7 @@ export class FakeCompany implements Company {
     return e;
   }
   engine(id: Id): Engine {
-    const e = this.engines.get(id);
+    const e = this.engineMap.get(id);
     if (!e) throw new Error(`no engine ${id}`);
     return e;
   }

@@ -66,6 +66,10 @@ export interface TicketState {
   pr: PullRequestRef | null;
   /** Whose machine has the ticket's worktree; a handoff makes a new one in the new builder's. */
   prFor: Id | null;
+  /** Direct mode: the last commit this ticket pushed to main. */
+  pushed: string | null;
+  /** Direct mode: CI went red on a commit this ticket pushed, since when. */
+  mainRed: { sha: string; since: number; reason: string } | null;
   /** Time spent running, leaving out time paused, failed or waiting on the owner. */
   workedMs: number;
   /** When the last event happened, for `workedMs`. */
@@ -112,6 +116,8 @@ export function emptyState(): TicketState {
     prFor: null,
     workedMs: 0,
     lastAt: null,
+    pushed: null,
+    mainRed: null,
   };
 }
 
@@ -209,6 +215,20 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
       return { ...s, interrupted: false, proposals: { auto: e.auto, ask: e.ask, off: e.off } };
     case "proposals-decided":
     case "policy-decided":
+      return s;
+    case "pushed":
+      return { ...s, pushed: e.sha };
+    case "main-red":
+      return {
+        ...s,
+        fixDue: true,
+        mainRed: { sha: s.mainRed?.sha ?? e.sha, since: s.mainRed?.since ?? e.at, reason: e.reason },
+      };
+    case "reverted":
+      return { ...s, mainRed: null, fixDue: false };
+    case "ci-green":
+      return { ...s, mainRed: null };
+    case "follow-ups":
       return s;
     case "retried":
       return s.status === "failed"

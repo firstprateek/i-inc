@@ -1,5 +1,5 @@
 // Stages are data, set per effort (spec §6, "Effort sets how far the loop goes").
-import type { Duty, Effort, Ticket } from "./model.ts";
+import { type Duty, defaultProjectPolicy, type Effort, type ProjectPolicy, type Ticket } from "./model.ts";
 
 export type StageId =
   | "pickup"
@@ -67,9 +67,31 @@ export const orientationPlan: StagePlan = {
   planGate: "never",
 };
 
+/**
+ * Direct mode (decided 2026-10-17): every code ticket is reviewed by a fresh pair of eyes, for at
+ * most 2 rounds, and nothing waits for the owner except protected paths. The gates push to main.
+ */
+export const directPlans: Record<Effort, StagePlan> = {
+  low: {
+    stages: ["pickup", "build", "checks", "review", "gates", "report"],
+    reviewRounds: 2,
+    planGate: "never",
+  },
+  medium: {
+    stages: ["pickup", "plan", "build", "checks", "prove", "review", "gates", "report"],
+    reviewRounds: 2,
+    planGate: "never",
+  },
+  high: {
+    stages: ["pickup", "plan", "build", "checks", "prove", "review", "gates", "report"],
+    reviewRounds: 2,
+    planGate: "never",
+  },
+};
+
 /** Ticket kinds are data: code tickets follow their effort's plan, errands and orientation their own. */
-export function planFor(ticket: Ticket): StagePlan {
+export function planFor(ticket: Ticket, policy: ProjectPolicy = defaultProjectPolicy): StagePlan {
   if (ticket.type === "errand") return errandPlan;
   if (ticket.type === "orientation") return orientationPlan;
-  return stagePlans[ticket.effort];
+  return (policy.mode === "direct" ? directPlans : stagePlans)[ticket.effort];
 }

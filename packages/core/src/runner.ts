@@ -3,10 +3,20 @@
 // runTicket takes one step at a time: fold the ticket's events, decide the next step, do it, append
 // what happened, repeat. Nothing lives in memory between steps, so after a crash, a quota pause or
 // an owner's answer, calling runTicket again carries on from the last event.
-import { brief } from "./brief.ts";
+import { brief, freshBrief } from "./brief.ts";
 import { engineAllowed, engineFor, nextFallback } from "./engines.ts";
 import type { Decision, Finding, HelperDuty, NeedsYou, TicketEvent } from "./events.ts";
-import type { Duty, Employee, Id, KnowledgeEdit, Proposal, Ticket } from "./model.ts";
+import {
+  type Duty,
+  defaultProjectPolicy,
+  type Employee,
+  type FollowUp,
+  type Id,
+  type KnowledgeEdit,
+  type ProjectPolicy,
+  type Proposal,
+  type Ticket,
+} from "./model.ts";
 import { decideOutbound } from "./outbound.ts";
 import type { Ports } from "./ports.ts";
 import { assembleReport, type Report, reportMarkdown } from "./report.ts";
@@ -28,6 +38,8 @@ const riskyAreas = /\b(schema|migration|auth|public api|dependenc|ci\b|workflow)
 const maxProofFailures = 2;
 /** A rebase conflict may be resolved once; if it comes back, the ticket fails honestly. */
 const maxGateConflicts = 2;
+/** Direct mode: how long main may stay red after this ticket's push before the push is reverted. */
+const redMainLimitMs = 2 * 60 * 60_000;
 /** Guards against a bug that makes no progress. A healthy ticket takes a few dozen steps. */
 const maxSteps = 500;
 
@@ -50,13 +62,15 @@ interface Step {
   opts: RunOptions;
   ticket: Ticket;
   plan: StagePlan;
+  policy: ProjectPolicy;
   s: TicketState;
   builder: Employee;
   emit: (...events: TicketEvent[]) => Promise<void>;
 }
 
 export async function runTicket(p: Ports, original: Ticket, opts: RunOptions = {}): Promise<RunResult> {
-  const plan = planFor(original);
+  const policy = p.company.projectPolicy?.(original.project) ?? defaultProjectPolicy;
+  const plan = planFor(original, policy);
   const emit = (...events: TicketEvent[]) => p.store.append(original.id, events);
 
   for (let i = 0; i < maxSteps; i++) {
@@ -78,7 +92,7 @@ export async function runTicket(p: Ports, original: Ticket, opts: RunOptions = {
     if (s.status === "needs-you" && s.needsYou) return { status: "needs-you", ask: s.needsYou };
     if (s.waitingFor) return { status: "waiting", duty: s.waitingFor.duty };
     if (s.paused && now < s.paused.until) {
-      if (await fallBackFromEmptyAccount({ p, opts, ticket, plan, s, builder, emit })) continue;
+      if (await fallBackFromEmptyAccount({ p, opts, ticket, plan, policy, s, builder, emit })) continue;
       return { status: "paused", until: s.paused.until };
     }
 
@@ -90,7 +104,7 @@ export async function runTicket(p: Ports, original: Ticket, opts: RunOptions = {
       await emit({ type: "stage-started", at: now, stage });
       continue;
     }
-    await stageSteps[stage]({ p, opts, ticket, plan, s, builder, emit });
+    await stageSteps[stage]({ p, opts, ticket, plan, policy, s, builder, emit });
   }
   throw new Error(`ticket ${original.id} made no progress in ${maxSteps} steps`);
 }
@@ -324,22 +338,36 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
       return;
     }
 
+    const direct = c.policy.mode === "direct";
     const needsVerdict = r.round === 0 || (r.addressed && r.round < c.plan.reviewRounds);
     if (needsVerdict) {
-      const reviewer = await helper(c, "review");
-      if (reviewer === "none") {
+      const seat = direct ? await reviewSeat(c) : await helper(c, "review");
+      if (seat === "none") {
         await c.emit(finished(c, "review", "no one on the team has the review duty"));
         return;
       }
-      if (reviewer === "wait") return;
-      if (reviewer.id === c.ticket.assignee) throw new Error("the reviewer must never be the builder");
+      if (seat === "wait") return;
+      const reviewer = "employee" in seat ? seat.employee : seat;
+      if (!direct && reviewer.id === c.ticket.assignee)
+        throw new Error("the reviewer must never be the builder");
+      const shape =
+        '{"approved": boolean, "findings":[{"severity":"blocking"|"should-fix"|"nit","where","text"}]}';
+      const earlier = r.findings.map((f) => `- [${f.severity}] ${f.where}: ${f.text}`).join("\n");
+      const task = direct
+        ? r.round === 0
+          ? `Review this change with fresh eyes. It's the diff of this folder against main: \`git diff origin/main\`, committed or not. Run what you need, but don't change any files. Reply as JSON: ${shape}.`
+          : `Re-review this change: the builder addressed your earlier findings, below. Check the diff in this folder against main again; don't change any files. Reply as JSON: ${shape}.\nEarlier findings:\n${earlier}`
+        : r.round === 0
+          ? `Check out the branch in your machine and run it. Reply as JSON: ${shape}, checking the builder's claims against the diff.`
+          : "Re-review only what changed since your last round, in the same JSON shape.";
       const out = await session(
         c,
         "review",
         reviewer,
-        r.round === 0
-          ? 'Check out the branch in your machine and run it. Reply as JSON: {"approved": boolean, "findings":[{"severity","where","text"}]}, checking the builder\'s claims against the diff.'
-          : "Re-review only what changed since your last round, in the same JSON shape.",
+        task,
+        "employee" in seat
+          ? { fresh: true, ...(seat.engineId ? { engineId: seat.engineId } : {}) }
+          : { fresh: direct },
       );
       if (out === null) return;
       const verdict = parseJson<{ approved: boolean; findings: Finding[] }>(out);
@@ -377,7 +405,18 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
       return;
     }
 
-    // Addressed and out of rounds: an open disagreement goes to the owner, summarized; otherwise go on.
+    // Addressed and out of rounds. Direct mode goes on after 2 rounds, noting any open disagreement
+    // for the report; otherwise it goes to the owner, summarized.
+    if (r.disputed && c.policy.mode === "direct") {
+      await c.emit(
+        finished(
+          c,
+          "review",
+          `went ahead after ${r.round} review rounds; the builder disputed: ${r.disputed}`,
+        ),
+      );
+      return;
+    }
     if (r.disputed) {
       await c.emit(
         needsYou(c, "review", {
@@ -392,6 +431,7 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
   },
 
   async gates(c) {
+    if (c.policy.mode === "direct") return directGates(c);
     if (c.s.fixDue) {
       if (c.s.gateConflicts >= maxGateConflicts) {
         await c.emit(failed(c, "gates", "the rebase on main conflicted again after a fix"));
@@ -417,6 +457,7 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
   },
 
   async report(c) {
+    if (c.policy.mode === "direct") return directReport(c);
     const out = await session(
       c,
       "build",
@@ -476,6 +517,121 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
 };
 
 /**
+ * Direct mode's reviewer (decided 2026-10-17): another employee with the review duty if there is one;
+ * otherwise a fresh session in the builder's seat, on a different engine from the builder's when the
+ * company has one. Either way the reviewer sees only the ticket and the diff.
+ */
+async function reviewSeat(c: Step): Promise<{ employee: Employee; engineId?: Id } | Employee | "wait"> {
+  const other = await helper(c, "review");
+  if (other !== "none") return other;
+  const own = engineFor(c.builder, "build", c.s, true);
+  const ownEngine = c.p.company.engine(own);
+  const different = (c.p.company.engines?.() ?? []).find(
+    (e) =>
+      e.id !== own &&
+      (e.harness !== ownEngine.harness || e.accountId !== ownEngine.accountId) &&
+      engineAllowed(c.ticket, e) &&
+      !c.s.paused,
+  );
+  return { employee: c.builder, ...(different ? { engineId: different.id } : {}) };
+}
+
+/**
+ * Direct mode's gates: protected paths wait for the owner's OK; then rebase on main, checks, and a
+ * push to main; then CI on that commit. Red CI makes the builder fix it, and if main is still red 2
+ * hours after the push, the push is reverted and the ticket fails honestly.
+ */
+async function directGates(c: Step): Promise<void> {
+  const at = c.p.clock.now();
+  const red = c.s.mainRed;
+  if (red && at - red.since > redMainLimitMs) {
+    if (c.p.harness.revert) await c.p.harness.revert(c.ticket, red.sha);
+    await c.emit(
+      { type: "reverted", at, sha: red.sha },
+      failed(
+        c,
+        "gates",
+        `main stayed red for 2 hours after ${red.sha.slice(0, 7)}, so it was reverted: ${red.reason}`,
+      ),
+    );
+    return;
+  }
+  if (c.s.fixDue) {
+    if (!red && c.s.gateConflicts >= maxGateConflicts) {
+      await c.emit(failed(c, "gates", "the rebase on main conflicted again after a fix"));
+      return;
+    }
+    const out = await session(
+      c,
+      "build",
+      c.builder,
+      red
+        ? `CI failed on main after your push (${red.sha.slice(0, 7)}): ${red.reason}. Fix it here; i.inc pushes the fix straight to main. Main is red until then.`
+        : "The rebase on main conflicted. Resolve it and keep the checks green.",
+    );
+    if (out !== null) await c.emit(checkpoint(c, "gates", out));
+    return;
+  }
+  const answer = c.s.lastAnswer?.answer;
+  if (answer === "reject") {
+    await c.emit(failed(c, "gates", "the owner declined the change to protected paths"));
+    return;
+  }
+  const g = await c.p.harness.runGates(c.ticket, { ownerApproved: answer === "approve" });
+  if (!g.ok && g.protectedPaths?.length) {
+    await c.emit(needsYou(c, "gates", { kind: "protected-paths", paths: g.protectedPaths }));
+    return;
+  }
+  if (!g.ok) {
+    await c.emit({ type: "gates-ran", at, ok: false, conflict: g.conflict, reason: g.reason });
+    if (!g.conflict) await c.emit(failed(c, "gates", g.reason));
+    return;
+  }
+  const events: TicketEvent[] = [{ type: "gates-ran", at, ok: true, conflict: false }];
+  if (g.pushed) events.push({ type: "pushed", at, sha: g.pushed });
+  await c.emit(...events);
+  if (g.pushed && c.p.harness.watchCi) {
+    const ci = await c.p.harness.watchCi(c.ticket, g.pushed);
+    const now = c.p.clock.now();
+    if (!ci.ok) {
+      await c.emit({ type: "main-red", at: now, sha: g.pushed, reason: ci.reason });
+      return;
+    }
+    await c.emit({ type: "ci-green", at: now, sha: g.pushed });
+  }
+  await c.emit(finished(c, "gates"));
+}
+
+/**
+ * Direct mode's report: it goes to the board (the work is on main already), with up to 3 follow-up
+ * tickets the builder noticed, and the ticket closes without waiting for the owner.
+ */
+async function directReport(c: Step): Promise<void> {
+  const out = await session(
+    c,
+    "build",
+    c.builder,
+    'Your work is on main. Write the report: what changed, why this way, risk, and the calls the owner might overrule. Then list up to 3 follow-up tickets you noticed but didn\'t do, only ones worth doing. Reply as JSON: {"report": "...", "followUps":[{"title","doneWhen":["..."],"type":"fix"|"feat"|"chore","effort":"low"|"medium"|"high","reason"}]}.',
+  );
+  if (out === null) return;
+  const parsed = parseJson<{ report?: string; followUps?: FollowUp[] }>(out);
+  const report = parsed?.report?.trim() || out;
+  const followUps = (parsed?.followUps ?? [])
+    .filter((f) => f?.title && Array.isArray(f.doneWhen))
+    .slice(0, 3);
+  const at = c.p.clock.now();
+  await c.emit(
+    finished(c, "report", report),
+    { type: "report-ready", at, summary: report },
+    ...(followUps.length
+      ? [{ type: "follow-ups" as const, at, employeeId: c.builder.id, tickets: followUps }]
+      : []),
+    // Nothing waits for the owner: the work is on main, and the retro follows.
+    { type: "owner-decided", at, decision: "approve" },
+  );
+}
+
+/**
  * The reviewer or verifier for this ticket: the one already assigned, or "none" when no one else has
  * the duty. Otherwise "wait": the runner picked one itself, or asked the scheduler for one.
  */
@@ -494,10 +650,16 @@ async function helper(c: Step, duty: HelperDuty): Promise<Employee | "none" | "w
 }
 
 /** Runs one session. Returns its output, or null when it paused, switched engine, escalated or failed. */
-async function session(c: Step, duty: Duty, employee: Employee, task: string): Promise<string | null> {
+async function session(
+  c: Step,
+  duty: Duty,
+  employee: Employee,
+  task: string,
+  o: { engineId?: Id; fresh?: boolean } = {},
+): Promise<string | null> {
   const stage = c.s.active as StageId;
   const isAssignee = employee.id === c.ticket.assignee;
-  const engineId = engineFor(employee, duty, c.s, isAssignee);
+  const engineId = o.engineId ?? engineFor(employee, duty, c.s, isAssignee);
   const engine = c.p.company.engine(engineId);
   if (!engineAllowed(c.ticket, engine)) {
     await c.emit(failed(c, stage, `${engine.model} is not a local engine, and errands carry home data`));
@@ -511,7 +673,9 @@ async function session(c: Step, duty: Duty, employee: Employee, task: string): P
     if (!pr) return null;
     await c.emit(pr);
   }
-  const text = brief(c.ticket, stage, c.s, task, c.p.harness.describe?.(c.ticket), isAssignee);
+  const text = o.fresh
+    ? freshBrief(c.ticket, stage, task, c.p.harness.describe?.(c.ticket))
+    : brief(c.ticket, stage, c.s, task, c.p.harness.describe?.(c.ticket), isAssignee && duty !== "review");
   await c.emit({
     type: "session-started",
     at: c.p.clock.now(),

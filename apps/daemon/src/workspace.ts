@@ -117,6 +117,7 @@ export class GitHubWorkspace implements Workspace {
 
   async ready(ticket: Ticket, pr: PullRequestRef, report: string): Promise<void> {
     const { repo } = this.project(ticket);
+    if (pr.number === undefined || pr.nodeId === undefined) return; // direct mode: no PR
     await this.o.prs.setBody(repo, pr.number, report);
     if (await this.o.prs.isDraft(repo, pr.number)) await this.o.prs.markReady(repo, pr.nodeId);
   }

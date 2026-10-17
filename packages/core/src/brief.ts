@@ -19,11 +19,16 @@ export function brief(
     ...ticket.doneWhen.map((d) => `- ${d}`),
     `Stage: ${stage}. Task: ${task}`,
   ];
-  if (state.pr) {
+  if (state.pr?.url) {
     lines.push(
       builds
         ? `Branch: ${state.pr.branch}, with draft PR ${state.pr.url}. Commit to it and push.`
         : `Branch: ${state.pr.branch}, with draft PR ${state.pr.url}. Check it out in your machine; don't push to it.`,
+    );
+  } else if (state.pr) {
+    // Direct mode: the branch stays local, and i.inc pushes the reviewed work to main.
+    lines.push(
+      `Branch: ${state.pr.branch}, local, in this folder. Commit to it, but don't push: after a review, i.inc pushes it to main.`,
     );
   }
   if (state.interruptedByOwner) {
@@ -69,4 +74,18 @@ export function brief(
   if (delivered.length)
     lines.push("Messages from the owner:", ...delivered.slice(-5).map((m) => `- ${m.text}`));
   return lines.join("\n");
+}
+
+/**
+ * A reviewer's brief in direct mode: the ticket and the task only, with none of the builder's plan,
+ * notes or history, so the review comes with fresh eyes (decided 2026-10-17).
+ */
+export function freshBrief(ticket: Ticket, stage: StageId, task: string, machine: string[] = []): string {
+  return [
+    `Ticket #${ticket.id} [${ticket.type}] ${ticket.title} · ${ticket.project}`,
+    "Done when:",
+    ...ticket.doneWhen.map((d) => `- ${d}`),
+    `Stage: ${stage}. Task: ${task}`,
+    ...(machine.length ? ["Your machine and the checks:", ...machine.map((m) => `- ${m}`)] : []),
+  ].join("\n");
 }

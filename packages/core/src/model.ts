@@ -37,7 +37,7 @@ export interface SwitchRules {
 
 export const defaultSwitchRules: SwitchRules = {
   outOfTokens: { action: "wait" },
-  checksFailedBeforeSwitch: 3,
+  checksFailedBeforeSwitch: 5,
   onStuck: "switch",
 };
 
@@ -124,13 +124,47 @@ export interface KnowledgeEdit {
 /** An orientation is a new hire's first ticket: read the handbook and projects, write brain pages. */
 export type TicketType = "fix" | "feat" | "chore" | "errand" | "orientation";
 
-/** A code ticket's pull request, as pick-up opened it (spec §6, stage 1). */
+/**
+ * A code ticket's branch, as pick-up made it (spec §6, stage 1). In owner-merges mode it also has a
+ * draft pull request; in direct mode the branch stays local and its work is pushed to main.
+ */
 export interface PullRequestRef {
-  number: number;
-  url: string;
-  /** GitHub's id for it, which marking it ready needs. */
-  nodeId: string;
   branch: string;
+  number?: number;
+  url?: string;
+  /** GitHub's id for the PR, which marking it ready needs. */
+  nodeId?: string;
+}
+
+/** How a project's work reaches main (decided 2026-10-17). */
+export type MergeMode = "direct" | "owner-merges";
+
+export interface ProjectPolicy {
+  /**
+   * direct: after a fresh-context review (at most 2 rounds) the builder's work is pushed straight
+   * to main. owner-merges: a pull request the owner reviews and merges.
+   */
+  mode: MergeMode;
+  /** Paths whose changes wait for the owner's OK before reaching main (prefixes, or exact files). */
+  protectedPaths: string[];
+  /** Follow-up tickets agents may file for themselves per day. */
+  followUpsPerDay: number;
+}
+
+export const defaultProjectPolicy: ProjectPolicy = {
+  mode: "direct",
+  protectedPaths: [".github/", "release-please-config.json", ".release-please-manifest.json"],
+  followUpsPerDay: 3,
+};
+
+/** A ticket an agent proposes for itself, from what it noticed while working. */
+export interface FollowUp {
+  title: string;
+  doneWhen: string[];
+  type: "fix" | "feat" | "chore";
+  effort: Effort;
+  /** Why it's worth doing. */
+  reason: string;
 }
 export type Effort = "low" | "medium" | "high";
 
@@ -143,4 +177,6 @@ export interface Ticket {
   doneWhen: string[];
   assignee: Id;
   labels?: string[];
+  /** The agent that filed it, for a follow-up; absent when the owner did. */
+  createdBy?: Id;
 }
