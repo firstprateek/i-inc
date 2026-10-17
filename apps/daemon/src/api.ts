@@ -26,6 +26,7 @@ import {
 } from "@i-inc/core";
 import type { Daemon, DaemonDeps } from "./daemon.ts";
 import type { Change, Repo } from "./knowledge.ts";
+import type { PushSubscription } from "./push.ts";
 import type { NewTicket } from "./tickets.ts";
 import {
   deskView,
@@ -261,6 +262,34 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           return json({ error: "expected an http://127.0.0.1:<port>/... callback URL" }, 400);
         }
         await d.machines.deliverCallback?.(id, b.url);
+        return json({ ok: true });
+      },
+    ],
+
+    ["GET", "/api/push/key", async () => json({ publicKey: d.push?.publicKey() ?? "" })],
+
+    [
+      "POST",
+      "/api/push/subscribe",
+      async (req) => {
+        const b = (await req.json()) as Partial<PushSubscription>;
+        if (!b || typeof b.endpoint !== "string" || !b.endpoint.trim()) {
+          return json({ error: "endpoint is required" }, 400);
+        }
+        await d.push?.subscribe(b as PushSubscription);
+        return json({ ok: true });
+      },
+    ],
+
+    [
+      "POST",
+      "/api/push/unsubscribe",
+      async (req) => {
+        const b = (await req.json()) as { endpoint?: unknown };
+        if (!b || typeof b.endpoint !== "string" || !b.endpoint.trim()) {
+          return json({ error: "endpoint is required" }, 400);
+        }
+        await d.push?.unsubscribe(b.endpoint.trim());
         return json({ ok: true });
       },
     ],

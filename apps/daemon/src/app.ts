@@ -14,6 +14,7 @@ import { ChatLog } from "./chat.ts";
 import { Daemon, type DaemonDeps } from "./daemon.ts";
 import { openDb } from "./db.ts";
 import { KnowledgeStore } from "./knowledge.ts";
+import { type PushService, WebPushSender } from "./push.ts";
 import { Registry } from "./registry.ts";
 import { migrate } from "./schema.ts";
 import { SqliteEventStore } from "./store.ts";
@@ -35,6 +36,8 @@ export interface AppOptions extends ApiOptions {
   helper: HelperModel;
   chat: ChatSession;
   log?: (msg: string) => void;
+  push?: FromRegistry<PushService>;
+  configDir?: string;
 }
 
 export async function createApp(o: AppOptions) {
@@ -57,6 +60,7 @@ export async function createApp(o: AppOptions) {
     chatLog: new ChatLog(db),
     knowledge: new KnowledgeStore(o.knowledgeDir),
     db,
+    push: o.push ? make(o.push) : new WebPushSender(registry, o.configDir ? { configDir: o.configDir } : {}),
     ...(o.log ? { log: o.log } : {}),
   };
   const daemon = new Daemon(deps);

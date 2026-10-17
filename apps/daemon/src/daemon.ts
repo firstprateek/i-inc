@@ -22,6 +22,7 @@ import {
   runTicket,
   type Snapshot,
   schedule,
+  type Ticket,
   type TicketEvent,
   type TicketState,
   type Waiting,
@@ -30,6 +31,7 @@ import {
 import type { ChatLog } from "./chat.ts";
 import type { Db } from "./db.ts";
 import type { KnowledgeStore } from "./knowledge.ts";
+import type { NotificationPayload, PushService } from "./push.ts";
 import type { Registry } from "./registry.ts";
 import type { SqliteEventStore } from "./store.ts";
 import type { TicketRecord, Tickets } from "./tickets.ts";
@@ -48,6 +50,7 @@ export interface DaemonDeps {
   chatLog: ChatLog;
   knowledge: KnowledgeStore;
   db: Db;
+  push?: PushService;
   log?: (msg: string) => void;
 }
 
@@ -106,6 +109,7 @@ export class Daemon {
       states.set(r.ticket.id, fold(events));
       this.applyKnowledge(r.ticket.id, events);
       this.fileFollowUps(r.ticket.id, events);
+      await this.sendPushNotifications(r.ticket, events);
     }
 
     this.checkAutoReleases(records, states, now);
@@ -227,6 +231,7 @@ export class Daemon {
         const events = await this.d.store.read(id);
         this.applyKnowledge(id, events);
         this.fileFollowUps(id, events);
+        await this.sendPushNotifications(record.ticket, events);
         // A stage finished or wants a helper: someone may be free now, or a reviewer is needed.
         if (r.status !== "paused") void this.tick().catch(() => {});
       })
@@ -308,6 +313,52 @@ export class Daemon {
         this.d.db.run("INSERT OR IGNORE INTO knowledge_applied (edit_id, at) VALUES (?, ?)", key, now);
       });
     });
+  }
+
+  /** Sends push notifications for needs-you, report-ready, and main-red events (Contract C2). */
+  async sendPushNotifications(ticket: Ticket, events: TicketEvent[]): Promise<void> {
+    if (!this.d.push) return;
+    for (const [i, e] of events.entries()) {
+      let payload: NotificationPayload | undefined;
+      if (e.type === "needs-you") {
+        payload = {
+          title: `Needs you · #${ticket.id}`,
+          body: ticket.title,
+          url: `#/ticket/${ticket.id}`,
+        };
+      } else if (e.type === "report-ready") {
+        payload = {
+          title: `Report ready · #${ticket.id}`,
+          body: ticket.title,
+          url: `#/ticket/${ticket.id}`,
+        };
+      } else if (e.type === "main-red") {
+        payload = {
+          title: `Main is red · #${ticket.id}`,
+          body: e.reason,
+          url: `#/ticket/${ticket.id}`,
+        };
+      }
+      if (!payload) continue;
+
+      const key = `push:${ticket.id}:${i}`;
+      const [done] = this.d.db.all<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM knowledge_applied WHERE edit_id = ?",
+        key,
+      );
+      if (done?.n) continue;
+
+      try {
+        await this.d.push.send(payload);
+      } catch (err) {
+        this.d.log?.(`failed to send push notification for ${key}: ${String(err)}`);
+      }
+      this.d.db.run(
+        "INSERT OR IGNORE INTO knowledge_applied (edit_id, at) VALUES (?, ?)",
+        key,
+        this.d.clock.now(),
+      );
+    }
   }
 
   /** Applies a ticket's proposed edits that are due and not yet applied (spec §5, "The brain"). */

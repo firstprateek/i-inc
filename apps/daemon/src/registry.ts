@@ -16,6 +16,7 @@ import {
 } from "@i-inc/core";
 import type { UsageReport } from "./acp.ts";
 import type { Db } from "./db.ts";
+import type { PushSubscription } from "./push.ts";
 
 /** A repo employees work on, and the checks its tickets must pass (spec §6, stages 4 and 8). */
 export interface Project extends Partial<ProjectPolicy> {
@@ -66,7 +67,8 @@ type Kind =
   | "usage"
   | "settings"
   | "rate_limit"
-  | "release";
+  | "release"
+  | "push_sub";
 
 export class Registry implements Company {
   constructor(private readonly db: Db) {}
@@ -214,5 +216,15 @@ export class Registry implements Company {
   }
   isContact(address: string): boolean {
     return this.get("contact", address.toLowerCase()) !== undefined;
+  }
+
+  addPushSubscription(sub: PushSubscription): void {
+    this.put("push_sub", sub.endpoint, sub);
+  }
+  removePushSubscription(endpoint: string): void {
+    this.db.run("DELETE FROM company WHERE kind = ? AND id = ?", "push_sub", endpoint);
+  }
+  pushSubscriptions(): PushSubscription[] {
+    return this.list<PushSubscription>("push_sub");
   }
 }

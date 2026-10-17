@@ -563,6 +563,7 @@ describe("autoRelease policy and automatic releases", () => {
   });
 });
 
+<<<<<<< HEAD
 describe("GET /api/sandboxes (contract C1)", () => {
   it("returns empty sandboxes when no teams are registered", async () => {
     const app = await testApp();
@@ -721,5 +722,119 @@ describe("TicketView Contract C10 fields (createdBy, finishedAt, pushed)", () =>
     });
     expect(v2?.finishedAt).toBe(t0 + 20);
     expect(v2?.pushed).toBe(true);
+  });
+});
+
+describe("Web Push backend API (contract C2)", () => {
+  it("GET /api/push/key returns public key", async () => {
+    const app = await testApp();
+    const res = await app.call("GET", "/api/push/key");
+    expect(res.status).toBe(200);
+    expect(typeof res.body.publicKey).toBe("string");
+    expect(res.body.publicKey.length).toBeGreaterThan(0);
+  });
+
+  it("POST /api/push/subscribe validates endpoint and stores subscription", async () => {
+    const app = await testApp();
+    const bad = await app.call("POST", "/api/push/subscribe", {});
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toBe("endpoint is required");
+
+    const sub = {
+      endpoint: "https://push.example.com/client-1",
+      keys: { p256dh: "key-p256", auth: "key-auth" },
+    };
+    const res = await app.call("POST", "/api/push/subscribe", sub);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+
+    expect(app.deps.registry.pushSubscriptions()).toContainEqual(sub);
+  });
+
+  it("POST /api/push/unsubscribe validates endpoint and removes subscription", async () => {
+    const app = await testApp();
+    await app.call("POST", "/api/push/subscribe", {
+      endpoint: "https://push.example.com/client-1",
+    });
+    expect(app.deps.registry.pushSubscriptions()).toHaveLength(1);
+
+    const bad = await app.call("POST", "/api/push/unsubscribe", {});
+    expect(bad.status).toBe(400);
+
+    const res = await app.call("POST", "/api/push/unsubscribe", {
+      endpoint: "https://push.example.com/client-1",
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+    expect(app.deps.registry.pushSubscriptions()).toHaveLength(0);
+  });
+
+  it("sends push notifications for needs-you, report-ready, and main-red events without duplicate sends", async () => {
+    const app = await testApp();
+    const { FakePushService } = await import("../src/push.ts");
+    const fakePush = new FakePushService(app.deps.registry);
+    app.deps.push = fakePush;
+
+    const t0 = app.clock.now();
+    app.deps.tickets.create({ ...refunds, type: "fix", effort: "medium", title: "Test Ticket 1" }, t0);
+
+    // 1. needs-you event
+    await app.deps.store.append("1", [
+      {
+        type: "needs-you",
+        at: t0,
+        stage: "plan",
+        ask: { kind: "plan-gate", plan: "Approve plan?" },
+      },
+    ]);
+
+    await app.daemon.tick();
+
+    expect(fakePush.sent).toEqual([
+      {
+        title: "Needs you · #1",
+        body: "Test Ticket 1",
+        url: "#/ticket/1",
+      },
+    ]);
+
+    // Subsequent tick does not re-send
+    await app.daemon.tick();
+    expect(fakePush.sent).toHaveLength(1);
+
+    // 2. report-ready event
+    await app.deps.store.append("1", [
+      {
+        type: "report-ready",
+        at: t0 + 10,
+        summary: "Work completed",
+      },
+    ]);
+
+    await app.daemon.tick();
+    expect(fakePush.sent).toHaveLength(2);
+    expect(fakePush.sent[1]).toEqual({
+      title: "Report ready · #1",
+      body: "Test Ticket 1",
+      url: "#/ticket/1",
+    });
+
+    // 3. main-red event
+    await app.deps.store.append("1", [
+      {
+        type: "main-red",
+        at: t0 + 20,
+        sha: "abc1234",
+        reason: "CI failed on test suite",
+      },
+    ]);
+
+    await app.daemon.tick();
+    expect(fakePush.sent).toHaveLength(3);
+    expect(fakePush.sent[2]).toEqual({
+      title: "Main is red · #1",
+      body: "CI failed on test suite",
+      url: "#/ticket/1",
+    });
   });
 });
