@@ -22,6 +22,7 @@ import {
   runTicket,
   type Snapshot,
   schedule,
+  type Ticket,
   type TicketEvent,
   type TicketState,
   type Waiting,
@@ -30,6 +31,7 @@ import {
 import type { ChatLog } from "./chat.ts";
 import type { Db } from "./db.ts";
 import type { KnowledgeStore } from "./knowledge.ts";
+import type { NotificationPayload, PushService } from "./push.ts";
 import type { Registry } from "./registry.ts";
 import type { SqliteEventStore } from "./store.ts";
 import type { TicketRecord, Tickets } from "./tickets.ts";
@@ -48,6 +50,7 @@ export interface DaemonDeps {
   chatLog: ChatLog;
   knowledge: KnowledgeStore;
   db: Db;
+  push?: PushService;
   log?: (msg: string) => void;
 }
 
@@ -106,6 +109,11 @@ export class Daemon {
       states.set(r.ticket.id, fold(events));
       this.applyKnowledge(r.ticket.id, events);
       this.fileFollowUps(r.ticket.id, events);
+      try {
+        await this.sendPushNotifications(r.ticket, events);
+      } catch (err) {
+        this.d.log?.(`push error: ${String(err)}`);
+      }
     }
 
     this.checkAutoReleases(records, states, now);
@@ -227,6 +235,7 @@ export class Daemon {
         const events = await this.d.store.read(id);
         this.applyKnowledge(id, events);
         this.fileFollowUps(id, events);
+        await this.sendPushNotifications(record.ticket, events);
         // A stage finished or wants a helper: someone may be free now, or a reviewer is needed.
         if (r.status !== "paused") void this.tick().catch(() => {});
       })
@@ -260,6 +269,39 @@ export class Daemon {
   ensureKnowledge(): void {
     this.d.knowledge.ensureHandbook();
     for (const e of this.d.registry.employees()) this.d.knowledge.ensureBrain(e);
+    this.ensurePushBaseline();
+  }
+
+  /** Seeds push_sent with a baseline on initial startup so historical events aren't notified. */
+  ensurePushBaseline(): void {
+    const [row] = this.d.db.all<{ key: string }>(
+      "SELECT key FROM push_sent WHERE key = 'baseline:init' LIMIT 1",
+    );
+    if (row) return;
+
+    this.d.db.transaction(() => {
+      this.d.db.run(
+        "INSERT OR IGNORE INTO push_sent (key, at) VALUES (?, ?)",
+        "baseline:init",
+        this.d.clock.now(),
+      );
+      const rows = this.d.db.all<{ ticket_id: string; body: string }>(
+        "SELECT ticket_id, body FROM events ORDER BY ticket_id, seq",
+      );
+      const byTicket = new Map<string, number>();
+      for (const r of rows) {
+        const idx = byTicket.get(r.ticket_id) ?? 0;
+        byTicket.set(r.ticket_id, idx + 1);
+        const e = JSON.parse(r.body) as TicketEvent;
+        if (e.type === "needs-you" || e.type === "report-ready" || e.type === "main-red") {
+          this.d.db.run(
+            "INSERT OR IGNORE INTO push_sent (key, at) VALUES (?, ?)",
+            `push:${r.ticket_id}:${idx}`,
+            this.d.clock.now(),
+          );
+        }
+      }
+    });
   }
 
   /**
@@ -308,6 +350,48 @@ export class Daemon {
         this.d.db.run("INSERT OR IGNORE INTO knowledge_applied (edit_id, at) VALUES (?, ?)", key, now);
       });
     });
+  }
+
+  /** Sends push notifications for needs-you, report-ready, and main-red events (Contract C2). */
+  async sendPushNotifications(ticket: Ticket, events: TicketEvent[]): Promise<void> {
+    if (!this.d.push) return;
+    for (const [i, e] of events.entries()) {
+      let payload: NotificationPayload | undefined;
+      if (e.type === "needs-you") {
+        payload = {
+          title: `Needs you · #${ticket.id}`,
+          body: ticket.title,
+          url: `#/ticket/${ticket.id}`,
+        };
+      } else if (e.type === "report-ready") {
+        payload = {
+          title: `Report ready · #${ticket.id}`,
+          body: ticket.title,
+          url: `#/ticket/${ticket.id}`,
+        };
+      } else if (e.type === "main-red") {
+        payload = {
+          title: `Main is red · #${ticket.id}`,
+          body: e.reason,
+          url: `#/ticket/${ticket.id}`,
+        };
+      }
+      if (!payload) continue;
+
+      const key = `push:${ticket.id}:${i}`;
+      const res = this.d.db.run(
+        "INSERT INTO push_sent (key, at) VALUES (?, ?) ON CONFLICT (key) DO NOTHING",
+        key,
+        this.d.clock.now(),
+      );
+      if ((res?.changes ?? 0) === 0) continue;
+
+      try {
+        await this.d.push.send(payload);
+      } catch (err) {
+        this.d.log?.(`failed to send push notification for ${key}: ${String(err)}`);
+      }
+    }
   }
 
   /** Applies a ticket's proposed edits that are due and not yet applied (spec §5, "The brain"). */

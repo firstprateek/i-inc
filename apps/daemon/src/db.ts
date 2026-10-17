@@ -6,7 +6,7 @@ export type Param = string | number | null;
 
 export interface Db {
   exec(sql: string): void;
-  run(sql: string, ...params: Param[]): void;
+  run(sql: string, ...params: Param[]): { changes?: number };
   all<T extends Row = Row>(sql: string, ...params: Param[]): T[];
   transaction(fn: () => void): void;
   close(): void;
@@ -24,7 +24,10 @@ async function openBun(path: string): Promise<Db> {
   const d = new Database(path, { create: true });
   return {
     exec: (sql) => d.exec(sql),
-    run: (sql, ...params) => void d.query(sql).run(...params),
+    run: (sql, ...params) => {
+      const res = d.query(sql).run(...params);
+      return { changes: res.changes };
+    },
     all: <T extends Row>(sql: string, ...params: Param[]) => d.query(sql).all(...params) as T[],
     transaction: (fn) => d.transaction(fn)(),
     close: () => d.close(),
@@ -36,7 +39,10 @@ async function openNode(path: string): Promise<Db> {
   const d = new DatabaseSync(path);
   return {
     exec: (sql) => d.exec(sql),
-    run: (sql, ...params) => void d.prepare(sql).run(...params),
+    run: (sql, ...params) => {
+      const res = d.prepare(sql).run(...params);
+      return { changes: Number(res.changes) };
+    },
     all: <T extends Row>(sql: string, ...params: Param[]) => d.prepare(sql).all(...params) as T[],
     transaction: (fn) => {
       d.exec("BEGIN");

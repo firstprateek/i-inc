@@ -18,6 +18,7 @@ export async function testApp(
   const app = await createApp({
     dbPath,
     knowledgeDir,
+    configDir: join(knowledgeDir, "config"),
     clock,
     agent,
     harness,

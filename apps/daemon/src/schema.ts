@@ -43,5 +43,9 @@ export function migrate(db: Db): void {
       password_hash TEXT NOT NULL,
       created_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS push_sent (
+      key TEXT PRIMARY KEY,
+      at INTEGER NOT NULL
+    );
   `);
 }
