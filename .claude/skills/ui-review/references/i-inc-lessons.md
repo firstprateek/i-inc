@@ -83,3 +83,8 @@ paths, branch names, structured briefs).
     the same rose; and slate, lilac and periwinkle side by side all read as lavender. → The tint is
     chosen at hiring (the least-worn one) and stored on the employee. The palette is ordered so the
     first hires get the most unlike tints; look at the office with the whole team, not one avatar.
+19. **A bare `li` rule caught a second list (layout).** The ticket view styled `li` as the
+    timeline's `48px 12px 1fr` grid, so `<ul><li><code>…</code></li></ul>` in the protected-paths
+    card put the path into a 48 px cell. → Scope tag selectors (`li`, `p`, `i`) to their container
+    (`ol li`, `.ask ul`), and when a flex row switches to `flex-direction: column` on mobile, pair it
+    with `align-items: stretch` so child cards don't shrink to their content width.

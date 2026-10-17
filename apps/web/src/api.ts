@@ -21,6 +21,8 @@ export type {
   TicketView,
 };
 
+import { showLogin } from "./login.ts";
+
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   // Every write is JSON, even an empty one: the daemon refuses anything else (api.ts).
   const write = method !== "GET";
@@ -29,6 +31,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
     headers: write ? { "content-type": "application/json" } : {},
     ...(write ? { body: JSON.stringify(body ?? {}) } : {}),
   });
+  if (res.status === 401) showLogin();
   const data = (await res.json()) as T & { error?: string };
   if (!res.ok) throw new Error(data.error ?? `${method} ${path}: ${res.status}`);
   return data;

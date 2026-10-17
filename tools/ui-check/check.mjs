@@ -25,9 +25,9 @@ import { mkdirSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-// Use the workspace's Playwright once there is one; until then, the global install.
+// Use the workspace's Playwright once there is one; until then, NODE_PATH or the global install.
 const { chromium, request } = await import("playwright").catch(() => {
-  const root = execSync("npm root -g").toString().trim();
+  const root = process.env.NODE_PATH || execSync("npm root -g").toString().trim();
   return import(pathToFileURL(`${root}/playwright/index.mjs`).href);
 });
 

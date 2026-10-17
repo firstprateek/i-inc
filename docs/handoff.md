@@ -12,15 +12,15 @@ Merged on `main`:
 | --- | --- |
 | M1 | Run on the mini. Answers are in [m1-findings.md](m1-findings.md) and scripts in `tools/m1/`. The machine `m1-test` still runs there. The walls and the Ollama relay now come back at boot (`tools/host/`, below) |
 | M2 | `packages/core`: the pipeline, engines and switch rules, the scheduler (reviewers and verifiers are scheduled like builds), errands, outbound permissions, My desk maths, knowledge routing, orientation. 64 tests |
-| M3 (part) | `apps/daemon`: SQLite, registry, tick loop, API, urgent chat interrupts, brains and the handbook as git repos. `apps/web`: every view, light and dark. The daemon runs real employees by default (`real.ts`: ACP sessions in machines, the harness, credentials from `~/.config/i-inc/credentials.json`, projects and their recipes in the registry through `PUT /api/projects/:id`), or the scripted demo with `I_INC_DEMO=1` |
+| M3 (part) | `apps/daemon`: SQLite, registry, tick loop, API, urgent chat interrupts, brains and the handbook as git repos, and the web login (`~/.config/i-inc/web-token` and `POST /api/login`). `apps/web`: every view and the sign-in form, light and dark. The daemon runs real employees by default (`real.ts`: ACP sessions in machines, the harness, credentials from `~/.config/i-inc/credentials.json`, projects and their recipes in the registry through `PUT /api/projects/:id`), or the scripted demo with `I_INC_DEMO=1` |
 | M3 adapters | `apps/daemon/src/acp.ts` (the real ACP client), `apps/daemon/src/harness.ts` (checks and gates in the machine), `apps/daemon/src/machines.ts` (Apple container, its commands checked on the mini) and `apps/daemon/src/github.ts` (the GitHub App's tokens, draft PRs and the bot's commit identity). Tested against a scripted ACP server and a recording `fetch`, and wired into real mode (`real.ts`) |
-| M3 image | `images/employee/`: the base image, built on the mini and checked in a throwaway machine, with Duet's recipe green in it ([its README](../images/employee/README.md)). Everything in a machine runs as its user `employee` |
+| M3 image | `images/employee/`: the base image, built on the mini and checked in a throwaway machine, with Duet's recipe green in it ([its README](../images/employee/README.md)) and plain `Co-Authored-By: Claude` attribution. Everything in a machine runs as its user `employee` |
 | Redesign (2026-10-17) | [architecture.md](architecture.md): teams share a sandbox (`inc-<team>`, 12G, 6 CPUs); projects default to direct mode, where a fresh-context review of at most 2 rounds is followed by a push to main, CI on main (fix, or revert after 2 hours), and a report with up to 3 follow-up tickets; protected paths wait for the owner; GitHub sign-ins in sandboxes are renewed by the daemon; the container service starts at login and the mini restarts monthly |
 | GitHub | The App **i.inc bot** is set up: its key and ids are on the mini in `~/.config/i-inc`, it's installed on Duet only, and Duet's `main` has the ruleset. `tools/github-app/check.mjs` passes. The App still has the Workflows, Actions write and Pages permissions it was created with; the owner narrows them (below) |
 | First real ticket | 2026-10-01, on the mini: Ada (Claude, signed in inside her machine) took M1's README ticket from pick-up to a ready PR as the bot, firstprateek/duet#8. Her branch was made in her machine, three required CI checks passed, the gates waited for them, and the report became the PR body. It took three fixes on the way: Claude's "session limit" now pauses a ticket until the reset; the `acp-claude` launcher refreshes an expired sign-in before the adapter's parallel queries race to; and only a session's final answer counts as its output |
 | M4 (part) | Brain and handbook repos, edits applied from each retro, policies that wait for the owner, orientation, and the viewer |
 
-`pnpm check`, `pnpm typecheck` and `pnpm test` pass (160 tests). CI runs all three.
+`pnpm check`, `pnpm typecheck` and `pnpm test` pass (162 tests). CI runs all three.
 
 ## Open questions for the owner
 
@@ -34,7 +34,8 @@ mini runs it since 2026-10-17, with the Engineering team signed in to Claude onc
 
 1. **Move the mini to the new design.**
    - Update `~/i-inc` to `main`, rebuild the image (`images/employee`), and reinstall the daemon
-     (`tools/host/install-daemon.sh`, which now also starts Apple's container service at login).
+     (`tools/host/install-daemon.sh`, which now also starts Apple's container service at login and
+     adds the mini's tailnet name to `I_INC_HOSTS`).
    - Register the team (`PUT /api/teams/engineering` with Ada), and sign its sandbox in once, with
      the owner: `tools/host/sign-in-claude.sh engineering`. Antigravity's sign-in still needs its
      callback relayed into the machine.
@@ -47,9 +48,8 @@ mini runs it since 2026-10-17, with the Engineering team signed in to Claude onc
    - Narrow the App: no Workflows, Actions read-only, no Pages; accept it on the installation.
    - Move Duet's release secrets into an environment limited to `main`.
 3. **The live test:** M1's README ticket (closed as Duet #8) again, in direct mode, end to end.
-4. **Later:** a web login so the daemon can serve the tailnet; the helper model and chat on Ollama;
-   Antigravity's sign-in relay and DNS in the daemon; usage caps (M5); automatic releases; a retry
-   button on the board; a visual check of the new protected-paths card (`tools/ui-check`).
+4. **Later:** the helper model and chat on Ollama; Antigravity's sign-in relay and DNS in the
+   daemon; usage caps (M5); automatic releases; a retry button on the board.
 
 Lessons kept from earlier rounds: a new image doesn't reach existing sandboxes
 (`tools/host/update-machine.sh`); failed tickets retry with `POST /api/tickets/:id/retry`; report
