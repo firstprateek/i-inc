@@ -104,6 +104,9 @@ export const api = {
     call("POST", `/api/tickets/${id}/answer`, note ? { answer, note } : { answer }),
   engines: () => call<{ engines: Engine[] }>("GET", "/api/engines").then((r) => r.engines),
   hire: (e: Partial<Employee>) => call<{ employee: Employee }>("POST", "/api/employees", e),
+  employees: () => call<{ employees: Employee[] }>("GET", "/api/employees").then((r) => r.employees),
+  updateEmployee: (id: string, e: Partial<Employee>) =>
+    call<{ employee: Employee }>("PUT", `/api/employees/${encodeURIComponent(id)}`, e),
   handbook: () => call<KnowledgeView>("GET", "/api/knowledge/handbook"),
   brain: (id: string) => call<KnowledgeView>("GET", `/api/knowledge/brains/${id}`),
   learned: () => call<{ changes: NamedChange[] }>("GET", "/api/knowledge/recent").then((r) => r.changes),
