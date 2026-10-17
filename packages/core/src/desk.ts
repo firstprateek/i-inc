@@ -10,6 +10,8 @@ export interface AccountCost {
   monthlyFee?: number;
   /** An API account's price per million tokens. */
   pricePerMillionTokens?: number;
+  /** Maximum monthly spend allowed before reaching the usage cap. */
+  monthlyCap?: number;
 }
 
 export interface HostCost {

@@ -94,7 +94,11 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       },
     ],
 
-    ["GET", "/api/accounts", async () => json({ accounts: d.registry.accounts() })],
+    [
+      "GET",
+      "/api/accounts",
+      async () => json({ accounts: d.registry.accounts(), rateLimits: d.registry.accountRateLimits() }),
+    ],
 
     [
       "PUT",
@@ -113,6 +117,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           ...(money(b.pricePerMillionTokens)
             ? { pricePerMillionTokens: b.pricePerMillionTokens as number }
             : {}),
+          ...(money(b.monthlyCap) ? { monthlyCap: b.monthlyCap as number } : {}),
         });
         return json({ account: d.registry.accounts().find((a) => a.id === id) });
       },
@@ -158,6 +163,21 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           ...(box ? { sandbox: { cpus: box.cpus as number, memory: box.memory as string } } : {}),
         });
         return json({ team: d.registry.teams().find((t) => t.id === id) });
+      },
+    ],
+
+    [
+      "POST",
+      "/api/teams/:id/antigravity-callback",
+      async (req, { id = "" }) => {
+        const team = d.registry.teams().find((t) => t.id === id);
+        if (!team) return json({ error: "no such team" }, 404);
+        const b = (await req.json()) as { url?: unknown };
+        if (typeof b.url !== "string" || !/^http:\/\/(127\.0\.0\.1|localhost):\d+\//.test(b.url)) {
+          return json({ error: "expected an http://127.0.0.1:<port>/... callback URL" }, 400);
+        }
+        await d.machines.deliverCallback?.(id, b.url);
+        return json({ ok: true });
       },
     ],
 

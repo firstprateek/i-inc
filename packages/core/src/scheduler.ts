@@ -81,6 +81,8 @@ export function schedule(snap: Snapshot, company: Pick<Company, "engine">): Plan
     const cap = snap.capReachedUntil[e.id];
     if (cap !== undefined && cap > snap.now) return `${e.name} reached its usage cap`;
     const engine = company.engine(e.engines.perDuty?.[duty] ?? e.engines.default);
+    const accountCap = snap.capReachedUntil[engine.accountId];
+    if (accountCap !== undefined && accountCap > snap.now) return `${e.name} reached its usage cap`;
     const blocked = snap.accountsBlockedUntil[engine.accountId];
     if (blocked !== undefined && blocked > snap.now) {
       return `${e.name} waits for ${engine.accountId} to reset`;

@@ -165,6 +165,26 @@ export class Daemon {
         hold: r.hold,
       }));
 
+    const capReachedUntil: Record<Id, number> = {};
+    for (const [accountId, limit] of Object.entries(this.d.registry.accountRateLimits())) {
+      const rejected = limit.status === "rejected";
+      const saturated = (limit.fiveHourUtilization ?? 0) >= 1 || (limit.sevenDayUtilization ?? 0) >= 1;
+      if ((rejected || saturated) && limit.resetsAt && limit.resetsAt > now) {
+        capReachedUntil[accountId] = Math.max(capReachedUntil[accountId] ?? 0, limit.resetsAt);
+      }
+    }
+    const d = new Date(now);
+    const nextMonthStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1, 0, 0, 0, 0);
+    for (const account of this.d.registry.accounts()) {
+      if (
+        account.monthlyCap !== undefined &&
+        account.monthlyFee !== undefined &&
+        account.monthlyFee > account.monthlyCap
+      ) {
+        capReachedUntil[account.id] = Math.max(capReachedUntil[account.id] ?? 0, nextMonthStart);
+      }
+    }
+
     const offset = this.d.registry.settings().utcOffsetMinutes;
     const snap: Snapshot = {
       now,
@@ -173,7 +193,7 @@ export class Daemon {
       busy,
       holding,
       accountsBlockedUntil,
-      capReachedUntil: {},
+      capReachedUntil,
       pickedUpToday: this.pickedUpToday(now),
       pending,
       backlog,

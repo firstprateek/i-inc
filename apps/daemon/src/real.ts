@@ -128,6 +128,7 @@ export function realPorts(o: RealOptions): Pick<
         },
         cwdFor: (ticketId) => workDir(ticketId, base),
         onUsage: (u) => registry.recordUsage(u),
+        onRateLimit: (accountId, limit) => registry.setAccountRateLimit(accountId, limit),
         ...(o.log ? { log: o.log } : {}),
       }),
     harness: (registry) =>

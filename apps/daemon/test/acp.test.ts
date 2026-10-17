@@ -11,12 +11,14 @@ import { describe, expect, it } from "vitest";
 import {
   AcpAgent,
   type AgentProcess,
+  extractRateLimit,
   type LaunchRequest,
   resetFromText,
   type UsageReport,
 } from "../src/acp.ts";
 import { machineScript } from "../src/harness.ts";
 import { AppleMachines, defaultMachineSettings, machineLaunch, workDir } from "../src/machines.ts";
+import type { AccountRateLimit } from "../src/registry.ts";
 
 // The defaults, without the walls' marker, which exists only on the mini (a test below covers it).
 const { wallsMarker: _, ...noWalls } = defaultMachineSettings;
@@ -114,7 +116,11 @@ function request(over: Partial<SessionRequest> = {}): SessionRequest {
   };
 }
 
-function agent(s: ReturnType<typeof server>, usage: UsageReport[] = []) {
+function agent(
+  s: ReturnType<typeof server>,
+  usage: UsageReport[] = [],
+  rateLimits: { accountId: string; limit: AccountRateLimit }[] = [],
+) {
   return new AcpAgent({
     launch: (r) => {
       s.launches.push(r);
@@ -123,6 +129,7 @@ function agent(s: ReturnType<typeof server>, usage: UsageReport[] = []) {
     credentials: (e) => (e.harness === "claude-code" ? { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-test" } : {}),
     cwdFor: (id) => `/home/employee/work/inc-${id}`,
     onUsage: (u) => usage.push(u),
+    onRateLimit: (accountId, limit) => rateLimits.push({ accountId, limit }),
     now: () => 1_000,
     cancelGraceMs: 50,
   });
@@ -213,6 +220,7 @@ describe("an ACP session", () => {
 
   it("reads Claude's rate limits, and pauses until the reset when the account is out", async () => {
     const usage: UsageReport[] = [];
+    const rateLimits: { accountId: string; limit: AccountRateLimit }[] = [];
     const s = server(
       claudeLike((reply, id) => {
         reply(
@@ -235,7 +243,7 @@ describe("an ACP session", () => {
         reply({ id, error: { code: -32603, message: "Claude AI usage limit reached" } });
       }),
     );
-    expect(await agent(s, usage).run(request())).toEqual({
+    expect(await agent(s, usage, rateLimits).run(request())).toEqual({
       kind: "out-of-tokens",
       resetsAt: 1_790_600_000_000,
     });
@@ -248,6 +256,18 @@ describe("an ACP session", () => {
         { name: "seven_day", utilization: 0.46, resetsAt: 1_791_000_000_000 },
       ],
     });
+    expect(rateLimits).toEqual([
+      {
+        accountId: "claude-pro",
+        limit: {
+          status: "rejected",
+          resetsAt: 1_790_600_000_000,
+          fiveHourUtilization: 1,
+          sevenDayUtilization: 0.46,
+          updatedAt: 1_000,
+        },
+      },
+    ]);
   });
 
   it("treats a limit error with no reset time (Antigravity) as out of tokens for an hour", async () => {
@@ -460,6 +480,63 @@ describe("limits named in error messages", () => {
     expect(resetFromText("resets 3:30am (America/New_York)", now)).toBeNull();
     expect(resetFromText("weekly limit · resets Oct 3, 9pm (UTC)", now)).toBe(at("2026-10-03T21:00:00Z"));
     expect(resetFromText("rate limited, try later", now)).toBeNull();
+  });
+});
+
+describe("extractRateLimit", () => {
+  it("extracts rate limit info with seconds timestamp and snake_case windows", () => {
+    const raw = {
+      status: "allowed",
+      resetsAt: 1_790_600_000,
+      unifiedWindows: {
+        five_hour: { utilization: 0.25, resetsAt: 1_790_600_000 },
+        seven_day: { utilization: 0.75, resetsAt: 1_791_000_000 },
+      },
+    };
+    expect(extractRateLimit(raw, 5_000)).toEqual({
+      status: "allowed",
+      resetsAt: 1_790_600_000_000,
+      fiveHourUtilization: 0.25,
+      sevenDayUtilization: 0.75,
+      updatedAt: 5_000,
+    });
+  });
+
+  it("handles camelCase windows and ISO string resetsAt", () => {
+    const raw = {
+      status: "allowed",
+      resetsAt: "2026-10-17T20:00:00Z",
+      unifiedWindows: {
+        fiveHour: { utilization: 0.8 },
+        sevenDay: { utilization: 0.5 },
+      },
+    };
+    expect(extractRateLimit(raw, 10_000)).toEqual({
+      status: "allowed",
+      resetsAt: Date.parse("2026-10-17T20:00:00Z"),
+      fiveHourUtilization: 0.8,
+      sevenDayUtilization: 0.5,
+      updatedAt: 10_000,
+    });
+  });
+
+  it("falls back to window resetsAt if top-level resetsAt is missing", () => {
+    const raw = {
+      unifiedWindows: {
+        five_hour: { utilization: 0.9, resetsAt: 1_790_600_000 },
+      },
+    };
+    expect(extractRateLimit(raw, 2_000)).toEqual({
+      resetsAt: 1_790_600_000_000,
+      fiveHourUtilization: 0.9,
+      updatedAt: 2_000,
+    });
+  });
+
+  it("handles missing fields gracefully", () => {
+    expect(extractRateLimit({}, 1_000)).toEqual({
+      updatedAt: 1_000,
+    });
   });
 });
 

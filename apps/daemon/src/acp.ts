@@ -9,6 +9,7 @@
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import type { Agent, Duty, Engine, Id, SessionOutcome, SessionRequest, Ticket } from "@i-inc/core";
+import type { AccountRateLimit } from "./registry.ts";
 
 type Json = Record<string, unknown>;
 
@@ -53,12 +54,29 @@ export interface AcpOptions {
   /** Where a ticket's worktree lives in the machine. */
   cwdFor: (ticketId: Id) => string;
   onUsage?: (u: UsageReport) => void;
+  onRateLimit?: (accountId: Id, limit: AccountRateLimit) => void;
   now?: () => number;
   log?: (msg: string) => void;
   /** How long a cancelled session gets to wind down before it's killed. */
   cancelGraceMs?: number;
   /** When an engine's limits show only as errors (Antigravity), how long to wait before trying again. */
   unknownResetMs?: number;
+}
+
+export function extractRateLimit(rl: Record<string, unknown>, now = Date.now()): AccountRateLimit {
+  const windows = (rl.unifiedWindows ?? {}) as Record<string, Record<string, unknown>>;
+  const fiveHour = windows.five_hour ?? windows.fiveHour;
+  const sevenDay = windows.seven_day ?? windows.sevenDay;
+  const fiveHourUtilization = fiveHour?.utilization !== undefined ? Number(fiveHour.utilization) : undefined;
+  const sevenDayUtilization = sevenDay?.utilization !== undefined ? Number(sevenDay.utilization) : undefined;
+  const resetsAt = toMs(rl.resetsAt) ?? (fiveHour ? toMs(fiveHour.resetsAt) : null) ?? undefined;
+  return {
+    ...(rl.status ? { status: String(rl.status) } : {}),
+    ...(resetsAt !== undefined ? { resetsAt } : {}),
+    ...(fiveHourUtilization !== undefined ? { fiveHourUtilization } : {}),
+    ...(sevenDayUtilization !== undefined ? { sevenDayUtilization } : {}),
+    updatedAt: now,
+  };
 }
 
 const bypassMode = /bypass|yolo|allow.?all|full.?access|dangerous/i;
@@ -143,6 +161,7 @@ export class AcpAgent implements Agent {
         const report = usageReport(r.engine.accountId, rl);
         limit = { rejected: report.status === "rejected", resetsAt: report.resetsAt };
         this.o.onUsage?.(report);
+        this.o.onRateLimit?.(r.engine.accountId, extractRateLimit(rl, now()));
       }
     };
 
