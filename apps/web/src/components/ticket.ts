@@ -3,6 +3,7 @@
 import { css, html } from "lit";
 import { api, refreshNow, type TicketEvent, type TicketView } from "../api.ts";
 import { Loader } from "./loader.ts";
+import "./transcript.ts";
 import { base, check } from "./shared.ts";
 
 interface Data {
@@ -101,6 +102,7 @@ export class IncTicket extends Loader<Data> {
         <h1>${t.title}</h1>
         ${this.error ? html`<p role="alert">${this.error}</p>` : ""}
         ${this.body(t)}
+        <inc-transcript .ticketId=${t.id}></inc-transcript>
       </section>
       <aside class="card" aria-label="Timeline">
         <h2>Timeline</h2>

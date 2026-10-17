@@ -28,6 +28,25 @@ export type {
   TicketView,
 };
 
+/** One entry of a session transcript (contract C4). */
+export interface TranscriptItem {
+  kind: "text" | "tool";
+  text?: string;
+  title?: string;
+  status?: string;
+  at: number;
+}
+
+/** One agent session on a ticket (contract C4, GET /api/tickets/:id/sessions). */
+export interface TicketSession {
+  stage: string;
+  employeeId: string;
+  engineId: string;
+  startedAt: number;
+  endedAt: number | null;
+  items: TranscriptItem[];
+}
+
 /** What POST /api/tickets takes from the owner (daemon NewTicket). */
 export interface NewTicketBody {
   title: string;
@@ -107,7 +126,17 @@ export async function logout(): Promise<void> {
   showLogin();
 }
 
+/** The ticket's session transcripts, or null when the daemon has no such endpoint or ticket (404). */
+async function sessions(id: string): Promise<TicketSession[] | null> {
+  const res = await send(`/api/tickets/${encodeURIComponent(id)}/sessions`);
+  if (res.status === 404) return null;
+  if (res.status === 401) showLogin();
+  if (!res.ok) throw new Error(`GET sessions: ${res.status}`);
+  return ((await res.json()) as { sessions: TicketSession[] }).sessions;
+}
+
 export const api = {
+  sessions,
   authStatus,
   signup,
   login,
