@@ -1,13 +1,13 @@
 {
-  "name": "branches other than main and inc/**",
+  "name": "branches other than main, inc/** and Release Please's",
   "target": "branch",
   "enforcement": "active",
-  "bypass_actors": [
-    { "actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always" },
-    { "actor_id": 15368, "actor_type": "Integration", "bypass_mode": "always" }
-  ],
+  "bypass_actors": [{ "actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always" }],
   "conditions": {
-    "ref_name": { "include": ["~ALL"], "exclude": ["~DEFAULT_BRANCH", "refs/heads/inc/**"] }
+    "ref_name": {
+      "include": ["~ALL"],
+      "exclude": ["~DEFAULT_BRANCH", "refs/heads/inc/**", "refs/heads/release-please--**"]
+    }
   },
   "rules": [{ "type": "creation" }, { "type": "update" }, { "type": "deletion" }]
 }

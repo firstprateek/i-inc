@@ -30,7 +30,7 @@ None right now.
 
 On 2026-10-17 the owner redesigned i.inc ([architecture.md](architecture.md)): a sandbox per team,
 signed in once to each subscription, and reviewed work pushed straight to main. The code is in; the
-mini still runs the old setup. Ask the owner before any `sudo` or change to the host.
+mini runs it since 2026-10-17, with the Engineering team signed in to Claude once. Ask the owner before any `sudo` or change to the host.
 
 1. **Move the mini to the new design.**
    - Update `~/i-inc` to `main`, rebuild the image (`images/employee`), and reinstall the daemon
@@ -41,10 +41,9 @@ mini still runs the old setup. Ask the owner before any `sudo` or change to the 
    - Retire `inc-ada` and `m1-test`.
    - The owner reinstalls the walls job with `sudo` (`install-walls.sh`), which adds the monthly
      restart.
-2. **GitHub, for direct mode** (the owner's sign-in):
-   - Duet's `main` ruleset: drop "PR required", "1 approval", "restrict updates" and the required
-     checks, keep "no force-push" and "no deletion" (`tools/github-app/duet-ruleset.json`).
-   - Apply `duet-branches-ruleset.json` and `duet-tags-ruleset.json`.
+2. **GitHub, for direct mode.** Done on 2026-10-17: Duet's `main` ruleset keeps only "no
+   force-push" and "no deletion", and the branches ruleset keeps the bot to `inc/**`. Still the
+   owner's:
    - Narrow the App: no Workflows, Actions read-only, no Pages; accept it on the installation.
    - Move Duet's release secrets into an environment limited to `main`.
 3. **The live test:** M1's README ticket (closed as Duet #8) again, in direct mode, end to end.
