@@ -14,6 +14,7 @@ import "./offline.ts";
 
 type Route =
   | { view: "office" | "board" | "desk" | "inbox" | "hiring" | "handbook" | "more" }
+  | { view: "hiring"; id: string }
   | { view: "brain"; id: string }
   | { view: "ticket"; id: string }
   | { view: "chat"; id: string };
@@ -24,6 +25,7 @@ const phone = 900;
 function parse(hash: string): Route {
   const [, view, id] = hash.split("/");
   if (view === "ticket" && id) return { view: "ticket", id };
+  if (view === "hiring" && id) return { view: "hiring", id };
   if (view === "chat") return { view: "chat", id: id ?? "" };
   if (view === "brain" && id) return { view: "brain", id };
   if (
@@ -162,7 +164,7 @@ export class IncApp extends LitElement {
       case "inbox":
         return html`<inc-inbox></inc-inbox>`;
       case "hiring":
-        return html`<inc-hiring></inc-hiring>`;
+        return html`<inc-hiring .employeeId=${"id" in this.route ? this.route.id : undefined}></inc-hiring>`;
       case "chat":
         return html`<inc-chat .employeeId=${this.route.id}></inc-chat>`;
       case "ticket":
