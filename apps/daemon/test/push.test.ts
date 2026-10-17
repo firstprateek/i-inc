@@ -188,4 +188,39 @@ describe("WebPushSender", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("handles non-410 delivery failure and fetch rejection without throwing", async () => {
+    const db = await openDb(":memory:");
+    migrate(db);
+    const registry = new Registry(db);
+    registry.addPushSubscription({
+      endpoint: "https://push.example.com/sub/500",
+    });
+    registry.addPushSubscription({
+      endpoint: "https://push.example.com/sub/network-error",
+    });
+
+    const mockFetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/network-error")) throw new Error("ECONNRESET");
+      return new Response("Internal Server Error", { status: 500 });
+    }) as unknown as typeof fetch;
+
+    const sender = new WebPushSender(registry, {
+      vapid: { publicKey: "fake", privateJwk: {} },
+      fetchImpl: mockFetch,
+    });
+
+    // Does not throw
+    await expect(
+      sender.send({
+        title: "Test",
+        body: "Body",
+        url: "#/ticket/1",
+      }),
+    ).resolves.not.toThrow();
+
+    // 500 is not removed from registry
+    expect(registry.pushSubscriptions()).toHaveLength(2);
+  });
 });

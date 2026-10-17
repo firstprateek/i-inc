@@ -43,6 +43,21 @@ export interface PushService {
   unsubscribe(endpoint: string): Promise<void>;
 }
 
+/** Generates a fresh P-256 VAPID keypair in memory. */
+export function generateVapidKeys(): VapidKeys {
+  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  const jwk = privateKey.export({ format: "jwk" });
+  const rawPub = Buffer.concat([
+    Buffer.from([0x04]),
+    Buffer.from(jwk.x ?? "", "base64url"),
+    Buffer.from(jwk.y ?? "", "base64url"),
+  ]);
+  return {
+    publicKey: rawPub.toString("base64url"),
+    privateJwk: jwk,
+  };
+}
+
 /** Reads or generates the VAPID keys in ~/.config/i-inc/vapid.json (mode 0600). */
 export function vapidKeys(dir = configDir()): VapidKeys {
   const path = join(dir, "vapid.json");
@@ -51,17 +66,7 @@ export function vapidKeys(dir = configDir()): VapidKeys {
     if (raw.publicKey && raw.privateJwk) return raw;
   }
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
-  const jwk = privateKey.export({ format: "jwk" });
-  const rawPub = Buffer.concat([
-    Buffer.from([0x04]),
-    Buffer.from(jwk.x ?? "", "base64url"),
-    Buffer.from(jwk.y ?? "", "base64url"),
-  ]);
-  const keys: VapidKeys = {
-    publicKey: rawPub.toString("base64url"),
-    privateJwk: jwk,
-  };
+  const keys = generateVapidKeys();
   writeFileSync(path, `${JSON.stringify(keys, null, 2)}\n`, { mode: 0o600 });
   return keys;
 }
@@ -180,13 +185,7 @@ export class WebPushSender implements PushService {
 
   async send(notification: NotificationPayload): Promise<void> {
     const subs = this.registry.pushSubscriptions();
-    for (const sub of subs) {
-      try {
-        await this.sendToSubscription(sub, notification);
-      } catch {
-        // Skip failed push delivery to avoid blocking others
-      }
-    }
+    await Promise.allSettled(subs.map((sub) => this.sendToSubscription(sub, notification)));
   }
 
   private async sendToSubscription(sub: PushSubscription, notification: NotificationPayload): Promise<void> {
@@ -206,15 +205,22 @@ export class WebPushSender implements PushService {
       headers["content-type"] = "application/json";
     }
 
-    const res = await this.fetchImpl(sub.endpoint, {
-      method: "POST",
-      headers,
-      // biome-ignore lint/suspicious/noExplicitAny: BodyInit compatibility between Node and Bun types
-      body: body as any,
-    });
+    try {
+      const res = await this.fetchImpl(sub.endpoint, {
+        method: "POST",
+        headers,
+        signal: AbortSignal.timeout(5000),
+        // biome-ignore lint/suspicious/noExplicitAny: BodyInit compatibility between Node and Bun types
+        body: body as any,
+      });
 
-    if (res.status === 404 || res.status === 410) {
-      this.registry.removePushSubscription(sub.endpoint);
+      if (res.status === 404 || res.status === 410) {
+        this.registry.removePushSubscription(sub.endpoint);
+      } else if (!res.ok) {
+        console.warn(`[push] delivery failed (${res.status}) for ${sub.endpoint}`);
+      }
+    } catch (err) {
+      console.warn(`[push] delivery error for ${sub.endpoint}:`, err);
     }
   }
 }

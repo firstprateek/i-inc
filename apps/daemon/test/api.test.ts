@@ -740,6 +740,18 @@ describe("Web Push backend API (contract C2)", () => {
     expect(bad.status).toBe(400);
     expect(bad.body.error).toBe("endpoint is required");
 
+    const nonHttps = await app.call("POST", "/api/push/subscribe", {
+      endpoint: "http://push.example.com/client-1",
+    });
+    expect(nonHttps.status).toBe(400);
+    expect(nonHttps.body.error).toBe("endpoint must be https");
+
+    const invalidUrl = await app.call("POST", "/api/push/subscribe", {
+      endpoint: "not-a-url",
+    });
+    expect(invalidUrl.status).toBe(400);
+    expect(invalidUrl.body.error).toBe("endpoint must be a valid URL");
+
     const sub = {
       endpoint: "https://push.example.com/client-1",
       keys: { p256dh: "key-p256", auth: "key-auth" },
@@ -836,5 +848,38 @@ describe("Web Push backend API (contract C2)", () => {
       body: "CI failed on test suite",
       url: "#/ticket/1",
     });
+  });
+
+  it("does not re-notify historical events when starting against an existing database (baseline)", async () => {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { FakePushService } = await import("../src/push.ts");
+
+    const dbFile = join(mkdtempSync(join(tmpdir(), "i-inc-db-")), "test.db");
+    const app1 = await testApp(dbFile);
+    const t0 = app1.clock.now();
+    app1.deps.tickets.create({ ...refunds, type: "fix", effort: "medium", title: "Historical Ticket" }, t0);
+    await app1.deps.store.append("1", [
+      { type: "needs-you", stage: "plan", at: t0, ask: { kind: "stuck", reason: "stuck" } },
+    ]);
+    // Simulate pre-T7 database with existing tickets/events but no push_sent table data:
+    app1.db.run("DELETE FROM push_sent");
+    app1.db.close();
+
+    // Reopen daemon against the existing database
+    const app2 = await testApp(dbFile);
+    const fakePush = new FakePushService(app2.deps.registry);
+    app2.deps.push = fakePush;
+
+    await app2.daemon.tick();
+    expect(fakePush.sent).toHaveLength(0);
+
+    // Newly appended event DOES notify:
+    await app2.deps.store.append("1", [{ type: "report-ready", at: t0 + 10, summary: "Done" }]);
+    await app2.daemon.tick();
+    expect(fakePush.sent).toHaveLength(1);
+    expect(fakePush.sent[0]?.title).toBe("Report ready · #1");
+    app2.db.close();
   });
 });

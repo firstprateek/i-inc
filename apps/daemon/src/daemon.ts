@@ -109,7 +109,11 @@ export class Daemon {
       states.set(r.ticket.id, fold(events));
       this.applyKnowledge(r.ticket.id, events);
       this.fileFollowUps(r.ticket.id, events);
-      await this.sendPushNotifications(r.ticket, events);
+      try {
+        await this.sendPushNotifications(r.ticket, events);
+      } catch (err) {
+        this.d.log?.(`push error: ${String(err)}`);
+      }
     }
 
     this.checkAutoReleases(records, states, now);
@@ -265,6 +269,39 @@ export class Daemon {
   ensureKnowledge(): void {
     this.d.knowledge.ensureHandbook();
     for (const e of this.d.registry.employees()) this.d.knowledge.ensureBrain(e);
+    this.ensurePushBaseline();
+  }
+
+  /** Seeds push_sent with a baseline on initial startup so historical events aren't notified. */
+  ensurePushBaseline(): void {
+    const [row] = this.d.db.all<{ key: string }>(
+      "SELECT key FROM push_sent WHERE key = 'baseline:init' LIMIT 1",
+    );
+    if (row) return;
+
+    this.d.db.transaction(() => {
+      this.d.db.run(
+        "INSERT OR IGNORE INTO push_sent (key, at) VALUES (?, ?)",
+        "baseline:init",
+        this.d.clock.now(),
+      );
+      const rows = this.d.db.all<{ ticket_id: string; body: string }>(
+        "SELECT ticket_id, body FROM events ORDER BY ticket_id, seq",
+      );
+      const byTicket = new Map<string, number>();
+      for (const r of rows) {
+        const idx = byTicket.get(r.ticket_id) ?? 0;
+        byTicket.set(r.ticket_id, idx + 1);
+        const e = JSON.parse(r.body) as TicketEvent;
+        if (e.type === "needs-you" || e.type === "report-ready" || e.type === "main-red") {
+          this.d.db.run(
+            "INSERT OR IGNORE INTO push_sent (key, at) VALUES (?, ?)",
+            `push:${r.ticket_id}:${idx}`,
+            this.d.clock.now(),
+          );
+        }
+      }
+    });
   }
 
   /**
@@ -342,22 +379,18 @@ export class Daemon {
       if (!payload) continue;
 
       const key = `push:${ticket.id}:${i}`;
-      const [done] = this.d.db.all<{ n: number }>(
-        "SELECT COUNT(*) AS n FROM knowledge_applied WHERE edit_id = ?",
+      const res = this.d.db.run(
+        "INSERT INTO push_sent (key, at) VALUES (?, ?) ON CONFLICT (key) DO NOTHING",
         key,
+        this.d.clock.now(),
       );
-      if (done?.n) continue;
+      if ((res?.changes ?? 0) === 0) continue;
 
       try {
         await this.d.push.send(payload);
       } catch (err) {
         this.d.log?.(`failed to send push notification for ${key}: ${String(err)}`);
       }
-      this.d.db.run(
-        "INSERT OR IGNORE INTO knowledge_applied (edit_id, at) VALUES (?, ?)",
-        key,
-        this.d.clock.now(),
-      );
     }
   }
 

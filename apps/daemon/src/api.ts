@@ -276,6 +276,15 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         if (!b || typeof b.endpoint !== "string" || !b.endpoint.trim()) {
           return json({ error: "endpoint is required" }, 400);
         }
+        let url: URL;
+        try {
+          url = new URL(b.endpoint);
+        } catch {
+          return json({ error: "endpoint must be a valid URL" }, 400);
+        }
+        if (url.protocol !== "https:") {
+          return json({ error: "endpoint must be https" }, 400);
+        }
         await d.push?.subscribe(b as PushSubscription);
         return json({ ok: true });
       },
