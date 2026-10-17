@@ -46,6 +46,7 @@ export interface TicketState {
   /** Employees who have proposed their retro edits. */
   retroBy: Id[];
   outcome: "merged" | "rejected" | "done" | null;
+  closedAt: number | null;
   /** Set by a handoff; otherwise the ticket's own assignee builds. */
   assignee: Id | null;
   handedFrom: Id | null;
@@ -101,6 +102,7 @@ export function emptyState(): TicketState {
     ownerNote: null,
     retroBy: [],
     outcome: null,
+    closedAt: null,
     assignee: null,
     handedFrom: null,
     messages: [],
@@ -290,7 +292,7 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
     case "session-interrupted":
       return { ...s, interrupted: true, interruptedByOwner: true };
     case "closed":
-      return { ...s, status: "done", outcome: e.outcome };
+      return { ...s, status: "done", outcome: e.outcome, closedAt: e.at };
     case "failed":
       return { ...s, status: "failed", failure: { stage: e.stage, reason: e.reason, tried: e.tried } };
   }

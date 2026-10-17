@@ -17,6 +17,7 @@ import {
   occupancy,
   type PendingDuty,
   type Ports,
+  type ProjectRelease,
   type RunResult,
   runTicket,
   type Snapshot,
@@ -31,7 +32,7 @@ import type { Db } from "./db.ts";
 import type { KnowledgeStore } from "./knowledge.ts";
 import type { Registry } from "./registry.ts";
 import type { SqliteEventStore } from "./store.ts";
-import type { Tickets } from "./tickets.ts";
+import type { TicketRecord, Tickets } from "./tickets.ts";
 
 export interface DaemonDeps {
   clock: Clock;
@@ -106,6 +107,8 @@ export class Daemon {
       this.applyKnowledge(r.ticket.id, events);
       this.fileFollowUps(r.ticket.id, events);
     }
+
+    this.checkAutoReleases(records, states, now);
 
     // Paused tickets run again (the runner returns at once if the wait isn't over), and so do running
     // ones that nothing is driving, e.g. after a restart.
@@ -363,5 +366,47 @@ export class Daemon {
         out[r.ticket.assignee] = (out[r.ticket.assignee] ?? 0) + 1;
     }
     return out;
+  }
+
+  private checkAutoReleases(records: TicketRecord[], states: Map<Id, TicketState>, now: number): void {
+    const allReleases = this.d.registry.releases();
+    for (const project of this.d.registry.projects()) {
+      const policy = this.d.registry.projectPolicy(project.id);
+      if (!policy.autoRelease) continue;
+
+      const projectReleases = allReleases.filter((r) => r.project === project.id);
+      const releasedTicketIds = new Set(projectReleases.flatMap((r) => r.ticketIds));
+      const latestReleaseAt = projectReleases.length ? Math.max(...projectReleases.map((r) => r.at)) : null;
+
+      const projectTickets = records.filter((r) => r.ticket.project === project.id);
+      const pendingTickets = projectTickets.filter((r) => {
+        if (releasedTicketIds.has(r.ticket.id)) return false;
+        const state = states.get(r.ticket.id);
+        if (state?.outcome !== "merged") return false;
+        if (latestReleaseAt !== null && (state.closedAt ?? 0) <= latestReleaseAt) return false;
+        return true;
+      });
+
+      if (!pendingTickets.length) continue;
+
+      const count = projectReleases.length + 1;
+      const tag = `v${new Date(now).toISOString().slice(0, 10)}.${count}`;
+      const ticketIds = pendingTickets.map((r) => r.ticket.id);
+      const commits = pendingTickets
+        .map((r) => states.get(r.ticket.id)?.pushed)
+        .filter((c): c is string => typeof c === "string" && Boolean(c));
+
+      const release: ProjectRelease = {
+        project: project.id,
+        tag,
+        at: now,
+        ticketIds,
+        commits,
+      };
+
+      this.d.registry.recordRelease(release);
+      allReleases.push(release);
+      this.d.log?.(`auto-release ${tag} recorded for project ${project.id} (${ticketIds.length} tickets)`);
+    }
   }
 }

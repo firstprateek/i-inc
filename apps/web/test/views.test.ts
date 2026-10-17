@@ -1,8 +1,11 @@
 // The views against a fake API: what they render, and what the owner's taps send.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TicketView } from "../src/api.ts";
+import "../src/components/app.ts";
 import "../src/components/board.ts";
+import "../src/components/desk.ts";
 import "../src/components/inbox.ts";
+import "../src/components/office.ts";
 import "../src/components/ticket.ts";
 
 const view = (over: Partial<TicketView>): TicketView => ({
@@ -217,5 +220,188 @@ describe("the ticket drawer", () => {
       body: {},
     });
     expect(changedDispatched).toBe(true);
+  });
+});
+
+describe("the shell", () => {
+  it("renders a Sign out button and triggers logout on click", async () => {
+    calls = [];
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      calls.push({
+        method: init?.method ?? "GET",
+        url,
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      });
+      if (url === "/api/logout") {
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url === "/api/office") {
+        return new Response(JSON.stringify({ employees: [], accounts: [] }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url === "/api/board") {
+        return new Response(JSON.stringify({ tickets: [] }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({}), {
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const root = await mount("inc-app");
+    const signOutBtn = [...root.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Sign out");
+    expect(signOutBtn).toBeTruthy();
+
+    signOutBtn?.click();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(calls).toContainEqual({
+      method: "POST",
+      url: "/api/logout",
+      body: {},
+    });
+  });
+});
+
+describe("the office", () => {
+  it("renders the floor and Accounts & quotas section", async () => {
+    calls = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (url === "/api/office") {
+        return new Response(
+          JSON.stringify({
+            employees: [
+              {
+                id: "ada",
+                name: "Ada",
+                tint: 0,
+                role: "Core Engineer",
+                engine: "Claude Sonnet",
+                state: "idle",
+                ticket: null,
+              },
+            ],
+            accounts: [
+              {
+                id: "claude-pro",
+                name: "Claude Pro",
+                monthlyCap: 100,
+              },
+            ],
+            rateLimits: {
+              "claude-pro": {
+                status: "allowed",
+                fiveHourUtilization: 0.45,
+                sevenDayUtilization: 0.8,
+                updatedAt: 1000,
+              },
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url === "/api/board") {
+        return new Response(JSON.stringify({ tickets: [] }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({}), {
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const root = await mount("inc-office");
+    expect(root.textContent).toContain("The floor");
+    expect(root.textContent).toContain("Ada");
+    expect(root.textContent).toContain("Accounts & quotas");
+    expect(root.textContent).toContain("Claude Pro");
+    expect(root.textContent).toContain("Cap: $100");
+    expect(root.textContent).toContain("45%");
+    expect(root.textContent).toContain("80%");
+    expect(root.textContent).toContain("allowed");
+  });
+});
+
+describe("My desk releases", () => {
+  it("renders pending releases with Cut release button and recent releases", async () => {
+    calls = [];
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      calls.push({
+        method: init?.method ?? "GET",
+        url,
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      });
+      if (url === "/api/desk") {
+        return new Response(
+          JSON.stringify({
+            spend: { lines: [], total: 0, perMergedPR: null },
+            waits: [],
+            bottleneck: null,
+            merged: 1,
+            releases: [
+              {
+                project: "Duet",
+                tag: "v2026-10-17.1",
+                at: 1000,
+                ticketIds: ["1"],
+                commits: ["sha1"],
+              },
+            ],
+            pendingReleases: [
+              {
+                project: "Duet",
+                id: "Duet",
+                repo: "firstprateek/duet",
+                pendingTickets: [{ id: "2", title: "Add feature", pushed: "sha222" }],
+              },
+            ],
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url === "/api/knowledge/recent") {
+        return new Response(JSON.stringify({ changes: [] }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url === "/api/projects/Duet/release") {
+        return new Response(
+          JSON.stringify({
+            release: {
+              project: "Duet",
+              tag: "v2026-10-17.2",
+              at: 2000,
+              ticketIds: ["2"],
+              commits: ["sha222"],
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const root = await mount("inc-desk");
+    expect(root.textContent).toContain("Releases");
+    expect(root.textContent).toContain("1 unreleased ticket");
+    expect(root.textContent).toContain("Add feature");
+    expect(root.textContent).toContain("v2026-10-17.1");
+
+    const cutBtn = [...root.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Cut release");
+    expect(cutBtn).toBeTruthy();
+    cutBtn?.click();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(calls).toContainEqual({
+      method: "POST",
+      url: "/api/projects/Duet/release",
+      body: {},
+    });
   });
 });

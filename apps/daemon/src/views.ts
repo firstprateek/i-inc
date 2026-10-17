@@ -12,9 +12,29 @@ import {
   withinHours,
 } from "@i-inc/core";
 import type { Registry } from "./registry.ts";
-import type { Column, DeskEntry, DeskView, EmployeeState, Person, TicketView } from "./view-types.ts";
+import type {
+  AccountRateLimit,
+  Column,
+  DeskEntry,
+  DeskView,
+  EmployeeState,
+  PendingRelease,
+  PendingTicket,
+  Person,
+  TicketView,
+} from "./view-types.ts";
 
-export type { Column, DeskEntry, DeskView, EmployeeState, Person, TicketView };
+export type {
+  AccountRateLimit,
+  Column,
+  DeskEntry,
+  DeskView,
+  EmployeeState,
+  PendingRelease,
+  PendingTicket,
+  Person,
+  TicketView,
+};
 
 import type { TicketRecord } from "./tickets.ts";
 

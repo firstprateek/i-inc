@@ -1,6 +1,5 @@
-// My desk (spec §10): the bottleneck, this month's spend, and what shipped.
 import { css, html } from "lit";
-import { api, type DeskView, type NamedChange } from "../api.ts";
+import { api, type DeskView, type NamedChange, refreshNow } from "../api.ts";
 import { describe } from "./knowledge.ts";
 import { Loader } from "./loader.ts";
 import { base } from "./shared.ts";
@@ -24,6 +23,17 @@ const hours = (h: number) => (h < 1 ? `${Math.round(h * 60)} min` : `${h.toFixed
 const money = (n: number) => `$${n.toFixed(n < 10 ? 2 : 0)}`;
 
 export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
+  static override properties = {
+    ...Loader.properties,
+    cutting: { state: true },
+  };
+  declare cutting: string | null;
+
+  constructor() {
+    super();
+    this.cutting = null;
+  }
+
   protected fetch = async () => ({ ...(await api.desk()), learned: await api.learned() });
 
   static override styles = [
@@ -46,9 +56,37 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
       .learned a:first-child { border-top: none; }
       .learned small { color: var(--ink-2); white-space: nowrap; }
       .num { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+      .releases { display: flex; flex-direction: column; gap: 14px; }
+      .release-project { display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+      .release-project:last-of-type { border-bottom: none; padding-bottom: 0; }
+      .release-project-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .spacer { flex-grow: 1; }
+      .release-btn { font-size: 13px; min-height: 36px; padding: 0 16px; }
+      .pending-tickets { display: flex; flex-direction: column; gap: 4px; padding-left: 6px; }
+      .pending-ticket { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+      .pending-ticket a { text-decoration: none; color: inherit; }
+      .font-mono { font-family: var(--mono); }
+      .font-small { font-size: 13px; }
+      .recent-releases { display: flex; flex-direction: column; gap: 8px; }
+      .recent-release { display: flex; flex-direction: column; gap: 4px; padding: 6px 0; border-top: 1px solid var(--line); }
+      .recent-release:first-child { border-top: none; }
+      .recent-release-header { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+      .recent-release-meta { font-size: 12px; }
       @media (max-width: 900px) { .grid > * { grid-column: 1 / -1 !important; } }
     `,
   ];
+
+  private async cutRelease(projectId: string) {
+    this.cutting = projectId;
+    try {
+      await api.cutRelease(projectId);
+      refreshNow();
+    } catch (err) {
+      alert(`Failed to cut release: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      this.cutting = null;
+    }
+  }
 
   override render() {
     if (this.error) return html`<p role="alert">The daemon isn't answering: ${this.error}</p>`;
@@ -101,6 +139,66 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
                   <small>${c.authorName} · ${c.repo === "handbook" ? "handbook" : "own brain"}</small></a>`,
               )}</div>`
             : html`<span class="note">Nothing yet. Lessons arrive at each ticket's retro.</span>`
+        }
+      </section>
+      <section class="card panel releases">
+        <h2>Releases</h2>
+        ${
+          (d.pendingReleases ?? []).length
+            ? (d.pendingReleases ?? []).map((p) => {
+                const count = p.pendingTickets.length;
+                return html`<div class="release-project">
+                <div class="release-project-header">
+                  <b>${p.project || p.id}</b>
+                  <span class="muted font-small">${count} unreleased ${count === 1 ? "ticket" : "tickets"}</span>
+                  <span class="spacer"></span>
+                  <button
+                    class="btn ${count ? "" : "ghost"} release-btn"
+                    type="button"
+                    ?disabled=${count === 0 || this.cutting === (p.project || p.id)}
+                    @click=${() => this.cutRelease(p.project || p.id)}
+                  >
+                    ${this.cutting === (p.project || p.id) ? "Cutting…" : "Cut release"}
+                  </button>
+                </div>
+                ${
+                  count > 0
+                    ? html`<div class="pending-tickets">
+                      ${p.pendingTickets.map(
+                        (t) => html`<div class="pending-ticket">
+                          <a href="#/ticket/${t.id}">#${t.id} ${t.title}</a>
+                          ${t.pushed ? html`<small class="muted font-mono">${t.pushed.slice(0, 7)}</small>` : ""}
+                        </div>`,
+                      )}
+                    </div>`
+                    : html`<span class="note">Up to date.</span>`
+                }
+              </div>`;
+              })
+            : html`<span class="note">No projects configured.</span>`
+        }
+        <h3>Recent releases</h3>
+        ${
+          (d.releases ?? []).length > 0
+            ? html`<div class="recent-releases">
+              ${[...(d.releases ?? [])]
+                .reverse()
+                .slice(0, 5)
+                .map(
+                  (r) => html`<div class="recent-release">
+                  <div class="recent-release-header">
+                    <span class="tag font-mono">${r.tag}</span>
+                    <b>${r.project}</b>
+                    <span class="spacer"></span>
+                    <small class="muted">${new Date(r.at).toISOString().slice(0, 10)}</small>
+                  </div>
+                  <div class="recent-release-meta">
+                    <small class="muted">${r.ticketIds.length} ${r.ticketIds.length === 1 ? "ticket" : "tickets"} (${r.ticketIds.map((id: string) => `#${id}`).join(", ")})</small>
+                  </div>
+                </div>`,
+                )}
+            </div>`
+            : html`<span class="note">No releases cut yet.</span>`
         }
       </section>
     </div>`;

@@ -141,6 +141,14 @@ export interface PullRequestRef {
 /** How a project's work reaches main (decided 2026-10-17). */
 export type MergeMode = "direct" | "owner-merges";
 
+export interface ProjectRelease {
+  project: Id;
+  tag: string;
+  at: number;
+  ticketIds: Id[];
+  commits: string[];
+}
+
 export interface ProjectPolicy {
   /**
    * direct: after a fresh-context review (at most 2 rounds) the builder's work is pushed straight
@@ -151,12 +159,14 @@ export interface ProjectPolicy {
   protectedPaths: string[];
   /** Follow-up tickets agents may file for themselves per day. */
   followUpsPerDay: number;
+  autoRelease?: boolean;
 }
 
 export const defaultProjectPolicy: ProjectPolicy = {
   mode: "direct",
   protectedPaths: [".github/", "release-please-config.json", ".release-please-manifest.json"],
   followUpsPerDay: 3,
+  autoRelease: false,
 };
 
 /** A ticket an agent proposes for itself, from what it noticed while working. */
