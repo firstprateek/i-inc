@@ -166,7 +166,7 @@ export class WebPushSender implements PushService {
     private readonly registry: Registry,
     opts: WebPushSenderOptions = {},
   ) {
-    this.vapid = opts.vapid ?? vapidKeys(opts.configDir);
+    this.vapid = opts.vapid ?? (opts.configDir ? vapidKeys(opts.configDir) : generateVapidKeys());
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.now = opts.now ?? Date.now;
   }

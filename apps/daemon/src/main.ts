@@ -39,6 +39,7 @@ const common = {
     ...(process.env.I_INC_HOSTS?.split(",").filter(Boolean) ?? []),
   ],
   log,
+  configDir: configDir(),
 };
 mkdirSync(home, { recursive: true });
 

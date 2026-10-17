@@ -563,7 +563,6 @@ describe("autoRelease policy and automatic releases", () => {
   });
 });
 
-<<<<<<< HEAD
 describe("GET /api/sandboxes (contract C1)", () => {
   it("returns empty sandboxes when no teams are registered", async () => {
     const app = await testApp();
