@@ -22,3 +22,6 @@ put() { # put <file> <path in the machine> <mode>
 }
 put "$img/acp-env.sh" /usr/local/lib/i-inc/acp-env.sh 644
 for f in "$img"/launchers/acp-*; do put "$f" "/usr/local/bin/$(basename "$f")" 755; done
+$c machine run -u employee -n "$machine" -- mkdir -p /home/employee/.claude </dev/null
+cat "$img/claude-settings.json" | $c machine run -i -u employee -n "$machine" -- tee /home/employee/.claude/settings.json >/dev/null
+echo "$machine: /home/employee/.claude/settings.json"

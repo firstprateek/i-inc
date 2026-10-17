@@ -577,27 +577,32 @@ async function directGates(c: Step): Promise<void> {
     await c.emit(failed(c, "gates", "the owner declined the change to protected paths"));
     return;
   }
-  const g = await c.p.harness.runGates(c.ticket, { ownerApproved: answer === "approve" });
-  if (!g.ok && g.protectedPaths?.length) {
-    await c.emit(needsYou(c, "gates", { kind: "protected-paths", paths: g.protectedPaths }));
-    return;
-  }
-  if (!g.ok) {
-    await c.emit({ type: "gates-ran", at, ok: false, conflict: g.conflict, reason: g.reason });
-    if (!g.conflict) await c.emit(failed(c, "gates", g.reason));
-    return;
-  }
-  const events: TicketEvent[] = [{ type: "gates-ran", at, ok: true, conflict: false }];
-  if (g.pushed) events.push({ type: "pushed", at, sha: g.pushed });
-  await c.emit(...events);
-  if (g.pushed && c.p.harness.watchCi) {
-    const ci = await c.p.harness.watchCi(c.ticket, g.pushed);
-    const now = c.p.clock.now();
-    if (!ci.ok) {
-      await c.emit({ type: "main-red", at: now, sha: g.pushed, reason: ci.reason });
+  let sha = c.s.pushed && !red ? c.s.pushed : undefined;
+  if (!sha) {
+    const g = await c.p.harness.runGates(c.ticket, { ownerApproved: answer === "approve" });
+    if (!g.ok && g.protectedPaths?.length) {
+      await c.emit(needsYou(c, "gates", { kind: "protected-paths", paths: g.protectedPaths }));
       return;
     }
-    await c.emit({ type: "ci-green", at: now, sha: g.pushed });
+    const now = c.p.clock.now();
+    if (!g.ok) {
+      await c.emit({ type: "gates-ran", at: now, ok: false, conflict: g.conflict, reason: g.reason });
+      if (!g.conflict) await c.emit(failed(c, "gates", g.reason));
+      return;
+    }
+    const events: TicketEvent[] = [{ type: "gates-ran", at: now, ok: true, conflict: false }];
+    if (g.pushed) events.push({ type: "pushed", at: now, sha: g.pushed });
+    await c.emit(...events);
+    sha = g.pushed;
+  }
+  if (sha && c.p.harness.watchCi) {
+    const ci = await c.p.harness.watchCi(c.ticket, sha);
+    const now = c.p.clock.now();
+    if (!ci.ok) {
+      await c.emit({ type: "main-red", at: now, sha, reason: ci.reason });
+      return;
+    }
+    await c.emit({ type: "ci-green", at: now, sha });
   }
   await c.emit(finished(c, "gates"));
 }
