@@ -83,6 +83,7 @@ describe("live updates SSE API (GET /api/events)", () => {
     expect(res.headers.get("content-type")).toBe("text/event-stream; charset=utf-8");
     expect(res.headers.get("cache-control")).toBe("no-cache");
     expect(res.headers.get("connection")).toBe("keep-alive");
+    expect(res.headers.get("x-accel-buffering")).toBe("no");
 
     const reader = createEventReader(res);
 
@@ -186,7 +187,7 @@ describe("live updates SSE API (GET /api/events)", () => {
     expect(app.live.listenerCount("office")).toBe(0);
   });
 
-  it("requires authentication when token is configured", async () => {
+  it("requires authentication when token is configured (bearer header or i_inc cookie)", async () => {
     const app = await testApp();
     const handle = createApi(app.daemon, app.deps, {
       token: "secret-token",
@@ -197,15 +198,46 @@ describe("live updates SSE API (GET /api/events)", () => {
     expect(unauth.status).toBe(401);
 
     // With bearer token: 200
-    const abort = new AbortController();
-    const authed = await handle(
+    const abortBearer = new AbortController();
+    const authedBearer = await handle(
       new Request("http://i.inc/api/events", {
         headers: { authorization: "Bearer secret-token" },
+        signal: abortBearer.signal,
+      }),
+    );
+    expect(authedBearer.status).toBe(200);
+    abortBearer.abort();
+
+    // With cookie (EventSource path in browsers): 200
+    const abortCookie = new AbortController();
+    const authedCookie = await handle(
+      new Request("http://i.inc/api/events", {
+        headers: { cookie: "i_inc=secret-token" },
+        signal: abortCookie.signal,
+      }),
+    );
+    expect(authedCookie.status).toBe(200);
+    abortCookie.abort();
+  });
+
+  it("drops and closes stream when client stalls and buffer fills (desiredSize <= 0)", async () => {
+    const app = await testApp();
+    const abort = new AbortController();
+    const res = await app.handle(
+      new Request("http://i.inc/api/events", {
+        method: "GET",
         signal: abort.signal,
       }),
     );
-    expect(authed.status).toBe(200);
+    expect(res.status).toBe(200);
+    expect(app.live.listenerCount("ticket")).toBe(1);
 
-    abort.abort();
+    // Enqueue without reading from res.body so desiredSize drops to <= 0
+    app.deps.tickets.create({ ...refunds, type: "fix", effort: "medium" }, app.deps.clock.now());
+    // Next event triggers desiredSize <= 0 drop
+    app.deps.tickets.create({ ...refunds, type: "fix", effort: "medium" }, app.deps.clock.now());
+
+    // Listeners should be cleaned up
+    expect(app.live.listenerCount("ticket")).toBe(0);
   });
 });

@@ -156,6 +156,13 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
 
         const send = (chunk: string) => {
           if (closed || !controllerRef) return;
+          if (controllerRef.desiredSize !== null && controllerRef.desiredSize <= 0) {
+            cleanup();
+            try {
+              controllerRef.close();
+            } catch {}
+            return;
+          }
           try {
             controllerRef.enqueue(encoder.encode(chunk));
           } catch {
@@ -198,6 +205,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
             "content-type": "text/event-stream; charset=utf-8",
             "cache-control": "no-cache",
             connection: "keep-alive",
+            "x-accel-buffering": "no",
           },
         });
       },

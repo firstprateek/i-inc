@@ -130,6 +130,7 @@ async function serveWeb(req: Request): Promise<Response> {
 Bun.serve({
   port,
   hostname: host,
+  idleTimeout: 60,
   fetch: (req) =>
     new URL(req.url).pathname.startsWith("/api/") || !existsSync(web) ? app.handle(req) : serveWeb(req),
 });
