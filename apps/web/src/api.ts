@@ -144,6 +144,13 @@ export const api = {
   retryTicket: (id: string): Promise<void> => call("POST", `/api/tickets/${id}/retry`, {}),
 };
 
-/** Tells every view to refetch: after an action, and on a timer. */
+/** What changed, when a refresh comes from the live event stream. A refresh without one is for everything. */
+export interface RefreshScope {
+  tickets: Set<string>;
+  office: boolean;
+}
+
+/** Tells every view to refetch: after an action, on a live event, and on a timer. */
 export const refresh = new EventTarget();
-export const refreshNow = () => refresh.dispatchEvent(new Event("refresh"));
+export const refreshNow = (scope?: RefreshScope) =>
+  refresh.dispatchEvent(new CustomEvent<RefreshScope | undefined>("refresh", { detail: scope }));
