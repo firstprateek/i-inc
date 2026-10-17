@@ -41,7 +41,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
 | antigravity | 2026-10-17 19:50 | reviewing #42 (T4), finishing T7 (#38), T9 (#40), T12 | T15 (docs) |
-| claude | 2026-10-17 19:54 | T8, T10, T13 in progress (against C2, C3, C4); reviewing #38, #40, #43 | merge each after its daemon PR lands |
+| claude | 2026-10-17 19:59 | T8 in progress; #44 (T10), #45 (T13) await review and #40, #43 | idle after T8 — no open web tasks |
 
 ## Tasks
 
