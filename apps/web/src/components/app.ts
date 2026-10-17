@@ -11,13 +11,16 @@ import "./hiring.ts";
 import "./chat.ts";
 import "./knowledge.ts";
 import "./offline.ts";
+import "./setup.ts";
+import { isSection, type Section } from "./setup.ts";
 
 type Route =
   | { view: "office" | "board" | "desk" | "inbox" | "hiring" | "handbook" | "more" }
   | { view: "hiring"; id: string }
   | { view: "brain"; id: string }
   | { view: "ticket"; id: string }
-  | { view: "chat"; id: string };
+  | { view: "chat"; id: string }
+  | { view: "setup"; section: Section };
 
 /** Below this width the views are a bottom tab bar, not a row in the header. */
 const phone = 900;
@@ -27,6 +30,7 @@ function parse(hash: string): Route {
   if (view === "ticket" && id) return { view: "ticket", id };
   if (view === "hiring" && id) return { view: "hiring", id };
   if (view === "chat") return { view: "chat", id: id ?? "" };
+  if (view === "setup") return { view: "setup", section: isSection(id) ? id : "teams" };
   if (view === "brain" && id) return { view: "brain", id };
   if (
     view === "board" ||
@@ -133,7 +137,7 @@ export class IncApp extends LitElement {
           ${link("office", "Office", v === "office")} ${link("board", "Board", v === "board" || v === "ticket")}
           ${link("chat", "Chat", v === "chat")}
           ${link("desk", "My desk", v === "desk")} ${link("handbook", "Handbook", v === "handbook" || v === "brain")}
-          ${link("hiring", "Hiring", v === "hiring")}
+          ${link("hiring", "Hiring", v === "hiring")} ${link("setup/teams", "Setup", v === "setup")}
           ${link("inbox", "Inbox", v === "inbox")}
         </nav>
         <span class="spacer"></span>
@@ -148,7 +152,7 @@ export class IncApp extends LitElement {
       <nav class="tabs" aria-label="Views">
         ${link("inbox", "Inbox", v === "inbox")} ${link("office", "Office", v === "office")}
         ${link("board", "Board", v === "board" || v === "ticket")} ${link("chat", "Chats", v === "chat")}
-        ${link("more", "More", v === "more" || v === "desk" || v === "hiring" || v === "handbook" || v === "brain")}
+        ${link("more", "More", v === "more" || v === "desk" || v === "hiring" || v === "handbook" || v === "brain" || v === "setup")}
       </nav>
     `;
   }
@@ -176,11 +180,14 @@ export class IncApp extends LitElement {
               ["desk", "My desk", "Spend, where work waited, releases"],
               ["handbook", "Handbook", "What every employee knows"],
               ["hiring", "Hiring", "Add someone to the team"],
+              ["setup/teams", "Setup", "Teams, projects, engines and sandboxes"],
             ].map(
               ([to, name, what]) =>
                 html`<li><a class="card" href="#/${to}"><b>${name}</b><span>${what}</span></a></li>`,
             )}
           </ul>`;
+      case "setup":
+        return html`<inc-setup .section=${this.route.section}></inc-setup>`;
       case "handbook":
         return html`<inc-knowledge repo="handbook"></inc-knowledge>`;
       case "brain":
