@@ -52,7 +52,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | T3 | `GET /api/sandboxes` (contract C1) | daemon | claimed (antigravity) | | | |
 | T4 | Setup screens: Teams, Projects (mode, protected paths, follow-up budget, recipe), Engines and accounts (add one, "local" badge), sandbox sign-in status | web | open | | T3 | Existing PUT routes for teams/projects/engines/accounts |
 | T5 | Mobile pass on every view (390x844 and 1440x900, light and dark): navigation, touch targets, forms, tables | web | claimed (claude) | | | |
-| T6 | Installable app: manifest, icons, service worker with an offline shell | web | claimed (claude) | | | |
+| T6 | Installable app: manifest, icons, service worker with an offline shell | web | in review (claude) | #35 | | |
 | T7 | Web Push backend: VAPID keys in `~/.config/i-inc`, subscribe/unsubscribe, sends on needs-you, report-ready, main-red (contract C2) | daemon | open | | | |
 | T8 | Push opt-in in settings, and the service worker's push handler | web | open | | T6, T7 | |
 | T9 | Live updates: `GET /api/events` server-sent events (contract C3) | daemon | open | | | |
