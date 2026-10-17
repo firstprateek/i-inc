@@ -312,7 +312,7 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     if (out === null) return;
     const items = parseJson<{ items: { doneWhen: string; pass: boolean; evidence: string }[] }>(out)?.items;
     if (!items) {
-      await c.emit(failed(c, "prove", "the verifier's proof could not be read"));
+      await c.emit(failed(c, "prove", `the verifier's proof could not be read${quoteOf(out)}`));
       return;
     }
     await c.emit({ type: "proof", at: c.p.clock.now(), items });
@@ -372,7 +372,7 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
       if (out === null) return;
       const verdict = parseJson<{ approved: boolean; findings: Finding[] }>(out);
       if (!verdict) {
-        await c.emit(failed(c, "review", "the review could not be read"));
+        await c.emit(failed(c, "review", `the review could not be read${quoteOf(out)}`));
         return;
       }
       await c.emit({
@@ -803,10 +803,23 @@ function routed(ticket: Ticket, edit: KnowledgeEdit): KnowledgeEdit {
   return ticket.type === "errand" ? { ...edit, layer: "brain" } : edit;
 }
 
-function parseJson<T>(text: string): T | null {
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    return null;
+/**
+ * An agent's JSON reply. Real agents (first seen on Duet, 2026-10-17) wrap it in a code fence or a
+ * sentence, so this tries the whole reply, then each fenced block, then the outermost braces.
+ */
+export function parseJson<T>(text: string): T | null {
+  const tries = [text.trim()];
+  for (const m of text.matchAll(/```(?:json)?[ \t]*\n([\s\S]*?)```/g)) tries.push((m[1] ?? "").trim());
+  const first = text.indexOf("{");
+  const last = text.lastIndexOf("}");
+  if (first >= 0 && last > first) tries.push(text.slice(first, last + 1));
+  for (const t of tries) {
+    try {
+      return JSON.parse(t) as T;
+    } catch {}
   }
+  return null;
 }
+
+/** The start of an unreadable reply, for the failure's reason. */
+const quoteOf = (text: string) => ` (it began: "${text.trim().slice(0, 160).replace(/\s+/g, " ")}")`;
