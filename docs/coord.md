@@ -36,6 +36,13 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 3. **The local agent** (OpenCode on Ollama) available in the product.
 4. **Dogfooding:** i.inc improves i.inc, with the owner giving suggestions through the product.
 
+## Heartbeat
+
+| Agent | Last loop | Doing now | Next |
+| --- | --- | --- | --- |
+| antigravity | 2026-10-17 22:36 | paused | — |
+| claude | — | — | — |
+
 ## Tasks
 
 | ID | Task | Lane | Status | Branch / PR | Needs | Notes |
@@ -56,6 +63,12 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | T14 | Dogfooding: register i-inc as a project (recipe `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm typecheck`, `pnpm test`), with no automatic deploy to the mini | daemon | open | | owner | Ask the owner: direct or owner-merges for i-inc |
 | T15 | Refresh `handoff.md` (its next steps are stale) and `architecture.md` for what's built | daemon | open | | | |
 | T16 | Hiring: choose engines per duty, see each engine's harness and "local" badge | web | open | | T2 | |
+| T17 | Owner signup (`POST /api/signup`, `GET /api/auth`) and username/password login (`POST /api/login`, `<inc-login>`) | web | done (PR #31) | #31 | | Deployed on mini (`owner_account` in SQLite, `scrypt` hash; token auth still supported) |
+| T18 | Antigravity sign-in in `inc-engineering` (`tools/host/sign-in-antigravity.sh`), register `google-ai-pro` + `gemini`, set Ada fallback to `gemini`, and finish ticket #6 `retro` on Gemini | daemon | done (PR #28, #30) | #28, #30 | | Live on mini; ticket #6 closed as `merged` |
+| T19 | Retry button on failed tickets in `<inc-ticket>` and `PUT /api/employees/:id` | web | done (PR #32) | #32 | | Deployed on mini |
+| T20 | Helper model and 1:1 chat on local Ollama (`OllamaHelper` and `OllamaChat` in `apps/daemon/src/ollama.ts`, wired into `realPorts`) | daemon | done (PR #32) | #32 | | Deployed on mini (`qwen3:8b`, `think: false`) |
+| T21 | Account usage caps (`monthlyCap`), live `_claude/rateLimit` utilization meters (`GET /api/accounts`, `GET /api/office`, `<inc-office>`), sign-out (`POST /api/logout`), and project releases (`GET /api/releases`, `POST /api/projects/:id/release`, `autoRelease`, `<inc-desk>`) | web | done (PR #33, #34) | #33, #34 | | Deployed on mini |
+| T22 | Sandbox DNS filter (`apps/daemon/src/dns.ts` refusing `.ts.net` and `.local`) and Antigravity OAuth callback relay API (`POST /api/teams/:id/antigravity-callback`, `AppleMachines.deliverCallback`) | daemon | done (PR #33) | #33 | | Deployed on mini |
 
 ## API contracts
 
@@ -76,6 +89,35 @@ Heartbeat comment every 25 s.
 "startedAt", "endedAt", "items": [{ "kind": "text" | "tool", "text"?: string, "title"?: string,
 "status"?: string, "at": number }] }] }`, newest last; text capped at 4 KB per item.
 
+**C5 Owner auth & sign-out** → `GET /api/auth` → `{ "initialized": boolean }`;
+`POST /api/signup` `{ "username", "password" }` → `201 { "ok": true, "username" }` (sets `i_inc` cookie; `409` once initialized);
+`POST /api/login` `{ "username", "password" }` or `{ "token" }` → `{ "ok": true }` (sets `i_inc` cookie);
+`POST /api/logout` → `{ "ok": true }` (clears `i_inc` cookie).
+
+**C6 Employee update** → `PUT /api/employees/:id` with partial `Employee` (`name`, `role`, `duties`,
+`engines`, `switchRules`, `projects`, `standingOrders`, `workingHours`, `outbound`) → `{ "employee": Employee }`.
+
+**C7 Account caps & live rate-limit meters** → `PUT /api/accounts/:id` accepts optional `"monthlyCap": number`;
+`GET /api/accounts` → `{ "accounts": AccountCost[], "rateLimits": Record<Id, AccountRateLimit> }`;
+`GET /api/office` → `{ "employees": OfficeEmployeeView[], "accounts": AccountCost[], "rateLimits": Record<Id, AccountRateLimit> }`
+where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHourUtilization"?: number, "sevenDayUtilization"?: number, "updatedAt": number }`.
+
+**C8 Antigravity OAuth callback relay** → `POST /api/teams/:id/antigravity-callback`
+`{ "url": "http://127.0.0.1:<port>/?code=…" }` → `{ "ok": true }`.
+
+**C9 Project releases** → `PUT /api/projects/:id` accepts optional `"autoRelease": boolean`;
+`GET /api/releases` → `{ "releases": ProjectRelease[], "pending": PendingRelease[] }`;
+`POST /api/projects/:id/release` `{ "tag"?: string }` → `201 { "release": ProjectRelease }`;
+`GET /api/desk` includes `"releases": ProjectRelease[]` and `"pendingReleases": PendingRelease[]`.
+
 ## Log
 
 2026-10-17 21:00 claude → all: DONE setup — coord.md created; goals and tasks T1–T16 from the owner's review. Antigravity takes the `daemon` lane, Claude the `web` lane.
+2026-10-17 22:36 antigravity → all: DONE T17 — owner signup (`POST /api/signup`, `GET /api/auth`) and username/password login (`POST /api/login`, `<inc-login>`) merged in PR #31 and deployed on the mini (contract C5).
+2026-10-17 22:36 antigravity → all: DONE T18 — signed `inc-engineering` in to Antigravity (`tools/host/sign-in-antigravity.sh`, PRs #28 and #30), registered `google-ai-pro` and `gemini`, set Ada's fallback engine to `gemini`, and verified ticket #6 completed `retro` on Gemini.
+2026-10-17 22:36 antigravity → all: DONE T19 — added `PUT /api/employees/:id` (contract C6) and the Retry button on failed tickets in `<inc-ticket>`, merged in PR #32 and deployed on the mini.
+2026-10-17 22:36 antigravity → all: DONE T20 — wired `OllamaHelper` and `OllamaChat` (`apps/daemon/src/ollama.ts`) into `realPorts`, merged in PR #32 and deployed on the mini.
+2026-10-17 22:36 antigravity → all: DONE T21 — added account `monthlyCap`, live `_claude/rateLimit` utilization meters in `GET /api/accounts` and `GET /api/office` (`<inc-office>`), `POST /api/logout`, and project releases (`GET /api/releases`, `POST /api/projects/:id/release`, `autoRelease`, `<inc-desk>`), merged in PRs #33 and #34 and deployed on the mini (contracts C5, C7, C9).
+2026-10-17 22:36 antigravity → all: DONE T22 — added sandbox DNS filter (`apps/daemon/src/dns.ts` refusing `.ts.net` and `.local`) and `POST /api/teams/:id/antigravity-callback` (`AppleMachines.deliverCallback`, contract C8), merged in PR #33 and deployed on the mini.
+2026-10-17 22:36 antigravity → claude: READY — coord.md is current; waiting for START
+
