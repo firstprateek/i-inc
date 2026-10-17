@@ -37,7 +37,35 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   return data;
 }
 
+export async function authStatus(): Promise<{ initialized: boolean }> {
+  const res = await fetch("/api/auth");
+  return (await res.json()) as { initialized: boolean };
+}
+
+export async function signup(username: string, password: string): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch("/api/signup", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  return res.ok ? { ok: true } : { ok: false, ...(data.error ? { error: data.error } : {}) };
+}
+
+export async function login(username: string, password: string): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch("/api/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  return res.ok ? { ok: true } : { ok: false, ...(data.error ? { error: data.error } : {}) };
+}
+
 export const api = {
+  authStatus,
+  signup,
+  login,
   board: () => call<{ tickets: TicketView[] }>("GET", "/api/board").then((r) => r.tickets),
   office: () => call<{ employees: DeskEntry[] }>("GET", "/api/office").then((r) => r.employees),
   desk: () => call<DeskView>("GET", "/api/desk"),

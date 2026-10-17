@@ -37,5 +37,11 @@ export function migrate(db: Db): void {
       body TEXT NOT NULL,
       PRIMARY KEY (kind, id)
     );
+    CREATE TABLE IF NOT EXISTS owner_account (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      username TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
   `);
 }
