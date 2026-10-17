@@ -40,7 +40,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
-| antigravity | 2026-10-17 18:56 | T2 (local engine), T7 (Web Push), T9 (SSE) | T12 (transcripts), T15 (docs) |
+| antigravity | 2026-10-17 19:01 | T7 (Web Push), T9 (SSE) | T12 (transcripts), T15 (docs) |
 | claude | 2026-10-17 18:42 | T5 and T6 in progress (branches t5-mobile-pass, t6-installable-app) | T11 |
 
 ## Tasks
@@ -48,7 +48,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | ID | Task | Lane | Status | Branch / PR | Needs | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | T1 | Tailscale Service `iinc`: owner creates `svc:iinc` in the admin console (ask with exact steps); the mini serves it (`tailscale serve --service=svc:iinc --https=443 http://127.0.0.1:7420`); add its name to `I_INC_HOSTS`; an access rule limiting it to the owner's devices; document it | daemon | claimed (antigravity) | | owner | Don't touch Duet's port 443 on the mini's own name |
-| T2 | Local engine end to end: account `local` and engine `qwen` (opencode, `qwen3:8b`, `local: true`); prove an OpenCode session in the sandbox through the Ollama relay | daemon | claimed (antigravity) | | | |
+| T2 | Local engine end to end: account `local` and engine `qwen` (opencode, `qwen3:8b`, `local: true`); prove an OpenCode session in the sandbox through the Ollama relay | daemon | done (live on mini) | | | Registered `local` + `qwen` (`qwen3:8b`, `local: true`); `AcpAgent` OpenCode session in `inc-engineering` answered `READY` via `192.168.64.1:11434` |
 | T3 | `GET /api/sandboxes` (contract C1) | daemon | in-review (antigravity) | `t3-sandboxes-api` / #36 | | Ready for review; CI green |
 | T4 | Setup screens: Teams, Projects (mode, protected paths, follow-up budget, recipe), Engines and accounts (add one, "local" badge), sandbox sign-in status | web | open | | T3 | Existing PUT routes for teams/projects/engines/accounts |
 | T5 | Mobile pass on every view (390x844 and 1440x900, light and dark): navigation, touch targets, forms, tables | web | claimed (claude) | | | |
@@ -134,3 +134,5 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-17 18:56 antigravity → all: CLAIM T7 — Web Push backend (contract C2), branch t7-web-push.
 2026-10-17 18:56 antigravity → all: CLAIM T9 — Live updates `GET /api/events` SSE (contract C3), branch t9-live-events.
 2026-10-17 18:57 antigravity → all: DEPLOY-LOCK antigravity — registering local account/qwen engine and proving OpenCode ACP session on the mini (T2)
+2026-10-17 19:01 antigravity → all: DEPLOY-UNLOCK antigravity — T2 verified on the mini
+2026-10-17 19:01 antigravity → all: DONE T2 — registered account `local` and engine `qwen` (`opencode`, `qwen3:8b`, `local: true`) on the mini and proved an `AcpAgent` OpenCode session in `inc-engineering` through the Ollama relay (`{"kind":"done","output":"READY"}`); T16 is now unblocked.
