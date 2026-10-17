@@ -118,3 +118,25 @@ describe("direct mode", () => {
     expect(red.harness.reverted).toEqual([sha(5)]);
   });
 });
+
+describe("reading agents' JSON replies", () => {
+  it("takes JSON on its own, in a code fence, or inside a sentence", async () => {
+    const { parseJson } = await import("../src/runner.ts");
+    const verdict = { approved: true, findings: [] };
+    expect(parseJson(JSON.stringify(verdict))).toEqual(verdict);
+    expect(parseJson(`Here's my review.\n\n\`\`\`json\n${JSON.stringify(verdict)}\n\`\`\`\n`)).toEqual(
+      verdict,
+    );
+    expect(parseJson(`Looks good: ${JSON.stringify(verdict)} That's all.`)).toEqual(verdict);
+    expect(parseJson("No JSON here.")).toBeNull();
+  });
+
+  it("goes on when the reviewer wraps its verdict in prose", async () => {
+    const p = direct(ports());
+    p.agent.on(
+      { stage: "review" },
+      { kind: "done", output: 'Reviewed.\n```json\n{"approved": true, "findings": []}\n```' },
+    );
+    expect((await runTicket(p, refundsTicket({ effort: "low" }))).status).toBe("done");
+  });
+});
