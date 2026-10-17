@@ -266,6 +266,10 @@ export async function waitForCi(
     )
     .map((c) => c.context);
 
+  // GitHub sometimes leaves `status: "in_progress"` on a check run that already has `conclusion` and
+  // `completed_at` set (seen on Duet's Sorting service job). A run with a conclusion is finished.
+  const finished = (r: Record<string, unknown>) =>
+    r.status === "completed" || (typeof r.conclusion === "string" && r.conclusion.length > 0);
   const passed = (r: Record<string, unknown>) =>
     ["success", "neutral", "skipped"].includes(String(r.conclusion));
   const start = now();
@@ -277,7 +281,7 @@ export async function waitForCi(
       runs.push(...batch);
       if (batch.length < 100) break;
     }
-    const failed = runs.filter((r) => r.status === "completed" && !passed(r));
+    const failed = runs.filter((r) => finished(r) && !passed(r));
     if (failed.length) {
       return {
         ok: false,
@@ -285,7 +289,7 @@ export async function waitForCi(
       };
     }
     const waited = now() - start;
-    const allDone = runs.every((r) => r.status === "completed");
+    const allDone = runs.every(finished);
     const requiredPassed = required.every((name) => runs.some((r) => r.name === name && passed(r)));
     if (required.length ? requiredPassed && allDone : runs.length > 0 && allDone) return { ok: true };
     if (!required.length && runs.length === 0 && waited >= (o.graceMs ?? 120_000)) return { ok: true };
