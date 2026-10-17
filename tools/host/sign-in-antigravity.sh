@@ -70,9 +70,15 @@ createInterface({ input: child.stderr }).on("line", (line) => {
       console.error("expected an http://127.0.0.1:<port>/… callback URL");
       process.exit(64);
     }
-    execFileSync(c, ["machine", "run", "-u", "employee", "-n", machine, "--", "curl", "-fsS", "--", url], {
-      stdio: ["ignore", "ignore", "inherit"],
-    });
+    execFileSync(
+      c,
+      ["machine", "run", "-i", "-u", "employee", "-n", machine, "-e", "CALLBACK_URL", "--", "bash", "-s"],
+      {
+        env: { ...process.env, CALLBACK_URL: url },
+        input: 'curl -fsS -- "$CALLBACK_URL" >/dev/null\n',
+        stdio: ["pipe", "ignore", "inherit"],
+      },
+    );
   });
 });
 
@@ -101,8 +107,12 @@ if (created.error) {
 }
 console.log(`${machine}: signed in to Antigravity (session ${created.result?.sessionId})`);
 child.stdin.end();
+child.stdout.destroy();
+child.stderr.destroy();
 child.kill();
 process.exit(0);
 EOF
 
+$c machine run -u employee -n "$machine" -- pkill -f antigravity-acp </dev/null 2>/dev/null || true
 $c machine run -u employee -n "$machine" -- ls -l /home/employee/.gemini/antigravity-acp/acp_token.json </dev/null
+
