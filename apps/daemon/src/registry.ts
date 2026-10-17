@@ -50,6 +50,14 @@ export interface Settings {
 
 const defaultSettings: Settings = { utcOffsetMinutes: 0, pricePerKWh: 0, currency: "USD" };
 
+export interface AccountRateLimit {
+  status?: string;
+  resetsAt?: number;
+  fiveHourUtilization?: number;
+  sevenDayUtilization?: number;
+  updatedAt: number;
+}
+
 type Kind =
   | "employee"
   | "engine"
@@ -59,7 +67,8 @@ type Kind =
   | "project"
   | "team"
   | "usage"
-  | "settings";
+  | "settings"
+  | "rate_limit";
 
 export class Registry implements Company {
   constructor(private readonly db: Db) {}
@@ -132,6 +141,20 @@ export class Registry implements Company {
   /** The latest report on an account's limits, as its harness sent it (Claude's, for now). */
   recordUsage(u: UsageReport): void {
     this.put("usage", u.accountId, u);
+  }
+  setAccountRateLimit(accountId: Id, limit: AccountRateLimit): void {
+    this.put("rate_limit", accountId, limit);
+  }
+  accountRateLimits(): Record<Id, AccountRateLimit> {
+    const rows = this.db.all<{ id: string; body: string }>(
+      "SELECT id, body FROM company WHERE kind = ?",
+      "rate_limit",
+    );
+    const out: Record<Id, AccountRateLimit> = {};
+    for (const r of rows) {
+      out[r.id] = JSON.parse(r.body) as AccountRateLimit;
+    }
+    return out;
   }
   setSettings(s: Partial<Settings>): void {
     this.put("settings", "company", { ...this.settings(), ...s });

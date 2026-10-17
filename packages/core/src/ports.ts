@@ -18,6 +18,8 @@ export interface MachineProvider {
   ensureUp(employeeId: Id): Promise<void>;
   /** Stops a machine whose employee has nothing running (spec §12: memory returns only on restart). */
   stop?(employeeId: Id): Promise<void>;
+  /** Delivers an OAuth callback URL into a team's sandbox (e.g. Antigravity sign-in). */
+  deliverCallback?(teamId: Id, url: string): Promise<void>;
 }
 
 export interface SessionRequest {

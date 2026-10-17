@@ -25,6 +25,8 @@ export interface Account {
   kind: AccountKind;
 }
 
+export type { AccountCost } from "./desk.ts";
+
 export type SwitchOnOutOfTokens = { action: "wait" } | { action: "fallback"; afterMinutes: number };
 
 export interface SwitchRules {

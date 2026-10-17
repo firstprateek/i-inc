@@ -108,12 +108,13 @@ describe("the scheduler", () => {
     const plan = schedule(
       snap({
         localHour: 14,
-        capReachedUntil: { kit: 9_999 },
+        capReachedUntil: { kit: 9_999, "claude-pro": 9_999 },
         pickedUpToday: { "qwen-bot": 2 },
         backlog: [
           item("held", { assignee: "ada", hold: true }),
           item("night", { assignee: "juno" }),
           item("capped", { assignee: "kit" }),
+          item("account-capped", { assignee: "ada" }),
           item("deps", { type: "chore", labels: ["deps"] }),
           item("orphan", { type: "feat" }),
         ],
@@ -124,6 +125,7 @@ describe("the scheduler", () => {
     expect(plan.waiting).toEqual([
       { ticketId: "night", reason: "Juno is off until 22:00" },
       { ticketId: "capped", reason: "Kit reached its usage cap" },
+      { ticketId: "account-capped", reason: "Ada reached its usage cap" },
       { ticketId: "deps", reason: "unassigned, and no standing order covers it" },
       { ticketId: "orphan", reason: "unassigned, and no standing order covers it" },
     ]);

@@ -70,15 +70,30 @@ export const workDir = (ticketId: Id, s: MachineSettings = defaultMachineSetting
   return `/home/${s.user}/work/inc-${ticketId}`;
 };
 
-/** Runs a command and resolves with its output, or rejects with its error output. */
-export type Exec = (bin: string, args: string[]) => Promise<string>;
+export interface ExecOptions {
+  env?: Record<string, string>;
+  input?: string;
+}
 
-const execDefault: Exec = (bin, args) =>
-  new Promise((resolve, reject) =>
-    execFile(bin, args, { encoding: "utf8" }, (err, stdout, stderr) =>
-      err ? reject(new Error(stderr.trim() || err.message)) : resolve(stdout),
-    ),
-  );
+/** Runs a command and resolves with its output, or rejects with its error output. */
+export type Exec = (bin: string, args: string[], opts?: ExecOptions) => Promise<string>;
+
+const execDefault: Exec = (bin, args, opts) =>
+  new Promise((resolve, reject) => {
+    const child = execFile(
+      bin,
+      args,
+      {
+        encoding: "utf8",
+        ...(opts?.env ? { env: { ...process.env, ...opts.env } } : {}),
+      },
+      (err, stdout, stderr) => (err ? reject(new Error(stderr.trim() || err.message)) : resolve(stdout)),
+    );
+    if (opts?.input && child.stdin) {
+      child.stdin.write(opts.input);
+      child.stdin.end();
+    }
+  });
 
 /** Employee ids are validated at hiring (1-32 lowercase letters, digits or dashes). */
 export const machineName = (employeeId: Id) => {
@@ -187,6 +202,19 @@ export class AppleMachines implements MachineProvider {
   /** Employees whose machines this daemon started and hasn't stopped. */
   running(): Id[] {
     return [...this.up.values()].flatMap((working) => [...working]);
+  }
+
+  async deliverCallback(teamId: Id, url: string): Promise<void> {
+    assertWalls(this.s);
+    const machine = `inc-${teamId}`;
+    await this.exec(
+      this.s.bin,
+      ["machine", "run", "-i", "-u", this.s.user, "-n", machine, "-e", "CALLBACK_URL", "--", "bash", "-s"],
+      {
+        env: { CALLBACK_URL: url },
+        input: 'curl -fsS -- "$CALLBACK_URL" >/dev/null\n',
+      },
+    );
   }
 }
 

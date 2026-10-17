@@ -52,11 +52,15 @@ export class MemoryEventStore implements EventStore {
 export class FakeMachines implements MachineProvider {
   readonly started: Id[] = [];
   readonly stopped: Id[] = [];
+  readonly callbacks: { teamId: Id; url: string }[] = [];
   async ensureUp(employeeId: Id): Promise<void> {
     this.started.push(employeeId);
   }
   async stop(employeeId: Id): Promise<void> {
     this.stopped.push(employeeId);
+  }
+  async deliverCallback(teamId: Id, url: string): Promise<void> {
+    this.callbacks.push({ teamId, url });
   }
 }
 

@@ -1,7 +1,8 @@
 // Owner account signup, username + password login, and token compatibility.
+import type { FakeMachines } from "@i-inc/core/testing";
 import { describe, expect, it } from "vitest";
 import { createApi } from "../src/api.ts";
-import { testApp } from "./setup.ts";
+import { refunds, testApp } from "./setup.ts";
 
 describe("owner signup and login API", () => {
   async function guardedApp() {
@@ -228,5 +229,150 @@ describe("PUT /api/employees/:id", () => {
     });
     expect(paLocal.status).toBe(200);
     expect(paLocal.body.employee.role).toBe("Personal Assistant");
+  });
+});
+
+describe("accounts API and rate limits", () => {
+  it("updates an account with monthlyCap and retrieves live rate limits", async () => {
+    const app = await testApp();
+
+    const putRes = await app.call("PUT", "/api/accounts/claude-pro", {
+      name: "Claude Pro",
+      monthlyFee: 200,
+      monthlyCap: 150,
+    });
+    expect(putRes.status).toBe(200);
+    expect(putRes.body.account).toMatchObject({
+      id: "claude-pro",
+      name: "Claude Pro",
+      monthlyFee: 200,
+      monthlyCap: 150,
+    });
+
+    app.deps.registry.setAccountRateLimit("claude-pro", {
+      status: "allowed",
+      fiveHourUtilization: 0.45,
+      sevenDayUtilization: 0.2,
+      resetsAt: 1_790_600_000_000,
+      updatedAt: 1_000,
+    });
+
+    const getRes = await app.call("GET", "/api/accounts");
+    expect(getRes.status).toBe(200);
+    expect(getRes.body.accounts.find((a: { id: string }) => a.id === "claude-pro")).toMatchObject({
+      id: "claude-pro",
+      monthlyCap: 150,
+    });
+    expect(getRes.body.rateLimits["claude-pro"]).toEqual({
+      status: "allowed",
+      fiveHourUtilization: 0.45,
+      sevenDayUtilization: 0.2,
+      resetsAt: 1_790_600_000_000,
+      updatedAt: 1_000,
+    });
+  });
+});
+
+describe("POST /api/teams/:id/antigravity-callback", () => {
+  it("rejects non-existent team with 404", async () => {
+    const app = await testApp();
+    const res = await app.call("POST", "/api/teams/missing-team/antigravity-callback", {
+      url: "http://127.0.0.1:4567/callback?code=abc",
+    });
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "no such team" });
+  });
+
+  it("validates that the callback URL is http://127.0.0.1:<port>/ or http://localhost:<port>/", async () => {
+    const app = await testApp();
+    await app.call("PUT", "/api/teams/devs", { name: "Devs", members: ["ada"] });
+
+    const badProtocol = await app.call("POST", "/api/teams/devs/antigravity-callback", {
+      url: "https://127.0.0.1:4567/callback",
+    });
+    expect(badProtocol.status).toBe(400);
+
+    const badHost = await app.call("POST", "/api/teams/devs/antigravity-callback", {
+      url: "http://example.com:4567/callback",
+    });
+    expect(badHost.status).toBe(400);
+
+    const missingUrl = await app.call("POST", "/api/teams/devs/antigravity-callback", {});
+    expect(missingUrl.status).toBe(400);
+  });
+
+  it("delivers valid callback URL to machines provider", async () => {
+    const app = await testApp();
+    await app.call("PUT", "/api/teams/devs", { name: "Devs", members: ["ada"] });
+
+    const res = await app.call("POST", "/api/teams/devs/antigravity-callback", {
+      url: "http://127.0.0.1:8085/oauth2callback?code=xyz",
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+
+    const machines = app.deps.machines as FakeMachines;
+    expect(machines.callbacks).toContainEqual({
+      teamId: "devs",
+      url: "http://127.0.0.1:8085/oauth2callback?code=xyz",
+    });
+  });
+});
+
+describe("usage caps and rate limit scheduling", () => {
+  it("populates capReachedUntil on saturated or rejected rate limits and pauses tickets", async () => {
+    // Rejected status
+    const appRejected = await testApp();
+    const resetTime = appRejected.clock.now() + 3_600_000;
+    appRejected.deps.registry.setAccountRateLimit("claude-pro", {
+      status: "rejected",
+      resetsAt: resetTime,
+      updatedAt: appRejected.clock.now(),
+    });
+    await appRejected.call("POST", "/api/tickets", refunds);
+    expect(appRejected.daemon.waiting).toContainEqual({
+      ticketId: "1",
+      reason: "Ada reached its usage cap",
+    });
+    const boardRejected = (await appRejected.call("GET", "/api/board")).body.tickets;
+    expect(boardRejected.find((t: { id: string }) => t.id === "1")?.waiting).toBe(
+      "Ada reached its usage cap",
+    );
+
+    // Saturated utilization >= 1
+    const appSaturated = await testApp();
+    const satResetTime = appSaturated.clock.now() + 3_600_000;
+    appSaturated.deps.registry.setAccountRateLimit("claude-pro", {
+      status: "allowed",
+      fiveHourUtilization: 1.0,
+      resetsAt: satResetTime,
+      updatedAt: appSaturated.clock.now(),
+    });
+    await appSaturated.call("POST", "/api/tickets", refunds);
+    expect(appSaturated.daemon.waiting).toContainEqual({
+      ticketId: "1",
+      reason: "Ada reached its usage cap",
+    });
+  });
+
+  it("populates capReachedUntil when monthlyFee exceeds monthlyCap until the next UTC month", async () => {
+    const app = await testApp();
+
+    app.deps.registry.addAccount({
+      id: "claude-pro",
+      name: "Claude Pro",
+      monthlyFee: 250,
+      monthlyCap: 100,
+    });
+
+    await app.call("POST", "/api/tickets", refunds);
+    expect(app.daemon.waiting).toContainEqual({
+      ticketId: "1",
+      reason: "Ada reached its usage cap",
+    });
+
+    const board = (await app.call("GET", "/api/board")).body.tickets;
+    const ticket = board.find((t: { id: string }) => t.id === "1");
+    expect(ticket.waiting).toBe("Ada reached its usage cap");
   });
 });
