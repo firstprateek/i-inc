@@ -10,7 +10,7 @@
 // succeeds on a machine that's already stopped.
 import { type ChildProcessWithoutNullStreams, execFile, spawn } from "node:child_process";
 import { statSync } from "node:fs";
-import type { Id, MachineProvider } from "@i-inc/core";
+import type { Id, MachineProvider, SandboxStatus } from "@i-inc/core";
 import type { AgentProcess, Launch } from "./acp.ts";
 
 export interface MachineSettings {
@@ -112,6 +112,7 @@ export const machineOf = (s: MachineSettings, employeeId: Id): string => {
 export class AppleMachines implements MachineProvider {
   /** The employees each running machine has working in it; a team's sandbox stops when none are. */
   private readonly up = new Map<string, Set<Id>>();
+  readonly signedInCache = new Map<string, { claude: boolean; antigravity: boolean; github: boolean }>();
 
   constructor(
     private readonly s: MachineSettings = defaultMachineSettings,
@@ -206,7 +207,7 @@ export class AppleMachines implements MachineProvider {
 
   async deliverCallback(teamId: Id, url: string): Promise<void> {
     assertWalls(this.s);
-    const machine = `inc-${teamId}`;
+    const machine = machineName(teamId);
     await this.exec(
       this.s.bin,
       ["machine", "run", "-i", "-u", this.s.user, "-n", machine, "-e", "CALLBACK_URL", "--", "bash", "-s"],
@@ -215,6 +216,70 @@ export class AppleMachines implements MachineProvider {
         input: 'curl -fsS -- "$CALLBACK_URL" >/dev/null\n',
       },
     );
+  }
+
+  async inspectSandbox(team: Id, size: { cpus: number; memory: string }): Promise<SandboxStatus> {
+    if (!/^[a-z0-9-]{1,32}$/.test(team)) throw new Error(`not a team id: ${team}`);
+    const machine = machineName(team);
+    const defaultSignedIn = { claude: false, antigravity: false, github: false };
+
+    const listing = await this.exec(this.s.bin, ["machine", "ls"]);
+    const lines = listing
+      .split("\n")
+      .slice(1)
+      .map((line) => line.trim().split(/\s+/));
+    const entry = lines.find((cols) => cols[0] === machine);
+
+    if (!entry) {
+      return {
+        team,
+        machine,
+        state: "missing",
+        cpus: size.cpus,
+        memory: size.memory,
+        signedIn: defaultSignedIn,
+      };
+    }
+
+    const state: "running" | "stopped" = entry.includes("running") ? "running" : "stopped";
+
+    let signedIn = this.signedInCache.get(machine) ?? defaultSignedIn;
+    if (wallsUp(this.s) && state === "running") {
+      try {
+        signedIn = await this.probeSignIn(machine);
+      } catch {
+        // keep cached or fallback
+      }
+    }
+
+    return {
+      team,
+      machine,
+      state,
+      cpus: size.cpus,
+      memory: size.memory,
+      signedIn,
+    };
+  }
+
+  private async probeSignIn(
+    machine: string,
+  ): Promise<{ claude: boolean; antigravity: boolean; github: boolean }> {
+    const input =
+      "[ -s ~/.claude/.credentials.json ] && echo claude; [ -s ~/.gemini/antigravity-acp/acp_token.json ] && echo antigravity; [ -s ~/.config/gh/hosts.yml ] && echo github; true\n";
+    const output = await this.exec(
+      this.s.bin,
+      ["machine", "run", "-i", "-u", this.s.user, "-n", machine, "--", "bash", "-s"],
+      { input },
+    );
+    const found = new Set(output.split(/\s+/).filter(Boolean));
+    const result = {
+      claude: found.has("claude"),
+      antigravity: found.has("antigravity"),
+      github: found.has("github"),
+    };
+    this.signedInCache.set(machine, result);
+    return result;
   }
 }
 

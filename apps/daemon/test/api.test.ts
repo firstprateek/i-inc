@@ -562,3 +562,164 @@ describe("autoRelease policy and automatic releases", () => {
     expect(app.deps.registry.releases()).toHaveLength(1);
   });
 });
+
+describe("GET /api/sandboxes (contract C1)", () => {
+  it("returns empty sandboxes when no teams are registered", async () => {
+    const app = await testApp();
+    const res = await app.call("GET", "/api/sandboxes");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ sandboxes: [] });
+  });
+
+  it("returns sandbox status for each team with default and custom sizes", async () => {
+    const app = await testApp();
+    await app.call("PUT", "/api/teams/devs", { name: "Devs", members: ["ada"] });
+    await app.call("PUT", "/api/teams/infra", {
+      name: "Infra",
+      members: [],
+      sandbox: { cpus: 8, memory: "16G" },
+    });
+
+    const res = await app.call("GET", "/api/sandboxes");
+    expect(res.status).toBe(200);
+    expect(res.body.sandboxes).toHaveLength(2);
+    expect(res.body.sandboxes).toEqual([
+      {
+        team: "devs",
+        machine: "inc-devs",
+        state: "stopped",
+        cpus: 6,
+        memory: "12G",
+        signedIn: { claude: true, antigravity: false, github: true },
+      },
+      {
+        team: "infra",
+        machine: "inc-infra",
+        state: "stopped",
+        cpus: 8,
+        memory: "16G",
+        signedIn: { claude: true, antigravity: false, github: true },
+      },
+    ]);
+  });
+
+  it("reflects running state and custom sign-ins from FakeMachines", async () => {
+    const app = await testApp();
+    await app.call("PUT", "/api/teams/devs", { name: "Devs", members: ["ada"] });
+
+    const machines = app.deps.machines as FakeMachines;
+    machines.sandboxSignIns = {
+      devs: { claude: true, antigravity: true, github: true },
+    };
+    await machines.ensureUp("inc-devs");
+
+    const res = await app.call("GET", "/api/sandboxes");
+    expect(res.status).toBe(200);
+    expect(res.body.sandboxes).toEqual([
+      {
+        team: "devs",
+        machine: "inc-devs",
+        state: "running",
+        cpus: 6,
+        memory: "12G",
+        signedIn: { claude: true, antigravity: true, github: true },
+      },
+    ]);
+  });
+
+  it("reports state: error when machines does not implement inspectSandbox", async () => {
+    const app = await testApp();
+    await app.call("PUT", "/api/teams/devs", { name: "Devs", members: ["ada"] });
+
+    (app.deps.machines as { inspectSandbox?: unknown }).inspectSandbox = undefined;
+
+    const res = await app.call("GET", "/api/sandboxes");
+    expect(res.status).toBe(200);
+    expect(res.body.sandboxes).toEqual([
+      {
+        team: "devs",
+        machine: "inc-devs",
+        state: "error",
+        cpus: 6,
+        memory: "12G",
+        signedIn: { claude: false, antigravity: false, github: false },
+      },
+    ]);
+  });
+
+  it("reports state: error per-team when inspectSandbox throws, without breaking other teams", async () => {
+    const app = await testApp();
+    await app.call("PUT", "/api/teams/devs", { name: "Devs", members: ["ada"] });
+    await app.call("PUT", "/api/teams/broken", { name: "Broken", members: [] });
+
+    const machines = app.deps.machines as FakeMachines;
+    const orig = machines.inspectSandbox.bind(machines);
+    machines.inspectSandbox = async (team, size) => {
+      if (team === "broken") throw new Error("container CLI exploded");
+      return orig(team, size);
+    };
+
+    const res = await app.call("GET", "/api/sandboxes");
+    expect(res.status).toBe(200);
+    expect(res.body.sandboxes).toHaveLength(2);
+    expect(res.body.sandboxes[0]?.team).toBe("devs");
+    expect(res.body.sandboxes[0]?.state).toBe("stopped");
+    expect(res.body.sandboxes[1]).toEqual({
+      team: "broken",
+      machine: "inc-broken",
+      state: "error",
+      cpus: 6,
+      memory: "12G",
+      signedIn: { claude: false, antigravity: false, github: false },
+    });
+  });
+});
+
+describe("TicketView Contract C10 fields (createdBy, finishedAt, pushed)", () => {
+  it("populates createdBy, finishedAt, and pushed properly", async () => {
+    const app = await testApp();
+    const t0 = app.deps.clock.now();
+
+    // 1. Ticket created by owner
+    const ownerTicket = app.deps.tickets.create(
+      { ...refunds, type: "fix", effort: "medium", createdBy: "owner" },
+      t0,
+    );
+    // 2. Ticket created by employee 'ada'
+    const adaTicket = app.deps.tickets.create(
+      { ...refunds, type: "feat", effort: "low", title: "Ada feat", createdBy: "ada" },
+      t0,
+    );
+
+    await app.deps.store.append(adaTicket.id, [
+      { type: "pushed", at: t0 + 10, sha: "abc1234" },
+      { type: "closed", at: t0 + 20, outcome: "merged" },
+    ]);
+
+    const res = await app.call("GET", "/api/board");
+    expect(res.status).toBe(200);
+    const tickets = res.body.tickets as Array<{
+      id: string;
+      createdBy: { id: string; name: string; tint: number; role?: string } | null;
+      finishedAt: number | null;
+      pushed: boolean;
+    }>;
+
+    const v1 = tickets.find((t) => t.id === ownerTicket.id);
+    expect(v1).toBeDefined();
+    expect(v1?.createdBy).toBeNull();
+    expect(v1?.finishedAt).toBeNull();
+    expect(v1?.pushed).toBe(false);
+
+    const v2 = tickets.find((t) => t.id === adaTicket.id);
+    expect(v2).toBeDefined();
+    expect(v2?.createdBy).toEqual({
+      id: "ada",
+      name: "Ada",
+      tint: expect.any(Number),
+      role: expect.any(String),
+    });
+    expect(v2?.finishedAt).toBe(t0 + 20);
+    expect(v2?.pushed).toBe(true);
+  });
+});
