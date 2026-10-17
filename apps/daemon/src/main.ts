@@ -78,7 +78,6 @@ if (!demo) {
   if (app.deps.registry.projects().length === 0) {
     log("no projects yet: PUT /api/projects/<id> with {repo, checks}");
   }
-  log("the helper model and chat are the fakes until they use Ollama");
 }
 
 if (demo && app.deps.registry.employees().length === 0) {

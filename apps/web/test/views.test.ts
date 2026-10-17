@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TicketView } from "../src/api.ts";
 import "../src/components/board.ts";
 import "../src/components/inbox.ts";
+import "../src/components/ticket.ts";
 
 const view = (over: Partial<TicketView>): TicketView => ({
   id: "1",
@@ -162,5 +163,59 @@ describe("the inbox", () => {
     serve([view({})]);
     const root = await mount("inc-inbox");
     expect(root.querySelector("h1")?.textContent).toBe("Nothing needs you");
+  });
+});
+
+describe("the ticket drawer", () => {
+  it("renders a retry button when failed and sends retry request", async () => {
+    const failedTicket = view({
+      id: "7",
+      status: "failed",
+      failure: { stage: "build", reason: "syntax error", tried: ["rebuild"] },
+    });
+    calls = [];
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      calls.push({
+        method: init?.method ?? "GET",
+        url,
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      });
+      if (url === "/api/tickets/7") {
+        return new Response(JSON.stringify({ ticket: failedTicket, events: [] }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const el = document.createElement("inc-ticket") as HTMLElement & {
+      ticketId: string;
+      updateComplete: Promise<unknown>;
+    };
+    el.ticketId = "7";
+    document.body.append(el);
+    let changedDispatched = false;
+    el.addEventListener("changed", () => {
+      changedDispatched = true;
+    });
+
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+    await el.updateComplete;
+
+    const root = el.shadowRoot as ShadowRoot;
+    const retryBtn = [...root.querySelectorAll("button")].find((b) => b.textContent === "Retry ticket");
+    expect(retryBtn).toBeTruthy();
+
+    retryBtn?.click();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(calls).toContainEqual({
+      method: "POST",
+      url: "/api/tickets/7/retry",
+      body: {},
+    });
+    expect(changedDispatched).toBe(true);
   });
 });

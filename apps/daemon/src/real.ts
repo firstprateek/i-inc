@@ -3,9 +3,8 @@
 // there, and the workspace makes a branch per ticket there. In direct mode (the default) reviewed work
 // goes straight to main; owner-merges projects get a draft PR. The daemon keeps each sandbox signed in
 // to GitHub as the bot, so sessions of any length can push. Claude's usage reports land in the
-// registry. The helper model and chat stay the core's fakes until they use Ollama through the relay.
+// registry. The helper model and chat use Ollama on the host.
 import type { Employee, Id } from "@i-inc/core";
-import { FakeChat, FakeHelper } from "@i-inc/core/testing";
 import { AcpAgent, type Launch } from "./acp.ts";
 import type { AppOptions } from "./app.ts";
 import { type Credentials, credentialsFor } from "./config.ts";
@@ -20,6 +19,7 @@ import {
   machineOf,
   workDir,
 } from "./machines.ts";
+import { OllamaChat, OllamaHelper, type OllamaOptions } from "./ollama.ts";
 import type { Registry } from "./registry.ts";
 import { GitHubWorkspace } from "./workspace.ts";
 
@@ -34,6 +34,7 @@ export interface RealOptions {
   exec?: Exec;
   launch?: Launch;
   runScript?: RunScript;
+  ollama?: OllamaOptions;
 }
 
 /** What the employee image has (images/employee/Dockerfile), for briefs. */
@@ -165,8 +166,8 @@ export function realPorts(o: RealOptions): Pick<
             }),
         }
       : {}),
-    helper: new FakeHelper(),
-    chat: new FakeChat(),
+    helper: new OllamaHelper(o.ollama),
+    chat: new OllamaChat(o.ollama),
     keepLoginsFresh: async () => {
       if (!machines || !registryRef) return;
       const registry = registryRef;
