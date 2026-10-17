@@ -267,6 +267,23 @@ describe("the shell", () => {
   });
 });
 
+describe("the phone tab bar", () => {
+  it("reaches My desk, the handbook and hiring through More", async () => {
+    vi.stubGlobal(
+      "fetch",
+      async () => new Response(JSON.stringify({}), { headers: { "content-type": "application/json" } }),
+    );
+    location.hash = "#/more";
+    const root = await mount("inc-app");
+    const tabs = [...(root.querySelectorAll(".tabs a") as NodeListOf<HTMLAnchorElement>)];
+    expect(tabs.map((a) => a.textContent?.trim())).toEqual(["Inbox", "Office", "Board", "Chats", "More"]);
+    expect(tabs[4]?.getAttribute("aria-current")).toBe("page");
+    const more = [...(root.querySelectorAll(".more a") as NodeListOf<HTMLAnchorElement>)];
+    expect(more.map((a) => a.getAttribute("href"))).toEqual(["#/desk", "#/handbook", "#/hiring"]);
+    location.hash = "";
+  });
+});
+
 describe("the office", () => {
   it("renders the floor and Accounts & quotas section", async () => {
     calls = [];

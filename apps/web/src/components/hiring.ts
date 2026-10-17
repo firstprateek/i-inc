@@ -151,7 +151,18 @@ export class IncHiring extends LitElement {
       .check { flex-direction: row; align-items: center; gap: 8px; font-size: 15px; color: var(--ink); }
       .check input { width: 20px; height: 20px; }
       .submit { display: flex; align-items: center; gap: 16px; }
-      @media (max-width: 800px) { form { grid-template-columns: 1fr; } .rows { grid-template-columns: 1fr; } }
+      .check { min-height: 44px; }
+      @media (max-width: 800px) {
+        form { grid-template-columns: 1fr; }
+        .rows { grid-template-columns: 1fr; }
+        .card { padding: 18px; }
+        .pill { min-height: 44px; padding: 0 16px; }
+        .seg { width: 100%; }
+        .seg button { flex: 1; min-height: 44px; }
+        .rows .muted { margin-bottom: 8px; }
+        .submit { flex-wrap: wrap; }
+        .submit .btn { flex: 1 1 auto; }
+      }
     `,
   ];
 
@@ -159,7 +170,7 @@ export class IncHiring extends LitElement {
     return html`<form @submit=${this.hire} aria-label="Hire someone">
       <section class="card">
         <h2>Who</h2>
-        <label>Name <input type="text" required .value=${this.name}
+        <label>Name <input type="text" required autocomplete="off" autocapitalize="words" enterkeyhint="done" .value=${this.name}
           @input=${(e: InputEvent) => {
             this.name = (e.target as HTMLInputElement).value;
           }}></label>

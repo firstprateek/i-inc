@@ -72,7 +72,23 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
       .recent-release:first-child { border-top: none; }
       .recent-release-header { display: flex; align-items: center; gap: 8px; font-size: 13px; }
       .recent-release-meta { font-size: 12px; }
-      @media (max-width: 900px) { .grid > * { grid-column: 1 / -1 !important; } }
+      .pending-ticket a, .learned a { overflow-wrap: anywhere; }
+      @media (max-width: 900px) {
+        .grid > * { grid-column: 1 / -1 !important; }
+        .grid > .tile { grid-column: span 6 !important; }
+        .release-btn { min-height: 44px; }
+        .pending-ticket { gap: 12px; }
+        .pending-ticket a { display: flex; align-items: center; min-height: 44px; flex-grow: 1; }
+        .learned a { align-items: center; min-height: 44px; padding: 4px 0; box-sizing: border-box; }
+        .learned a span { overflow-wrap: anywhere; }
+        .learned small { white-space: normal; text-align: right; flex-shrink: 0; max-width: 40%; }
+      }
+      @media (max-width: 560px) {
+        .grid > .tile { grid-column: 1 / -1 !important; }
+        .hero { padding: 18px 20px; }
+        .hero h1 { font-size: 24px; }
+        .bars { grid-template-columns: minmax(0, 120px) minmax(0, 1fr) 56px; }
+      }
     `,
   ];
 

@@ -45,7 +45,7 @@ export class IncOffice extends Loader<Data> {
       .meta { font-size: 13px; color: var(--ink-2); }
       aside { width: 340px; flex-shrink: 0; display: flex; flex-direction: column; gap: 16px; }
       aside .card { padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; }
-      aside a { display: flex; flex-direction: column; gap: 2px; text-decoration: none; }
+      aside a { display: flex; flex-direction: column; justify-content: center; gap: 2px; text-decoration: none; min-height: 44px; }
       aside a b { font-size: 14px; }
       .empty { font-size: 14px; color: var(--ink-2); }
       .accounts-card { display: flex; flex-direction: column; gap: 12px; }
@@ -61,7 +61,9 @@ export class IncOffice extends Loader<Data> {
       .quota-bar-track { height: 8px; border-radius: 4px; background: var(--sunken); overflow: hidden; }
       .quota-bar { height: 100%; border-radius: 4px; background: var(--bar); min-width: 2px; }
       .quota-val { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--ink-2); }
-      @media (max-width: 1100px) { .wrap { flex-direction: column; } aside { width: 100%; } }
+      .name, .ticket, .meta { overflow-wrap: anywhere; }
+      @media (max-width: 1100px) { .wrap { flex-direction: column; align-self: stretch; } .wrap > * { width: 100%; box-sizing: border-box; } aside { width: 100%; } }
+      @media (max-width: 560px) { .floor { padding: 14px; border-radius: 22px; } .desks { gap: 12px; } aside .card { padding: 16px; } }
     `,
   ];
 

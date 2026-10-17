@@ -101,6 +101,7 @@ export class IncLogin extends LitElement {
         border: 1px solid var(--line-strong, var(--line));
         border-radius: 12px;
         font: inherit;
+        font-size: 16px;
         background: var(--surface, var(--paper-2));
         color: var(--ink);
       }
@@ -119,6 +120,10 @@ export class IncLogin extends LitElement {
         cursor: pointer;
         white-space: nowrap;
         align-self: flex-start;
+      }
+      @media (max-width: 480px) {
+        form { margin: 8vh auto; padding: 1.25rem; }
+        button { align-self: stretch; }
       }
     `,
   ];
@@ -140,6 +145,10 @@ export class IncLogin extends LitElement {
             name="username"
             type="text"
             autocomplete="username"
+            autocapitalize="none"
+            autocorrect="off"
+            spellcheck="false"
+            enterkeyhint="next"
             aria-label="Username"
             required
             .value=${this.username}
@@ -154,6 +163,7 @@ export class IncLogin extends LitElement {
             name="password"
             type="password"
             autocomplete=${passwordAutocomplete}
+            enterkeyhint="go"
             aria-label="Password"
             required
             .value=${this.password}

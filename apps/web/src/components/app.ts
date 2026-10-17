@@ -11,20 +11,30 @@ import "./chat.ts";
 import "./knowledge.ts";
 
 type Route =
-  | { view: "office" | "board" | "desk" | "inbox" | "hiring" | "handbook" }
+  | { view: "office" | "board" | "desk" | "inbox" | "hiring" | "handbook" | "more" }
   | { view: "brain"; id: string }
   | { view: "ticket"; id: string }
   | { view: "chat"; id: string };
+
+/** Below this width the views are a bottom tab bar, not a row in the header. */
+const phone = 900;
 
 function parse(hash: string): Route {
   const [, view, id] = hash.split("/");
   if (view === "ticket" && id) return { view: "ticket", id };
   if (view === "chat") return { view: "chat", id: id ?? "" };
   if (view === "brain" && id) return { view: "brain", id };
-  if (view === "board" || view === "desk" || view === "inbox" || view === "hiring" || view === "handbook")
+  if (
+    view === "board" ||
+    view === "desk" ||
+    view === "inbox" ||
+    view === "hiring" ||
+    view === "handbook" ||
+    view === "more"
+  )
     return { view };
   // Phones start at the inbox; desktops at the office (spec §10).
-  return { view: matchMedia("(max-width: 700px)").matches ? "inbox" : "office" };
+  return { view: matchMedia(`(max-width: ${phone}px)`).matches ? "inbox" : "office" };
 }
 
 export class IncApp extends LitElement {
@@ -69,26 +79,34 @@ export class IncApp extends LitElement {
     base,
     css`
       header { display: flex; align-items: center; gap: 28px; padding: 12px 32px; }
-      .mark { font-family: var(--display); font-weight: 700; font-size: 28px; letter-spacing: -0.8px; text-decoration: none; }
+      .mark { font-family: var(--display); font-weight: 700; font-size: 28px; letter-spacing: -0.8px; text-decoration: none;
+        min-height: 44px; display: inline-flex; align-items: center; }
       nav { display: flex; gap: 4px; }
       nav a { padding: 10px 14px; border-radius: 999px; font-weight: 600; font-size: 15px; text-decoration: none; }
       nav a[aria-current="page"] { background: var(--ink); color: var(--on-ink); }
       .spacer { flex-grow: 1; }
-      .icon { width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--line); background: transparent;
+      .icon { width: 44px; height: 44px; flex-shrink: 0; border-radius: 50%; border: 1px solid var(--line); background: transparent;
         color: var(--ink); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
       .sign-out { font-size: 13px; min-height: 36px; padding: 0 14px; }
       main { padding: 4px 32px 28px; }
-      @media (max-width: 700px) {
+      h1.page { font-size: 30px; margin: 4px 0 14px; }
+      .more { display: flex; flex-direction: column; gap: 10px; max-width: 560px; padding: 0; margin: 0; list-style: none; }
+      .more a { display: flex; flex-direction: column; justify-content: center; gap: 2px; min-height: 64px; box-sizing: border-box;
+        padding: 10px 18px; text-decoration: none; }
+      .more b { font-size: 17px; }
+      .more span { font-size: 14px; color: var(--ink-2); }
+      @media (max-width: 900px) {
         header { padding: 10px 16px; gap: 12px; }
-        nav { display: none; }
-        main { padding: 0 16px 96px; }
-        .tabs { position: fixed; inset: auto 0 0 0; display: grid; grid-template-columns: repeat(4, 1fr);
-          background: var(--surface); border-top: 1px solid var(--line); padding: 6px 8px calc(10px + env(safe-area-inset-bottom)); }
+        header nav { display: none; }
+        .sign-out { min-height: 44px; }
+        main { padding: 0 16px calc(88px + env(safe-area-inset-bottom)); }
+        .tabs { position: fixed; inset: auto 0 0 0; z-index: 10; display: grid; grid-template-columns: repeat(5, 1fr);
+          background: var(--surface); border-top: 1px solid var(--line); padding: 6px 4px calc(10px + env(safe-area-inset-bottom)); }
         .tabs a { display: flex; flex-direction: column; align-items: center; gap: 2px; min-height: 44px; justify-content: center;
-          font-size: 12px; font-weight: 600; text-decoration: none; }
+          padding: 0; border-radius: 12px; font-size: 12px; font-weight: 600; text-decoration: none; }
         .tabs a[aria-current="page"] { background: transparent; color: var(--ink); font-weight: 800; text-decoration: underline; }
       }
-      @media (min-width: 701px) { .tabs { display: none; } }
+      @media (min-width: 901px) { .tabs { display: none; } }
     `,
   ];
 
@@ -118,6 +136,7 @@ export class IncApp extends LitElement {
       <nav class="tabs" aria-label="Views">
         ${link("inbox", "Inbox", v === "inbox")} ${link("office", "Office", v === "office")}
         ${link("board", "Board", v === "board" || v === "ticket")} ${link("chat", "Chats", v === "chat")}
+        ${link("more", "More", v === "more" || v === "desk" || v === "hiring" || v === "handbook" || v === "brain")}
       </nav>
     `;
   }
@@ -138,6 +157,18 @@ export class IncApp extends LitElement {
         return html`<inc-chat .employeeId=${this.route.id}></inc-chat>`;
       case "ticket":
         return html`<inc-ticket .ticketId=${this.route.id}></inc-ticket>`;
+      case "more":
+        return html`<h1 class="page">More</h1>
+          <ul class="more">
+            ${[
+              ["desk", "My desk", "Spend, where work waited, releases"],
+              ["handbook", "Handbook", "What every employee knows"],
+              ["hiring", "Hiring", "Add someone to the team"],
+            ].map(
+              ([to, name, what]) =>
+                html`<li><a class="card" href="#/${to}"><b>${name}</b><span>${what}</span></a></li>`,
+            )}
+          </ul>`;
       case "handbook":
         return html`<inc-knowledge repo="handbook"></inc-knowledge>`;
       case "brain":

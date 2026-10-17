@@ -124,18 +124,35 @@ export class IncChat extends LitElement {
       .thread { flex-grow: 1; min-width: 0; display: flex; flex-direction: column; }
       .head { padding: 16px 22px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 12px; }
       .msgs { flex-grow: 1; padding: 20px 22px; display: flex; flex-direction: column; gap: 12px; }
+      .me, .them, .ticket { overflow-wrap: anywhere; }
       .me { align-self: flex-end; max-width: 520px; padding: 11px 14px; border-radius: 16px 4px 16px 16px; background: var(--ink); color: var(--on-ink); }
       .them { align-self: flex-start; max-width: 620px; padding: 11px 14px; border-radius: 4px 16px 16px 16px; background: var(--sunken); }
       .sys { align-self: center; font-size: 13px; color: var(--ink-2); }
       .ticket { align-self: flex-start; max-width: 620px; border: 2px dashed var(--line-strong); border-radius: 16px; padding: 14px;
         display: flex; flex-direction: column; gap: 8px; background: var(--surface); }
       form { padding: 12px 16px 16px; border-top: 1px solid var(--line); display: flex; gap: 10px; }
-      input { flex-grow: 1; min-width: 0; font: 15px var(--body); min-height: 46px; padding: 0 16px; border-radius: 999px;
+      input { flex-grow: 1; min-width: 0; font: 16px var(--body); min-height: 46px; padding: 0 16px; border-radius: 999px;
         border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); }
       .empty { color: var(--ink-2); }
       .me .tag { display: inline-block; margin-bottom: 4px; }
       .urgent[aria-pressed="true"] { border: 2px solid var(--ink); padding: 0 17px; }
-      @media (max-width: 800px) { .wrap { flex-direction: column; } nav { width: auto; flex-direction: row; overflow-x: auto; } nav small { display: none; } }
+      .head > div { min-width: 0; }
+      @media (max-width: 800px) {
+        .wrap { flex-direction: column; min-height: 0; }
+        nav { width: auto; flex-direction: row; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
+        nav::-webkit-scrollbar { display: none; }
+        nav a { flex-shrink: 0; min-height: 44px; box-sizing: border-box; }
+        nav small { display: none; }
+        .thread { min-height: 52vh; }
+        .head { padding: 12px 16px; }
+        .msgs { padding: 16px; }
+        .me, .them, .ticket { max-width: 88%; }
+        /* The composer stays above the tab bar while a long thread scrolls. */
+        form { position: sticky; bottom: calc(66px + env(safe-area-inset-bottom)); z-index: 5; flex-wrap: wrap;
+          background: var(--surface); border-radius: 0 0 var(--radius) var(--radius); }
+        form input { flex: 1 1 100%; }
+        form .btn { flex: 1 1 0; }
+      }
     `,
   ];
 
@@ -160,7 +177,8 @@ export class IncChat extends LitElement {
           ${this.error ? html`<p role="alert">${this.error}</p>` : ""}
         </div>
         <form @submit=${this.send}>
-          <input aria-label="Message ${me?.name ?? ""}" placeholder="Message ${me?.name ?? ""}" .value=${this.draft}
+          <input type="text" enterkeyhint="send" autocomplete="off" autocapitalize="sentences"
+            aria-label="Message ${me?.name ?? ""}" placeholder="Message ${me?.name ?? ""}" .value=${this.draft}
             @input=${(e: InputEvent) => {
               this.draft = (e.target as HTMLInputElement).value;
             }}>
@@ -193,7 +211,7 @@ export class IncChat extends LitElement {
         ${
           e.confirmed
             ? html`<a href="#/ticket/${e.ticketId}">On the board as #${e.ticketId}</a>`
-            : html`<div style="display:flex;gap:8px"><button class="btn" @click=${() => this.confirm(e.ticketId)}>Put on the board</button>
+            : html`<div style="display:flex;flex-wrap:wrap;gap:8px"><button class="btn" @click=${() => this.confirm(e.ticketId)}>Put on the board</button>
               <a class="btn ghost" href="#/ticket/${e.ticketId}" style="display:inline-flex;align-items:center;text-decoration:none">Open</a></div>`
         }
       </div>`;

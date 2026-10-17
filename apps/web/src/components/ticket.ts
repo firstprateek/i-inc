@@ -54,7 +54,8 @@ export class IncTicket extends Loader<Data> {
       .wrap { display: flex; gap: 24px; align-items: flex-start; }
       .main { flex-grow: 1; min-width: 0; padding: 26px 30px; display: flex; flex-direction: column; gap: 18px; }
       .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-      h1 { font-size: 32px; letter-spacing: -0.6px; }
+      h1 { font-size: 32px; letter-spacing: -0.6px; overflow-wrap: anywhere; }
+      dd, ol li span, .ask code { overflow-wrap: anywhere; }
       dl { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 12px 20px; margin: 0; font-size: 15px; line-height: 1.5; }
       dt { font-weight: 700; color: var(--ink-2); }
       dd { margin: 0; }
@@ -64,7 +65,7 @@ export class IncTicket extends Loader<Data> {
       .ask ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; font: 14px/1.5 var(--body); }
       .ask code { font-family: var(--mono); font-size: 13px; }
       .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-      textarea { font: 15px var(--body); padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line-strong);
+      textarea { font: 16px var(--body); padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line-strong);
         background: var(--surface); color: var(--ink); min-height: 44px; flex-grow: 1; min-width: 220px; }
       aside { width: 380px; flex-shrink: 0; padding: 22px 24px; display: flex; flex-direction: column; gap: 12px; }
       ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
@@ -76,6 +77,14 @@ export class IncTicket extends Loader<Data> {
       ol li i.you { background: var(--needs-edge); }
       @media (max-width: 1000px) { .wrap { flex-direction: column; align-items: stretch; } aside { width: auto; } .main { padding: 18px; }
         dl { grid-template-columns: 1fr; gap: 2px 0; } dd { margin-bottom: 10px; } }
+      @media (max-width: 600px) {
+        h1 { font-size: 26px; }
+        aside { padding: 18px; }
+        /* Answers are thumb-sized and full width, with the note box above its button. */
+        .actions { flex-direction: column; align-items: stretch; }
+        .actions .btn { width: 100%; white-space: normal; }
+        textarea { min-width: 0; min-height: 88px; }
+      }
     `,
   ];
 
