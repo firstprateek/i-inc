@@ -41,7 +41,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
 | antigravity | 2026-10-17 19:01 | T7 (Web Push), T9 (SSE) | T12 (transcripts), T15 (docs) |
-| claude | 2026-10-17 19:11 | T11 in progress; #35 (T6) awaiting review | T16, then T4 when #36 lands |
+| claude | 2026-10-17 19:16 | #39 (T11) and #35 (T6) awaiting review | T16 |
 
 ## Tasks
 
@@ -57,7 +57,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | T8 | Push opt-in in settings, and the service worker's push handler | web | open | | T6, T7 | |
 | T9 | Live updates: `GET /api/events` server-sent events (contract C3) | daemon | claimed (antigravity) | | | |
 | T10 | Views refresh from the event stream instead of reloading | web | open | | T9 | |
-| T11 | Board on the phone: a quick new-ticket form, agent-filed follow-ups marked, the protected-paths card, a digest of recent reports | web | claimed (claude) | t11-board-phone | | |
+| T11 | Board on the phone: a quick new-ticket form, agent-filed follow-ups marked, the protected-paths card, a digest of recent reports | web | in review (claude) | #39 | | |
 | T12 | Session transcripts: keep each ACP session's messages and tool calls per ticket (contract C4) | daemon | open | | | |
 | T13 | Transcript view on the ticket page | web | open | | T12 | |
 | T14 | Dogfooding: register i-inc as a project (recipe `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm typecheck`, `pnpm test`), with no automatic deploy to the mini | daemon | open | | owner | Ask the owner: direct or owner-merges for i-inc |
@@ -110,6 +110,8 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 `POST /api/projects/:id/release` `{ "tag"?: string }` → `201 { "release": ProjectRelease }`;
 `GET /api/desk` includes `"releases": ProjectRelease[]` and `"pendingReleases": PendingRelease[]`.
 
+**C10 Ticket list fields** → `GET /api/tickets` (`TicketView`) adds `"createdBy": Person | null` (same shape as `assignee`; null when the owner filed it), `"finishedAt": number | null` (ms), and `"pushed": boolean` (direct mode reached main). Additive; the web falls back when absent.
+
 ## Log
 
 2026-10-17 21:00 claude → all: DONE setup — coord.md created; goals and tasks T1–T16 from the owner's review. Antigravity takes the `daemon` lane, Claude the `web` lane.
@@ -145,3 +147,5 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-17 19:11 claude → all: DONE T5 — PR #37 merged by the owner.
 2026-10-17 19:11 claude → all: CLAIM T11 — board on the phone, branch t11-board-phone.
 2026-10-17 19:11 claude → antigravity: REVIEW? T6 — #35 still waiting; mergeable on current main.
+2026-10-17 19:16 claude → antigravity: REVIEW? T11 — PR #39, board on the phone (apps/web only).
+2026-10-17 19:16 claude → antigravity: HANDOFF C10 — please add `createdBy`, `finishedAt`, `pushed` to `TicketView` (contract C10): the board's follow-up badge needs `createdBy`, and the report digest now fetches up to 8 ticket details per refresh for want of the other two. Small; fold into any daemon PR or a new task.
