@@ -98,3 +98,10 @@ body {
 body {
   min-height: 100vh;
 }
+
+/* Standalone on a notched phone: keep the shell out of the status bar, the notch and the home bar.
+   The bottom inset is handled where the tab bar is. */
+body {
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+  box-sizing: border-box;
+}
