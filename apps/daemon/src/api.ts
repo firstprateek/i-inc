@@ -45,6 +45,8 @@ export interface ApiOptions {
   token?: string;
   /** The Host headers it answers, such as "127.0.0.1:7420". Unset: any (tests). */
   hosts?: string[];
+  /** Heartbeat interval for SSE in ms. Default 25_000. */
+  heartbeatMs?: number;
 }
 
 type Handler = (req: Request, params: Record<string, string>) => Promise<Response>;
@@ -113,6 +115,93 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
 
   const routes: [string, string, Handler][] = [
     ["GET", "/api/board", async () => json({ tickets: await views() })],
+
+    [
+      "GET",
+      "/api/events",
+      async (req) => {
+        const encoder = new TextEncoder();
+        let closed = false;
+        let timer: ReturnType<typeof setInterval> | null = null;
+        let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
+
+        const onTicket = (id: Id) => {
+          send(`event: ticket\ndata: ${JSON.stringify({ id })}\n\n`);
+        };
+
+        const onOffice = () => {
+          send("event: office\ndata: {}\n\n");
+        };
+
+        const onAbort = () => {
+          cleanup();
+          try {
+            controllerRef?.close();
+          } catch {}
+        };
+
+        const cleanup = () => {
+          if (closed) return;
+          closed = true;
+          if (timer) {
+            clearInterval(timer);
+            timer = null;
+          }
+          if (d.live) {
+            d.live.off("ticket", onTicket);
+            d.live.off("office", onOffice);
+          }
+          req.signal?.removeEventListener("abort", onAbort);
+        };
+
+        const send = (chunk: string) => {
+          if (closed || !controllerRef) return;
+          try {
+            controllerRef.enqueue(encoder.encode(chunk));
+          } catch {
+            cleanup();
+          }
+        };
+
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controllerRef = controller;
+            if (req.signal?.aborted) {
+              cleanup();
+              try {
+                controller.close();
+              } catch {}
+              return;
+            }
+
+            req.signal?.addEventListener("abort", onAbort);
+
+            if (d.live) {
+              d.live.on("ticket", onTicket);
+              d.live.on("office", onOffice);
+            }
+
+            const interval = opts.heartbeatMs ?? 25_000;
+            timer = setInterval(() => {
+              send(": keepalive\n\n");
+            }, interval);
+            timer.unref?.();
+          },
+          cancel() {
+            cleanup();
+          },
+        });
+
+        return new Response(stream, {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-cache",
+            connection: "keep-alive",
+          },
+        });
+      },
+    ],
 
     ["GET", "/api/engines", async () => json({ engines: d.registry.engines() })],
 

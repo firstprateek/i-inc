@@ -3,6 +3,8 @@ import type { EventStore, Id, TicketEvent } from "@i-inc/core";
 import type { Db } from "./db.ts";
 
 export class SqliteEventStore implements EventStore {
+  onAppend?: (ticketId: Id, events: TicketEvent[]) => void;
+
   constructor(private readonly db: Db) {}
 
   async read(ticketId: Id): Promise<TicketEvent[]> {
@@ -29,6 +31,9 @@ export class SqliteEventStore implements EventStore {
         );
       }
     });
+    if (events.length > 0) {
+      this.onAppend?.(ticketId, events);
+    }
   }
 
   /** Every ticket's events, for My desk. */

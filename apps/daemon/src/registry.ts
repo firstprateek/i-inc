@@ -71,6 +71,8 @@ type Kind =
   | "push_sub";
 
 export class Registry implements Company {
+  onChange?: () => void;
+
   constructor(private readonly db: Db) {}
 
   private put(kind: Kind, id: Id, body: unknown): void {
@@ -80,6 +82,7 @@ export class Registry implements Company {
       id,
       JSON.stringify(body),
     );
+    this.onChange?.();
   }
 
   private list<T>(kind: Kind): T[] {

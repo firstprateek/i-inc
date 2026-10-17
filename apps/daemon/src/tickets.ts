@@ -27,6 +27,8 @@ export interface TicketRecord {
 }
 
 export class Tickets {
+  onChange?: (ticketId: Id) => void;
+
   constructor(private readonly db: Db) {}
 
   create(input: NewTicket, now: number): Ticket {
@@ -51,6 +53,7 @@ export class Tickets {
       input.hold ? 1 : 0,
       now,
     );
+    this.onChange?.(id);
     return ticket;
   }
 
@@ -72,10 +75,12 @@ export class Tickets {
       pickedAt,
       id,
     );
+    this.onChange?.(id);
   }
 
   setHold(id: Id, hold: boolean): void {
     this.db.run("UPDATE tickets SET hold = ? WHERE id = ?", hold ? 1 : 0, id);
+    this.onChange?.(id);
   }
 
   private rows(where: string, ...params: string[]): TicketRecord[] {
