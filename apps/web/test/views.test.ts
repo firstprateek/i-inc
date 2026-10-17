@@ -268,7 +268,7 @@ describe("the shell", () => {
 });
 
 describe("the phone tab bar", () => {
-  it("reaches My desk, the handbook and hiring through More", async () => {
+  it("reaches My desk, the handbook, hiring and Setup through More", async () => {
     vi.stubGlobal(
       "fetch",
       async () => new Response(JSON.stringify({}), { headers: { "content-type": "application/json" } }),
@@ -279,7 +279,12 @@ describe("the phone tab bar", () => {
     expect(tabs.map((a) => a.textContent?.trim())).toEqual(["Inbox", "Office", "Board", "Chats", "More"]);
     expect(tabs[4]?.getAttribute("aria-current")).toBe("page");
     const more = [...(root.querySelectorAll(".more a") as NodeListOf<HTMLAnchorElement>)];
-    expect(more.map((a) => a.getAttribute("href"))).toEqual(["#/desk", "#/handbook", "#/hiring"]);
+    expect(more.map((a) => a.getAttribute("href"))).toEqual([
+      "#/desk",
+      "#/handbook",
+      "#/hiring",
+      "#/setup/teams",
+    ]);
     location.hash = "";
   });
 });

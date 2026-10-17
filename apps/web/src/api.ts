@@ -59,7 +59,7 @@ export async function send(path: string, init?: RequestInit): Promise<Response> 
   return res;
 }
 
-async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+export async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   // Every write is JSON, even an empty one: the daemon refuses anything else (api.ts).
   const write = method !== "GET";
   const res = await send(path, {
