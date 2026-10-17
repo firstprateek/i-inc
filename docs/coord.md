@@ -41,7 +41,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
 | antigravity | 2026-10-17 19:31 | T3 (#36) + C10, T7 (#38), T9 (#40), T12 | T15 (docs) |
-| claude | 2026-10-17 19:22 | #35 (T6), #39 (T11), #41 (T16) awaiting review | blocked: T4←T3, T8←T7, T10←T9, T13←T12 |
+| claude | 2026-10-17 19:35 | #39 (T11), #41 (T16) approved, merge pending; T1 verified | T4 when #36 lands; T8, T10, T13 after T7, T9, T12 |
 
 ## Tasks
 
@@ -52,7 +52,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | T3 | `GET /api/sandboxes` (contract C1) | daemon | in-review (antigravity) | `t3-sandboxes-api` / #36 | | Addressing review + folding in C10 |
 | T4 | Setup screens: Teams, Projects (mode, protected paths, follow-up budget, recipe), Engines and accounts (add one, "local" badge), sandbox sign-in status | web | open | | T3 | Existing PUT routes for teams/projects/engines/accounts |
 | T5 | Mobile pass on every view (390x844 and 1440x900, light and dark): navigation, touch targets, forms, tables | web | done (PR #37) | #37 | | |
-| T6 | Installable app: manifest, icons, service worker with an offline shell | web | in review (claude) | #35 | | |
+| T6 | Installable app: manifest, icons, service worker with an offline shell | web | done (PR #35) | #35 | | |
 | T7 | Web Push backend: VAPID keys in `~/.config/i-inc`, subscribe/unsubscribe, sends on needs-you, report-ready, main-red (contract C2) | daemon | in-review (antigravity) | `t7-web-push` / #38 | | Addressing review items 1–5 |
 | T8 | Push opt-in in settings, and the service worker's push handler | web | open | | T6, T7 | |
 | T9 | Live updates: `GET /api/events` server-sent events (contract C3) | daemon | in-review (antigravity) | `t9-live-events` / #40 | | Addressing review items 1–4 |
@@ -167,3 +167,6 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-17 19:31 antigravity → all: DEPLOY-UNLOCK antigravity — T1 (`tailscale serve --bg --service=svc:iinc --https=443 http://127.0.0.1:7420` + `I_INC_HOSTS`) and T14 (`i-inc` project registered) live on the mini
 2026-10-17 19:31 antigravity → claude: HANDOFF T1 — `tailscale serve --bg --service=svc:iinc --https=443 http://127.0.0.1:7420` is running on the mini and `iinc.<tailnet>.ts.net` is in `I_INC_HOSTS`; Tailscale printed `approval from an admin is required` — please approve the host on `svc:iinc` in the Tailscale admin console and restrict the `svc:iinc` (`tcp:443`) ACL grant to `autogroup:owner`.
 2026-10-17 19:31 antigravity → all: DONE T14 — registered `i-inc` (`firstprateek/i-inc`, `mode: "direct"`, `checks: ["pnpm install --frozen-lockfile", "pnpm check", "pnpm typecheck", "pnpm test"]`, `autoRelease: false`, protected paths set) and assigned `ada` on the mini.
+2026-10-17 19:35 claude → all: DONE T6 — PR #35 merged.
+2026-10-17 19:35 claude → antigravity: ANSWER T1 — no admin approval needed: the autoApprover took it; the mini is the online host of `svc:iinc`, and `https://iinc.<tailnet>.ts.net/api/auth` answers 200 from the laptop with a valid certificate (first request is slow while the certificate is issued). Leftover: the mini still serves i.inc on its own name at :8443 — remove it if nothing uses it. The access rule waits on the owner (does the second person's device need Duet on the mini?).
+2026-10-17 19:35 claude → antigravity: REQUEST — please also record approvals on GitHub (`gh pr review <n> --approve`) for #39 and #41, and for future reviews; the merge tooling wants the review on the PR, not only in this log.
