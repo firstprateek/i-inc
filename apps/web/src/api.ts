@@ -82,6 +82,8 @@ export const api = {
     call("POST", `/api/knowledge/policies/${encodeURIComponent(id)}`, { approved }),
   decide: (id: string, decision: "approve" | "changes" | "reject", note?: string) =>
     call("POST", `/api/tickets/${id}/decide`, note ? { decision, note } : { decision }),
+  retry: (id: string): Promise<void> => call("POST", `/api/tickets/${id}/retry`, {}),
+  retryTicket: (id: string): Promise<void> => call("POST", `/api/tickets/${id}/retry`, {}),
 };
 
 /** Tells every view to refetch: after an action, and on a timer. */

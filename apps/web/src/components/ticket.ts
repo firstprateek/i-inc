@@ -40,6 +40,7 @@ export class IncTicket extends Loader<Data> {
       await fn();
       this.note = "";
       refreshNow();
+      this.dispatchEvent(new CustomEvent("changed", { bubbles: true, composed: true }));
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -153,9 +154,12 @@ export class IncTicket extends Loader<Data> {
           <button class="btn ghost" ?disabled=${this.busy} @click=${() => this.act(() => api.decide(id, "reject"))}>Reject</button>
         </div>`;
     }
-    if (t.status === "failed" && t.failure) {
-      return html`<div class="ask"><b>An honest failure in ${t.failure.stage}</b><p>${t.failure.reason}</p>
-        <p class="muted">Tried: ${t.failure.tried.join(", ") || "nothing yet"}</p></div>`;
+    if (t.status === "failed") {
+      return html`<div class="ask"><b>An honest failure${t.failure ? ` in ${t.failure.stage}` : ""}</b><p>${t.failure?.reason ?? "Failed"}</p>
+        ${t.failure?.tried?.length ? html`<p class="muted">Tried: ${t.failure.tried.join(", ")}</p>` : ""}
+        <div class="actions">
+          <button class="btn" ?disabled=${this.busy} @click=${() => this.act(() => api.retry(id))}>Retry ticket</button>
+        </div></div>`;
     }
     if (t.status === "done") return html`<p><span class="chip done">${t.outcome}</span></p>`;
     return html`<p class="muted">${t.waiting ?? (t.status === "queued" ? "Queued" : t.live)}</p>`;

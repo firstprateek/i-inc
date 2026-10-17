@@ -388,6 +388,41 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     ],
 
     [
+      "PUT",
+      "/api/employees/:id",
+      async (req, { id = "" }) => {
+        let existing: Employee;
+        try {
+          existing = d.registry.employee(id);
+        } catch {
+          return json({ error: "no such employee" }, 404);
+        }
+        const b = (await req.json()) as Partial<Employee>;
+        const updated: Employee = {
+          ...existing,
+          ...(b.name !== undefined ? { name: b.name } : {}),
+          ...(b.role !== undefined ? { role: b.role } : {}),
+          ...(b.duties !== undefined ? { duties: b.duties } : {}),
+          ...(b.engines !== undefined ? { engines: b.engines } : {}),
+          ...(b.switchRules !== undefined ? { switchRules: b.switchRules } : {}),
+          ...(b.projects !== undefined ? { projects: b.projects } : {}),
+          ...(b.standingOrders !== undefined ? { standingOrders: b.standingOrders } : {}),
+          ...(b.workingHours !== undefined ? { workingHours: b.workingHours } : {}),
+          ...(b.outbound !== undefined ? { outbound: b.outbound } : {}),
+          id,
+        };
+        const problems = hiringProblems(
+          updated,
+          d.registry.engines(),
+          d.registry.employees().filter((e) => e.id !== id),
+        );
+        if (problems.length) return json({ error: problems.join("; "), problems }, 400);
+        d.registry.hire(updated);
+        return json({ employee: d.registry.employee(id) });
+      },
+    ],
+
+    [
       "GET",
       "/api/office",
       async () => {

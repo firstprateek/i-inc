@@ -148,3 +148,85 @@ describe("owner signup and login API", () => {
     expect(bearerBoard.status).toBe(200);
   });
 });
+
+describe("PUT /api/employees/:id", () => {
+  it("returns 404 if employee does not exist", async () => {
+    const app = await testApp();
+    const res = await app.call("PUT", "/api/employees/non-existent", {
+      name: "Ghost",
+    });
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "no such employee" });
+  });
+
+  it("updates an existing employee in place, preserving existing fields and tint", async () => {
+    const app = await testApp();
+    const before = (await app.call("GET", "/api/employees")).body.employees.find(
+      (e: { id: string }) => e.id === "ada",
+    );
+    expect(before).toBeTruthy();
+    expect(before.name).toBe("Ada");
+
+    const res = await app.call("PUT", "/api/employees/ada", {
+      name: "Ada Lovelace",
+      role: "Principal Engineer",
+      duties: ["build"],
+      workingHours: { from: 9, to: 17 },
+      projects: ["Duet"],
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.employee).toMatchObject({
+      id: "ada",
+      name: "Ada Lovelace",
+      role: "Principal Engineer",
+      duties: ["build"],
+      workingHours: { from: 9, to: 17 },
+      projects: ["Duet"],
+      engines: before.engines,
+      switchRules: before.switchRules,
+      tint: before.tint,
+    });
+
+    // Check registry was updated
+    const after = (await app.call("GET", "/api/employees")).body.employees.find(
+      (e: { id: string }) => e.id === "ada",
+    );
+    expect(after.name).toBe("Ada Lovelace");
+    expect(after.role).toBe("Principal Engineer");
+  });
+
+  it("validates employee updates with hiringProblems", async () => {
+    const app = await testApp();
+
+    // Invalid engine
+    const badEngine = await app.call("PUT", "/api/employees/ada", {
+      engines: { default: "imaginary-engine", fallbacks: [] },
+    });
+    expect(badEngine.status).toBe(400);
+    expect(badEngine.body.error).toContain("there is no engine imaginary-engine");
+
+    // Empty duties
+    const emptyDuties = await app.call("PUT", "/api/employees/ada", {
+      duties: [],
+    });
+    expect(emptyDuties.status).toBe(400);
+    expect(emptyDuties.body.error).toContain("an employee needs at least one duty");
+
+    // Personal Assistant on cloud engine
+    const paCloud = await app.call("PUT", "/api/employees/ada", {
+      role: "Personal Assistant",
+      engines: { default: "opus", fallbacks: [] }, // opus is cloud (local: false)
+    });
+    expect(paCloud.status).toBe(400);
+    expect(paCloud.body.error).toContain("Personal Assistant works on home data");
+
+    // Personal Assistant on local engine succeeds
+    const paLocal = await app.call("PUT", "/api/employees/ada", {
+      role: "Personal Assistant",
+      engines: { default: "qwen", fallbacks: [] }, // qwen is local: true
+    });
+    expect(paLocal.status).toBe(200);
+    expect(paLocal.body.employee.role).toBe("Personal Assistant");
+  });
+});
