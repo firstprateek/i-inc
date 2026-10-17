@@ -43,6 +43,27 @@ export interface SessionRequest {
   brief: string;
   /** Aborted when the owner sends an urgent message: stop at once and return "interrupted". */
   signal?: AbortSignal;
+  /** Emits transcript items (streamed from ACP notifications) for recording. */
+  onTranscriptItem?: (item: SessionTranscriptItem) => void;
+}
+
+export interface SessionTranscriptItem {
+  kind: "text" | "tool";
+  text?: string;
+  title?: string;
+  status?: string;
+  at: number;
+  /** Internal ID for matching tool call updates or streaming chunks */
+  id?: string;
+}
+
+export interface TicketSessionTranscript {
+  stage: string;
+  employeeId: string;
+  engineId: string;
+  startedAt: number;
+  endedAt: number | null;
+  items: SessionTranscriptItem[];
 }
 
 export type SessionOutcome =

@@ -18,6 +18,7 @@ import { LiveEvents } from "./live.ts";
 import { type PushService, WebPushSender } from "./push.ts";
 import { Registry } from "./registry.ts";
 import { migrate } from "./schema.ts";
+import { SessionStore } from "./sessions.ts";
 import { SqliteEventStore } from "./store.ts";
 import { Tickets } from "./tickets.ts";
 
@@ -29,6 +30,7 @@ export interface AppOptions extends ApiOptions {
   /** Where brains and the handbook live: git repos on the host, never pushed. */
   knowledgeDir: string;
   clock: Clock;
+  sessions?: SessionStore;
   machines: FromRegistry<MachineProvider>;
   agent: FromRegistry<Agent>;
   harness: FromRegistry<Harness>;
@@ -65,6 +67,7 @@ export async function createApp(o: AppOptions) {
   const deps: DaemonDeps = {
     clock: o.clock,
     store,
+    sessions: o.sessions ?? new SessionStore(db, o.clock),
     registry,
     tickets,
     machines: make(o.machines),

@@ -26,6 +26,7 @@ import type {
   SandboxStatus,
   SessionOutcome,
   SessionRequest,
+  SessionTranscriptItem,
   Workspace,
 } from "../ports.ts";
 import type { StageId } from "../stages.ts";
@@ -135,7 +136,10 @@ export class Crash extends Error {
 }
 
 /** "hang" keeps the session going until its signal aborts, like a long build the owner interrupts. */
-export type Scripted = SessionOutcome | { kind: "crash" } | { kind: "hang" };
+export type Scripted =
+  | (SessionOutcome & { items?: SessionTranscriptItem[] })
+  | { kind: "crash" }
+  | { kind: "hang" };
 
 export interface Match {
   ticket?: Id;
@@ -164,6 +168,11 @@ export class FakeAgent implements Agent {
     const next = script?.queue.shift() ?? defaultOutcome(request);
     if (next.kind === "crash") throw new Crash();
     if (next.kind === "hang") return hang(request.signal);
+    if ("items" in next && Array.isArray((next as { items?: SessionTranscriptItem[] }).items)) {
+      for (const item of (next as { items?: SessionTranscriptItem[] }).items ?? []) {
+        request.onTranscriptItem?.(item);
+      }
+    }
     return next;
   }
 
