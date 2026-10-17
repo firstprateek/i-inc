@@ -1,5 +1,6 @@
 import { css, html, LitElement } from "lit";
 import { logout, refreshNow } from "../api.ts";
+import { connection, isOffline } from "../connection.ts";
 import { base } from "./shared.ts";
 import "./office.ts";
 import "./board.ts";
@@ -9,6 +10,7 @@ import "./inbox.ts";
 import "./hiring.ts";
 import "./chat.ts";
 import "./knowledge.ts";
+import "./offline.ts";
 
 type Route =
   | { view: "office" | "board" | "desk" | "inbox" | "hiring" | "handbook" }
@@ -28,8 +30,9 @@ function parse(hash: string): Route {
 }
 
 export class IncApp extends LitElement {
-  static override properties = { route: { state: true }, theme: { state: true } };
+  static override properties = { route: { state: true }, theme: { state: true }, offline: { state: true } };
   declare route: Route;
+  declare offline: boolean;
   declare theme: "light" | "dark" | null;
   private timer = 0;
 
@@ -37,23 +40,30 @@ export class IncApp extends LitElement {
     super();
     this.route = parse(location.hash);
     this.theme = readTheme();
+    this.offline = isOffline();
   }
 
   override connectedCallback(): void {
     super.connectedCallback();
     addEventListener("hashchange", this.onHash);
+    connection.addEventListener("change", this.onConnection);
     this.timer = window.setInterval(() => document.visibilityState === "visible" && refreshNow(), 5000);
     applyTheme(this.theme);
   }
 
   override disconnectedCallback(): void {
     removeEventListener("hashchange", this.onHash);
+    connection.removeEventListener("change", this.onConnection);
     clearInterval(this.timer);
     super.disconnectedCallback();
   }
 
   private onHash = () => {
     this.route = parse(location.hash);
+  };
+
+  private onConnection = () => {
+    this.offline = isOffline();
   };
 
   private toggleTheme() {
@@ -114,7 +124,7 @@ export class IncApp extends LitElement {
         </button>
         <button class="btn ghost sign-out" type="button" @click=${() => logout()}>Sign out</button>
       </header>
-      <main>${this.view()}</main>
+      <main>${this.offline ? html`<inc-offline></inc-offline>` : this.view()}</main>
       <nav class="tabs" aria-label="Views">
         ${link("inbox", "Inbox", v === "inbox")} ${link("office", "Office", v === "office")}
         ${link("board", "Board", v === "board" || v === "ticket")} ${link("chat", "Chats", v === "chat")}

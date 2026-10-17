@@ -34,12 +34,26 @@ export interface OfficeResponse {
   rateLimits?: Record<string, AccountRateLimit>;
 }
 
+import { isGatewayDown, report } from "./connection.ts";
 import { showLogin } from "./login.ts";
+
+/** fetch, plus telling the app whether the daemon answered (see connection.ts). */
+export async function send(path: string, init?: RequestInit): Promise<Response> {
+  let res: Response;
+  try {
+    res = await fetch(path, init);
+  } catch {
+    report(false);
+    throw new Error("Can't reach i.inc");
+  }
+  report(!isGatewayDown(res.status));
+  return res;
+}
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   // Every write is JSON, even an empty one: the daemon refuses anything else (api.ts).
   const write = method !== "GET";
-  const res = await fetch(path, {
+  const res = await send(path, {
     method,
     headers: write ? { "content-type": "application/json" } : {},
     ...(write ? { body: JSON.stringify(body ?? {}) } : {}),
@@ -51,12 +65,12 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 }
 
 export async function authStatus(): Promise<{ initialized: boolean }> {
-  const res = await fetch("/api/auth");
+  const res = await send("/api/auth");
   return (await res.json()) as { initialized: boolean };
 }
 
 export async function signup(username: string, password: string): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch("/api/signup", {
+  const res = await send("/api/signup", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username, password }),
@@ -66,7 +80,7 @@ export async function signup(username: string, password: string): Promise<{ ok: 
 }
 
 export async function login(username: string, password: string): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch("/api/login", {
+  const res = await send("/api/login", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username, password }),
@@ -76,7 +90,7 @@ export async function login(username: string, password: string): Promise<{ ok: b
 }
 
 export async function logout(): Promise<void> {
-  await fetch("/api/logout", {
+  await send("/api/logout", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({}),
