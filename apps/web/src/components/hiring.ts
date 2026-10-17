@@ -45,8 +45,8 @@ const outboundRows: { action: OutboundAction; label: string; rule: OutboundRule;
 
 const dutyNames: Record<Duty, string> = { plan: "Plan", build: "Build", verify: "Verify", review: "Review" };
 
-/** "qwen3 (opencode, local)": what a native option can show; the chips under the picker say it again, louder. */
-const engineLabel = (e: Engine) => `${e.model} (${e.harness}${e.local ? ", local" : ""}) · ${e.accountId}`;
+/** "qwen3 · opencode · local": what a native option can show; the chips under the picker are the visual. */
+const engineLabel = (e: Engine) => `${e.model} · ${e.harness}${e.local ? " · local" : ""}`;
 
 export class IncHiring extends LitElement {
   static override properties = {

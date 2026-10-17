@@ -75,8 +75,8 @@ describe("hiring", () => {
     const root = await mount();
     const [def] = selects(root);
     const labels = [...(def?.querySelectorAll("option") ?? [])].map((o) => o.textContent?.trim());
-    expect(labels).toContain("Claude Opus (claude-code) · claude-pro");
-    expect(labels).toContain("qwen3 (opencode, local) · local");
+    expect(labels).toContain("Claude Opus · claude-code");
+    expect(labels).toContain("qwen3 · opencode · local");
 
     await pick(root, def as HTMLSelectElement, "qwen");
     const chips = [...root.querySelectorAll("label .chips .chip")].map((c) => c.textContent);
