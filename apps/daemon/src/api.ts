@@ -4,7 +4,7 @@
 // another site can't send without a CORS preflight, and none is ever allowed), and an Origin from
 // anywhere else is refused. A bearer token can guard it as well.
 
-import { timingSafeEqual } from "node:crypto";
+import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import {
   type AccountCost,
   type AgentHarness,
@@ -595,10 +595,21 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     return json({ ok: true });
   }
 
+  function getOwner(): { username: string; password_hash: string } | undefined {
+    const [row] = d.db.all<{ username: string; password_hash: string }>(
+      "SELECT username, password_hash FROM owner_account WHERE id = 1",
+    );
+    return row;
+  }
+
   return async function handle(req: Request): Promise<Response> {
     const path = new URL(req.url).pathname;
+    const authStatus = req.method === "GET" && path === "/api/auth";
+    const signup = req.method === "POST" && path === "/api/signup";
     const login = req.method === "POST" && path === "/api/login";
-    if (opts.token && !login && !authorized(req, opts.token)) return json({ error: "unauthorized" }, 401);
+    if (opts.token && !authStatus && !signup && !login && !authorized(req, opts.token)) {
+      return json({ error: "unauthorized" }, 401);
+    }
     const host = req.headers.get("host") ?? "";
     if (opts.hosts && !opts.hosts.includes(host)) return json({ error: `not served as ${host}` }, 421);
     if (req.method !== "GET" && req.method !== "HEAD") {
@@ -614,19 +625,49 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         return json({ error: "writes must be application/json" }, 415);
       }
     }
+    if (authStatus) {
+      return json({ initialized: getOwner() !== undefined });
+    }
+    if (signup) {
+      if (getOwner()) return json({ error: "owner account already exists" }, 409);
+      const body = (await req.json().catch(() => ({}))) as { username?: unknown; password?: unknown };
+      const username = typeof body.username === "string" ? body.username.trim() : "";
+      if (!username) return json({ error: "username is required" }, 400);
+      if (typeof body.password !== "string" || body.password.length < 8) {
+        return json({ error: "password must be at least 8 characters" }, 400);
+      }
+      d.db.run(
+        "INSERT INTO owner_account (id, username, password_hash, created_at) VALUES (1, ?, ?, ?)",
+        username,
+        hashPassword(body.password),
+        d.clock.now(),
+      );
+      return jsonWithCookie({ ok: true, username }, 201, opts.token);
+    }
     if (login) {
-      const body = (await req.json().catch(() => ({}))) as { token?: unknown };
+      const body = (await req.json().catch(() => ({}))) as {
+        username?: unknown;
+        password?: unknown;
+        token?: unknown;
+      };
+      if (body.username !== undefined || body.password !== undefined) {
+        const owner = getOwner();
+        if (!owner) return json({ error: "create an owner account first" }, 400);
+        if (
+          typeof body.username !== "string" ||
+          typeof body.password !== "string" ||
+          body.username.trim() !== owner.username ||
+          !verifyPassword(body.password, owner.password_hash)
+        ) {
+          return json({ error: "wrong username or password" }, 401);
+        }
+        return jsonWithCookie({ ok: true }, 200, opts.token);
+      }
       if (!opts.token || typeof body.token !== "string" || !same(body.token, opts.token)) {
         await new Promise((r) => setTimeout(r, 1000)); // slows guessing
         return json({ error: "that's not the token" }, 401);
       }
-      return new Response(JSON.stringify({ ok: true }), {
-        headers: {
-          "content-type": "application/json",
-          // HttpOnly: the page's scripts can't read it; Strict: other sites can't send it.
-          "set-cookie": `i_inc=${opts.token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=2592000`,
-        },
-      });
+      return jsonWithCookie({ ok: true }, 200, opts.token);
     }
     const url = new URL(req.url);
     for (const [method, pattern, handler] of routes) {
@@ -636,6 +677,20 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     }
     return json({ error: "not found" }, 404);
   };
+}
+
+function hashPassword(password: string): string {
+  const salt = randomBytes(16).toString("hex");
+  const hash = scryptSync(password, salt, 64).toString("hex");
+  return `${salt}:${hash}`;
+}
+
+function verifyPassword(password: string, stored: string): boolean {
+  const [salt, hashHex] = stored.split(":");
+  if (!salt || !hashHex) return false;
+  const expected = Buffer.from(hashHex, "hex");
+  const actual = scryptSync(password, salt, expected.length);
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
 /** Compares secrets in constant time. */
@@ -677,4 +732,19 @@ function validate(t: Partial<NewTicket>): string | null {
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
+
+function jsonWithCookie(body: unknown, status: number, token?: string): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "content-type": "application/json",
+      ...(token
+        ? {
+            // HttpOnly: the page's scripts can't read it; Strict: other sites can't send it.
+            "set-cookie": `i_inc=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`,
+          }
+        : {}),
+    },
+  });
 }
