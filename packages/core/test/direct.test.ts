@@ -117,6 +117,30 @@ describe("direct mode", () => {
     );
     expect(red.harness.reverted).toEqual([sha(5)]);
   });
+
+  it("resumes watching CI after a restart without pushing a second time", async () => {
+    const p = direct(ports());
+    let gateCalls = 0;
+    p.harness.runGates = async () => {
+      gateCalls++;
+      return { ok: true, conflict: false, pushed: sha(8) };
+    };
+    let interruptedOnce = false;
+    p.harness.watchCi = async () => {
+      if (!interruptedOnce) {
+        interruptedOnce = true;
+        throw new Error("daemon restarted mid-watchCi");
+      }
+      return { ok: true };
+    };
+    await expect(runTicket(p, refundsTicket({ effort: "low" }))).rejects.toThrow(
+      "daemon restarted mid-watchCi",
+    );
+    expect(gateCalls).toBe(1);
+    const resumed = await runTicket(p, refundsTicket({ effort: "low" }));
+    expect(resumed).toEqual({ status: "done", outcome: "merged" });
+    expect(gateCalls).toBe(1);
+  });
 });
 
 describe("reading agents' JSON replies", () => {
