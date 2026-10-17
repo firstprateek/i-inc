@@ -279,4 +279,15 @@ describe("CI at the gates", () => {
       reason: "CI didn't finish in time: waiting on Lint, types and tests",
     });
   });
+
+  it("treats a check run with a conclusion as finished even when GitHub leaves status in_progress", async () => {
+    const { run, slept } = ci([
+      [
+        done("Lint, types and tests", "success"),
+        { name: "Sorting service (Python)", status: "in_progress", conclusion: "success" },
+      ],
+    ]);
+    expect(await run()).toEqual({ ok: true });
+    expect(slept).toEqual([]);
+  });
 });
