@@ -2,6 +2,7 @@
 import { css, html } from "lit";
 import { api, type PolicyProposal, refreshNow, type TicketView } from "../api.ts";
 import { Loader } from "./loader.ts";
+import { protectedOk } from "./protected-card.ts";
 import { avatar, base } from "./shared.ts";
 
 export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyProposal[] }> {
@@ -74,8 +75,7 @@ export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyPr
             ? html`<div class="q">${a.items.length} ${a.items.length === 1 ? "proposal waits" : "proposals wait"} for you.</div>
                 <div class="actions">${btn("Approve all", () => api.answer(t.id, "approve"))}${btn("Decline", () => api.answer(t.id, "reject"), true)}</div>`
             : a.kind === "protected-paths"
-              ? html`<div class="q">“${t.title}” changes protected paths: ${a.paths.join(", ")}. It reaches main once you OK it.</div>
-                  <div class="actions">${btn("OK it", () => api.answer(t.id, "approve"))}${btn("Decline", () => api.answer(t.id, "reject"), true)}</div>`
+              ? protectedOk(t, a.paths, (fn) => void this.act(fn))
               : html`<div class="q">${a.reason}</div>`;
     return html`<div class="card item waiting">${this.header(t, a.kind.replace("-", " "))}${body}</div>`;
   }

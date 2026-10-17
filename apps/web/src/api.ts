@@ -28,6 +28,15 @@ export type {
   TicketView,
 };
 
+/** What POST /api/tickets takes from the owner (daemon NewTicket). */
+export interface NewTicketBody {
+  title: string;
+  project: string;
+  type: "fix" | "feat" | "chore" | "errand";
+  effort: "low" | "medium" | "high";
+  doneWhen: string[];
+}
+
 export interface OfficeResponse {
   employees: DeskEntry[];
   accounts?: AccountCost[];
@@ -104,6 +113,8 @@ export const api = {
   login,
   logout,
   board: () => call<{ tickets: TicketView[] }>("GET", "/api/board").then((r) => r.tickets),
+  projects: () => call<{ projects: { id: string }[] }>("GET", "/api/projects").then((r) => r.projects),
+  createTicket: (t: NewTicketBody) => call<{ ticket: { id: string } }>("POST", "/api/tickets", t),
   office: () => call<OfficeResponse>("GET", "/api/office"),
   desk: () => call<DeskView>("GET", "/api/desk"),
   releases: () => call<{ releases: ProjectRelease[]; pending: PendingRelease[] }>("GET", "/api/releases"),
