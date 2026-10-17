@@ -116,17 +116,19 @@ if (!/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
     const branch = info.json.default_branch ?? "main";
     const rules = await gh("GET", `/repos/${repo}/rules/branches/${branch}`, token);
     const types = new Map((Array.isArray(rules.json) ? rules.json : []).map((rule) => [rule.type, rule]));
-    const want = {
-      update: "only the bypass list updates it (Restrict updates)",
-      pull_request: "a PR is required",
-      non_fast_forward: "force pushes are blocked",
-      deletion: "it can't be deleted",
-      required_status_checks: "status checks are required",
-    };
+    // Every project: main's history can't be rewritten or deleted. An owner-merges project also
+    // requires a PR the owner approves; a direct-mode one lets the bot push reviewed work.
+    const want = { non_fast_forward: "force pushes are blocked", deletion: "it can't be deleted" };
     for (const [type, what] of Object.entries(want)) {
       if (types.has(type)) pass(`${branch}: ${what}`);
       else fail(`${branch}: ${what} is missing from the ruleset`);
     }
+    const ownerMerges = types.has("pull_request");
+    note(
+      ownerMerges
+        ? `${branch}: owner-merges (a PR is required${types.has("update") ? ", and only you update it" : ""})`
+        : `${branch}: direct mode (the bot pushes reviewed work)`,
+    );
     const pr = types.get("pull_request")?.parameters;
     if (pr && pr.required_approving_review_count < 1) fail(`${branch}: a PR needs at least 1 approval`);
     if (pr && !pr.dismiss_stale_reviews_on_push)

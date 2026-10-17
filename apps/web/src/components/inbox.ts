@@ -73,7 +73,10 @@ export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyPr
           : a.kind === "proposals"
             ? html`<div class="q">${a.items.length} ${a.items.length === 1 ? "proposal waits" : "proposals wait"} for you.</div>
                 <div class="actions">${btn("Approve all", () => api.answer(t.id, "approve"))}${btn("Decline", () => api.answer(t.id, "reject"), true)}</div>`
-            : html`<div class="q">${a.reason}</div>`;
+            : a.kind === "protected-paths"
+              ? html`<div class="q">“${t.title}” changes protected paths: ${a.paths.join(", ")}. It reaches main once you OK it.</div>
+                  <div class="actions">${btn("OK it", () => api.answer(t.id, "approve"))}${btn("Decline", () => api.answer(t.id, "reject"), true)}</div>`
+              : html`<div class="q">${a.reason}</div>`;
     return html`<div class="card item waiting">${this.header(t, a.kind.replace("-", " "))}${body}</div>`;
   }
 

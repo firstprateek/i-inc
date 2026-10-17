@@ -48,6 +48,7 @@ export interface AcpOptions {
     engine: Engine,
     ticket: Ticket,
     duty: Duty,
+    employeeId: Id,
   ) => Record<string, string> | Promise<Record<string, string>>;
   /** Where a ticket's worktree lives in the machine. */
   cwdFor: (ticketId: Id) => string;
@@ -116,7 +117,7 @@ export class AcpAgent implements Agent {
       employeeId: r.employee.id,
       engine: r.engine,
       cwd: this.o.cwdFor(r.ticket.id),
-      env: await this.o.credentials(r.engine, r.ticket, r.duty),
+      env: await this.o.credentials(r.engine, r.ticket, r.duty, r.employee.id),
     });
     const rpc = new Rpc(proc, this.o.log);
     let limit: { rejected: boolean; resetsAt: number | null } = { rejected: false, resetsAt: null };

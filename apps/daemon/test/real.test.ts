@@ -12,7 +12,7 @@ import { createApp } from "../src/app.ts";
 import { readCredentials } from "../src/config.ts";
 import { seedDemo } from "../src/demo.ts";
 import { defaultMachineSettings } from "../src/machines.ts";
-import { realPorts } from "../src/real.ts";
+import { portsFor, realPorts } from "../src/real.ts";
 import { testApp } from "./setup.ts";
 
 const tmp = (prefix: string) => mkdtempSync(join(tmpdir(), prefix));
@@ -61,6 +61,37 @@ describe("projects", () => {
     expect((await app.call("PUT", "/api/projects/Duet", { ...duet, repo: "duet" })).status).toBe(400);
     expect((await app.call("PUT", "/api/projects/Duet", { ...duet, checks: [] })).status).toBe(400);
     expect((await app.call("PUT", "/api/projects/..%2Fx", duet)).status).toBe(400);
+  });
+});
+
+describe("teams", () => {
+  it("puts employees in one team each, with a sandbox size", async () => {
+    const app = await testApp();
+    const eng = await app.call("PUT", "/api/teams/engineering", {
+      name: "Engineering",
+      members: ["ada", "kit"],
+      sandbox: { cpus: 6, memory: "12G" },
+    });
+    expect(eng.body.team).toEqual({
+      id: "engineering",
+      name: "Engineering",
+      members: ["ada", "kit"],
+      sandbox: { cpus: 6, memory: "12G" },
+    });
+    await app.call("PUT", "/api/teams/platform", { name: "Platform", members: ["kit"] });
+    expect(app.deps.registry.teamOf("kit").id).toBe("platform");
+    expect(app.deps.registry.teamOf("ada").id).toBe("engineering");
+    expect(app.deps.registry.teamOf("grace").id).toBe("company");
+    expect((await app.call("PUT", "/api/teams/x", { name: "X", members: ["nobody"] })).status).toBe(400);
+    expect(
+      (
+        await app.call("PUT", "/api/teams/x", {
+          name: "X",
+          members: [],
+          sandbox: { cpus: 6, memory: "lots" },
+        })
+      ).status,
+    ).toBe(400);
   });
 });
 
@@ -153,11 +184,15 @@ describe("real mode", () => {
     assignee: "ada",
   };
 
-  it("boots the employee's machine, and starts its session there with the account's credentials", async () => {
+  it("boots the team's sandbox, and starts the session there with the account's credentials", async () => {
     const { app, exec, launched } = await realApp();
     const { registry } = app.deps;
+    // No team claims Ada: she works in the company's sandbox.
     await app.deps.machines.ensureUp("ada");
-    expect(exec[0]).toEqual(["machine", "run", "-n", "inc-ada", "--", "true"]);
+    expect(exec[0]).toEqual(["machine", "run", "-n", "inc-company", "--", "true"]);
+    registry.addTeam({ id: "engineering", name: "Engineering", members: ["kit"] });
+    await app.deps.machines.ensureUp("kit");
+    expect(exec.at(-1)).toEqual(["machine", "run", "-n", "inc-engineering", "--", "true"]);
 
     const outcome = await app.deps.agent.run({
       ticket,
@@ -171,13 +206,13 @@ describe("real mode", () => {
     expect(launched[0]).toMatchObject({
       employeeId: "ada",
       cwd: "/home/employee/work/inc-7",
-      env: { CLAUDE_CODE_OAUTH_TOKEN: "sk-x" },
+      env: { CLAUDE_CODE_OAUTH_TOKEN: "sk-x", I_INC_PORTS: portsFor("7") },
     });
     expect(registry.usage()).toEqual([
       { accountId: "claude-pro", status: "allowed", resetsAt: 1_900_000_000_000, windows: [] },
     ]);
 
-    // Antigravity signs in inside the machine, so its account has no entry and its session gets none.
+    // Antigravity signs in inside the machine, so its account has no entry: its session gets only ports.
     await app.deps.agent.run({
       ticket,
       stage: "build",
@@ -186,7 +221,9 @@ describe("real mode", () => {
       engine: registry.engine("gemini"),
       brief: "b",
     });
-    expect(launched[1]?.env).toEqual({});
+    expect(launched[1]?.env).toEqual({ I_INC_PORTS: portsFor("7") });
+    expect(portsFor("7")).toMatch(/^\d{5}-\d{5}$/);
+    expect(portsFor("7")).not.toBe(portsFor("8"));
   });
 
   it("runs the project's recipe from the registry in the ticket's worktree", async () => {

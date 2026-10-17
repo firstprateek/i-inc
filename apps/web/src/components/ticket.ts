@@ -124,6 +124,14 @@ export class IncTicket extends Loader<Data> {
             </div></div>`;
         case "stuck":
           return html`<div class="ask"><b>Stuck</b><p>${ask.reason}</p></div>`;
+        case "protected-paths":
+          return html`<div class="ask"><b>This change touches protected paths</b>
+            <ul>${ask.paths.map((p) => html`<li><code>${p}</code></li>`)}</ul>
+            <p class="muted">It was reviewed, and reaches main once you OK it. GitHub only takes workflow changes from you: run <code>tools/host/push-for-owner.sh</code> first, then OK it.</p>
+            <div class="actions">
+              <button class="btn" ?disabled=${this.busy} @click=${() => this.act(() => api.answer(id, "approve"))}>OK it</button>
+              <button class="btn ghost" ?disabled=${this.busy} @click=${() => this.act(() => api.answer(id, "reject"))}>Decline</button>
+            </div></div>`;
       }
     }
     if (t.status === "ready" && t.report) {

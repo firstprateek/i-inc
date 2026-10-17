@@ -39,6 +39,15 @@ const appConfig =
   !demo && existsSync(join(configDir(), "github-app.json")) ? readGitHubAppConfig() : undefined;
 const agent = new FakeAgent();
 const harness = new FakeHarness();
+const real = demo
+  ? undefined
+  : realPorts({
+      credentials,
+      log,
+      ...(appConfig
+        ? { github: { tokens: new GitHubApp(appConfig), slug: appConfig.slug ?? "i-inc-bot" } }
+        : {}),
+    });
 const app = demo
   ? await createApp({
       ...common,
@@ -52,13 +61,7 @@ const app = demo
   : await createApp({
       ...common,
       dbPath: join(home, "i-inc.db"),
-      ...realPorts({
-        credentials,
-        log,
-        ...(appConfig
-          ? { github: { tokens: new GitHubApp(appConfig), slug: appConfig.slug ?? "i-inc-bot" } }
-          : {}),
-      }),
+      ...(real as NonNullable<typeof real>),
     });
 
 if (!demo) {
@@ -90,6 +93,9 @@ if (demo && app.deps.registry.employees().length === 0) {
 }
 await app.daemon.tick();
 setInterval(() => void app.daemon.tick(), 30_000);
+
+// Each team sandbox in use stays signed in to GitHub as the bot.
+if (real) setInterval(() => void real.keepLoginsFresh(), 5 * 60_000);
 
 // If the walls go down, nothing new starts (assertWalls), and the machines already running stop.
 if (!demo && app.deps.machines instanceof AppleMachines) {

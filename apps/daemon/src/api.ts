@@ -113,6 +113,49 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       },
     ],
 
+    ["GET", "/api/teams", async () => json({ teams: d.registry.teams() })],
+
+    [
+      "PUT",
+      "/api/teams/:id",
+      async (req, { id = "" }) => {
+        const b = (await req.json()) as { name?: unknown; members?: unknown; sandbox?: unknown };
+        if (!/^[a-z0-9-]{1,32}$/.test(id))
+          return json({ error: "a team id is lowercase letters, digits and dashes" }, 400);
+        if (typeof b.name !== "string" || !b.name.trim()) return json({ error: "name names the team" }, 400);
+        const members = Array.isArray(b.members) ? b.members : [];
+        const known = new Set(d.registry.employees().map((e) => e.id));
+        if (!members.every((m) => typeof m === "string" && known.has(m))) {
+          return json({ error: "members must be employees' ids" }, 400);
+        }
+        const box = b.sandbox as { cpus?: unknown; memory?: unknown } | undefined;
+        if (
+          box !== undefined &&
+          !(
+            Number.isInteger(box.cpus) &&
+            (box.cpus as number) > 0 &&
+            typeof box.memory === "string" &&
+            /^\d+G$/.test(box.memory)
+          )
+        ) {
+          return json({ error: 'sandbox is {"cpus": 6, "memory": "12G"}' }, 400);
+        }
+        // Someone joins one team at a time: joining this one takes them out of any other.
+        for (const t of d.registry.teams()) {
+          if (t.id !== id && t.members.some((m) => members.includes(m))) {
+            d.registry.addTeam({ ...t, members: t.members.filter((m) => !members.includes(m)) });
+          }
+        }
+        d.registry.addTeam({
+          id,
+          name: b.name,
+          members: members as string[],
+          ...(box ? { sandbox: { cpus: box.cpus as number, memory: box.memory as string } } : {}),
+        });
+        return json({ team: d.registry.teams().find((t) => t.id === id) });
+      },
+    ],
+
     ["GET", "/api/projects", async () => json({ projects: d.registry.projects() })],
 
     [

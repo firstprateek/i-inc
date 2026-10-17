@@ -15,6 +15,14 @@ plist="$HOME/Library/LaunchAgents/inc.i.daemon.plist"
 log="$HOME/Library/Logs/i-inc-daemon.log"
 
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+
+# Apple's container service doesn't start by itself after a restart (found 2026-10-17), and every
+# team's sandbox needs it, so it starts at login.
+cplist="$HOME/Library/LaunchAgents/inc.i.container.plist"
+sed -e "s#@LOG@#$HOME/Library/Logs/i-inc-container.log#" "$here/inc.i.container.plist" >"$cplist"
+launchctl bootout "gui/$(id -u)/inc.i.container" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$cplist"
+
 sed -e "s#@BUN@#$bun#" -e "s#@REPO@#$repo#g" -e "s#@LOG@#$log#" "$here/inc.i.daemon.plist" >"$plist"
 launchctl bootout "gui/$(id -u)/inc.i.daemon" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$plist"

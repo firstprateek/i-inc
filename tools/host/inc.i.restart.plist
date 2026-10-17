@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>inc.i.restart</string>
+  <!-- A restart on the 1st of each month at 05:15: macOS stops expiring finished connections after
+       about 49.7 days of uptime, and the mini ran out of ports at 75 days (2026-10-17). -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/sbin/shutdown</string>
+    <string>-r</string>
+    <string>now</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Day</key>
+    <integer>1</integer>
+    <key>Hour</key>
+    <integer>5</integer>
+    <key>Minute</key>
+    <integer>15</integer>
+  </dict>
+</dict>
+</plist>

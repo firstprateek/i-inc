@@ -1,9 +1,10 @@
-// Real mode's ports: ACP sessions in Apple container machines, the harness running each project's
-// recipe in the builder's machine, and, once the GitHub App is set up, a branch and draft PR per
-// code ticket. Sessions get their account's credentials from the host's config, plus a token for
-// the ticket's repo, and Claude's usage reports land in the registry. The helper model and chat stay
-// the core's fakes until they use Ollama through the relay.
-import type { Employee } from "@i-inc/core";
+// Real mode's ports. Each team works in one shared sandbox (inc-<team>), signed in once to its
+// subscriptions (decided 2026-10-17): ACP sessions run there, the harness runs each project's recipe
+// there, and the workspace makes a branch per ticket there. In direct mode (the default) reviewed work
+// goes straight to main; owner-merges projects get a draft PR. The daemon keeps each sandbox signed in
+// to GitHub as the bot, so sessions of any length can push. Claude's usage reports land in the
+// registry. The helper model and chat stay the core's fakes until they use Ollama through the relay.
+import type { Employee, Id } from "@i-inc/core";
 import { FakeChat, FakeHelper } from "@i-inc/core/testing";
 import { AcpAgent, type Launch } from "./acp.ts";
 import type { AppOptions } from "./app.ts";
@@ -16,8 +17,10 @@ import {
   type Exec,
   type MachineSettings,
   machineLaunch,
+  machineOf,
   workDir,
 } from "./machines.ts";
+import type { Registry } from "./registry.ts";
 import { GitHubWorkspace } from "./workspace.ts";
 
 export interface RealOptions {
@@ -26,6 +29,7 @@ export interface RealOptions {
   github?: { tokens: TokenSource; slug: string; prs?: PullRequests };
   machine?: MachineSettings;
   log?: (msg: string) => void;
+  now?: () => number;
   /** Stand-ins for the `container` CLI, for tests. */
   exec?: Exec;
   launch?: Launch;
@@ -34,12 +38,28 @@ export interface RealOptions {
 
 /** What the employee image has (images/employee/Dockerfile), for briefs. */
 const machine =
-  "Your machine runs Ubuntu 24.04. You're the user employee, with passwordless sudo. It has Node 24, pnpm 10, git, gh and Docker; install anything else you need.";
+  "Your machine runs Ubuntu 24.04. You're the user employee, with passwordless sudo. It has Node 24, pnpm 10, git, gh and Docker; install anything else you need. Other agents on your team share it: run servers only on the ports in $I_INC_PORTS.";
 
-export function realPorts(
-  o: RealOptions,
-): Pick<AppOptions, "machines" | "agent" | "harness" | "workspace" | "helper" | "chat"> {
-  const s = o.machine ?? defaultMachineSettings;
+/** A ticket's own range of 100 ports, so agents sharing a sandbox don't take each other's. */
+export function portsFor(ticketId: Id): string {
+  let h = 0;
+  for (const ch of ticketId) h = (h * 31 + ch.charCodeAt(0)) % 400;
+  const base = 20_000 + h * 100;
+  return `${base}-${base + 99}`;
+}
+
+/** How often a sandbox's GitHub sign-in is renewed; the bot's tokens last an hour. */
+const loginEveryMs = 25 * 60_000;
+
+export function realPorts(o: RealOptions): Pick<
+  AppOptions,
+  "machines" | "agent" | "harness" | "workspace" | "helper" | "chat"
+> & {
+  /** Renews the GitHub sign-in of every sandbox in use. main.ts calls it on a timer. */
+  keepLoginsFresh: () => Promise<void>;
+} {
+  const base = o.machine ?? defaultMachineSettings;
+  const now = o.now ?? Date.now;
   const account = credentialsFor(o.credentials);
   const { github } = o;
   let bot: Promise<{ email: string }> | undefined;
@@ -51,23 +71,61 @@ export function realPorts(
     });
     return { name: `${employee.name} (i.inc)`, email: (await bot).email };
   };
-  const run = o.runScript ?? machineScript(s);
+
+  // Machine settings for teams: an employee works in its team's sandbox, sized as the team says.
+  let settings: MachineSettings | undefined;
+  let registryRef: Registry | undefined;
+  const teams = (registry: Registry): MachineSettings => {
+    registryRef = registry;
+    settings ??= {
+      ...base,
+      machineFor: (employeeId) => `inc-${registry.teamOf(employeeId).id}`,
+      sizeFor: (name) => registry.teams().find((t) => `inc-${t.id}` === name)?.sandbox,
+    };
+    return settings;
+  };
+  let runner: RunScript | undefined;
+  const run = (registry: Registry): RunScript => {
+    runner ??= o.runScript ?? machineScript(teams(registry));
+    return runner;
+  };
+  let machines: AppleMachines | undefined;
+
+  // Each sandbox is signed in to GitHub as the bot, for all the App's repos, renewed before it
+  // expires. A session's token in its environment would stop working after an hour; this doesn't.
+  const signedIn = new Map<string, number>();
+  const signIn = async (registry: Registry, employeeId: Id): Promise<void> => {
+    if (!github) return;
+    const name = machineOf(teams(registry), employeeId);
+    if (now() - (signedIn.get(name) ?? 0) < loginEveryMs) return;
+    const token = await github.tokens.token("*");
+    const r = await run(registry)(
+      employeeId,
+      'printf %s "$I_INC_GH" | gh auth login --hostname github.com --git-protocol https --with-token && echo @@signed-in',
+      { I_INC_GH: token },
+    );
+    if (!r.output.includes("@@signed-in")) {
+      o.log?.(`couldn't sign ${name} in to GitHub: ${r.output.trim().slice(-200)}`);
+      return;
+    }
+    signedIn.set(name, now());
+  };
+
   return {
-    machines: new AppleMachines(s, o.exec),
+    machines: (registry) => {
+      machines = new AppleMachines(teams(registry), o.exec);
+      return machines;
+    },
     agent: (registry) =>
       new AcpAgent({
-        launch: o.launch ?? machineLaunch(s),
-        // The account's credential, and a token for the ticket's repo: one that pushes for the
-        // builder, read-only for a reviewer or verifier.
-        credentials: async (engine, ticket, duty) => {
-          const repo = registry.project(ticket.project)?.repo;
-          const access = duty === "review" || duty === "verify" ? "read" : "write";
-          return {
-            ...account(engine),
-            ...(github && repo ? { GH_TOKEN: await github.tokens.token(repo, access) } : {}),
-          };
+        launch: o.launch ?? machineLaunch(teams(registry)),
+        // The account's credential if it has one (machines sign in themselves by default), and the
+        // ticket's ports. GitHub comes from the sandbox's sign-in.
+        credentials: async (engine, ticket, _duty, employeeId) => {
+          await signIn(registry, employeeId);
+          return { ...account(engine), I_INC_PORTS: portsFor(ticket.id) };
         },
-        cwdFor: (ticketId) => workDir(ticketId, s),
+        cwdFor: (ticketId) => workDir(ticketId, base),
         onUsage: (u) => registry.recordUsage(u),
         ...(o.log ? { log: o.log } : {}),
       }),
@@ -75,8 +133,9 @@ export function realPorts(
       new MachineHarness(
         {
           recipe: (project) => registry.project(project)?.checks,
-          worktree: (ticketId) => workDir(ticketId, s),
+          worktree: (ticketId) => workDir(ticketId, base),
           machine,
+          policy: (project) => registry.projectPolicy(project),
           ...(github
             ? {
                 github: async (ticket) => {
@@ -90,22 +149,30 @@ export function realPorts(
               }
             : {}),
         },
-        run,
+        run(registry),
       ),
     ...(github
       ? {
           workspace: (registry) =>
             new GitHubWorkspace({
               project: (name) => registry.project(name),
+              policy: (project) => registry.projectPolicy(project),
               tokens: github.tokens,
               prs: github.prs ?? new PullRequests(github.tokens),
               identity,
-              worktree: (ticketId) => workDir(ticketId, s),
-              run,
+              worktree: (ticketId) => workDir(ticketId, base),
+              run: run(registry),
             }),
         }
       : {}),
     helper: new FakeHelper(),
     chat: new FakeChat(),
+    keepLoginsFresh: async () => {
+      if (!machines || !registryRef) return;
+      const registry = registryRef;
+      for (const employeeId of machines.running()) {
+        await signIn(registry, employeeId).catch((err) => o.log?.(`GitHub sign-in renewal failed: ${err}`));
+      }
+    },
   };
 }
