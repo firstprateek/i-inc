@@ -93,7 +93,7 @@ describe("AppleMachines.inspectSandbox", () => {
     });
   });
 
-  it("probes and re-stops a stopped machine if not yet cached, caching the result", async () => {
+  it("reports stopped sandboxes without booting the machine, using cache if present or default signedIn", async () => {
     const calls: { bin: string; args: string[]; input?: string }[] = [];
     const listing = [
       "NAME             CREATED              IP             CPUS  MEMORY  DISK  STATE    DEFAULT",
@@ -102,7 +102,6 @@ describe("AppleMachines.inspectSandbox", () => {
     const exec: Exec = async (bin, args, opts) => {
       calls.push({ bin, args, ...(opts?.input !== undefined ? { input: opts.input } : {}) });
       if (args[1] === "ls") return listing;
-      if (args[1] === "run") return "antigravity\n";
       return "";
     };
     const m = new AppleMachines(noWalls, exec);
@@ -114,21 +113,17 @@ describe("AppleMachines.inspectSandbox", () => {
       state: "stopped",
       cpus: 6,
       memory: "12G",
-      signedIn: { claude: false, antigravity: true, github: false },
+      signedIn: { claude: false, antigravity: false, github: false },
     });
 
-    // Probed and stopped
-    expect(calls.map((c) => c.args.slice(0, 2).join(" "))).toEqual([
-      "machine ls",
-      "machine run",
-      "machine stop",
-    ]);
-    expect(calls[2]?.args).toEqual(["machine", "stop", "inc-engineering"]);
+    // Never booted or probed!
+    expect(calls).toEqual([{ bin: defaultMachineSettings.bin, args: ["machine", "ls"] }]);
 
-    // Subsequent call uses cache and does not probe or stop
+    // If cache is set (e.g. from a prior ensureUp), uses the cached signedIn
+    m.signedInCache.set("inc-engineering", { claude: true, antigravity: true, github: false });
     calls.length = 0;
     const status2 = await m.inspectSandbox("engineering", { cpus: 6, memory: "12G" });
-    expect(status2.signedIn).toEqual({ claude: false, antigravity: true, github: false });
+    expect(status2.signedIn).toEqual({ claude: true, antigravity: true, github: false });
     expect(calls).toEqual([{ bin: defaultMachineSettings.bin, args: ["machine", "ls"] }]);
   });
 

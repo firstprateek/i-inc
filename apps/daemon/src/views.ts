@@ -56,6 +56,20 @@ export function ticketView(
         ? ("current" as const)
         : ("todo" as const),
   }));
+  const createdBy =
+    !r.ticket.createdBy || r.ticket.createdBy === "owner" ? null : personOf(registry, r.ticket.createdBy);
+
+  let finishedAt: number | null = null;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e && (e.type === "closed" || e.type === "failed" || e.type === "report-ready")) {
+      finishedAt = e.at;
+      break;
+    }
+  }
+
+  const pushed = events.some((e) => e.type === "pushed") || Boolean(s.pushed);
+
   return {
     id: r.ticket.id,
     title: r.ticket.title,
@@ -73,6 +87,9 @@ export function ticketView(
     report: s.status === "ready" ? assembleReport({ ...r.ticket, assignee: assigneeId }, s, registry) : null,
     failure: s.failure,
     outcome: s.outcome,
+    createdBy,
+    finishedAt,
+    pushed,
   };
 }
 
@@ -86,9 +103,9 @@ export function columnOf(s: TicketState): Column {
 function personOf(registry: Registry, id: Id): Person {
   try {
     const e = registry.employee(id);
-    return { id, name: e.name, tint: e.tint ?? 0 };
+    return { id, name: e.name, tint: e.tint ?? 0, role: e.role };
   } catch {
-    return { id, name: id, tint: 0 };
+    return { id, name: id, tint: 0, role: "" };
   }
 }
 

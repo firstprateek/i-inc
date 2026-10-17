@@ -207,7 +207,7 @@ export class AppleMachines implements MachineProvider {
 
   async deliverCallback(teamId: Id, url: string): Promise<void> {
     assertWalls(this.s);
-    const machine = `inc-${teamId}`;
+    const machine = machineName(teamId);
     await this.exec(
       this.s.bin,
       ["machine", "run", "-i", "-u", this.s.user, "-n", machine, "-e", "CALLBACK_URL", "--", "bash", "-s"],
@@ -220,7 +220,7 @@ export class AppleMachines implements MachineProvider {
 
   async inspectSandbox(team: Id, size: { cpus: number; memory: string }): Promise<SandboxStatus> {
     if (!/^[a-z0-9-]{1,32}$/.test(team)) throw new Error(`not a team id: ${team}`);
-    const machine = `inc-${team}`;
+    const machine = machineName(team);
     const defaultSignedIn = { claude: false, antigravity: false, github: false };
 
     const listing = await this.exec(this.s.bin, ["machine", "ls"]);
@@ -244,20 +244,11 @@ export class AppleMachines implements MachineProvider {
     const state: "running" | "stopped" = entry.includes("running") ? "running" : "stopped";
 
     let signedIn = this.signedInCache.get(machine) ?? defaultSignedIn;
-    if (wallsUp(this.s)) {
-      if (state === "running") {
-        try {
-          signedIn = await this.probeSignIn(machine);
-        } catch {
-          // keep cached or fallback
-        }
-      } else if (!this.signedInCache.has(machine)) {
-        try {
-          signedIn = await this.probeSignIn(machine);
-          await this.exec(this.s.bin, ["machine", "stop", machine]).catch(() => {});
-        } catch {
-          // keep fallback
-        }
+    if (wallsUp(this.s) && state === "running") {
+      try {
+        signedIn = await this.probeSignIn(machine);
+      } catch {
+        // keep cached or fallback
       }
     }
 

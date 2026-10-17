@@ -8,6 +8,7 @@ export interface Person {
   id: Id;
   name: string;
   tint: number;
+  role?: string;
 }
 
 export interface TicketView {
@@ -29,6 +30,9 @@ export interface TicketView {
   report: Report | null;
   failure: TicketState["failure"];
   outcome: TicketState["outcome"];
+  createdBy?: Person | null;
+  finishedAt?: number | null;
+  pushed?: boolean;
 }
 
 export type EmployeeState =

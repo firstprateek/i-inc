@@ -180,13 +180,25 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         const sandboxes: SandboxStatus[] = [];
         for (const t of d.registry.teams()) {
           const size = t.sandbox ?? { cpus: 6, memory: "12G" };
-          if (d.machines.inspectSandbox) {
-            sandboxes.push(await d.machines.inspectSandbox(t.id, size));
-          } else {
+          const machine = `inc-${t.id}`;
+          if (!d.machines.inspectSandbox) {
             sandboxes.push({
               team: t.id,
-              machine: `inc-${t.id}`,
-              state: "stopped",
+              machine,
+              state: "error",
+              cpus: size.cpus,
+              memory: size.memory,
+              signedIn: { claude: false, antigravity: false, github: false },
+            });
+            continue;
+          }
+          try {
+            sandboxes.push(await d.machines.inspectSandbox(t.id, size));
+          } catch {
+            sandboxes.push({
+              team: t.id,
+              machine,
+              state: "error",
               cpus: size.cpus,
               memory: size.memory,
               signedIn: { claude: false, antigravity: false, github: false },

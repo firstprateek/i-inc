@@ -16,7 +16,7 @@ export interface EventStore {
 export interface SandboxStatus {
   team: Id;
   machine: string;
-  state: "running" | "stopped" | "missing";
+  state: "running" | "stopped" | "missing" | "error";
   cpus: number;
   memory: string;
   signedIn: { claude: boolean; antigravity: boolean; github: boolean };
