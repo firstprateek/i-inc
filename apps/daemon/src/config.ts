@@ -4,12 +4,26 @@
 //   github-app.json   the GitHub App's ids, with its key in github-app.pem (docs/github-app.md)
 // Both secret files must be readable only by their owner. By default each machine signs in to its
 // harnesses itself, once at hiring (tools/host/sign-in-claude.sh), so accounts need no entry here.
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Engine, Id } from "@i-inc/core";
 
 export const configDir = () => join(homedir(), ".config", "i-inc");
+
+/**
+ * The web app's login token, in web-token next to the other config: made at random the first time,
+ * readable only by the owner. Show it with: cat ~/.config/i-inc/web-token
+ */
+export function webToken(dir = configDir()): string {
+  const path = join(dir, "web-token");
+  if (!existsSync(path)) {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(path, `${randomBytes(24).toString("base64url")}\n`, { mode: 0o600 });
+  }
+  return readOwnerOnly(path).trim();
+}
 
 /** Reads a secret file, refusing one that anyone but its owner can read. */
 export function readOwnerOnly(path: string): string {

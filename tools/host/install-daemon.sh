@@ -1,7 +1,8 @@
 #!/bin/sh
 # Installs the daemon as the owner's LaunchAgent, so real employees run whenever the mini is up. It
-# listens on 127.0.0.1:7420 only: the web app sends no token yet, so it isn't served on the tailnet.
-# Reach it with an SSH tunnel: ssh -L 7420:127.0.0.1:7420 <mini>, then http://127.0.0.1:7420.
+# listens on 127.0.0.1:7420; `tailscale serve --bg --https=8443 http://127.0.0.1:7420` puts it on
+# the tailnet, behind the login token in ~/.config/i-inc/web-token. An SSH tunnel works too:
+# ssh -L 7420:127.0.0.1:7420 <mini>, then http://127.0.0.1:7420.
 # Run it on the mini as the owner, from a checkout that has run pnpm install and built apps/web:
 #   sh tools/host/install-daemon.sh
 # Undo it: launchctl bootout gui/$(id -u)/inc.i.daemon, and delete the plist.
@@ -23,7 +24,12 @@ sed -e "s#@LOG@#$HOME/Library/Logs/i-inc-container.log#" "$here/inc.i.container.
 launchctl bootout "gui/$(id -u)/inc.i.container" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$cplist"
 
-sed -e "s#@BUN@#$bun#" -e "s#@REPO@#$repo#g" -e "s#@LOG@#$log#" "$here/inc.i.daemon.plist" >"$plist"
+# The daemon also answers as the mini's tailnet name on 8443, where `tailscale serve` puts it (port
+# 443 is Duet's). Everyone else on the tailnet meets the login (~/.config/i-inc/web-token).
+ts=$(/usr/local/bin/tailscale status --json 2>/dev/null | /usr/bin/jq -r '.Self.DNSName // empty' | sed 's/\.$//')
+hosts=${ts:+$ts:8443,$ts}
+sed -e "s#@BUN@#$bun#" -e "s#@REPO@#$repo#g" -e "s#@LOG@#$log#" -e "s#@HOSTS@#$hosts#" \
+  "$here/inc.i.daemon.plist" >"$plist"
 launchctl bootout "gui/$(id -u)/inc.i.daemon" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$plist"
 sleep 3

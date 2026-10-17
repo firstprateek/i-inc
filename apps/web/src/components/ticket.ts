@@ -59,19 +59,21 @@ export class IncTicket extends Loader<Data> {
       dd { margin: 0; }
       .ask { background: var(--needs-surface); border: 2px solid var(--needs-edge); border-radius: 16px; padding: 16px 18px;
         display: flex; flex-direction: column; gap: 12px; }
-      .ask pre { margin: 0; white-space: pre-wrap; font: 14px/1.5 var(--body); }
+      .ask pre, .ask p { margin: 0; white-space: pre-wrap; font: 14px/1.5 var(--body); }
+      .ask ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; font: 14px/1.5 var(--body); }
+      .ask code { font-family: var(--mono); font-size: 13px; }
       .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
       textarea { font: 15px var(--body); padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line-strong);
         background: var(--surface); color: var(--ink); min-height: 44px; flex-grow: 1; min-width: 220px; }
       aside { width: 380px; flex-shrink: 0; padding: 22px 24px; display: flex; flex-direction: column; gap: 12px; }
       ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
-      li { display: grid; grid-template-columns: 48px 12px minmax(0, 1fr); gap: 10px; font-size: 14px; }
-      li time { font-size: 13px; color: var(--ink-2); }
-      li i { width: 10px; height: 10px; border-radius: 50%; margin-top: 5px; background: var(--ink); }
-      li i.bad { background: var(--alarm); }
-      li i.rev { background: var(--reviewing-mark); }
-      li i.you { background: var(--needs-edge); }
-      @media (max-width: 1000px) { .wrap { flex-direction: column; } aside { width: auto; } .main { padding: 18px; }
+      ol li { display: grid; grid-template-columns: 48px 12px minmax(0, 1fr); gap: 10px; font-size: 14px; }
+      ol li time { font-size: 13px; color: var(--ink-2); }
+      ol li i { width: 10px; height: 10px; border-radius: 50%; margin-top: 5px; background: var(--ink); }
+      ol li i.bad { background: var(--alarm); }
+      ol li i.rev { background: var(--reviewing-mark); }
+      ol li i.you { background: var(--needs-edge); }
+      @media (max-width: 1000px) { .wrap { flex-direction: column; align-items: stretch; } aside { width: auto; } .main { padding: 18px; }
         dl { grid-template-columns: 1fr; gap: 2px 0; } dd { margin-bottom: 10px; } }
     `,
   ];

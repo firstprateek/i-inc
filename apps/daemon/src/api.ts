@@ -3,6 +3,8 @@
 // still send it requests, so: only known Host headers (no DNS rebinding), writes must be JSON (which
 // another site can't send without a CORS preflight, and none is ever allowed), and an Origin from
 // anywhere else is refused. A bearer token can guard it as well.
+
+import { timingSafeEqual } from "node:crypto";
 import {
   type AccountCost,
   type AgentHarness,
@@ -26,7 +28,10 @@ import type { NewTicket } from "./tickets.ts";
 import { deskView, officeView, type TicketView, ticketView } from "./views.ts";
 
 export interface ApiOptions {
-  /** When set, every request needs `Authorization: Bearer <token>`. */
+  /**
+   * When set, every request needs the token: as the `i_inc` cookie the web app gets from
+   * `POST /api/login`, or as `Authorization: Bearer <token>`. Real mode always sets one.
+   */
   token?: string;
   /** The Host headers it answers, such as "127.0.0.1:7420". Unset: any (tests). */
   hosts?: string[];
@@ -591,9 +596,9 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
   }
 
   return async function handle(req: Request): Promise<Response> {
-    if (opts.token && req.headers.get("authorization") !== `Bearer ${opts.token}`) {
-      return json({ error: "unauthorized" }, 401);
-    }
+    const path = new URL(req.url).pathname;
+    const login = req.method === "POST" && path === "/api/login";
+    if (opts.token && !login && !authorized(req, opts.token)) return json({ error: "unauthorized" }, 401);
     const host = req.headers.get("host") ?? "";
     if (opts.hosts && !opts.hosts.includes(host)) return json({ error: `not served as ${host}` }, 421);
     if (req.method !== "GET" && req.method !== "HEAD") {
@@ -609,6 +614,20 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         return json({ error: "writes must be application/json" }, 415);
       }
     }
+    if (login) {
+      const body = (await req.json().catch(() => ({}))) as { token?: unknown };
+      if (!opts.token || typeof body.token !== "string" || !same(body.token, opts.token)) {
+        await new Promise((r) => setTimeout(r, 1000)); // slows guessing
+        return json({ error: "that's not the token" }, 401);
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: {
+          "content-type": "application/json",
+          // HttpOnly: the page's scripts can't read it; Strict: other sites can't send it.
+          "set-cookie": `i_inc=${opts.token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=2592000`,
+        },
+      });
+    }
     const url = new URL(req.url);
     for (const [method, pattern, handler] of routes) {
       if (req.method !== method) continue;
@@ -617,6 +636,20 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     }
     return json({ error: "not found" }, 404);
   };
+}
+
+/** Compares secrets in constant time. */
+function same(a: string, b: string): boolean {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+}
+
+/** The token as the web app's cookie, or as a bearer header. */
+function authorized(req: Request, token: string): boolean {
+  const bearer = /^Bearer (.+)$/.exec(req.headers.get("authorization") ?? "")?.[1];
+  const cookie = /(?:^|;\s*)i_inc=([^;]+)/.exec(req.headers.get("cookie") ?? "")?.[1];
+  return [bearer, cookie].some((t) => t !== undefined && same(t, token));
 }
 
 function match(pattern: string, path: string): Record<string, string> | null {

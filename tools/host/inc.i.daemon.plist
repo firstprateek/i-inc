@@ -19,6 +19,8 @@
     <string>127.0.0.1</string>
     <key>PORT</key>
     <string>7420</string>
+    <key>I_INC_HOSTS</key>
+    <string>@HOSTS@</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>

@@ -106,6 +106,8 @@ COPY launchers/acp-claude launchers/acp-antigravity launchers/acp-opencode /usr/
 RUN chmod 755 /usr/local/bin/acp-claude /usr/local/bin/acp-antigravity /usr/local/bin/acp-opencode && \
     ls -l /usr/local/bin/acp-claude /usr/local/bin/acp-antigravity /usr/local/bin/acp-opencode
 COPY opencode.json /home/employee/.config/opencode/opencode.json
+# Commits say "Co-Authored-By: Claude", without the model's name (Claude Code adds it by default).
+COPY claude-settings.json /home/employee/.claude/settings.json
 RUN chown -R employee:employee /home/employee
 
 # What installs into the employee's home: its own npm globals, and Antigravity. Google's installer

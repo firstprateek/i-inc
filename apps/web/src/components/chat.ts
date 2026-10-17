@@ -3,6 +3,7 @@
 // the next stage boundary.
 import { css, html, LitElement } from "lit";
 import { refreshNow } from "../api.ts";
+import { showLogin } from "../login.ts";
 import { avatar, base } from "./shared.ts";
 
 type Entry =
@@ -27,6 +28,7 @@ async function json<T>(method: string, url: string, body?: unknown): Promise<T> 
       ? {}
       : { headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) }),
   });
+  if (res.status === 401) showLogin();
   const data = (await res.json()) as T & { error?: string };
   if (!res.ok) throw new Error(data.error ?? `${res.status}`);
   return data;

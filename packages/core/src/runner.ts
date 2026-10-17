@@ -611,7 +611,7 @@ async function directReport(c: Step): Promise<void> {
     c,
     "build",
     c.builder,
-    'Your work is on main. Write the report: what changed, why this way, risk, and the calls the owner might overrule. Then list up to 3 follow-up tickets you noticed but didn\'t do, only ones worth doing. Reply as JSON: {"report": "...", "followUps":[{"title","doneWhen":["..."],"type":"fix"|"feat"|"chore","effort":"low"|"medium"|"high","reason"}]}.',
+    `i.inc pushed your work to main${c.s.pushed ? ` as ${c.s.pushed.slice(0, 7)}` : ""}, and CI passed there. Write the report: what changed, why this way, risk, and the calls the owner might overrule. Then list up to 3 follow-up tickets you noticed but didn't do, only ones worth doing. Reply as JSON: {"report": "...", "followUps":[{"title","doneWhen":["..."],"type":"fix"|"feat"|"chore","effort":"low"|"medium"|"high","reason"}]}.`,
   );
   if (out === null) return;
   const parsed = parseJson<{ report?: string; followUps?: FollowUp[] }>(out);

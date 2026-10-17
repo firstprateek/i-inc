@@ -279,3 +279,55 @@ describe("the API's guard", () => {
     expect((await send({ headers: { ...json, origin: "http://127.0.0.1:7420" } })).status).toBe(200);
   });
 });
+
+describe("the web login", () => {
+  it("lets in the cookie from a right token, or a bearer token, and nothing else", async () => {
+    const { FakeAgent, FakeChat, FakeHarness, FakeHelper, FakeMachines } = await import(
+      "@i-inc/core/testing"
+    );
+    const app = await createApp({
+      dbPath: ":memory:",
+      knowledgeDir: tmp("inc-knowledge-"),
+      clock: new FakeClock(),
+      machines: new FakeMachines(),
+      agent: new FakeAgent(),
+      harness: new FakeHarness(),
+      helper: new FakeHelper(),
+      chat: new FakeChat(),
+      token: "s3cret-token",
+      hosts: ["127.0.0.1:7420"],
+    });
+    const get = (headers: Record<string, string> = {}) =>
+      app.handle(
+        new Request("http://127.0.0.1:7420/api/teams", { headers: { host: "127.0.0.1:7420", ...headers } }),
+      );
+    const login = (token: string) =>
+      app.handle(
+        new Request("http://127.0.0.1:7420/api/login", {
+          method: "POST",
+          headers: { host: "127.0.0.1:7420", "content-type": "application/json" },
+          body: JSON.stringify({ token }),
+        }),
+      );
+    expect((await get()).status).toBe(401);
+    expect((await login("guess")).status).toBe(401);
+    const ok = await login("s3cret-token");
+    expect(ok.status).toBe(200);
+    const cookie = ok.headers.get("set-cookie") ?? "";
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("SameSite=Strict");
+    expect((await get({ cookie: cookie.split(";")[0] as string })).status).toBe(200);
+    expect((await get({ cookie: "i_inc=wrong" })).status).toBe(401);
+    expect((await get({ authorization: "Bearer s3cret-token" })).status).toBe(200);
+  });
+
+  it("makes its token once, readable only by the owner", async () => {
+    const { webToken } = await import("../src/config.ts");
+    const { statSync } = await import("node:fs");
+    const dir = tmp("inc-config-");
+    const first = webToken(dir);
+    expect(first.length).toBeGreaterThan(20);
+    expect(webToken(dir)).toBe(first);
+    expect(statSync(join(dir, "web-token")).mode & 0o077).toBe(0);
+  });
+});

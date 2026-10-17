@@ -10,7 +10,7 @@ import { homedir } from "node:os";
 import { join, normalize } from "node:path";
 import { FakeAgent, FakeChat, FakeHarness, FakeHelper, FakeMachines } from "@i-inc/core/testing";
 import { createApp } from "./app.ts";
-import { configDir, readCredentials } from "./config.ts";
+import { configDir, readCredentials, webToken } from "./config.ts";
 import { seedDemo, seedDemoLater, seedDemoTickets } from "./demo.ts";
 import { GitHubApp, readGitHubAppConfig } from "./github.ts";
 import { AppleMachines, defaultMachineSettings, wallsUp } from "./machines.ts";
@@ -26,9 +26,18 @@ const log = (m: string) => console.log(new Date().toISOString(), m);
 const common = {
   knowledgeDir: join(home, "knowledge"),
   clock: { now: () => Date.now() },
-  ...(process.env.I_INC_TOKEN ? { token: process.env.I_INC_TOKEN } : {}),
+  // Real mode always needs the login token (config.ts), so the daemon can be served on the tailnet.
+  ...(process.env.I_INC_TOKEN
+    ? { token: process.env.I_INC_TOKEN }
+    : process.env.I_INC_DEMO === "1"
+      ? {}
+      : { token: webToken() }),
   // The Host headers it answers: its own address, plus any in I_INC_HOSTS (comma-separated).
-  hosts: [`${host}:${port}`, `localhost:${port}`, ...(process.env.I_INC_HOSTS?.split(",") ?? [])],
+  hosts: [
+    `${host}:${port}`,
+    `localhost:${port}`,
+    ...(process.env.I_INC_HOSTS?.split(",").filter(Boolean) ?? []),
+  ],
   log,
 };
 mkdirSync(home, { recursive: true });
@@ -79,9 +88,10 @@ if (demo && app.deps.registry.employees().length === 0) {
   await app.daemon.tick();
   await app.daemon.idle();
   await app.handle(
-    new Request("http://i.inc/api/tickets/1/decide", {
+    new Request(`http://${host}:${port}/api/tickets/1/decide`, {
       method: "POST",
       headers: {
+        host: `${host}:${port}`,
         "content-type": "application/json",
         ...(process.env.I_INC_TOKEN ? { authorization: `Bearer ${process.env.I_INC_TOKEN}` } : {}),
       },
