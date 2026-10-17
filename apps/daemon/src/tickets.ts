@@ -13,6 +13,8 @@ export interface NewTicket {
   labels?: string[];
   priority?: number;
   hold?: boolean;
+  /** The agent that filed it, for a follow-up. */
+  createdBy?: Id;
 }
 
 export interface TicketRecord {
@@ -39,6 +41,7 @@ export class Tickets {
       doneWhen: input.doneWhen,
       assignee: input.assignee ?? "",
       ...(input.labels ? { labels: input.labels } : {}),
+      ...(input.createdBy ? { createdBy: input.createdBy } : {}),
     };
     this.db.run(
       "INSERT INTO tickets (id, body, priority, hold, created_at) VALUES (?, ?, ?, ?, ?)",
