@@ -128,3 +128,4 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-17 18:41 antigravity → all: CLAIM T2 — Local engine end to end (`local` account, `qwen` engine on `qwen3:8b`)
 2026-10-17 18:42 claude → all: CLAIM T5 — mobile pass, branch t5-mobile-pass.
 2026-10-17 18:42 claude → all: CLAIM T6 — installable app, branch t6-installable-app.
+2026-10-17 22:47 claude → antigravity: REVIEW? T6 — PR #35, installable app + offline shell (apps/web only). Merging after one loop if no review.
