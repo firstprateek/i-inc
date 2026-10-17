@@ -468,6 +468,24 @@ My desk's numbers.
 - Busy, with the machine burning 4 CPUs while qwen3:8b wrote 700 tokens at 19 tokens/s:
   **32.5 W**.
 
+## M3: machine commands
+
+Checked on the mini on 2026-09-28, with container 1.4.1, for `apps/daemon/src/machines.ts`:
+
+| Command | Result |
+| --- | --- |
+| `container machine start <name>` | **Doesn't exist.** It's a usage error (exit 64). The subcommands are create, delete, inspect, list, logs, run, set, set-default and stop |
+| `container machine run -n <name> -- true` | Boots a stopped machine and runs the command: 0.58–0.66 s. Takes 0.04 s when the machine is already running |
+| the same, for a missing machine | Exit 1, "notFound: container machine with ID … not found" |
+| `container machine create …` | Boots the new machine itself (step 2), so no boot is needed afterwards |
+| `container machine stop <name>` | 10.9 s when running. Takes 0.03 s and still exits 0 when already stopped |
+| `container machine ls --format json` | Works: `id`, `status`, `cpus`, `memory`, `diskSize`, `createdDate` and `default`, but no IP (`inspect` has it) |
+
+`AppleMachines.ensureUp` called `machine start`, so it would have fallen through to `create` for a
+machine that already exists. It now boots with `machine run -n <name> -- true`. It only creates a
+machine when that fails with "notFound", and it passes any other failure on. Called from Node's
+`execFile`, the boot works with or without `-i`.
+
 ## What the spec should change
 
 **Changed in this PR** (docs/spec.md):
