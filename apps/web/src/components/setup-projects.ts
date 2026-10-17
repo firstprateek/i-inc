@@ -30,25 +30,50 @@ export class IncSetupProjects extends Loader<Project[]> {
     drafts: { state: true },
     notes: { state: true },
     busy: { state: true },
+    open: { state: true },
   };
   declare drafts: Record<string, Draft>;
   declare notes: Record<string, Note>;
   declare busy: string | null;
+  /** The one project whose editor is open; undefined until the first load decides. */
+  declare open: string | null | undefined;
 
   constructor() {
     super();
     this.drafts = {};
     this.notes = {};
     this.busy = null;
+    this.open = undefined;
   }
 
-  protected fetch = () => setupApi.projects();
+  protected fetch = async () => {
+    const projects = await setupApi.projects();
+    // On a wide screen the first project starts open; on a phone every row starts closed.
+    if (this.open === undefined) {
+      this.open = matchMedia("(min-width: 901px)").matches ? (projects[0]?.id ?? null) : null;
+    }
+    return projects;
+  };
 
   static override styles = [
     base,
     setupStyles,
     css`
-      .modes { display: flex; flex-direction: column; gap: 6px; }
+      .card.row { padding: 0; gap: 0; }
+      .toggle { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 10px; width: 100%; min-height: 64px;
+        padding: 10px 20px; cursor: pointer; }
+      .toggle:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: -3px; border-radius: var(--radius); }
+      .toggle .text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+      .toggle b { font-family: var(--display); font-size: 20px; overflow-wrap: anywhere; }
+      .toggle .sub { font-family: var(--mono); font-size: 13px; }
+      .toggle .caret { width: 10px; height: 10px; border-right: 2px solid var(--ink-2); border-bottom: 2px solid var(--ink-2);
+        transform: rotate(45deg); flex-shrink: 0; margin: 0 4px 4px 0; }
+      .toggle[aria-expanded="true"] .caret { transform: rotate(-135deg); margin: 4px 4px 0 0; }
+      .editor { display: flex; flex-direction: column; gap: 14px; padding: 4px 20px 18px; border-top: 1px solid var(--line); padding-top: 16px; }
+      @media (max-width: 560px) {
+        .toggle { padding: 10px 16px; }
+        .editor { padding: 16px 16px 16px; }
+      }
     `,
   ];
 
@@ -104,8 +129,24 @@ export class IncSetupProjects extends Loader<Project[]> {
     const d = this.draft(p);
     const modeBtn = (m: MergeMode, label: string) =>
       html`<button type="button" aria-pressed=${d.mode === m ? "true" : "false"} @click=${() => this.edit(p, { mode: m })}>${label}</button>`;
-    return html`<section class="card" aria-label=${p.id}>
-      <div class="head"><h3>${p.id}</h3></div>
+    const open = this.open === p.id;
+    const modeName = d.mode === "direct" ? "Direct" : "Owner merges";
+    return html`<section class="card row" aria-label=${p.id}>
+      <button class="toggle" type="button" aria-expanded=${open ? "true" : "false"} aria-controls="editor-${p.id}"
+        @click=${() => {
+          this.open = open ? null : p.id;
+        }}>
+        <span class="text"><b>${p.id}</b><span class="sub">${d.repo}</span></span>
+        ${this.dirty(p) ? html`<span class="tag">Unsaved</span>` : ""}
+        <span class="chip ${d.mode === "direct" ? "" : "reviewing"}">${modeName}</span>
+        <span class="caret" aria-hidden="true"></span>
+      </button>
+      ${open ? this.editor(p, d, modeBtn) : ""}
+    </section>`;
+  }
+
+  private editor(p: Project, d: Draft, modeBtn: (m: MergeMode, label: string) => unknown) {
+    return html`<div class="editor" id="editor-${p.id}">
       <label>Repo
         <input type="text" class="mono" .value=${d.repo} autocomplete="off" autocapitalize="off" spellcheck="false"
           @input=${(e: InputEvent) => this.edit(p, { repo: (e.target as HTMLInputElement).value })} />
@@ -150,7 +191,7 @@ export class IncSetupProjects extends Loader<Project[]> {
           ${this.busy === p.id ? "Saving…" : "Save"}</button>
         ${noteLine(this.notes[p.id])}
       </div>
-    </section>`;
+    </div>`;
   }
 
   override render() {

@@ -96,6 +96,17 @@ const type = async (host: ShadowRoot, input: Element, value: string) => {
   await settle(host.host);
 };
 
+/** Opens a project's editor (one is open at a time; a wide screen starts with the first open). */
+async function openProject(root: ShadowRoot, id: string): Promise<HTMLElement> {
+  const card = root.querySelector(`section[aria-label="${id}"]`) as HTMLElement;
+  const toggle = card.querySelector(".toggle") as HTMLButtonElement;
+  if (toggle.getAttribute("aria-expanded") !== "true") {
+    toggle.click();
+    await settle(root.host);
+  }
+  return card;
+}
+
 const button = (root: ParentNode, text: string) =>
   [...root.querySelectorAll("button")].find((b) => b.textContent?.trim() === text) as HTMLButtonElement;
 
@@ -149,12 +160,22 @@ describe("teams", () => {
 });
 
 describe("projects", () => {
-  it("shows repo, mode, protected paths, follow-ups and the ordered recipe, with defaults for the rest", async () => {
+  it("lists collapsed rows with name, repo and mode, and opens one editor at a time", async () => {
     serve();
     const root = await mount("inc-setup-projects");
-    const [duet, bare] = [...root.querySelectorAll("section.card")] as HTMLElement[];
-    const values = (c: HTMLElement | undefined, sel: string) =>
-      [...(c?.querySelectorAll(sel) ?? [])].map((i) => (i as HTMLInputElement).value);
+    const rows = [...root.querySelectorAll(".toggle")];
+    expect(rows.map((r) => r.querySelector("b")?.textContent)).toEqual(["Duet", "bare"]);
+    expect(rows.map((r) => r.querySelector(".sub")?.textContent)).toEqual(["demo/duet", "demo/bare"]);
+    expect(rows.map((r) => r.querySelector(".chip")?.textContent)).toEqual(["Owner merges", "Direct"]);
+
+    // Close whatever a wide screen opened, then open each in turn.
+    for (const r of rows) if (r.getAttribute("aria-expanded") === "true") (r as HTMLElement).click();
+    await settle(root.host);
+    expect(root.querySelectorAll(".editor").length).toBe(0);
+
+    const values = (c: HTMLElement, sel: string) =>
+      [...c.querySelectorAll(sel)].map((i) => (i as HTMLInputElement).value);
+    const duet = await openProject(root, "Duet");
     expect(values(duet, "input.mono")).toEqual([
       "demo/duet",
       ".github/",
@@ -162,16 +183,32 @@ describe("projects", () => {
       "pnpm install",
       "pnpm test",
     ]);
-    expect(duet?.querySelector('[aria-pressed="true"]')?.textContent).toBe("Owner merges");
-    expect(bare?.querySelector('[aria-pressed="true"]')?.textContent).toBe("Direct");
+    expect(duet.querySelector('[aria-pressed="true"]')?.textContent).toBe("Owner merges");
+
+    const bare = await openProject(root, "bare");
+    expect(root.querySelectorAll(".editor").length).toBe(1);
+    expect(duet.querySelector(".editor")).toBeNull();
+    expect(bare.querySelector('[aria-pressed="true"]')?.textContent).toBe("Direct");
     expect(values(bare, "input.mono")).toEqual(["demo/bare", ...policyDefaults.protectedPaths, "make"]);
     expect(values(bare, 'input[type="number"]')).toEqual([String(policyDefaults.followUpsPerDay)]);
+  });
+
+  it("keeps an unsaved edit when its row is closed", async () => {
+    serve();
+    const root = await mount("inc-setup-projects");
+    const card = await openProject(root, "Duet");
+    await type(root, card.querySelector("input.mono") as Element, "demo/other");
+    (card.querySelector(".toggle") as HTMLElement).click();
+    await settle(root.host);
+    expect(card.querySelector(".editor")).toBeNull();
+    expect(card.querySelector(".sub")?.textContent).toBe("demo/other");
+    expect(card.textContent).toContain("Unsaved");
   });
 
   it("saves what was edited as one PUT", async () => {
     serve();
     const root = await mount("inc-setup-projects");
-    const card = root.querySelector("section.card") as HTMLElement;
+    const card = await openProject(root, "Duet");
     expect(button(card, "Save").disabled).toBe(true);
     button(card, "Direct").click();
     await settle(root.host);
@@ -204,7 +241,7 @@ describe("projects", () => {
   it("refuses an empty recipe without calling the daemon", async () => {
     serve();
     const root = await mount("inc-setup-projects");
-    const card = root.querySelector("section.card") as HTMLElement;
+    const card = await openProject(root, "Duet");
     (card.querySelector('[aria-label="Remove command 1"]') as HTMLElement).click();
     await settle(root.host);
     (card.querySelector('[aria-label="Remove command 1"]') as HTMLElement).click();
@@ -218,7 +255,7 @@ describe("projects", () => {
   it("shows the daemon's complaint and keeps the edit", async () => {
     serve({ putFails: "repo must be owner/name on GitHub" });
     const root = await mount("inc-setup-projects");
-    const card = root.querySelector("section.card") as HTMLElement;
+    const card = await openProject(root, "Duet");
     await type(root, card.querySelector("input.mono") as Element, "demo/other");
     button(card, "Save").click();
     await settle(root.host);
