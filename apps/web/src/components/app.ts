@@ -180,6 +180,7 @@ export class IncApp extends LitElement {
               ["desk", "My desk", "Spend, where work waited, releases"],
               ["handbook", "Handbook", "What every employee knows"],
               ["hiring", "Hiring", "Add someone to the team"],
+              ["setup/notifications", "Notifications", "Get a push when something needs you"],
               ["setup/teams", "Setup", "Teams, projects, engines and sandboxes"],
             ].map(
               ([to, name, what]) =>

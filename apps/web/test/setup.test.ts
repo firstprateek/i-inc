@@ -390,6 +390,7 @@ describe("the Setup area", () => {
       "Projects",
       "Engines and accounts",
       "Sandboxes",
+      "Notifications",
     ]);
     expect(tabs.find((a) => a.getAttribute("aria-current") === "page")?.textContent).toBe("Projects");
     expect(setup.shadowRoot?.querySelector("inc-setup-projects")).not.toBeNull();
@@ -399,6 +400,9 @@ describe("the Setup area", () => {
     await settle(root.host);
     expect([...root.querySelectorAll(".more a")].map((a) => a.getAttribute("href"))).toContain(
       "#/setup/teams",
+    );
+    expect([...root.querySelectorAll(".more a")].map((a) => a.getAttribute("href"))).toContain(
+      "#/setup/notifications",
     );
     location.hash = "";
   });

@@ -5,12 +5,14 @@ import "./setup-teams.ts";
 import "./setup-projects.ts";
 import "./setup-engines.ts";
 import "./setup-sandboxes.ts";
+import "./setup-notifications.ts";
 
 export const sections = [
   ["teams", "Teams"],
   ["projects", "Projects"],
   ["engines", "Engines and accounts"],
   ["sandboxes", "Sandboxes"],
+  ["notifications", "Notifications"],
 ] as const;
 
 export type Section = (typeof sections)[number][0];
@@ -58,6 +60,8 @@ export class IncSetup extends LitElement {
         return html`<inc-setup-engines></inc-setup-engines>`;
       case "sandboxes":
         return html`<inc-setup-sandboxes></inc-setup-sandboxes>`;
+      case "notifications":
+        return html`<inc-setup-notifications></inc-setup-notifications>`;
     }
   }
 }

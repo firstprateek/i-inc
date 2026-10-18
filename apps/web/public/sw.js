@@ -7,7 +7,8 @@
 // - /assets/* (hashed, so immutable) and the other static files: cache first, filled on use.
 // - /api/*: never touched. No response from the daemon is cached or answered from the cache.
 //
-// To add a feature (push, T8), add listeners at the bottom. Keep the fetch handler above untouched.
+// Push (T8, contract C2): `push` shows the daemon's notification and `notificationclick` opens it. They
+// are at the bottom; the fetch handler above is untouched.
 
 const VERSION = "__BUILD_ID__";
 const PRECACHE = "__PRECACHE__";
@@ -73,3 +74,57 @@ async function cacheFirst(request) {
   if (response.ok && !type.includes("text/html")) cache.put(request, response.clone());
   return response;
 }
+
+// ---- Push notifications (contract C2: { title, body, url: "#/ticket/<id>" }) ----
+
+self.addEventListener("push", (event) => {
+  let payload = {};
+  try {
+    payload = event.data ? event.data.json() : {};
+  } catch {
+    payload = { body: event.data ? event.data.text() : "" };
+  }
+  const title = typeof payload.title === "string" && payload.title ? payload.title : "i.inc";
+  const url = typeof payload.url === "string" ? payload.url : "";
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body: typeof payload.body === "string" ? payload.body : "",
+      // One notification per ticket (or per explicit tag): a newer one replaces the older and still alerts.
+      tag: typeof payload.tag === "string" && payload.tag ? payload.tag : url || "i-inc",
+      renotify: true,
+      icon: "/icons/icon-192.png",
+      badge: "/icons/icon-192.png",
+      data: { url },
+    }),
+  );
+});
+
+/** Where a tap goes: the payload's url if it is on this origin, otherwise the app's front door. */
+function notificationTarget(url) {
+  try {
+    const target = new URL(url, `${self.location.origin}/`);
+    if (target.origin === self.location.origin) return target.href;
+  } catch {
+    // Not a URL at all: fall through.
+  }
+  return `${self.location.origin}/`;
+}
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = event.notification.data?.url;
+  const target = notificationTarget(typeof url === "string" ? url : "");
+  event.waitUntil(
+    (async () => {
+      const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      const open = windows.find((c) => new URL(c.url).origin === self.location.origin);
+      if (open) {
+        const focused = (await open.focus().catch(() => null)) ?? open;
+        // A change of #hash is a same-document navigation, so the open app just moves to the ticket.
+        if (typeof focused.navigate === "function") await focused.navigate(target).catch(() => {});
+        return;
+      }
+      await self.clients.openWindow(target);
+    })(),
+  );
+});

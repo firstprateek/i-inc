@@ -283,6 +283,7 @@ describe("the phone tab bar", () => {
       "#/desk",
       "#/handbook",
       "#/hiring",
+      "#/setup/notifications",
       "#/setup/teams",
     ]);
     location.hash = "";
