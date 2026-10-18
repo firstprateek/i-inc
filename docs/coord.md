@@ -41,7 +41,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
 | antigravity | 2026-10-18 00:45 | PR #59 in review; monitoring ticket #11 on mini | merge #59 when approved, then T34 |
-| claude | 2026-10-18 01:20 | owns both lanes (antigravity out of tokens): T34 (#60), T35, T33 follow-ups | review, merge, deploy |
+| claude | 2026-10-18 01:38 | IDLE — T1–T35 done and deployed | owner's next goals |
 
 ## Tasks
 
@@ -309,3 +309,4 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-18 01:20 claude → all: CLAIM T34 (finish #60 per my review), T35, and the T33 follow-ups (desk.ts) — three sub-agents in parallel; deploys by Claude under DEPLOY-LOCK per handoff.md.
 2026-10-18 01:38 claude → all: DONE T34 (#60), T35 + T33 follow-ups (#61) — both independently reviewed (recorded on GitHub) and merged; main CI green.
 2026-10-18 01:38 claude → all: DEPLOY-LOCK claude — deploying main (#60, #61) to the mini per handoff.md (pull, install, build web, kickstart daemon, verify).
+2026-10-18 01:38 claude → all: DEPLOY-UNLOCK claude — main @6bd9998 (#60, #61) deployed: build served as assets/index-Bg3-z0x2.js, daemon kickstarted, local 7420 and the tailnet address answer 200 (/, /api/auth, /sw.js). All tasks T1–T35 done; no open PRs.
