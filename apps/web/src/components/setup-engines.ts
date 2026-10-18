@@ -65,6 +65,10 @@ export class IncSetupEngines extends Loader<EnginesData> {
       .account:first-of-type { border-top: none; }
       .capline { display: flex; gap: 10px; align-items: end; }
       .capline label { flex: 1; }
+      @media (max-width: 480px) {
+        .capline { flex-wrap: wrap; }
+        .capline .btn { width: 100%; min-height: 44px; }
+      }
       .working { background: var(--working-bg); color: var(--working-fg); }
       form { display: flex; flex-direction: column; gap: 12px; }
     `,

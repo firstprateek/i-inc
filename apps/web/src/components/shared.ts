@@ -6,9 +6,9 @@ export const base = css`
   :host { display: block; color: var(--ink); font-family: var(--body); }
   h1, h2, h3 { font-family: var(--display); font-weight: 700; margin: 0; letter-spacing: -0.3px; }
   a { color: inherit; }
-  a, button, summary { touch-action: manipulation; }
+  a, button, summary, select, input, textarea { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
   pre { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; }
-  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); -webkit-tap-highlight-color: transparent; }
   .muted { color: var(--ink-2); }
   .btn {
     font: 700 15px var(--body); min-height: 44px; padding: 0 18px; border-radius: 999px; cursor: pointer; white-space: nowrap;

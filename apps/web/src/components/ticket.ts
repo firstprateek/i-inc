@@ -71,6 +71,7 @@ export class IncTicket extends Loader<Data> {
       aside { width: 380px; flex-shrink: 0; padding: 22px 24px; display: flex; flex-direction: column; gap: 12px; }
       ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
       ol li { display: grid; grid-template-columns: 48px 12px minmax(0, 1fr); gap: 10px; font-size: 14px; }
+      ol li span { overflow-wrap: anywhere; }
       ol li time { font-size: 13px; color: var(--ink-2); }
       ol li i { width: 10px; height: 10px; border-radius: 50%; margin-top: 5px; background: var(--ink); }
       ol li i.bad { background: var(--alarm); }
@@ -119,22 +120,22 @@ export class IncTicket extends Loader<Data> {
         case "plan-gate":
           return html`<div class="ask"><b>The plan waits at the gate</b><pre>${ask.plan}</pre>
             <div class="actions">
-              <button class="btn" ?disabled=${this.busy} @click=${() => this.act(() => api.answer(id, "approve"))}>Approve plan</button>
-              <button class="btn ghost" ?disabled=${this.busy} @click=${() => this.act(() => api.answer(id, "reject"))}>Reject</button>
+              <button type="button" class="btn" ?disabled=${this.busy} @click=${() => this.act(() => api.answer(id, "approve"))}>Approve plan</button>
+              <button type="button" class="btn ghost" ?disabled=${this.busy} @click=${() => this.act(() => api.answer(id, "reject"))}>Reject</button>
             </div></div>`;
         case "disagreement":
           return html`<div class="ask"><b>The builder and reviewer disagree</b>
             <dl><dt>Builder</dt><dd>${ask.builder}</dd><dt>Reviewer</dt><dd>${ask.reviewer}</dd></dl>
             <div class="actions">
-              <button class="btn ghost" ?disabled=${this.busy} @click=${() => this.act(() => api.answer(id, "builder"))}>Side with the builder</button>
-              <button class="btn ghost" ?disabled=${this.busy} @click=${() => this.act(() => api.answer(id, "reviewer"))}>Side with the reviewer</button>
+              <button type="button" class="btn ghost" ?disabled=${this.busy} @click=${() => this.act(() => api.answer(id, "builder"))}>Side with the builder</button>
+              <button type="button" class="btn ghost" ?disabled=${this.busy} @click=${() => this.act(() => api.answer(id, "reviewer"))}>Side with the reviewer</button>
             </div></div>`;
         case "proposals":
           return html`<div class="ask"><b>${ask.items.length} proposals wait for you</b>
             <ul>${ask.items.map((p) => html`<li>${p.summary}${p.to?.length ? html` <span class="muted">to ${p.to.join(", ")}</span>` : ""}</li>`)}</ul>
             <div class="actions">
-              <button class="btn" ?disabled=${this.busy} @click=${() => this.act(() => api.answer(id, "approve"))}>Approve all</button>
-              <button class="btn ghost" ?disabled=${this.busy} @click=${() => this.act(() => api.answer(id, "reject"))}>Decline</button>
+              <button type="button" class="btn" ?disabled=${this.busy} @click=${() => this.act(() => api.answer(id, "approve"))}>Approve all</button>
+              <button type="button" class="btn ghost" ?disabled=${this.busy} @click=${() => this.act(() => api.answer(id, "reject"))}>Decline</button>
             </div></div>`;
         case "stuck":
           return html`<div class="ask"><b>Stuck</b><p>${ask.reason}</p></div>`;
@@ -143,8 +144,8 @@ export class IncTicket extends Loader<Data> {
             <ul>${ask.paths.map((p) => html`<li><code>${p}</code></li>`)}</ul>
             <p class="muted">It was reviewed, and reaches main once you OK it. GitHub only takes workflow changes from you: run <code>tools/host/push-for-owner.sh</code> first, then OK it.</p>
             <div class="actions">
-              <button class="btn" ?disabled=${this.busy} @click=${() => this.act(() => api.answer(id, "approve"))}>OK it</button>
-              <button class="btn ghost" ?disabled=${this.busy} @click=${() => this.act(() => api.answer(id, "reject"))}>Decline</button>
+              <button type="button" class="btn" ?disabled=${this.busy} @click=${() => this.act(() => api.answer(id, "approve"))}>OK it</button>
+              <button type="button" class="btn ghost" ?disabled=${this.busy} @click=${() => this.act(() => api.answer(id, "reject"))}>Decline</button>
             </div></div>`;
       }
     }
@@ -155,21 +156,21 @@ export class IncTicket extends Loader<Data> {
         ${r.engines ? html`<div class="muted" style="font-size:14px">${r.engines}</div>` : ""}
         <dl><dt>What changed</dt><dd>${r.judgment || "The builder's draft is empty."}</dd></dl>
         <div class="actions">
-          <button class="btn" ?disabled=${this.busy} @click=${() => this.act(() => api.decide(id, "approve"))}>Approve and merge</button>
+          <button type="button" class="btn" ?disabled=${this.busy} @click=${() => this.act(() => api.decide(id, "approve"))}>Approve and merge</button>
           <textarea aria-label="What to change" placeholder="What should change?" .value=${this.note}
             @input=${(e: InputEvent) => {
               this.note = (e.target as HTMLTextAreaElement).value;
             }}></textarea>
-          <button class="btn ghost" ?disabled=${this.busy || !this.note.trim()}
+          <button type="button" class="btn ghost" ?disabled=${this.busy || !this.note.trim()}
             @click=${() => this.act(() => api.decide(id, "changes", this.note))}>Request changes</button>
-          <button class="btn ghost" ?disabled=${this.busy} @click=${() => this.act(() => api.decide(id, "reject"))}>Reject</button>
+          <button type="button" class="btn ghost" ?disabled=${this.busy} @click=${() => this.act(() => api.decide(id, "reject"))}>Reject</button>
         </div>`;
     }
     if (t.status === "failed") {
       return html`<div class="ask"><b>An honest failure${t.failure ? ` in ${t.failure.stage}` : ""}</b><p>${t.failure?.reason ?? "Failed"}</p>
         ${t.failure?.tried?.length ? html`<p class="muted">Tried: ${t.failure.tried.join(", ")}</p>` : ""}
         <div class="actions">
-          <button class="btn" ?disabled=${this.busy} @click=${() => this.act(() => api.retry(id))}>Retry ticket</button>
+          <button type="button" class="btn" ?disabled=${this.busy} @click=${() => this.act(() => api.retry(id))}>Retry ticket</button>
         </div></div>`;
     }
     if (t.status === "done") return html`<p><span class="chip done">${t.outcome}</span></p>`;

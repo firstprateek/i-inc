@@ -52,7 +52,7 @@ export class IncOffice extends Loader<Data> {
       .accounts-list { display: flex; flex-direction: column; gap: 12px; }
       .account-item { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid var(--line); }
       .account-item:first-child { padding-top: 0; border-top: none; }
-      .account-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .account-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
       .account-name { font-weight: 700; font-size: 14px; }
       .font-small { font-size: 12px; }
       .quota-bars { display: flex; flex-direction: column; gap: 4px; }

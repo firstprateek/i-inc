@@ -145,6 +145,7 @@ export class IncBoard extends Loader<BoardData> {
       .by { font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px; color: var(--reviewing-fg); background: var(--reviewing-bg); border-radius: 999px; padding: 2px 9px; }
       @media (max-width: 520px) {
         .digest a { display: grid; grid-template-columns: auto 1fr; column-gap: 10px; row-gap: 0; align-items: center; padding: 6px 0; }
+        .digest .chip { grid-row: span 2; align-self: center; }
         .digest .title { white-space: normal; overflow: visible; }
         .digest .meta { grid-column: 2; }
       }

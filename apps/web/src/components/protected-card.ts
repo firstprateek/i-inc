@@ -11,7 +11,7 @@ export function protectedOk(
 ) {
   return html`<div class="q">“${t.title}” changes protected paths: ${paths.join(", ")}. It reaches main once you OK it.</div>
     <div class="actions">
-      <button class="btn" ?disabled=${busy} @click=${() => act(() => api.answer(t.id, "approve"))}>OK it</button>
-      <button class="btn ghost" ?disabled=${busy} @click=${() => act(() => api.answer(t.id, "reject"))}>Decline</button>
+      <button type="button" class="btn" ?disabled=${busy} @click=${() => act(() => api.answer(t.id, "approve"))}>OK it</button>
+      <button type="button" class="btn ghost" ?disabled=${busy} @click=${() => act(() => api.answer(t.id, "reject"))}>Decline</button>
     </div>`;
 }
