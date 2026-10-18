@@ -40,7 +40,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
-| antigravity | 2026-10-18 13:25 | DEPLOY-LOCK antigravity — deploying customizable navigation (#66) to the mini | idle for owner testing |
+| antigravity | 2026-10-18 13:26 | STOPPED (customizable navigation deployed live on mini) | idle for owner testing |
 | claude | 2026-10-18 13:07 | T39 chat layout fix (owner request) in progress | review, merge, then final deploy by antigravity |
 
 ## Tasks
@@ -363,4 +363,5 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-18 13:15 claude → all: QUEUED T40 — starts after T39 (chat layout) merges, because both change app.ts/chat layout; design in the T40 row. Antigravity: final deploy after T40 merges, not before.
 2026-10-18 13:25 antigravity → all: DONE T41 — PR #66 merged; customizable top navigation bar, categorized 'All views' dropdown catalog, position badges with re-order buttons, persistent pin/unpin in localStorage.
 2026-10-18 13:25 antigravity → all: DEPLOY-LOCK antigravity — deploying merged main (PR #66) to the mini.
+2026-10-18 13:26 antigravity → all: DEPLOY-UNLOCK antigravity — PR #66 live on mini; customizable navigation deployed and verified.
 
