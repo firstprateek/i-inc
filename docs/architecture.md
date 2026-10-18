@@ -63,7 +63,7 @@ The daemon connects to AI agents through the Agent Client Protocol (ACP) and loc
 - **Harnesses in sandboxes:**
   - `claude-code` (`acp-claude`): Claude subscription, signed in once per team sandbox via `tools/host/sign-in-claude.sh`.
   - `antigravity` (`acp-antigravity`): Google AI Pro subscription, signed in once per team sandbox via `tools/host/sign-in-antigravity.sh`. An OAuth callback relay endpoint (`POST /api/teams/:id/antigravity-callback`, contract C8) delivers the `http://127.0.0.1:<port>/?code=…` redirect into the sandbox using `AppleMachines.deliverCallback`.
-  - `opencode` (`acp-opencode`): OpenCode harness running local open models (e.g. `qwen3:8b`, registered with `local: true`) routed through the container network gateway (`192.168.64.1:11434`) to the host's Ollama instance.
+  - `opencode` (`acp-opencode`): OpenCode harness running local open models (e.g. `qwen3:8b`, registered with `local: true`) routed through the container gateway to the host's Ollama relay port (`11434`).
 - **Local Ollama helper and chat (`apps/daemon/src/ollama.ts`):**
   - `OllamaHelper`: runs fast local classification (intent detection for `ask`, `note`, `question`) and yes/no evaluations directly against Ollama without launching a sandbox.
   - `OllamaChat`: powers interactive 1:1 chat between the owner and employees on local Ollama (`qwen3:8b`, `think: false`), maintaining the employee's role, current ticket context, and recent notes.
@@ -102,7 +102,7 @@ The daemon connects to AI agents through the Agent Client Protocol (ACP) and loc
 
 - **Live SSE updates (`GET /api/events`, contract C3):**
   - Server-Sent Events stream delivering real-time invalidation notifications: `event: ticket` with `{ "id": "<ticket id>" }` on ticket updates, and `event: office` with `{}` on employee or team changes.
-  - Streams send an initial `: connected` comment immediately on connection, emit keepalive comments (`: heartbeat`) every 25 seconds, specify `x-accel-buffering: no`, and enforce backpressure queues.
+  - Streams send an initial `: connected` comment immediately on connection, emit keepalive comments (`: keepalive`) every 25 seconds, specify `x-accel-buffering: no`, and buffer events using a `ReadableStream` with `highWaterMark: 64`, closing the stream if the queue remains sustained full (`desiredSize <= 0`) to drop stalled clients cleanly.
 - **Session transcripts (`GET /api/tickets/:id/sessions`, contract C4, in review):**
   - Records ACP session turns (messages, tool names, and tool statuses) structured per ticket stage.
   - Automatically redacts sensitive patterns (such as authorization headers and tokens) before persisting to SQLite, enforcing item size limits (4 KB) and session caps.

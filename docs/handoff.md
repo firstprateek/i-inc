@@ -11,17 +11,17 @@ Merged on `main` and live on the mini:
 | Area | What's there |
 | --- | --- |
 | Access & auth | Tailscale Service `svc:iinc` serves HTTPS on standard port 443 at `https://iinc.<tailnet>.ts.net` (`I_INC_HOSTS` configured; old `:8443` removed). Owner auth via `POST /api/signup`, `POST /api/login`, `POST /api/logout`, `GET /api/auth` with `scrypt` hashing in SQLite, `i_inc` cookie, and bearer token fallback |
-| Engines & sandboxes | Teams share a sandbox (`inc-<team>`, 12G, 6 CPUs) with Claude (`claude-code`) and Antigravity (Google AI Pro, `antigravity`) signed in once; Antigravity OAuth callback relay (`POST /api/teams/:id/antigravity-callback`); OpenCode (`opencode`, `local: true`) using local Ollama via the host relay (`192.168.64.1:11434`); local `OllamaHelper` (yes/no & intent classification) and `OllamaChat` (1:1 chat) |
+| Engines & sandboxes | Teams share a sandbox (`inc-<team>`, 12G, 6 CPUs) with Claude (`claude-code`) and Antigravity (Google AI Pro, `antigravity`) signed in once; Antigravity OAuth callback relay (`POST /api/teams/:id/antigravity-callback`); OpenCode (`opencode`, `local: true`) using local Ollama via the container gateway relay (port 11434); local `OllamaHelper` (yes/no & intent classification) and `OllamaChat` (1:1 chat) |
 | Isolation & safety | Sandbox inspection (`GET /api/sandboxes`, C1) without booting stopped VMs on read; sandbox DNS filter (`apps/daemon/src/dns.ts`) refusing `.ts.net` and `.local`; firewall walls (`pf`) refreshed every minute; monthly scheduled host restart |
 | Caps & releases | Account `monthlyCap` and live Claude rate-limit utilization meters (`GET /api/accounts`, `GET /api/office`); project releases (`GET /api/releases`, `POST /api/projects/:id/release`, `autoRelease` setting, `<inc-desk>`) |
 | Web Push | Backend VAPID key file in `~/.config/i-inc/vapid.json`, dedicated `push_sent` SQLite table preventing duplicate notifications, startup baseline, 5 s timeout, triggering on `needs-you`, `report-ready`, and `main-red` (C2) |
+| Live updates | Server-Sent Events stream (`GET /api/events`, C3) broadcasting `ticket` and `office` updates with `: keepalive` heartbeats every 25 s, `x-accel-buffering: no`, and `highWaterMark: 64` backpressure handling; web app refetches reactively |
 | Web application | Mobile pass (1440x900 & 390x844, light/dark), installable PWA (manifest, icons, offline shell service worker), Setup screens (`<inc-setup>`), per-duty engine assignment in hiring (`<inc-hiring>`), phone board (`<inc-board>`), push notification opt-in |
 | Dogfooding | Project `i-inc` registered on the mini in direct mode (`checks`: install, check, typecheck, test; `autoRelease: false`; protected paths set) and assigned to Ada |
 
 In review:
-- Live SSE updates: `GET /api/events` (C3, daemon PR #40 and web PR #44).
 - Session transcripts: `GET /api/tickets/:id/sessions` (C4, daemon PR #43 and web PR #45).
-- Web Push opt-in UI: web PR #46.
+- Web Push opt-in UI: web PR #46 (ready to merge).
 
 All tests pass (`pnpm check && pnpm typecheck && pnpm test`).
 
@@ -64,9 +64,9 @@ Before the bot can work on tickets for a repository (e.g. `firstprateek/i-inc`),
 
 ## Next steps, in order
 
-1. **Merge live updates, session transcripts, and push UI:**
-   - Finalize and merge T9 (SSE live updates, PR #40) and T12 (session transcripts, PR #43) in daemon.
-   - Review and merge their web counterparts: T10 (PR #44), T13 (PR #45), and T8 (PR #46).
+1. **Merge session transcripts and push UI:**
+   - Finalize and merge T12 (session transcripts, PR #43) in daemon.
+   - Review and merge its web counterpart T13 (PR #45), and merge T8 (PR #46, push opt-in UI).
 2. **Deploy to the mini:**
    - Pull `main`, build web, restart the daemon with `launchctl kickstart`, and verify `/api/health` and `/api/auth`.
 3. **Dogfood i-inc tickets:**
