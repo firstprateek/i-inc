@@ -88,3 +88,8 @@ paths, branch names, structured briefs).
     card put the path into a 48 px cell. → Scope tag selectors (`li`, `p`, `i`) to their container
     (`ol li`, `.ask ul`), and when a flex row switches to `flex-direction: column` on mobile, pair it
     with `align-items: stretch` so child cards don't shrink to their content width.
+20. **The checker compared clipped shadow content with viewport bars (tooling).** Grid content
+    outside an overflow ancestor's visible area appeared to overlap the bottom tabs, while app
+    scrollers were never checked at their ends. → Intersect overlap and covered geometry with every
+    overflow ancestor across shadow roots and the viewport; inspect each app scrollport's end and
+    restore its position. Keep below-fold contrast and text overflow checks active.

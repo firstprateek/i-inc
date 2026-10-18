@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; width: 400px; height: 300px; font: 16px Arial, sans-serif; }
+  demo-shell { display: block; height: 120px; }
+</style>
+<demo-shell></demo-shell>
+<script>
+  const root = document.querySelector("demo-shell").attachShadow({ mode: "open" });
+  root.innerHTML = `
+    <style>
+      .viewport { position: relative; width: 400px; height: 120px; overflow: hidden; }
+      .pane { position: absolute; inset: 0 0 40px; overflow: hidden; }
+      .offscreen { position: absolute; top: 96px; left: 12px; height: 20px; }
+      .partial { position: absolute; top: -6px; left: -8px; width: 24px; height: 20px; }
+      .tabs { position: absolute; inset: 80px 0 0; background: white; }
+    </style>
+    <div class="viewport">
+      <div class="pane">
+        <span class="offscreen">Clipped below main</span>
+        <span class="partial">Partly clipped at top left</span>
+      </div>
+      <nav class="tabs">Inbox tabs</nav>
+    </div>`;
+</script>
