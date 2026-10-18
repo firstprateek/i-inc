@@ -124,6 +124,27 @@ export class Registry implements Company {
   addProject(p: Project): void {
     this.put("project", p.id, p);
   }
+  private remove(kind: Kind, id: Id): boolean {
+    const existing = this.get(kind, id);
+    if (!existing) return false;
+    this.db.run("DELETE FROM company WHERE kind = ? AND id = ?", kind, id);
+    this.onChange?.(kind);
+    return true;
+  }
+
+  removeEngine(id: Id): boolean {
+    return this.remove("engine", id);
+  }
+  removeAccount(id: Id): boolean {
+    return this.remove("account", id);
+  }
+  removeProject(id: Id): boolean {
+    return this.remove("project", id);
+  }
+  removeTeam(id: Id): boolean {
+    return this.remove("team", id);
+  }
+
   addTeam(t: Team): void {
     this.put("team", t.id, t);
   }
