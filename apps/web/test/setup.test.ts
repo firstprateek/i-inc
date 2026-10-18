@@ -52,7 +52,9 @@ const sandboxes: Sandbox[] = [
   },
 ];
 
-function serve(opts: { sandboxes?: "ok" | "404" | "fail"; putFails?: string } = {}) {
+function serve(
+  opts: { sandboxes?: "ok" | "404" | "fail"; putFails?: string; githubReposFails?: boolean } = {},
+) {
   calls = [];
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
@@ -69,7 +71,10 @@ function serve(opts: { sandboxes?: "ok" | "404" | "fail"; putFails?: string } = 
           { id: "juno", name: "Juno" },
         ],
       });
-    if (url === "/api/github/repos")
+    if (url === "/api/github/repos") {
+      if (opts.githubReposFails) {
+        return json({ error: "GitHub integration error", repos: [] }, 502);
+      }
       return json({
         repos: [
           {
@@ -86,6 +91,7 @@ function serve(opts: { sandboxes?: "ok" | "404" | "fail"; putFails?: string } = 
           },
         ],
       });
+    }
     if (url.startsWith("/api/github/repos/") && url.endsWith("/inspect"))
       return json({
         id: "My Service",
@@ -327,6 +333,7 @@ describe("projects", () => {
 
   it("starts a new project from a starter template", async () => {
     serve();
+    window.confirm = vi.fn().mockReturnValue(true);
     const root = await mount("inc-setup-projects");
     button(root, "+ Add a project").click();
     await settle(root.host);
@@ -360,6 +367,44 @@ describe("projects", () => {
       template: "ts-node",
       mode: "direct",
     });
+  });
+
+  it("does not scaffold starter template if user cancels confirmation", async () => {
+    serve();
+    window.confirm = vi.fn().mockReturnValue(false);
+    const root = await mount("inc-setup-projects");
+    button(root, "+ Add a project").click();
+    await settle(root.host);
+
+    const addCard = root.querySelector(".add-card");
+    const startTab = [...(addCard?.querySelectorAll(".seg button") ?? [])].find(
+      (b) => b.textContent === "Start new project",
+    ) as HTMLButtonElement | undefined;
+    startTab?.click();
+    await settle(root.host);
+
+    const idInput = addCard?.querySelector('input[placeholder="e.g. duet, i-inc"]') as HTMLInputElement;
+    const repoInput = addCard?.querySelector('input[placeholder="owner/repo"]') as HTMLInputElement;
+    await type(root, idInput, "Canceled API");
+    await type(root, repoInput, "firstprateek/canceled-api");
+
+    const scaffoldBtn = [...(addCard?.querySelectorAll("button.btn") ?? [])].find(
+      (b) => b.textContent?.trim() === "Start project & scaffold",
+    ) as HTMLButtonElement | undefined;
+    scaffoldBtn?.click();
+    await settle(root.host);
+
+    expect(calls.some((c) => c.method === "POST" && c.url.includes("bootstrap"))).toBe(false);
+  });
+
+  it("shows reposError alert when repository listing fails", async () => {
+    serve({ githubReposFails: true });
+    const root = await mount("inc-setup-projects");
+    button(root, "+ Add a project").click();
+    await settle(root.host);
+
+    const addCard = root.querySelector(".add-card");
+    expect(addCard?.textContent).toContain("Unable to load GitHub repositories");
   });
 
   it("deletes a project when confirmed", async () => {

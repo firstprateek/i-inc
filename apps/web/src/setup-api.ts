@@ -66,6 +66,8 @@ export interface BootstrapProjectBody {
   checks?: string[];
   protectedPaths?: string[];
   autoRelease?: boolean;
+  force?: boolean;
+  defaultBranch?: string;
 }
 
 /** One sandbox in `GET /api/sandboxes` (contract C1 in docs/coord.md). */

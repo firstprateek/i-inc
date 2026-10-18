@@ -61,21 +61,23 @@ export function openScript(o: {
     // A team shares one machine, so each worktree carries its own author, not the global config.
     "git config extensions.worktreeConfig true",
     "git fetch --quiet --prune origin",
+    "BASE_REF=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)",
+    'if [ -z "$BASE_REF" ]; then',
+    "  if git show-ref --quiet --verify refs/remotes/origin/main; then",
+    '    BASE_REF="origin/main"',
+    "  elif git show-ref --quiet --verify refs/remotes/origin/master; then",
+    '    BASE_REF="origin/master"',
+    "  elif git rev-parse --verify HEAD >/dev/null 2>&1; then",
+    '    BASE_REF="HEAD"',
+    "  else",
+    '    git commit --quiet --allow-empty -m "Initial commit"',
+    '    BASE_REF="HEAD"',
+    "  fi",
+    "fi",
     `if ! git -C ${worktree} rev-parse --is-inside-work-tree >/dev/null 2>&1; then`,
     `  if git show-ref --quiet --verify refs/remotes/origin/${o.branch}; then`,
     `    git worktree add --quiet -B ${branch} ${worktree} origin/${o.branch}`,
     "  else",
-    '    BASE_REF="origin/main"',
-    "    if ! git show-ref --quiet --verify refs/remotes/origin/main; then",
-    "      if git show-ref --quiet --verify refs/remotes/origin/master; then",
-    '        BASE_REF="origin/master"',
-    "      elif git rev-parse --verify HEAD >/dev/null 2>&1; then",
-    '        BASE_REF="HEAD"',
-    "      else",
-    "        git commit --quiet --allow-empty -m 'Initial commit'",
-    '        BASE_REF="HEAD"',
-    "      fi",
-    "    fi",
     `    git worktree add --quiet -b ${branch} ${worktree} "$BASE_REF"`,
     "  fi",
     "fi",
@@ -102,7 +104,8 @@ export class GitHubWorkspace implements Workspace {
   }
 
   async open(ticket: Ticket, builder: Employee): Promise<PullRequestRef> {
-    const { repo } = this.project(ticket);
+    const project = this.project(ticket);
+    const { repo } = project;
     const branch = branchName(ticket);
     const worktree = this.o.worktree(ticket.id);
     const direct = this.o.policy?.(ticket.project).mode === "direct";
@@ -127,7 +130,7 @@ export class GitHubWorkspace implements Workspace {
       (await this.o.prs.find(repo, branch)) ??
       (await this.o.prs.openDraft(repo, {
         head: branch,
-        base: "main",
+        base: project.defaultBranch ?? "main",
         title: `${ticket.type}: ${ticket.title}`,
         body: [
           `Ticket #${ticket.id} in i.inc, built by ${builder.name}. It's a draft so CI runs from the start;`,

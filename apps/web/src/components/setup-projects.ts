@@ -44,6 +44,7 @@ export class IncSetupProjects extends Loader<Project[]> {
     addTab: { state: true },
     githubRepos: { state: true },
     loadingRepos: { state: true },
+    reposError: { state: true },
     repoFilter: { state: true },
     inspecting: { state: true },
     inspectError: { state: true },
@@ -67,6 +68,7 @@ export class IncSetupProjects extends Loader<Project[]> {
   declare addTab: "import" | "bootstrap";
   declare githubRepos: GitHubRepoSummary[] | null;
   declare loadingRepos: boolean;
+  declare reposError: string | null;
   declare repoFilter: string;
   declare inspecting: boolean;
   declare inspectError: string | null;
@@ -91,6 +93,7 @@ export class IncSetupProjects extends Loader<Project[]> {
     this.addTab = "import";
     this.githubRepos = null;
     this.loadingRepos = false;
+    this.reposError = null;
     this.repoFilter = "";
     this.inspecting = false;
     this.inspectError = null;
@@ -140,9 +143,10 @@ export class IncSetupProjects extends Loader<Project[]> {
       .repo-item.selected { border: 2px solid var(--reviewing-mark); }
       .repo-name { font-weight: 700; font-size: 13px; font-family: var(--mono); overflow-wrap: anywhere; }
       .repo-meta { display: flex; gap: 6px; align-items: center; font-size: 11px; flex-wrap: wrap; }
+      .add-card input[type="search"] { min-height: 44px; font-size: 16px; }
       .template-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
       .template-btn { border: 1px solid var(--line); border-radius: 8px; padding: 8px; background: var(--surface); cursor: pointer; text-align: left; display: flex; flex-direction: column; gap: 2px; }
-      .template-btn[aria-pressed="true"] { border-color: var(--reviewing-mark); background: var(--reviewing-bg); }
+      .template-btn[aria-pressed="true"] { border-color: var(--reviewing-mark); background: var(--reviewing-bg); color: var(--reviewing-fg); }
       .template-title { font-weight: 700; font-size: 13px; }
       .template-desc { font-size: 11px; color: var(--ink-2); }
       .employee-grid { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -175,9 +179,11 @@ export class IncSetupProjects extends Loader<Project[]> {
     this.showAdd = !this.showAdd;
     if (this.showAdd && this.githubRepos === null) {
       this.loadingRepos = true;
+      this.reposError = null;
       try {
         this.githubRepos = await setupApi.githubRepos();
-      } catch {
+      } catch (e) {
+        this.reposError = message(e);
         this.githubRepos = [];
       } finally {
         this.loadingRepos = false;
@@ -242,16 +248,49 @@ export class IncSetupProjects extends Loader<Project[]> {
           }
         }
       } else {
+        if (
+          !confirm(
+            `Initialize starter files for template "${this.newProjectTemplate}" into repository "${repo}"?`,
+          )
+        ) {
+          this.busy = null;
+          return;
+        }
+        let force = false;
+        if (this.detectedInfo && !this.detectedInfo.includes("empty repo")) {
+          if (!confirm(`Repository "${repo}" is not empty. Overwrite and commit starter template anyway?`)) {
+            this.busy = null;
+            return;
+          }
+          force = true;
+        }
+
         const body: BootstrapProjectBody = {
           repo,
           mode: this.newProjectMode,
           template: this.newProjectTemplate,
+          ...(force ? { force: true } : {}),
           ...(this.newProjectDesc.trim() ? { description: this.newProjectDesc.trim() } : {}),
           ...(this.newProjectEmployees.length ? { employees: this.newProjectEmployees } : {}),
           checks: this.newProjectChecks,
           protectedPaths: [".github/"],
         };
-        await setupApi.bootstrapProject(id, body);
+
+        try {
+          await setupApi.bootstrapProject(id, body);
+        } catch (e) {
+          const msg = message(e);
+          if (msg.includes("not empty") && !force) {
+            if (confirm(`Repository "${repo}" is not empty. Overwrite and commit starter template anyway?`)) {
+              await setupApi.bootstrapProject(id, { ...body, force: true });
+            } else {
+              this.addNote = { ok: false, text: msg };
+              return;
+            }
+          } else {
+            throw e;
+          }
+        }
       }
 
       this.showAdd = false;
@@ -417,6 +456,11 @@ export class IncSetupProjects extends Loader<Project[]> {
                   this.repoFilter = (e.target as HTMLInputElement).value;
                 }} />
             </label>
+            ${
+              this.reposError
+                ? html`<p class="note warn" role="alert" style="margin-top:6px">Unable to load GitHub repositories: ${this.reposError}</p>`
+                : ""
+            }
             ${
               this.loadingRepos
                 ? html`<p class="muted">Scanning GitHub App repositories…</p>`

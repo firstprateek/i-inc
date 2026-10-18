@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { createApi } from "../src/api.ts";
-import { bootstrapRepo, inspectRepo, listInstallationRepos, type TokenSource } from "../src/github.ts";
+import {
+  bootstrapRepo,
+  inspectRepo,
+  isValidRepo,
+  listInstallationRepos,
+  type TokenSource,
+} from "../src/github.ts";
 import { testApp } from "./setup.ts";
 
 describe("GitHub project discovery, recipe inspection, and bootstrapping", () => {
@@ -254,7 +260,20 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
       repo: "not-a-repo",
     });
     expect(badBootstrap.status).toBe(400);
-    expect(badBootstrap.body.error).toBe("repo must be owner/name on GitHub");
+    expect(badBootstrap.body.error).toContain("repo must be valid owner/name");
+
+    // 3b. Traversal repo in bootstrap returns 400
+    const traversalBootstrap = await call("POST", "/api/projects/TestProj/bootstrap", {
+      repo: "owner/..",
+    });
+    expect(traversalBootstrap.status).toBe(400);
+
+    // 3c. Invalid mode in bootstrap returns 400
+    const invalidModeBootstrap = await call("POST", "/api/projects/TestProj/bootstrap", {
+      repo: "owner/valid-repo",
+      mode: "invalid-mode",
+    });
+    expect(invalidModeBootstrap.status).toBe(400);
 
     // 4. Valid bootstrap request registers project and assigns employees
     const employees = app.deps.registry.employees();
@@ -280,5 +299,73 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
     // Verify Ada was assigned NewTestProj
     const updatedAda = app.deps.registry.employees().find((e) => e.id === ada.id);
     expect(updatedAda?.projects).toContain("NewTestProj");
+
+    // 5. Duplicate project ID in bootstrap returns 409
+    const dupBootstrap = await call("POST", "/api/projects/NewTestProj/bootstrap", {
+      repo: "firstprateek/other-repo",
+      mode: "direct",
+    });
+    expect(dupBootstrap.status).toBe(409);
+    expect(dupBootstrap.body.error).toContain("already exists");
+  });
+
+  it("strictly validates repository names, rejecting path traversals and invalid characters", () => {
+    expect(isValidRepo("firstprateek/duet")).toBe(true);
+    expect(isValidRepo("org-name/repo_123.js")).toBe(true);
+    expect(isValidRepo("owner/..")).toBe(false);
+    expect(isValidRepo("owner/.")).toBe(false);
+    expect(isValidRepo("owner/...")).toBe(false);
+    expect(isValidRepo("../repo")).toBe(false);
+    expect(isValidRepo("owner/repo.git")).toBe(false);
+    expect(isValidRepo("invalid")).toBe(false);
+    expect(isValidRepo("owner/repo/sub")).toBe(false);
+  });
+
+  it("detects bun projects from bun.lock and configures bun test", async () => {
+    const fakeFetch = (async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.endsWith("/repos/org/bun-app")) {
+        return new Response(
+          JSON.stringify({
+            default_branch: "main",
+            size: 100,
+            language: "TypeScript",
+            pushed_at: "2026-10-18T00:00:00Z",
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (u.endsWith("/repos/org/bun-app/contents")) {
+        return new Response(
+          JSON.stringify([
+            { name: "package.json", type: "file" },
+            { name: "bun.lock", type: "file" },
+          ]),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (u.endsWith("/repos/org/bun-app/contents/package.json")) {
+        return new Response(
+          JSON.stringify({
+            content: Buffer.from(
+              JSON.stringify({
+                scripts: { test: "vitest run" },
+              }),
+            ).toString("base64"),
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected URL: ${u}`);
+    }) as unknown as typeof fetch;
+
+    const res = await inspectRepo(fakeTokenSource, "org", "bun-app", {
+      fetch: fakeFetch,
+      api: "https://mock.github",
+    });
+
+    expect(res.detected).toBe("bun");
+    expect(res.checks).toEqual(["bun install --frozen-lockfile", "bun test"]);
+    expect(res.protectedPaths).toContain("bun.lock");
   });
 });

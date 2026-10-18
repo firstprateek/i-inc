@@ -67,27 +67,75 @@ export function appJwt(appId: string, privateKey: string, nowMs: number): string
 /** Reads the App's key, refusing one that anyone but its owner can read. */
 export const readPrivateKey = readOwnerOnly;
 
-async function call(f: typeof fetch, url: string, init: RequestInit): Promise<Record<string, unknown>> {
-  const res = await f(url, {
-    ...init,
-    headers: {
-      accept: "application/vnd.github+json",
-      "x-github-api-version": "2022-11-28",
-      "user-agent": "i-inc",
-      ...init.headers,
-    },
-  });
-  const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!res.ok)
-    throw new Error(
-      `GitHub ${init.method ?? "GET"} ${url} failed: ${res.status} ${body.message ?? ""}`.trim(),
-    );
-  return body;
+/** Structured error representing an upstream GitHub HTTP failure without leaking secrets or IDs. */
+export class UpstreamGitHubError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly method: string,
+    public readonly endpoint: string,
+    public readonly detail: string,
+  ) {
+    super(`GitHub ${method} ${endpoint} failed: ${status} ${detail}`.trim());
+    this.name = "UpstreamGitHubError";
+  }
+}
+
+async function call(
+  f: typeof fetch,
+  url: string,
+  init: RequestInit,
+  timeoutMs = 10_000,
+): Promise<Record<string, unknown>> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await f(url, {
+      ...init,
+      signal: init.signal ?? controller.signal,
+      headers: {
+        accept: "application/vnd.github+json",
+        "x-github-api-version": "2022-11-28",
+        "user-agent": "i-inc",
+        ...init.headers,
+      },
+    });
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) {
+      const sanitized = url
+        .replace(/https:\/\/[^/]+/, "")
+        .replace(/\/installations\/\d+/, "/installations/[id]");
+      throw new UpstreamGitHubError(
+        res.status,
+        init.method ?? "GET",
+        sanitized,
+        typeof body.message === "string" ? body.message : "",
+      );
+    }
+    return body;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Strictly validates owner/name repository path, preventing dot segments, traversal, and invalid chars. */
+export function isValidRepo(repo: string): boolean {
+  if (typeof repo !== "string") return false;
+  const parts = repo.split("/");
+  if (parts.length !== 2) return false;
+  const [owner, name] = parts;
+  if (!owner || !name) return false;
+  if (/^\.+$/.test(owner) || /^\.+$/.test(name)) return false;
+  if (owner.startsWith(".") || owner.endsWith(".")) return false;
+  if (name.startsWith(".") || name.endsWith(".")) return false;
+  if (name.endsWith(".git")) return false;
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(owner)) return false;
+  if (!/^[A-Za-z0-9_.-]{1,100}$/.test(name)) return false;
+  return true;
 }
 
 /** Checks "owner/name" before it goes into a URL. */
-const checkRepo = (repo: string) => {
-  if (!/^[A-Za-z0-9-]+\/(?!\.\.?$)[A-Za-z0-9_.-]+$/.test(repo)) throw new Error(`not a repo: ${repo}`);
+export const checkRepo = (repo: string) => {
+  if (!isValidRepo(repo)) throw new Error(`not a repo: ${repo}`);
   return repo;
 };
 
@@ -364,12 +412,24 @@ export async function listInstallationRepos(
   const token = await tokens.token("*", "read");
   const registeredSet = new Set(registeredRepos.map((r) => r.toLowerCase()));
 
-  const res = (await call(f, `${api}/installation/repositories?per_page=100`, {
-    method: "GET",
-    headers: { authorization: `Bearer ${token}` },
-  })) as { repositories?: Record<string, unknown>[] };
-
-  const rawRepos = Array.isArray(res.repositories) ? res.repositories : [];
+  const rawRepos: Record<string, unknown>[] = [];
+  let page = 1;
+  const maxPages = 10;
+  while (page <= maxPages) {
+    const res = (await call(f, `${api}/installation/repositories?per_page=100&page=${page}`, {
+      method: "GET",
+      headers: { authorization: `Bearer ${token}` },
+    })) as { repositories?: Record<string, unknown>[]; total_count?: number };
+    const pageRepos = Array.isArray(res.repositories) ? res.repositories : [];
+    rawRepos.push(...pageRepos);
+    if (
+      pageRepos.length < 100 ||
+      (typeof res.total_count === "number" && rawRepos.length >= res.total_count)
+    ) {
+      break;
+    }
+    page++;
+  }
   return rawRepos.map((r) => {
     const fullName = String(r.full_name ?? "");
     const name = String(r.name ?? "");
@@ -417,7 +477,7 @@ export async function inspectRepo(
   });
   const defaultBranch = String(repoMeta.default_branch ?? "main");
   const size = typeof repoMeta.size === "number" ? repoMeta.size : 0;
-  const empty = size === 0 || !repoMeta.pushed_at;
+  const empty = size === 0 && !repoMeta.pushed_at;
 
   const id = name
     .toLowerCase()
@@ -454,16 +514,21 @@ export async function inspectRepo(
     const hasPnpmLock = fileNames.has("pnpm-lock.yaml");
     const hasYarnLock = fileNames.has("yarn.lock");
     const hasPackageLock = fileNames.has("package-lock.json");
+    const hasBunLock = fileNames.has("bun.lock") || fileNames.has("bun.lockb");
 
-    const installCmd = hasPnpmLock
-      ? "pnpm install --frozen-lockfile"
-      : hasYarnLock
-        ? "yarn install --frozen-lockfile"
-        : hasPackageLock
-          ? "npm ci"
-          : "pnpm install";
+    const installCmd = hasBunLock
+      ? "bun install --frozen-lockfile"
+      : hasPnpmLock
+        ? "pnpm install --frozen-lockfile"
+        : hasYarnLock
+          ? "yarn install --frozen-lockfile"
+          : hasPackageLock
+            ? "npm ci"
+            : "pnpm install";
 
     checks.push(installCmd);
+
+    const runner = hasBunLock ? "bun run" : hasPnpmLock ? "pnpm" : hasYarnLock ? "yarn run" : "npm run";
 
     try {
       const pkgFile = await call(f, `${api}/repos/${repo}/contents/package.json`, {
@@ -474,20 +539,19 @@ export async function inspectRepo(
         typeof pkgFile.content === "string" ? Buffer.from(pkgFile.content, "base64").toString("utf8") : "";
       const pkg = JSON.parse(content) as { scripts?: Record<string, string> };
       const scripts = pkg.scripts ?? {};
-      const runner = hasPnpmLock ? "pnpm" : hasYarnLock ? "yarn" : "npm run";
 
       if (scripts.check) checks.push(`${runner} check`);
       if (scripts.typecheck) checks.push(`${runner} typecheck`);
-      if (scripts.test) checks.push(`${runner} test`);
+      if (scripts.test) checks.push(hasBunLock ? "bun test" : `${runner} test`);
       if (!scripts.check && !scripts.typecheck && !scripts.test && scripts.build) {
         checks.push(`${runner} build`);
       }
     } catch {
-      checks.push("pnpm test");
+      checks.push(hasBunLock ? "bun test" : "pnpm test");
     }
 
     if (checks.length === 1) {
-      checks.push("pnpm test");
+      checks.push(hasBunLock ? "bun test" : "pnpm test");
     }
 
     return {
@@ -498,9 +562,19 @@ export async function inspectRepo(
       checks,
       protectedPaths: [
         "package.json",
-        ...(hasPnpmLock ? ["pnpm-lock.yaml"] : hasPackageLock ? ["package-lock.json"] : []),
+        ...(hasBunLock
+          ? fileNames.has("bun.lock")
+            ? ["bun.lock"]
+            : ["bun.lockb"]
+          : hasPnpmLock
+            ? ["pnpm-lock.yaml"]
+            : hasYarnLock
+              ? ["yarn.lock"]
+              : hasPackageLock
+                ? ["package-lock.json"]
+                : []),
       ],
-      detected: "node",
+      detected: hasBunLock ? "bun" : "node",
     };
   }
 
@@ -564,8 +638,15 @@ export async function bootstrapRepo(
   const authHeader = { authorization: `Bearer ${token}` };
 
   const template = opts.template ?? "ts-node";
-  const name = repo.split("/")[1] ?? "project";
-  const description = opts.description ?? "Project managed by i.inc";
+  const rawName = repo.split("/")[1] ?? "project";
+  const name = rawName.slice(0, 100);
+  const rawDesc =
+    typeof opts.description === "string" && opts.description.trim()
+      ? opts.description.trim()
+      : "Project managed by i.inc";
+  const description = rawDesc.slice(0, 500);
+  const tomlDesc = description.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r?\n/g, " ");
+  const tomlName = name.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 
   const files: Record<string, string> = {};
 
@@ -604,7 +685,7 @@ export async function bootstrapRepo(
     files["src/index.ts"] =
       `export function greet(name = "World"): string {\n  return \`Hello, \${name}!\`;\n}\n`;
     files["test/index.test.ts"] =
-      `import { describe, expect, it } from "vitest";\nimport { greet } from "../src/index.js";\n\ndescribe("greet", () => {\n  it("greets by name", () => {\n    expect(greet("${name}")).toBe("Hello, ${name}!");\n  });\n});\n`;
+      `import { describe, expect, it } from "vitest";\nimport { greet } from "../src/index.js";\n\ndescribe("greet", () => {\n  it("greets by name", () => {\n    expect(greet(${JSON.stringify(name)})).toBe(${JSON.stringify(`Hello, ${name}!`)};\n  });\n});\n`;
     files["README.md"] = `# ${name}\n\n${description}\n`;
     files[".gitignore"] = "node_modules/\ndist/\n";
   } else if (template === "web") {
@@ -629,12 +710,13 @@ export async function bootstrapRepo(
     )}\n`;
     files["index.html"] =
       `<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <title>${name}</title>\n</head>\n<body>\n  <div id="app"></div>\n  <script type="module" src="/src/main.ts"></script>\n</body>\n</html>\n`;
-    files["src/main.ts"] = `document.querySelector("#app")!.innerHTML = "<h1>${name}</h1>";\n`;
+    files["src/main.ts"] =
+      `document.querySelector("#app")!.innerHTML = "<h1>" + ${JSON.stringify(name)} + "</h1>";\n`;
     files["README.md"] = `# ${name}\n\n${description}\n`;
     files[".gitignore"] = "node_modules/\ndist/\n";
   } else if (template === "python") {
     files["pyproject.toml"] =
-      `[project]\nname = "${name}"\nversion = "0.1.0"\ndescription = "${description}"\nreadme = "README.md"\nrequires-python = ">=3.11"\n\n[build-system]\nrequires = ["setuptools>=61.0"]\nbuild-backend = "setuptools.build_meta"\n`;
+      `[project]\nname = "${tomlName}"\nversion = "0.1.0"\ndescription = "${tomlDesc}"\nreadme = "README.md"\nrequires-python = ">=3.11"\n\n[build-system]\nrequires = ["setuptools>=61.0"]\nbuild-backend = "setuptools.build_meta"\n`;
     files["src/__init__.py"] = '__version__ = "0.1.0"\n';
     files["tests/test_basic.py"] = "def test_basic():\n    assert True\n";
     files["README.md"] = `# ${name}\n\n${description}\n`;

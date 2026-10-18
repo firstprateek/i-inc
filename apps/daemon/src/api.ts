@@ -25,7 +25,13 @@ import {
   type SandboxStatus,
 } from "@i-inc/core";
 import type { Daemon, DaemonDeps } from "./daemon.ts";
-import { bootstrapRepo, inspectRepo, listInstallationRepos } from "./github.ts";
+import {
+  bootstrapRepo,
+  inspectRepo,
+  isValidRepo,
+  listInstallationRepos,
+  UpstreamGitHubError,
+} from "./github.ts";
 import type { Change, Repo } from "./knowledge.ts";
 import type { PushSubscription } from "./push.ts";
 import type { NewTicket } from "./tickets.ts";
@@ -526,7 +532,9 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           const repos = await listInstallationRepos(d.tokens, registered);
           return json({ repos });
         } catch (e) {
-          return json({ error: e instanceof Error ? e.message : String(e), repos: [] }, 500);
+          console.error("[github] failed to list repos:", e);
+          const status = e instanceof UpstreamGitHubError ? (e.status >= 500 ? 502 : e.status) : 502;
+          return json({ error: "failed to list GitHub repositories", repos: [] }, status);
         }
       },
     ],
@@ -536,14 +544,26 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       "/api/github/repos/:owner/:name/inspect",
       async (_req, { owner = "", name = "" }) => {
         if (!d.tokens) return json({ error: "GitHub integration is not configured" }, 400);
-        if (!/^[A-Za-z0-9-]+$/.test(owner) || !/^[A-Za-z0-9_.-]+$/.test(name)) {
+        const repo = `${owner}/${name}`;
+        if (!isValidRepo(repo)) {
           return json({ error: "invalid repository owner or name" }, 400);
         }
         try {
+          const registered = d.registry.projects().map((p) => p.repo);
+          const repos = await listInstallationRepos(d.tokens, registered);
+          const accessible = repos.some((r) => r.fullName.toLowerCase() === repo.toLowerCase());
+          if (!accessible) {
+            return json(
+              { error: `repository "${repo}" is not accessible in this GitHub App installation` },
+              403,
+            );
+          }
           const result = await inspectRepo(d.tokens, owner, name);
           return json(result);
         } catch (e) {
-          return json({ error: e instanceof Error ? e.message : String(e) }, 500);
+          console.error("[github] failed to inspect repo:", e);
+          const status = e instanceof UpstreamGitHubError ? (e.status >= 500 ? 502 : e.status) : 502;
+          return json({ error: "failed to inspect repository" }, status);
         }
       },
     ],
@@ -558,6 +578,10 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
             400,
           );
         }
+        if (d.registry.project(id)) {
+          return json({ error: `project "${id}" already exists` }, 409);
+        }
+
         const body = (await req.json().catch(() => ({}))) as {
           repo?: unknown;
           mode?: unknown;
@@ -567,13 +591,53 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           checks?: unknown;
           protectedPaths?: unknown;
           autoRelease?: unknown;
+          force?: unknown;
+          defaultBranch?: unknown;
         };
 
-        if (typeof body.repo !== "string" || !/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(body.repo)) {
-          return json({ error: "repo must be owner/name on GitHub" }, 400);
+        if (typeof body.repo !== "string" || !isValidRepo(body.repo)) {
+          return json({ error: "repo must be valid owner/name on GitHub" }, 400);
+        }
+        const repo = body.repo;
+
+        if (body.mode !== undefined && body.mode !== "direct" && body.mode !== "owner-merges") {
+          return json({ error: 'mode must be "direct" or "owner-merges"' }, 400);
+        }
+        const mode = body.mode === "owner-merges" ? "owner-merges" : "direct";
+
+        if (
+          body.description !== undefined &&
+          (typeof body.description !== "string" || body.description.length > 500)
+        ) {
+          return json({ error: "description must be a string up to 500 characters" }, 400);
         }
 
-        const repo = body.repo;
+        if (body.checks !== undefined) {
+          if (
+            !Array.isArray(body.checks) ||
+            body.checks.length > 20 ||
+            body.checks.some((c) => typeof c !== "string" || c.length > 200)
+          ) {
+            return json(
+              { error: "checks must be an array of at most 20 strings, up to 200 characters each" },
+              400,
+            );
+          }
+        }
+
+        if (body.protectedPaths !== undefined) {
+          if (
+            !Array.isArray(body.protectedPaths) ||
+            body.protectedPaths.length > 50 ||
+            body.protectedPaths.some((p) => typeof p !== "string" || p.length > 200)
+          ) {
+            return json(
+              { error: "protectedPaths must be an array of at most 50 strings, up to 200 characters each" },
+              400,
+            );
+          }
+        }
+
         let bootstrapped = false;
         let commits = 0;
 
@@ -585,6 +649,17 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           if (!d.tokens) {
             return json({ error: "GitHub integration is required to bootstrap starter files" }, 400);
           }
+
+          const [owner = "", name = ""] = repo.split("/");
+          try {
+            const inspect = await inspectRepo(d.tokens, owner, name).catch(() => null);
+            if (inspect && !inspect.empty && !body.force) {
+              return json({ error: "repository is not empty", empty: false }, 409);
+            }
+          } catch (e) {
+            console.error("[github] failed to inspect repo before bootstrap:", e);
+          }
+
           try {
             const res = await bootstrapRepo(d.tokens, {
               repo,
@@ -594,10 +669,9 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
             bootstrapped = res.bootstrapped;
             commits = res.commits;
           } catch (e) {
-            return json(
-              { error: `Failed to bootstrap repo: ${e instanceof Error ? e.message : String(e)}` },
-              500,
-            );
+            console.error("[github] failed to bootstrap repo:", e);
+            const status = e instanceof UpstreamGitHubError ? (e.status >= 500 ? 502 : e.status) : 502;
+            return json({ error: "failed to bootstrap starter files in repository" }, status);
           }
         }
 
@@ -612,7 +686,6 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           checks = ["pnpm install --frozen-lockfile", "pnpm check", "pnpm test"];
         }
 
-        const mode = body.mode === "owner-merges" ? "owner-merges" : "direct";
         const protectedPaths = Array.isArray(body.protectedPaths)
           ? body.protectedPaths.filter((p): p is string => typeof p === "string" && Boolean(p.trim()))
           : [".github/"];
@@ -624,6 +697,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           mode,
           protectedPaths,
           autoRelease: body.autoRelease === true,
+          ...(typeof body.defaultBranch === "string" ? { defaultBranch: body.defaultBranch } : {}),
         });
 
         if (Array.isArray(body.employees)) {
