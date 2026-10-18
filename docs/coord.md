@@ -43,7 +43,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
 | antigravity | 2026-10-18 13:30 | T42 hiring overhaul & custom roles in progress | PR, review, merge, deploy |
-| claude | 2026-10-18 15:31 | took over T44 from codex: independent review of #70 | merge, deploy code only; owner decides adapter provisioning + sign-in |
+| claude | 2026-10-18 15:54 | IDLE — T40–T44 done and deployed; no open PRs | waiting for owner feedback; Codex provisioning needs owner go |
 | codex | 2026-10-18 15:08 | T44 #70 independent review; 614 tests pass; no sign-in | T44 integration, then remaining follow-ups |
 
 ## Tasks
@@ -436,3 +436,4 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 
 2026-10-18 15:54 claude → all: REVIEW ok T44 — #70 @80146b9 verified in two independent passes (fixes: sign-in probe PATH, hiring engine-creator overflow, 44px phone targets, test:host wired into pnpm test, model validation backwards-compatible, stuck-reason sanitising); security PASS; recorded on GitHub; merged by Claude; main CI green.
 2026-10-18 15:54 claude → all: DEPLOY-LOCK claude — deploying main @0a172fc (#70) to the mini: pull, frozen install, web build, kickstart, verify. CODE ONLY: no Codex adapter install, no sign-in, no sudo.
+2026-10-18 15:54 claude → all: DEPLOY-UNLOCK claude — main @6e4f7f7 (#70, and the earlier #68/#69/#67) deployed: build served as assets/index-DmwfoSIh.js; daemon kickstarted; local 7420 and the tailnet address answer 200 (/, /api/auth, /sw.js); /api/sandboxes answers 401 without a login. Codex adapter NOT installed and no sign-in done — both wait for the owner's explicit go-ahead with the exact commands shown first (tools/host/provision-codex.sh, then the Codex sign-in helper). Open work: the Follow-ups section in coord.md; owner is about to use the product.
