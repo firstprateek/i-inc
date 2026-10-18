@@ -1126,6 +1126,41 @@ describe("The project of a draft ticket (T34, C12)", () => {
     expect(row?.querySelector(".tag")).toBeNull();
   });
 
+  it("disables Put on the board for an ambiguous draft until a project is chosen", async () => {
+    const { el, root, row, postCalls } = await showDraft({ inferred: false, ambiguous: ["Duet", "i-inc"] });
+    const select = row?.querySelector("select") as HTMLSelectElement;
+    expect(select.value).toBe("");
+    const placeholder = select.options[0] as HTMLOptionElement;
+    expect(placeholder.textContent).toBe("Choose a project…");
+    expect(placeholder.disabled).toBe(true);
+    expect(row?.textContent).toContain("not chosen yet");
+    expect(confirmBtn(root)?.disabled).toBe(true);
+    confirmBtn(root)?.click();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(postCalls.filter((c) => c.url.includes("/drafts/7"))).toHaveLength(0);
+
+    select.value = "i-inc";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await el.updateComplete;
+    expect(confirmBtn(root)?.disabled).toBe(false);
+    expect(root.querySelector(".project .hint")).toBeNull();
+    confirmBtn(root)?.click();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(postCalls.find((c) => c.url.includes("/drafts/7"))?.body).toEqual({ project: "i-inc" });
+  });
+
+  it("asks for a pick when the message named only a project the employee can't use", async () => {
+    const { row, root } = await showDraft({ inferred: false, ambiguous: ["secret"] });
+    expect(row?.textContent).toContain("secret, which isn't one of this employee's projects");
+    expect(confirmBtn(root)?.disabled).toBe(true);
+    expect(row?.querySelector(".tag")).toBeNull();
+  });
+
+  it("keeps Put on the board enabled for a draft that isn't ambiguous", async () => {
+    const { root } = await showDraft();
+    expect(confirmBtn(root)?.disabled).toBe(false);
+  });
+
   it("offers the project even when the daemon left it out of the choices", async () => {
     const { row } = await showDraft({ choices: ["i-inc"] });
     const select = row?.querySelector("select") as HTMLSelectElement;

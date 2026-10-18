@@ -457,6 +457,51 @@ describe("chat", () => {
       expect(entry[1]).toMatchObject({ project: "i-inc", inferred: true, confirmed: true });
     });
 
+    it("infers a company project for an employee with no list (the demo's Kit)", async () => {
+      const app = await testApp();
+      const draft = (
+        await app.call("POST", "/api/chat/kit", { text: "Fix the Duet login bug" })
+      ).body.entries.at(-1);
+      expect(draft).toMatchObject({ kind: "draft", project: "Duet", inferred: true });
+      expect(draft.choices).toEqual(expect.arrayContaining(["Duet", "fintrack", "listy"]));
+    });
+
+    it("treats a project the employee can't use, named with one it can, as ambiguous", async () => {
+      const { app, ask } = await withProjects(["Duet", "fintrack"]);
+      const draft = await ask("Fix the duet bug and the listy export");
+      expect(draft).toMatchObject({ inferred: false });
+      expect([...draft.ambiguous].sort()).toEqual(["Duet", "listy"]);
+      expect(draft.choices).toEqual(["Duet", "fintrack"]);
+      const bad = await app.call("POST", `/api/chat/ada/drafts/${draft.ticketId}`, { project: "listy" });
+      expect(bad.status).toBe(400);
+    });
+
+    it("holds an ambiguous draft until the owner picks a project", async () => {
+      const { app, ask } = await withProjects(["Duet", "i-inc"]);
+      const draft = await ask("Fix the duet bug in i-inc");
+      const none = await app.call("POST", `/api/chat/ada/drafts/${draft.ticketId}`);
+      expect(none.status).toBe(400);
+      expect(none.body.error).toMatch(/choose a project/);
+      expect((await app.call("GET", `/api/tickets/${draft.ticketId}`)).body.ticket.held).toBe(true);
+      const ok = await app.call("POST", `/api/chat/ada/drafts/${draft.ticketId}`, { project: "Duet" });
+      expect(ok.body).toEqual({ ok: true, project: "Duet" });
+    });
+
+    it("answers 400, not 500, to a confirm body that isn't a JSON object", async () => {
+      const { app, ask } = await withProjects(["Duet", "i-inc"]);
+      const draft = await ask("Add refunds to duet");
+      for (const raw of ["null", "[]", '"Duet"', "7", "true", "{nope", '[{"project":"Duet"}]']) {
+        const res = await app.handle(
+          new Request(`http://i.inc/api/chat/ada/drafts/${draft.ticketId}`, {
+            method: "POST",
+            body: raw,
+            headers: { "content-type": "application/json" },
+          }),
+        );
+        expect(res.status).toBe(400);
+      }
+    });
+
     it("lets an employee without a project list use any project the company has", async () => {
       const app = await testApp();
       await app.call("PUT", "/api/projects/zed", { repo: "x/y", checks: ["pnpm test"] });

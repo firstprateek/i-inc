@@ -30,6 +30,8 @@ export interface ChatContext {
   notes: string;
   /** A project to file new work under when the message doesn't say. */
   defaultProject: string;
+  /** Every project the company has: the ones an employee with no list of its own may work on. */
+  companyProjects?: string[];
 }
 
 const isAsk = "Is this message asking for new work to be done, rather than asking a question?";
@@ -44,8 +46,12 @@ export async function handleMessage(
   const pa = ctx.employee.role === "Personal Assistant";
 
   if (await helper.yesNo(isAsk, text)) {
-    const named = pa ? [] : matchProjects(text, ctx.employee.projects);
-    const mentioned = named.length === 1 ? (named[0] ?? null) : null;
+    // The employee's own projects, or all the company's when it has no list. A message that also names
+    // a project outside that set is read against both, so a name it may not use still makes it ambiguous.
+    const allowed = ctx.employee.projects ?? ctx.companyProjects ?? [];
+    const named = pa ? [] : matchProjects(text, [...allowed, ...(ctx.companyProjects ?? [])]);
+    const onlyOne = named.length === 1 ? (named[0] ?? null) : null;
+    const mentioned = onlyOne !== null && allowed.includes(onlyOne) ? onlyOne : null;
     // Never a project the employee doesn't work on: the scheduler wouldn't run it.
     const mine = (p: string | undefined): p is string =>
       !!p && (!ctx.employee.projects || ctx.employee.projects.includes(p));
@@ -68,7 +74,7 @@ export async function handleMessage(
       kind: "draft",
       ticket,
       inferred: mentioned !== null,
-      ...(named.length > 1 ? { ambiguous: named } : {}),
+      ...(named.length > 0 && mentioned === null ? { ambiguous: named } : {}),
     };
   }
 
@@ -102,14 +108,21 @@ function firstLine(text: string): string {
   return t.charAt(0).toUpperCase() + t.slice(1).replace(/[.!]$/, "");
 }
 
+/** Only this much of a message is read for project names, so a huge paste can't make inference slow. */
+const READ_LIMIT = 8 * 1024;
+
 /** What the message leaves behind once URLs, code blocks, code spans and "project: x" text are removed. */
 function prose(text: string): string {
-  return text
+  const head = text
+    .slice(0, READ_LIMIT)
     .normalize("NFC")
     .replace(/(```|~~~)[\s\S]*?(\1|$)/g, " ")
-    .replace(/`[^`\n]*`/g, " ")
-    .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S*/gi, " ")
-    .replace(/\bwww\.\S*/gi, " ")
+    .replace(/`[^`\n]*`/g, " ");
+  // A word is a URL if it holds "://" or starts "www.": one pass over the words, so it stays linear.
+  return head
+    .split(/(\s+)/)
+    .map((w) => (w.includes("://") || /^www\./i.test(w) ? " " : w))
+    .join("")
     .replace(/\bproject\s*[:=]\s*\S*/gi, " ");
 }
 

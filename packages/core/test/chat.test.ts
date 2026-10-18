@@ -233,11 +233,32 @@ describe("inferProject", () => {
     expect(inferProject("set project: other-secret", projects)).toBeNull();
   });
 
-  it("survives a huge message", () => {
+  it("reads only the first 8 KB of a message", () => {
+    const projects = ["Duet", "x.y+z"];
+    expect(inferProject(`${"word ".repeat(12_000)}Duet`, projects)).toBeNull();
+    expect(inferProject(`Duet ${"word ".repeat(12_000)}`, projects)).toBe("Duet");
+  });
+
+  it("stays fast on hostile input (100 KB)", () => {
     const projects = ["Duet", "i-inc", "x.y+z"];
-    const t0 = Date.now();
-    expect(inferProject(`${"duet-app ".repeat(12_000)}x.y+z`, projects)).toBe("x.y+z");
-    expect(Date.now() - t0).toBeLessThan(1000);
+    const hostile = [
+      "a-".repeat(50_000),
+      `${"a.".repeat(50_000)}://`,
+      "a+".repeat(50_000),
+      "a".repeat(100_000),
+      "`".repeat(100_000),
+      "```a".repeat(25_000),
+      "project ".repeat(12_500),
+      `project${" ".repeat(100_000)}`,
+      "duet-app ".repeat(12_000),
+      "https://".repeat(12_500),
+      "é\u0301".repeat(50_000),
+    ];
+    for (const text of hostile) {
+      const t0 = performance.now();
+      matchProjects(text, projects);
+      expect(performance.now() - t0).toBeLessThan(100);
+    }
   });
 });
 
@@ -284,6 +305,37 @@ describe("a draft's project", () => {
   it("prefers the current ticket's project, then the default, when none is named", async () => {
     const cur = refundsTicket({ project: "Duet", assignee: "kit" });
     expect(await ask("Add refunds", { current: cur })).toMatchObject({ ticket: { project: "Duet" } });
+  });
+
+  it("reads the company's projects when the employee has no list, and infers Duet", async () => {
+    const out = await handleMessage(
+      "fix the Duet login bug",
+      {
+        employee: kit,
+        engine: engine("sonnet"),
+        current: null,
+        notes: "",
+        defaultProject: "fintrack",
+        companyProjects: ["fintrack", "Duet", "listy"],
+      },
+      new FakeHelper(),
+      new FakeChat(),
+    );
+    expect(out).toMatchObject({ kind: "draft", inferred: true, ticket: { project: "Duet" } });
+    expect(out).not.toHaveProperty("ambiguous");
+  });
+
+  it("is ambiguous, not inferred, when an allowed project is named with one outside the list", async () => {
+    const mixed = { companyProjects: ["Duet", "i-inc", "secret"] };
+    for (const text of ["fix duet and secret", "Fix secret and duet"]) {
+      const out = await ask(text, mixed);
+      expect(out).toMatchObject({ kind: "draft", inferred: false });
+      expect((out as { ambiguous: string[] }).ambiguous.sort()).toEqual(["Duet", "secret"]);
+      expect((out as { ticket: { project: string } }).ticket.project).not.toBe("secret");
+    }
+    const only = await ask("fix secret", mixed);
+    expect(only).toMatchObject({ inferred: false, ambiguous: ["secret"], ticket: { project: "i-inc" } });
+    expect(await ask("fix duet", mixed)).toMatchObject({ inferred: true, ticket: { project: "Duet" } });
   });
 
   it("files a PA's errand under Home whatever the message names", async () => {

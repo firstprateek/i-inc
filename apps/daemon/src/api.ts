@@ -582,6 +582,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
             current: current ? { ...current.r.ticket, assignee: e.id } : null,
             notes,
             defaultProject: recentProject ?? e.projects?.[0] ?? "General",
+            companyProjects: d.registry.projects().map((pr) => pr.id),
           },
           d.helper,
           d.chat,
@@ -640,14 +641,33 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         const r = d.tickets.get(p.ticket ?? "");
         if (!r?.hold || r.ticket.assignee !== p.id) return json({ error: "no such draft" }, 404);
         // The owner may change the project before it goes on the board, but only to one of the employee's.
-        const body = (await req.json().catch(() => ({}))) as { project?: unknown };
+        const raw = await req.text();
+        let parsed: unknown = {};
+        if (raw.trim() !== "") {
+          try {
+            parsed = JSON.parse(raw);
+          } catch {
+            return json({ error: "send a JSON object" }, 400);
+          }
+        }
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+          return json({ error: "send a JSON object" }, 400);
+        }
+        const body = parsed as { project?: unknown };
+        const emp = d.registry.employees().find((x) => x.id === p.id);
         let project: string | undefined;
         if (body.project !== undefined && body.project !== null) {
-          const emp = d.registry.employees().find((x) => x.id === p.id);
           if (typeof body.project !== "string" || !emp || !projectChoices(emp).includes(body.project)) {
             return json({ error: "that isn't one of this employee's projects" }, 400);
           }
           project = body.project;
+        }
+        // A draft that named several projects (or one the employee can't use) waits for the owner's pick.
+        const entry = d.chatLog
+          .thread(p.id ?? "")
+          .find((x) => "kind" in x && x.kind === "draft" && x.ticketId === r.ticket.id);
+        if (entry && "ambiguous" in entry && entry.ambiguous?.length && project === undefined) {
+          return json({ error: "choose a project first" }, 400);
         }
         if (project !== undefined && project !== r.ticket.project) d.tickets.setProject(r.ticket.id, project);
         d.tickets.setHold(r.ticket.id, false);

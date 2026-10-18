@@ -431,6 +431,7 @@ export class IncChat extends LitElement {
       .project select { font: 16px/1.2 var(--body); min-height: 44px; max-width: 100%; padding: 0 12px; border-radius: 12px;
         border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); box-sizing: border-box; }
       .project select:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+      .ticket .btn:disabled { opacity: 0.4; cursor: default; }
       .project .hint { flex-basis: 100%; color: var(--ink-2); }
       .me .tag { display: inline-block; margin-bottom: 4px; }
       .urgent[aria-pressed="true"] { border: 2px solid var(--ink); padding: 0 17px; }
@@ -512,29 +513,41 @@ export class IncChat extends LitElement {
   private projectRow(e: Extract<Entry, { kind: "draft" }>) {
     // An older daemon sends neither: show nothing new.
     if (e.inferred === undefined || !e.project) return "";
-    const chosen = this.picks[e.ticketId] ?? e.project;
+    const picked = this.picks[e.ticketId];
+    const open = this.needsPick(e);
+    const chosen = picked ?? (open ? "" : e.project);
     const options = e.choices?.includes(e.project) ? e.choices : [e.project, ...(e.choices ?? [])];
-    const changed = chosen !== e.project;
+    const changed = picked !== undefined && picked !== e.project;
     return html`<div class="project">
-      <span>Project: <b>${chosen}</b></span>
+      <span>Project: <b>${chosen || "not chosen yet"}</b></span>
       ${e.inferred && !changed && !e.confirmed ? html`<span class="tag">inferred</span>` : ""}
       ${
-        !e.confirmed && options.length > 1
-          ? html`<label>Change
+        !e.confirmed && (options.length > 1 || open)
+          ? html`<label>${open ? "Choose" : "Change"}
               <select aria-label="Project for #${e.ticketId}" .value=${chosen}
                 @change=${(ev: Event) => {
                   this.picks = { ...this.picks, [e.ticketId]: (ev.target as HTMLSelectElement).value };
                 }}>
+                ${open ? html`<option value="" ?selected=${chosen === ""} disabled>Choose a project…</option>` : ""}
                 ${options.map((o) => html`<option value=${o} ?selected=${o === chosen}>${o}</option>`)}
               </select></label>`
           : ""
       }
       ${
-        e.ambiguous?.length && !e.confirmed && !changed
-          ? html`<span class="hint">This names more than one project (${e.ambiguous.join(", ")}). Pick one.</span>`
+        e.ambiguous?.length && !e.confirmed && open
+          ? html`<span class="hint">${
+              e.ambiguous.length > 1
+                ? html`This names more than one project (${e.ambiguous.join(", ")}). Pick one.`
+                : html`This names ${e.ambiguous.join(", ")}, which isn't one of this employee's projects. Pick one.`
+            }</span>`
           : ""
       }
     </div>`;
+  }
+
+  /** A draft that named several projects waits for the owner to pick one before it goes on the board. */
+  private needsPick(e: Extract<Entry, { kind: "draft" }>): boolean {
+    return !e.confirmed && !!e.ambiguous?.length && !this.picks[e.ticketId];
   }
 
   private entry(e: Entry) {
@@ -566,7 +579,7 @@ export class IncChat extends LitElement {
         ${
           e.confirmed
             ? html`<a href="#/ticket/${e.ticketId}">On the board as #${e.ticketId}</a>`
-            : html`<div style="display:flex;flex-wrap:wrap;gap:8px"><button type="button" class="btn" @click=${() => this.confirm(e.ticketId, this.picks[e.ticketId])}>Put on the board</button>
+            : html`<div style="display:flex;flex-wrap:wrap;gap:8px"><button type="button" class="btn" ?disabled=${this.needsPick(e)} @click=${() => this.confirm(e.ticketId, this.picks[e.ticketId])}>Put on the board</button>
               <a class="btn ghost" href="#/ticket/${e.ticketId}" style="display:inline-flex;align-items:center;text-decoration:none">Open</a></div>`
         }
       </div>`;
