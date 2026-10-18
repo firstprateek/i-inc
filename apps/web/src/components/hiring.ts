@@ -395,13 +395,14 @@ export class IncHiring extends LitElement {
   static override styles = [
     base,
     css`
-      form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; align-items: start; max-width: 1100px; }
-      .card { padding: 20px 22px; display: flex; flex-direction: column; gap: 14px; }
+      form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; align-items: start; max-width: 1100px; width: 100%; box-sizing: border-box; }
+      .card { padding: 20px 22px; display: flex; flex-direction: column; gap: 14px; min-width: 0; box-sizing: border-box; }
       .wide { grid-column: 1 / -1; }
-      label { font-size: 13px; font-weight: 600; color: var(--ink-2); display: flex; flex-direction: column; gap: 6px; }
+      label { font-size: 13px; font-weight: 600; color: var(--ink-2); display: flex; flex-direction: column; gap: 6px; min-width: 0; width: 100%; box-sizing: border-box; }
       input[type="text"], select, textarea {
         font: 15px var(--body); min-height: 44px; padding: 10px 12px; border-radius: 10px;
         border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); box-sizing: border-box;
+        width: 100%; max-width: 100%; min-width: 0;
       }
       textarea { font-family: inherit; line-height: 1.5; resize: vertical; min-height: 100px; }
       .pills { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -429,13 +430,17 @@ export class IncHiring extends LitElement {
       }
       .duty-explainer p { margin: 0 0 4px 0; }
       .duty-explainer p:last-child { margin: 0; }
-      .engine-header { display: flex; justify-content: space-between; align-items: center; }
+      .engine-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+      .engine-header .btn { flex-shrink: 0; }
       .custom-engine-box {
         padding: 14px; border: 1px dashed var(--line-strong); border-radius: 10px; background: var(--sunken);
-        display: flex; flex-direction: column; gap: 10px; margin-top: 8px;
+        display: flex; flex-direction: column; gap: 12px; margin-top: 8px;
+        box-sizing: border-box; width: 100%; max-width: 100%; min-width: 0;
       }
       .custom-engine-box h4 { margin: 0; font-size: 14px; color: var(--ink); }
-      .custom-engine-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+      .custom-engine-grid { display: grid; grid-template-columns: 1fr; gap: 10px; width: 100%; min-width: 0; box-sizing: border-box; }
+      .custom-engine-grid label { width: 100%; min-width: 0; box-sizing: border-box; }
+      .custom-engine-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
       .team { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
       .team li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
       .team li:first-child { border-top: none; }
@@ -460,7 +465,6 @@ export class IncHiring extends LitElement {
         .seg { width: 100%; }
         .seg button { flex: 1; min-height: 44px; }
         .duties-grid { grid-template-columns: 1fr; }
-        .custom-engine-grid { grid-template-columns: 1fr; }
         .rows .muted { margin-bottom: 8px; }
         .submit { flex-wrap: wrap; }
         .submit .btn { flex: 1 1 auto; }
@@ -593,17 +597,26 @@ export class IncHiring extends LitElement {
                         this.newModel = (e.target as HTMLInputElement).value;
                       }} />
                   </label>
-                  <label style="grid-column: 1 / -1">Account
+                  <label>Account
                     <select .value=${this.newAccountId} @change=${(e: Event) => {
                       this.newAccountId = (e.target as HTMLSelectElement).value;
                     }}>
-                      ${this.accounts.map((a) => html`<option value=${a.id}>${a.name || a.id}</option>`)}
+                      ${
+                        this.accounts.length
+                          ? this.accounts.map((a) => html`<option value=${a.id}>${a.name || a.id}</option>`)
+                          : html`<option value="default">Default account</option>`
+                      }
                     </select>
                   </label>
                 </div>
-                <div style="display:flex;gap:8px;align-items:center;margin-top:4px">
-                  <button type="button" class="btn small" ?disabled=${!this.newModel.trim()} @click=${() => this.createCustomEngine()}>
-                    Save & select engine
+                <div class="custom-engine-actions">
+                  <button type="button" class="btn small" ?disabled=${!this.newModel.trim() || this.busy} @click=${() => this.createCustomEngine()}>
+                    ${this.busy ? "Saving…" : "Save & select engine"}
+                  </button>
+                  <button type="button" class="btn ghost small" @click=${() => {
+                    this.showNewEngineForm = false;
+                  }}>
+                    Cancel
                   </button>
                 </div>
               </div>`
