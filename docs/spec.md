@@ -253,11 +253,11 @@ then writes project pages in its brain.
 
 ### Engines and switching: identity is memory
 
-Every machine has all the harnesses installed: Claude Code, Antigravity and OpenCode, each speaking
-ACP. Claude Code goes through an adapter, Antigravity through its own ACP server, and OpenCode
+Every machine has all the harnesses installed: Claude Code, Antigravity, Codex and OpenCode, each speaking
+ACP. Claude Code and Codex go through maintained adapters, Antigravity through its own ACP server, and OpenCode
 natively. The engine chosen for a session decides which harness runs on which account. Each
 employee's machine signs in to the owner's subscriptions once, at hiring: Claude Code with `claude
-auth login`, and Antigravity with its own sign-in. The owner chose this over Claude's model-only
+auth login`, Codex with its device-code sign-in, and Antigravity with its own sign-in. The owner chose this over Claude's model-only
 token (`claude setup-token`), accepting that a full Claude login also reaches the owner's claude.ai
 connectors (mail, calendar, drive) from inside the machine. A token can still be given to any
 account instead, and i.inc then injects it into each session.

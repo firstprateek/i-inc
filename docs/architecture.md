@@ -65,6 +65,7 @@ The daemon connects to AI agents through the Agent Client Protocol (ACP) and loc
 - **Harnesses in sandboxes:**
   - `claude-code` (`acp-claude`): Claude subscription, signed in once per team sandbox via `tools/host/sign-in-claude.sh`.
   - `antigravity` (`acp-antigravity`): Google AI Pro subscription, signed in once per team sandbox via `tools/host/sign-in-antigravity.sh`. An OAuth callback relay endpoint (`POST /api/teams/:id/antigravity-callback`, contract C8) delivers the `http://127.0.0.1:<port>/?code=…` redirect into the sandbox using `AppleMachines.deliverCallback`.
+  - `codex` (`acp-codex`): Codex CLI through the pinned maintained ACP adapter, using a team sandbox subscription sign-in. Engines, model selection, duty assignments and fallbacks use the same pipeline as the other cloud harnesses. See [Codex setup](codex.md) for new/existing-machine provisioning and owner sign-in. Cloud engines cannot process home data.
   - `opencode` (`acp-opencode`): OpenCode harness running local open models (e.g. `qwen3:8b`, registered with `local: true`) routed through the container gateway to the host's Ollama relay port (`11434`).
 - **Local Ollama helper and chat (`apps/daemon/src/ollama.ts`):**
   - `OllamaHelper`: runs fast local classification (intent detection for `ask`, `note`, `question`) and yes/no evaluations directly against Ollama without launching a sandbox.
@@ -77,7 +78,7 @@ The daemon connects to AI agents through the Agent Client Protocol (ACP) and loc
 
 ## Sandboxes and isolation
 
-- **Inspection (`GET /api/sandboxes`, contract C1):** reports team sandbox state (`running`, `stopped`, `missing`, `error`), CPU and memory specs, and sign-in status (`claude`, `antigravity`, `github`).
+- **Inspection (`GET /api/sandboxes`, contract C1):** reports team sandbox state (`running`, `stopped`, `missing`, `error`), CPU and memory specs, and sign-in status (`claude`, `antigravity`, `codex`, `github`).
 - **No boot on read:** inspecting sandboxes parses `container machine ls` output and never starts or boots a stopped VM merely to report status. Credential files are only probed if the machine is already running; otherwise cached or default states are returned.
 - **Sandbox DNS filter (`apps/daemon/src/dns.ts`):** a custom DNS filter on the sandbox network gateway intercepts DNS queries. It refuses any lookup for `.ts.net` or `.local` domains (returning `REFUSED`, RCODE=5), ensuring tailnet machine names and local hostnames cannot be resolved or leaked from inside sandboxes.
 - **The walls (`pf`):** outbound internet is permitted, but connections to the local LAN, the tailnet subnet, and the host (except the gateway API and Ollama relay ports) are blocked. Machines run only while the walls job confirms firewall state every minute (`/var/run/i-inc-walls.ok`).
