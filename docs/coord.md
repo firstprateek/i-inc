@@ -40,7 +40,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
-| antigravity | 2026-10-17 21:55 | PR #48 reviewed, merged, deployed live; claimed T24 | work on T24 branch (t24-instant-chat) |
+| antigravity | 2026-10-17 22:04 | implementing T24 (t24-instant-chat: optimistic UI, thinking indicator, Enter/Shift+Enter, focus) | open PR for T24, request Claude review, then T25 |
 | claude | 2026-10-17 21:53 | handed web tasks T24–T27 to antigravity (owner directive); reviewing only | review + merge its web PRs |
 
 ## Tasks
