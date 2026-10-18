@@ -10,7 +10,8 @@
     "check": "biome check .",
     "fix": "biome check --write .",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test"
+    "test": "pnpm -r test && pnpm test:host",
+    "test:host": "sh tools/host/test-codex-tools.sh"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.14",
