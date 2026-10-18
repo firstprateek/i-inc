@@ -47,5 +47,26 @@ export function migrate(db: Db): void {
       key TEXT PRIMARY KEY,
       at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS ticket_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id TEXT NOT NULL,
+      stage TEXT NOT NULL,
+      employee_id TEXT NOT NULL,
+      engine_id TEXT NOT NULL,
+      started_at INTEGER NOT NULL,
+      ended_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_ticket_sessions_ticket ON ticket_sessions(ticket_id, id);
+    CREATE TABLE IF NOT EXISTS ticket_session_items (
+      session_id INTEGER NOT NULL,
+      seq INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      text TEXT,
+      title TEXT,
+      status TEXT,
+      at INTEGER NOT NULL,
+      PRIMARY KEY (session_id, seq)
+    );
+    CREATE INDEX IF NOT EXISTS idx_ticket_session_items_session ON ticket_session_items(session_id, seq);
   `);
 }

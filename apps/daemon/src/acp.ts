@@ -8,8 +8,18 @@
 // urgent message.
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
-import type { Agent, Duty, Engine, Id, SessionOutcome, SessionRequest, Ticket } from "@i-inc/core";
+import type {
+  Agent,
+  Duty,
+  Engine,
+  Id,
+  SessionOutcome,
+  SessionRequest,
+  SessionTranscriptItem,
+  Ticket,
+} from "@i-inc/core";
 import type { AccountRateLimit } from "./registry.ts";
+import { capText } from "./sessions.ts";
 
 type Json = Record<string, unknown>;
 
@@ -144,6 +154,46 @@ export class AcpAgent implements Agent {
     // leaked into a PR body; a trailing tool call after the answer mustn't erase it.
     let reply = "";
     let answer = "";
+    let textBuf = "";
+    let textId = 0;
+    let currentTextId = "";
+    let textAt = now();
+
+    const emit = (item: SessionTranscriptItem) => {
+      r.onTranscriptItem?.(item);
+    };
+
+    const flushText = () => {
+      if (!currentTextId || !textBuf) {
+        textBuf = "";
+        currentTextId = "";
+        return;
+      }
+      emit({ id: currentTextId, kind: "text", text: capText(textBuf, 4096), at: textAt });
+      textBuf = "";
+      currentTextId = "";
+    };
+
+    const appendText = (chunk: string) => {
+      if (!chunk) return;
+      if (!currentTextId) {
+        currentTextId = `text-${++textId}`;
+        textAt = now();
+        textBuf = "";
+      }
+      let full = textBuf + chunk;
+      while (Buffer.byteLength(full, "utf8") >= 4096) {
+        const itemText = capText(full, 4096);
+        emit({ id: currentTextId, kind: "text", text: itemText, at: textAt });
+        full = full.slice(itemText.length);
+        currentTextId = `text-${++textId}`;
+        textAt = now();
+      }
+      textBuf = full;
+      if (textBuf.length > 0) {
+        emit({ id: currentTextId, kind: "text", text: textBuf, at: textAt });
+      }
+    };
 
     rpc.onNotice = (method, params) => {
       if (method !== "session/update") return;
@@ -151,10 +201,38 @@ export class AcpAgent implements Agent {
       if (u.sessionUpdate === "tool_call") {
         if (reply.trim()) answer = reply;
         reply = "";
+        flushText();
+        const toolCallId = u.toolCallId ? String(u.toolCallId) : `tool-${Date.now()}-${Math.random()}`;
+        const title = typeof u.title === "string" ? capText(u.title, 4096) : undefined;
+        const status = typeof u.status === "string" ? capText(u.status, 4096) : undefined;
+        emit({
+          id: toolCallId,
+          kind: "tool",
+          ...(title !== undefined ? { title } : {}),
+          ...(status !== undefined ? { status } : {}),
+          at: now(),
+        });
+      }
+      if (u.sessionUpdate === "tool_call_update") {
+        const toolCallId = u.toolCallId ? String(u.toolCallId) : undefined;
+        const title = typeof u.title === "string" ? capText(u.title, 4096) : undefined;
+        const status = typeof u.status === "string" ? capText(u.status, 4096) : undefined;
+        if (toolCallId) {
+          emit({
+            id: toolCallId,
+            kind: "tool",
+            ...(title !== undefined ? { title } : {}),
+            ...(status !== undefined ? { status } : {}),
+            at: now(),
+          });
+        }
       }
       if (u.sessionUpdate === "agent_message_chunk") {
         const c = u.content as Json | undefined;
-        if (c?.type === "text") reply += String(c.text);
+        if (c?.type === "text" && typeof c.text === "string") {
+          reply += c.text;
+          appendText(c.text);
+        }
       }
       const rl = ((u._meta ?? {}) as Json)["_claude/rateLimit"] as Json | undefined;
       if (rl) {
@@ -237,6 +315,7 @@ export class AcpAgent implements Agent {
     } catch (e) {
       return stuck(e instanceof Error ? e.message : String(e));
     } finally {
+      flushText();
       rpc.close();
     }
   }

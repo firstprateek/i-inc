@@ -784,6 +784,16 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     ],
 
     [
+      "GET",
+      "/api/tickets/:id/sessions",
+      async (_, p) => {
+        const r = d.tickets.get(p.id ?? "");
+        if (!r) return json({ error: "no such ticket" }, 404);
+        return json({ sessions: d.sessions.list(p.id ?? "") });
+      },
+    ],
+
+    [
       "POST",
       "/api/tickets/:id/answer",
       async (req, p) => {

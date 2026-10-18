@@ -20,6 +20,8 @@ import {
   type ProjectRelease,
   type RunResult,
   runTicket,
+  type SessionOutcome,
+  type SessionRequest,
   type Snapshot,
   schedule,
   type Ticket,
@@ -34,12 +36,14 @@ import type { KnowledgeStore } from "./knowledge.ts";
 import type { LiveEvents } from "./live.ts";
 import type { NotificationPayload, PushService } from "./push.ts";
 import type { Registry } from "./registry.ts";
+import { capText, type SessionStore } from "./sessions.ts";
 import type { SqliteEventStore } from "./store.ts";
 import type { TicketRecord, Tickets } from "./tickets.ts";
 
 export interface DaemonDeps {
   clock: Clock;
   store: SqliteEventStore;
+  sessions: SessionStore;
   registry: Registry;
   tickets: Tickets;
   machines: MachineProvider;
@@ -69,11 +73,65 @@ export class Daemon {
   private readonly awake = new Set<Id>();
 
   private get ports(): Ports {
-    const { clock, store, agent, harness, registry } = this.d;
+    const { clock, store, harness, registry, sessions } = this.d;
     const machines = {
       ensureUp: async (id: Id) => {
         await this.d.machines.ensureUp(id);
         this.awake.add(id);
+      },
+    };
+    const agent: Agent = {
+      run: async (req: SessionRequest): Promise<SessionOutcome> => {
+        let sessionId: number | null = null;
+        try {
+          sessionId = sessions.start(req.ticket.id, req.stage, req.employee.id, req.engine.id);
+        } catch (err) {
+          console.error("[sessions] start failed:", err);
+        }
+        let textCount = 0;
+        const origOnTranscriptItem = req.onTranscriptItem;
+        req.onTranscriptItem = (item) => {
+          if (item.kind === "text") textCount++;
+          if (sessionId !== null) {
+            try {
+              sessions.recordItem(sessionId, item);
+            } catch (err) {
+              console.error("[sessions] recordItem failed:", err);
+            }
+          }
+          origOnTranscriptItem?.(item);
+        };
+        try {
+          const outcome = await this.d.agent.run(req);
+          if (textCount === 0 && sessionId !== null) {
+            try {
+              if (outcome.kind === "done" && outcome.output) {
+                sessions.recordItem(sessionId, {
+                  kind: "text",
+                  text: capText(outcome.output, 4096),
+                  at: clock.now(),
+                });
+              } else if ((outcome.kind === "stuck" || outcome.kind === "interrupted") && outcome.reason) {
+                sessions.recordItem(sessionId, {
+                  kind: "text",
+                  text: capText(outcome.reason, 4096),
+                  at: clock.now(),
+                });
+              }
+            } catch (err) {
+              console.error("[sessions] recordItem failed:", err);
+            }
+          }
+          return outcome;
+        } finally {
+          if (sessionId !== null) {
+            try {
+              sessions.finish(sessionId);
+            } catch (err) {
+              console.error("[sessions] finish failed:", err);
+            }
+          }
+        }
       },
     };
     const { workspace } = this.d;
