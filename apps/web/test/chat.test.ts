@@ -1,5 +1,6 @@
 // Instant optimistic chat with thinking indicator, retry, and keyboard handling (T24).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { logout } from "../src/api.ts";
 import { type Entry, IncChat, type Thread } from "../src/components/chat.ts";
 
 const sampleThreads: Thread[] = [
@@ -99,11 +100,14 @@ async function mount(employeeId = "ada"): Promise<{ el: IncChat; root: ShadowRoo
 
 beforeEach(() => {
   document.body.innerHTML = "";
+  localStorage.clear();
 });
 
 afterEach(() => {
   document.body.innerHTML = "";
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  localStorage.clear();
 });
 
 describe("Circular send button (T29)", () => {
@@ -716,5 +720,150 @@ describe("Instant chat (T24)", () => {
 
       expect(scrollSpy).toHaveBeenCalled();
     });
+  });
+});
+
+describe("Drafts across reloads (T10)", () => {
+  const box = (root: ShadowRoot) => root.querySelector("textarea") as HTMLTextAreaElement;
+  const sendBtn = (root: ShadowRoot) => root.querySelector("button[type=submit]") as HTMLButtonElement;
+  const type = async (el: IncChat, root: ShadowRoot, text: string) => {
+    box(root).value = text;
+    box(root).dispatchEvent(new Event("input"));
+    await el.updateComplete;
+  };
+  // A reload: the old element goes, a fresh one mounts with nothing in memory.
+  const reload = (employeeId = "ada") => {
+    document.body.innerHTML = "";
+    return mount(employeeId);
+  };
+  const settle = async (el: IncChat) => {
+    for (let i = 0; i < 6; i++) {
+      await new Promise((r) => setTimeout(r, 0));
+      await el.updateComplete;
+    }
+  };
+
+  it("brings Ada's draft back after a reload, with Send enabled", async () => {
+    const { postCalls } = serveChat();
+    const first = await mount("ada");
+    await type(first.el, first.root, "Ship the login fix\nand the tests");
+    expect(localStorage.getItem("inc.chat.draft.ada")).toBe("Ship the login fix\nand the tests");
+
+    const { el, root } = await reload();
+    expect(el.draft).toBe("Ship the login fix\nand the tests");
+    expect(box(root).value).toBe("Ship the login fix\nand the tests");
+    expect(sendBtn(root).disabled).toBe(false);
+    expect(postCalls).toEqual([]);
+  });
+
+  it("keeps Ada's and Kit's drafts apart across a reload", async () => {
+    serveChat();
+    const first = await mount("ada");
+    await type(first.el, first.root, "For Ada");
+    first.el.employeeId = "kit";
+    await first.el.updateComplete;
+    await type(first.el, first.root, "For Kit");
+
+    const { el, root } = await reload("ada");
+    expect(box(root).value).toBe("For Ada");
+    el.employeeId = "kit";
+    await el.updateComplete;
+    expect(box(root).value).toBe("For Kit");
+    el.employeeId = "ada";
+    await el.updateComplete;
+    expect(box(root).value).toBe("For Ada");
+  });
+
+  it("restores the first thread's draft when mounted without an employee", async () => {
+    serveChat();
+    localStorage.setItem("inc.chat.draft.ada", "Left over");
+    const { el, root } = await mount("");
+    expect(el.employeeId).toBe("ada");
+    expect(el.draft).toBe("Left over");
+    expect(box(root).value).toBe("Left over");
+  });
+
+  it("forgets the draft once it's sent", async () => {
+    const { postCalls } = serveChat();
+    const first = await mount("ada");
+    await type(first.el, first.root, "Send me");
+    void first.el.send();
+    expect(localStorage.getItem("inc.chat.draft.ada")).toBeNull();
+    await settle(first.el);
+    expect(postCalls[0]?.body).toEqual({ text: "Send me" });
+
+    const { el, root } = await reload();
+    expect(el.draft).toBe("");
+    expect(box(root).value).toBe("");
+    expect(sendBtn(root).disabled).toBe(true);
+  });
+
+  it("removes the key when the box is cleared, rather than storing blank text", async () => {
+    serveChat();
+    const { el, root } = await mount("ada");
+    await type(el, root, "Something");
+    await type(el, root, "   \n ");
+    expect(localStorage.getItem("inc.chat.draft.ada")).toBeNull();
+    await type(el, root, "");
+    expect(localStorage.length).toBe(0);
+  });
+
+  it("doesn't bring a failed send back as a draft, so it can't go twice", async () => {
+    serveChat({
+      handlePost: () =>
+        new Response(JSON.stringify({ error: "Ollama timeout" }), {
+          status: 504,
+          headers: { "content-type": "application/json" },
+        }),
+    });
+    const first = await mount("ada");
+    await type(first.el, first.root, "Try sending this");
+    void first.el.send();
+    await settle(first.el);
+    expect(first.root.textContent).toContain("Retry");
+    expect(localStorage.getItem("inc.chat.draft.ada")).toBeNull();
+
+    const { el, root } = await reload();
+    expect(el.draft).toBe("");
+    expect(box(root).value).toBe("");
+  });
+
+  it("still keeps drafts per employee in memory when storage is blocked", async () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("SecurityError");
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("QuotaExceededError");
+    });
+    vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new Error("SecurityError");
+    });
+    const { postCalls } = serveChat();
+    const { el, root } = await mount("ada");
+    await type(el, root, "For Ada");
+    el.employeeId = "kit";
+    await el.updateComplete;
+    expect(box(root).value).toBe("");
+    el.employeeId = "ada";
+    await el.updateComplete;
+    expect(box(root).value).toBe("For Ada");
+
+    void el.send();
+    await settle(el);
+    expect(postCalls[0]?.body).toEqual({ text: "For Ada" });
+    expect(box(root).value).toBe("");
+  });
+
+  it("forgets every chat draft on sign out, and nothing else", async () => {
+    vi.stubGlobal("fetch", async () => new Response("{}", { headers: { "content-type": "application/json" } }));
+    localStorage.setItem("inc.chat.draft.ada", "For Ada");
+    localStorage.setItem("inc.chat.draft.pa", "My address is…");
+    localStorage.setItem("inc.new-ticket.project", "i-inc");
+
+    await logout();
+
+    expect(localStorage.getItem("inc.chat.draft.ada")).toBeNull();
+    expect(localStorage.getItem("inc.chat.draft.pa")).toBeNull();
+    expect(localStorage.getItem("inc.new-ticket.project")).toBe("i-inc");
   });
 });
