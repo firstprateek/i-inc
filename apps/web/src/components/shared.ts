@@ -13,7 +13,7 @@ export const base = css`
     border: 1px solid var(--line);
     border-radius: var(--radius);
     -webkit-tap-highlight-color: transparent;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02);
+    box-shadow: var(--shadow-card);
     transition: transform 0.12s ease, box-shadow 0.12s ease;
   }
   a.card:active, button.card:active { transform: scale(0.98); opacity: 0.85; }

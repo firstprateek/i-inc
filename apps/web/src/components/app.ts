@@ -120,12 +120,17 @@ export class IncApp extends LitElement {
           position: sticky;
           top: 0;
           z-index: 10;
-          padding: 8px 16px;
+          padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
           gap: 10px;
-          background: color-mix(in srgb, var(--surface) 86%, transparent);
-          backdrop-filter: blur(20px) saturate(180%);
-          -webkit-backdrop-filter: blur(20px) saturate(180%);
+          background: var(--surface);
           border-bottom: 1px solid var(--line);
+        }
+        @supports ((backdrop-filter: blur(20px)) or (-webkit-backdrop-filter: blur(20px))) and (background: color-mix(in srgb, red, blue)) {
+          header {
+            background: color-mix(in srgb, var(--surface) 86%, transparent);
+            backdrop-filter: blur(20px) saturate(180%);
+            -webkit-backdrop-filter: blur(20px) saturate(180%);
+          }
         }
         header nav { display: none; }
         .mobile-view-title {
@@ -135,6 +140,11 @@ export class IncApp extends LitElement {
           font-size: 17px;
           color: var(--ink-2);
           letter-spacing: -0.3px;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          max-width: calc(100vw - 160px);
+          vertical-align: middle;
         }
         .sign-out { min-height: 44px; }
         main { padding: 8px 16px calc(88px + env(safe-area-inset-bottom)); }
@@ -144,9 +154,7 @@ export class IncApp extends LitElement {
           z-index: 10;
           display: grid;
           grid-template-columns: repeat(5, 1fr);
-          background: color-mix(in srgb, var(--surface) 86%, transparent);
-          backdrop-filter: blur(20px) saturate(180%);
-          -webkit-backdrop-filter: blur(20px) saturate(180%);
+          background: var(--surface);
           border-top: 1px solid var(--line);
           box-shadow: 0 -1px 3px rgba(0, 0, 0, 0.02);
           padding: 4px 4px calc(8px + env(safe-area-inset-bottom));
@@ -154,6 +162,13 @@ export class IncApp extends LitElement {
           -webkit-user-select: none;
           -webkit-touch-callout: none;
           -webkit-tap-highlight-color: transparent;
+        }
+        @supports ((backdrop-filter: blur(20px)) or (-webkit-backdrop-filter: blur(20px))) and (background: color-mix(in srgb, red, blue)) {
+          .tabs {
+            background: color-mix(in srgb, var(--surface) 86%, transparent);
+            backdrop-filter: blur(20px) saturate(180%);
+            -webkit-backdrop-filter: blur(20px) saturate(180%);
+          }
         }
         .tabs button,
         .tabs [role="tab"] {
@@ -217,8 +232,9 @@ export class IncApp extends LitElement {
         }
         .tabs button[aria-selected="true"] .tab-pill,
         .tabs [role="tab"][aria-selected="true"] .tab-pill {
-          background: var(--neutral-bg);
-          color: var(--ink);
+          background: var(--ink);
+          color: var(--on-ink);
+          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
         }
         .tabs button:focus-visible,
         .tabs [role="tab"]:focus-visible {
@@ -236,7 +252,8 @@ export class IncApp extends LitElement {
   }
 
   private viewTitle(): string {
-    switch (this.route.view) {
+    const r = this.route;
+    switch (r.view) {
       case "inbox":
         return "Inbox";
       case "office":
@@ -244,9 +261,14 @@ export class IncApp extends LitElement {
       case "board":
         return "Board";
       case "ticket":
-        return "Ticket";
-      case "chat":
-        return "Chat";
+        return r.id ? `Ticket #${r.id}` : "Ticket";
+      case "chat": {
+        if (r.id) {
+          const name = r.id.charAt(0).toUpperCase() + r.id.slice(1);
+          return `Chat · ${name}`;
+        }
+        return "Chats";
+      }
       case "desk":
         return "My desk";
       case "handbook":
@@ -255,7 +277,7 @@ export class IncApp extends LitElement {
       case "hiring":
         return "Hiring";
       case "setup":
-        return "Setup";
+        return `Setup · ${r.section.charAt(0).toUpperCase() + r.section.slice(1)}`;
       case "more":
         return "More";
       default:

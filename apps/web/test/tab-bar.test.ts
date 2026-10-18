@@ -164,9 +164,17 @@ describe("mobile app tab bar (T25)", () => {
     expect(allCss).not.toContain("text-decoration: underline");
     expect(allCss).toContain("text-decoration: none");
 
-    // Frosted glass blur backdrop
+    // Frosted glass blur backdrop and solid fallback
     expect(allCss).toContain("backdrop-filter: blur(20px)");
     expect(allCss).toContain("-webkit-backdrop-filter: blur(20px)");
+    expect(allCss).toContain("@supports");
+
+    // Header safe-area-inset-top on mobile
+    expect(allCss).toContain("calc(10px + env(safe-area-inset-top))");
+
+    // Active pill uses var(--ink) and var(--on-ink) for high contrast
+    expect(allCss).toContain("background: var(--ink)");
+    expect(allCss).toContain("color: var(--on-ink)");
   });
 
   it("renders an icon and pill container inside each tab button", async () => {
@@ -211,5 +219,21 @@ describe("mobile app tab bar (T25)", () => {
     board.click();
     await app.updateComplete;
     expect(titleEl?.textContent).toContain("Board");
+
+    // Test ticket and chat contextual titles
+    location.hash = "#/ticket/123";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    await app.updateComplete;
+    expect(titleEl?.textContent).toContain("Ticket #123");
+
+    location.hash = "#/chat/ada";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    await app.updateComplete;
+    expect(titleEl?.textContent).toContain("Chat · Ada");
+
+    location.hash = "#/setup/teams";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    await app.updateComplete;
+    expect(titleEl?.textContent).toContain("Setup · Teams");
   });
 });
