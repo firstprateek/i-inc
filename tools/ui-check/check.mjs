@@ -286,9 +286,11 @@ async function endOfPage() {
             !prior ||
             !sameRect(prior, r) ||
             ["fixed", "sticky"].includes(getComputedStyle(el).position) ||
-            ancestors(el).includes(candidate.el) || r.height <= 2 ||
+            ancestors(el).includes(candidate.el) ||
+            r.height <= 2 ||
             Math.abs(r.bottom - innerHeight) > 2
-          ) continue;
+          )
+            continue;
           bars.push(el);
         }
       }
@@ -309,7 +311,7 @@ async function endOfPage() {
           if (w > 2 && h > 2) {
             const text = el.textContent.trim().replace(/\s+/g, " ").slice(0, 40);
             const key = [text, b.left, b.top, b.right, b.bottom, r.top]
-              .map((part) => typeof part === "number" ? Math.round(part) : part)
+              .map((part) => (typeof part === "number" ? Math.round(part) : part))
               .join(":");
             if (seen.has(key)) continue;
             seen.add(key);
@@ -517,7 +519,12 @@ function auditInPage() {
       if (ps.overflow === "visible" && ps.overflowX === "visible" && ps.overflowY === "visible") continue;
       const pr = p.getBoundingClientRect();
       const clip = clippedRect(el);
-      const cut = Math.max(clip.left - r.left, r.right - clip.right, clip.top - r.top, r.bottom - clip.bottom);
+      const cut = Math.max(
+        clip.left - r.left,
+        r.right - clip.right,
+        clip.top - r.top,
+        r.bottom - clip.bottom,
+      );
       if (
         cut > 1 &&
         isLeaf(el) &&

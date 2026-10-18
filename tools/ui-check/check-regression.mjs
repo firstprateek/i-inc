@@ -20,7 +20,8 @@ const result = spawnSync(
 );
 const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
 if (result.error) throw result.error;
-if (result.status !== 1) throw new Error(`expected intentional findings (exit 1), got ${result.status}\n${output}`);
+if (result.status !== 1)
+  throw new Error(`expected intentional findings (exit 1), got ${result.status}\n${output}`);
 const section = (name) => {
   const at = output.indexOf(name);
   if (at < 0) return "";
