@@ -11,6 +11,7 @@ export type SendStatus = "sending" | "sent" | "error";
 export type Entry =
   | {
       id?: string | undefined;
+      employeeId?: string | undefined;
       from: "owner";
       at: number;
       text: string;
@@ -20,6 +21,7 @@ export type Entry =
     }
   | {
       id?: string | undefined;
+      employeeId?: string | undefined;
       from: "employee";
       at: number;
       text: string;
@@ -27,6 +29,7 @@ export type Entry =
     }
   | {
       id?: string | undefined;
+      employeeId?: string | undefined;
       from: "employee";
       at: number;
       kind: "draft";
@@ -37,6 +40,7 @@ export type Entry =
     }
   | {
       id?: string | undefined;
+      employeeId?: string | undefined;
       from: "employee";
       at: number;
       kind: "errand";
@@ -46,6 +50,7 @@ export type Entry =
     }
   | {
       id?: string | undefined;
+      employeeId?: string | undefined;
       from: "system";
       at: number;
       text: string;
@@ -60,9 +65,14 @@ export interface Thread {
   last: Entry | null;
 }
 
-async function json<T>(method: string, url: string, body?: unknown): Promise<T> {
+async function json<T>(method: string, url: string, body?: unknown, timeoutMs = 45_000): Promise<T> {
+  const signal =
+    typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
+      ? AbortSignal.timeout(timeoutMs)
+      : undefined;
   const res = await fetch(url, {
     method,
+    ...(signal ? { signal } : {}),
     ...(method === "GET"
       ? {}
       : { headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) }),
@@ -74,15 +84,10 @@ async function json<T>(method: string, url: string, body?: unknown): Promise<T> 
 }
 
 export function isTouchDevice(): boolean {
-  if (typeof window === "undefined") return false;
-  const coarse = window.matchMedia?.("(pointer: coarse)")?.matches ?? false;
-  const hoverNone = window.matchMedia?.("(hover: none)")?.matches ?? false;
-  const touchPoints =
-    typeof navigator !== "undefined" &&
-    ((navigator.maxTouchPoints ?? 0) > 0 ||
-      ((navigator as { msMaxTouchPoints?: number }).msMaxTouchPoints ?? 0) > 0);
-  const touchEvent = "ontouchstart" in window;
-  return coarse || hoverNone || touchPoints || touchEvent;
+  if (typeof window === "undefined" || !window.matchMedia) return false;
+  // Key off a coarse primary pointer with no hover (e.g. phones, pure touch devices without physical keyboard/mouse).
+  // Touchscreen laptops and iPads with keyboards maintain Enter-to-send.
+  return window.matchMedia("(pointer: coarse) and (hover: none)").matches;
 }
 
 export class IncChat extends LitElement {
@@ -104,7 +109,10 @@ export class IncChat extends LitElement {
   declare busy: boolean;
   declare thinking: boolean;
   declare error: string | null;
-  private pendingCount = 0;
+
+  // Track pending optimistic messages across employees to prevent cross-thread leaks
+  private pendingEntries: (Entry & { from: "owner" })[] = [];
+  private inFlightEmployees = new Set<string>();
 
   constructor() {
     super();
@@ -124,7 +132,11 @@ export class IncChat extends LitElement {
   }
 
   override updated(changed: Map<string, unknown>): void {
-    if (changed.has("employeeId") && changed.get("employeeId") !== undefined) void this.load();
+    if (changed.has("employeeId") && changed.get("employeeId") !== undefined) {
+      this.error = null;
+      this.thinking = this.inFlightEmployees.has(this.employeeId);
+      void this.load();
+    }
     if (changed.has("entries") || changed.has("thinking")) {
       this.scrollToBottom();
     }
@@ -146,19 +158,30 @@ export class IncChat extends LitElement {
   }
 
   private async load() {
+    const targetEmployeeId = this.employeeId;
     try {
       this.threads = (await json<{ threads: Thread[] }>("GET", "/api/chat")).threads;
       if (!this.employeeId && this.threads[0]) this.employeeId = this.threads[0].id;
       if (this.employeeId) {
-        const res = await json<{ entries: Entry[] }>("GET", `/api/chat/${this.employeeId}`);
-        const pending = this.entries.filter(
-          (e) => "status" in e && (e.status === "sending" || e.status === "error"),
-        );
-        this.entries = [...(res.entries ?? []), ...pending];
+        const empId = this.employeeId;
+        const res = await json<{ entries: Entry[] }>("GET", `/api/chat/${empId}`);
+        // Only update entries if employee hasn't switched during fetch
+        if (this.employeeId === empId) {
+          const myPending = this.pendingEntries.filter(
+            (e) => e.employeeId === empId && (e.status === "sending" || e.status === "error"),
+          );
+          const combined = [...(res.entries ?? []), ...myPending];
+          combined.sort((a, b) => a.at - b.at);
+          this.entries = combined;
+        }
       }
-      this.error = null;
+      if (this.employeeId === targetEmployeeId) {
+        this.error = null;
+      }
     } catch (e) {
-      this.error = e instanceof Error ? e.message : String(e);
+      if (this.employeeId === targetEmployeeId) {
+        this.error = e instanceof Error ? e.message : String(e);
+      }
     }
   }
 
@@ -177,12 +200,16 @@ export class IncChat extends LitElement {
 
   private onKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Enter") {
+      // IME composition guard: skip Enter when composing or during IME selection
+      if (e.isComposing || e.keyCode === 229) {
+        return;
+      }
       if (e.shiftKey) {
         // Shift+Enter inserts a newline
         return;
       }
       if (this.isTouch()) {
-        // On touch devices Return keeps a newline; user taps Send button
+        // On pure touch devices (coarse pointer, no hover) Return keeps a newline; user taps Send button
         return;
       }
       e.preventDefault();
@@ -193,13 +220,15 @@ export class IncChat extends LitElement {
   async send(e?: Event) {
     e?.preventDefault();
     const text = this.draft.trim();
-    if (!text) return;
+    if (!text || !this.employeeId) return;
 
     const msgId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const urgent = this.urgent;
+    const empId = this.employeeId;
 
     const optEntry: Entry & { from: "owner" } = {
       id: msgId,
+      employeeId: empId,
       from: "owner",
       at: Date.now(),
       text,
@@ -207,7 +236,11 @@ export class IncChat extends LitElement {
       status: "sending",
     };
 
-    this.entries = [...this.entries, optEntry];
+    this.pendingEntries.push(optEntry);
+    const combined = [...this.entries, optEntry];
+    combined.sort((a, b) => a.at - b.at);
+    this.entries = combined;
+
     this.draft = "";
     this.urgent = false;
     this.error = null;
@@ -223,8 +256,11 @@ export class IncChat extends LitElement {
   }
 
   private async executeSend(entry: Entry & { from: "owner" }) {
-    this.pendingCount++;
-    this.thinking = true;
+    const empId = entry.employeeId ?? this.employeeId;
+    this.inFlightEmployees.add(empId);
+    if (this.employeeId === empId) {
+      this.thinking = true;
+    }
     this.busy = true;
 
     await this.updateComplete;
@@ -233,65 +269,62 @@ export class IncChat extends LitElement {
     textarea?.focus();
 
     try {
-      const res = await json<{ entries: Entry[] }>("POST", `/api/chat/${this.employeeId}`, {
+      const res = await json<{ entries: Entry[] }>("POST", `/api/chat/${empId}`, {
         text: entry.text,
         ...(entry.urgent ? { urgent: true } : {}),
       });
 
       entry.status = "sent";
       entry.error = undefined;
+      // Remove from pending entries once delivered
+      this.pendingEntries = this.pendingEntries.filter((p) => p.id !== entry.id);
 
-      if (res.entries && res.entries.length > 0) {
-        const merged: Entry[] = res.entries.map((item) => ({ ...item }));
-        let matched = false;
-        for (let i = merged.length - 1; i >= 0; i--) {
-          const item = merged[i];
-          if (item && item.from === "owner" && item.text === entry.text && !item.status) {
-            item.status = "sent";
-            if (entry.id) item.id = entry.id;
-            matched = true;
-            break;
+      // Only update this.entries if the user is still viewing this employee's thread!
+      if (this.employeeId === empId) {
+        if (res.entries && res.entries.length > 0) {
+          const merged: Entry[] = res.entries.map((item) => ({ ...item }));
+          for (let i = merged.length - 1; i >= 0; i--) {
+            const item = merged[i];
+            if (item && item.from === "owner" && item.text === entry.text && !item.status) {
+              item.status = "sent";
+              if (entry.id) item.id = entry.id;
+              break;
+            }
           }
+          const otherPending = this.pendingEntries.filter(
+            (e) =>
+              e.employeeId === empId && e.id !== entry.id && (e.status === "sending" || e.status === "error"),
+          );
+          const combined = [...merged, ...otherPending];
+          combined.sort((a, b) => a.at - b.at);
+          this.entries = combined;
         }
-        const others = this.entries.filter(
-          (e) => e.id !== entry.id && "status" in e && (e.status === "sending" || e.status === "error"),
-        );
-        if (matched) {
-          this.entries = [...merged, ...others];
-        } else {
-          this.entries = [
-            ...this.entries.filter((e) => e.id !== entry.id),
-            entry,
-            ...merged.filter((e) => e.from !== "owner" || e.text !== entry.text),
-          ];
-        }
-      } else {
-        this.entries = [...this.entries];
       }
       refreshNow();
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      this.error = errMsg;
       entry.status = "error";
       entry.error = errMsg;
-      this.entries = [...this.entries];
+      if (this.employeeId === empId) {
+        this.error = errMsg;
+        this.entries = [...this.entries];
+      }
     } finally {
-      this.pendingCount = Math.max(0, this.pendingCount - 1);
-      this.thinking = this.pendingCount > 0;
-      this.busy = this.pendingCount > 0;
-      this.requestUpdate();
-      await this.updateComplete;
-      this.scrollToBottom();
-      textarea?.focus();
+      this.inFlightEmployees.delete(empId);
+      if (this.employeeId === empId) {
+        this.thinking = false;
+      }
+      this.busy = this.inFlightEmployees.size > 0;
     }
   }
 
-  async retry(entry: Entry & { from: "owner" }) {
-    this.error = null;
+  async retry(entry: Entry) {
+    if (entry.from !== "owner") return;
     entry.status = "sending";
     entry.error = undefined;
+    this.error = null;
     this.entries = [...this.entries];
-    await this.executeSend(entry);
+    await this.executeSend(entry as Entry & { from: "owner" });
   }
 
   private async confirm(ticketId: string) {
@@ -311,7 +344,8 @@ export class IncChat extends LitElement {
       .thread { flex-grow: 1; min-width: 0; display: flex; flex-direction: column; }
       .head { padding: 16px 22px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 12px; }
       .msgs { flex-grow: 1; padding: 20px 22px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
-      .me, .them, .ticket { overflow-wrap: anywhere; white-space: pre-wrap; }
+      .me, .them, .ticket { overflow-wrap: anywhere; }
+      .msg-body { white-space: pre-wrap; }
       .me { align-self: flex-end; max-width: 520px; padding: 11px 14px; border-radius: 16px 4px 16px 16px; background: var(--ink); color: var(--on-ink); }
       .them { align-self: flex-start; max-width: 620px; padding: 11px 14px; border-radius: 4px 16px 16px 16px; background: var(--sunken); }
       .them.thinking { display: inline-flex; align-items: center; gap: 8px; color: var(--ink-2); font-style: normal; }
@@ -326,9 +360,9 @@ export class IncChat extends LitElement {
       .me .meta { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 4px; font-size: 11px; opacity: 0.85; }
       .me .status { font-size: 11px; }
       .me .status.sending { font-style: italic; }
-      .me .status.error { color: #ff8080; font-weight: 600; }
+      .me .status.error { color: var(--alarm-fg, #f28b76); font-weight: 600; }
       .me .retry { font-size: 11px; padding: 2px 8px; min-height: 22px; border-radius: 6px; background: var(--surface); color: var(--ink); border: none; cursor: pointer; }
-      .error-msg { color: #d32f2f; background: rgba(211, 47, 47, 0.1); padding: 8px 12px; border-radius: 8px; font-size: 13px; margin: 0; align-self: flex-start; }
+      .error-msg { color: var(--alarm-fg, #8a2b17); background: var(--needs-bg, rgba(196, 69, 43, 0.1)); border: 1px solid var(--alarm, #c4452b); padding: 8px 12px; border-radius: 8px; font-size: 13px; margin: 0; align-self: flex-start; }
       .sys { align-self: center; font-size: 13px; color: var(--ink-2); }
       .ticket { align-self: flex-start; max-width: 620px; border: 2px dashed var(--line-strong); border-radius: 16px; padding: 14px;
         display: flex; flex-direction: column; gap: 8px; background: var(--surface); }
@@ -379,7 +413,7 @@ export class IncChat extends LitElement {
           ${this.entries.length ? this.entries.map((e) => this.entry(e)) : html`<p class="empty">Ask ${me?.name ?? "them"} anything, or ask for something new.</p>`}
           ${
             this.thinking
-              ? html`<div class="them thinking">
+              ? html`<div class="them thinking" role="status" aria-live="polite">
                   <span class="dots" aria-hidden="true"><span></span><span></span><span></span></span>
                   <span>${me?.name ?? "Employee"} is thinking…</span>
                 </div>`
@@ -419,23 +453,17 @@ export class IncChat extends LitElement {
             : e.status === "error"
               ? "failed"
               : null;
-      return html`<div class="me ${e.status ?? ""}">
-        ${e.urgent ? html`<span class="tag">urgent</span><br>` : ""}${e.text}
-        ${
-          statusText
-            ? html`<div class="meta">
-                <span class="status ${e.status}">${statusText}</span>
-                ${
-                  e.status === "error"
-                    ? html`<button class="btn retry" type="button" @click=${() => this.retry(e)}>Retry</button>`
-                    : ""
-                }
-              </div>`
-            : ""
-        }
-      </div>`;
+      return html`<div class="me ${e.status ?? ""}">${e.urgent ? html`<span class="tag">urgent</span><br>` : ""}<div class="msg-body">${e.text}</div>${
+        statusText
+          ? html`<div class="meta"><span class="status ${e.status}" aria-live="polite">${statusText}</span>${
+              e.status === "error"
+                ? html`<button class="btn retry" type="button" @click=${() => this.retry(e)}>Retry</button>`
+                : ""
+            }</div>`
+          : ""
+      }</div>`;
     }
-    if (e.from === "system") return html`<div class="sys">${e.text}</div>`;
+    if (e.from === "system") return html`<div class="sys"><div class="msg-body">${e.text}</div></div>`;
     if ("kind" in e && e.kind === "draft") {
       return html`<div class="ticket">
         <span class="tag" style="align-self:flex-start">draft ticket</span>
@@ -452,7 +480,7 @@ export class IncChat extends LitElement {
       return html`<div class="ticket"><span class="tag" style="align-self:flex-start">errand</span><b>${e.title}</b>
         <a href="#/ticket/${e.ticketId}">On the Home lane as #${e.ticketId}</a></div>`;
     }
-    return html`<div class="them">${"text" in e ? e.text : ""}</div>`;
+    return html`<div class="them"><div class="msg-body">${"text" in e ? e.text : ""}</div></div>`;
   }
 }
 

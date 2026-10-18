@@ -32,6 +32,7 @@ function serveChat(
   opts: {
     threads?: Thread[];
     entries?: Entry[];
+    getEntries?: (url: string) => Entry[] | undefined;
     handlePost?: (url: string, body: unknown) => Promise<Response> | Response;
   } = {},
 ) {
@@ -47,7 +48,8 @@ function serveChat(
       });
     }
     if (method === "GET" && url.startsWith("/api/chat/")) {
-      return new Response(JSON.stringify({ entries }), {
+      const result = opts.getEntries ? opts.getEntries(url) : entries;
+      return new Response(JSON.stringify({ entries: result ?? entries }), {
         headers: { "content-type": "application/json" },
       });
     }
@@ -434,6 +436,84 @@ describe("Instant chat (T24)", () => {
 
       expect(postCalls.length).toBe(1);
       expect(postCalls[0]?.body).toEqual({ text: "Phone typing message" });
+    });
+    it("ignores Enter during IME composition", async () => {
+      const { postCalls } = serveChat();
+      const { el, root } = await mount("ada");
+      const textarea = root.querySelector("textarea") as HTMLTextAreaElement;
+
+      textarea.value = "Japanese IME text";
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      await el.updateComplete;
+
+      const imeEvent = new KeyboardEvent("keydown", {
+        key: "Enter",
+        isComposing: true,
+        cancelable: true,
+        bubbles: true,
+      });
+      textarea.dispatchEvent(imeEvent);
+      await el.updateComplete;
+
+      expect(imeEvent.defaultPrevented).toBe(false);
+      expect(postCalls.length).toBe(0);
+    });
+
+    it("prevents cross-thread leak when switching employees during send", async () => {
+      const postDeferred = createDeferred<Response>();
+      let adaEntries = [...sampleEntries];
+      serveChat({
+        getEntries: (url) => (url.endsWith("/ada") ? adaEntries : [...sampleEntries]),
+        handlePost: () => postDeferred.promise,
+      });
+
+      const { el, root } = await mount("ada");
+      const textarea = root.querySelector("textarea") as HTMLTextAreaElement;
+
+      textarea.value = "Message for Ada";
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      await el.updateComplete;
+
+      void el.send();
+      await el.updateComplete;
+
+      // Ada's message shows sending in Ada's thread
+      expect(root.textContent).toContain("Message for Ada");
+      expect(root.querySelector(".me.sending")).not.toBeNull();
+
+      // Switch employee to Kit
+      el.employeeId = "kit";
+      await el.updateComplete;
+      for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
+
+      // Kit's thread should NOT contain Ada's pending message!
+      expect(root.textContent).not.toContain("Message for Ada");
+
+      // Resolve Ada's post response
+      adaEntries = [
+        ...sampleEntries,
+        { from: "owner", at: 2000, text: "Message for Ada" },
+        { from: "employee", at: 2001, text: "Ada replied!" },
+      ];
+      postDeferred.resolve(
+        new Response(
+          JSON.stringify({
+            entries: adaEntries,
+          }),
+          { headers: { "content-type": "application/json" } },
+        ),
+      );
+      await new Promise((r) => setTimeout(r, 10));
+      await el.updateComplete;
+
+      // Still in Kit's thread: Ada's reply should not have leaked in
+      expect(root.textContent).not.toContain("Ada replied!");
+
+      // Switch back to Ada: Ada's thread now shows the reply
+      el.employeeId = "ada";
+      await el.updateComplete;
+      for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
+      expect(root.textContent).toContain("Ada replied!");
     });
   });
 
