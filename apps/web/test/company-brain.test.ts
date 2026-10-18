@@ -1,0 +1,235 @@
+// Tests for Company brain discoverability, team sections, and handbook links (T26).
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { IncApp } from "../src/components/app.ts";
+import type { IncKnowledge } from "../src/components/knowledge.ts";
+
+async function mountKnowledge(repo = "handbook"): Promise<{ el: IncKnowledge; root: ShadowRoot }> {
+  const el = document.createElement("inc-knowledge") as IncKnowledge;
+  el.repo = repo;
+  document.body.append(el);
+  for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+  await el.updateComplete;
+  return { el, root: el.shadowRoot as ShadowRoot };
+}
+
+async function mountApp(): Promise<{ app: IncApp; root: ShadowRoot }> {
+  const app = new IncApp();
+  document.body.append(app);
+  for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+  await app.updateComplete;
+  return { app, root: app.shadowRoot as ShadowRoot };
+}
+
+beforeEach(() => {
+  document.body.innerHTML = "";
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  location.hash = "";
+});
+
+describe("Company brain discoverability (T26)", () => {
+  it("More page displays 'Company brain / Handbook' and links to #/handbook", async () => {
+    vi.stubGlobal(
+      "fetch",
+      async () =>
+        new Response(JSON.stringify({ ok: true }), {
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    location.hash = "#/more";
+    const { root } = await mountApp();
+
+    const moreLinks = [...(root.querySelectorAll(".more a") as NodeListOf<HTMLAnchorElement>)];
+    const handbookItem = moreLinks.find((a) => a.getAttribute("href") === "#/handbook");
+    expect(handbookItem).toBeDefined();
+    expect(handbookItem?.querySelector("b")?.textContent?.trim()).toBe("Company brain / Handbook");
+    expect(handbookItem?.querySelector("span")?.textContent?.trim()).toBe(
+      "Organisation-wide knowledge: policies, facts, and what every employee knows",
+    );
+
+    // Desktop header nav check
+    const navLinks = [...(root.querySelectorAll("header nav a") as NodeListOf<HTMLAnchorElement>)];
+    const navHandbook = navLinks.find((a) => a.getAttribute("href") === "#/handbook");
+    expect(navHandbook).toBeDefined();
+    expect(navHandbook?.textContent?.trim()).toBe("Company brain / Handbook");
+    expect(navHandbook?.getAttribute("title")).toBe("Company brain / Handbook");
+  });
+
+  it("Handbook view renders 'Company brain / Handbook' title and team sections", async () => {
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (url === "/api/knowledge/handbook") {
+        return new Response(
+          JSON.stringify({
+            pages: [{ path: "INDEX.md", text: "# Company Map\nHandbook policies and facts." }],
+            history: [],
+            awaiting: [],
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url === "/api/teams") {
+        return new Response(
+          JSON.stringify({
+            teams: [
+              { id: "engineering", name: "Engineering", members: ["ada", "kit"] },
+              { id: "design", name: "Design", members: ["lin"] },
+            ],
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url === "/api/office") {
+        return new Response(
+          JSON.stringify({
+            employees: [
+              { id: "ada", name: "Ada Lovelace" },
+              { id: "kit", name: "Kit" },
+              { id: "lin", name: "Lin" },
+            ],
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const { root } = await mountKnowledge("handbook");
+
+    // Title in head
+    const title = root.querySelector(".head h1");
+    expect(title?.textContent?.trim()).toBe("Company brain / Handbook");
+
+    // Subtitle in head
+    const subtitle = root.querySelector(".head .muted");
+    expect(subtitle?.textContent?.trim()).toBe(
+      "Organisation-wide knowledge: facts, policies, and team guidelines",
+    );
+
+    // Dedicated Teams section
+    const teamsSection = root.querySelector("section.teams");
+    expect(teamsSection).not.toBeNull();
+    expect(teamsSection?.querySelector("h2")?.textContent?.trim()).toBe("Teams");
+
+    // Teams listed
+    const teamCards = [...(teamsSection?.querySelectorAll(".team-section") ?? [])];
+    expect(teamCards).toHaveLength(2);
+    expect(teamCards[0]?.querySelector("h3")?.textContent?.trim()).toBe("Engineering");
+    expect(teamCards[1]?.querySelector("h3")?.textContent?.trim()).toBe("Design");
+
+    // Members linked to their brains
+    const engLinks = [...(teamCards[0]?.querySelectorAll(".team-members a") ?? [])];
+    expect(engLinks.map((a) => a.getAttribute("href"))).toEqual(["#/brain/ada", "#/brain/kit"]);
+    expect(engLinks.map((a) => a.textContent?.trim())).toEqual(["Ada Lovelace", "Kit"]);
+
+    const designLinks = [...(teamCards[1]?.querySelectorAll(".team-members a") ?? [])];
+    expect(designLinks.map((a) => a.getAttribute("href"))).toEqual(["#/brain/lin"]);
+    expect(designLinks.map((a) => a.textContent?.trim())).toEqual(["Lin"]);
+  });
+
+  it("Employee brain renders the link to 'Company brain / Handbook' (#/handbook)", async () => {
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (url === "/api/knowledge/brains/ada") {
+        return new Response(
+          JSON.stringify({
+            employee: { id: "ada", name: "Ada", role: "Staff Engineer", tint: 0 },
+            pages: [{ path: "INDEX.md", text: "# Ada's Brain\nPersonal map and notes." }],
+            history: [],
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const { root } = await mountKnowledge("ada");
+
+    // Clear link in header
+    const companyLink = root.querySelector("a.company-link");
+    expect(companyLink).not.toBeNull();
+    expect(companyLink?.getAttribute("href")).toBe("#/handbook");
+    expect(companyLink?.textContent?.trim()).toBe("Company brain / Handbook →");
+
+    // Callout on map/INDEX.md page
+    const callout = root.querySelector(".company-callout");
+    expect(callout).not.toBeNull();
+    expect(callout?.textContent).toContain("Part of the organisation.");
+    expect(callout?.textContent).toContain("shared policies and facts.");
+    const calloutLink = callout?.querySelector("a");
+    expect(calloutLink?.getAttribute("href")).toBe("#/handbook");
+    expect(calloutLink?.textContent?.trim()).toBe("Company brain / Handbook");
+  });
+
+  it("Clicking the link navigates to #/handbook", async () => {
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (url === "/api/knowledge/brains/ada") {
+        return new Response(
+          JSON.stringify({
+            employee: { id: "ada", name: "Ada", role: "Staff Engineer", tint: 0 },
+            pages: [{ path: "INDEX.md", text: "# Ada's Brain\nPersonal map and notes." }],
+            history: [],
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url === "/api/knowledge/handbook") {
+        return new Response(
+          JSON.stringify({
+            pages: [{ path: "INDEX.md", text: "# Handbook Map\nCompany wide info" }],
+            history: [],
+            awaiting: [],
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url === "/api/teams") {
+        return new Response(JSON.stringify({ teams: [] }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    location.hash = "#/brain/ada";
+    const { app, root: appRoot } = await mountApp();
+
+    const knowledge = appRoot.querySelector("inc-knowledge") as IncKnowledge;
+    expect(knowledge).not.toBeNull();
+    await knowledge.updateComplete;
+
+    const companyLink = knowledge.shadowRoot?.querySelector("a.company-link") as HTMLAnchorElement;
+    expect(companyLink).not.toBeNull();
+
+    // Click the company link in employee brain
+    companyLink.click();
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+    await app.updateComplete;
+
+    expect(location.hash).toBe("#/handbook");
+    const activeKnowledge = appRoot.querySelector("inc-knowledge") as IncKnowledge;
+    expect(activeKnowledge.getAttribute("repo")).toBe("handbook");
+
+    // Also verify clicking callout link navigates to #/handbook
+    location.hash = "#/brain/ada";
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+    await app.updateComplete;
+
+    const adaKnowledge = appRoot.querySelector("inc-knowledge") as IncKnowledge;
+    await adaKnowledge.updateComplete;
+    const calloutLink = adaKnowledge.shadowRoot?.querySelector(".company-callout a") as HTMLAnchorElement;
+    expect(calloutLink).not.toBeNull();
+
+    calloutLink.click();
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+    await app.updateComplete;
+
+    expect(location.hash).toBe("#/handbook");
+  });
+});
