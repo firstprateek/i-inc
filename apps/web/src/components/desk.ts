@@ -26,12 +26,15 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
   static override properties = {
     ...Loader.properties,
     cutting: { state: true },
+    actionError: { state: true },
   };
   declare cutting: string | null;
+  declare actionError: string | null;
 
   constructor() {
     super();
     this.cutting = null;
+    this.actionError = null;
   }
 
   protected fetch = async () => ({ ...(await api.desk()), learned: await api.learned() });
@@ -61,7 +64,8 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
       .release-project:last-of-type { border-bottom: none; padding-bottom: 0; }
       .release-project-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
       .spacer { flex-grow: 1; }
-      .release-btn { font-size: 13px; min-height: 36px; padding: 0 16px; }
+      .release-btn { font-size: 13px; min-height: 44px; padding: 0 16px; box-sizing: border-box; }
+      .err { background: var(--needs-bg); color: var(--needs-fg); border: 1px solid var(--alarm); border-radius: 10px; padding: 10px 12px; font-size: 14px; overflow-wrap: anywhere; }
       .pending-tickets { display: flex; flex-direction: column; gap: 4px; padding-left: 6px; }
       .pending-ticket { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
       .pending-ticket a { text-decoration: none; color: inherit; }
@@ -94,11 +98,12 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
 
   private async cutRelease(projectId: string) {
     this.cutting = projectId;
+    this.actionError = null;
     try {
       await api.cutRelease(projectId);
       refreshNow();
     } catch (err) {
-      alert(`Failed to cut release: ${err instanceof Error ? err.message : String(err)}`);
+      this.actionError = `Failed to cut release: ${err instanceof Error ? err.message : String(err)}`;
     } finally {
       this.cutting = null;
     }
@@ -159,6 +164,7 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
       </section>
       <section class="card panel releases">
         <h2>Releases</h2>
+        ${this.actionError ? html`<div class="err" role="alert">${this.actionError}</div>` : ""}
         ${
           (d.pendingReleases ?? []).length
             ? (d.pendingReleases ?? []).map((p) => {
@@ -171,6 +177,7 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
                   <button
                     class="btn ${count ? "" : "ghost"} release-btn"
                     type="button"
+                    aria-busy=${this.cutting === (p.project || p.id) ? "true" : "false"}
                     ?disabled=${count === 0 || this.cutting === (p.project || p.id)}
                     @click=${() => this.cutRelease(p.project || p.id)}
                   >
