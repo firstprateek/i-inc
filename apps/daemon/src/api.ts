@@ -257,7 +257,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       "/api/engines/:id",
       async (req, { id = "" }) => {
         const b = (await req.json()) as Partial<Engine>;
-        const harnesses: AgentHarness[] = ["claude-code", "antigravity", "opencode"];
+        const harnesses: AgentHarness[] = ["claude-code", "antigravity", "opencode", "codex"];
         if (!/^[a-z0-9-]{1,40}$/.test(id))
           return json({ error: "an engine id is lowercase letters, digits and dashes" }, 400);
         const existing = d.registry.engines().find((e) => e.id === id);
@@ -272,6 +272,9 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           return json({ error: "accountId must be an account added with PUT /api/accounts/:id" }, 400);
         }
         const local = b.local !== undefined ? b.local === true : (existing?.local ?? false);
+        if (harness === "codex" && local) {
+          return json({ error: "Codex is a cloud harness and cannot be marked local" }, 400);
+        }
         d.registry.addEngine({
           id,
           harness,
@@ -354,7 +357,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
               state: "error",
               cpus: size.cpus,
               memory: size.memory,
-              signedIn: { claude: false, antigravity: false, github: false },
+              signedIn: { claude: false, antigravity: false, codex: false, github: false },
             });
             continue;
           }
@@ -367,7 +370,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
               state: "error",
               cpus: size.cpus,
               memory: size.memory,
-              signedIn: { claude: false, antigravity: false, github: false },
+              signedIn: { claude: false, antigravity: false, codex: false, github: false },
             });
           }
         }

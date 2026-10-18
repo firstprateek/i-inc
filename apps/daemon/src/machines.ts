@@ -112,7 +112,10 @@ export const machineOf = (s: MachineSettings, employeeId: Id): string => {
 export class AppleMachines implements MachineProvider {
   /** The employees each running machine has working in it; a team's sandbox stops when none are. */
   private readonly up = new Map<string, Set<Id>>();
-  readonly signedInCache = new Map<string, { claude: boolean; antigravity: boolean; github: boolean }>();
+  readonly signedInCache = new Map<
+    string,
+    { claude: boolean; antigravity: boolean; codex: boolean; github: boolean }
+  >();
 
   constructor(
     private readonly s: MachineSettings = defaultMachineSettings,
@@ -221,7 +224,7 @@ export class AppleMachines implements MachineProvider {
   async inspectSandbox(team: Id, size: { cpus: number; memory: string }): Promise<SandboxStatus> {
     if (!/^[a-z0-9-]{1,32}$/.test(team)) throw new Error(`not a team id: ${team}`);
     const machine = machineName(team);
-    const defaultSignedIn = { claude: false, antigravity: false, github: false };
+    const defaultSignedIn = { claude: false, antigravity: false, codex: false, github: false };
 
     const listing = await this.exec(this.s.bin, ["machine", "ls"]);
     const lines = listing
@@ -264,9 +267,9 @@ export class AppleMachines implements MachineProvider {
 
   private async probeSignIn(
     machine: string,
-  ): Promise<{ claude: boolean; antigravity: boolean; github: boolean }> {
+  ): Promise<{ claude: boolean; antigravity: boolean; codex: boolean; github: boolean }> {
     const input =
-      "[ -s ~/.claude/.credentials.json ] && echo claude; [ -s ~/.gemini/antigravity-acp/acp_token.json ] && echo antigravity; [ -s ~/.config/gh/hosts.yml ] && echo github; true\n";
+      "[ -s ~/.claude/.credentials.json ] && echo claude; [ -s ~/.gemini/antigravity-acp/acp_token.json ] && echo antigravity; codex login status >/dev/null 2>&1 && echo codex; [ -s ~/.config/gh/hosts.yml ] && echo github; true\n";
     const output = await this.exec(
       this.s.bin,
       ["machine", "run", "-i", "-u", this.s.user, "-n", machine, "--", "bash", "-s"],
@@ -276,6 +279,7 @@ export class AppleMachines implements MachineProvider {
     const result = {
       claude: found.has("claude"),
       antigravity: found.has("antigravity"),
+      codex: found.has("codex"),
       github: found.has("github"),
     };
     this.signedInCache.set(machine, result);
@@ -288,6 +292,7 @@ export const launchers: Record<string, string> = {
   "claude-code": "acp-claude",
   antigravity: "acp-antigravity",
   opencode: "acp-opencode",
+  codex: "acp-codex",
 };
 
 /** Starts the `container` CLI; a test can stand in for it. */

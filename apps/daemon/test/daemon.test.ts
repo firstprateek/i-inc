@@ -248,6 +248,7 @@ describe("My desk", () => {
     expect(desk.spend.lines.map((l: { name: string; kind: string }) => `${l.name} ${l.kind}`)).toEqual([
       "Claude Pro subscription",
       "Google AI Pro subscription",
+      "ChatGPT subscription",
       "Mac mini hardware",
       "Mac mini electricity",
     ]);

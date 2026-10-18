@@ -1,8 +1,8 @@
 // The M2 cases from the spec (§9, "Tests"), run end to end against the fakes.
 import { describe, expect, it } from "vitest";
-import { answer, fold, runTicket } from "../src/index.ts";
-import { Crash, json } from "../src/testing/index.ts";
-import { ada, grace, kit, ports, refundsTicket } from "./fixtures.ts";
+import { answer, type Engine, fold, runTicket } from "../src/index.ts";
+import { Crash, fakePorts, json } from "../src/testing/index.ts";
+import { ada, engines as fixtureEngines, grace, kit, pip, ports, refundsTicket, team } from "./fixtures.ts";
 
 describe("the happy path", () => {
   it("takes a Medium fix through every stage to a ready report", async () => {
@@ -278,7 +278,21 @@ describe("engines", () => {
   });
 
   it("keeps home data on local engines: an errand never falls back to a cloud engine", async () => {
-    const p = ports();
+    const forgedCodex: Engine = {
+      id: "codex-local",
+      harness: "codex",
+      model: "gpt-5-codex",
+      accountId: "openai",
+      local: true,
+    };
+    const pipWithCodexFallback = {
+      ...pip,
+      engines: { ...pip.engines, fallbacks: [forgedCodex.id, "qwen-moe"] },
+    };
+    const p = fakePorts(
+      team.map((employee) => (employee.id === pip.id ? pipWithCodexFallback : employee)),
+      [...fixtureEngines, forgedCodex],
+    );
     p.agent.on({ employee: "pip", engine: "qwen" }, { kind: "stuck", reason: "the model loops" });
     const errand = refundsTicket({
       id: "e1",
@@ -292,6 +306,7 @@ describe("engines", () => {
     expect((await runTicket(p, errand)).status).toBe("done");
     const engines = p.agent.callsFor("pip").map((c) => c.engine.id);
     expect(engines).not.toContain("gemini");
+    expect(engines).not.toContain(forgedCodex.id);
     expect(engines).toContain("qwen-moe");
     expect(p.agent.calls.every((c) => c.engine.local)).toBe(true);
   });

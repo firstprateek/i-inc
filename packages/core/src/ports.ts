@@ -19,7 +19,7 @@ export interface SandboxStatus {
   state: "running" | "stopped" | "missing" | "error";
   cpus: number;
   memory: string;
-  signedIn: { claude: boolean; antigravity: boolean; github: boolean };
+  signedIn: { claude: boolean; antigravity: boolean; codex: boolean; github: boolean };
 }
 
 /** Makes sure an employee's machine is up before a session runs on it. */

@@ -161,6 +161,7 @@ export class AcpAgent implements Agent {
     let textId = 0;
     let currentTextId = "";
     let textAt = now();
+    let liveConfigOptions: Json[] = [];
 
     const emit = (item: SessionTranscriptItem) => {
       r.onTranscriptItem?.(item);
@@ -201,6 +202,9 @@ export class AcpAgent implements Agent {
     rpc.onNotice = (method, params) => {
       if (method !== "session/update") return;
       const u = (params.update ?? {}) as Json;
+      if (u.sessionUpdate === "config_option_update" && Array.isArray(u.configOptions)) {
+        liveConfigOptions = u.configOptions as Json[];
+      }
       if (u.sessionUpdate === "tool_call") {
         if (reply.trim()) answer = reply;
         reply = "";
@@ -264,11 +268,67 @@ export class AcpAgent implements Agent {
       }
       const session = (created.result ?? {}) as Json;
       const sessionId = String(session.sessionId);
-      const modes = (((session.modes as Json | undefined)?.availableModes ?? []) as Json[]).map((m) =>
-        String(m.id),
-      );
-      const bypass = modes.find((m) => bypassMode.test(m));
-      if (bypass) await rpc.request("session/set_mode", { sessionId, modeId: bypass });
+      liveConfigOptions = Array.isArray(session.configOptions) ? (session.configOptions as Json[]) : [];
+      if (r.engine.harness === "codex") {
+        const select = async (
+          category: string,
+          ids: string[],
+          label: string,
+          desired: (choices: { value: string; name: string }[]) => string | undefined,
+        ) => {
+          const config = liveConfigOptions.find(
+            (option) =>
+              ids.includes(String(option.id ?? option.configId ?? "")) || option.category === category,
+          );
+          if (!config) throw new Error(`Codex ACP didn't offer a ${label} option`);
+          const value = desired(configChoices(config));
+          if (!value) throw new Error(`Codex ACP doesn't offer the configured ${label}`);
+          if (config.currentValue === value) return;
+          const changed = await rpc.request("session/set_config_option", {
+            sessionId,
+            configId: String(config.id ?? config.configId),
+            value,
+          });
+          if (changed.error) throw new Error(`Codex ACP couldn't select ${label}: ${message(changed.error)}`);
+          const result = (changed.result ?? {}) as Json;
+          if (Array.isArray(result.configOptions)) liveConfigOptions = result.configOptions as Json[];
+        };
+
+        try {
+          // Model selection can change which reasoning levels the server advertises, so choose it first.
+          await select(
+            "model",
+            ["model"],
+            `model ${r.engine.model}`,
+            (choices) =>
+              choices.find(
+                (choice) =>
+                  choice.value === r.engine.model ||
+                  choice.name.toLowerCase() === r.engine.model.toLowerCase(),
+              )?.value,
+          );
+          await select(
+            "thought_level",
+            ["reasoning_effort"],
+            `${r.ticket.effort} reasoning effort`,
+            (choices) => choices.find((choice) => choice.value === r.ticket.effort)?.value,
+          );
+          await select(
+            "mode",
+            ["mode"],
+            "full-access machine mode",
+            (choices) => choices.find((choice) => bypassMode.test(choice.value))?.value,
+          );
+        } catch (e) {
+          return stuck(e instanceof Error ? e.message : String(e));
+        }
+      } else {
+        const modes = (((session.modes as Json | undefined)?.availableModes ?? []) as Json[]).map((m) =>
+          String(m.id),
+        );
+        const bypass = modes.find((m) => bypassMode.test(m));
+        if (bypass) await rpc.request("session/set_mode", { sessionId, modeId: bypass });
+      }
 
       let cancelled = false;
       const onAbort = () => {
@@ -339,6 +399,26 @@ function stuck(reason: string): SessionOutcome {
 function message(e: unknown): string {
   const m = (e as Json | undefined)?.message;
   return typeof m === "string" ? m : JSON.stringify(e);
+}
+
+/** Select options can be nested by an ACP peer to group related choices. */
+function configChoices(config: Json): { value: string; name: string }[] {
+  const choices: { value: string; name: string }[] = [];
+  const visit = (value: unknown) => {
+    if (!value || typeof value !== "object") return;
+    const item = value as Json;
+    if (typeof item.value === "string") {
+      choices.push({
+        value: item.value,
+        name: typeof item.name === "string" ? item.name : item.value,
+      });
+    }
+    for (const key of ["options", "children"]) {
+      if (Array.isArray(item[key])) for (const child of item[key] as unknown[]) visit(child);
+    }
+  };
+  visit(config);
+  return choices;
 }
 
 /** Epoch seconds or milliseconds, or an ISO string, as milliseconds. */

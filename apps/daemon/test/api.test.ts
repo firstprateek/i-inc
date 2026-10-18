@@ -736,7 +736,7 @@ describe("GET /api/sandboxes (contract C1)", () => {
         state: "stopped",
         cpus: 6,
         memory: "12G",
-        signedIn: { claude: true, antigravity: false, github: true },
+        signedIn: { claude: true, antigravity: false, codex: false, github: true },
       },
       {
         team: "infra",
@@ -744,7 +744,7 @@ describe("GET /api/sandboxes (contract C1)", () => {
         state: "stopped",
         cpus: 8,
         memory: "16G",
-        signedIn: { claude: true, antigravity: false, github: true },
+        signedIn: { claude: true, antigravity: false, codex: false, github: true },
       },
     ]);
   });
@@ -755,7 +755,7 @@ describe("GET /api/sandboxes (contract C1)", () => {
 
     const machines = app.deps.machines as FakeMachines;
     machines.sandboxSignIns = {
-      devs: { claude: true, antigravity: true, github: true },
+      devs: { claude: true, antigravity: true, codex: true, github: true },
     };
     await machines.ensureUp("inc-devs");
 
@@ -768,7 +768,7 @@ describe("GET /api/sandboxes (contract C1)", () => {
         state: "running",
         cpus: 6,
         memory: "12G",
-        signedIn: { claude: true, antigravity: true, github: true },
+        signedIn: { claude: true, antigravity: true, codex: true, github: true },
       },
     ]);
   });
@@ -788,7 +788,7 @@ describe("GET /api/sandboxes (contract C1)", () => {
         state: "error",
         cpus: 6,
         memory: "12G",
-        signedIn: { claude: false, antigravity: false, github: false },
+        signedIn: { claude: false, antigravity: false, codex: false, github: false },
       },
     ]);
   });
@@ -816,7 +816,7 @@ describe("GET /api/sandboxes (contract C1)", () => {
       state: "error",
       cpus: 6,
       memory: "12G",
-      signedIn: { claude: false, antigravity: false, github: false },
+      signedIn: { claude: false, antigravity: false, codex: false, github: false },
     });
   });
 });
@@ -1030,6 +1030,51 @@ describe("Web Push backend API (contract C2)", () => {
 });
 
 describe("engine edit and deletion routes (Contract C11)", () => {
+  it("accepts Codex engines, persists them, and rejects local data routing at both boundaries", async () => {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dbFile = join(mkdtempSync(join(tmpdir(), "i-inc-codex-engine-")), "test.db");
+    const app = await testApp(dbFile);
+
+    const created = await app.call("PUT", "/api/engines/openai-codex", {
+      harness: "codex",
+      model: "gpt-5-codex",
+      accountId: "claude-pro",
+      local: false,
+    });
+    expect(created.status).toBe(200);
+    expect(created.body.engine).toEqual({
+      id: "openai-codex",
+      harness: "codex",
+      model: "gpt-5-codex",
+      accountId: "claude-pro",
+      local: false,
+    });
+    expect(
+      await app.call("PUT", "/api/engines/openai-codex", {
+        local: true,
+      }),
+    ).toMatchObject({ status: 400, body: { error: expect.stringContaining("cloud harness") } });
+    expect(() =>
+      app.deps.registry.addEngine({
+        id: "forged-local-codex",
+        harness: "codex",
+        model: "gpt-5-codex",
+        accountId: "claude-pro",
+        local: true,
+      }),
+    ).toThrow("Codex is a cloud harness and cannot be marked local");
+    expect(app.deps.registry.engine("openai-codex")).toMatchObject({ harness: "codex", local: false });
+    app.db.close();
+
+    const reopened = await testApp(dbFile);
+    expect(reopened.deps.registry.engine("openai-codex")).toEqual(created.body.engine);
+    expect((await reopened.call("DELETE", "/api/engines/openai-codex")).status).toBe(200);
+    expect(reopened.deps.registry.engines().some((engine) => engine.id === "openai-codex")).toBe(false);
+    reopened.db.close();
+  });
+
   it("edits an existing engine partially without re-specifying harness and account", async () => {
     const app = await testApp();
 

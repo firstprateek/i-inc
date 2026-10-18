@@ -23,11 +23,13 @@ export function seedDemo(r: Registry): void {
       accountId: "google-ai-pro",
       local: false,
     },
+    { id: "codex", harness: "codex", model: "gpt-5-codex", accountId: "openai-chatgpt", local: false },
     { id: "qwen", harness: "opencode", model: "qwen3", accountId: "local", local: true },
   ];
   for (const e of engines) r.addEngine(e);
   r.addAccount({ id: "claude-pro", name: "Claude Pro", monthlyFee: 20 });
   r.addAccount({ id: "google-ai-pro", name: "Google AI Pro", monthlyFee: 20 });
+  r.addAccount({ id: "openai-chatgpt", name: "ChatGPT", monthlyFee: 20 });
   r.addAccount({ id: "local", name: "Local" });
   r.addHost({ id: "mini", name: "Mac mini", purchasePrice: 0, idleWatts: 7, busyWatts: 60 });
   r.addContact("dentist@example.com");
