@@ -1,6 +1,7 @@
 import { css, html, LitElement } from "lit";
-import { logout, refreshNow } from "../api.ts";
+import { logout } from "../api.ts";
 import { connection, isOffline } from "../connection.ts";
+import { startLiveUpdates } from "../live.ts";
 import { base } from "./shared.ts";
 import "./office.ts";
 import "./board.ts";
@@ -50,7 +51,7 @@ export class IncApp extends LitElement {
   declare route: Route;
   declare offline: boolean;
   declare theme: "light" | "dark" | null;
-  private timer = 0;
+  private stopLive: (() => void) | null = null;
 
   constructor() {
     super();
@@ -63,14 +64,15 @@ export class IncApp extends LitElement {
     super.connectedCallback();
     addEventListener("hashchange", this.onHash);
     connection.addEventListener("change", this.onConnection);
-    this.timer = window.setInterval(() => document.visibilityState === "visible" && refreshNow(), 5000);
+    this.stopLive = startLiveUpdates();
     applyTheme(this.theme);
   }
 
   override disconnectedCallback(): void {
     removeEventListener("hashchange", this.onHash);
     connection.removeEventListener("change", this.onConnection);
-    clearInterval(this.timer);
+    this.stopLive?.();
+    this.stopLive = null;
     super.disconnectedCallback();
   }
 
