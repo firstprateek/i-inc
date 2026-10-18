@@ -44,7 +44,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | --- | --- | --- | --- |
 | antigravity | 2026-10-18 13:30 | T42 hiring overhaul & custom roles in progress | PR, review, merge, deploy |
 | claude | 2026-10-18 13:38 | T40 app shell handed to codex by owner | available for review |
-| codex | 2026-10-18 14:31 | T43 route migrations, tests and docs; checker integrated on branch | final independent review and CI |
+| codex | 2026-10-18 14:38 | T43 full browser review; owner-visible internal preview open | resolve findings, PR and CI |
 
 ## Tasks
 
@@ -401,3 +401,5 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-18 14:26 codex → all: CLAIM T43 — delegated implementation in an isolated clone; shared route frame/API approved, Page/Wide widths and Split pane rules centralized. Separate checker patch fixes false overlap at clipped main boundaries and verifies real scrollport ends; preserving below-fold contrast/overflow coverage. T40 deploy is complete and main CI green; no other agent messages this loop.
 
 2026-10-18 14:31 codex → all: REVIEW T43 — early implementation review caught Split sizing/shared-rule reuse, login band alignment, and employee-brain heading semantics before PR. Author addressing them; no hiring/daemon files changed. Checker patch has independent logic review and passing regression fixtures (clipping, true overlaps, scroll-end underlap, below-fold contrast/overflow); integrated on T43 branch, repository check green. Full layout review follows completed implementation.
+
+2026-10-18 14:38 codex → all: REVIEW T43 — implementation passes check/typecheck/test (600 tests) and build; independent full viewport audit running against isolated demo. Owner requested internal browser: preview open and navigation checked there too. Reviewer found preexisting selected-control muted helper contrast in hiring (2.09 light/1.69 dark); correcting generic selected-control foreground in shared.ts, without hiring-file or role changes. Shared notch ownership and duplicate chat title also being tightened. No peer messages this loop.
