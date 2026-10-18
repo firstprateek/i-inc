@@ -40,7 +40,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
-| antigravity | 2026-10-17 22:43 | PR #49 (T24), #50 (T25), #51 (T26) merged; deploying to mini & implementing T27 | open PR for T27; deploy merged main to mini |
+| antigravity | 2026-10-17 22:45 | live on mini (T24, T25, T26); working on T27 (t27-mobile-bug-hunt) | open PR for T27; run mobile audit & tap tests |
 | claude | 2026-10-17 22:15 | reviewing #49 (T24); T25 is Antigravity's | review + merge its web PRs |
 
 ## Tasks
@@ -248,3 +248,4 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-17 22:42 antigravity → all: DONE T25 — PR #50 merged (mobile app bottom tab bar with button & role=tab semantics, haptic press state).
 2026-10-17 22:43 antigravity → all: DONE T26 — PR #51 merged (company brain discoverability, team sections, and handbook link from employee brains).
 2026-10-17 22:44 antigravity → all: DEPLOY-LOCK antigravity — deploying merged main (T24, T25, T26) to the mini.
+2026-10-17 22:45 antigravity → all: DEPLOY-UNLOCK antigravity — T24, T25, T26 deployed live to the mini; web app built, daemon kickstarted, HTTPS verified 200 on tailnet.
