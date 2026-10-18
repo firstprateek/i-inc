@@ -1,18 +1,17 @@
 // Hiring (spec §5): who, which engines, role instructions & prompt, and for a PA what may leave the house.
 
-import type {
-  AgentHarness,
-  Duty,
-  Effort,
-  Employee,
-  Engine,
-  OutboundAction,
-  OutboundRule,
-  OutboundSetting,
-} from "@i-inc/core";
+import type { Duty, Effort, Employee, OutboundAction, OutboundRule, OutboundSetting } from "@i-inc/core";
 import { css, html, LitElement } from "lit";
 import { api, refreshNow } from "../api.ts";
-import { type AccountCost, setupApi } from "../setup-api.ts";
+import {
+  type AccountCost,
+  type Engine,
+  engineIsLocal,
+  engineLabel,
+  type Harness,
+  harnessOptions,
+  setupApi,
+} from "../setup-api.ts";
 import { base } from "./shared.ts";
 
 export const standardRoles = [
@@ -76,9 +75,6 @@ const outboundRows: { action: OutboundAction; label: string; rule: OutboundRule;
 
 const dutyNames: Record<Duty, string> = { plan: "Plan", build: "Build", verify: "Verify", review: "Review" };
 
-/** "qwen3 · opencode · local": what a native option can show; the chips under the picker are the visual. */
-const engineLabel = (e: Engine) => `${e.model} · ${e.harness}${e.local ? " · local" : ""}`;
-
 export class IncHiring extends LitElement {
   static override properties = {
     employeeId: { type: String },
@@ -126,7 +122,7 @@ export class IncHiring extends LitElement {
   declare nights: boolean;
   declare outbound: Record<string, Mode>;
   declare showNewEngineForm: boolean;
-  declare newHarness: AgentHarness;
+  declare newHarness: Harness;
   declare newModel: string;
   declare newAccountId: string;
   declare error: string | null;
@@ -272,7 +268,9 @@ export class IncHiring extends LitElement {
     const e = this.engines.find((x) => x.id === id);
     if (!e) return "";
     return html`<span class="chips"><span class="chip" title="Harness">${e.harness}</span>${
-      e.local ? html`<span class="chip working" title="Runs on this machine">local</span>` : ""
+      e.local && e.harness !== "codex"
+        ? html`<span class="chip working" title="Runs on this machine">local</span>`
+        : ""
     }</span>`;
   }
 
@@ -304,7 +302,7 @@ export class IncHiring extends LitElement {
     this.error = null;
     const harness = this.newHarness;
     const accountId = this.newAccountId || (this.accounts[0]?.id ?? "local");
-    const local = harness === "opencode" || accountId === "local";
+    const local = engineIsLocal(harness, accountId);
     const id = model
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
@@ -356,7 +354,7 @@ export class IncHiring extends LitElement {
 
   /** A PA works on home data, so only local engines are offered (spec §7). */
   private get choices() {
-    return this.pa ? this.engines.filter((e) => e.local) : this.engines;
+    return this.pa ? this.engines.filter((e) => e.local && e.harness !== "codex") : this.engines;
   }
 
   private async hire(e: Event) {
@@ -584,15 +582,13 @@ export class IncHiring extends LitElement {
                 <div class="custom-engine-grid">
                   <label>Harness
                     <select .value=${this.newHarness} @change=${(e: Event) => {
-                      this.newHarness = (e.target as HTMLSelectElement).value as AgentHarness;
+                      this.newHarness = (e.target as HTMLSelectElement).value as Harness;
                     }}>
-                      <option value="claude-code">Claude Code (Anthropic)</option>
-                      <option value="antigravity">Antigravity (Gemini)</option>
-                      <option value="opencode">OpenCode (Local Ollama)</option>
+                      ${harnessOptions.map(({ value, label }) => html`<option value=${value}>${label}</option>`)}
                     </select>
                   </label>
                   <label>Model ID
-                    <input type="text" placeholder="e.g. claude-3-7-sonnet" .value=${this.newModel}
+                    <input type="text" placeholder="Enter a model ID supported by this provider" .value=${this.newModel}
                       @input=${(e: Event) => {
                         this.newModel = (e.target as HTMLInputElement).value;
                       }} />
@@ -609,6 +605,7 @@ export class IncHiring extends LitElement {
                     </select>
                   </label>
                 </div>
+                ${this.newHarness === "codex" ? html`<p class="note">Codex signs in on each team sandbox using a host helper. i.inc never asks for a Codex token. <a href="https://github.com/firstprateek/i-inc/blob/main/docs/codex.md" target="_blank" rel="noreferrer">Owner sign-in instructions</a>.</p>` : ""}
                 <div class="custom-engine-actions">
                   <button type="button" class="btn small" ?disabled=${!this.newModel.trim() || this.busy} @click=${() => this.createCustomEngine()}>
                     ${this.busy ? "Saving…" : "Save & select engine"}

@@ -19,6 +19,7 @@ const signIns: [keyof Sandbox["signedIn"], string][] = [
   ["claude", "Claude"],
   ["antigravity", "Antigravity"],
   ["github", "GitHub"],
+  ["codex", "Codex"],
 ];
 
 export class IncSetupSandboxes extends Loader<Data> {
@@ -35,6 +36,7 @@ export class IncSetupSandboxes extends Loader<Data> {
       .subs li.in { background: var(--working-bg); color: var(--working-fg); border-color: transparent; }
       .subs li.out { color: var(--ink-2); }
       .failed { border-color: var(--alarm); }
+      .codex-help { margin: 8px 0 0; }
     `,
   ];
 
@@ -61,6 +63,7 @@ export class IncSetupSandboxes extends Loader<Data> {
             return html`<li class=${on ? "in" : "out"}>${name}: ${on ? "signed in" : "not signed in"}</li>`;
           })}
         </ul>
+        ${s.signedIn?.codex !== true ? html`<p class="note codex-help">To sign Codex in, run <code>sh tools/host/sign-in-codex.sh ${s.team}</code> on the host. Authentication stays there; don't enter credentials in i.inc. <a href="https://github.com/firstprateek/i-inc/blob/main/docs/codex.md" target="_blank" rel="noreferrer">Owner sign-in instructions</a>.</p>` : ""}
       </section>`;
     })}</div>`;
   }

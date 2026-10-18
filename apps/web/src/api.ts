@@ -1,4 +1,4 @@
-import type { AccountCost, Employee, Engine, ProjectRelease, TicketEvent } from "@i-inc/core";
+import type { AccountCost, Employee, ProjectRelease, TicketEvent } from "@i-inc/core";
 import type {
   AccountRateLimit,
   DeskEntry,
@@ -11,6 +11,7 @@ import type {
   PolicyProposal,
   TicketView,
 } from "@i-inc/daemon/views";
+import type { Engine } from "./providers.ts";
 
 export type {
   AccountCost,

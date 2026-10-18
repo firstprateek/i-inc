@@ -1,7 +1,14 @@
 // Setup > Engines and accounts: which models the company can use, and the subscriptions behind them.
 import { css, html } from "lit";
 import { refreshNow } from "../api.ts";
-import { type AccountCost, type Engine, type Harness, harnesses, setupApi } from "../setup-api.ts";
+import {
+  type AccountCost,
+  type Engine,
+  engineLabel,
+  type Harness,
+  harnessOptions,
+  setupApi,
+} from "../setup-api.ts";
 import { message, type Note, noteLine, setupStyles } from "../setup-shared.ts";
 import { Loader } from "./loader.ts";
 import { base } from "./shared.ts";
@@ -13,9 +20,6 @@ interface EnginesData {
 
 const idPattern = /^[a-z0-9-]{1,40}$/;
 const money = (n: number) => `$${n.toFixed(n < 10 ? 2 : 0)}`;
-
-/** "Claude Opus · claude-code · local": the engine as a single line (the same label hiring uses). */
-export const engineLabel = (e: Engine) => `${e.model} · ${e.harness}${e.local ? " · local" : ""}`;
 
 const feeLine = (a: AccountCost) =>
   a.monthlyFee !== undefined
@@ -182,7 +186,7 @@ export class IncSetupEngines extends Loader<EnginesData> {
           harness: f.harness,
           model: f.model.trim(),
           accountId,
-          local: f.local,
+          local: f.harness === "codex" ? false : f.local,
         });
         this.engine = { id: "", harness: "claude-code", model: "", accountId: "", local: false };
       },
@@ -205,7 +209,7 @@ export class IncSetupEngines extends Loader<EnginesData> {
             ? html`<ul class="engines">${engines.map(
                 (x) => html`<li title=${engineLabel(x)}>
                   <b>${x.model}</b><span class="muted">· ${x.harness}</span>
-                  ${x.local ? html`<span class="chip working" title="Runs on this machine">local</span>` : ""}
+                  ${x.local && x.harness !== "codex" ? html`<span class="chip working" title="Runs on this machine">local</span>` : ""}
                   <span class="sub">Signs in with ${name(x.accountId)}</span>
                 </li>`,
               )}</ul>`
@@ -221,7 +225,7 @@ export class IncSetupEngines extends Loader<EnginesData> {
               .value=${e.id} @input=${(ev: InputEvent) => {
                 this.engine = { ...this.engine, id: (ev.target as HTMLInputElement).value };
               }} /></label>
-            <label>Model <input type="text" name="engine-model" autocomplete="off" placeholder="Claude Opus"
+            <label>Model <input type="text" name="engine-model" autocomplete="off" placeholder="Enter a model ID supported by this provider"
               .value=${e.model} @input=${(ev: InputEvent) => {
                 this.engine = { ...this.engine, model: (ev.target as HTMLInputElement).value };
               }} /></label>
@@ -231,9 +235,10 @@ export class IncSetupEngines extends Loader<EnginesData> {
                   this.engine = {
                     ...this.engine,
                     harness: (ev.target as HTMLSelectElement).value as Harness,
+                    local: (ev.target as HTMLSelectElement).value === "codex" ? false : this.engine.local,
                   };
                 }}>
-                ${harnesses.map((h) => html`<option value=${h} ?selected=${h === e.harness}>${h}</option>`)}
+                ${harnessOptions.map(({ value, label }) => html`<option value=${value} ?selected=${value === e.harness}>${label}</option>`)}
               </select></label>
             <label>Account
               <select name="engine-account" .value=${e.accountId || accounts[0]?.id || ""}
@@ -243,11 +248,13 @@ export class IncSetupEngines extends Loader<EnginesData> {
                 ${accounts.map((x) => html`<option value=${x.id} ?selected=${x.id === (e.accountId || accounts[0]?.id)}>${x.name}</option>`)}
               </select></label>
           </div>
-          <label class="check"><input type="checkbox" .checked=${e.local}
+          <label class="check"><input type="checkbox" .checked=${e.harness === "codex" ? false : e.local}
+            ?disabled=${e.harness === "codex"}
             @change=${(ev: Event) => {
               this.engine = { ...this.engine, local: (ev.target as HTMLInputElement).checked };
             }} />
             Runs on this machine (may see home data)</label>
+          ${e.harness === "codex" ? html`<p class="note">Codex is a cloud provider and cannot use home data.</p>` : ""}
           <div class="actions">
             <button class="btn" type="submit" ?disabled=${this.busy === "new-engine"}>Add engine</button>
             ${noteLine(this.notes["new-engine"])}

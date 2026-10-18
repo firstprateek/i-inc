@@ -1,8 +1,11 @@
 // What the Setup screens read and write: teams, projects, engines, accounts and sandbox status.
 // Kept apart from api.ts so the views that share that file don't collide with these.
-import type { AccountCost, Engine } from "@i-inc/core";
+import type { AccountCost } from "@i-inc/core";
 import { call } from "./api.ts";
+import type { Engine } from "./providers.ts";
 
+export type { Harness } from "./providers.ts";
+export { engineIsLocal, engineLabel, harnesses, harnessOptions } from "./providers.ts";
 export type { AccountCost, Engine };
 
 export interface Team {
@@ -79,11 +82,8 @@ export interface Sandbox {
   state: "running" | "stopped" | "missing" | "error";
   cpus: number;
   memory: string;
-  signedIn: { claude: boolean; antigravity: boolean; github: boolean };
+  signedIn: { claude: boolean; antigravity: boolean; github: boolean; codex?: boolean };
 }
-
-export type Harness = Engine["harness"];
-export const harnesses: Harness[] = ["claude-code", "antigravity", "opencode"];
 
 /** The daemon's defaults for a project with no policy of its own (defaultProjectPolicy in the core). */
 export const policyDefaults = {
@@ -132,7 +132,7 @@ export const setupApi = {
       harness: e.harness,
       model: e.model,
       accountId: e.accountId,
-      local: e.local,
+      local: e.harness === "codex" ? false : e.local,
     }),
   /** null when the daemon has no such endpoint yet (PR #36), or it fails. */
   sandboxes: (): Promise<Sandbox[] | null> =>
