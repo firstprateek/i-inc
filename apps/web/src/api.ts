@@ -63,6 +63,7 @@ export interface OfficeResponse {
 }
 
 import { isGatewayDown, report } from "./connection.ts";
+import { draftMemo } from "./drafts.ts";
 import { showLogin } from "./login.ts";
 
 /** fetch, plus telling the app whether the daemon answered (see connection.ts). */
@@ -123,6 +124,7 @@ export async function logout(): Promise<void> {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({}),
   });
+  draftMemo.clearAll();
   showLogin();
 }
 

@@ -3,6 +3,7 @@
 // the next stage boundary.
 import { css, html, LitElement } from "lit";
 import { refreshNow } from "../api.ts";
+import { draftMemo } from "../drafts.ts";
 import { showLogin } from "../login.ts";
 import { avatar, base } from "./shared.ts";
 
@@ -113,8 +114,18 @@ export class IncChat extends LitElement {
   // Track pending optimistic messages across employees to prevent cross-thread leaks
   private pendingEntries: (Entry & { from: "owner" })[] = [];
   private inFlightEmployees = new Set<string>();
-  // Unsent text per employee, so a message typed to one is never sent to another
+  // Unsent text per employee, so a message typed to one is never sent to another. It's also kept in
+  // localStorage to survive a reload; the Map covers blocked storage.
   private drafts = new Map<string, string>();
+
+  private draftFor(employeeId: string): string {
+    return draftMemo.get(employeeId) ?? this.drafts.get(employeeId) ?? "";
+  }
+
+  private keepDraft(employeeId: string, text: string): void {
+    this.drafts.set(employeeId, text);
+    draftMemo.set(employeeId, text);
+  }
 
   constructor() {
     super();
@@ -143,9 +154,12 @@ export class IncChat extends LitElement {
       this.entries = [];
       this.error = null;
       const last = changed.get("employeeId") as string;
-      if (last) this.drafts.set(last, this.draft);
-      this.draft = this.drafts.get(this.employeeId) ?? "";
+      if (last) this.keepDraft(last, this.draft);
+      this.draft = this.draftFor(this.employeeId);
       this.thinking = this.inFlightEmployees.has(this.employeeId);
+    } else if (changed.has("employeeId") && this.employeeId) {
+      // First mount, or load() picking the first thread: bring back a draft from before a reload.
+      this.draft = this.draftFor(this.employeeId);
     }
   }
 
@@ -153,6 +167,8 @@ export class IncChat extends LitElement {
     if (this.switched(changed)) {
       this.autoResize();
       void this.load();
+    } else if (changed.has("employeeId") && this.draft) {
+      this.autoResize();
     }
     if (changed.has("entries") || changed.has("thinking")) {
       this.scrollToBottom();
@@ -205,6 +221,7 @@ export class IncChat extends LitElement {
   private onInput = (e: Event) => {
     const target = e.target as HTMLTextAreaElement;
     this.draft = target.value;
+    if (this.employeeId) this.keepDraft(this.employeeId, this.draft);
     this.autoResize(target);
   };
 
@@ -259,6 +276,7 @@ export class IncChat extends LitElement {
     this.entries = combined;
 
     this.draft = "";
+    this.keepDraft(empId, "");
     this.urgent = false;
     this.error = null;
 
