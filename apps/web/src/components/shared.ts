@@ -8,7 +8,15 @@ export const base = css`
   a { color: inherit; }
   a, button, summary, select, input, textarea { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
   pre { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; }
-  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); -webkit-tap-highlight-color: transparent; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    -webkit-tap-highlight-color: transparent;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02);
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+  }
+  a.card:active, button.card:active { transform: scale(0.98); opacity: 0.85; }
   .muted { color: var(--ink-2); }
   .btn {
     font: 700 15px var(--body); min-height: 44px; padding: 0 18px; border-radius: 999px; cursor: pointer; white-space: nowrap;

@@ -114,29 +114,117 @@ export class IncApp extends LitElement {
         padding: 10px 18px; text-decoration: none; }
       .more b { font-size: 17px; }
       .more span { font-size: 14px; color: var(--ink-2); }
+      .mobile-view-title { display: none; }
       @media (max-width: 900px) {
-        header { padding: 10px 16px; gap: 12px; }
+        header {
+          position: sticky;
+          top: 0;
+          z-index: 10;
+          padding: 8px 16px;
+          gap: 10px;
+          background: color-mix(in srgb, var(--surface) 86%, transparent);
+          backdrop-filter: blur(20px) saturate(180%);
+          -webkit-backdrop-filter: blur(20px) saturate(180%);
+          border-bottom: 1px solid var(--line);
+        }
         header nav { display: none; }
+        .mobile-view-title {
+          display: inline-block;
+          font-family: var(--display);
+          font-weight: 600;
+          font-size: 17px;
+          color: var(--ink-2);
+          letter-spacing: -0.3px;
+        }
         .sign-out { min-height: 44px; }
-        main { padding: 0 16px calc(88px + env(safe-area-inset-bottom)); }
-        .tabs { position: fixed; inset: auto 0 0 0; z-index: 10; display: grid; grid-template-columns: repeat(5, 1fr);
-          background: var(--surface); border-top: 1px solid var(--line); padding: 6px 4px calc(10px + env(safe-area-inset-bottom));
-          user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+        main { padding: 8px 16px calc(88px + env(safe-area-inset-bottom)); }
+        .tabs {
+          position: fixed;
+          inset: auto 0 0 0;
+          z-index: 10;
+          display: grid;
+          grid-template-columns: repeat(5, 1fr);
+          background: color-mix(in srgb, var(--surface) 86%, transparent);
+          backdrop-filter: blur(20px) saturate(180%);
+          -webkit-backdrop-filter: blur(20px) saturate(180%);
+          border-top: 1px solid var(--line);
+          box-shadow: 0 -1px 3px rgba(0, 0, 0, 0.02);
+          padding: 4px 4px calc(8px + env(safe-area-inset-bottom));
+          user-select: none;
+          -webkit-user-select: none;
+          -webkit-touch-callout: none;
+          -webkit-tap-highlight-color: transparent;
+        }
         .tabs button,
-        .tabs [role="tab"] { display: flex; flex-direction: column; align-items: center; gap: 2px; min-height: 44px; min-width: 44px;
-          justify-content: center; padding: 0; border: none; background: transparent; color: var(--ink-2);
-          font-family: inherit; font-size: 12px; font-weight: 600; text-decoration: none; cursor: pointer;
+        .tabs [role="tab"] {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 2px;
+          min-height: 44px;
+          min-width: 44px;
+          justify-content: center;
+          padding: 2px 0;
+          border: none;
+          background: transparent;
+          color: var(--ink-2);
+          font-family: inherit;
+          font-size: 11px;
+          font-weight: 600;
+          text-decoration: none;
+          cursor: pointer;
           border-radius: 12px;
-          user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
-          transition: transform 0.08s ease, opacity 0.08s ease; }
+          user-select: none;
+          -webkit-user-select: none;
+          -webkit-touch-callout: none;
+          -webkit-tap-highlight-color: transparent;
+          transition: transform 0.08s ease, opacity 0.08s ease;
+        }
         .tabs button:active,
-        .tabs [role="tab"]:active { transform: scale(0.92); opacity: 0.7; }
+        .tabs [role="tab"]:active {
+          transform: scale(0.92);
+          opacity: 0.7;
+        }
+        .tab-pill {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 44px;
+          height: 26px;
+          border-radius: 13px;
+          background: transparent;
+          color: inherit;
+          transition: background 0.15s ease, color 0.15s ease;
+        }
+        .tab-pill svg {
+          width: 19px;
+          height: 19px;
+          display: block;
+        }
+        .tab-label {
+          font-size: 11px;
+          line-height: 1.1;
+          letter-spacing: -0.1px;
+        }
         .tabs button[aria-current="page"],
         .tabs [role="tab"][aria-current="page"],
         .tabs button[aria-selected="true"],
-        .tabs [role="tab"][aria-selected="true"] { background: transparent; color: var(--ink); font-weight: 800; text-decoration: none; }
+        .tabs [role="tab"][aria-selected="true"] {
+          background: transparent;
+          color: var(--ink);
+          font-weight: 800;
+          text-decoration: none;
+        }
+        .tabs button[aria-selected="true"] .tab-pill,
+        .tabs [role="tab"][aria-selected="true"] .tab-pill {
+          background: var(--neutral-bg);
+          color: var(--ink);
+        }
         .tabs button:focus-visible,
-        .tabs [role="tab"]:focus-visible { outline: 2px solid var(--reviewing-mark); outline-offset: -2px; }
+        .tabs [role="tab"]:focus-visible {
+          outline: 2px solid var(--reviewing-mark);
+          outline-offset: -2px;
+        }
       }
       @media (min-width: 901px) { .tabs { display: none; } }
     `,
@@ -147,23 +235,59 @@ export class IncApp extends LitElement {
     this.route = parse(location.hash);
   }
 
+  private viewTitle(): string {
+    switch (this.route.view) {
+      case "inbox":
+        return "Inbox";
+      case "office":
+        return "Office";
+      case "board":
+        return "Board";
+      case "ticket":
+        return "Ticket";
+      case "chat":
+        return "Chat";
+      case "desk":
+        return "My desk";
+      case "handbook":
+      case "brain":
+        return "Company brain";
+      case "hiring":
+        return "Hiring";
+      case "setup":
+        return "Setup";
+      case "more":
+        return "More";
+      default:
+        return "";
+    }
+  }
+
   override render() {
     const v = this.route.view;
     const link = (to: string, label: string, active: boolean, title?: string) =>
       title
         ? html`<a href="#/${to}" aria-current=${active ? "page" : "false"} title=${title}>${label}</a>`
         : html`<a href="#/${to}" aria-current=${active ? "page" : "false"}>${label}</a>`;
-    const tab = (to: string, label: string, active: boolean) =>
+    const tab = (to: string, label: string, active: boolean, icon: unknown) =>
       html`<button
         type="button"
         role="tab"
         aria-selected=${active ? "true" : "false"}
         aria-current=${active ? "page" : "false"}
         @click=${() => this.navigate(to)}
-      >${label}</button>`;
+      ><span class="tab-pill" aria-hidden="true">${icon}</span><span class="tab-label">${label}</span></button>`;
+
+    const inboxIcon = html`<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg>`;
+    const officeIcon = html`<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 21h18"></path><path d="M5 21V7l8-4v18"></path><path d="M19 21V11l-6-4"></path><line x1="9" y1="9" x2="9" y2="9.01"></line><line x1="9" y1="13" x2="9" y2="13.01"></line><line x1="9" y1="17" x2="9" y2="17.01"></line></svg>`;
+    const boardIcon = html`<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="5" height="16" rx="1.5"></rect><rect x="10" y="4" width="5" height="10" rx="1.5"></rect><rect x="17" y="4" width="5" height="14" rx="1.5"></rect></svg>`;
+    const chatIcon = html`<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>`;
+    const moreIcon = html`<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect><rect x="3" y="14" width="7" height="7" rx="1.5"></rect></svg>`;
+
     return html`
       <header>
         <a class="mark" href="#/office">i.inc</a>
+        <span class="mobile-view-title" aria-hidden="true"> · ${this.viewTitle()}</span>
         <nav aria-label="Views">
           ${link("office", "Office", v === "office")} ${link("board", "Board", v === "board" || v === "ticket")}
           ${link("chat", "Chat", v === "chat")}
@@ -181,9 +305,11 @@ export class IncApp extends LitElement {
       </header>
       <main>${this.offline ? html`<inc-offline></inc-offline>` : this.view()}</main>
       <nav class="tabs" role="tablist" aria-label="Views">
-        ${tab("inbox", "Inbox", v === "inbox")} ${tab("office", "Office", v === "office")}
-        ${tab("board", "Board", v === "board" || v === "ticket")} ${tab("chat", "Chats", v === "chat")}
-        ${tab("more", "More", v === "more" || v === "desk" || v === "hiring" || v === "handbook" || v === "brain" || v === "setup")}
+        ${tab("inbox", "Inbox", v === "inbox", inboxIcon)}
+        ${tab("office", "Office", v === "office", officeIcon)}
+        ${tab("board", "Board", v === "board" || v === "ticket", boardIcon)}
+        ${tab("chat", "Chats", v === "chat", chatIcon)}
+        ${tab("more", "More", v === "more" || v === "desk" || v === "hiring" || v === "handbook" || v === "brain" || v === "setup", moreIcon)}
       </nav>
     `;
   }
