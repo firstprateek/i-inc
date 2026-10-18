@@ -177,7 +177,7 @@ export class IncNewTicket extends LitElement {
     return html`<div class="card box">
       <div class="head">
         <h2>New ticket</h2>
-        <button class="btn ghost" aria-expanded="true" @click=${() => {
+        <button type="button" class="btn ghost" aria-expanded="true" @click=${() => {
           this.open = false;
         }}>Close</button>
       </div>

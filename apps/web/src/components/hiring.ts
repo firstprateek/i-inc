@@ -270,11 +270,11 @@ export class IncHiring extends LitElement {
   ];
 
   private teamCard() {
-    if (this.editing || !this.team.length) return "";
+    if (this.editing || !this.team?.length) return "";
     return html`<section class="card wide" aria-label="Your team">
       <h2>Your team</h2>
       <ul class="team">
-        ${this.team.map(
+        ${(this.team ?? []).map(
           (m) => html`<li><span><b>${m.name}</b> <span class="muted">${m.role}</span></span>
             <a class="btn ghost" href="#/hiring/${m.id}" aria-label="Edit ${m.name}'s engines">Edit engines</a></li>`,
         )}
@@ -286,7 +286,7 @@ export class IncHiring extends LitElement {
     return html`<label><span>${label}</span>
       <select data-value=${value} ?required=${!blank.length} @change=${(e: Event) => onPick((e.target as HTMLSelectElement).value)}>
         ${blank ? html`<option value="">${blank}</option>` : ""}
-        ${this.choices.filter((e) => e.id !== skip).map((e) => html`<option value=${e.id}>${engineLabel(e)}</option>`)}
+        ${(this.choices ?? []).filter((e) => e.id !== skip).map((e) => html`<option value=${e.id}>${engineLabel(e)}</option>`)}
       </select>
       ${this.chips(value)}
     </label>`;

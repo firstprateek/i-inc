@@ -361,7 +361,7 @@ export class IncChat extends LitElement {
       .me .status { font-size: 11px; }
       .me .status.sending { font-style: italic; }
       .me .status.error { color: var(--alarm-fg, #f28b76); font-weight: 600; }
-      .me .retry { font-size: 11px; padding: 2px 8px; min-height: 22px; border-radius: 6px; background: var(--surface); color: var(--ink); border: none; cursor: pointer; }
+      .me .retry { font-size: 12px; font-weight: 600; padding: 4px 12px; min-height: 36px; min-width: 44px; border-radius: 8px; background: var(--surface); color: var(--ink); border: 1px solid var(--line-strong); cursor: pointer; touch-action: manipulation; }
       .error-msg { color: var(--alarm-fg, #8a2b17); background: var(--needs-bg, rgba(196, 69, 43, 0.1)); border: 1px solid var(--alarm, #c4452b); padding: 8px 12px; border-radius: 8px; font-size: 13px; margin: 0; align-self: flex-start; }
       .sys { align-self: center; font-size: 13px; color: var(--ink-2); }
       .ticket { align-self: flex-start; max-width: 620px; border: 2px dashed var(--line-strong); border-radius: 16px; padding: 14px;
@@ -389,15 +389,16 @@ export class IncChat extends LitElement {
           background: var(--surface); border-radius: 0 0 var(--radius) var(--radius); }
         form textarea { flex: 1 1 100%; }
         form .btn { flex: 1 1 0; }
+        .me .retry { min-height: 44px; padding: 6px 14px; font-size: 13px; }
       }
     `,
   ];
 
   override render() {
-    const me = this.threads.find((t) => t.id === this.employeeId);
+    const me = (this.threads ?? []).find((t) => t.id === this.employeeId);
     return html`<div class="wrap">
       <nav class="card" aria-label="Chats">
-        ${this.threads.map(
+        ${(this.threads ?? []).map(
           (t) => html`<a href="#/chat/${t.id}" aria-current=${t.id === this.employeeId ? "true" : "false"}>
             ${avatar(t, 40)}<span><b>${t.name}</b><small>${this.preview(t.last) ?? t.role}</small></span></a>`,
         )}
@@ -471,7 +472,7 @@ export class IncChat extends LitElement {
         ${
           e.confirmed
             ? html`<a href="#/ticket/${e.ticketId}">On the board as #${e.ticketId}</a>`
-            : html`<div style="display:flex;flex-wrap:wrap;gap:8px"><button class="btn" @click=${() => this.confirm(e.ticketId)}>Put on the board</button>
+            : html`<div style="display:flex;flex-wrap:wrap;gap:8px"><button type="button" class="btn" @click=${() => this.confirm(e.ticketId)}>Put on the board</button>
               <a class="btn ghost" href="#/ticket/${e.ticketId}" style="display:inline-flex;align-items:center;text-decoration:none">Open</a></div>`
         }
       </div>`;

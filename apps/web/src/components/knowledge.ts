@@ -191,8 +191,8 @@ export class IncKnowledge extends Loader<KnowledgeData> {
               <b>${p.author} proposes a change to the ${p.page} policy</b>
               <blockquote>${p.text}</blockquote>
               <div class="row">
-                <button class="btn" @click=${() => this.act(() => api.decidePolicy(p.id, true))}>Approve</button>
-                <button class="btn ghost" @click=${() => this.act(() => api.decidePolicy(p.id, false))}>Decline</button>
+                <button type="button" class="btn" @click=${() => this.act(() => api.decidePolicy(p.id, true))}>Approve</button>
+                <button type="button" class="btn ghost" @click=${() => this.act(() => api.decidePolicy(p.id, false))}>Decline</button>
               </div>
             </section>`,
           )}
@@ -257,7 +257,7 @@ export class IncKnowledge extends Loader<KnowledgeData> {
       <span class=${c.reverted ? "undone" : ""}>${describe(c.subject)}</span>
       ${
         c.author && !c.reverted && !c.revert
-          ? html`<button class="btn ghost" @click=${() => this.act(() => api.revert(this.key, c.commit))}>Revert</button>`
+          ? html`<button type="button" class="btn ghost" @click=${() => this.act(() => api.revert(this.key, c.commit))}>Revert</button>`
           : html`<span></span>`
       }
       <small>${who} · ${when(c.at)}${c.reverted ? " · reverted" : ""}</small>

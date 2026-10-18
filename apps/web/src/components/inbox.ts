@@ -31,7 +31,7 @@ export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyPr
       .who { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); }
       .who b { color: var(--ink); }
       .q { font-size: 17px; font-weight: 700; line-height: 1.3; overflow-wrap: anywhere; }
-      .actions { display: flex; gap: 8px; }
+      .actions { display: flex; gap: 8px; flex-wrap: wrap; }
       .actions .btn:first-child { flex-grow: 1; }
       h2 { font-size: 20px; margin-top: 18px; }
       .empty { color: var(--ink-2); }
@@ -62,7 +62,7 @@ export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyPr
     const a = t.needsYou;
     if (!a) return "";
     const btn = (label: string, fn: () => Promise<unknown>, ghost = false) =>
-      html`<button class="btn ${ghost ? "ghost" : ""}" @click=${() => this.act(fn)}>${label}</button>`;
+      html`<button type="button" class="btn ${ghost ? "ghost" : ""}" @click=${() => this.act(fn)}>${label}</button>`;
     const body =
       a.kind === "plan-gate"
         ? html`<div class="q">The plan for “${t.title}” waits at the gate.</div>
@@ -85,8 +85,8 @@ export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyPr
       <div class="who"><span><b>${p.author}</b> · handbook policy · ${p.page}</span></div>
       <div class="q">${p.text}</div>
       <div class="actions">
-        <button class="btn" @click=${() => this.act(() => api.decidePolicy(p.id, true))}>Approve</button>
-        <button class="btn ghost" @click=${() => this.act(() => api.decidePolicy(p.id, false))}>Decline</button>
+        <button type="button" class="btn" @click=${() => this.act(() => api.decidePolicy(p.id, true))}>Approve</button>
+        <button type="button" class="btn ghost" @click=${() => this.act(() => api.decidePolicy(p.id, false))}>Decline</button>
       </div></div>`;
   }
 
@@ -94,7 +94,7 @@ export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyPr
     return html`<div class="card item">${this.header(t, "report")}
       <div class="q">${t.title}</div>
       <div class="actions">
-        <button class="btn" @click=${() => this.act(() => api.decide(t.id, "approve"))}>Approve</button>
+        <button type="button" class="btn" @click=${() => this.act(() => api.decide(t.id, "approve"))}>Approve</button>
         <a class="btn ghost" href="#/ticket/${t.id}" style="display:inline-flex;align-items:center;text-decoration:none">Report</a>
       </div></div>`;
   }
