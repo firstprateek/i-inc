@@ -335,4 +335,27 @@ describe("Customizable top navigation bar & All views dropdown", () => {
     expect(location.hash).toBe("#/desk");
     expect(root.querySelector(".all-views-dropdown")).toBeNull();
   });
+
+  it("keeps the dropdown header fixed at top while categories list scrolls", async () => {
+    const { app, root } = await mountApp("#/office");
+    const trigger = root.querySelector<HTMLButtonElement>(".all-views-trigger");
+    if (!trigger) throw new Error("Missing trigger");
+
+    trigger.click();
+    await app.updateComplete;
+
+    const dropdown = root.querySelector<HTMLElement>(".all-views-dropdown");
+    expect(dropdown).not.toBeNull();
+    const header = dropdown?.querySelector<HTMLElement>(".dropdown-header");
+    expect(header).not.toBeNull();
+    expect(header?.querySelector(".dropdown-title")?.textContent).toBe("All views");
+    expect(header?.querySelector(".close-btn")).not.toBeNull();
+
+    const categoriesList = dropdown?.querySelector<HTMLElement>(".categories-list");
+    expect(categoriesList).not.toBeNull();
+
+    // The header is outside the scroll container (.categories-list) so it remains fixed
+    expect(dropdown?.contains(header!)).toBe(true);
+    expect(categoriesList?.contains(header!)).toBe(false);
+  });
 });

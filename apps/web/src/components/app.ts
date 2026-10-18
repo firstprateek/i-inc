@@ -554,12 +554,14 @@ export class IncApp extends LitElement {
         max-width: calc(100vw - 32px);
         max-height: calc(100vh - 110px);
         max-height: calc(100dvh - 110px);
-        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
         background: var(--surface);
         border: 1px solid var(--line);
         border-radius: 16px;
         box-shadow: 0 12px 32px rgba(0, 0, 0, 0.14), 0 2px 8px rgba(0, 0, 0, 0.06);
-        padding: 16px;
+        padding: 0;
         z-index: 100;
         box-sizing: border-box;
       }
@@ -576,9 +578,12 @@ export class IncApp extends LitElement {
         align-items: flex-start;
         justify-content: space-between;
         gap: 8px;
-        margin-bottom: 12px;
-        padding-bottom: 10px;
+        margin: 0;
+        padding: 14px 16px;
         border-bottom: 1px solid var(--line);
+        background: var(--surface);
+        flex-shrink: 0;
+        z-index: 2;
       }
       .header-titles {
         display: flex;
@@ -628,6 +633,13 @@ export class IncApp extends LitElement {
         display: flex;
         flex-direction: column;
         gap: 12px;
+        padding: 12px 16px 16px;
+        overflow-y: auto;
+        flex: 1 1 auto;
+        min-height: 0;
+        overscroll-behavior: contain;
+        scrollbar-width: thin;
+        scrollbar-color: var(--scroll-thumb) transparent;
       }
       .category-section {
         display: flex;
