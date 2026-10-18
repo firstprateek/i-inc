@@ -1,5 +1,5 @@
-// Shared pieces every view uses: buttons, chips, cards and avatars. Colours come from tokens.css,
-// each with one role (status, identity, action, alarm, neutral).
+// Shared pieces every view uses: buttons, chips, cards, avatars and layout primitives (see layout.ts
+// and docs/layout.md). Colours come from tokens.css, each with one role (status, identity, action, alarm, neutral).
 import { css, html } from "lit";
 
 export const base = css`
@@ -33,6 +33,8 @@ export const base = css`
   }
   a.card:active, button.card:active { transform: scale(0.98); opacity: 0.85; }
   .muted { color: var(--ink-2); }
+  /* Selected controls set a foreground for their background; helper copy must follow it. */
+  [aria-pressed="true"] .muted, [aria-checked="true"] .muted { color: inherit; }
   .btn {
     font: 700 15px var(--body); min-height: 44px; padding: 0 18px; border-radius: 999px; cursor: pointer; white-space: nowrap;
     border: none; background: var(--ink); color: var(--on-ink);

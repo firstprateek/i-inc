@@ -44,7 +44,7 @@ export class IncSetupSandboxes extends Loader<Data> {
     const list = this.data.sandboxes;
     if (!list) return html`<p class="note">Sandbox status isn't available yet.</p>`;
     if (!list.length) return html`<p class="muted">No sandboxes yet.</p>`;
-    return html`<div class="stack">${list.map((s) => {
+    return html`<div class="stack layout-stack layout-page-band">${list.map((s) => {
       const [label, tone] = states[s.state] ?? [s.state, ""];
       return html`<section class="card ${s.state === "error" ? "failed" : ""}" aria-label=${s.machine}>
         <div class="head">

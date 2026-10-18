@@ -1,5 +1,6 @@
 // Setup: where the owner manages teams, projects, engines and accounts, and checks the sandboxes.
 import { css, html, LitElement } from "lit";
+import { LAYOUT_BREAKPOINTS, layoutStyles } from "./layout.ts";
 import { base } from "./shared.ts";
 import "./setup-teams.ts";
 import "./setup-projects.ts";
@@ -30,24 +31,33 @@ export class IncSetup extends LitElement {
 
   static override styles = [
     base,
+    layoutStyles,
     css`
-      h1 { font-size: 30px; margin: 4px 0 14px; }
-      nav { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 18px; }
-      nav a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; border-radius: 999px; box-sizing: border-box;
+      :host { display: block; height: 100%; min-height: 0; }
+      .sections-nav { padding: 10px; display: flex; flex-direction: column; gap: 6px; border-right: 1px solid var(--line); }
+      .sections-nav a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; border-radius: 999px; box-sizing: border-box;
         border: 1px solid var(--line-strong); font-weight: 600; font-size: 15px; text-decoration: none; }
-      nav a[aria-current="page"] { background: var(--ink); color: var(--on-ink); border-color: var(--ink); }
+      .sections-nav a[aria-current="page"] { background: var(--ink); color: var(--on-ink); border-color: var(--ink); }
+      .sections-nav a:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 2px; }
+      .work { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 4px 2px 20px; scrollbar-gutter: stable; }
+      @media (max-width: ${LAYOUT_BREAKPOINTS.split - 1}px) {
+        .sections-nav { flex-direction: row; overflow-x: auto; overflow-y: hidden; border-right: 0; border-bottom: 1px solid var(--line); padding: 4px 0 8px; scrollbar-width: none; }
+        .sections-nav::-webkit-scrollbar { display: none; }
+        .sections-nav a { flex: none; white-space: nowrap; }
+        .work { padding: 0 0 12px; }
+      }
     `,
   ];
 
   override render() {
-    return html`<h1>Setup</h1>
-      <nav aria-label="Setup sections">
-        ${sections.map(
-          ([id, name]) =>
-            html`<a href="#/setup/${id}" aria-current=${this.section === id ? "page" : "false"}>${name}</a>`,
-        )}
+    return html`<div class="layout-split">
+      <nav class="sections-nav layout-split-sidebar" aria-label="Setup sections">
+        ${sections.map(([id, name]) => html`<a href="#/setup/${id}" aria-current=${this.section === id ? "page" : "false"}>${name}</a>`)}
       </nav>
-      ${this.body()}`;
+      <div class="work layout-split-work" aria-label="Setup section">
+        ${this.body()}
+      </div>
+    </div>`;
   }
 
   private body() {

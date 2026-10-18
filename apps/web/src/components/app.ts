@@ -3,6 +3,7 @@ import { logout } from "../api.ts";
 import { connection, isOffline } from "../connection.ts";
 import { startLiveUpdates } from "../live.ts";
 import { arrive, ScrollMemory, stampEntry } from "../scroll-memory.ts";
+import { LAYOUT_BREAKPOINTS, type LayoutKind } from "./layout.ts";
 import { base } from "./shared.ts";
 import "./office.ts";
 import "./board.ts";
@@ -25,7 +26,15 @@ export type Route =
   | { view: "setup"; section: Section };
 
 /** Below this width the views are a bottom tab bar, not a row in the header. */
-const phone = 900;
+const phone = LAYOUT_BREAKPOINTS.phone;
+
+/** The single route-to-template map, also used by the layout regression test. */
+export function layoutForRoute(route: Route): LayoutKind {
+  if (route.view === "board" || route.view === "office") return "wide";
+  if (route.view === "chat" || route.view === "handbook" || route.view === "brain" || route.view === "setup")
+    return "split";
+  return "page";
+}
 
 export function parse(hash: string): Route {
   const [, view, id] = hash.split("/");
@@ -64,12 +73,13 @@ export function routeName(r: Route): { long: string; short: string } {
     case "ticket":
       return r.id ? { long: `Ticket #${r.id}`, short: `#${r.id}` } : same("Ticket");
     case "chat":
-      return r.id ? same(cap(r.id)) : same("Chats");
+      return same("Chats");
     case "desk":
       return { long: "My desk", short: "Desk" };
     case "handbook":
-    case "brain":
       return { long: "Company brain", short: "Brain" };
+    case "brain":
+      return { long: `${cap(r.id)}’s brain`, short: "Brain" };
     case "hiring":
       return same("Hiring");
     case "setup":
@@ -83,6 +93,7 @@ export function routeName(r: Route): { long: string; short: string } {
 
 /** The browser tab / window title for a route: "Board · i.inc". */
 export function routeTitle(r: Route): string {
+  if (r.view === "chat" && r.id) return `${cap(r.id)} · Chat · i.inc`;
   const name = routeName(r).long;
   const where = r.view === "setup" ? `${name} · Setup` : r.view === "chat" && r.id ? `${name} · Chat` : name;
   return where ? `${where} · i.inc` : "i.inc";
@@ -282,9 +293,8 @@ export class IncApp extends LitElement {
   }
 
   override willUpdate(): void {
-    // A route that owns its scrolling (the chat) lays its own panes out in <main>, which then does not
-    // scroll itself. Every other route scrolls <main>. The attribute drives the shell's styles.
-    this.toggleAttribute("own-scroll", this.route.view === "chat");
+    // Split routes own their pane scrolling. Every other route scrolls <main>.
+    this.toggleAttribute("own-scroll", layoutForRoute(this.route) === "split");
   }
 
   override updated(changed: Map<string, unknown>): void {
@@ -468,7 +478,7 @@ export class IncApp extends LitElement {
         position: relative;
         z-index: 20;
         display: flex; align-items: center; gap: 24px;
-        padding: calc(12px + env(safe-area-inset-top)) max(32px, calc((100% - 1360px) / 2), env(safe-area-inset-right)) 12px max(32px, calc((100% - 1360px) / 2), env(safe-area-inset-left));
+        padding: calc(12px + env(safe-area-inset-top)) max(var(--layout-gutter), calc((100% - var(--wide-width)) / 2), env(safe-area-inset-right)) 12px max(var(--layout-gutter), calc((100% - var(--wide-width)) / 2), env(safe-area-inset-left));
         border-bottom: 1px solid var(--line);
         background: var(--ground);
         -webkit-user-select: none; user-select: none;
@@ -484,8 +494,8 @@ export class IncApp extends LitElement {
         overscroll-behavior: contain;
         scrollbar-gutter: stable;
         scrollbar-width: thin;
-        /* A centred column on wide screens: at least 32px of room, at most 1360px of content. */
-        padding: 20px max(32px, calc((100% - 1360px) / 2), env(safe-area-inset-right)) 28px max(32px, calc((100% - 1360px) / 2), env(safe-area-inset-left));
+        /* The shared Wide width aligns the app's working area with the route templates. */
+        padding: 20px max(var(--layout-gutter), calc((100% - var(--wide-width)) / 2), env(safe-area-inset-right)) 28px max(var(--layout-gutter), calc((100% - var(--wide-width)) / 2), env(safe-area-inset-left));
       }
       main:focus, #view-heading:focus { outline: none; }
       .sr-only {
@@ -802,7 +812,7 @@ export class IncApp extends LitElement {
         color: var(--ink); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
       .sign-out { font-size: 13px; min-height: 36px; padding: 0 14px; }
       h1.page { font-size: 30px; margin: 4px 0 14px; }
-      .more { display: flex; flex-direction: column; gap: 10px; max-width: 560px; padding: 0; margin: 0; list-style: none; }
+      .more { display: flex; flex-direction: column; gap: 10px; max-width: none; padding: 0; margin: 0; list-style: none; }
       .more a { display: flex; flex-direction: column; justify-content: center; gap: 2px; min-height: 64px; box-sizing: border-box;
         padding: 10px 18px; text-decoration: none; }
       .more b { font-size: 17px; }
@@ -823,7 +833,7 @@ export class IncApp extends LitElement {
           clip-path: inset(50%); white-space: nowrap; border: 0;
         }
       }
-      @media (max-width: 900px) {
+      @media (max-width: ${LAYOUT_BREAKPOINTS.phone}px) {
         /* Phones: header, main, tab bar are three rows of the grid. */
         :host {
           grid-template-rows: auto minmax(0, 1fr) auto;
@@ -978,8 +988,8 @@ export class IncApp extends LitElement {
         padding-top: 16px;
         padding-bottom: 20px;
       }
-      :host([own-scroll]) inc-chat { flex: 1 1 0; min-height: 0; }
-      @media (max-width: 900px) {
+      :host([own-scroll]) inc-layout { flex: 1 1 0; min-height: 0; }
+      @media (max-width: ${LAYOUT_BREAKPOINTS.phone}px) {
         /* No padding of its own, but the notch's side insets stay (the bars handle top and bottom). */
         :host([own-scroll]) main { padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left); }
       }
@@ -1208,8 +1218,10 @@ export class IncApp extends LitElement {
         </button>
       </header>
       <main tabindex="-1">
-        <h1 id="view-heading" tabindex="-1" class=${v === "more" ? "page" : "sr-only"}>${routeName(this.route).long}</h1>
-        ${this.offline ? html`<inc-offline></inc-offline>` : this.view()}
+        <inc-layout .kind=${layoutForRoute(this.route)}>
+          <h1 id="view-heading" tabindex="-1" slot="heading">${routeName(this.route).long}</h1>
+          ${this.offline ? html`<inc-offline></inc-offline>` : this.view()}
+        </inc-layout>
       </main>
       <nav class="tabs" role="tablist" aria-label="Views">
         ${tab("inbox", "Inbox", v === "inbox", inboxIcon)}

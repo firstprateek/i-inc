@@ -93,7 +93,7 @@ export class IncSetupTeams extends Loader<TeamsData> {
     if (!teams.length) {
       return html`<p class="muted">No teams yet. Everyone works in the shared company sandbox.</p>`;
     }
-    return html`<div class="stack">${teams.map((t) => {
+    return html`<div class="stack layout-stack layout-page-band">${teams.map((t) => {
       const s = this.size(t);
       return html`<section class="card" aria-label=${t.name}>
         <div class="head"><h3>${t.name}</h3><span class="tag">${t.id}</span></div>

@@ -1,5 +1,7 @@
 # Handoff: where i.inc stands, and what's next
 
+For the web route layout system and responsive behavior, see [layout.md](layout.md).
+
 For the next session, local or cloud. Read this, then [CLAUDE.md](../CLAUDE.md) and [coord.md](coord.md).
 It replaces the context the earlier cloud session had. Update it as you work, and remove each item
 as it lands.

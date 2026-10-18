@@ -128,7 +128,7 @@ describe("the inbox", () => {
       view({ id: "1", status: "ready", column: "review" }),
     ]);
     const root = await mount("inc-inbox");
-    expect(root.querySelector("h1")?.textContent).toBe("1 thing needs you");
+    expect(root.querySelector(".summary")?.textContent).toBe("1 thing needs you");
     expect(root.textContent).toContain("The plan for “Budget alerts” waits at the gate.");
 
     const approve = [...root.querySelectorAll("button")].find((b) => b.textContent === "Approve plan");
@@ -166,7 +166,7 @@ describe("the inbox", () => {
       ],
     });
     const root = await mount("inc-inbox");
-    expect(root.querySelector("h1")?.textContent).toBe("1 thing needs you");
+    expect(root.querySelector(".summary")?.textContent).toBe("1 thing needs you");
     expect(root.textContent).toContain("Squash-merge every PR.");
     [...root.querySelectorAll("button")].find((b) => b.textContent === "Approve")?.click();
     await new Promise((r) => setTimeout(r, 0));
@@ -180,7 +180,7 @@ describe("the inbox", () => {
   it("says so when nothing needs the owner", async () => {
     serve([view({})]);
     const root = await mount("inc-inbox");
-    expect(root.querySelector("h1")?.textContent).toBe("Nothing needs you");
+    expect(root.querySelector(".summary")?.textContent).toBe("Nothing needs you");
   });
 
   it("shows a calm all-clear card with two links when nothing needs you and nothing is ready", async () => {

@@ -1,6 +1,7 @@
 import { css, html, type TemplateResult } from "lit";
 import { api, type KnowledgeView, type NamedChange, type Page, refreshNow } from "../api.ts";
 import { setupApi } from "../setup-api.ts";
+import { LAYOUT_BREAKPOINTS, layoutStyles } from "./layout.ts";
 import { Loader } from "./loader.ts";
 import { avatar, base } from "./shared.ts";
 
@@ -78,9 +79,10 @@ export class IncKnowledge extends Loader<KnowledgeData> {
 
   static override styles = [
     base,
+    layoutStyles,
     css`
+      :host { display: block; height: 100%; min-height: 0; }
       .head { display: flex; align-items: center; gap: 14px; margin: 4px 0 18px; }
-      .head h1 { font-size: 30px; }
       .spacer { flex-grow: 1; }
       .company-link { white-space: nowrap; }
       .company-callout {
@@ -92,13 +94,16 @@ export class IncKnowledge extends Loader<KnowledgeData> {
         line-height: 1.4;
       }
       .company-callout a { color: var(--ink); font-weight: 600; text-decoration: underline; }
-      .wrap { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 20px; align-items: start; }
-      nav { padding: 10px; display: flex; flex-direction: column; gap: 2px; }
+      .wrap { grid-template-rows: auto minmax(0, 1fr); gap: var(--layout-section-gap, 20px) var(--layout-gap, 24px); align-items: stretch; }
+      .head { grid-column: 1 / -1; margin: 0; }
+      nav { padding: 10px; display: flex; flex-direction: column; gap: 2px; border-right: 1px solid var(--line); }
       nav button { all: unset; box-sizing: border-box; padding: 10px 12px; border-radius: 12px; cursor: pointer; font-size: 14px; min-height: 44px;
         display: flex; align-items: center; }
       nav button[aria-current="true"] { background: var(--sunken); font-weight: 700; }
       nav button:focus-visible { outline: 3px solid var(--reviewing-mark); }
-      .col { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+      .col { display: flex; flex-direction: column; gap: 20px; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 2px 4px 20px 0; scrollbar-gutter: stable; }
+      .work-state { grid-column: 1 / -1; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+      .wrap:has(.work-state) { grid-template-rows: minmax(0, 1fr); }
       article { padding: 22px 26px; display: flex; flex-direction: column; gap: 10px; line-height: 1.5; }
       article h2 { font-size: 24px; }
       article h3 { font-size: 17px; margin-top: 8px; }
@@ -125,12 +130,13 @@ export class IncKnowledge extends Loader<KnowledgeData> {
       .waiting blockquote { margin: 0; padding-left: 12px; border-left: 3px solid var(--line-strong); }
       .row { display: flex; gap: 8px; }
       article, .change > span, .waiting blockquote { overflow-wrap: anywhere; }
-      @media (max-width: 800px) {
+      @media (max-width: ${LAYOUT_BREAKPOINTS.split - 1}px) {
         .head { flex-wrap: wrap; }
-        .head h1 { font-size: 26px; }
         .company-link { min-height: 44px; }
-        .wrap { grid-template-columns: 1fr; gap: 16px; }
+        .wrap { grid-template-rows: auto auto minmax(0, 1fr); gap: var(--layout-section-gap, 20px); }
+        .head { grid-column: auto; }
         nav { flex-direction: row; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
+        nav { border-right: 0; border-bottom: 1px solid var(--line); padding: 4px 0 8px; }
         nav::-webkit-scrollbar { display: none; }
         nav button { flex-shrink: 0; white-space: nowrap; }
         article { padding: 18px; }
@@ -150,17 +156,17 @@ export class IncKnowledge extends Loader<KnowledgeData> {
   };
 
   override render() {
-    if (this.error) return html`<p role="alert">${this.error}</p>`;
+    if (this.error)
+      return html`<div class="wrap layout-split"><div class="work-state" role="alert">${this.error}</div></div>`;
     if (!this.data)
-      return html`<p class="muted">Opening ${this.repo === "handbook" ? "the handbook" : "the brain"}…</p>`;
+      return html`<div class="wrap layout-split"><div class="work-state muted" role="status">Opening ${this.repo === "handbook" ? "the handbook" : "the brain"}…</div></div>`;
     const d = this.data;
     const page = d.pages.find((p) => p.path === this.page) ?? d.pages[0];
     const isHandbook = this.repo === "handbook";
-    return html`
+    return html`<div class="wrap layout-split">
       <div class="head">
         ${d.employee ? avatar(d.employee, 52) : ""}
         <div>
-          <h1>${isHandbook ? "Company brain / Handbook" : d.employee ? `${d.employee.name}'s brain` : "Brain"}</h1>
           <span class="muted">${isHandbook ? "Organisation-wide knowledge: facts, policies, and team guidelines" : (d.employee?.role ?? "")}</span>
         </div>
         ${
@@ -176,8 +182,7 @@ export class IncKnowledge extends Loader<KnowledgeData> {
             : ""
         }
       </div>
-      <div class="wrap">
-        <nav class="card" aria-label="Pages">
+        <nav class="card layout-split-sidebar" aria-label="Pages">
           ${d.pages.map(
             (p) => html`<button type="button" aria-current=${p.path === page?.path ? "true" : "false"}
               @click=${() => {
@@ -185,7 +190,7 @@ export class IncKnowledge extends Loader<KnowledgeData> {
               }}>${title(p)}</button>`,
           )}
         </nav>
-        <div class="col">
+        <div class="col layout-split-work">
           ${(d.awaiting ?? []).map(
             (p) => html`<section class="card waiting" aria-label="Policy change from ${p.author}">
               <b>${p.author} proposes a change to the ${p.page} policy</b>
@@ -247,8 +252,7 @@ export class IncKnowledge extends Loader<KnowledgeData> {
             ${d.history.map((c) => this.change(c))}
           </section>
         </div>
-      </div>
-    `;
+      </div>`;
   }
 
   private change(c: NamedChange) {

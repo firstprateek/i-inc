@@ -1,6 +1,7 @@
 import { css, html } from "lit";
 import { api, type DeskView, type NamedChange, refreshNow } from "../api.ts";
 import { describe } from "./knowledge.ts";
+import { LAYOUT_BREAKPOINTS, layoutStyles } from "./layout.ts";
 import { Loader } from "./loader.ts";
 import { base, projectBadge } from "./shared.ts";
 
@@ -42,12 +43,13 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
 
   static override styles = [
     base,
+    layoutStyles,
     css`
       .grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 16px; align-items: start; }
       .hero { grid-column: span 6; background: var(--ink); color: var(--on-ink); border-radius: 20px; padding: 20px 24px;
         display: flex; flex-direction: column; gap: 8px; }
       .hero small { font-weight: 700; opacity: 0.8; }
-      .hero h1 { font-size: 26px; }
+      .hero h2 { font-size: 26px; }
       .tile { grid-column: span 3; padding: 18px 20px; display: flex; flex-direction: column; gap: 6px; }
       .tile b { font-family: var(--display); font-size: 36px; }
       .tile small, .note { font-size: 13px; color: var(--ink-2); }
@@ -85,7 +87,7 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
       .recent-release-header { display: flex; align-items: center; gap: 8px; font-size: 13px; }
       .recent-release-meta { font-size: 12px; }
       .pending-ticket a, .learned a { overflow-wrap: anywhere; }
-      @media (max-width: 900px) {
+      @media (max-width: ${LAYOUT_BREAKPOINTS.phone}px) {
         .grid > * { grid-column: 1 / -1 !important; }
         .grid > .tile { grid-column: span 6 !important; }
         .release-btn { min-height: 44px; }
@@ -98,7 +100,7 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
       @media (max-width: 560px) {
         .grid > .tile { grid-column: 1 / -1 !important; }
         .hero { padding: 18px 20px; }
-        .hero h1 { font-size: 24px; }
+        .hero h2 { font-size: 24px; }
         .bars { grid-template-columns: minmax(0, 120px) minmax(0, 1fr) 56px; }
       }
     `,
@@ -132,10 +134,10 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
     const d = this.data;
     const b = d.bottleneck;
     const max = Math.max(...d.spend.lines.map((l) => l.amount), 0.01);
-    return html`<div class="grid">
+    return html`<div class="grid layout-page-band">
       <section class="hero">
         <small>The bottleneck</small>
-        <h1>${b ? (reasons[b.reason]?.(hours(b.hours), b.tickets) ?? b.reason) : "Nothing has waited yet"}</h1>
+        <h2>${b ? (reasons[b.reason]?.(hours(b.hours), b.tickets) ?? b.reason) : "Nothing has waited yet"}</h2>
         <span>${d.waits
           .slice(1)
           .map((w) => reasons[w.reason]?.(hours(w.hours), w.tickets))

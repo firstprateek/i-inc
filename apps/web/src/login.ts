@@ -2,6 +2,7 @@
 import { css, html, LitElement } from "lit";
 import { authStatus, login, signup } from "./api.ts";
 import { base } from "./components/shared.ts";
+import "./components/layout.ts";
 import { draftMemo } from "./drafts.ts";
 
 export class IncLogin extends LitElement {
@@ -63,12 +64,12 @@ export class IncLogin extends LitElement {
     base,
     css`
       /* The document does not scroll (the app shell), so a short window scrolls the sign-in itself. */
-      :host { height: 100vh; height: 100dvh; overflow-y: auto; box-sizing: border-box;
+      :host { display: block; height: 100vh; height: 100dvh; overflow-y: auto; box-sizing: border-box;
         padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
       form {
-        width: calc(100% - 32px);
-        max-width: 24rem;
-        margin: 15vh auto;
+        width: 100%;
+        max-width: var(--compact-page-width, 24rem);
+        margin: 0 auto;
         padding: 1.5rem;
         box-sizing: border-box;
         background: var(--surface, var(--paper-2));
@@ -126,7 +127,7 @@ export class IncLogin extends LitElement {
         align-self: flex-start;
       }
       @media (max-width: 480px) {
-        form { margin: 8vh auto; padding: 1.25rem; }
+        form { padding: 1.25rem; }
         button { align-self: stretch; }
       }
     `,
@@ -140,9 +141,10 @@ export class IncLogin extends LitElement {
     const passwordAutocomplete = this.initialized ? "current-password" : "new-password";
     const submitLabel = this.initialized ? "Sign in" : "Create account";
     return html`
+      <inc-layout kind="page" compact>
+      <h1 slot="heading">${title}</h1>
+      <p slot="subtitle">${subtitle}</p>
       <form id="login" @submit=${this.submit}>
-        <h1>${title}</h1>
-        <p class="sub">${subtitle}</p>
         <label>
           Username
           <input
@@ -179,6 +181,7 @@ export class IncLogin extends LitElement {
         ${this.error ? html`<p id="login-error" class="error" role="alert">${this.error}</p>` : ""}
         <button type="submit" ?disabled=${this.busy}>${submitLabel}</button>
       </form>
+      </inc-layout>
     `;
   }
 }

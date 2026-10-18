@@ -230,7 +230,7 @@ describe("mobile app tab bar (T25)", () => {
     location.hash = "#/chat/ada";
     window.dispatchEvent(new HashChangeEvent("hashchange"));
     await app.updateComplete;
-    expect(titleEl?.querySelector(".long")?.textContent).toBe("Ada");
+    expect(titleEl?.querySelector(".long")?.textContent).toBe("Chats");
 
     location.hash = "#/setup/teams";
     window.dispatchEvent(new HashChangeEvent("hashchange"));

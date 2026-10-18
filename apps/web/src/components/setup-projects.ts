@@ -128,8 +128,8 @@ export class IncSetupProjects extends Loader<Project[]> {
     base,
     setupStyles,
     css`
-      .top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-      .card.row { padding: 0; gap: 0; }
+      .top-bar { display: flex; justify-content: flex-end; align-items: center; margin-bottom: 12px; }
+      .card.row { display: flex; flex-direction: column; align-items: stretch; padding: 0; gap: 0; }
       .toggle { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 10px; width: 100%; min-height: 64px;
         padding: 10px 20px; cursor: pointer; }
       .toggle:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: -3px; border-radius: var(--radius); }
@@ -627,7 +627,6 @@ export class IncSetupProjects extends Loader<Project[]> {
 
     return html`
       <div class="top-bar">
-        <h1>Projects</h1>
         ${
           !this.showAdd
             ? html`<button type="button" class="btn" @click=${() => this.toggleAdd()}>+ Add a project</button>`
@@ -638,7 +637,7 @@ export class IncSetupProjects extends Loader<Project[]> {
       ${
         this.data.length === 0
           ? html`<p class="muted">No projects yet. Add one above to start assigning work.</p>`
-          : html`<div class="stack">${this.data.map((p) => this.card(p))}</div>`
+          : html`<div class="stack layout-stack layout-page-band">${this.data.map((p) => this.card(p))}</div>`
       }
     `;
   }
