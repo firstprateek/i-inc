@@ -15,13 +15,13 @@ own and sign in to each subscription once. This page is the current picture. Whe
 - the registry: teams, employees, engines, accounts and projects;
 - knowledge: the handbook, with a section per team, and each employee's brain, as git repos;
 - the GitHub bot, "i.inc bot", which mints tokens and keeps each sandbox signed in to GitHub;
-- the web app and API, on 127.0.0.1, reached through an SSH tunnel.
+- the web app and API, on 127.0.0.1:7420, served over Tailscale.
 
 **A team** is a group of employees, and its **sandbox**: one walled machine, `inc-<team>`, about
 12G and 6 CPUs, where all its members work.
 
 - Each subscription (Claude, Antigravity) is signed in once per sandbox, and every agent on the
-  team uses that sign-in (`tools/host/sign-in-claude.sh`).
+  team uses that sign-in (`tools/host/sign-in-claude.sh`, `tools/host/sign-in-antigravity.sh`).
 - Each ticket works in its own folder, `/home/employee/work/inc-<ticket>`, and gets its own range
   of 100 ports in `$I_INC_PORTS`.
 - The daemon renews the sandbox's GitHub sign-in every 25 minutes, so sessions of any length can push.
@@ -34,6 +34,88 @@ own and sign in to each subscription once. This page is the current picture. Whe
 | `mode` | `direct` | `direct`: reviewed work goes straight to main. `owner-merges`: a draft PR the owner merges |
 | `protectedPaths` | `.github/`, Release Please's config | Changes there wait for the owner's OK |
 | `followUpsPerDay` | 3 | Tickets agents may file for themselves |
+| `autoRelease` | `false` | Whether merged tickets trigger an automatic project release |
+
+## Access
+
+The daemon runs locally on the mini at `127.0.0.1:7420`.
+
+- **Tailscale Service:** served via Tailscale Service `svc:iinc` on standard HTTPS:
+  `tailscale serve --bg --service=svc:iinc --https=443 http://127.0.0.1:7420`
+  This publishes the service at `https://iinc.<tailnet>.ts.net` with an automatically managed TLS certificate, allowing phone and desktop browsers to connect without custom port numbers. (The earlier `:8443` serve configuration was removed.)
+- **Host validation:** the daemon validates the `Host` header against `I_INC_HOSTS` (configured as `iinc.<tailnet>.ts.net`, plus local loopback addresses). Unrecognized host headers receive an HTTP 421 response, protecting against DNS rebinding.
+- **SSH tunnel fallback:** an SSH tunnel remains available if Tailscale is down:
+  `ssh -L 7420:127.0.0.1:7420 <mini>`, then open `http://127.0.0.1:7420`.
+
+## Owner authentication
+
+Access to the API and web app is restricted to the owner:
+
+- **Initial state:** `GET /api/auth` returns `{ "initialized": boolean }` indicating whether an owner account exists.
+- **Signup:** `POST /api/signup` (`{ "username", "password" }`, password at least 8 characters) creates the owner account in SQLite (`owner_account` table) with `scrypt` hashing (`salt:hash`, 16-byte random salt, 64-byte key). It issues the `i_inc` session cookie (`HttpOnly; SameSite=Strict; Path=/`). Once initialized, subsequent signup attempts return 409.
+- **Login:** `POST /api/login` accepts `{ "username", "password" }`, verifying the hash in constant time (`scryptSync` and `timingSafeEqual`), and issues the `i_inc` cookie. Legacy token login (`{ "token" }` matching `~/.config/i-inc/web-token` or `Authorization: Bearer <token>`) remains supported as a fallback, with a 1-second delay on failure.
+- **Logout:** `POST /api/logout` clears the session cookie (`Max-Age=0`).
+
+## Engines and harnesses
+
+The daemon connects to AI agents through the Agent Client Protocol (ACP) and local models:
+
+- **Harnesses in sandboxes:**
+  - `claude-code` (`acp-claude`): Claude subscription, signed in once per team sandbox via `tools/host/sign-in-claude.sh`.
+  - `antigravity` (`acp-antigravity`): Google AI Pro subscription, signed in once per team sandbox via `tools/host/sign-in-antigravity.sh`. An OAuth callback relay endpoint (`POST /api/teams/:id/antigravity-callback`, contract C8) delivers the `http://127.0.0.1:<port>/?code=…` redirect into the sandbox using `AppleMachines.deliverCallback`.
+  - `opencode` (`acp-opencode`): OpenCode harness running local open models (e.g. `qwen3:8b`, registered with `local: true`) routed through the container gateway to the host's Ollama relay port (`11434`).
+- **Local Ollama helper and chat (`apps/daemon/src/ollama.ts`):**
+  - `OllamaHelper`: runs fast local classification (intent detection for `ask`, `note`, `question`) and yes/no evaluations directly against Ollama without launching a sandbox.
+  - `OllamaChat`: powers interactive 1:1 chat between the owner and employees on local Ollama (`qwen3:8b`, `think: false`), maintaining the employee's role, current ticket context, and recent notes.
+
+## Account caps and rate limits
+
+- **Monthly spending caps:** `PUT /api/accounts/:id` accepts an optional `monthlyCap`. Account costs and caps are listed in `GET /api/accounts`.
+- **Live rate-limit meters:** live Claude utilization metrics (`fiveHourUtilization`, `sevenDayUtilization`, `resetsAt`, `status`, `updatedAt`) are polled and exposed in `GET /api/accounts` and `GET /api/office` (contract C7), rendered visually as utilization meters in `<inc-office>`.
+
+## Sandboxes and isolation
+
+- **Inspection (`GET /api/sandboxes`, contract C1):** reports team sandbox state (`running`, `stopped`, `missing`, `error`), CPU and memory specs, and sign-in status (`claude`, `antigravity`, `github`).
+- **No boot on read:** inspecting sandboxes parses `container machine ls` output and never starts or boots a stopped VM merely to report status. Credential files are only probed if the machine is already running; otherwise cached or default states are returned.
+- **Sandbox DNS filter (`apps/daemon/src/dns.ts`):** a custom DNS filter on the sandbox network gateway intercepts DNS queries. It refuses any lookup for `.ts.net` or `.local` domains (returning `REFUSED`, RCODE=5), ensuring tailnet machine names and local hostnames cannot be resolved or leaked from inside sandboxes.
+- **The walls (`pf`):** outbound internet is permitted, but connections to the local LAN, the tailnet subnet, and the host (except the gateway API and Ollama relay ports) are blocked. Machines run only while the walls job confirms firewall state every minute (`/var/run/i-inc-walls.ok`).
+
+## Releases
+
+- **Policy:** projects configure release behavior via `PUT /api/projects/:id` with `autoRelease: boolean` (contract C9).
+- **Status:** `GET /api/releases` returns all recorded `ProjectRelease` objects and `pending` merged tickets awaiting release.
+- **Manual release:** `POST /api/projects/:id/release` `{ "tag"?: string }` cuts a release for all unreleased merged tickets on a project (HTTP 201).
+- **Desk integration:** `<inc-desk>` displays recent releases and pending unreleased tickets. Automatic release cuts can be enabled per project once workflows are proven.
+
+## Web Push notifications
+
+- **Backend (`apps/daemon/src/push.ts`, contract C2):** sends push notifications to subscribed browsers using RFC 8291 (aes128gcm) payload encryption and RFC 8292 VAPID headers.
+- **Key management:** VAPID keys are stored at `~/.config/i-inc/vapid.json` (mode 0600) and exposed via `GET /api/push/key`. In-memory keys are generated when no config directory is provided (e.g. tests).
+- **Subscriptions:** managed via `POST /api/push/subscribe` and `POST /api/push/unsubscribe`.
+- **Triggers:** notifications are sent for three critical events:
+  - `needs-you`: when a ticket reaches a gate requiring owner intervention (e.g. protected paths or policy decision);
+  - `report-ready`: when a ticket completes and its report is published;
+  - `main-red`: when CI on main fails after a direct merge.
+- **Deduplication and reliability:** sent notification keys (`push:<ticketId>:<eventIndex>`) are recorded atomically in the SQLite `push_sent` table before transmission to prevent duplicates. A baseline on startup prevents re-notifying historical events, and requests timeout after 5 seconds to avoid blocking the daemon tick loop.
+
+## Live updates and transcripts
+
+- **Live SSE updates (`GET /api/events`, contract C3):**
+  - Server-Sent Events stream delivering real-time invalidation notifications: `event: ticket` with `{ "id": "<ticket id>" }` on ticket updates, and `event: office` with `{}` on employee or team changes.
+  - Streams send an initial `: connected` comment immediately on connection, emit keepalive comments (`: keepalive`) every 25 seconds, specify `x-accel-buffering: no`, and buffer events using a `ReadableStream` with `highWaterMark: 64`, closing the stream if the queue remains sustained full (`desiredSize <= 0`) to drop stalled clients cleanly.
+- **Session transcripts (`GET /api/tickets/:id/sessions`, contract C4, in review):**
+  - Records ACP session turns (messages, tool names, and tool statuses) structured per ticket stage.
+  - Automatically redacts sensitive patterns (such as authorization headers and tokens) before persisting to SQLite, enforcing item size limits (4 KB) and session caps.
+
+## The web app
+
+The frontend is an installable, mobile-responsive single-page app built with Lit components (`apps/web`):
+
+- **Mobile pass:** every view is optimized for mobile (390x844) and desktop (1440x900) screens, supporting both light and dark themes with comfortable touch targets, responsive tables, and adapted navigation.
+- **Installable PWA:** includes a web app manifest, application icons, and a service worker implementing an offline shell and handling Web Push notifications.
+- **Setup screens (`<inc-setup>`):** centralized management for Teams, Projects (mode, protected paths, follow-up budgets, check recipes, auto-release), Engines and Accounts (displaying the "local" badge for Ollama), and sandbox sign-in statuses.
+- **Per-duty engines:** employee hiring and editing allows configuring distinct engines per duty (`build`, `review`, `verify`) in addition to default and fallback engines (`EmployeeEngines.perDuty`).
+- **Board on the phone (`<inc-board>`):** provides a quick ticket filing form, badges identifying agent-filed follow-up tickets, protected paths warning cards, and a digest of recent reports.
 
 ## A ticket, in direct mode
 
@@ -57,11 +139,6 @@ own and sign in to each subscription once. This page is the current picture. Whe
 GitHub refuses the bot any change to `.github/workflows`, which keeps the repo's secrets (Duet's
 release signing key) out of agents' reach. So a reviewed workflow change waits for the owner, who
 pushes it with `tools/host/push-for-owner.sh` and then OKs the ticket.
-
-## Releases
-
-The owner cuts releases for now: a release bundles many commits on main. Making them automatic is
-for later, once the owner trusts it. The signing key stays a GitHub secret, never readable by agents.
 
 ## Knowledge
 
