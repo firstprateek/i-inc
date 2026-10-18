@@ -1,0 +1,13 @@
+#!/bin/sh
+# Codex ACP talks to the pinned Codex CLI and keeps ChatGPT auth in this sandbox's HOME.
+. /usr/local/lib/i-inc/acp-env.sh
+codex_bin=$(command -v codex) || {
+  echo "the pinned Codex CLI is missing; run tools/host/provision-codex.sh on the mini" >&2
+  exit 69
+}
+export CODEX_PATH="$codex_bin"
+export CODEX_HOME="$HOME/.codex"
+export NO_BROWSER=1
+export INITIAL_AGENT_MODE=workspace-write
+mkdir -p "$CODEX_HOME" || exit 1
+exec codex-acp "$@"
