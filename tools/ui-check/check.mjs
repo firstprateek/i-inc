@@ -46,6 +46,7 @@ if (targets.length === 0) {
   console.error("usage: check.mjs [--out dir] [--size WxH] [--dark] <file.html | url> ...");
   process.exit(2);
 }
+const requestedSize = size?.split("x").map(Number) ?? null;
 mkdirSync(outDir, { recursive: true });
 
 // Chromium connects directly, so pages on localhost load. When the environment has an HTTPS proxy
@@ -61,7 +62,9 @@ let errors = 0;
 for (const target of targets) {
   const url = /^https?:|^file:/.test(target) ? target : pathToFileURL(resolve(target)).href;
   const page = await browser.newPage({
-    viewport: { width: 1600, height: 1000 },
+    viewport: requestedSize
+      ? { width: requestedSize[0], height: requestedSize[1] }
+      : { width: 1600, height: 1000 },
     colorScheme: dark ? "dark" : "light",
   });
   if (outside) {
@@ -85,15 +88,15 @@ for (const target of targets) {
   await page.evaluate(() => document.fonts.ready);
 
   // Size the viewport to the page's fixed root (design artboards) unless told otherwise.
-  const dims = size
-    ? size.split("x").map(Number)
+  const dims = requestedSize
+    ? requestedSize
     : await page.evaluate(() => {
         // A design artboard's root is its first element with a fixed inline width.
         const root = document.querySelector('body [style*="width"]');
         const r = root?.getBoundingClientRect();
         return [Math.ceil(r?.width) || 1440, Math.ceil(r?.height) || 900];
       });
-  await page.setViewportSize({ width: dims[0], height: dims[1] });
+  if (!requestedSize) await page.setViewportSize({ width: dims[0], height: dims[1] });
 
   const findings = await page.evaluate(auditInPage);
   findings.push(...(await cdpChecks(page)));

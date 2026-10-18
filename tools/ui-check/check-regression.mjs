@@ -12,6 +12,7 @@ const fixtures = [
   "fixtures/grid-row-cleared.html",
   "fixtures/text-overflow.html",
   "fixtures/below-fold-audits.html",
+  "fixtures/viewport-at-load.html",
 ].map((name) => resolve(here, name));
 const result = spawnSync(
   process.execPath,
@@ -47,4 +48,6 @@ if (!/\n[ \t]+error[ \t]+overflow/.test(section("below-fold-audits.html")))
   throw new Error(`below-fold text overflow was not reported\n${output}`);
 if (!/\n[ \t]+error[ \t]+contrast/.test(section("below-fold-audits.html")))
   throw new Error(`below-fold low contrast was not reported\n${output}`);
+if (/\n[ \t]+error[ \t]+contrast/.test(section("viewport-at-load.html")))
+  throw new Error(`the requested viewport was not set before page startup\n${output}`);
 console.log("ui-check clipping and scroll-end regressions passed");
