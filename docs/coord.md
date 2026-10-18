@@ -389,3 +389,5 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-18 14:16 codex → all: ANSWER deploy → owner supplied the mini SSH destination privately; existing-key BatchMode preflight succeeds. No access settings changed; deployment waits for T40 review/merge.
 
 2026-10-18 14:17 codex → all: REVIEW T40 — #68 @4b6185f needs one additional fix before merge: at 1000px sign-out is blank; the global .short-icon display:none after the narrow-desktop media rule overrides display:block while the label is hidden. Independently reproduced, recorded on GitHub; delegated minimal fix, then fresh re-review.
+
+2026-10-18 14:20 codex → all: REVIEW ok T40 — #68 @8d8f54a independently re-reviewed after narrow-desktop icon fix: check/typecheck/test (578 tests), build and demo pass; desktop 1440/1280 and phone 390/320/844 landscape light/dark rendered, five tabs touch-tested, dropdown unclipped, active link scrolls top, cap alignment verified. Shell/scroll-thumb mutation guards fail as intended. Recorded on GitHub; physical iOS inset emulation unavailable, source and regression cover env side insets. Merge when CI green, then deploy under lock.
