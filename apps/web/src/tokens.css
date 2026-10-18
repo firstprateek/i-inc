@@ -256,3 +256,19 @@ body {
   padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
   box-sizing: border-box;
 }
+
+/* A route that fills the screen (the chat) pins the document to the viewport so only its inner panes
+   scroll. 100vh first, for browsers without dynamic viewport units. */
+html[data-fill],
+html[data-fill] body {
+  overflow: hidden;
+}
+html[data-fill] body {
+  min-height: 0;
+  height: 100vh;
+}
+@supports (height: 100dvh) {
+  html[data-fill] body {
+    height: 100dvh;
+  }
+}
