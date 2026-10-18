@@ -392,6 +392,14 @@ export class IncApp extends LitElement {
     }
   };
 
+  /** The link to the page you are already on does not navigate: like the tab bar, it goes to the top. */
+  private onHeaderClick = (e: MouseEvent) => {
+    const a = e.composedPath().find((n): n is HTMLAnchorElement => n instanceof HTMLAnchorElement);
+    if (!a || a.hash !== location.hash) return;
+    const main = this.main();
+    if (main) main.scrollTop = 0;
+  };
+
   private toggleAllViews = (e?: Event) => {
     e?.stopPropagation();
     this.allViewsOpen = !this.allViewsOpen;
@@ -460,7 +468,7 @@ export class IncApp extends LitElement {
         position: relative;
         z-index: 20;
         display: flex; align-items: center; gap: 24px;
-        padding: calc(12px + env(safe-area-inset-top)) max(32px, env(safe-area-inset-right)) 12px max(32px, env(safe-area-inset-left));
+        padding: calc(12px + env(safe-area-inset-top)) max(32px, calc((100% - 1360px) / 2), env(safe-area-inset-right)) 12px max(32px, calc((100% - 1360px) / 2), env(safe-area-inset-left));
         border-bottom: 1px solid var(--line);
         background: var(--ground);
         -webkit-user-select: none; user-select: none;
@@ -972,7 +980,8 @@ export class IncApp extends LitElement {
       }
       :host([own-scroll]) inc-chat { flex: 1 1 0; min-height: 0; }
       @media (max-width: 900px) {
-        :host([own-scroll]) main { padding: 0; }
+        /* No padding of its own, but the notch's side insets stay (the bars handle top and bottom). */
+        :host([own-scroll]) main { padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left); }
       }
       /* Touch screens wider than a phone (a tablet): the "All views" controls get full-size targets. */
       @media (pointer: coarse) {
@@ -1149,7 +1158,7 @@ export class IncApp extends LitElement {
       ><span class="tab-pill" aria-hidden="true">${icon}</span><span class="tab-label">${label}</span></button>`;
 
     return html`
-      <header>
+      <header @click=${this.onHeaderClick}>
         <a class="mark" href="#/office">i.inc</a>
         ${this.mobileTitle()}
         <nav aria-label="Views">

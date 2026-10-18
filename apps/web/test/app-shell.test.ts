@@ -277,3 +277,154 @@ describe("no code scrolls the page", () => {
     }
   });
 });
+
+// Guards for the headline fix: if any of these rules is removed the page goes back to scrolling as a
+// document and the header scrolls away. happy-dom has no layout, so these read the rules themselves.
+describe("the shell's layout rules", () => {
+  const tokens = readFileSync(join(import.meta.dirname, "../src/tokens.css"), "utf8");
+  const appCss = (IncApp.styles as unknown as { cssText: string }[]).map((c) => c.cssText).join("\n");
+
+  /** The bodies of every rule whose selector is exactly `selector` (rules without nested braces). */
+  const bodies = (css: string, selector: string): string[] => {
+    const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return [...css.matchAll(new RegExp(`(?:^|[};\\n])\\s*${esc}\\s*\\{([^{}]*)\\}`, "g"))].map(
+      (m) => m[1] ?? "",
+    );
+  };
+  const has = (css: string, selector: string, ...decls: RegExp[]) => {
+    const found = bodies(css, selector);
+    expect(found.length, `no rule for ${selector}`).toBeGreaterThan(0);
+    for (const d of decls)
+      expect(
+        found.some((b) => d.test(b)),
+        `${selector} lacks ${d}`,
+      ).toBe(true);
+  };
+
+  it("html and body never scroll the document", () => {
+    has(tokens, "html", /overflow:\s*hidden/, /height:\s*100%/, /overscroll-behavior:\s*none/);
+    has(tokens, "body", /overflow:\s*hidden/, /height:\s*100%/, /overscroll-behavior:\s*none/);
+  });
+
+  it("the host is a viewport-height grid of header, main (and the tab bar on phones)", () => {
+    has(
+      appCss,
+      ":host",
+      /display:\s*grid/,
+      /grid-template-rows:\s*auto minmax\(0, 1fr\)\s*;/,
+      /height:\s*100dvh/,
+      /overflow:\s*hidden/,
+    );
+    has(appCss, ":host", /grid-template-areas:\s*"header" "main" "tabs"/);
+    expect(appCss).toMatch(/grid-template-rows:\s*auto minmax\(0, 1fr\) auto/);
+  });
+
+  it("the header and the tab bar are grid rows, never sticky or fixed", () => {
+    has(appCss, "header", /grid-area:\s*header/, /z-index:\s*20/);
+    has(appCss, ".tabs", /grid-area:\s*tabs/);
+    expect(appCss).not.toMatch(/position:\s*(sticky|fixed)/);
+  });
+
+  it("main is the one scroller, and a route that owns its scrolling clips it", () => {
+    has(
+      appCss,
+      "main",
+      /grid-area:\s*main/,
+      /min-height:\s*0/,
+      /overflow-y:\s*auto/,
+      /overscroll-behavior:\s*contain/,
+      /scrollbar-gutter:\s*stable/,
+    );
+    has(appCss, ":host([own-scroll]) main", /overflow:\s*hidden/);
+  });
+
+  it("a route that owns its scrolling keeps the notch's side insets on a phone", () => {
+    has(
+      appCss,
+      ":host([own-scroll]) main",
+      /padding:\s*0 env\(safe-area-inset-right\) 0 env\(safe-area-inset-left\)/,
+    );
+  });
+
+  it("the scrollbar thumb is at least 3:1 on the ground and the surface, in light and dark", () => {
+    const hex = (block: string, name: string) =>
+      new RegExp(`${name}:\\s*(#[0-9a-fA-F]{6})`).exec(block)?.[1] as string;
+    const lum = (h: string) => {
+      const [r, g, b] = [1, 3, 5].map((i) => {
+        const v = Number.parseInt(h.slice(i, i + 2), 16) / 255;
+        return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+      }) as [number, number, number];
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const ratio = (a: string, b: string) => {
+      const [x, y] = [lum(a), lum(b)];
+      return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+    };
+    const light = tokens.slice(
+      tokens.indexOf(":root {"),
+      tokens.indexOf("@media (prefers-color-scheme: dark)"),
+    );
+    const dark = tokens.slice(tokens.indexOf(':root[data-theme="dark"]'));
+    const darkMedia = tokens.slice(
+      tokens.indexOf("@media (prefers-color-scheme: dark)"),
+      tokens.indexOf(':root[data-theme="dark"]'),
+    );
+    for (const block of [light, dark, darkMedia]) {
+      for (const bg of ["--ground", "--surface"]) {
+        expect(ratio(hex(block, "--scroll-thumb"), hex(block, bg))).toBeGreaterThanOrEqual(3);
+        expect(ratio(hex(block, "--scroll-thumb-hover"), hex(block, bg))).toBeGreaterThanOrEqual(3);
+      }
+    }
+    expect(tokens).toMatch(/scrollbar-color:\s*var\(--scroll-thumb\)/);
+  });
+});
+
+describe("the shell's structure and header links", () => {
+  beforeEach(() => {
+    phone(false);
+    vi.stubGlobal("fetch", () => new Promise(() => {}));
+    history.replaceState(null, "");
+    localStorage.clear();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    document.body.innerHTML = "";
+  });
+
+  it("has header, main and the tab bar as the grid's direct children, in that order", async () => {
+    location.hash = "#/board";
+    const app = new IncApp();
+    document.body.append(app);
+    await app.updateComplete;
+    const kids = [...(app.shadowRoot as ShadowRoot).children]
+      .filter((e) => e.tagName !== "STYLE")
+      .map((e) => e.tagName);
+    expect(kids).toEqual(["HEADER", "MAIN", "NAV"]);
+  });
+
+  it("clicking the link to the page you are on scrolls main to the top", async () => {
+    location.hash = "#/board";
+    const app = new IncApp();
+    document.body.append(app);
+    await app.updateComplete;
+    await new Promise((r) => setTimeout(r, 10));
+    const main = (app.shadowRoot as ShadowRoot).querySelector("main") as HTMLElement;
+    let top = 480;
+    Object.defineProperty(main, "scrollTop", {
+      configurable: true,
+      get: () => top,
+      set: (v: number) => (top = v),
+    });
+    const link = (app.shadowRoot as ShadowRoot).querySelector(
+      'header nav a[href="#/board"]',
+    ) as HTMLAnchorElement;
+    link.click();
+    expect(top).toBe(0);
+    // A link to another page leaves the position to the navigation logic.
+    top = 480;
+    (app.shadowRoot as ShadowRoot)
+      .querySelector('header nav a[href="#/desk"]')
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
+    expect(top).toBe(480);
+  });
+});

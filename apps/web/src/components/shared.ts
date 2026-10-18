@@ -19,8 +19,8 @@ export const base = css`
   @supports not (scrollbar-width: thin) {
     *::-webkit-scrollbar { width: 10px; height: 10px; }
     *::-webkit-scrollbar-track { background: transparent; }
-    *::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 999px; border: 2px solid transparent; background-clip: content-box; }
-    *::-webkit-scrollbar-thumb:hover { background: var(--ink-2); background-clip: content-box; }
+    *::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 999px; border: 2px solid transparent; background-clip: content-box; }
+    *::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); background-clip: content-box; }
   }
   pre { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; }
   .card {

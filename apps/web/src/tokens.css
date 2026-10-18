@@ -34,6 +34,9 @@
   --bar-ok: #1d5234;
   --bar-warn: #7a4f00;
   --bar-crit: #c4452b;
+  /* Scrollbar thumb: at least 3:1 on the ground and on the surface; darker on hover. */
+  --scroll-thumb: #7d8680;
+  --scroll-thumb-hover: #59625d;
 
   /* Deterministic project badge colors (WCAG AA contrast > 7:1) */
   --proj-0-bg: #e2f0ef;
@@ -119,6 +122,8 @@
     --bar-ok: #48bb78;
     --bar-warn: #e0a32d;
     --bar-crit: #ff6b57;
+    --scroll-thumb: #6b756f;
+    --scroll-thumb-hover: #9aa39d;
     --neutral-bg: #2e3531;
     --neutral-fg: #c9cfc9;
     --screen: #0c0f0d;
@@ -193,6 +198,8 @@
   --bar-ok: #48bb78;
   --bar-warn: #e0a32d;
   --bar-crit: #ff6b57;
+  --scroll-thumb: #6b756f;
+  --scroll-thumb-hover: #9aa39d;
   --neutral-bg: #2e3531;
   --neutral-fg: #c9cfc9;
   --screen: #0c0f0d;
@@ -259,5 +266,5 @@ body {
 /* The themed scrollbar, thin, for the page's one scroller (<main>) and the inner panes. Mirrored in
    the shell's own styles, since shadow roots do not inherit these rules. */
 html {
-  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-color: var(--scroll-thumb) transparent;
 }
