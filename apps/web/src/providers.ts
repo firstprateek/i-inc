@@ -1,7 +1,8 @@
-import type { Engine as CoreEngine } from "@i-inc/core";
+import type { Engine } from "@i-inc/core";
 
-export type Harness = CoreEngine["harness"] | "codex";
-export type Engine = Omit<CoreEngine, "harness"> & { harness: Harness };
+export type { Engine } from "@i-inc/core";
+
+export type Harness = Engine["harness"];
 
 export const harnessOptions: { value: Harness; label: string }[] = [
   { value: "claude-code", label: "Claude Code (Anthropic)" },
