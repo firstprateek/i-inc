@@ -100,7 +100,7 @@ describe("accounts and engines", () => {
     const app = await testApp();
     const engine = {
       harness: "claude-code",
-      model: "Claude (the subscription's default)",
+      model: "Claude subscription default",
       accountId: "claude",
     };
     expect((await app.call("PUT", "/api/engines/claude", engine)).status).toBe(400);

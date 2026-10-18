@@ -507,6 +507,41 @@ describe("an ACP session", () => {
     expect(s.sent.some((message) => message.method === "session/prompt")).toBe(false);
   });
 
+  it("redacts tokens and control characters from upstream config errors and caps them at 200 characters", async () => {
+    const noisy = `bad\u0007 token ghp_abc123SECRET and Bearer eyJhbGci.tail and sk-live-xyz\nsecond line ${"z".repeat(400)}`;
+    const s = server((method, _params, reply, id) => {
+      if (method === "initialize") reply({ id, result: { protocolVersion: 1 } });
+      if (method === "session/new")
+        reply({
+          id,
+          result: {
+            sessionId: "s1",
+            configOptions: [
+              {
+                id: "model",
+                category: "model",
+                type: "select",
+                currentValue: "other",
+                options: [{ value: codex.model, name: codex.model }],
+              },
+            ],
+          },
+        });
+      if (method === "session/set_config_option") reply({ id, error: { code: -32602, message: noisy } });
+    });
+    const out = await agent(s).run(request({ engine: codex }));
+    expect(out.kind).toBe("stuck");
+    const reason = out.kind === "stuck" ? out.reason : "";
+    expect(reason).toContain(
+      "Codex ACP couldn't select model gpt-5-codex: bad token [redacted] and [redacted] and [redacted] second line z",
+    );
+    expect(reason).not.toMatch(/ghp_|eyJhbGci|sk-live/);
+    expect(reason).not.toContain("\u0007");
+    expect(reason).not.toContain("\n");
+    // the upstream part alone is at most 200 characters
+    expect(reason.length).toBeLessThanOrEqual("Codex ACP couldn't select model gpt-5-codex: ".length + 200);
+  });
+
   it("reports Codex sign-in failure as actionable and maps usage-limit errors to fallback outcomes", async () => {
     const auth = server((method, _params, reply, id) => {
       if (method === "initialize")

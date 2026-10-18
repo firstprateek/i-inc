@@ -1075,6 +1075,61 @@ describe("engine edit and deletion routes (Contract C11)", () => {
     reopened.db.close();
   });
 
+  it("validates the model id for every harness", async () => {
+    const app = await testApp();
+    const put = (harness: string, model: unknown) =>
+      app.call("PUT", "/api/engines/model-check", { harness, model, accountId: "claude-pro" });
+    for (const harness of ["claude-code", "antigravity", "opencode", "codex"]) {
+      for (const bad of [
+        "",
+        "   ",
+        "x".repeat(101),
+        "gpt\n5",
+        "gpt\u0000",
+        "gpt\t5",
+        "a;rm -rf",
+        "gpt`5`",
+        7,
+      ]) {
+        const res = await put(harness, bad);
+        expect(res.status, `${harness} ${JSON.stringify(bad)}`).toBe(400);
+        expect(res.body.error).toEqual(expect.stringContaining("model"));
+      }
+      for (const good of [
+        "gpt-5-codex",
+        "Gemini 3.1 Pro",
+        "qwen3:8b",
+        "openai/gpt-5.5@2026+x_1.0",
+        "x".repeat(100),
+      ]) {
+        expect((await put(harness, good)).status, `${harness} ${good}`).toBe(200);
+      }
+    }
+    app.db.close();
+  });
+
+  it("explains why an existing local engine can't switch to Codex", async () => {
+    const app = await testApp();
+    expect(
+      (
+        await app.call("PUT", "/api/engines/local-eng", {
+          harness: "opencode",
+          model: "qwen3:8b",
+          accountId: "claude-pro",
+          local: true,
+        })
+      ).status,
+    ).toBe(200);
+    const res = await app.call("PUT", "/api/engines/local-eng", { harness: "codex" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Codex runs in the cloud and cannot be local; turn off Local first");
+    expect(app.deps.registry.engine("local-eng")).toMatchObject({ harness: "opencode", local: true });
+    const ok = await app.call("PUT", "/api/engines/local-eng", { harness: "codex", local: false });
+    expect(ok.status).toBe(200);
+    expect(ok.body.engine).toMatchObject({ harness: "codex", local: false });
+    app.db.close();
+  });
+
   it("edits an existing engine partially without re-specifying harness and account", async () => {
     const app = await testApp();
 

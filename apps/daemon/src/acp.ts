@@ -256,7 +256,8 @@ export class AcpAgent implements Agent {
         clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
         clientInfo: { name: "i.inc", version: "0.1.0" },
       });
-      if (init.error) return stuck(`the ${r.engine.harness} ACP server didn't start: ${message(init.error)}`);
+      if (init.error)
+        return stuck(`the ${r.engine.harness} ACP server didn't start: ${upstreamReason(init.error)}`);
 
       const created = await rpc.request("session/new", { cwd: this.o.cwdFor(r.ticket.id), mcpServers: [] });
       if (created.error) {
@@ -264,7 +265,7 @@ export class AcpAgent implements Agent {
         // "Authentication required": sign-ins need the owner (spec §5), so the switch rules take over.
         if (e.code === -32000)
           return stuck(`${r.engine.harness} needs a sign-in in ${r.employee.name}'s machine`);
-        return stuck(`${r.engine.harness} couldn't open a session: ${message(e)}`);
+        return stuck(`${r.engine.harness} couldn't open a session: ${upstreamReason(e)}`);
       }
       const session = (created.result ?? {}) as Json;
       const sessionId = String(session.sessionId);
@@ -289,7 +290,8 @@ export class AcpAgent implements Agent {
             configId: String(config.id ?? config.configId),
             value,
           });
-          if (changed.error) throw new Error(`Codex ACP couldn't select ${label}: ${message(changed.error)}`);
+          if (changed.error)
+            throw new Error(`Codex ACP couldn't select ${label}: ${upstreamReason(changed.error)}`);
           const result = (changed.result ?? {}) as Json;
           if (Array.isArray(result.configOptions)) liveConfigOptions = result.configOptions as Json[];
         };
@@ -399,6 +401,20 @@ function stuck(reason: string): SessionOutcome {
 function message(e: unknown): string {
   const m = (e as Json | undefined)?.message;
   return typeof m === "string" ? m : JSON.stringify(e);
+}
+
+/**
+ * An upstream ACP server's error text, made fit for a stuck reason the owner reads: control characters
+ * become spaces, anything that looks like a token or credential is redacted, and it stops at 200
+ * characters. Redacting comes before cutting, so a token can't survive by being split at the limit.
+ */
+export function upstreamReason(e: unknown): string {
+  const text = message(e)
+    .replace(/\p{Cc}/gu, " ")
+    .replace(/(ghp_|ghs_|sk-|Bearer )\S+/g, "[redacted]")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.length > 200 ? `${text.slice(0, 199)}…` : text;
 }
 
 /** Select options can be nested by an ACP peer to group related choices. */
