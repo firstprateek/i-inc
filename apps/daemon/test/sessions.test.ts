@@ -417,31 +417,72 @@ describe("Secret redaction", () => {
     );
   });
 
-  it("redacts curl credentials (-u / --user)", () => {
+  it("redacts curl credentials (-u / --user with or without space)", () => {
     expect(redactSecrets("curl -u user:pass https://example.com")).toBe(
       "curl -u user:[redacted] https://example.com",
+    );
+    expect(redactSecrets("curl -uadmin:secret123 https://example.com")).toBe(
+      "curl -uadmin:[redacted] https://example.com",
     );
     expect(redactSecrets("curl --user admin:secret123 https://example.com")).toBe(
       "curl --user admin:[redacted] https://example.com",
     );
   });
 
-  it("redacts generalized token/key env variables (e.g. GITHUB_TOKEN)", () => {
+  it("redacts URL credentials (scheme://user:pass@host)", () => {
+    expect(redactSecrets("git clone https://bot:ghp_secret@github.com/org/repo.git")).toBe(
+      "git clone https://bot:[redacted]@github.com/org/repo.git",
+    );
+    expect(redactSecrets("postgres://admin:supersecret@127.0.0.1:5432/mydb")).toBe(
+      "postgres://admin:[redacted]@127.0.0.1:5432/mydb",
+    );
+  });
+
+  it("redacts AWS Access Key IDs (AKIA...)", () => {
+    expect(redactSecrets("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE")).toBe("AWS_ACCESS_KEY_ID=[redacted]");
+    expect(redactSecrets("access key is AKIAIOSFODNN7EXAMPLE in config")).toBe(
+      "access key is [redacted] in config",
+    );
+  });
+
+  it("redacts CLI flags and YAML/config password/token values", () => {
+    expect(redactSecrets("app --password mySecretPassword --host localhost")).toBe(
+      "app --password [redacted] --host localhost",
+    );
+    expect(redactSecrets("cli --token 'my-cli-token'")).toBe("cli --token [redacted]");
+    expect(redactSecrets("password: superSecretValue\nhost: localhost")).toBe(
+      "password: [redacted]\nhost: localhost",
+    );
+    expect(redactSecrets("api_key: 'conf-api-key'")).toBe("api_key: [redacted]");
+  });
+
+  it("redacts single-quoted JSON and Python dicts", () => {
+    expect(redactSecrets("{'password': 'hunter2', 'api_key': 'abcd1234'}")).toBe(
+      "{'password': '[redacted]', 'api_key': '[redacted]'}",
+    );
+  });
+
+  it("redacts generalized token/key env variables while preserving words like keyboard=on", () => {
     expect(redactSecrets("GITHUB_TOKEN=abc123 curl -u user:pass x")).toBe(
       "GITHUB_TOKEN=[redacted] curl -u user:[redacted] x",
     );
     expect(redactSecrets("MY_SECRET=shh export ACCESS_KEY=123")).toBe(
       "MY_SECRET=[redacted] export ACCESS_KEY=[redacted]",
     );
+    expect(redactSecrets("settings: keyboard=on mouse=off key=secret123")).toBe(
+      "settings: keyboard=on mouse=off key=[redacted]",
+    );
   });
 
-  it("redacts long hex strings (32+ chars) and base64 strings while preserving paths", () => {
+  it("redacts long hex strings (32+ chars) and padded/unpadded base64 strings while preserving paths", () => {
     expect(
       redactSecrets("key aaaaaaaaaa0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
     ).toBe("key [redacted]");
     expect(redactSecrets("Z2l0aHViX3NlY3JldF9iYXNlNjRfdmFsdWVfdGhhdF9pc19sb25nX2Vub3VnaA==")).toBe(
       "[redacted]",
     );
+    // Unpadded base64 string (32+ chars, mixed casing and digits)
+    expect(redactSecrets("token: dGhpcyBpcyBhIHNhbXBsZSB1bnBhZGRlZCBiYXNlNjQ")).toBe("token: [redacted]");
     expect(
       redactSecrets("/Users/padi/Documents/projects/ai-projects/i-inc/apps/daemon/src/sessions.ts"),
     ).toBe("/Users/padi/Documents/projects/ai-projects/i-inc/apps/daemon/src/sessions.ts");
