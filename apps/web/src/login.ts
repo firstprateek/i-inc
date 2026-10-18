@@ -62,6 +62,9 @@ export class IncLogin extends LitElement {
   static override styles = [
     base,
     css`
+      /* The document does not scroll (the app shell), so a short window scrolls the sign-in itself. */
+      :host { height: 100vh; height: 100dvh; overflow-y: auto; box-sizing: border-box;
+        padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
       form {
         width: calc(100% - 32px);
         max-width: 24rem;

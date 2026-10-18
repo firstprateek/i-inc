@@ -7,6 +7,21 @@ export const base = css`
   h1, h2, h3 { font-family: var(--display); font-weight: 700; margin: 0; letter-spacing: -0.3px; }
   a { color: inherit; }
   a, button, summary, select, input, textarea { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+  /* Chrome, not content (T40): buttons, tabs and summaries are not selectable text and show the
+     pointer; text, links inside prose, inputs and the transcripts stay selectable. */
+  button, summary, [role="button"], [role="tab"] {
+    cursor: pointer; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  }
+  button:disabled, [aria-disabled="true"] { cursor: default; }
+  /* One thin, themed scrollbar for every scroller in the app (scrollbar-color inherits from :root;
+     the ::-webkit-scrollbar rules are for browsers without the standard properties). */
+  * { scrollbar-width: thin; }
+  @supports not (scrollbar-width: thin) {
+    *::-webkit-scrollbar { width: 10px; height: 10px; }
+    *::-webkit-scrollbar-track { background: transparent; }
+    *::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 999px; border: 2px solid transparent; background-clip: content-box; }
+    *::-webkit-scrollbar-thumb:hover { background: var(--ink-2); background-clip: content-box; }
+  }
   pre { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; }
   .card {
     background: var(--surface);
