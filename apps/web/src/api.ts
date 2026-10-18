@@ -161,6 +161,11 @@ export const api = {
   employees: () => call<{ employees: Employee[] }>("GET", "/api/employees").then((r) => r.employees),
   updateEmployee: (id: string, e: Partial<Employee>) =>
     call<{ employee: Employee }>("PUT", `/api/employees/${encodeURIComponent(id)}`, e),
+  teams: () =>
+    call<{ teams: { id: string; name: string; members: (string | { id: string; name?: string })[] }[] }>(
+      "GET",
+      "/api/teams",
+    ).then((r) => r.teams),
   handbook: () => call<KnowledgeView>("GET", "/api/knowledge/handbook"),
   brain: (id: string) => call<KnowledgeView>("GET", `/api/knowledge/brains/${id}`),
   learned: () => call<{ changes: NamedChange[] }>("GET", "/api/knowledge/recent").then((r) => r.changes),

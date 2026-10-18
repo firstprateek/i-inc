@@ -149,8 +149,10 @@ export class IncApp extends LitElement {
 
   override render() {
     const v = this.route.view;
-    const link = (to: string, label: string, active: boolean) =>
-      html`<a href="#/${to}" aria-current=${active ? "page" : "false"}>${label}</a>`;
+    const link = (to: string, label: string, active: boolean, title?: string) =>
+      title
+        ? html`<a href="#/${to}" aria-current=${active ? "page" : "false"} title=${title}>${label}</a>`
+        : html`<a href="#/${to}" aria-current=${active ? "page" : "false"}>${label}</a>`;
     const tab = (to: string, label: string, active: boolean) =>
       html`<button
         type="button"
@@ -165,7 +167,7 @@ export class IncApp extends LitElement {
         <nav aria-label="Views">
           ${link("office", "Office", v === "office")} ${link("board", "Board", v === "board" || v === "ticket")}
           ${link("chat", "Chat", v === "chat")}
-          ${link("desk", "My desk", v === "desk")} ${link("handbook", "Handbook", v === "handbook" || v === "brain")}
+          ${link("desk", "My desk", v === "desk")} ${link("handbook", "Company brain / Handbook", v === "handbook" || v === "brain", "Company brain / Handbook")}
           ${link("hiring", "Hiring", v === "hiring")} ${link("setup/teams", "Setup", v === "setup")}
           ${link("inbox", "Inbox", v === "inbox")}
         </nav>
@@ -207,7 +209,11 @@ export class IncApp extends LitElement {
           <ul class="more">
             ${[
               ["desk", "My desk", "Spend, where work waited, releases"],
-              ["handbook", "Handbook", "What every employee knows"],
+              [
+                "handbook",
+                "Company brain / Handbook",
+                "Organisation-wide knowledge: policies, facts, and what every employee knows",
+              ],
               ["hiring", "Hiring", "Add someone to the team"],
               ["setup/notifications", "Notifications", "Get a push when something needs you"],
               ["setup/teams", "Setup", "Teams, projects, engines and sandboxes"],

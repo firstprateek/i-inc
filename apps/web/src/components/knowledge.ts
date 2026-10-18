@@ -1,11 +1,26 @@
-// A brain or the handbook (spec §5, "The brain"): its pages, what changed and who taught it, with a
-// revert for anything learned. The handbook also holds policy changes waiting for the owner.
 import { css, html, type TemplateResult } from "lit";
 import { api, type KnowledgeView, type NamedChange, type Page, refreshNow } from "../api.ts";
+import { setupApi } from "../setup-api.ts";
 import { Loader } from "./loader.ts";
 import { avatar, base } from "./shared.ts";
 
-export class IncKnowledge extends Loader<KnowledgeView> {
+export interface TeamMember {
+  id: string;
+  name?: string;
+}
+
+export interface TeamItem {
+  id: string;
+  name: string;
+  members: (string | TeamMember)[];
+}
+
+export interface KnowledgeData extends KnowledgeView {
+  teams?: TeamItem[];
+  employeeNames?: Record<string, string>;
+}
+
+export class IncKnowledge extends Loader<KnowledgeData> {
   static override properties = { ...Loader.properties, repo: {}, page: { state: true } };
   /** "handbook", or an employee id for their brain. */
   declare repo: string;
@@ -17,7 +32,28 @@ export class IncKnowledge extends Loader<KnowledgeView> {
     this.page = "INDEX.md";
   }
 
-  protected fetch = () => (this.repo === "handbook" ? api.handbook() : api.brain(this.repo));
+  protected fetch = async (): Promise<KnowledgeData> => {
+    if (this.repo === "handbook") {
+      const [handbook, teamsData, officeData] = await Promise.all([
+        api.handbook(),
+        setupApi.teams().catch(() => []),
+        api.office().catch(() => null),
+      ]);
+      const employeeNames: Record<string, string> = {};
+      for (const e of officeData?.employees ?? []) {
+        employeeNames[e.id] = e.name;
+      }
+      const teams = Array.isArray(teamsData)
+        ? teamsData
+        : ((teamsData as { teams?: TeamItem[] })?.teams ?? []);
+      return {
+        ...handbook,
+        teams: teams as TeamItem[],
+        employeeNames,
+      };
+    }
+    return api.brain(this.repo);
+  };
 
   override updated(changed: Map<string, unknown>): void {
     if (changed.has("repo") && changed.get("repo") !== undefined) {
@@ -45,6 +81,17 @@ export class IncKnowledge extends Loader<KnowledgeView> {
     css`
       .head { display: flex; align-items: center; gap: 14px; margin: 4px 0 18px; }
       .head h1 { font-size: 30px; }
+      .spacer { flex-grow: 1; }
+      .company-link { white-space: nowrap; }
+      .company-callout {
+        padding: 12px 16px;
+        background: var(--sunken);
+        border-radius: 8px;
+        font-size: 14px;
+        color: var(--ink-2);
+        line-height: 1.4;
+      }
+      .company-callout a { color: var(--ink); font-weight: 600; text-decoration: underline; }
       .wrap { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 20px; align-items: start; }
       nav { padding: 10px; display: flex; flex-direction: column; gap: 2px; }
       nav button { all: unset; box-sizing: border-box; padding: 10px 12px; border-radius: 12px; cursor: pointer; font-size: 14px; min-height: 44px;
@@ -58,6 +105,14 @@ export class IncKnowledge extends Loader<KnowledgeView> {
       article ul { margin: 0; padding-left: 20px; }
       article a { cursor: pointer; }
       .path { font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
+      section.teams { padding: 18px 22px; display: flex; flex-direction: column; gap: 14px; }
+      section.teams h2 { font-size: 20px; }
+      .teams-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+      .team-section { background: var(--sunken); border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+      .team-section h3 { font-size: 16px; margin: 0; }
+      .team-members { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+      .team-members li a { color: var(--ink); font-weight: 600; text-decoration: none; }
+      .team-members li a:hover { text-decoration: underline; }
       section.log { padding: 18px 22px; display: flex; flex-direction: column; gap: 4px; }
       .change { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: center; padding: 10px 0;
         border-top: 1px solid var(--line); }
@@ -71,12 +126,17 @@ export class IncKnowledge extends Loader<KnowledgeView> {
       .row { display: flex; gap: 8px; }
       article, .change > span, .waiting blockquote { overflow-wrap: anywhere; }
       @media (max-width: 800px) {
+        .head { flex-wrap: wrap; }
         .head h1 { font-size: 26px; }
+        .company-link { min-height: 44px; }
         .wrap { grid-template-columns: 1fr; gap: 16px; }
         nav { flex-direction: row; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
         nav::-webkit-scrollbar { display: none; }
         nav button { flex-shrink: 0; white-space: nowrap; }
         article { padding: 18px; }
+        section.teams { padding: 16px 18px; }
+        .teams-list { grid-template-columns: 1fr; }
+        .team-members li a { display: inline-flex; align-items: center; min-height: 44px; }
         section.log { padding: 16px 18px; }
         /* Links inside a page get a 44px row, so they're easy to hit. */
         article li a, article p a { display: inline-flex; align-items: center; min-height: 44px; min-width: 44px; }
@@ -85,17 +145,36 @@ export class IncKnowledge extends Loader<KnowledgeView> {
     `,
   ];
 
+  private onCompanyLinkClick = () => {
+    location.hash = "#/handbook";
+  };
+
   override render() {
     if (this.error) return html`<p role="alert">${this.error}</p>`;
     if (!this.data)
       return html`<p class="muted">Opening ${this.repo === "handbook" ? "the handbook" : "the brain"}…</p>`;
     const d = this.data;
     const page = d.pages.find((p) => p.path === this.page) ?? d.pages[0];
+    const isHandbook = this.repo === "handbook";
     return html`
       <div class="head">
         ${d.employee ? avatar(d.employee, 52) : ""}
-        <div><h1>${d.employee ? `${d.employee.name}'s brain` : "Handbook"}</h1>
-          <span class="muted">${d.employee ? d.employee.role : "What every employee knows"}</span></div>
+        <div>
+          <h1>${isHandbook ? "Company brain / Handbook" : d.employee ? `${d.employee.name}'s brain` : "Brain"}</h1>
+          <span class="muted">${isHandbook ? "Organisation-wide knowledge: facts, policies, and team guidelines" : (d.employee?.role ?? "")}</span>
+        </div>
+        ${
+          !isHandbook
+            ? html`<span class="spacer"></span>
+              <a
+                class="btn ghost company-link"
+                href="#/handbook"
+                style="display:inline-flex;align-items:center;text-decoration:none"
+                @click=${this.onCompanyLinkClick}
+                >Company brain / Handbook →</a
+              >`
+            : ""
+        }
       </div>
       <div class="wrap">
         <nav class="card" aria-label="Pages">
@@ -119,7 +198,48 @@ export class IncKnowledge extends Loader<KnowledgeView> {
           )}
           ${
             page
-              ? html`<article class="card">${page.path === "INDEX.md" ? "" : html`<span class="path">${page.path}</span>`}${this.markdown(page.text)}</article>`
+              ? html`<article class="card">
+                  ${
+                    !isHandbook && page.path === "INDEX.md"
+                      ? html`<div class="company-callout">Part of the organisation. See <a href="#/handbook" @click=${this.onCompanyLinkClick}>Company brain / Handbook</a> for shared policies and facts.</div>`
+                      : ""
+                  }
+                  ${page.path === "INDEX.md" ? "" : html`<span class="path">${page.path}</span>`}
+                  ${this.markdown(page.text)}
+                </article>`
+              : !isHandbook
+                ? html`<article class="card">
+                    <div class="company-callout">Part of the organisation. See <a href="#/handbook" @click=${this.onCompanyLinkClick}>Company brain / Handbook</a> for shared policies and facts.</div>
+                  </article>`
+                : ""
+          }
+          ${
+            isHandbook
+              ? html`<section class="card teams" aria-label="Teams">
+                  <h2>Teams</h2>
+                  ${
+                    d.teams && d.teams.length > 0
+                      ? html`<div class="teams-list">
+                        ${d.teams.map((t) => {
+                          const members = (t.members ?? []).map((m) => normalizeMember(m, d.employeeNames));
+                          return html`<section class="team-section" aria-label=${t.name}>
+                            <h3>${t.name}</h3>
+                            ${
+                              members.length > 0
+                                ? html`<ul class="team-members">
+                                  ${members.map(
+                                    (m) =>
+                                      html`<li><a class="member-brain-link" href="#/brain/${m.id}">${m.name}</a></li>`,
+                                  )}
+                                </ul>`
+                                : html`<p class="muted">No members</p>`
+                            }
+                          </section>`;
+                        })}
+                      </div>`
+                      : html`<p class="muted">No teams configured</p>`
+                  }
+                </section>`
               : ""
           }
           <section class="card log" aria-label="What changed">
@@ -187,6 +307,20 @@ export class IncKnowledge extends Loader<KnowledgeView> {
       this.page = path ?? "INDEX.md";
     }}>${label}</a>`;
   }
+}
+
+function normalizeMember(
+  m: string | TeamMember,
+  names: Record<string, string> = {},
+): { id: string; name: string } {
+  if (typeof m === "string") {
+    return { id: m, name: names[m] || m };
+  }
+  if (typeof m === "object" && m !== null) {
+    const id = m.id || "";
+    return { id, name: m.name || names[id] || id };
+  }
+  return { id: String(m), name: String(m) };
 }
 
 /** "Add facts/duet-money.md" → "Added the fact “Duet money”". Other subjects read as they are. */
