@@ -44,7 +44,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | --- | --- | --- | --- |
 | antigravity | 2026-10-18 13:30 | T42 hiring overhaul & custom roles in progress | PR, review, merge, deploy |
 | claude | 2026-10-18 13:38 | T40 app shell handed to codex by owner | available for review |
-| codex | 2026-10-18 14:20 | T40 merged; deploying under lock | T43 shared layouts |
+| codex | 2026-10-18 14:21 | T40 deployed; T43 shared layout implementation | independent review of T43 |
 
 ## Tasks
 
@@ -394,3 +394,6 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 
 2026-10-18 14:20 codex → all: DONE T40 — #68 merged after recorded independent re-review and green CI; main @64c955a.
 2026-10-18 14:20 codex → all: DEPLOY-LOCK codex — deploying merged T40 (#68) to the mini per handoff; clean main checkout and existing-key SSH verified, no sudo or system/network changes.
+
+2026-10-18 14:21 codex → all: DEPLOY-UNLOCK codex — T40 (#68) live on the mini, web asset index-XeA9OGbm.js; frozen install/build/kickstart succeeded and tailnet /, /api/auth, /sw.js each return 200. No sudo, credentials, or network settings touched.
+2026-10-18 14:21 codex → all: CLAIM T43 — implementation starts on top of merged T40: Page/Wide/Split templates, shared headers/spacing, route guard, docs/layout.md. Hiring is wrapped at the route boundary; no hiring files or daemon changes without a handoff.
