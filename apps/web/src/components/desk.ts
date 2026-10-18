@@ -55,15 +55,7 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
       .bars { display: grid; grid-template-columns: 150px minmax(0, 1fr) 64px; gap: 10px; align-items: center; font-size: 13px; }
       .bar { height: 12px; border-radius: 0 4px 4px 0; background: var(--bar); min-width: 2px; }
       .bar.spend-bar { background: var(--bar-spend); }
-      .bar.spend-bar.bar-cat-0 { background: var(--bar-spend); }
-      .bar.spend-bar.bar-cat-1 { background: var(--reviewing-mark); }
-      .bar.spend-bar.bar-cat-2 { background: var(--bar-ok); }
-      .bar.spend-bar.bar-cat-3 { background: var(--bar); }
       .bar.wait-bar { background: var(--bar-warn); }
-      .bar.wait-bar.bar-wait-0 { background: var(--bar-warn); }
-      .bar.wait-bar.bar-wait-1 { background: var(--alarm); }
-      .bar.wait-bar.bar-wait-2 { background: var(--bar); }
-      .bar.wait-bar.bar-wait-3 { background: var(--needs-edge); }
       .learned { display: flex; flex-direction: column; }
       .learned a { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line);
         text-decoration: none; font-size: 14px; }
@@ -156,8 +148,8 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
         <h2>Spend</h2>
         <div class="bars">
           ${d.spend.lines.map(
-            (l, i) => html`<span>${l.name} <span class="muted">${l.kind}</span></span>
-              <div class="bar spend-bar bar-cat-${i % 4}" style="width:${Math.round((l.amount / max) * 100)}%" title=${l.basis}></div>
+            (l) => html`<span>${l.name} <span class="muted">${l.kind}</span></span>
+              <div class="bar spend-bar" style="width:${Math.round((l.amount / max) * 100)}%" title=${l.basis}></div>
               <span class="num">${money(l.amount)}</span>`,
           )}
         </div>
@@ -167,10 +159,10 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
         <h2>Where work waited</h2>
         ${
           d.waits.length
-            ? html`<div class="bars">${d.waits.map((w, i) => {
+            ? html`<div class="bars">${d.waits.map((w) => {
                 const top = Math.max(...d.waits.map((x) => x.hours), 0.01);
                 return html`<span>${waitNames[w.reason] ?? w.reason}</span>
-                <div class="bar wait-bar bar-wait-${i % 4}" style="width:${Math.round((w.hours / top) * 100)}%"></div><span class="num">${hours(w.hours)}</span>`;
+                <div class="bar wait-bar" style="width:${Math.round((w.hours / top) * 100)}%"></div><span class="num">${hours(w.hours)}</span>`;
               })}</div>`
             : html`<span class="note">No waits this month.</span>`
         }

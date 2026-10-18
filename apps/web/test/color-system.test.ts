@@ -21,12 +21,30 @@ function relativeLuminance(hex: string): number {
   return 0.2126 * sRGBtoLinear(r) + 0.7152 * sRGBtoLinear(g) + 0.0722 * sRGBtoLinear(b);
 }
 
-function contrastRatio(hex1: string, hex2: string): number {
+function contrastRatio(hex1?: string, hex2?: string): number {
+  if (!hex1 || !hex2) return 1;
   const l1 = relativeLuminance(hex1);
   const l2 = relativeLuminance(hex2);
   const lighter = Math.max(l1, l2);
   const darker = Math.min(l1, l2);
   return (lighter + 0.05) / (darker + 0.05);
+}
+
+function parseTokens(cssBlock: string): Record<string, string> {
+  const tokens: Record<string, string> = {};
+  for (const line of cssBlock.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("--") && trimmed.includes(":")) {
+      const colonIdx = trimmed.indexOf(":");
+      const key = trimmed.slice(0, colonIdx).trim();
+      const val = trimmed
+        .slice(colonIdx + 1)
+        .replace(";", "")
+        .trim();
+      tokens[key] = val;
+    }
+  }
+  return tokens;
 }
 
 describe("Rich visual identity and color system (T38)", () => {
@@ -49,10 +67,26 @@ describe("Rich visual identity and color system (T38)", () => {
     expect(fullHtml).toContain("proj-name");
   });
 
+  it("computes deterministic project hue indices regardless of array order or list position", () => {
+    const listA = ["alpha", "beta", "gamma", "delta", "i-inc", "duet"];
+    const listB = ["duet", "delta", "alpha", "i-inc", "gamma", "beta"];
+
+    const badgesA = listA.map((p) => ({ p, idx: projectIndex(p), badge: projectBadge(p) }));
+    const badgesB = listB.map((p) => ({ p, idx: projectIndex(p), badge: projectBadge(p) }));
+
+    for (const itemA of badgesA) {
+      const itemB = badgesB.find((b) => b.p === itemA.p);
+      expect(itemB).toBeDefined();
+      expect(itemA.idx).toBe(itemB?.idx);
+      expect(itemA.badge.values).toEqual(itemB?.badge.values);
+    }
+  });
+
   it("provides 7 distinct avatar tints with high contrast (≥7:1) in light and dark mode", () => {
     const cssPath = resolve(__dirname, "../src/tokens.css");
     const css = readFileSync(cssPath, "utf-8");
     const [_lightSection = "", darkSection = ""] = css.split(/data-theme="dark"/);
+    const darkTokens = parseTokens(darkSection);
 
     expect(tints).toHaveLength(7);
     for (const [bg, fg] of tints) {
@@ -61,91 +95,129 @@ describe("Rich visual identity and color system (T38)", () => {
     }
 
     for (let i = 0; i < 7; i++) {
-      const bgMatch = darkSection.match(new RegExp(`--avatar-${i}-bg:\\s*(#[0-9a-fA-F]{6})`));
-      const fgMatch = darkSection.match(new RegExp(`--avatar-${i}-fg:\\s*(#[0-9a-fA-F]{6})`));
-      expect(bgMatch).toBeTruthy();
-      expect(fgMatch).toBeTruthy();
-      if (bgMatch?.[1] && fgMatch?.[1]) {
-        expect(contrastRatio(bgMatch[1], fgMatch[1])).toBeGreaterThanOrEqual(7.0);
+      const bg = darkTokens[`--avatar-${i}-bg`];
+      const fg = darkTokens[`--avatar-${i}-fg`];
+      expect(bg).toBeDefined();
+      expect(fg).toBeDefined();
+      if (bg && fg) {
+        expect(contrastRatio(bg, fg)).toBeGreaterThanOrEqual(7.0);
       }
     }
   });
 
-  it("tokens.css defines status chips, dark mode overrides, and semantic bars", () => {
+  it("synchronizes prefers-color-scheme: dark tokens with [data-theme='dark'] tokens", () => {
     const cssPath = resolve(__dirname, "../src/tokens.css");
     const css = readFileSync(cssPath, "utf-8");
 
-    // Must define chip tokens
-    expect(css).toMatch(/--working-bg:\s*#[0-9a-fA-F]{6}/);
-    expect(css).toMatch(/--working-fg:\s*#[0-9a-fA-F]{6}/);
-    expect(css).toMatch(/--working-edge:\s*#[0-9a-fA-F]{6}/);
-    expect(css).toMatch(/--reviewing-bg:\s*#[0-9a-fA-F]{6}/);
-    expect(css).toMatch(/--reviewing-fg:\s*#[0-9a-fA-F]{6}/);
-    expect(css).toMatch(/--reviewing-edge:\s*#[0-9a-fA-F]{6}/);
-    expect(css).toMatch(/--needs-bg:\s*#[0-9a-fA-F]{6}/);
-    expect(css).toMatch(/--needs-fg:\s*#[0-9a-fA-F]{6}/);
-    expect(css).toMatch(/--needs-edge:\s*#[0-9a-fA-F]{6}/);
+    const mediaMatch = css.match(
+      /@media\s*\(prefers-color-scheme:\s*dark\)\s*\{[\s\S]*?:root:not\(\[data-theme="light"\]\)\s*\{([\s\S]*?)\}\s*\}/,
+    );
+    const dataThemeMatch = css.match(/:root\[data-theme="dark"\]\s*\{([\s\S]*?)\}/);
 
-    // Semantic health bars
-    expect(css).toContain("--bar-ok:");
-    expect(css).toContain("--bar-warn:");
-    expect(css).toContain("--bar-crit:");
-    expect(css).toContain("--bar-spend:");
-    expect(css).toContain("--bar-track:");
+    expect(mediaMatch).toBeTruthy();
+    expect(dataThemeMatch).toBeTruthy();
+
+    const mediaTokens = parseTokens(mediaMatch?.[1] ?? "");
+    const dataThemeTokens = parseTokens(dataThemeMatch?.[1] ?? "");
+
+    // Every token defined in [data-theme="dark"] must be present and identical in prefers-color-scheme
+    for (const [key, val] of Object.entries(dataThemeTokens)) {
+      expect(mediaTokens[key]).toBe(val);
+    }
+  });
+
+  it("tokens.css defines status chips, dark mode overrides, and semantic bars with adequate contrast", () => {
+    const cssPath = resolve(__dirname, "../src/tokens.css");
+    const css = readFileSync(cssPath, "utf-8");
+    const [lightSection = "", darkSection = ""] = css.split(/data-theme="dark"/);
+    const lightTokens = parseTokens(lightSection);
+    const darkTokens = parseTokens(darkSection);
+
+    // Chip foreground vs background contrast ≥ 4.5:1
+    expect(contrastRatio(lightTokens["--working-bg"], lightTokens["--working-fg"])).toBeGreaterThanOrEqual(
+      4.5,
+    );
+    expect(
+      contrastRatio(lightTokens["--reviewing-bg"], lightTokens["--reviewing-fg"]),
+    ).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(lightTokens["--needs-bg"], lightTokens["--needs-fg"])).toBeGreaterThanOrEqual(4.5);
+
+    expect(contrastRatio(darkTokens["--working-bg"], darkTokens["--working-fg"])).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(darkTokens["--reviewing-bg"], darkTokens["--reviewing-fg"])).toBeGreaterThanOrEqual(
+      4.5,
+    );
+    expect(contrastRatio(darkTokens["--needs-bg"], darkTokens["--needs-fg"])).toBeGreaterThanOrEqual(4.5);
+
+    // Semantic health bars defined
+    expect(lightTokens["--bar-ok"]).toBeDefined();
+    expect(lightTokens["--bar-warn"]).toBeDefined();
+    expect(lightTokens["--bar-crit"]).toBeDefined();
+    expect(lightTokens["--bar-spend"]).toBeDefined();
+    expect(lightTokens["--bar-track"]).toBeDefined();
+
+    expect(darkTokens["--bar-ok"]).toBeDefined();
+    expect(darkTokens["--bar-warn"]).toBeDefined();
+    expect(darkTokens["--bar-crit"]).toBeDefined();
+    expect(darkTokens["--bar-spend"]).toBeDefined();
+    expect(darkTokens["--bar-track"]).toBeDefined();
   });
 
   it("verifies project badge token contrast in light and dark mode exceeds 7:1", () => {
     const cssPath = resolve(__dirname, "../src/tokens.css");
     const css = readFileSync(cssPath, "utf-8");
     const [lightSection = "", darkSection = ""] = css.split(/data-theme="dark"/);
+    const lightTokens = parseTokens(lightSection);
+    const darkTokens = parseTokens(darkSection);
 
     for (let i = 0; i < 6; i++) {
       // Light
-      const lBg = lightSection.match(new RegExp(`--proj-${i}-bg:\\s*(#[0-9a-fA-F]{6})`));
-      const lFg = lightSection.match(new RegExp(`--proj-${i}-fg:\\s*(#[0-9a-fA-F]{6})`));
-      const lDot = lightSection.match(new RegExp(`--proj-${i}-dot:\\s*(#[0-9a-fA-F]{6})`));
-      expect(lBg).toBeTruthy();
-      expect(lFg).toBeTruthy();
-      if (lBg?.[1] && lFg?.[1]) {
-        expect(contrastRatio(lBg[1], lFg[1])).toBeGreaterThanOrEqual(7.0);
+      const lBg = lightTokens[`--proj-${i}-bg`];
+      const lFg = lightTokens[`--proj-${i}-fg`];
+      const lDot = lightTokens[`--proj-${i}-dot`];
+      expect(lBg).toBeDefined();
+      expect(lFg).toBeDefined();
+      expect(lDot).toBeDefined();
+      if (lBg && lFg) {
+        expect(contrastRatio(lBg, lFg)).toBeGreaterThanOrEqual(7.0);
       }
-      if (lBg?.[1] && lDot?.[1]) {
-        expect(contrastRatio(lBg[1], lDot[1])).toBeGreaterThanOrEqual(4.0);
+      if (lBg && lDot) {
+        expect(contrastRatio(lBg, lDot)).toBeGreaterThanOrEqual(4.0);
       }
 
       // Dark
-      const dBg = darkSection.match(new RegExp(`--proj-${i}-bg:\\s*(#[0-9a-fA-F]{6})`));
-      const dFg = darkSection.match(new RegExp(`--proj-${i}-fg:\\s*(#[0-9a-fA-F]{6})`));
-      const dDot = darkSection.match(new RegExp(`--proj-${i}-dot:\\s*(#[0-9a-fA-F]{6})`));
-      expect(dBg).toBeTruthy();
-      expect(dFg).toBeTruthy();
-      if (dBg?.[1] && dFg?.[1]) {
-        expect(contrastRatio(dBg[1], dFg[1])).toBeGreaterThanOrEqual(7.0);
+      const dBg = darkTokens[`--proj-${i}-bg`];
+      const dFg = darkTokens[`--proj-${i}-fg`];
+      const dDot = darkTokens[`--proj-${i}-dot`];
+      expect(dBg).toBeDefined();
+      expect(dFg).toBeDefined();
+      expect(dDot).toBeDefined();
+      if (dBg && dFg) {
+        expect(contrastRatio(dBg, dFg)).toBeGreaterThanOrEqual(7.0);
       }
-      if (dBg?.[1] && dDot?.[1]) {
-        expect(contrastRatio(dBg[1], dDot[1])).toBeGreaterThanOrEqual(4.0);
+      if (dBg && dDot) {
+        expect(contrastRatio(dBg, dDot)).toBeGreaterThanOrEqual(4.0);
       }
     }
   });
 
-  it("verifies bar pairs contrast against track exceeds 3:1 in both light and dark mode", () => {
+  it("verifies bar pairs contrast against track/line/surface exceeds 3:1 in both light and dark mode", () => {
     const cssPath = resolve(__dirname, "../src/tokens.css");
     const css = readFileSync(cssPath, "utf-8");
     const [lightSection = "", darkSection = ""] = css.split(/data-theme="dark"/);
+    const lightTokens = parseTokens(lightSection);
+    const darkTokens = parseTokens(darkSection);
 
-    const lWarn = lightSection.match(/--bar-warn:\s*(#[0-9a-fA-F]{6})/)?.[1];
-    const lLine = lightSection.match(/--line:\s*(#[0-9a-fA-F]{6})/)?.[1];
-    expect(lWarn && lLine).toBeTruthy();
-    if (lWarn && lLine) {
-      expect(contrastRatio(lWarn, lLine)).toBeGreaterThanOrEqual(3.0);
-    }
+    // Light mode bar contrast
+    expect(contrastRatio(lightTokens["--bar-ok"], lightTokens["--line"])).toBeGreaterThanOrEqual(3.0);
+    expect(contrastRatio(lightTokens["--bar-warn"], lightTokens["--line"])).toBeGreaterThanOrEqual(3.0);
+    expect(contrastRatio(lightTokens["--bar-crit"], lightTokens["--line"])).toBeGreaterThanOrEqual(3.0);
+    expect(contrastRatio(lightTokens["--bar-spend"], lightTokens["--surface"])).toBeGreaterThanOrEqual(3.0);
 
-    const dCrit = darkSection.match(/--bar-crit:\s*(#[0-9a-fA-F]{6})/)?.[1];
-    const dTrack = darkSection.match(/--bar-track:\s*(#[0-9a-fA-F]{6})/)?.[1];
-    expect(dCrit && dTrack).toBeTruthy();
-    if (dCrit && dTrack) {
-      expect(contrastRatio(dCrit, dTrack)).toBeGreaterThanOrEqual(3.0);
-    }
+    // Dark mode bar contrast
+    expect(contrastRatio(darkTokens["--bar-ok"], darkTokens["--bar-track"])).toBeGreaterThanOrEqual(3.0);
+    expect(contrastRatio(darkTokens["--bar-warn"], darkTokens["--bar-track"])).toBeGreaterThanOrEqual(3.0);
+    expect(contrastRatio(darkTokens["--bar-crit"], darkTokens["--bar-track"])).toBeGreaterThanOrEqual(3.0);
+    expect(contrastRatio(darkTokens["--bar-spend"], darkTokens["--surface"])).toBeGreaterThanOrEqual(3.0);
   });
 
   it("board renders status column indicator dots and active card accent classes (including paused)", async () => {

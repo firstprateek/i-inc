@@ -149,25 +149,24 @@ export class IncBoard extends Loader<BoardData> {
         .digest .title { white-space: normal; overflow: visible; }
         .digest .meta { grid-column: 2; }
       }
-      .cols { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; align-items: start; }
-      section { background: var(--sunken); border-radius: 22px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
-      h2 { font-size: 20px; padding: 2px 4px; display: flex; gap: 8px; align-items: center; }
+      .cols { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; align-items: start; min-width: 0; }
+      section { background: var(--sunken); border-radius: 22px; padding: 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+      h2 { font-size: 20px; padding: 2px 4px; display: flex; gap: 8px; align-items: center; min-width: 0; }
       h2 span { font-size: 14px; color: var(--ink-2); font-family: var(--body); font-weight: 600; }
       .col-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
       .col-dot-todo { background: var(--ink-2); }
       .col-dot-progress { background: var(--working-fg); }
       .col-dot-review { background: var(--reviewing-mark); }
       .col-dot-done { background: var(--ink); }
-      .t { padding: 14px; display: flex; flex-direction: column; gap: 8px; text-decoration: none; }
+      .t { padding: 14px; display: flex; flex-direction: column; gap: 8px; text-decoration: none; min-width: 0; box-sizing: border-box; }
       .t.in-progress { border-left: 3px solid var(--working-fg); }
       .t.review { border-left: 3px solid var(--reviewing-mark); }
       .t.paused { border-left: 3px solid var(--bar-warn); }
       .t.waiting { background: var(--needs-surface); border: 2px solid var(--needs-edge); padding: 13px; }
-      .row { display: flex; gap: 6px; align-items: center; }
+      .row { display: flex; gap: 6px; align-items: center; min-width: 0; flex-wrap: wrap; }
       .grow { flex-grow: 1; }
-      .title { font-size: 15px; font-weight: 700; line-height: 1.3; overflow-wrap: anywhere; }
-      .row { flex-wrap: wrap; }
-      .strip { display: flex; gap: 3px; }
+      .title { font-size: 15px; font-weight: 700; line-height: 1.3; overflow-wrap: anywhere; min-width: 0; }
+      .strip { display: flex; gap: 3px; min-width: 0; }
       .strip i { flex-grow: 1; height: 6px; border-radius: 3px; background: var(--line); }
       .strip i.done { background: var(--ink); }
       .strip i.cur { background: var(--working-fg); }
@@ -175,11 +174,11 @@ export class IncBoard extends Loader<BoardData> {
       .strip i.cur.paused { background: var(--bar); }
       .strip i.cur.failed { background: var(--alarm); }
       .strip i.cur.review { background: var(--reviewing-mark); }
-      .live, .who { font-size: 13px; color: var(--ink-2); }
+      .live, .who { font-size: 13px; color: var(--ink-2); min-width: 0; }
       .who { display: flex; align-items: center; gap: 8px; }
       .empty { display: flex; align-items: center; justify-content: center; min-height: 64px; box-sizing: border-box; padding: 14px;
         border: 2px dashed var(--line-strong); border-radius: 14px; font-size: 14px; color: var(--ink-2); }
-      @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+      @media (max-width: 900px) { .cols { grid-template-columns: minmax(0, 1fr); } }
     `,
   ];
 
