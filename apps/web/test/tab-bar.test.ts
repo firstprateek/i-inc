@@ -163,5 +163,53 @@ describe("mobile app tab bar (T25)", () => {
     // No underline anywhere in the styles
     expect(allCss).not.toContain("text-decoration: underline");
     expect(allCss).toContain("text-decoration: none");
+
+    // Frosted glass blur backdrop
+    expect(allCss).toContain("backdrop-filter: blur(20px)");
+    expect(allCss).toContain("-webkit-backdrop-filter: blur(20px)");
+  });
+
+  it("renders an icon and pill container inside each tab button", async () => {
+    const app = new IncApp();
+    document.body.append(app);
+    await app.updateComplete;
+
+    const buttons = [...(app.shadowRoot?.querySelectorAll<HTMLButtonElement>(".tabs button") ?? [])];
+    expect(buttons.length).toBe(5);
+
+    for (const btn of buttons) {
+      const pill = btn.querySelector(".tab-pill");
+      expect(pill).not.toBeNull();
+      const svg = pill?.querySelector("svg");
+      expect(svg).not.toBeNull();
+      expect(svg?.getAttribute("aria-hidden")).toBe("true");
+
+      const label = btn.querySelector(".tab-label");
+      expect(label).not.toBeNull();
+      expect(label?.textContent?.trim().length).toBeGreaterThan(0);
+    }
+  });
+
+  it("updates mobile header view context title on navigation", async () => {
+    const app = new IncApp();
+    document.body.append(app);
+    await app.updateComplete;
+
+    const titleEl = app.shadowRoot?.querySelector(".mobile-view-title");
+    expect(titleEl).not.toBeNull();
+    // Initially on phone, default route is inbox
+    expect(titleEl?.textContent).toContain("Inbox");
+
+    const buttons = [...(app.shadowRoot?.querySelectorAll<HTMLButtonElement>(".tabs button") ?? [])];
+    const [, office, board] = buttons;
+    if (!office || !board) throw new Error("Missing tabs");
+
+    office.click();
+    await app.updateComplete;
+    expect(titleEl?.textContent).toContain("Office");
+
+    board.click();
+    await app.updateComplete;
+    expect(titleEl?.textContent).toContain("Board");
   });
 });
