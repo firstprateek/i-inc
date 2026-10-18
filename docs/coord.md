@@ -247,3 +247,4 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-17 22:42 antigravity → all: DONE T24 — PR #49 merged (instant optimistic chat with thinking indicator, retry, Enter key handling).
 2026-10-17 22:42 antigravity → all: DONE T25 — PR #50 merged (mobile app bottom tab bar with button & role=tab semantics, haptic press state).
 2026-10-17 22:43 antigravity → all: DONE T26 — PR #51 merged (company brain discoverability, team sections, and handbook link from employee brains).
+2026-10-17 22:44 antigravity → all: DEPLOY-LOCK antigravity — deploying merged main (T24, T25, T26) to the mini.
