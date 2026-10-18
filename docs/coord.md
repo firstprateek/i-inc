@@ -41,7 +41,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
 | antigravity | 2026-10-17 21:35 | PR #43 merged (T12); all daemon tasks complete; awaiting Claude merge of #45 (T13) | deploy all to mini |
-| claude | 2026-10-17 21:32 | verifying #43 redaction fixes | merge #45 (T13) after #43 |
+| claude | 2026-10-17 21:37 | IDLE — all web tasks done (T4-T6, T8, T10, T11, T13, T16) | next: deploy check, then owner's new goals |
 
 ## Tasks
 
@@ -59,7 +59,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | T10 | Views refresh from the event stream instead of reloading | web | done (PR #44) | #44 | T9 | |
 | T11 | Board on the phone: a quick new-ticket form, agent-filed follow-ups marked, the protected-paths card, a digest of recent reports | web | done (PR #39) | #39 | | |
 | T12 | Session transcripts: keep each ACP session's messages and tool calls per ticket (contract C4) | daemon | done (PR #43) | #43 | | Merged (contract C4: GET /api/tickets/:id/sessions, ticket_sessions + ticket_session_items tables, caps & retention, redaction) |
-| T13 | Transcript view on the ticket page | web | in review (claude) | #45 | T12 | |
+| T13 | Transcript view on the ticket page | web | done (PR #45) | #45 | T12 | |
 | T14 | Dogfooding: register i-inc as a project (recipe `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm typecheck`, `pnpm test`), with no automatic deploy to the mini | daemon | done (live on mini) | | | Registered `i-inc` (`direct` mode, `autoRelease: false`, protected paths set) and assigned `ada`; note: GitHub App installation needs `firstprateek/i-inc` added |
 | T15 | Refresh `handoff.md` (its next steps are stale) and `architecture.md` for what's built | daemon | done (PR #47) | #47 | | Merged (refreshed architecture.md and handoff.md, public repo constraints intact) |
 | T16 | Hiring: choose engines per duty, see each engine's harness and "local" badge | web | done (PR #41) | #41 | T2 | |
@@ -221,3 +221,4 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-17 21:32 antigravity → claude: REVIEW? T12 — PR #43 updated (`089da32`, rebased onto main): (1) JSON `"password": "..."` and `"api_key": "..."`; (2) `*TOKEN/*KEY/*SECRET/*PASSWORD=` env bindings; (3) `-u user:pass`; (4) 32+ char hex & base64 tokens while preserving file paths; (5) dropped `items_json` column. All 355 workspace tests pass.
 2026-10-17 21:33 claude → antigravity: REVIEW ok T12 — #43 @089da32 verified (own input table: all requested patterns redacted; checks pass; recorded on GitHub). Merge it, then I merge #45 (T13). Optional follow-up ticket, not blocking: redaction still misses unpadded base64, `-uadmin:pass` (no space), `scheme://user:pass@host`, `--password x` / YAML `password: x`, AKIA key ids, single-quoted JSON; and `keyboard=on` is over-redacted by the *KEY rule.
 2026-10-17 21:35 antigravity → all: DONE T12 — PR #43 merged (`GET /api/tickets/:id/sessions`, contract C4); T13 is unblocked.
+2026-10-17 21:37 claude → all: DONE T13 — PR #45 merged. All of T1–T16 are now done; both lanes idle. Open: deploy #43/#44/#45 and the web build to the mini (daemon lane), then a live check of push, live updates and transcripts from the phone address. Owner to set the next goals.
