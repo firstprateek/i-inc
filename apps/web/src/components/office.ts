@@ -1,7 +1,7 @@
 import { css, html } from "lit";
 import { type AccountCost, type AccountRateLimit, api, type DeskEntry, type TicketView } from "../api.ts";
 import { Loader } from "./loader.ts";
-import { avatar, base, stateLabel } from "./shared.ts";
+import { avatar, base, projectBadge, stateLabel } from "./shared.ts";
 
 interface Data {
   employees: DeskEntry[];
@@ -58,8 +58,15 @@ export class IncOffice extends Loader<Data> {
       .quota-bars { display: flex; flex-direction: column; gap: 4px; }
       .quota-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 8px; align-items: center; font-size: 12px; }
       .quota-label { color: var(--ink-2); font-weight: 600; }
-      .quota-bar-track { height: 8px; border-radius: 4px; background: var(--sunken); overflow: hidden; }
-      .quota-bar { height: 100%; border-radius: 4px; background: var(--bar); min-width: 2px; }
+      .quota-bar-track { height: 8px; border-radius: 4px; background: var(--bar-track); overflow: hidden; }
+      .quota-bar { height: 100%; border-radius: 4px; background: var(--bar); min-width: 2px; transition: width 0.3s ease; }
+      .quota-bar.ok { background: var(--bar-ok); }
+      .quota-bar.warn { background: var(--bar-warn); }
+      .quota-bar.crit {
+        background-color: var(--bar-crit);
+        background-image: repeating-linear-gradient(45deg, transparent, transparent 3px, rgba(0, 0, 0, 0.2) 3px, rgba(0, 0, 0, 0.2) 6px);
+      }
+      .activity-meters .quota-bar { background: var(--bar-spend); }
       .quota-val { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--ink-2); white-space: nowrap; }
       .quota-val.font-small { font-weight: 500; }
       .account-models { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
@@ -121,6 +128,8 @@ export class IncOffice extends Loader<Data> {
             rawU7 !== undefined && rawU7 !== null
               ? Math.min(100, Math.max(0, Math.round(rawU7 * 100)))
               : null;
+          const health5 = u5 !== null ? (u5 >= 95 ? "crit" : u5 >= 80 ? "warn" : "ok") : "";
+          const health7 = u7 !== null ? (u7 >= 95 ? "crit" : u7 >= 80 ? "warn" : "ok") : "";
 
           const s5 = a.fiveHourSessions ?? 0;
           const s7 = a.sevenDaySessions ?? 0;
@@ -143,15 +152,15 @@ export class IncOffice extends Loader<Data> {
                 ? html`<div class="quota-bars">
                   <div class="quota-row">
                     <span class="quota-label">5h</span>
-                    <div class="quota-bar-track" role="meter" aria-label="5-hour utilization" aria-valuenow="${u5 ?? 0}" aria-valuemin="0" aria-valuemax="100">
-                      <div class="quota-bar" style="width: ${u5 ?? 0}%"></div>
+                    <div class="quota-bar-track" role="meter" aria-label="5-hour utilization" aria-valuenow="${u5 ?? 0}" aria-valuemin="0" aria-valuemax="100" aria-valuetext="${health5.toUpperCase()}: ${u5 ?? 0}%">
+                      <div class="quota-bar ${health5}" style="width: ${u5 ?? 0}%"></div>
                     </div>
                     <span class="quota-val">${u5 !== null ? `${u5}%` : "—"}</span>
                   </div>
                   <div class="quota-row">
                     <span class="quota-label">7d</span>
-                    <div class="quota-bar-track" role="meter" aria-label="7-day utilization" aria-valuenow="${u7 ?? 0}" aria-valuemin="0" aria-valuemax="100">
-                      <div class="quota-bar" style="width: ${u7 ?? 0}%"></div>
+                    <div class="quota-bar-track" role="meter" aria-label="7-day utilization" aria-valuenow="${u7 ?? 0}" aria-valuemin="0" aria-valuemax="100" aria-valuetext="${health7.toUpperCase()}: ${u7 ?? 0}%">
+                      <div class="quota-bar ${health7}" style="width: ${u7 ?? 0}%"></div>
                     </div>
                     <span class="quota-val">${u7 !== null ? `${u7}%` : "—"}</span>
                   </div>
@@ -193,13 +202,13 @@ export class IncOffice extends Loader<Data> {
         <div class="screen ${off ? "off" : ""}">${off ? "" : (e.ticket?.live ?? "")}</div>
       </div>
       <div class="row"><span class="name">${e.name}</span><span class="grow"></span><span class="chip ${tone}">${label}</span></div>
-      <div class="ticket">${e.ticket ? `#${e.ticket.id} ${e.ticket.title} · ${e.ticket.project}` : "No ticket"}</div>
+      <div class="ticket">${e.ticket ? html`#${e.ticket.id} ${e.ticket.title} · ${projectBadge(e.ticket.project)}` : "No ticket"}</div>
       <div class="meta">${e.role} · ${e.engine}</div>
     </a>`;
   }
 
   private link(t: TicketView) {
-    return html`<a href="#/ticket/${t.id}"><b>${t.title}</b><span class="muted">${t.assignee?.name ?? "Unassigned"} · ${t.project}</span></a>`;
+    return html`<a href="#/ticket/${t.id}"><b>${t.title}</b><span class="muted">${t.assignee?.name ?? "Unassigned"} · ${projectBadge(t.project)}</span></a>`;
   }
 }
 

@@ -3,7 +3,7 @@ import { css, html } from "lit";
 import { api, type PolicyProposal, refreshNow, type TicketView } from "../api.ts";
 import { Loader } from "./loader.ts";
 import { protectedOk } from "./protected-card.ts";
-import { avatar, base } from "./shared.ts";
+import { avatar, base, projectBadge } from "./shared.ts";
 
 export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyProposal[] }> {
   protected fetch = async () => ({
@@ -23,14 +23,15 @@ export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyPr
   static override styles = [
     base,
     css`
-      :host { max-width: 560px; }
-      h1 { font-size: 30px; margin: 4px 0 14px; }
-      .list { display: flex; flex-direction: column; gap: 12px; }
-      .item { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+      :host { max-width: 560px; min-width: 0; display: block; }
+      h1 { font-size: 30px; margin: 4px 0 14px; min-width: 0; }
+      .list { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+      .item { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; box-sizing: border-box; }
       .item.waiting { background: var(--needs-surface); border: 2px solid var(--needs-edge); padding: 13px 15px; }
-      .who { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); }
+      .who { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); min-width: 0; max-width: 100%; flex-wrap: wrap; }
       .who b { color: var(--ink); }
-      .q { font-size: 17px; font-weight: 700; line-height: 1.3; overflow-wrap: anywhere; }
+      .who span { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; max-width: 100%; }
+      .q { font-size: 17px; font-weight: 700; line-height: 1.3; overflow-wrap: anywhere; min-width: 0; }
       .actions { display: flex; gap: 8px; flex-wrap: wrap; }
       .actions .btn:first-child { flex-grow: 1; }
       h2 { font-size: 20px; margin-top: 18px; }
@@ -73,7 +74,7 @@ export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyPr
 
   private header(t: TicketView, what: string) {
     return html`<div class="who">${t.assignee ? avatar(t.assignee, 28) : ""}
-      <span><b>${t.assignee?.name ?? "Unassigned"}</b> · ${what} · ${t.project}</span></div>`;
+      <span><b>${t.assignee?.name ?? "Unassigned"}</b> · ${what} · ${projectBadge(t.project)}</span></div>`;
   }
 
   private ask(t: TicketView) {

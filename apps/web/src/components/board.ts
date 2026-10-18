@@ -4,7 +4,7 @@ import { api, refreshNow, type TicketEvent, type TicketView } from "../api.ts";
 import { Loader } from "./loader.ts";
 import "./new-ticket.ts";
 import { protectedOk } from "./protected-card.ts";
-import { avatar, base } from "./shared.ts";
+import { avatar, base, projectBadge } from "./shared.ts";
 
 /** A board ticket. `createdBy` is the agent that filed it, when the daemon says so (owner tickets have none). */
 export type BoardTicket = TicketView & { createdBy?: NonNullable<TicketView["assignee"]> | null };
@@ -93,11 +93,11 @@ export function ago(at: number, now = Date.now()): string {
   return `${Math.round(min / 1440)} d ago`;
 }
 
-const columns: [TicketView["column"], string][] = [
-  ["todo", "To do"],
-  ["in-progress", "In progress"],
-  ["review", "Review"],
-  ["done", "Done"],
+const columns: [TicketView["column"], string, string][] = [
+  ["todo", "To do", "col-dot-todo"],
+  ["in-progress", "In progress", "col-dot-progress"],
+  ["review", "Review", "col-dot-review"],
+  ["done", "Done", "col-dot-done"],
 ];
 
 export class IncBoard extends Loader<BoardData> {
@@ -149,17 +149,24 @@ export class IncBoard extends Loader<BoardData> {
         .digest .title { white-space: normal; overflow: visible; }
         .digest .meta { grid-column: 2; }
       }
-      .cols { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; align-items: start; }
-      section { background: var(--sunken); border-radius: 22px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
-      h2 { font-size: 20px; padding: 2px 4px; display: flex; gap: 8px; align-items: baseline; }
-      h2 span { font-size: 14px; color: var(--ink-2); font-family: var(--body); }
-      .t { padding: 14px; display: flex; flex-direction: column; gap: 8px; text-decoration: none; }
+      .cols { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; align-items: start; min-width: 0; }
+      section { background: var(--sunken); border-radius: 22px; padding: 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+      h2 { font-size: 20px; padding: 2px 4px; display: flex; gap: 8px; align-items: center; min-width: 0; }
+      h2 span { font-size: 14px; color: var(--ink-2); font-family: var(--body); font-weight: 600; }
+      .col-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+      .col-dot-todo { background: var(--ink-2); }
+      .col-dot-progress { background: var(--working-fg); }
+      .col-dot-review { background: var(--reviewing-mark); }
+      .col-dot-done { background: var(--ink); }
+      .t { padding: 14px; display: flex; flex-direction: column; gap: 8px; text-decoration: none; min-width: 0; box-sizing: border-box; }
+      .t.in-progress { border-left: 3px solid var(--working-fg); }
+      .t.review { border-left: 3px solid var(--reviewing-mark); }
+      .t.paused { border-left: 3px solid var(--bar-warn); }
       .t.waiting { background: var(--needs-surface); border: 2px solid var(--needs-edge); padding: 13px; }
-      .row { display: flex; gap: 6px; align-items: center; }
+      .row { display: flex; gap: 6px; align-items: center; min-width: 0; flex-wrap: wrap; }
       .grow { flex-grow: 1; }
-      .title { font-size: 15px; font-weight: 700; line-height: 1.3; overflow-wrap: anywhere; }
-      .row { flex-wrap: wrap; }
-      .strip { display: flex; gap: 3px; }
+      .title { font-size: 15px; font-weight: 700; line-height: 1.3; overflow-wrap: anywhere; min-width: 0; }
+      .strip { display: flex; gap: 3px; min-width: 0; }
       .strip i { flex-grow: 1; height: 6px; border-radius: 3px; background: var(--line); }
       .strip i.done { background: var(--ink); }
       .strip i.cur { background: var(--working-fg); }
@@ -167,11 +174,11 @@ export class IncBoard extends Loader<BoardData> {
       .strip i.cur.paused { background: var(--bar); }
       .strip i.cur.failed { background: var(--alarm); }
       .strip i.cur.review { background: var(--reviewing-mark); }
-      .live, .who { font-size: 13px; color: var(--ink-2); }
+      .live, .who { font-size: 13px; color: var(--ink-2); min-width: 0; }
       .who { display: flex; align-items: center; gap: 8px; }
       .empty { display: flex; align-items: center; justify-content: center; min-height: 64px; box-sizing: border-box; padding: 14px;
         border: 2px dashed var(--line-strong); border-radius: 14px; font-size: 14px; color: var(--ink-2); }
-      @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+      @media (max-width: 900px) { .cols { grid-template-columns: minmax(0, 1fr); } }
     `,
   ];
 
@@ -187,10 +194,10 @@ export class IncBoard extends Loader<BoardData> {
       ${digest.length ? this.digestList(digest) : ""}
     </div>
     <div class="cols">
-      ${columns.map(([id, name]) => {
+      ${columns.map(([id, name, dotCls]) => {
         const list = tickets.filter((t) => t.column === id);
         return html`<section aria-label=${name}>
-          <h2>${name}<span>${list.length}</span></h2>
+          <h2><span class="col-dot ${dotCls}" aria-hidden="true"></span>${name}<span>${list.length}</span></h2>
           ${list.length ? list.map((t) => this.card(t)) : html`<div class="empty">Nothing here</div>`}
         </section>`;
       })}
@@ -201,7 +208,7 @@ export class IncBoard extends Loader<BoardData> {
     const a = t.needsYou;
     if (a?.kind !== "protected-paths") return "";
     return html`<div class="card ok-card" aria-label="Waiting for your OK">
-      <div class="head"><span class="chip needs">Needs your OK</span><span>${t.project} · #${t.id}</span>
+      <div class="head"><span class="chip needs">Needs your OK</span>${projectBadge(t.project)}<span>#${t.id}</span>
         <a href="#/ticket/${t.id}" style="margin-left:auto;padding:12px 0">Open</a></div>
       ${protectedOk(t, a.paths, (fn) => void this.act(fn))}
     </div>`;
@@ -219,9 +226,18 @@ export class IncBoard extends Loader<BoardData> {
 
   private card(t: BoardTicket) {
     const needs = t.status === "needs-you";
-    return html`<a class="card t ${needs ? "waiting" : ""}" href="#/ticket/${t.id}">
+    const statusCls = needs
+      ? "waiting"
+      : t.status === "paused" || t.waiting
+        ? "paused"
+        : t.column === "in-progress"
+          ? "in-progress"
+          : t.column === "review"
+            ? "review"
+            : "";
+    return html`<a class="card t ${statusCls}" href="#/ticket/${t.id}">
       <div class="row">
-        <span class="tag">${t.type}</span><span class="tag">${t.project}</span><span class="grow"></span>
+        <span class="tag">${t.type}</span>${projectBadge(t.project)}<span class="grow"></span>
         ${needs ? html`<span class="chip needs">Needs you</span>` : ""}${t.held ? html`<span class="chip">On hold</span>` : ""}<span class="muted" style="font-size:12px;font-weight:700">#${t.id}</span>
       </div>
       <div class="title">${t.title}</div>

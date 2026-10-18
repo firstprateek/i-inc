@@ -12,9 +12,11 @@
 
   --working-bg: #dceedf;
   --working-fg: #1d5234;
+  --working-edge: #a4cca8;
   --reviewing-bg: #dde7f6;
   --reviewing-fg: #1d4476;
   --reviewing-mark: #3a68a8;
+  --reviewing-edge: #9cbce4;
   --needs-bg: #fce8b8;
   --needs-fg: #5a3a00;
   --needs-edge: #c48a12;
@@ -27,6 +29,47 @@
   --neutral-bg: #e6e8e3;
   --neutral-fg: #3f4642;
   --bar: #59625d;
+  --bar-track: var(--line);
+  --bar-spend: #4e5652;
+  --bar-ok: #1d5234;
+  --bar-warn: #7a4f00;
+  --bar-crit: #c4452b;
+
+  /* Deterministic project badge colors (WCAG AA contrast > 7:1) */
+  --proj-0-bg: #e2f0ef;
+  --proj-0-fg: #174744;
+  --proj-0-dot: #1b5e59;
+  --proj-1-bg: #f0e6f6;
+  --proj-1-fg: #46235b;
+  --proj-1-dot: #5e267d;
+  --proj-2-bg: #f6ece3;
+  --proj-2-fg: #5a371c;
+  --proj-2-dot: #6e3e18;
+  --proj-3-bg: #e8ebf8;
+  --proj-3-fg: #232f64;
+  --proj-3-dot: #2a3c91;
+  --proj-4-bg: #eaf0e4;
+  --proj-4-fg: #2c461d;
+  --proj-4-dot: #355321;
+  --proj-5-bg: #f7e8ea;
+  --proj-5-fg: #5c232c;
+  --proj-5-dot: #7a2230;
+
+  /* Rich employee avatar palette (WCAG AA contrast > 7:1) */
+  --avatar-0-bg: #dae1e8;
+  --avatar-0-fg: #1f2d3a;
+  --avatar-1-bg: #f3d6e1;
+  --avatar-1-fg: #5e1e37;
+  --avatar-2-bg: #f0e1c2;
+  --avatar-2-fg: #52360e;
+  --avatar-3-bg: #e3d4f4;
+  --avatar-3-fg: #3e1d61;
+  --avatar-4-bg: #f0ded2;
+  --avatar-4-fg: #5a2d18;
+  --avatar-5-bg: #d8e2d4;
+  --avatar-5-fg: #20361d;
+  --avatar-6-bg: #d6dcee;
+  --avatar-6-fg: #1d2d56;
 
   --floor: #e6d7bc;
   --desk: #cfaf82;
@@ -53,6 +96,16 @@
     --ink: #eef0ea;
     --ink-2: #b4bcb6;
     --on-ink: #141816;
+    --working-bg: #153422;
+    --working-fg: #9ce6b8;
+    --working-edge: #235436;
+    --reviewing-bg: #152840;
+    --reviewing-fg: #a6cafb;
+    --reviewing-mark: #548cd8;
+    --reviewing-edge: #244169;
+    --needs-bg: #3a2a14;
+    --needs-fg: #f6d9a6;
+    --needs-edge: #d49b28;
     --needs-surface: #2a2415;
     --banner-bg: #3a2a14;
     --banner-fg: #f6d9a6;
@@ -61,11 +114,50 @@
     --desk: #5b4a33;
     --desk-edge: #3f3323;
     --bar: #9aa39d;
+    --bar-track: #2e3531;
+    --bar-spend: #9aa39d;
+    --bar-ok: #48bb78;
+    --bar-warn: #e0a32d;
+    --bar-crit: #ff6b57;
     --neutral-bg: #2e3531;
     --neutral-fg: #c9cfc9;
     --screen: #0c0f0d;
     --screen-edge: #323a35;
     --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.2);
+
+    --proj-0-bg: #132c2b;
+    --proj-0-fg: #97ded9;
+    --proj-0-dot: #4ad4cb;
+    --proj-1-bg: #2b1738;
+    --proj-1-fg: #ddbaf0;
+    --proj-1-dot: #b974e6;
+    --proj-2-bg: #332115;
+    --proj-2-fg: #eec8ab;
+    --proj-2-dot: #d5915d;
+    --proj-3-bg: #19203d;
+    --proj-3-fg: #b5c4f6;
+    --proj-3-dot: #7b94f8;
+    --proj-4-bg: #1c2816;
+    --proj-4-fg: #bddcb0;
+    --proj-4-dot: #83bd5f;
+    --proj-5-bg: #33181c;
+    --proj-5-fg: #f2b3bc;
+    --proj-5-dot: #dc6a7c;
+
+    --avatar-0-bg: #233240;
+    --avatar-0-fg: #c2d4e6;
+    --avatar-1-bg: #421727;
+    --avatar-1-fg: #f0bad0;
+    --avatar-2-bg: #3b2608;
+    --avatar-2-fg: #eed19c;
+    --avatar-3-bg: #30164c;
+    --avatar-3-fg: #d8bcf5;
+    --avatar-4-bg: #3d1d0e;
+    --avatar-4-fg: #f0c2a8;
+    --avatar-5-bg: #1b3018;
+    --avatar-5-fg: #bdd7b6;
+    --avatar-6-bg: #1b2646;
+    --avatar-6-fg: #bccae8;
     color-scheme: dark;
   }
 }
@@ -78,6 +170,16 @@
   --ink: #eef0ea;
   --ink-2: #b4bcb6;
   --on-ink: #141816;
+  --working-bg: #153422;
+  --working-fg: #9ce6b8;
+  --working-edge: #235436;
+  --reviewing-bg: #152840;
+  --reviewing-fg: #a6cafb;
+  --reviewing-mark: #548cd8;
+  --reviewing-edge: #244169;
+  --needs-bg: #3a2a14;
+  --needs-fg: #f6d9a6;
+  --needs-edge: #d49b28;
   --needs-surface: #2a2415;
   --banner-bg: #3a2a14;
   --banner-fg: #f6d9a6;
@@ -86,11 +188,50 @@
   --desk: #5b4a33;
   --desk-edge: #3f3323;
   --bar: #9aa39d;
+  --bar-track: #2e3531;
+  --bar-spend: #9aa39d;
+  --bar-ok: #48bb78;
+  --bar-warn: #e0a32d;
+  --bar-crit: #ff6b57;
   --neutral-bg: #2e3531;
   --neutral-fg: #c9cfc9;
   --screen: #0c0f0d;
   --screen-edge: #323a35;
   --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.2);
+
+  --proj-0-bg: #132c2b;
+  --proj-0-fg: #97ded9;
+  --proj-0-dot: #4ad4cb;
+  --proj-1-bg: #2b1738;
+  --proj-1-fg: #ddbaf0;
+  --proj-1-dot: #b974e6;
+  --proj-2-bg: #332115;
+  --proj-2-fg: #eec8ab;
+  --proj-2-dot: #d5915d;
+  --proj-3-bg: #19203d;
+  --proj-3-fg: #b5c4f6;
+  --proj-3-dot: #7b94f8;
+  --proj-4-bg: #1c2816;
+  --proj-4-fg: #bddcb0;
+  --proj-4-dot: #83bd5f;
+  --proj-5-bg: #33181c;
+  --proj-5-fg: #f2b3bc;
+  --proj-5-dot: #dc6a7c;
+
+  --avatar-0-bg: #233240;
+  --avatar-0-fg: #c2d4e6;
+  --avatar-1-bg: #421727;
+  --avatar-1-fg: #f0bad0;
+  --avatar-2-bg: #3b2608;
+  --avatar-2-fg: #eed19c;
+  --avatar-3-bg: #30164c;
+  --avatar-3-fg: #d8bcf5;
+  --avatar-4-bg: #3d1d0e;
+  --avatar-4-fg: #f0c2a8;
+  --avatar-5-bg: #1b3018;
+  --avatar-5-fg: #bdd7b6;
+  --avatar-6-bg: #1b2646;
+  --avatar-6-fg: #bccae8;
   color-scheme: dark;
 }
 

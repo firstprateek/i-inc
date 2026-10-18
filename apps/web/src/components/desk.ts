@@ -2,7 +2,7 @@ import { css, html } from "lit";
 import { api, type DeskView, type NamedChange, refreshNow } from "../api.ts";
 import { describe } from "./knowledge.ts";
 import { Loader } from "./loader.ts";
-import { base } from "./shared.ts";
+import { base, projectBadge } from "./shared.ts";
 
 const reasons: Record<string, (h: string, n: number) => string> = {
   tokens: (h, n) => `Tickets waited ${h} for tokens (${n} ${n === 1 ? "ticket" : "tickets"})`,
@@ -54,6 +54,8 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
       .panel { grid-column: span 6; padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; }
       .bars { display: grid; grid-template-columns: 150px minmax(0, 1fr) 64px; gap: 10px; align-items: center; font-size: 13px; }
       .bar { height: 12px; border-radius: 0 4px 4px 0; background: var(--bar); min-width: 2px; }
+      .bar.spend-bar { background: var(--bar-spend); }
+      .bar.wait-bar { background: var(--bar-warn); }
       .learned { display: flex; flex-direction: column; }
       .learned a { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line);
         text-decoration: none; font-size: 14px; }
@@ -147,7 +149,7 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
         <div class="bars">
           ${d.spend.lines.map(
             (l) => html`<span>${l.name} <span class="muted">${l.kind}</span></span>
-              <div class="bar" style="width:${Math.round((l.amount / max) * 100)}%" title=${l.basis}></div>
+              <div class="bar spend-bar" style="width:${Math.round((l.amount / max) * 100)}%" title=${l.basis}></div>
               <span class="num">${money(l.amount)}</span>`,
           )}
         </div>
@@ -160,7 +162,7 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
             ? html`<div class="bars">${d.waits.map((w) => {
                 const top = Math.max(...d.waits.map((x) => x.hours), 0.01);
                 return html`<span>${waitNames[w.reason] ?? w.reason}</span>
-                <div class="bar" style="width:${Math.round((w.hours / top) * 100)}%"></div><span class="num">${hours(w.hours)}</span>`;
+                <div class="bar wait-bar" style="width:${Math.round((w.hours / top) * 100)}%"></div><span class="num">${hours(w.hours)}</span>`;
               })}</div>`
             : html`<span class="note">No waits this month.</span>`
         }
@@ -196,7 +198,7 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
                 const busy = this.cutting.has(key);
                 return html`<div class="release-project">
                 <div class="release-project-header">
-                  <b>${p.project || p.id}</b>
+                  ${projectBadge(p.project || p.id)}
                   <span class="muted font-small">${count} unreleased ${count === 1 ? "ticket" : "tickets"}</span>
                   <span class="spacer"></span>
                   <button
@@ -236,7 +238,7 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
                   (r) => html`<div class="recent-release">
                   <div class="recent-release-header">
                     <span class="tag font-mono">${r.tag}</span>
-                    <b>${r.project}</b>
+                    ${projectBadge(r.project)}
                     <span class="spacer"></span>
                     <small class="muted">${new Date(r.at).toISOString().slice(0, 10)}</small>
                   </div>
