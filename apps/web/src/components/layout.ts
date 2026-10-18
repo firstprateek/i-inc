@@ -101,7 +101,8 @@ export class IncLayout extends LitElement {
       ::slotted([slot="subtitle"]) { display: block; margin: 6px 0 0; color: var(--ink-2); font-size: 15px; line-height: 1.4; }
       .content { width: 100%; min-width: 0; box-sizing: border-box; }
       .frame.wide .content { max-width: var(--wide-width, 1400px); margin-inline: auto; }
-      .frame.split .page-header { flex: none; }
+      /* A Split heading tracks the full pane grid; the Page-width cap is for Page/Wide headers. */
+      .frame.split .page-header { max-width: none; margin-inline: 0; flex: none; }
       .frame.split .content { display: flex; flex: 1 1 0; min-height: 0; overflow: hidden; }
       ::slotted(:not([slot])) { display: block; width: 100%; min-width: 0; max-width: none; box-sizing: border-box; }
       :host([kind="split"]) ::slotted(:not([slot])) { height: 100%; min-height: 0; }

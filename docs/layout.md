@@ -11,7 +11,7 @@ same frame. The unauthenticated login screen uses the Page frame too.
 | --- | --- | --- |
 | **Page** | A centred band up to `--page-width` (840px). Use for inbox, ticket details, My desk, hiring, More, and setup forms. | The application shell's `<main>` scrolls. Forms and ticket detail stack within the Page width, even on a wide viewport. |
 | **Wide** | A centred header band at Page width and content up to `--wide-width` (1400px). Use for the board and office, whose columns, floor, and reports need room. | The shell's `<main>` scrolls vertically; the wide content may scroll horizontally only where its own data view intentionally does so. |
-| **Split** | A 300px (280–320px) navigation/sidebar plus a flexible working pane. Use for chat, handbook/brain, and Setup sections. | Sidebar and working pane own their scroll positions. The app shell main stays fixed on Split routes so its scroll position cannot compete with either pane. |
+| **Split** | A full-width header above a 300px (280–320px) navigation/sidebar and flexible working pane. Use for chat, handbook/brain, and Setup sections. The header follows the outer frame's left and right tracks so it aligns with the sidebar and work pane. | Sidebar and working pane own their scroll positions. The app shell main stays fixed on Split routes so its scroll position cannot compete with either pane. |
 
 Login opts into a compact Page frame at `--compact-page-width` (24rem) so its title and form share
 one centred reading band. It remains Page layout and scrolls inside its bounded host on a short screen.
@@ -25,8 +25,9 @@ safe-area padding.
 ## Shared API
 
 - `IncLayout` renders the common route frame, visible page heading, optional subtitle/actions slots,
-  and a Page, Wide, or Split content band. Put route titles in the `heading` slot; keep actions in
-  the `actions` slot so they stay aligned to the right of the heading.
+  and a Page, Wide, or Split content band. Page and Wide headers share the centred Page-width band;
+  Split headers span the full frame above both grid tracks. Put route titles in the `heading` slot;
+  keep actions in the `actions` slot so they stay aligned to the right of the heading.
 - `layoutStyles` provides `.layout-page-band`, `.layout-wide-content`, `.layout-split`,
   `.layout-split-sidebar`, `.layout-split-work`, `.layout-stack`, and the shared header pieces for
   use inside a component's own Lit shadow root. Components opt in explicitly because styles do not
