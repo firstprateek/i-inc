@@ -65,7 +65,18 @@ export function openScript(o: {
     `  if git show-ref --quiet --verify refs/remotes/origin/${o.branch}; then`,
     `    git worktree add --quiet -B ${branch} ${worktree} origin/${o.branch}`,
     "  else",
-    `    git worktree add --quiet -b ${branch} ${worktree} origin/main`,
+    '    BASE_REF="origin/main"',
+    "    if ! git show-ref --quiet --verify refs/remotes/origin/main; then",
+    "      if git show-ref --quiet --verify refs/remotes/origin/master; then",
+    '        BASE_REF="origin/master"',
+    "      elif git rev-parse --verify HEAD >/dev/null 2>&1; then",
+    '        BASE_REF="HEAD"',
+    "      else",
+    "        git commit --quiet --allow-empty -m 'Initial commit'",
+    '        BASE_REF="HEAD"',
+    "      fi",
+    "    fi",
+    `    git worktree add --quiet -b ${branch} ${worktree} "$BASE_REF"`,
     "  fi",
     "fi",
     `cd ${worktree}`,
@@ -74,7 +85,7 @@ export function openScript(o: {
     ...(o.push === false
       ? ["echo @@ready"]
       : [
-          `if [ -z "$(git rev-list origin/main..HEAD)" ]; then git commit --quiet --allow-empty -m ${quote(o.message)}; fi`,
+          `if [ -z "$(git rev-list \${BASE_REF:-origin/main}..HEAD 2>/dev/null)" ]; then git commit --quiet --allow-empty -m ${quote(o.message)}; fi`,
           `git push --quiet -u origin ${branch}`,
           "echo @@pushed",
         ]),

@@ -25,6 +25,7 @@ import {
   type SandboxStatus,
 } from "@i-inc/core";
 import type { Daemon, DaemonDeps } from "./daemon.ts";
+import { bootstrapRepo, inspectRepo, listInstallationRepos } from "./github.ts";
 import type { Change, Repo } from "./knowledge.ts";
 import type { PushSubscription } from "./push.ts";
 import type { NewTicket } from "./tickets.ts";
@@ -512,6 +513,135 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         const ok = d.registry.removeProject(id);
         if (!ok) return json({ error: "no such project" }, 404);
         return json({ ok: true });
+      },
+    ],
+
+    [
+      "GET",
+      "/api/github/repos",
+      async () => {
+        if (!d.tokens) return json({ repos: [] });
+        try {
+          const registered = d.registry.projects().map((p) => p.repo);
+          const repos = await listInstallationRepos(d.tokens, registered);
+          return json({ repos });
+        } catch (e) {
+          return json({ error: e instanceof Error ? e.message : String(e), repos: [] }, 500);
+        }
+      },
+    ],
+
+    [
+      "GET",
+      "/api/github/repos/:owner/:name/inspect",
+      async (_req, { owner = "", name = "" }) => {
+        if (!d.tokens) return json({ error: "GitHub integration is not configured" }, 400);
+        if (!/^[A-Za-z0-9-]+$/.test(owner) || !/^[A-Za-z0-9_.-]+$/.test(name)) {
+          return json({ error: "invalid repository owner or name" }, 400);
+        }
+        try {
+          const result = await inspectRepo(d.tokens, owner, name);
+          return json(result);
+        } catch (e) {
+          return json({ error: e instanceof Error ? e.message : String(e) }, 500);
+        }
+      },
+    ],
+
+    [
+      "POST",
+      "/api/projects/:id/bootstrap",
+      async (req, { id = "" }) => {
+        if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$/.test(id)) {
+          return json(
+            { error: "a project is named by up to 40 letters, digits, spaces, dots and dashes" },
+            400,
+          );
+        }
+        const body = (await req.json().catch(() => ({}))) as {
+          repo?: unknown;
+          mode?: unknown;
+          template?: unknown;
+          description?: unknown;
+          employees?: unknown;
+          checks?: unknown;
+          protectedPaths?: unknown;
+          autoRelease?: unknown;
+        };
+
+        if (typeof body.repo !== "string" || !/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(body.repo)) {
+          return json({ error: "repo must be owner/name on GitHub" }, 400);
+        }
+
+        const repo = body.repo;
+        let bootstrapped = false;
+        let commits = 0;
+
+        if (body.template && typeof body.template === "string") {
+          const validTemplates = ["ts-node", "web", "python", "minimal"];
+          if (!validTemplates.includes(body.template)) {
+            return json({ error: `template must be one of: ${validTemplates.join(", ")}` }, 400);
+          }
+          if (!d.tokens) {
+            return json({ error: "GitHub integration is required to bootstrap starter files" }, 400);
+          }
+          try {
+            const res = await bootstrapRepo(d.tokens, {
+              repo,
+              template: body.template as "ts-node" | "web" | "python" | "minimal",
+              ...(typeof body.description === "string" ? { description: body.description } : {}),
+            });
+            bootstrapped = res.bootstrapped;
+            commits = res.commits;
+          } catch (e) {
+            return json(
+              { error: `Failed to bootstrap repo: ${e instanceof Error ? e.message : String(e)}` },
+              500,
+            );
+          }
+        }
+
+        let checks: string[] = [];
+        if (Array.isArray(body.checks) && body.checks.length > 0) {
+          checks = body.checks.filter((c): c is string => typeof c === "string" && Boolean(c.trim()));
+        } else if (body.template === "python") {
+          checks = ["pytest"];
+        } else if (body.template === "minimal") {
+          checks = ["echo ok"];
+        } else {
+          checks = ["pnpm install --frozen-lockfile", "pnpm check", "pnpm test"];
+        }
+
+        const mode = body.mode === "owner-merges" ? "owner-merges" : "direct";
+        const protectedPaths = Array.isArray(body.protectedPaths)
+          ? body.protectedPaths.filter((p): p is string => typeof p === "string" && Boolean(p.trim()))
+          : [".github/"];
+
+        d.registry.addProject({
+          id,
+          repo,
+          checks,
+          mode,
+          protectedPaths,
+          autoRelease: body.autoRelease === true,
+        });
+
+        if (Array.isArray(body.employees)) {
+          const empIds = new Set(body.employees.filter((e): e is string => typeof e === "string"));
+          for (const emp of d.registry.employees()) {
+            if (empIds.has(emp.id)) {
+              const currentProjects = emp.projects ?? [];
+              if (!currentProjects.includes(id)) {
+                d.registry.hire({
+                  ...emp,
+                  projects: [...currentProjects, id],
+                });
+              }
+            }
+          }
+        }
+
+        return json({ project: d.registry.project(id), bootstrapped, commits }, 201);
       },
     ],
     [

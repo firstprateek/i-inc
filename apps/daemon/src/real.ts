@@ -54,7 +54,7 @@ const loginEveryMs = 25 * 60_000;
 
 export function realPorts(o: RealOptions): Pick<
   AppOptions,
-  "machines" | "agent" | "harness" | "workspace" | "helper" | "chat"
+  "machines" | "agent" | "harness" | "workspace" | "tokens" | "helper" | "chat"
 > & {
   /** Renews the GitHub sign-in of every sandbox in use. main.ts calls it on a timer. */
   keepLoginsFresh: () => Promise<void>;
@@ -155,6 +155,7 @@ export function realPorts(o: RealOptions): Pick<
       ),
     ...(github
       ? {
+          tokens: github.tokens,
           workspace: (registry) =>
             new GitHubWorkspace({
               project: (name) => registry.project(name),

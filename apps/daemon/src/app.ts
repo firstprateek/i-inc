@@ -13,6 +13,7 @@ import { type ApiOptions, createApi } from "./api.ts";
 import { ChatLog } from "./chat.ts";
 import { Daemon, type DaemonDeps } from "./daemon.ts";
 import { openDb } from "./db.ts";
+import type { TokenSource } from "./github.ts";
 import { KnowledgeStore } from "./knowledge.ts";
 import { LiveEvents } from "./live.ts";
 import { type PushService, WebPushSender } from "./push.ts";
@@ -38,6 +39,7 @@ export interface AppOptions extends ApiOptions {
   workspace?: FromRegistry<Workspace>;
   helper: HelperModel;
   chat: ChatSession;
+  tokens?: FromRegistry<TokenSource>;
   live?: LiveEvents;
   log?: (msg: string) => void;
   push?: FromRegistry<PushService>;
@@ -74,6 +76,7 @@ export async function createApp(o: AppOptions) {
     agent: make(o.agent),
     harness: make(o.harness),
     ...(o.workspace ? { workspace: make(o.workspace) } : {}),
+    ...(o.tokens ? { tokens: make(o.tokens) } : {}),
     helper: o.helper,
     chat: o.chat,
     chatLog: new ChatLog(db),

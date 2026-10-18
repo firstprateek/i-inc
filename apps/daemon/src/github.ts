@@ -317,3 +317,347 @@ export async function commitIdentity(
   const bot = await call(deps.fetch ?? fetch, url, { method: "GET" });
   return { name: `${employeeName} (i.inc)`, email: `${bot.id}+${appSlug}[bot]@users.noreply.github.com` };
 }
+
+export interface GitHubRepoSummary {
+  fullName: string;
+  name: string;
+  owner: string;
+  private: boolean;
+  defaultBranch: string;
+  description: string | null;
+  language: string | null;
+  empty: boolean;
+  pushedAt: string | null;
+  alreadyRegistered: boolean;
+}
+
+export interface GitHubInspectResult {
+  id: string;
+  repo: string;
+  defaultBranch: string;
+  empty: boolean;
+  checks: string[];
+  protectedPaths: string[];
+  detected: string;
+}
+
+export interface BootstrapOptions {
+  repo: string;
+  template?: "ts-node" | "web" | "python" | "minimal";
+  description?: string;
+  defaultBranch?: string;
+}
+
+export interface BootstrapResult {
+  bootstrapped: boolean;
+  commits: number;
+}
+
+/** Lists all repositories accessible to the GitHub App installation. */
+export async function listInstallationRepos(
+  tokens: TokenSource,
+  registeredRepos: string[] = [],
+  deps: GitHubDeps & { api?: string } = {},
+): Promise<GitHubRepoSummary[]> {
+  const f = deps.fetch ?? fetch;
+  const api = deps.api ?? API;
+  const token = await tokens.token("*", "read");
+  const registeredSet = new Set(registeredRepos.map((r) => r.toLowerCase()));
+
+  const res = (await call(f, `${api}/installation/repositories?per_page=100`, {
+    method: "GET",
+    headers: { authorization: `Bearer ${token}` },
+  })) as { repositories?: Record<string, unknown>[] };
+
+  const rawRepos = Array.isArray(res.repositories) ? res.repositories : [];
+  return rawRepos.map((r) => {
+    const fullName = String(r.full_name ?? "");
+    const name = String(r.name ?? "");
+    const owner = String((r.owner as Record<string, unknown>)?.login ?? fullName.split("/")[0] ?? "");
+    const isPrivate = Boolean(r.private);
+    const defaultBranch = String(r.default_branch ?? "main");
+    const description = typeof r.description === "string" ? r.description : null;
+    const language = typeof r.language === "string" ? r.language : null;
+    const size = typeof r.size === "number" ? r.size : 0;
+    const pushedAt = typeof r.pushed_at === "string" ? r.pushed_at : null;
+    const empty = size === 0 || !pushedAt;
+    const alreadyRegistered = registeredSet.has(fullName.toLowerCase());
+    return {
+      fullName,
+      name,
+      owner,
+      private: isPrivate,
+      defaultBranch,
+      description,
+      language,
+      empty,
+      pushedAt,
+      alreadyRegistered,
+    };
+  });
+}
+
+/** Inspects a repository to detect language, build tools, check recipes, and default branch. */
+export async function inspectRepo(
+  tokens: TokenSource,
+  owner: string,
+  name: string,
+  deps: GitHubDeps & { api?: string } = {},
+): Promise<GitHubInspectResult> {
+  const f = deps.fetch ?? fetch;
+  const api = deps.api ?? API;
+  const repo = `${owner}/${name}`;
+  checkRepo(repo);
+  const token = await tokens.token(repo, "read");
+  const authHeader = { authorization: `Bearer ${token}` };
+
+  const repoMeta = await call(f, `${api}/repos/${repo}`, {
+    method: "GET",
+    headers: authHeader,
+  });
+  const defaultBranch = String(repoMeta.default_branch ?? "main");
+  const size = typeof repoMeta.size === "number" ? repoMeta.size : 0;
+  const empty = size === 0 || !repoMeta.pushed_at;
+
+  const id = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+
+  if (empty) {
+    return {
+      id,
+      repo,
+      defaultBranch,
+      empty: true,
+      checks: ["pnpm install --frozen-lockfile", "pnpm check", "pnpm test"],
+      protectedPaths: ["package.json", "pnpm-lock.yaml"],
+      detected: "empty",
+    };
+  }
+
+  let contents: Record<string, unknown>[] = [];
+  try {
+    const list = await call(f, `${api}/repos/${repo}/contents`, {
+      method: "GET",
+      headers: authHeader,
+    });
+    contents = Array.isArray(list) ? (list as Record<string, unknown>[]) : [];
+  } catch {
+    // repo contents not accessible or directory is empty
+  }
+
+  const fileNames = new Set(contents.map((c) => String(c.name ?? "")));
+
+  if (fileNames.has("package.json")) {
+    const checks: string[] = [];
+    const hasPnpmLock = fileNames.has("pnpm-lock.yaml");
+    const hasYarnLock = fileNames.has("yarn.lock");
+    const hasPackageLock = fileNames.has("package-lock.json");
+
+    const installCmd = hasPnpmLock
+      ? "pnpm install --frozen-lockfile"
+      : hasYarnLock
+        ? "yarn install --frozen-lockfile"
+        : hasPackageLock
+          ? "npm ci"
+          : "pnpm install";
+
+    checks.push(installCmd);
+
+    try {
+      const pkgFile = await call(f, `${api}/repos/${repo}/contents/package.json`, {
+        method: "GET",
+        headers: authHeader,
+      });
+      const content =
+        typeof pkgFile.content === "string" ? Buffer.from(pkgFile.content, "base64").toString("utf8") : "";
+      const pkg = JSON.parse(content) as { scripts?: Record<string, string> };
+      const scripts = pkg.scripts ?? {};
+      const runner = hasPnpmLock ? "pnpm" : hasYarnLock ? "yarn" : "npm run";
+
+      if (scripts.check) checks.push(`${runner} check`);
+      if (scripts.typecheck) checks.push(`${runner} typecheck`);
+      if (scripts.test) checks.push(`${runner} test`);
+      if (!scripts.check && !scripts.typecheck && !scripts.test && scripts.build) {
+        checks.push(`${runner} build`);
+      }
+    } catch {
+      checks.push("pnpm test");
+    }
+
+    if (checks.length === 1) {
+      checks.push("pnpm test");
+    }
+
+    return {
+      id,
+      repo,
+      defaultBranch,
+      empty: false,
+      checks,
+      protectedPaths: [
+        "package.json",
+        ...(hasPnpmLock ? ["pnpm-lock.yaml"] : hasPackageLock ? ["package-lock.json"] : []),
+      ],
+      detected: "node",
+    };
+  }
+
+  if (fileNames.has("pyproject.toml") || fileNames.has("requirements.txt")) {
+    return {
+      id,
+      repo,
+      defaultBranch,
+      empty: false,
+      checks: ["pytest"],
+      protectedPaths: fileNames.has("pyproject.toml") ? ["pyproject.toml"] : ["requirements.txt"],
+      detected: "python",
+    };
+  }
+
+  if (fileNames.has("Cargo.toml")) {
+    return {
+      id,
+      repo,
+      defaultBranch,
+      empty: false,
+      checks: ["cargo test"],
+      protectedPaths: ["Cargo.toml", ...(fileNames.has("Cargo.lock") ? ["Cargo.lock"] : [])],
+      detected: "rust",
+    };
+  }
+
+  if (fileNames.has("go.mod")) {
+    return {
+      id,
+      repo,
+      defaultBranch,
+      empty: false,
+      checks: ["go test ./..."],
+      protectedPaths: ["go.mod", ...(fileNames.has("go.sum") ? ["go.sum"] : [])],
+      detected: "go",
+    };
+  }
+
+  return {
+    id,
+    repo,
+    defaultBranch,
+    empty: false,
+    checks: ["echo ok"],
+    protectedPaths: [],
+    detected: typeof repoMeta.language === "string" ? repoMeta.language.toLowerCase() : "unknown",
+  };
+}
+
+/** Scaffolds starter template files into a repository via the GitHub Contents API. */
+export async function bootstrapRepo(
+  tokens: TokenSource,
+  opts: BootstrapOptions,
+  deps: GitHubDeps & { api?: string } = {},
+): Promise<BootstrapResult> {
+  const f = deps.fetch ?? fetch;
+  const api = deps.api ?? API;
+  const repo = checkRepo(opts.repo);
+  const token = await tokens.token(repo, "write");
+  const authHeader = { authorization: `Bearer ${token}` };
+
+  const template = opts.template ?? "ts-node";
+  const name = repo.split("/")[1] ?? "project";
+  const description = opts.description ?? "Project managed by i.inc";
+
+  const files: Record<string, string> = {};
+
+  if (template === "ts-node") {
+    files["package.json"] = `${JSON.stringify(
+      {
+        name,
+        version: "0.1.0",
+        type: "module",
+        scripts: {
+          check: "tsc --noEmit",
+          test: "vitest run",
+        },
+        devDependencies: {
+          typescript: "^5.7.0",
+          vitest: "^3.0.0",
+        },
+      },
+      null,
+      2,
+    )}\n`;
+    files["tsconfig.json"] = `${JSON.stringify(
+      {
+        compilerOptions: {
+          target: "ES2022",
+          module: "NodeNext",
+          moduleResolution: "NodeNext",
+          strict: true,
+          skipLibCheck: true,
+        },
+        include: ["src", "test"],
+      },
+      null,
+      2,
+    )}\n`;
+    files["src/index.ts"] =
+      `export function greet(name = "World"): string {\n  return \`Hello, \${name}!\`;\n}\n`;
+    files["test/index.test.ts"] =
+      `import { describe, expect, it } from "vitest";\nimport { greet } from "../src/index.js";\n\ndescribe("greet", () => {\n  it("greets by name", () => {\n    expect(greet("${name}")).toBe("Hello, ${name}!");\n  });\n});\n`;
+    files["README.md"] = `# ${name}\n\n${description}\n`;
+    files[".gitignore"] = "node_modules/\ndist/\n";
+  } else if (template === "web") {
+    files["package.json"] = `${JSON.stringify(
+      {
+        name,
+        version: "0.1.0",
+        type: "module",
+        scripts: {
+          check: "tsc --noEmit",
+          build: "vite build",
+          test: "vitest run",
+        },
+        devDependencies: {
+          typescript: "^5.7.0",
+          vite: "^6.0.0",
+          vitest: "^3.0.0",
+        },
+      },
+      null,
+      2,
+    )}\n`;
+    files["index.html"] =
+      `<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <title>${name}</title>\n</head>\n<body>\n  <div id="app"></div>\n  <script type="module" src="/src/main.ts"></script>\n</body>\n</html>\n`;
+    files["src/main.ts"] = `document.querySelector("#app")!.innerHTML = "<h1>${name}</h1>";\n`;
+    files["README.md"] = `# ${name}\n\n${description}\n`;
+    files[".gitignore"] = "node_modules/\ndist/\n";
+  } else if (template === "python") {
+    files["pyproject.toml"] =
+      `[project]\nname = "${name}"\nversion = "0.1.0"\ndescription = "${description}"\nreadme = "README.md"\nrequires-python = ">=3.11"\n\n[build-system]\nrequires = ["setuptools>=61.0"]\nbuild-backend = "setuptools.build_meta"\n`;
+    files["src/__init__.py"] = '__version__ = "0.1.0"\n';
+    files["tests/test_basic.py"] = "def test_basic():\n    assert True\n";
+    files["README.md"] = `# ${name}\n\n${description}\n`;
+    files[".gitignore"] = "__pycache__/\n*.py[cod]\n.venv/\n";
+  } else {
+    files["README.md"] = `# ${name}\n\n${description}\n`;
+    files[".gitignore"] = ".DS_Store\n";
+  }
+
+  let commits = 0;
+  for (const [path, content] of Object.entries(files)) {
+    const encoded = Buffer.from(content, "utf8").toString("base64");
+    await call(f, `${api}/repos/${repo}/contents/${path}`, {
+      method: "PUT",
+      headers: authHeader,
+      body: JSON.stringify({
+        message: `Initialize ${path} (i.inc scaffold)`,
+        content: encoded,
+        ...(opts.defaultBranch ? { branch: opts.defaultBranch } : {}),
+      }),
+    });
+    commits++;
+  }
+
+  return { bootstrapped: true, commits };
+}

@@ -69,6 +69,38 @@ function serve(opts: { sandboxes?: "ok" | "404" | "fail"; putFails?: string } = 
           { id: "juno", name: "Juno" },
         ],
       });
+    if (url === "/api/github/repos")
+      return json({
+        repos: [
+          {
+            fullName: "firstprateek/my-service",
+            name: "my-service",
+            owner: "firstprateek",
+            private: true,
+            defaultBranch: "main",
+            description: "A service",
+            language: "TypeScript",
+            empty: false,
+            pushedAt: "2026-10-18T00:00:00Z",
+            alreadyRegistered: false,
+          },
+        ],
+      });
+    if (url.startsWith("/api/github/repos/") && url.endsWith("/inspect"))
+      return json({
+        id: "My Service",
+        repo: "firstprateek/my-service",
+        defaultBranch: "main",
+        empty: false,
+        checks: ["pnpm install --frozen-lockfile", "pnpm test"],
+        protectedPaths: ["package.json"],
+        detected: "node",
+      });
+    if (url.startsWith("/api/projects/") && url.endsWith("/bootstrap"))
+      return json(
+        { project: { id: "My Service", repo: "firstprateek/my-service" }, bootstrapped: true, commits: 1 },
+        201,
+      );
     if (url === "/api/sandboxes") {
       if (opts.sandboxes === "404") return json({ error: "not found" }, 404);
       if (opts.sandboxes === "fail") return new Response("<html>nope</html>", { status: 500 });
@@ -252,15 +284,98 @@ describe("projects", () => {
     expect(calls.some((c) => c.method === "PUT")).toBe(false);
   });
 
-  it("shows the daemon's complaint and keeps the edit", async () => {
-    serve({ putFails: "repo must be owner/name on GitHub" });
+  it("opens add project form and imports an existing repository from GitHub", async () => {
+    serve();
+    const root = await mount("inc-setup-projects");
+    button(root, "+ Add a project").click();
+    await settle(root.host);
+
+    const addCard = root.querySelector(".add-card");
+    expect(addCard).not.toBeNull();
+    expect(addCard?.textContent).toContain("Import from GitHub");
+    expect(addCard?.textContent).toContain("firstprateek/my-service");
+
+    // Select the repository
+    const selectBtn = [...(addCard?.querySelectorAll("button") ?? [])].find(
+      (b) => b.textContent === "Select",
+    ) as HTMLButtonElement | undefined;
+    expect(selectBtn).toBeDefined();
+    selectBtn?.click();
+    await settle(root.host);
+
+    // Verify fields auto-filled
+    const idInput = addCard?.querySelector('input[placeholder="e.g. duet, i-inc"]') as HTMLInputElement;
+    expect(idInput.value).toBe("my-service");
+
+    // Click submit "Add project"
+    const submitBtn = [...(addCard?.querySelectorAll("button.btn") ?? [])].find(
+      (b) => b.textContent?.trim() === "Add project",
+    ) as HTMLButtonElement | undefined;
+    expect(submitBtn).toBeDefined();
+    submitBtn?.click();
+    await settle(root.host);
+
+    // Verify PUT was sent
+    const put = calls.find((c) => c.method === "PUT" && c.url === "/api/projects/my-service");
+    expect(put).toBeDefined();
+    expect(put?.body).toMatchObject({
+      repo: "firstprateek/my-service",
+      checks: ["pnpm install --frozen-lockfile", "pnpm test"],
+      mode: "direct",
+    });
+  });
+
+  it("starts a new project from a starter template", async () => {
+    serve();
+    const root = await mount("inc-setup-projects");
+    button(root, "+ Add a project").click();
+    await settle(root.host);
+
+    const addCard = root.querySelector(".add-card");
+    const startTab = [...(addCard?.querySelectorAll(".seg button") ?? [])].find(
+      (b) => b.textContent === "Start new project",
+    ) as HTMLButtonElement | undefined;
+    expect(startTab).toBeDefined();
+    startTab?.click();
+    await settle(root.host);
+
+    // Fill in project ID and repo
+    const idInput = addCard?.querySelector('input[placeholder="e.g. duet, i-inc"]') as HTMLInputElement;
+    const repoInput = addCard?.querySelector('input[placeholder="owner/repo"]') as HTMLInputElement;
+    await type(root, idInput, "New API");
+    await type(root, repoInput, "firstprateek/new-api");
+
+    // Click "Start project & scaffold"
+    const scaffoldBtn = [...(addCard?.querySelectorAll("button.btn") ?? [])].find(
+      (b) => b.textContent?.trim() === "Start project & scaffold",
+    ) as HTMLButtonElement | undefined;
+    expect(scaffoldBtn).toBeDefined();
+    scaffoldBtn?.click();
+    await settle(root.host);
+
+    const post = calls.find((c) => c.method === "POST" && c.url === "/api/projects/New%20API/bootstrap");
+    expect(post).toBeDefined();
+    expect(post?.body).toMatchObject({
+      repo: "firstprateek/new-api",
+      template: "ts-node",
+      mode: "direct",
+    });
+  });
+
+  it("deletes a project when confirmed", async () => {
+    serve();
     const root = await mount("inc-setup-projects");
     const card = await openProject(root, "Duet");
-    await type(root, card.querySelector("input.mono") as Element, "demo/other");
-    button(card, "Save").click();
+
+    // Stub confirm to return true
+    const confirmMock = vi.fn().mockReturnValue(true);
+    window.confirm = confirmMock;
+    button(card, "Delete project").click();
     await settle(root.host);
-    expect(root.querySelector('[role="alert"]')?.textContent).toContain("owner/name");
-    expect((root.querySelector("input.mono") as HTMLInputElement).value).toBe("demo/other");
+
+    expect(confirmMock).toHaveBeenCalled();
+    const del = calls.find((c) => c.method === "DELETE" && c.url === "/api/projects/Duet");
+    expect(del).toBeDefined();
   });
 });
 

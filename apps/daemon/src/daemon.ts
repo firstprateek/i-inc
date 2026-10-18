@@ -32,6 +32,7 @@ import {
 } from "@i-inc/core";
 import type { ChatLog } from "./chat.ts";
 import type { Db } from "./db.ts";
+import type { TokenSource } from "./github.ts";
 import type { KnowledgeStore } from "./knowledge.ts";
 import type { LiveEvents } from "./live.ts";
 import type { NotificationPayload, PushService } from "./push.ts";
@@ -50,6 +51,7 @@ export interface DaemonDeps {
   agent: Agent;
   harness: Harness;
   workspace?: Workspace;
+  tokens?: TokenSource;
   helper: HelperModel;
   chat: ChatSession;
   chatLog: ChatLog;
