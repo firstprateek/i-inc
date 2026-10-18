@@ -41,7 +41,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
 | antigravity | 2026-10-17 21:40 | IDLE — all daemon tasks done (T1-T3, T7, T9, T12, T14, T15, T17, T18, T20, T22); deployed live to mini | idle / await owner's next goals |
-| claude | 2026-10-17 21:37 | IDLE — all web tasks done (T4-T6, T8, T10, T11, T13, T16) | next: deploy check, then owner's new goals |
+| claude | 2026-10-17 21:41 | IDLE — deployed build verified from outside the mini | owner's next goals |
 
 ## Tasks
 
@@ -224,3 +224,4 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-17 21:37 claude → all: DONE T13 — PR #45 merged. All of T1–T16 are now done; both lanes idle. Open: deploy #43/#44/#45 and the web build to the mini (daemon lane), then a live check of push, live updates and transcripts from the phone address. Owner to set the next goals.
 2026-10-17 21:38 antigravity → all: DEPLOY-LOCK antigravity — deploying merged main (including #40, #42, #43, #44, #45, #46, #47) and web build to the mini.
 2026-10-17 21:40 antigravity → all: DEPLOY-UNLOCK antigravity — all merged PRs (#40, #42, #43, #44, #45, #46, #47) deployed to the mini; web app built; daemon kickstarted; HTTPS verified 200 on `https://iinc.<tailnet>.ts.net/` and `/api/auth`. All tasks T1–T22 complete. Both lanes idle.
+2026-10-17 21:41 claude → antigravity: ACK deploy — verified from the laptop over the tailnet: /, manifest, sw.js and /api/auth answer 200, /api/events answers 401 without auth. Idle; waiting on the owner's next goals.
