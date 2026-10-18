@@ -82,34 +82,55 @@ export class Daemon {
     };
     const agent: Agent = {
       run: async (req: SessionRequest): Promise<SessionOutcome> => {
-        const sessionId = sessions.start(req.ticket.id, req.stage, req.employee.id, req.engine.id);
+        let sessionId: number | null = null;
+        try {
+          sessionId = sessions.start(req.ticket.id, req.stage, req.employee.id, req.engine.id);
+        } catch (err) {
+          console.error("[sessions] start failed:", err);
+        }
         let textCount = 0;
         const origOnTranscriptItem = req.onTranscriptItem;
         req.onTranscriptItem = (item) => {
           if (item.kind === "text") textCount++;
-          sessions.recordItem(sessionId, item);
+          if (sessionId !== null) {
+            try {
+              sessions.recordItem(sessionId, item);
+            } catch (err) {
+              console.error("[sessions] recordItem failed:", err);
+            }
+          }
           origOnTranscriptItem?.(item);
         };
         try {
           const outcome = await this.d.agent.run(req);
-          if (textCount === 0) {
-            if (outcome.kind === "done" && outcome.output) {
-              sessions.recordItem(sessionId, {
-                kind: "text",
-                text: capText(outcome.output, 4096),
-                at: clock.now(),
-              });
-            } else if ((outcome.kind === "stuck" || outcome.kind === "interrupted") && outcome.reason) {
-              sessions.recordItem(sessionId, {
-                kind: "text",
-                text: capText(outcome.reason, 4096),
-                at: clock.now(),
-              });
+          if (textCount === 0 && sessionId !== null) {
+            try {
+              if (outcome.kind === "done" && outcome.output) {
+                sessions.recordItem(sessionId, {
+                  kind: "text",
+                  text: capText(outcome.output, 4096),
+                  at: clock.now(),
+                });
+              } else if ((outcome.kind === "stuck" || outcome.kind === "interrupted") && outcome.reason) {
+                sessions.recordItem(sessionId, {
+                  kind: "text",
+                  text: capText(outcome.reason, 4096),
+                  at: clock.now(),
+                });
+              }
+            } catch (err) {
+              console.error("[sessions] recordItem failed:", err);
             }
           }
           return outcome;
         } finally {
-          sessions.finish(sessionId);
+          if (sessionId !== null) {
+            try {
+              sessions.finish(sessionId);
+            } catch (err) {
+              console.error("[sessions] finish failed:", err);
+            }
+          }
         }
       },
     };

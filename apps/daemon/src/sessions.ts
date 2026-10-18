@@ -1,6 +1,9 @@
 import type { Clock, Id, SessionTranscriptItem, TicketSessionTranscript } from "@i-inc/core";
 import type { Db } from "./db.ts";
 
+export const MAX_SESSION_ITEMS = 500;
+export const MAX_SESSIONS_PER_TICKET = 50;
+
 export function capText(s: string, maxBytes = 4096): string {
   if (Buffer.byteLength(s, "utf8") <= maxBytes) return s;
   let end = maxBytes;
@@ -12,8 +15,56 @@ export function capText(s: string, maxBytes = 4096): string {
   return truncated;
 }
 
+export function redactSecrets(text: string): string {
+  if (!text) return text;
+  let out = text;
+
+  // 1. Authorization: <anything> header values
+  out = out.replace(
+    /(authorization:\s*)(?:["'])(?:bearer\s+|basic\s+|token\s+)?[^\r\n"']+["']/gi,
+    "$1[redacted]",
+  );
+  out = out.replace(/(authorization:\s*)(?:bearer\s+|basic\s+|token\s+)?[^\s\r\n"']+/gi, "$1[redacted]");
+
+  // 2. Bearer <token> headers/values
+  out = out.replace(/(bearer\s+)[^\s\r\n"']+/gi, "$1[redacted]");
+
+  // 3. GitHub tokens (ghp_, gho_, ghs_, github_pat_)
+  out = out.replace(/\b(?:ghp|gho|ghs|github_pat)_[A-Za-z0-9_]+\b/g, "[redacted]");
+
+  // 4. OpenAI / Anthropic keys (sk-...)
+  out = out.replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[redacted]");
+
+  // 5. Google AIza API keys
+  out = out.replace(/\bAIza[0-9A-Za-z_-]{20,}\b/g, "[redacted]");
+
+  // 6. Slack xox[bp]- tokens
+  out = out.replace(/\bxox[baprs]-[0-9A-Za-z-]{8,}\b/g, "[redacted]");
+
+  // 7. JWT-like tokens (eyJ...\.eyJ...\....)
+  out = out.replace(/\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\b/g, "[redacted]");
+
+  // 8. password= / token= / secret= / api_key= query or env values
+  out = out.replace(
+    /(?<=[?&]|\b)(password|token|secret|api[-_]?key)=(?:(["'])([^\r\n"']+)\2|([^\s&;"']+))/gi,
+    "$1=[redacted]",
+  );
+
+  return out;
+}
+
+export { redactSecrets as redact };
+
+interface ActiveSession {
+  seq: number;
+  count: number;
+  truncated: boolean;
+  itemSeqById: Map<string, number>;
+  lastSeq?: number | undefined;
+}
+
 export class SessionStore {
-  private readonly active = new Map<number, SessionTranscriptItem[]>();
+  private readonly active = new Map<number, ActiveSession>();
 
   constructor(
     private readonly db: Db,
@@ -23,7 +74,7 @@ export class SessionStore {
   start(ticketId: Id, stage: string, employeeId: Id, engineId: Id): number {
     const startedAt = this.clock.now();
     this.db.run(
-      "INSERT INTO ticket_sessions (ticket_id, stage, employee_id, engine_id, started_at, items_json) VALUES (?, ?, ?, ?, ?, '[]')",
+      "INSERT INTO ticket_sessions (ticket_id, stage, employee_id, engine_id, started_at) VALUES (?, ?, ?, ?, ?)",
       ticketId,
       stage,
       employeeId,
@@ -32,35 +83,88 @@ export class SessionStore {
     );
     const [row] = this.db.all<{ id: number }>("SELECT last_insert_rowid() AS id");
     const sessionId = row?.id ?? 0;
-    this.active.set(sessionId, []);
+    this.active.set(sessionId, {
+      seq: 0,
+      count: 0,
+      truncated: false,
+      itemSeqById: new Map(),
+    });
+
+    this.pruneOldSessions(ticketId, MAX_SESSIONS_PER_TICKET);
     return sessionId;
   }
 
   recordItem(sessionId: number, item: SessionTranscriptItem): void {
-    let items = this.active.get(sessionId);
-    if (!items) {
-      const [row] = this.db.all<{ items_json: string }>(
-        "SELECT items_json FROM ticket_sessions WHERE id = ?",
+    let state = this.active.get(sessionId);
+    if (!state) {
+      const rows = this.db.all<{ seq: number; kind: string; text: string | null }>(
+        "SELECT seq, kind, text FROM ticket_session_items WHERE session_id = ? ORDER BY seq ASC",
         sessionId,
       );
-      items = row?.items_json ? (JSON.parse(row.items_json) as SessionTranscriptItem[]) : [];
-      this.active.set(sessionId, items);
+      const last = rows.at(-1);
+      state = {
+        seq: last?.seq ?? 0,
+        count: rows.length,
+        truncated: last?.kind === "text" && last.text === "[truncated]",
+        itemSeqById: new Map(),
+        ...(last?.seq !== undefined ? { lastSeq: last.seq } : {}),
+      };
+      this.active.set(sessionId, state);
     }
 
+    const text = item.text !== undefined ? capText(redactSecrets(item.text), 4096) : undefined;
+    const title = item.title !== undefined ? capText(redactSecrets(item.title), 4096) : undefined;
+    const status = item.status !== undefined ? capText(redactSecrets(item.status), 4096) : undefined;
+
+    // Check if this item updates an existing item by id
+    const existingSeq = item.id ? state.itemSeqById.get(item.id) : undefined;
+    if (existingSeq !== undefined) {
+      this.db.run(
+        "UPDATE ticket_session_items SET text = coalesce(?, text), title = coalesce(?, title), status = coalesce(?, status) WHERE session_id = ? AND seq = ?",
+        text !== undefined ? text : null,
+        title !== undefined ? title : null,
+        status !== undefined ? status : null,
+        sessionId,
+        existingSeq,
+      );
+      return;
+    }
+
+    if (state.truncated) {
+      return;
+    }
+
+    if (state.count >= MAX_SESSION_ITEMS) {
+      state.truncated = true;
+      state.seq++;
+      state.count++;
+      state.lastSeq = state.seq;
+      this.db.run(
+        "INSERT INTO ticket_session_items (session_id, seq, kind, text, title, status, at) VALUES (?, ?, 'text', '[truncated]', NULL, NULL, ?)",
+        sessionId,
+        state.seq,
+        item.at,
+      );
+      return;
+    }
+
+    state.seq++;
+    state.count++;
+    state.lastSeq = state.seq;
     if (item.id) {
-      const existing = items.find((i) => i.id === item.id);
-      if (existing) {
-        if (item.text !== undefined) existing.text = item.text;
-        if (item.title !== undefined) existing.title = item.title;
-        if (item.status !== undefined) existing.status = item.status;
-      } else {
-        items.push({ ...item });
-      }
-    } else {
-      items.push({ ...item });
+      state.itemSeqById.set(item.id, state.seq);
     }
 
-    this.db.run("UPDATE ticket_sessions SET items_json = ? WHERE id = ?", JSON.stringify(items), sessionId);
+    this.db.run(
+      "INSERT INTO ticket_session_items (session_id, seq, kind, text, title, status, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      sessionId,
+      state.seq,
+      item.kind,
+      text !== undefined ? text : null,
+      title !== undefined ? title : null,
+      status !== undefined ? status : null,
+      item.at,
+    );
   }
 
   finish(sessionId: number): void {
@@ -70,34 +174,69 @@ export class SessionStore {
   }
 
   list(ticketId: Id): TicketSessionTranscript[] {
-    return this.db
-      .all<{
-        stage: string;
-        employee_id: string;
-        engine_id: string;
-        started_at: number;
-        ended_at: number | null;
-        items_json: string;
-      }>(
-        "SELECT stage, employee_id, engine_id, started_at, ended_at, items_json FROM ticket_sessions WHERE ticket_id = ? ORDER BY id ASC",
-        ticketId,
-      )
-      .map((row) => ({
-        stage: row.stage,
-        employeeId: row.employee_id,
-        engineId: row.engine_id,
-        startedAt: row.started_at,
-        endedAt: row.ended_at !== null ? row.ended_at : null,
-        items: (JSON.parse(row.items_json || "[]") as SessionTranscriptItem[]).map((item) => {
-          const res: SessionTranscriptItem = {
-            kind: item.kind,
-            at: item.at,
-          };
-          if (item.text !== undefined) res.text = capText(item.text, 4096);
-          if (item.title !== undefined) res.title = capText(item.title, 4096);
-          if (item.status !== undefined) res.status = capText(item.status, 4096);
-          return res;
-        }),
-      }));
+    const sessions = this.db.all<{
+      id: number;
+      stage: string;
+      employee_id: string;
+      engine_id: string;
+      started_at: number;
+      ended_at: number | null;
+    }>(
+      "SELECT id, stage, employee_id, engine_id, started_at, ended_at FROM ticket_sessions WHERE ticket_id = ? ORDER BY id ASC",
+      ticketId,
+    );
+    if (sessions.length === 0) return [];
+
+    const sessionIds = sessions.map((s) => s.id);
+    const placeholders = sessionIds.map(() => "?").join(", ");
+    const itemRows = this.db.all<{
+      session_id: number;
+      kind: "text" | "tool";
+      text: string | null;
+      title: string | null;
+      status: string | null;
+      at: number;
+    }>(
+      `SELECT session_id, kind, text, title, status, at FROM ticket_session_items WHERE session_id IN (${placeholders}) ORDER BY session_id ASC, seq ASC`,
+      ...sessionIds,
+    );
+
+    const itemsBySession = new Map<number, SessionTranscriptItem[]>();
+    for (const row of itemRows) {
+      let list = itemsBySession.get(row.session_id);
+      if (!list) {
+        list = [];
+        itemsBySession.set(row.session_id, list);
+      }
+      const item: SessionTranscriptItem = {
+        kind: row.kind,
+        at: row.at,
+      };
+      if (row.text !== null && row.text !== undefined) item.text = row.text;
+      if (row.title !== null && row.title !== undefined) item.title = row.title;
+      if (row.status !== null && row.status !== undefined) item.status = row.status;
+      list.push(item);
+    }
+
+    return sessions.map((s) => ({
+      stage: s.stage,
+      employeeId: s.employee_id,
+      engineId: s.engine_id,
+      startedAt: s.started_at,
+      endedAt: s.ended_at !== null ? s.ended_at : null,
+      items: itemsBySession.get(s.id) ?? [],
+    }));
+  }
+
+  private pruneOldSessions(ticketId: Id, keepLimit = MAX_SESSIONS_PER_TICKET): void {
+    const oldSessions = this.db.all<{ id: number }>(
+      "SELECT id FROM ticket_sessions WHERE ticket_id = ? ORDER BY id DESC LIMIT -1 OFFSET ?",
+      ticketId,
+      keepLimit,
+    );
+    for (const s of oldSessions) {
+      this.db.run("DELETE FROM ticket_session_items WHERE session_id = ?", s.id);
+      this.db.run("DELETE FROM ticket_sessions WHERE id = ?", s.id);
+    }
   }
 }

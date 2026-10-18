@@ -55,8 +55,19 @@ export function migrate(db: Db): void {
       engine_id TEXT NOT NULL,
       started_at INTEGER NOT NULL,
       ended_at INTEGER,
-      items_json TEXT NOT NULL DEFAULT '[]'
+      items_json TEXT DEFAULT '[]'
     );
     CREATE INDEX IF NOT EXISTS idx_ticket_sessions_ticket ON ticket_sessions(ticket_id, id);
+    CREATE TABLE IF NOT EXISTS ticket_session_items (
+      session_id INTEGER NOT NULL,
+      seq INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      text TEXT,
+      title TEXT,
+      status TEXT,
+      at INTEGER NOT NULL,
+      PRIMARY KEY (session_id, seq)
+    );
+    CREATE INDEX IF NOT EXISTS idx_ticket_session_items_session ON ticket_session_items(session_id, seq);
   `);
 }
