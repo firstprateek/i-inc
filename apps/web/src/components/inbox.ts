@@ -3,7 +3,7 @@ import { css, html } from "lit";
 import { api, type PolicyProposal, refreshNow, type TicketView } from "../api.ts";
 import { Loader } from "./loader.ts";
 import { protectedOk } from "./protected-card.ts";
-import { avatar, base } from "./shared.ts";
+import { avatar, base, projectBadge } from "./shared.ts";
 
 export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyProposal[] }> {
   protected fetch = async () => ({
@@ -73,7 +73,7 @@ export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyPr
 
   private header(t: TicketView, what: string) {
     return html`<div class="who">${t.assignee ? avatar(t.assignee, 28) : ""}
-      <span><b>${t.assignee?.name ?? "Unassigned"}</b> · ${what} · ${t.project}</span></div>`;
+      <span><b>${t.assignee?.name ?? "Unassigned"}</b> · ${what} · ${projectBadge(t.project)}</span></div>`;
   }
 
   private ask(t: TicketView) {

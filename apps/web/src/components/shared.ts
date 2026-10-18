@@ -27,6 +27,35 @@ export const base = css`
   .chip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 700;
     padding: 3px 10px; border-radius: 999px; background: var(--neutral-bg); color: var(--neutral-fg); white-space: nowrap; }
   .tag { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 6px; background: var(--sunken); color: var(--neutral-fg); }
+  .proj-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 6px;
+    white-space: nowrap;
+  }
+  .proj-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+  }
+  .proj-0 { background: var(--proj-0-bg); color: var(--proj-0-fg); }
+  .proj-0 .proj-dot { background: var(--proj-0-dot); }
+  .proj-1 { background: var(--proj-1-bg); color: var(--proj-1-fg); }
+  .proj-1 .proj-dot { background: var(--proj-1-dot); }
+  .proj-2 { background: var(--proj-2-bg); color: var(--proj-2-fg); }
+  .proj-2 .proj-dot { background: var(--proj-2-dot); }
+  .proj-3 { background: var(--proj-3-bg); color: var(--proj-3-fg); }
+  .proj-3 .proj-dot { background: var(--proj-3-dot); }
+  .proj-4 { background: var(--proj-4-bg); color: var(--proj-4-fg); }
+  .proj-4 .proj-dot { background: var(--proj-4-dot); }
+  .proj-5 { background: var(--proj-5-bg); color: var(--proj-5-fg); }
+  .proj-5 .proj-dot { background: var(--proj-5-dot); }
   .working { background: var(--working-bg); color: var(--working-fg); }
   .reviewing { background: var(--reviewing-bg); color: var(--reviewing-fg); }
   .needs { background: var(--needs-bg); color: var(--needs-fg); }
@@ -38,22 +67,38 @@ export const base = css`
 
 // Identity tints: never a status colour (lessons 1-2). An employee's tint is an index into this list,
 // chosen at hiring (pickTint in the core), so the order matters: neighbours are the most unlike.
-const tints: [string, string][] = [
-  ["#DDE1E6", "#34404C"], // slate
-  ["#F1DCE4", "#6B2B45"], // rose
-  ["#EDE3D0", "#5A4524"], // sand
-  ["#E4D6F3", "#4A2B70"], // lilac
-  ["#EADFD6", "#5B3E2E"], // clay
-  ["#E5E2DA", "#46423A"], // stone
-  ["#E3E1EC", "#3D3A5C"], // periwinkle
+export const tints: [string, string][] = [
+  ["#DAE1E8", "#1F2D3A"], // slate
+  ["#F3D6E1", "#5E1E37"], // rose
+  ["#F0E1C2", "#52360E"], // sand
+  ["#E3D4F4", "#3E1D61"], // lilac
+  ["#F0DED2", "#5A2D18"], // clay
+  ["#D8E2D4", "#20361D"], // stone
+  ["#D6DCEE", "#1D2D56"], // periwinkle
 ];
+
+/** Deterministic project hue index (0..5) from project name */
+export function projectIndex(name: string): number {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+  }
+  return hash % 6;
+}
+
+/** A project tag chip with a colored dot indicator */
+export function projectBadge(name: string) {
+  const idx = projectIndex(name);
+  return html`<span class="proj-badge proj-${idx}"><span class="proj-dot" aria-hidden="true"></span>${name}</span>`;
+}
 
 /** An employee's avatar, in the identity tint they were given at hiring. */
 export function avatar(p: { name: string; tint: number }, size = 36) {
-  const [bg, fg] = tints[p.tint % tints.length] ?? ["#DDE1E6", "#34404C"];
+  const tintIdx = Math.abs(p.tint % tints.length);
+  const [fallbackBg, fallbackFg] = tints[tintIdx] ?? ["#DAE1E8", "#1F2D3A"];
   const name = p.name;
   return html`<span class="avatar" aria-hidden="true"
-    style="width:${size}px;height:${size}px;background:${bg};color:${fg};font-size:${Math.round(size * 0.42)}px"
+    style="width:${size}px;height:${size}px;background:var(--avatar-${tintIdx}-bg, ${fallbackBg});color:var(--avatar-${tintIdx}-fg, ${fallbackFg});font-size:${Math.round(size * 0.42)}px"
     >${name.charAt(0)}</span>`;
 }
 

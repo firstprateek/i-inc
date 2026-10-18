@@ -59,7 +59,11 @@ export class IncOffice extends Loader<Data> {
       .quota-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 8px; align-items: center; font-size: 12px; }
       .quota-label { color: var(--ink-2); font-weight: 600; }
       .quota-bar-track { height: 8px; border-radius: 4px; background: var(--sunken); overflow: hidden; }
-      .quota-bar { height: 100%; border-radius: 4px; background: var(--bar); min-width: 2px; }
+      .quota-bar { height: 100%; border-radius: 4px; background: var(--bar); min-width: 2px; transition: width 0.3s ease; }
+      .quota-bar.ok { background: var(--bar-ok); }
+      .quota-bar.warn { background: var(--bar-warn); }
+      .quota-bar.crit { background: var(--bar-crit); }
+      .activity-meters .quota-bar { background: var(--bar-spend); }
       .quota-val { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--ink-2); white-space: nowrap; }
       .quota-val.font-small { font-weight: 500; }
       .account-models { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
@@ -121,6 +125,8 @@ export class IncOffice extends Loader<Data> {
             rawU7 !== undefined && rawU7 !== null
               ? Math.min(100, Math.max(0, Math.round(rawU7 * 100)))
               : null;
+          const health5 = u5 !== null ? (u5 >= 95 ? "crit" : u5 >= 80 ? "warn" : "ok") : "";
+          const health7 = u7 !== null ? (u7 >= 95 ? "crit" : u7 >= 80 ? "warn" : "ok") : "";
 
           const s5 = a.fiveHourSessions ?? 0;
           const s7 = a.sevenDaySessions ?? 0;
@@ -144,14 +150,14 @@ export class IncOffice extends Loader<Data> {
                   <div class="quota-row">
                     <span class="quota-label">5h</span>
                     <div class="quota-bar-track" role="meter" aria-label="5-hour utilization" aria-valuenow="${u5 ?? 0}" aria-valuemin="0" aria-valuemax="100">
-                      <div class="quota-bar" style="width: ${u5 ?? 0}%"></div>
+                      <div class="quota-bar ${health5}" style="width: ${u5 ?? 0}%"></div>
                     </div>
                     <span class="quota-val">${u5 !== null ? `${u5}%` : "—"}</span>
                   </div>
                   <div class="quota-row">
                     <span class="quota-label">7d</span>
                     <div class="quota-bar-track" role="meter" aria-label="7-day utilization" aria-valuenow="${u7 ?? 0}" aria-valuemin="0" aria-valuemax="100">
-                      <div class="quota-bar" style="width: ${u7 ?? 0}%"></div>
+                      <div class="quota-bar ${health7}" style="width: ${u7 ?? 0}%"></div>
                     </div>
                     <span class="quota-val">${u7 !== null ? `${u7}%` : "—"}</span>
                   </div>

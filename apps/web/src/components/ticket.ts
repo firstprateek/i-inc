@@ -4,7 +4,7 @@ import { css, html } from "lit";
 import { api, refreshNow, type TicketEvent, type TicketView } from "../api.ts";
 import { Loader } from "./loader.ts";
 import "./transcript.ts";
-import { base, check } from "./shared.ts";
+import { base, check, projectBadge } from "./shared.ts";
 
 interface Data {
   ticket: TicketView;
@@ -97,7 +97,7 @@ export class IncTicket extends Loader<Data> {
     return html`<div class="wrap">
       <section class="card main">
         <div class="row">
-          <span class="tag">${t.type}</span><span class="tag">${t.project}</span><span class="tag">${t.effort}</span>
+          <span class="tag">${t.type}</span>${projectBadge(t.project)}<span class="tag">${t.effort}</span>
           <span class="muted" style="font-size:13px;font-weight:700">#${t.id}</span>
         </div>
         <h1>${t.title}</h1>
