@@ -592,6 +592,50 @@ describe("Instant chat (T24)", () => {
       warn.mockRestore();
     });
 
+    it("keeps the draft per employee: Kit's box starts empty and Ada's text comes back", async () => {
+      const { postCalls } = serveChat();
+      const { el, root } = await mount("ada");
+      const box = () => root.querySelector("textarea") as HTMLTextAreaElement;
+
+      box().value = "Ship the login fix";
+      box().dispatchEvent(new Event("input"));
+      await el.updateComplete;
+
+      el.employeeId = "kit";
+      await el.updateComplete;
+      expect(el.draft).toBe("");
+      expect(box().value).toBe("");
+      expect((root.querySelector("button[type=submit]") as HTMLButtonElement).disabled).toBe(true);
+
+      el.employeeId = "ada";
+      await el.updateComplete;
+      expect(el.draft).toBe("Ship the login fix");
+      expect(box().value).toBe("Ship the login fix");
+      expect(postCalls).toEqual([]);
+    });
+
+    it("keeps Kit's own draft when switching back and forth", async () => {
+      serveChat();
+      const { el, root } = await mount("ada");
+      const box = () => root.querySelector("textarea") as HTMLTextAreaElement;
+      const type = async (text: string) => {
+        box().value = text;
+        box().dispatchEvent(new Event("input"));
+        await el.updateComplete;
+      };
+
+      await type("For Ada");
+      el.employeeId = "kit";
+      await el.updateComplete;
+      await type("For Kit");
+      el.employeeId = "ada";
+      await el.updateComplete;
+      expect(box().value).toBe("For Ada");
+      el.employeeId = "kit";
+      await el.updateComplete;
+      expect(box().value).toBe("For Kit");
+    });
+
     it("does not clear entries on the first load", async () => {
       serveChat();
       const { el } = await mount("ada");

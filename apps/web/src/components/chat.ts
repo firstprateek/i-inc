@@ -113,6 +113,8 @@ export class IncChat extends LitElement {
   // Track pending optimistic messages across employees to prevent cross-thread leaks
   private pendingEntries: (Entry & { from: "owner" })[] = [];
   private inFlightEmployees = new Set<string>();
+  // Unsent text per employee, so a message typed to one is never sent to another
+  private drafts = new Map<string, string>();
 
   constructor() {
     super();
@@ -140,12 +142,18 @@ export class IncChat extends LitElement {
       // Drop the last employee's thread before this render, so it never shows under the new one.
       this.entries = [];
       this.error = null;
+      const last = changed.get("employeeId") as string;
+      if (last) this.drafts.set(last, this.draft);
+      this.draft = this.drafts.get(this.employeeId) ?? "";
       this.thinking = this.inFlightEmployees.has(this.employeeId);
     }
   }
 
   override updated(changed: Map<string, unknown>): void {
-    if (this.switched(changed)) void this.load();
+    if (this.switched(changed)) {
+      this.autoResize();
+      void this.load();
+    }
     if (changed.has("entries") || changed.has("thinking")) {
       this.scrollToBottom();
     }
