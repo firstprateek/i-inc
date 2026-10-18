@@ -393,6 +393,64 @@ describe("the office", () => {
     expect(root.textContent).toContain("80%");
     expect(root.textContent).toContain("allowed");
   });
+
+  it("renders accounts without percentage bars with model badges, activity meters, and status", async () => {
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (url === "/api/office") {
+        return new Response(
+          JSON.stringify({
+            employees: [],
+            accounts: [
+              {
+                id: "google-ai-pro",
+                name: "Google AI Pro",
+                models: ["gemini-2.5-pro"],
+                harnesses: ["antigravity"],
+                fiveHourSessions: 3,
+                fiveHourMinutes: 12,
+                sevenDaySessions: 15,
+                sevenDayMinutes: 65,
+              },
+              {
+                id: "local",
+                name: "Local Ollama",
+                models: ["qwen3:8b"],
+                harnesses: ["opencode"],
+                fiveHourSessions: 0,
+                fiveHourMinutes: 0,
+                sevenDaySessions: 2,
+                sevenDayMinutes: 8,
+              },
+            ],
+            rateLimits: {
+              "google-ai-pro": {
+                status: "allowed",
+                updatedAt: 1000,
+              },
+              local: {
+                status: "local",
+                updatedAt: 1000,
+              },
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({ tickets: [] }), {
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const root = await mount("inc-office");
+    expect(root.textContent).toContain("Google AI Pro");
+    expect(root.textContent).toContain("gemini-2.5-pro");
+    expect(root.textContent).toContain("3 sessions · 12m active");
+    expect(root.textContent).toContain("15 sessions · 65m active");
+    expect(root.textContent).toContain("Local Ollama");
+    expect(root.textContent).toContain("qwen3:8b");
+    expect(root.textContent).toContain("local");
+    expect(root.textContent).toContain("2 sessions · 8m active");
+  });
 });
 
 describe("My desk releases", () => {

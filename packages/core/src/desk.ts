@@ -12,6 +12,20 @@ export interface AccountCost {
   pricePerMillionTokens?: number;
   /** Maximum monthly spend allowed before reaching the usage cap. */
   monthlyCap?: number;
+  /** Distinct models bound to this account. */
+  models?: string[];
+  /** Distinct harnesses bound to this account. */
+  harnesses?: string[];
+  /** Number of sessions started in the last 5 hours. */
+  fiveHourSessions?: number;
+  /** Active session duration in minutes in the last 5 hours. */
+  fiveHourMinutes?: number;
+  /** Number of sessions started in the last 7 days. */
+  sevenDaySessions?: number;
+  /** Active session duration in minutes in the last 7 days. */
+  sevenDayMinutes?: number;
+  /** Epoch timestamp in ms when an engine under this account was last used. */
+  lastUsedAt?: number | null;
 }
 
 export interface HostCost {

@@ -1,5 +1,5 @@
-// What the board, office, ticket and My desk views read. Pure shaping of the event log and config.
 import {
+  type AccountCost,
   assembleReport,
   type Employee,
   type Id,
@@ -11,6 +11,7 @@ import {
   waits,
   withinHours,
 } from "@i-inc/core";
+import type { Db } from "./db.ts";
 import type { Registry } from "./registry.ts";
 import type {
   AccountRateLimit,
@@ -248,4 +249,115 @@ export function deskView(all: Map<Id, TicketEvent[]>, registry: Registry, now: n
     bottleneck: w[0] ?? null,
     merged,
   };
+}
+
+/** Enriches accounts with bound models, harnesses, 5h/7d session counts & active minutes, and lastUsedAt. */
+export function enrichAccounts(
+  accounts: AccountCost[],
+  registry: Registry,
+  db: Db,
+  now: number,
+): AccountCost[] {
+  const engines = registry.engines();
+  const fiveHoursAgo = now - 5 * 3_600_000;
+  const sevenDaysAgo = now - 7 * 24 * 3_600_000;
+
+  let sessionRows: { engine_id: string; started_at: number; ended_at: number | null }[] = [];
+  try {
+    sessionRows = db.all<{ engine_id: string; started_at: number; ended_at: number | null }>(
+      "SELECT engine_id, started_at, ended_at FROM ticket_sessions WHERE started_at >= ? ORDER BY started_at DESC",
+      sevenDaysAgo,
+    );
+  } catch {
+    // If ticket_sessions table is not yet created
+  }
+
+  let eventRows: { body: string; at: number }[] = [];
+  if (sessionRows.length === 0) {
+    try {
+      eventRows = db.all<{ body: string; at: number }>(
+        "SELECT body, at FROM events WHERE type = 'session-started' AND at >= ? ORDER BY at DESC",
+        sevenDaysAgo,
+      );
+    } catch {}
+  }
+
+  return accounts.map((acc) => {
+    const boundEngines = engines.filter((e) => e.accountId === acc.id);
+    const models = [...new Set(boundEngines.map((e) => e.model))];
+    const harnesses = [...new Set(boundEngines.map((e) => e.harness))];
+    const engineIds = new Set(boundEngines.map((e) => e.id));
+
+    let fiveHourSessions = 0;
+    let fiveHourMinutes = 0;
+    let sevenDaySessions = 0;
+    let sevenDayMinutes = 0;
+    let lastUsedAt: number | null = null;
+
+    if (sessionRows.length > 0) {
+      for (const row of sessionRows) {
+        if (!engineIds.has(row.engine_id)) continue;
+        const durationMinutes = Math.max(1, Math.round(((row.ended_at ?? now) - row.started_at) / 60_000));
+        sevenDaySessions++;
+        sevenDayMinutes += durationMinutes;
+        if (row.started_at >= fiveHoursAgo) {
+          fiveHourSessions++;
+          fiveHourMinutes += durationMinutes;
+        }
+        if (lastUsedAt === null || row.started_at > lastUsedAt) {
+          lastUsedAt = row.started_at;
+        }
+      }
+    } else if (eventRows.length > 0) {
+      for (const er of eventRows) {
+        try {
+          const ev = JSON.parse(er.body) as { engineId?: string; at: number };
+          if (ev.engineId && engineIds.has(ev.engineId)) {
+            sevenDaySessions++;
+            sevenDayMinutes += 2;
+            if (ev.at >= fiveHoursAgo) {
+              fiveHourSessions++;
+              fiveHourMinutes += 2;
+            }
+            if (lastUsedAt === null || ev.at > lastUsedAt) {
+              lastUsedAt = ev.at;
+            }
+          }
+        } catch {}
+      }
+    }
+
+    return {
+      ...acc,
+      ...(models.length ? { models } : {}),
+      ...(harnesses.length ? { harnesses } : {}),
+      fiveHourSessions,
+      fiveHourMinutes,
+      sevenDaySessions,
+      sevenDayMinutes,
+      lastUsedAt,
+    };
+  });
+}
+
+/** Provides rate limits for all accounts, defaulting unmetered local accounts to 'local' and cloud accounts to 'ready'. */
+export function allRateLimits(
+  accounts: AccountCost[],
+  registry: Registry,
+  now: number,
+): Record<Id, AccountRateLimit> {
+  const existing = registry.accountRateLimits();
+  const engines = registry.engines();
+  const out: Record<Id, AccountRateLimit> = { ...existing };
+  for (const a of accounts) {
+    if (!out[a.id]) {
+      const bound = engines.filter((e) => e.accountId === a.id);
+      const isLocal = bound.some((e) => e.local);
+      out[a.id] = {
+        status: isLocal ? "local" : "ready",
+        updatedAt: now,
+      };
+    }
+  }
+  return out;
 }

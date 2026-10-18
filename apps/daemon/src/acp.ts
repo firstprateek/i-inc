@@ -148,7 +148,10 @@ export class AcpAgent implements Agent {
       env: await this.o.credentials(r.engine, r.ticket, r.duty, r.employee.id),
     });
     const rpc = new Rpc(proc, this.o.log);
-    let limit: { rejected: boolean; resetsAt: number | null } = { rejected: false, resetsAt: null };
+    let limit: { rejected: boolean; resetsAt: number | null; fromMeta?: boolean } = {
+      rejected: false,
+      resetsAt: null,
+    };
     // The outcome is the final answer: the last stretch of text between tool calls that has any.
     // Earlier stretches are the agent narrating its work ("Now I'm writing the report…"), which
     // leaked into a PR body; a trailing tool call after the answer mustn't erase it.
@@ -237,7 +240,7 @@ export class AcpAgent implements Agent {
       const rl = ((u._meta ?? {}) as Json)["_claude/rateLimit"] as Json | undefined;
       if (rl) {
         const report = usageReport(r.engine.accountId, rl);
-        limit = { rejected: report.status === "rejected", resetsAt: report.resetsAt };
+        limit = { rejected: report.status === "rejected", resetsAt: report.resetsAt, fromMeta: true };
         this.o.onUsage?.(report);
         this.o.onRateLimit?.(r.engine.accountId, extractRateLimit(rl, now()));
       }
@@ -287,10 +290,18 @@ export class AcpAgent implements Agent {
       if (done.error) {
         const text = message(done.error);
         if (limit.rejected || limitError.test(text)) {
+          const resetsAt =
+            limit.resetsAt ?? resetFromText(text, now()) ?? now() + (this.o.unknownResetMs ?? 3_600_000);
+          if (!limit.fromMeta && r.engine.accountId) {
+            this.o.onRateLimit?.(r.engine.accountId, {
+              status: "rejected",
+              resetsAt,
+              updatedAt: now(),
+            });
+          }
           return {
             kind: "out-of-tokens",
-            resetsAt:
-              limit.resetsAt ?? resetFromText(text, now()) ?? now() + (this.o.unknownResetMs ?? 3_600_000),
+            resetsAt,
           };
         }
         // Claude Code says so when a hiccup should pass, such as a sign-in refresh clashing with
@@ -311,6 +322,12 @@ export class AcpAgent implements Agent {
       this.transient.delete(`${r.employee.id}/${r.ticket.id}`);
       const output = (reply.trim() ? reply : answer).trim();
       if (!output) return stuck("the session ended without an answer");
+      if (!limit.rejected && !limit.fromMeta && r.engine.accountId) {
+        this.o.onRateLimit?.(r.engine.accountId, {
+          status: "allowed",
+          updatedAt: now(),
+        });
+      }
       return { kind: "done", output };
     } catch (e) {
       return stuck(e instanceof Error ? e.message : String(e));

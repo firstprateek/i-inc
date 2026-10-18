@@ -438,12 +438,67 @@ describe("GET /api/office with accounts and rate limits", () => {
     const res = await app.call("GET", "/api/office");
     expect(res.status).toBe(200);
     expect(res.body.employees.length).toBeGreaterThan(0);
-    expect(res.body.accounts).toEqual(app.deps.registry.accounts());
+    expect(res.body.accounts.length).toBeGreaterThan(0);
     expect(res.body.rateLimits["claude-pro"]).toMatchObject({
       status: "allowed",
       fiveHourUtilization: 0.42,
       sevenDayUtilization: 0.65,
     });
+  });
+
+  it("enriches accounts with bound models, harnesses, telemetry, and default status", async () => {
+    const app = await testApp();
+    const now = app.clock.now();
+
+    // Add accounts and engines
+    app.deps.registry.addAccount({ id: "google-pro", name: "Google AI Pro" });
+    app.deps.registry.addEngine({
+      id: "gemini",
+      harness: "antigravity",
+      model: "gemini-2.5-pro",
+      accountId: "google-pro",
+      local: false,
+    });
+    app.deps.registry.addAccount({ id: "local-acc", name: "Local Ollama" });
+    app.deps.registry.addEngine({
+      id: "qwen",
+      harness: "opencode",
+      model: "qwen3:8b",
+      accountId: "local-acc",
+      local: true,
+    });
+
+    // Seed session in ticket_sessions for gemini
+    app.deps.db.run(
+      "INSERT INTO ticket_sessions (ticket_id, stage, employee_id, engine_id, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?)",
+      "t1",
+      "build",
+      "ada",
+      "gemini",
+      now - 30 * 60_000,
+      now - 10 * 60_000,
+    );
+
+    const res = await app.call("GET", "/api/accounts");
+    expect(res.status).toBe(200);
+    const google = res.body.accounts.find((a: { id: string }) => a.id === "google-pro");
+    expect(google).toBeDefined();
+    expect(google.models).toEqual(["gemini-2.5-pro"]);
+    expect(google.harnesses).toEqual(["antigravity"]);
+    expect(google.fiveHourSessions).toBe(1);
+    expect(google.fiveHourMinutes).toBe(20);
+    expect(google.sevenDaySessions).toBe(1);
+    expect(google.sevenDayMinutes).toBe(20);
+
+    const local = res.body.accounts.find((a: { id: string }) => a.id === "local-acc");
+    expect(local).toBeDefined();
+    expect(local.models).toEqual(["qwen3:8b"]);
+    expect(local.harnesses).toEqual(["opencode"]);
+    expect(local.fiveHourSessions).toBe(0);
+
+    // Verify rate limit defaults: local account defaults to "local", cloud defaults to "ready"
+    expect(res.body.rateLimits["local-acc"]?.status).toBe("local");
+    expect(res.body.rateLimits["google-pro"]?.status).toBe("ready");
   });
 });
 

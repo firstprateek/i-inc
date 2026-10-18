@@ -29,7 +29,9 @@ import type { Change, Repo } from "./knowledge.ts";
 import type { PushSubscription } from "./push.ts";
 import type { NewTicket } from "./tickets.ts";
 import {
+  allRateLimits,
   deskView,
+  enrichAccounts,
   officeView,
   type PendingRelease,
   type PendingTicket,
@@ -264,7 +266,12 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     [
       "GET",
       "/api/accounts",
-      async () => json({ accounts: d.registry.accounts(), rateLimits: d.registry.accountRateLimits() }),
+      async () => {
+        const now = d.clock.now();
+        const accounts = enrichAccounts(d.registry.accounts(), d.registry, d.db, now);
+        const rateLimits = allRateLimits(accounts, d.registry, now);
+        return json({ accounts, rateLimits });
+      },
     ],
 
     [
@@ -767,12 +774,15 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         const states = new Map(
           await Promise.all(all.map(async (v) => [v.id, await daemon.state(v.id)] as const)),
         );
+        const now = d.clock.now();
         const offset = d.registry.settings().utcOffsetMinutes;
-        const localHour = new Date(d.clock.now() + offset * 60_000).getUTCHours();
+        const localHour = new Date(now + offset * 60_000).getUTCHours();
+        const accounts = enrichAccounts(d.registry.accounts(), d.registry, d.db, now);
+        const rateLimits = allRateLimits(accounts, d.registry, now);
         return json({
           employees: officeView(d.registry.employees(), all, states, d.registry, localHour),
-          accounts: d.registry.accounts(),
-          rateLimits: d.registry.accountRateLimits(),
+          accounts,
+          rateLimits,
         });
       },
     ],

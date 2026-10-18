@@ -61,6 +61,11 @@ export class IncOffice extends Loader<Data> {
       .quota-bar-track { height: 8px; border-radius: 4px; background: var(--sunken); overflow: hidden; }
       .quota-bar { height: 100%; border-radius: 4px; background: var(--bar); min-width: 2px; }
       .quota-val { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--ink-2); }
+      .account-models { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+      .model-tag { font-size: 11px; padding: 1px 6px; border-radius: 6px; background: var(--sunken); color: var(--ink-2); font-family: var(--mono); }
+      .activity-meters { display: flex; flex-direction: column; gap: 4px; margin-top: 2px; }
+      .activity-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; gap: 8px; }
+      .activity-val { font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
       .name, .ticket, .meta { overflow-wrap: anywhere; }
       @media (max-width: 1100px) { .wrap { flex-direction: column; align-self: stretch; } .wrap > * { width: 100%; box-sizing: border-box; } aside { width: 100%; } }
       @media (max-width: 560px) { .floor { padding: 14px; border-radius: 22px; } .desks { gap: 12px; } aside .card { padding: 16px; } }
@@ -103,12 +108,16 @@ export class IncOffice extends Loader<Data> {
             rl?.fiveHourUtilization !== undefined ? Math.round((rl.fiveHourUtilization ?? 0) * 100) : null;
           const u7 =
             rl?.sevenDayUtilization !== undefined ? Math.round((rl.sevenDayUtilization ?? 0) * 100) : null;
+          const status = rl?.status ?? (a.harnesses?.includes("opencode") ? "local" : "ready");
+          const statusTone =
+            status === "allowed" || status === "ready" || status === "local" ? "done" : "alarm";
           return html`<div class="account-item">
             <div class="account-header">
               <span class="account-name">${a.name}</span>
               ${a.monthlyCap !== undefined ? html`<span class="muted font-small">Cap: $${a.monthlyCap}</span>` : ""}
-              ${rl?.status ? html`<span class="chip ${rl.status === "allowed" ? "done" : "alarm"}">${rl.status}</span>` : ""}
+              <span class="chip ${statusTone}">${status}</span>
             </div>
+            ${a.models?.length ? html`<div class="account-models">${a.models.map((m) => html`<span class="model-tag">${m}</span>`)}</div>` : ""}
             ${
               rl && (u5 !== null || u7 !== null)
                 ? html`<div class="quota-bars">
@@ -135,7 +144,18 @@ export class IncOffice extends Loader<Data> {
                       : ""
                   }
                 </div>`
-                : ""
+                : (a.fiveHourSessions !== undefined || a.sevenDaySessions !== undefined)
+                  ? html`<div class="activity-meters">
+                    <div class="activity-row">
+                      <span class="quota-label">5h</span>
+                      <span class="activity-val">${a.fiveHourSessions ?? 0} sessions${a.fiveHourMinutes !== undefined ? ` · ${a.fiveHourMinutes}m active` : ""}</span>
+                    </div>
+                    <div class="activity-row">
+                      <span class="quota-label">7d</span>
+                      <span class="activity-val">${a.sevenDaySessions ?? 0} sessions${a.sevenDayMinutes !== undefined ? ` · ${a.sevenDayMinutes}m active` : ""}</span>
+                    </div>
+                  </div>`
+                  : ""
             }
           </div>`;
         })}
