@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import type { Engine, SessionRequest } from "@i-inc/core";
+import type { Engine, Id, SessionRequest } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
 import {
   AcpAgent,
@@ -270,11 +270,25 @@ describe("an ACP session", () => {
     ]);
   });
 
-  it("treats a limit error with no reset time (Antigravity) as out of tokens for an hour", async () => {
+  it("treats a limit error with no reset time (Antigravity) as out of tokens for an hour and emits onRateLimit", async () => {
     const s = server(
       claudeLike((reply, id) => reply({ id, error: { code: -32603, message: "429 RESOURCE_EXHAUSTED" } })),
     );
-    expect(await agent(s).run(request())).toEqual({ kind: "out-of-tokens", resetsAt: 1_000 + 3_600_000 });
+    const rateLimits: { accountId: Id; limit: AccountRateLimit }[] = [];
+    expect(await agent(s, undefined, rateLimits).run(request())).toEqual({
+      kind: "out-of-tokens",
+      resetsAt: 1_000 + 3_600_000,
+    });
+    expect(rateLimits).toEqual([
+      {
+        accountId: "claude-pro",
+        limit: {
+          status: "rejected",
+          resetsAt: 1_000 + 3_600_000,
+          updatedAt: 1_000,
+        },
+      },
+    ]);
   });
 
   it("cancels the session for an urgent message", async () => {
