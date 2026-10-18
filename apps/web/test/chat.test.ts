@@ -1047,3 +1047,104 @@ describe("Drafts across reloads (T10)", () => {
     expect(localStorage.getItem("inc.new-ticket.project")).toBe("i-inc");
   });
 });
+
+describe("The project of a draft ticket (T34, C12)", () => {
+  const draft = (over: Record<string, unknown> = {}): Entry =>
+    ({
+      from: "employee",
+      at: 2000,
+      kind: "draft",
+      ticketId: "7",
+      title: "Add refunds",
+      confirmed: false,
+      project: "Duet",
+      inferred: true,
+      choices: ["Duet", "i-inc", "fintrack"],
+      ...over,
+    }) as Entry;
+
+  async function showDraft(over: Record<string, unknown> = {}) {
+    const served = serveChat({ entries: [...sampleEntries, draft(over)] });
+    const view = await mount("ada");
+    const row = view.root.querySelector(".project") as HTMLElement | null;
+    return { ...served, ...view, row };
+  }
+
+  const confirmBtn = (root: ShadowRoot) =>
+    [...root.querySelectorAll("button")].find((b) => b.textContent?.includes("Put on the board")) as
+      | HTMLButtonElement
+      | undefined;
+
+  it("shows the inferred project with an inferred tag and a select defaulting to it", async () => {
+    const { row } = await showDraft();
+    expect(row?.textContent).toContain("Project: Duet");
+    expect(row?.querySelector(".tag")?.textContent).toBe("inferred");
+    const select = row?.querySelector("select") as HTMLSelectElement;
+    expect([...select.options].map((o) => o.value)).toEqual(["Duet", "i-inc", "fintrack"]);
+    expect(select.value).toBe("Duet");
+    expect(select.getAttribute("aria-label")).toContain("#7");
+  });
+
+  it("shows nothing new when the daemon doesn't send inferred", async () => {
+    const { root, row } = await showDraft({ inferred: undefined, project: undefined, choices: undefined });
+    expect(row).toBeNull();
+    expect(root.querySelector("select")).toBeNull();
+    expect(root.textContent).not.toContain("Project:");
+    expect(confirmBtn(root)).toBeDefined();
+  });
+
+  it("doesn't tag a fallback project as inferred, but still lets the owner change it", async () => {
+    const { row } = await showDraft({ inferred: false });
+    expect(row?.textContent).toContain("Project: Duet");
+    expect(row?.querySelector(".tag")).toBeNull();
+    expect(row?.querySelector("select")).not.toBeNull();
+  });
+
+  it("confirms with the project the owner picked, and drops the inferred tag when they change it", async () => {
+    const { el, root, postCalls } = await showDraft();
+    const select = root.querySelector(".project select") as HTMLSelectElement;
+    select.value = "i-inc";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await el.updateComplete;
+    expect(root.querySelector(".project")?.textContent).toContain("Project: i-inc");
+    expect(root.querySelector(".project .tag")).toBeNull();
+    confirmBtn(root)?.click();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(postCalls.find((c) => c.url.includes("/drafts/7"))?.body).toEqual({ project: "i-inc" });
+  });
+
+  it("confirms without a project when the owner leaves the inferred one", async () => {
+    const { root, postCalls } = await showDraft();
+    confirmBtn(root)?.click();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(postCalls.find((c) => c.url.includes("/drafts/7"))?.body).toEqual({});
+  });
+
+  it("says when several projects were named, and offers all of them", async () => {
+    const { row } = await showDraft({ inferred: false, ambiguous: ["Duet", "i-inc"] });
+    expect(row?.textContent).toContain("more than one project (Duet, i-inc)");
+    expect(row?.querySelector(".tag")).toBeNull();
+  });
+
+  it("offers the project even when the daemon left it out of the choices", async () => {
+    const { row } = await showDraft({ choices: ["i-inc"] });
+    const select = row?.querySelector("select") as HTMLSelectElement;
+    expect([...select.options].map((o) => o.value)).toEqual(["Duet", "i-inc"]);
+  });
+
+  it("shows the project but no select once the draft is on the board", async () => {
+    const { row, root } = await showDraft({ confirmed: true });
+    expect(row?.textContent).toContain("Project: Duet");
+    expect(row?.querySelector("select")).toBeNull();
+    expect(row?.querySelector(".tag")).toBeNull();
+    expect(confirmBtn(root)).toBeUndefined();
+  });
+
+  it("is built for a phone: 44px select, 16px text, tokens only", () => {
+    const css = (IncChat.styles as unknown as { cssText: string }[]).map((s) => s.cssText).join("\n");
+    const rules = css.match(/\.project[^{]*\{[^}]*\}/g)?.join("\n") ?? "";
+    expect(rules).toMatch(/\.project select\s*\{[^}]*min-height:\s*44px/);
+    expect(rules).toMatch(/\.project select\s*\{[^}]*font:\s*16px/);
+    expect(rules).not.toMatch(/#[0-9a-fA-F]{3,8}\b|rgb\(/);
+  });
+});

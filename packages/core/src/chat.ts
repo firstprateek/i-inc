@@ -6,7 +6,7 @@ import type { ChatSession, HelperModel } from "./ports.ts";
 
 export type ChatOutcome =
   | { kind: "answer"; text: string }
-  | { kind: "draft"; ticket: DraftTicket }
+  | { kind: "draft"; ticket: DraftTicket; inferred: boolean; ambiguous?: string[] }
   | { kind: "errand"; ticket: DraftTicket }
   | { kind: "note"; ticketId: string }
   | { kind: "unavailable"; reason: string };
@@ -44,8 +44,17 @@ export async function handleMessage(
   const pa = ctx.employee.role === "Personal Assistant";
 
   if (await helper.yesNo(isAsk, text)) {
-    const mentioned = inferProject(text, ctx.employee.projects);
-    const project = pa ? "Home" : (mentioned ?? ctx.current?.project ?? ctx.defaultProject);
+    const named = pa ? [] : matchProjects(text, ctx.employee.projects);
+    const mentioned = named.length === 1 ? (named[0] ?? null) : null;
+    // Never a project the employee doesn't work on: the scheduler wouldn't run it.
+    const mine = (p: string | undefined): p is string =>
+      !!p && (!ctx.employee.projects || ctx.employee.projects.includes(p));
+    const project = pa
+      ? "Home"
+      : (mentioned ??
+        [ctx.current?.project, ctx.defaultProject].find(mine) ??
+        ctx.employee.projects?.[0] ??
+        ctx.defaultProject);
     const ticket: DraftTicket = {
       title: firstLine(text),
       project,
@@ -54,7 +63,13 @@ export async function handleMessage(
       doneWhen: [],
       assignee: ctx.employee.id,
     };
-    return pa ? { kind: "errand", ticket } : { kind: "draft", ticket };
+    if (pa) return { kind: "errand", ticket };
+    return {
+      kind: "draft",
+      ticket,
+      inferred: mentioned !== null,
+      ...(named.length > 1 ? { ambiguous: named } : {}),
+    };
   }
 
   if (ctx.current && (await helper.yesNo(isAboutCurrent, text))) {
@@ -87,13 +102,48 @@ function firstLine(text: string): string {
   return t.charAt(0).toUpperCase() + t.slice(1).replace(/[.!]$/, "");
 }
 
-export function inferProject(text: string, projects?: string[]): string | null {
-  if (!projects?.length) return null;
-  const candidates = [...projects].filter(Boolean).sort((a, b) => b.length - a.length);
-  for (const p of candidates) {
-    const escaped = p.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
-    const regex = new RegExp(`(^|[^a-zA-Z0-9_-])${escaped}([^a-zA-Z0-9_-]|$)`, "i");
-    if (regex.test(text)) return p;
+/** What the message leaves behind once URLs, code blocks, code spans and "project: x" text are removed. */
+function prose(text: string): string {
+  return text
+    .normalize("NFC")
+    .replace(/(```|~~~)[\s\S]*?(\1|$)/g, " ")
+    .replace(/`[^`\n]*`/g, " ")
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S*/gi, " ")
+    .replace(/\bwww\.\S*/gi, " ")
+    .replace(/\bproject\s*[:=]\s*\S*/gi, " ");
+}
+
+/**
+ * The employee's projects the message names, as written in `projects`. A name only counts as a whole
+ * word (letters, digits, "_" and "-" don't end it, in any script); a name inside a longer matched name
+ * ("inc" in "i-inc" or "Duet" in "Duet Web") doesn't count separately. Text in URLs, code and a
+ * "project: x" label is never read, so none of it can pick a project.
+ */
+export function matchProjects(text: string, projects?: string[]): string[] {
+  if (!projects?.length) return [];
+  const body = prose(text);
+  const seen = new Set<string>();
+  const hits: { name: string; spans: [number, number][] }[] = [];
+  for (const raw of projects) {
+    const name = raw?.normalize("NFC");
+    if (!name || seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`(?<![\\p{L}\\p{N}\\p{M}_-])${escaped}(?![\\p{L}\\p{N}\\p{M}_-])`, "giu");
+    const spans = [...body.matchAll(re)].map((m): [number, number] => [m.index, m.index + m[0].length]);
+    if (spans.length) hits.push({ name: raw, spans });
   }
-  return null;
+  return hits
+    .filter((h) =>
+      h.spans.some(([a, b]) =>
+        hits.every((o) => o === h || !o.spans.some(([c, d]) => c <= a && b <= d && d - c > b - a)),
+      ),
+    )
+    .map((h) => h.name);
+}
+
+/** The one project the message names, or null when it names none or more than one. */
+export function inferProject(text: string, projects?: string[]): string | null {
+  const hits = matchProjects(text, projects);
+  return hits.length === 1 ? (hits[0] ?? null) : null;
 }
