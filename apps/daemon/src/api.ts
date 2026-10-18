@@ -226,22 +226,36 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         const harnesses: AgentHarness[] = ["claude-code", "antigravity", "opencode"];
         if (!/^[a-z0-9-]{1,40}$/.test(id))
           return json({ error: "an engine id is lowercase letters, digits and dashes" }, 400);
-        if (!b.harness || !harnesses.includes(b.harness)) {
+        const existing = d.registry.engines().find((e) => e.id === id);
+        const harness = b.harness ?? existing?.harness;
+        if (!harness || !harnesses.includes(harness)) {
           return json({ error: `harness must be one of ${harnesses.join(", ")}` }, 400);
         }
-        if (typeof b.model !== "string" || !b.model.trim())
-          return json({ error: "model names the model" }, 400);
-        if (typeof b.accountId !== "string" || !d.registry.accounts().some((a) => a.id === b.accountId)) {
+        const model = b.model ?? existing?.model;
+        if (typeof model !== "string" || !model.trim()) return json({ error: "model names the model" }, 400);
+        const accountId = b.accountId ?? existing?.accountId;
+        if (typeof accountId !== "string" || !d.registry.accounts().some((a) => a.id === accountId)) {
           return json({ error: "accountId must be an account added with PUT /api/accounts/:id" }, 400);
         }
+        const local = b.local !== undefined ? b.local === true : (existing?.local ?? false);
         d.registry.addEngine({
           id,
-          harness: b.harness,
-          model: b.model,
-          accountId: b.accountId,
-          local: b.local === true,
+          harness,
+          model,
+          accountId,
+          local,
         });
         return json({ engine: d.registry.engine(id) });
+      },
+    ],
+
+    [
+      "DELETE",
+      "/api/engines/:id",
+      async (_req, { id = "" }) => {
+        const ok = d.registry.removeEngine(id);
+        if (!ok) return json({ error: "no such engine" }, 404);
+        return json({ ok: true });
       },
     ],
 
@@ -271,6 +285,16 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           ...(money(b.monthlyCap) ? { monthlyCap: b.monthlyCap as number } : {}),
         });
         return json({ account: d.registry.accounts().find((a) => a.id === id) });
+      },
+    ],
+
+    [
+      "DELETE",
+      "/api/accounts/:id",
+      async (_req, { id = "" }) => {
+        const ok = d.registry.removeAccount(id);
+        if (!ok) return json({ error: "no such account" }, 404);
+        return json({ ok: true });
       },
     ],
 
@@ -350,6 +374,16 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           ...(box ? { sandbox: { cpus: box.cpus as number, memory: box.memory as string } } : {}),
         });
         return json({ team: d.registry.teams().find((t) => t.id === id) });
+      },
+    ],
+
+    [
+      "DELETE",
+      "/api/teams/:id",
+      async (_req, { id = "" }) => {
+        const ok = d.registry.removeTeam(id);
+        if (!ok) return json({ error: "no such team" }, 404);
+        return json({ ok: true });
       },
     ],
 
@@ -459,6 +493,16 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           ...(body.autoRelease !== undefined ? { autoRelease: body.autoRelease } : {}),
         });
         return json({ project: d.registry.project(id), policy: d.registry.projectPolicy(id) });
+      },
+    ],
+
+    [
+      "DELETE",
+      "/api/projects/:id",
+      async (_req, { id = "" }) => {
+        const ok = d.registry.removeProject(id);
+        if (!ok) return json({ error: "no such project" }, 404);
+        return json({ ok: true });
       },
     ],
     [

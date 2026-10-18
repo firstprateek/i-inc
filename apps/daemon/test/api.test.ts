@@ -882,3 +882,85 @@ describe("Web Push backend API (contract C2)", () => {
     app2.db.close();
   });
 });
+
+describe("engine edit and deletion routes (Contract C11)", () => {
+  it("edits an existing engine partially without re-specifying harness and account", async () => {
+    const app = await testApp();
+
+    // Create an engine
+    const create = await app.call("PUT", "/api/engines/test-eng", {
+      harness: "claude-code",
+      model: "claude-3-5-sonnet",
+      accountId: "claude-pro",
+    });
+    expect(create.status).toBe(200);
+    expect(create.body.engine).toMatchObject({
+      id: "test-eng",
+      harness: "claude-code",
+      model: "claude-3-5-sonnet",
+      accountId: "claude-pro",
+      local: false,
+    });
+
+    // Edit only model and local flag
+    const edit = await app.call("PUT", "/api/engines/test-eng", {
+      model: "claude-3-7-sonnet",
+      local: true,
+    });
+    expect(edit.status).toBe(200);
+    expect(edit.body.engine).toMatchObject({
+      id: "test-eng",
+      harness: "claude-code", // preserved
+      model: "claude-3-7-sonnet", // updated
+      accountId: "claude-pro", // preserved
+      local: true, // updated
+    });
+  });
+
+  it("deletes engines, accounts, teams, and projects", async () => {
+    const app = await testApp();
+
+    // 1. Engine deletion
+    await app.call("PUT", "/api/engines/temp-eng", {
+      harness: "opencode",
+      model: "qwen",
+      accountId: "claude-pro",
+    });
+    expect(app.deps.registry.engines().some((e) => e.id === "temp-eng")).toBe(true);
+    const delEng = await app.call("DELETE", "/api/engines/temp-eng");
+    expect(delEng.status).toBe(200);
+    expect(delEng.body).toEqual({ ok: true });
+    expect(app.deps.registry.engines().some((e) => e.id === "temp-eng")).toBe(false);
+    expect((await app.call("DELETE", "/api/engines/temp-eng")).status).toBe(404);
+
+    // 2. Account deletion
+    await app.call("PUT", "/api/accounts/temp-acc", { name: "Temp Acc" });
+    expect(app.deps.registry.accounts().some((a) => a.id === "temp-acc")).toBe(true);
+    const delAcc = await app.call("DELETE", "/api/accounts/temp-acc");
+    expect(delAcc.status).toBe(200);
+    expect(delAcc.body).toEqual({ ok: true });
+    expect(app.deps.registry.accounts().some((a) => a.id === "temp-acc")).toBe(false);
+    expect((await app.call("DELETE", "/api/accounts/temp-acc")).status).toBe(404);
+
+    // 3. Team deletion
+    await app.call("PUT", "/api/teams/temp-team", { name: "Temp Team", members: [] });
+    expect(app.deps.registry.teams().some((t) => t.id === "temp-team")).toBe(true);
+    const delTeam = await app.call("DELETE", "/api/teams/temp-team");
+    expect(delTeam.status).toBe(200);
+    expect(delTeam.body).toEqual({ ok: true });
+    expect(app.deps.registry.teams().some((t) => t.id === "temp-team")).toBe(false);
+    expect((await app.call("DELETE", "/api/teams/temp-team")).status).toBe(404);
+
+    // 4. Project deletion
+    await app.call("PUT", "/api/projects/temp-proj", {
+      repo: "org/temp-repo",
+      checks: ["npm test"],
+    });
+    expect(app.deps.registry.projects().some((p) => p.id === "temp-proj")).toBe(true);
+    const delProj = await app.call("DELETE", "/api/projects/temp-proj");
+    expect(delProj.status).toBe(200);
+    expect(delProj.body).toEqual({ ok: true });
+    expect(app.deps.registry.projects().some((p) => p.id === "temp-proj")).toBe(false);
+    expect((await app.call("DELETE", "/api/projects/temp-proj")).status).toBe(404);
+  });
+});
