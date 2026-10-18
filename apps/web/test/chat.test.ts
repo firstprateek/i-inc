@@ -855,7 +855,10 @@ describe("Drafts across reloads (T10)", () => {
   });
 
   it("forgets every chat draft on sign out, and nothing else", async () => {
-    vi.stubGlobal("fetch", async () => new Response("{}", { headers: { "content-type": "application/json" } }));
+    vi.stubGlobal(
+      "fetch",
+      async () => new Response("{}", { headers: { "content-type": "application/json" } }),
+    );
     localStorage.setItem("inc.chat.draft.ada", "For Ada");
     localStorage.setItem("inc.chat.draft.pa", "My address is…");
     localStorage.setItem("inc.new-ticket.project", "i-inc");
