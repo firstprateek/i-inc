@@ -99,9 +99,9 @@ describe("Company brain discoverability (T26)", () => {
 
     const { root } = await mountKnowledge("handbook");
 
-    // Title in head
-    const title = root.querySelector(".head h1");
-    expect(title?.textContent?.trim()).toBe("Company brain / Handbook");
+    // The route frame owns the page title; the child view keeps only its contextual subtitle.
+    expect(root.querySelector(".head h1")).toBeNull();
+    expect(root.querySelector(".head h2")).toBeNull();
 
     // Subtitle in head
     const subtitle = root.querySelector(".head .muted");

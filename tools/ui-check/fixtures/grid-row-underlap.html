@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; width: 400px; height: 300px; font: 16px Arial, sans-serif; }
+  .shell { position: relative; display: grid; grid-template-columns: 1fr; grid-template-rows: 1fr 48px; height: 300px; }
+  main { grid-column: 1; grid-row: 1 / 3; width: 400px; height: 280px; overflow-y: auto; }
+  .content { position: relative; height: 500px; }
+  .last { position: absolute; left: 16px; bottom: 8px; height: 24px; }
+  nav { grid-column: 1; grid-row: 2; z-index: 1; background: white; }
+</style>
+<div class="shell">
+  <main><div class="content"><p>Earlier content</p><p class="last">Last content under tabs</p></div></main>
+  <nav>Inbox tabs</nav>
+</div>

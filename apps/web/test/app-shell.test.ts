@@ -72,7 +72,7 @@ describe("routeTitle", () => {
     expect(t("#/inbox")).toBe("Inbox · i.inc");
     expect(t("#/desk")).toBe("My desk · i.inc");
     expect(t("#/handbook")).toBe("Company brain · i.inc");
-    expect(t("#/brain/ada")).toBe("Company brain · i.inc");
+    expect(t("#/brain/ada")).toBe("Ada’s brain · i.inc");
     expect(t("#/hiring")).toBe("Hiring · i.inc");
     expect(t("#/more")).toBe("More · i.inc");
     expect(t("#/chat")).toBe("Chats · i.inc");

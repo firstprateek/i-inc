@@ -6,6 +6,7 @@ import { refreshNow } from "../api.ts";
 import { hasNewFromOthers, isNearBottom, newFromOthers } from "../chat-scroll.ts";
 import { draftMemo } from "../drafts.ts";
 import { showLogin } from "../login.ts";
+import { LAYOUT_BREAKPOINTS, layoutStyles } from "./layout.ts";
 import { avatar, base } from "./shared.ts";
 
 export type SendStatus = "sending" | "sent" | "error";
@@ -480,17 +481,18 @@ export class IncChat extends LitElement {
 
   static override styles = [
     base,
+    layoutStyles,
     css`
       /* The chat fills whatever room the app shell gives it (the shell is exactly the viewport below the
          header on this route), and each region scrolls by itself: the list, and the messages. */
       :host { display: block; height: 100%; min-height: 0; }
-      .wrap { display: grid; grid-template-columns: 280px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 20px; height: 100%; min-height: 0; }
       nav { min-height: 0; padding: 10px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; overscroll-behavior: contain; }
       nav a { flex: none; display: flex; gap: 12px; align-items: center; padding: 10px; border-radius: 14px; text-decoration: none; min-height: 44px; box-sizing: border-box; }
       nav a[aria-current="true"] { background: var(--sunken); }
       nav a > span:not(.avatar) { min-width: 0; }
       nav small { display: block; font-size: 13px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
       .thread { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+      .thread.layout-split-work { overflow: hidden; }
       .head { flex: none; padding: 16px 22px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 12px; }
       .head h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .head .btn { flex: none; }
@@ -557,8 +559,7 @@ export class IncChat extends LitElement {
       .head > div { min-width: 0; }
       /* Phones (the app's own phone breakpoint): the list of people is a strip across the top, the
          conversation fills the rest down to the tab bar, and the composer sits right above it. */
-      @media (max-width: 900px) {
-        .wrap { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 0; }
+      @media (max-width: ${LAYOUT_BREAKPOINTS.split - 1}px) {
         nav.card, .thread.card { border-radius: 0; border-left: 0; border-right: 0; box-shadow: none; }
         nav { flex-direction: row; gap: 4px; padding: 6px 8px; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain;
           scrollbar-width: none; border-top: 0; }
@@ -577,11 +578,11 @@ export class IncChat extends LitElement {
       /* A short phone screen (landscape, or the keyboard up): the conversation and composer get all of
          it, so the people strip and the thread head step aside (switch threads by leaving the field,
          or turning the phone back). On a touch screen the same goes while the message field is focused. */
-      @media (max-width: 900px) and (max-height: 520px) {
+      @media (max-width: ${LAYOUT_BREAKPOINTS.phone}px) and (max-height: 520px) {
         nav.card, .head { display: none; }
         .wrap { grid-template-rows: minmax(0, 1fr); }
       }
-      @media (max-width: 900px) and (pointer: coarse) {
+      @media (max-width: ${LAYOUT_BREAKPOINTS.phone}px) and (pointer: coarse) {
         .wrap:has(textarea:focus) nav.card, .wrap:has(textarea:focus) .head { display: none; }
         .wrap:has(textarea:focus) { grid-template-rows: minmax(0, 1fr); }
       }
@@ -590,14 +591,14 @@ export class IncChat extends LitElement {
 
   override render() {
     const me = (this.threads ?? []).find((t) => t.id === this.employeeId);
-    return html`<div class="wrap">
-      <nav class="card" aria-label="Chats">
+    return html`<div class="wrap layout-split">
+      <nav class="card layout-split-sidebar" aria-label="Chats">
         ${(this.threads ?? []).map(
           (t) => html`<a href="#/chat/${t.id}" aria-current=${t.id === this.employeeId ? "true" : "false"}>
             ${avatar(t, 40)}<span><b>${t.name}</b><small>${this.preview(t.last) ?? t.role}</small></span></a>`,
         )}
       </nav>
-      <section class="card thread" aria-label="Chat with ${me?.name ?? "the team"}">
+      <section class="card thread layout-split-work" aria-label="Chat with ${me?.name ?? "the team"}">
         ${
           me
             ? html`<div class="head">${avatar(me, 44)}<div><h2>${me.name}</h2><span class="muted" style="font-size:13px">${me.role}</span></div>

@@ -96,7 +96,7 @@ export class IncSetupNotifications extends LitElement {
     if (!state) return html`<p class="muted">Checking this device…</p>`;
     const [label, tone] = stateChip[state];
     const canToggle = state === "on" || state === "off";
-    return html`<div class="stack">
+    return html`<div class="stack layout-stack layout-page-band">
       <section class="card" aria-label="Notifications">
         <div class="head">
           <h3>This device</h3>

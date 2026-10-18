@@ -197,7 +197,7 @@ export class IncSetupEngines extends Loader<EnginesData> {
     const name = (id: string) => accounts.find((a) => a.id === id)?.name ?? id;
     const e = this.engine;
     const a = this.account;
-    return html`<div class="stack">
+    return html`<div class="stack layout-stack layout-page-band">
       <section class="card" aria-label="Engines">
         <h2>Engines</h2>
         ${

@@ -1,5 +1,6 @@
 import { css, html } from "lit";
 import { type AccountCost, type AccountRateLimit, api, type DeskEntry, type TicketView } from "../api.ts";
+import { LAYOUT_BREAKPOINTS, layoutStyles } from "./layout.ts";
 import { Loader } from "./loader.ts";
 import { avatar, base, projectBadge, stateLabel } from "./shared.ts";
 
@@ -23,8 +24,10 @@ export class IncOffice extends Loader<Data> {
 
   static override styles = [
     base,
+    layoutStyles,
     css`
-      .wrap { display: flex; gap: 24px; align-items: flex-start; }
+      .wrap { display: flex; gap: var(--layout-gap, 24px); align-items: flex-start; }
+      .floor h2 { font-size: 24px; }
       .floor { flex-grow: 1; min-width: 0; background: var(--floor); border-radius: 28px; padding: 20px 22px;
         display: flex; flex-direction: column; gap: 16px; }
       .desks { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 16px; }
@@ -75,7 +78,7 @@ export class IncOffice extends Loader<Data> {
       .activity-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; gap: 8px; }
       .activity-val { font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
       .name, .ticket, .meta { overflow-wrap: anywhere; }
-      @media (max-width: 1100px) { .wrap { flex-direction: column; align-self: stretch; } .wrap > * { width: 100%; box-sizing: border-box; } aside { width: 100%; } }
+      @media (max-width: ${LAYOUT_BREAKPOINTS.split - 1}px) { .wrap { flex-direction: column; align-self: stretch; } .wrap > * { width: 100%; box-sizing: border-box; } aside { width: 100%; } }
       @media (max-width: 560px) { .floor { padding: 14px; border-radius: 22px; } .desks { gap: 12px; } aside .card { padding: 16px; } }
     `,
   ];
@@ -87,9 +90,9 @@ export class IncOffice extends Loader<Data> {
     const tickets = this.data.tickets ?? [];
     const needs = tickets.filter((t) => t.status === "needs-you");
     const ready = tickets.filter((t) => t.status === "ready");
-    return html`<div class="wrap">
+    return html`<div class="wrap layout-wide-content">
       <section class="floor" aria-label="The floor">
-        <h1>The floor</h1>
+        <h2>The floor</h2>
         <div class="desks">${employees.map((e) => this.desk(e))}</div>
       </section>
       <aside>

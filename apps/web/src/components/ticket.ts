@@ -4,6 +4,7 @@ import { css, html } from "lit";
 import { api, refreshNow, type TicketEvent, type TicketView } from "../api.ts";
 import { Loader } from "./loader.ts";
 import "./transcript.ts";
+import { layoutStyles } from "./layout.ts";
 import { base, check, projectBadge } from "./shared.ts";
 
 interface Data {
@@ -51,11 +52,12 @@ export class IncTicket extends Loader<Data> {
 
   static override styles = [
     base,
+    layoutStyles,
     css`
-      .wrap { display: flex; gap: 24px; align-items: flex-start; }
+      .wrap { display: flex; flex-direction: column; gap: var(--layout-section-gap, 20px); align-items: stretch; }
       .main { flex-grow: 1; min-width: 0; padding: 26px 30px; display: flex; flex-direction: column; gap: 18px; }
       .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-      h1 { font-size: 32px; letter-spacing: -0.6px; overflow-wrap: anywhere; }
+      h2 { font-size: 24px; letter-spacing: -0.4px; overflow-wrap: anywhere; }
       dd, ol li span, .ask code { overflow-wrap: anywhere; }
       dl { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 12px 20px; margin: 0; font-size: 15px; line-height: 1.5; }
       dt { font-weight: 700; color: var(--ink-2); }
@@ -68,7 +70,7 @@ export class IncTicket extends Loader<Data> {
       .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
       textarea { font: 16px var(--body); padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line-strong);
         background: var(--surface); color: var(--ink); min-height: 44px; flex-grow: 1; min-width: 220px; }
-      aside { width: 380px; flex-shrink: 0; padding: 22px 24px; display: flex; flex-direction: column; gap: 12px; }
+      aside { width: auto; padding: 22px 24px; display: flex; flex-direction: column; gap: 12px; }
       ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
       ol li { display: grid; grid-template-columns: 48px 12px minmax(0, 1fr); gap: 10px; font-size: 14px; }
       ol li span { overflow-wrap: anywhere; }
@@ -77,11 +79,12 @@ export class IncTicket extends Loader<Data> {
       ol li i.bad { background: var(--alarm); }
       ol li i.rev { background: var(--reviewing-mark); }
       ol li i.you { background: var(--needs-edge); }
-      @media (max-width: 1000px) { .wrap { flex-direction: column; align-items: stretch; } aside { width: auto; } .main { padding: 18px; }
-        dl { grid-template-columns: 1fr; gap: 2px 0; } dd { margin-bottom: 10px; } }
       @media (max-width: 600px) {
-        h1 { font-size: 26px; }
+        h2 { font-size: 22px; }
+        .main { padding: 18px; }
         aside { padding: 18px; }
+        dl { grid-template-columns: 1fr; gap: 2px 0; }
+        dd { margin-bottom: 10px; }
         /* Answers are thumb-sized and full width, with the note box above its button. */
         .actions { flex-direction: column; align-items: stretch; }
         .actions .btn { width: 100%; white-space: normal; }
@@ -100,7 +103,7 @@ export class IncTicket extends Loader<Data> {
           <span class="tag">${t.type}</span>${projectBadge(t.project)}<span class="tag">${t.effort}</span>
           <span class="muted" style="font-size:13px;font-weight:700">#${t.id}</span>
         </div>
-        <h1>${t.title}</h1>
+        <h2>${t.title}</h2>
         ${this.error ? html`<p role="alert">${this.error}</p>` : ""}
         ${this.body(t)}
         <inc-transcript .ticketId=${t.id}></inc-transcript>

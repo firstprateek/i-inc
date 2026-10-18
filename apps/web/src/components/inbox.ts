@@ -1,6 +1,7 @@
 // The phone inbox (spec §10): what needs you and what's ready, each answerable in one tap.
 import { css, html } from "lit";
 import { api, type PolicyProposal, refreshNow, type TicketView } from "../api.ts";
+import { layoutStyles } from "./layout.ts";
 import { Loader } from "./loader.ts";
 import { protectedOk } from "./protected-card.ts";
 import { avatar, base, projectBadge } from "./shared.ts";
@@ -22,9 +23,10 @@ export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyPr
 
   static override styles = [
     base,
+    layoutStyles,
     css`
-      :host { max-width: 560px; min-width: 0; display: block; }
-      h1 { font-size: 30px; margin: 4px 0 14px; min-width: 0; }
+      :host { width: 100%; min-width: 0; display: block; }
+      .summary { margin: 0 0 14px; font-size: 17px; font-weight: 700; }
       .list { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
       .item { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; box-sizing: border-box; }
       .item.waiting { background: var(--needs-surface); border: 2px solid var(--needs-edge); padding: 13px 15px; }
@@ -54,7 +56,7 @@ export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyPr
     const policies = this.data.policies;
     const n = needs.length + policies.length;
     return html`
-      <h1>${n ? `${n} ${n === 1 ? "thing needs" : "things need"} you` : "Nothing needs you"}</h1>
+      <p class="summary">${n ? `${n} ${n === 1 ? "thing needs" : "things need"} you` : "Nothing needs you"}</p>
       <div class="list">${needs.map((t) => this.ask(t))}${policies.map((p) => this.policy(p))}</div>
       ${ready.length ? html`<h2>Ready for you</h2><div class="list">${ready.map((t) => this.ready(t))}</div>` : ""}
       ${!n && !ready.length ? this.allClear() : ""}

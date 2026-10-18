@@ -3,6 +3,7 @@ import { css, html } from "lit";
 import { api, refreshNow, type TicketEvent, type TicketView } from "../api.ts";
 import { Loader } from "./loader.ts";
 import "./new-ticket.ts";
+import { LAYOUT_BREAKPOINTS, layoutStyles } from "./layout.ts";
 import { protectedOk } from "./protected-card.ts";
 import { avatar, base, projectBadge } from "./shared.ts";
 
@@ -126,8 +127,9 @@ export class IncBoard extends Loader<BoardData> {
 
   static override styles = [
     base,
+    layoutStyles,
     css`
-      .top { display: flex; flex-direction: column; gap: 14px; margin-bottom: 18px; max-width: 760px; }
+      .top { display: flex; flex-direction: column; gap: var(--layout-section-gap, 20px); margin-bottom: var(--layout-section-gap, 20px); }
       .top h2 { font-size: 18px; }
       .ok-card { padding: 13px 15px; display: flex; flex-direction: column; gap: 10px; background: var(--needs-surface); border: 2px solid var(--needs-edge); }
       .ok-card .q { font-size: 16px; font-weight: 700; line-height: 1.3; overflow-wrap: anywhere; }
@@ -178,7 +180,7 @@ export class IncBoard extends Loader<BoardData> {
       .who { display: flex; align-items: center; gap: 8px; }
       .empty { display: flex; align-items: center; justify-content: center; min-height: 64px; box-sizing: border-box; padding: 14px;
         border: 2px dashed var(--line-strong); border-radius: 14px; font-size: 14px; color: var(--ink-2); }
-      @media (max-width: 900px) { .cols { grid-template-columns: minmax(0, 1fr); } }
+      @media (max-width: ${LAYOUT_BREAKPOINTS.phone}px) { .cols { grid-template-columns: minmax(0, 1fr); } }
     `,
   ];
 
@@ -187,7 +189,7 @@ export class IncBoard extends Loader<BoardData> {
     if (!this.data) return html`<p class="muted">Loading the board…</p>`;
     const { tickets, digest } = this.data;
     const oks = tickets.filter((t) => t.needsYou?.kind === "protected-paths");
-    return html`<div class="top">
+    return html`<div class="top layout-page-band">
       ${this.actionError ? html`<div class="err" role="alert">${this.actionError}</div>` : ""}
       ${oks.map((t) => this.okCard(t))}
       <inc-new-ticket></inc-new-ticket>

@@ -72,7 +72,7 @@ export class IncOffline extends LitElement {
             <path d="M8.5 16.2a5 5 0 0 1 7 0"></path><path d="M12 20h.01"></path><path d="M3 3l18 18"></path>
           </svg>
         </div>
-        <h1>Can't reach i.inc</h1>
+        <h2>Can't reach i.inc</h2>
         <p class="muted">Your connection is down, or the office isn't answering. This page checks again by itself.</p>
         <div class="status"><span class="dot ${this.trying ? "trying" : ""}"></span>Retrying every few seconds</div>
         <div><button class="btn" type="button" @click=${() => void this.retry()}>Try now</button></div>

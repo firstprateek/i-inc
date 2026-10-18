@@ -46,6 +46,7 @@ if (targets.length === 0) {
   console.error("usage: check.mjs [--out dir] [--size WxH] [--dark] <file.html | url> ...");
   process.exit(2);
 }
+const requestedSize = size?.split("x").map(Number) ?? null;
 mkdirSync(outDir, { recursive: true });
 
 // Chromium connects directly, so pages on localhost load. When the environment has an HTTPS proxy
@@ -61,7 +62,9 @@ let errors = 0;
 for (const target of targets) {
   const url = /^https?:|^file:/.test(target) ? target : pathToFileURL(resolve(target)).href;
   const page = await browser.newPage({
-    viewport: { width: 1600, height: 1000 },
+    viewport: requestedSize
+      ? { width: requestedSize[0], height: requestedSize[1] }
+      : { width: 1600, height: 1000 },
     colorScheme: dark ? "dark" : "light",
   });
   if (outside) {
@@ -85,15 +88,15 @@ for (const target of targets) {
   await page.evaluate(() => document.fonts.ready);
 
   // Size the viewport to the page's fixed root (design artboards) unless told otherwise.
-  const dims = size
-    ? size.split("x").map(Number)
+  const dims = requestedSize
+    ? requestedSize
     : await page.evaluate(() => {
         // A design artboard's root is its first element with a fixed inline width.
         const root = document.querySelector('body [style*="width"]');
         const r = root?.getBoundingClientRect();
         return [Math.ceil(r?.width) || 1440, Math.ceil(r?.height) || 900];
       });
-  await page.setViewportSize({ width: dims[0], height: dims[1] });
+  if (!requestedSize) await page.setViewportSize({ width: dims[0], height: dims[1] });
 
   const findings = await page.evaluate(auditInPage);
   findings.push(...(await cdpChecks(page)));
@@ -178,41 +181,156 @@ async function cdpChecks(page) {
   return out;
 }
 
-// Runs inside the page: scrolled to the end, is anything still under a fixed bar? (Content may scroll
-// under a bar; the last of it must clear it.)
-function endOfPage() {
-  scrollTo(0, document.documentElement.scrollHeight);
+// Runs inside the page: visit the end of every vertical scrollport, including app content panes.
+// Content may scroll under a bar; the last of it must clear the bar. Scroll positions are restored.
+async function endOfPage() {
   const deep = (root) =>
     [...root.querySelectorAll("*")].flatMap((el) => [el, ...(el.shadowRoot ? deep(el.shadowRoot) : [])]);
   const parentOf = (el) => el.parentElement ?? el.getRootNode()?.host ?? null;
-  const fixedOf = (el) => {
-    for (let p = el; p; p = parentOf(p)) if (getComputedStyle(p).position === "fixed") return p;
-    return null;
-  };
   const all = deep(document.body);
-  const bars = all.filter(
-    (el) => getComputedStyle(el).position === "fixed" && el.getBoundingClientRect().height > 2,
-  );
   const out = [];
-  for (const bar of bars) {
-    const b = bar.getBoundingClientRect();
-    for (const el of all) {
-      if (fixedOf(el) || ![...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim())) continue;
-      const r = el.getBoundingClientRect();
-      if (r.width < 2 || r.height < 2 || getComputedStyle(el).visibility === "hidden") continue;
-      const w = Math.min(r.right, b.right) - Math.max(r.left, b.left);
-      const h = Math.min(r.bottom, b.bottom) - Math.max(r.top, b.top);
-      if (w > 2 && h > 2) {
-        const text = el.textContent.trim().replace(/\s+/g, " ").slice(0, 40);
-        out.push({
-          level: "error",
-          kind: "covered",
-          msg: `"${text}" stays under a fixed bar at the end of the page`,
-        });
+  const ownText = (el) => [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
+  const ancestors = (el) => {
+    const result = [];
+    for (let p = el; p; p = parentOf(p)) result.push(p);
+    return result;
+  };
+  const pinned = (el) =>
+    ancestors(el).some((p) => ["fixed", "sticky"].includes(getComputedStyle(p).position));
+  const measure = (el) => {
+    const r = el.getBoundingClientRect();
+    return {
+      left: r.left,
+      top: r.top,
+      right: r.right,
+      bottom: r.bottom,
+      width: r.width,
+      height: r.height,
+    };
+  };
+  const sameRect = (a, b) =>
+    Math.abs(a.left - b.left) < 1 &&
+    Math.abs(a.top - b.top) < 1 &&
+    Math.abs(a.right - b.right) < 1 &&
+    Math.abs(a.bottom - b.bottom) < 1;
+  const visibleRect = (el) => {
+    const r = measure(el);
+    let left = Math.max(0, r.left);
+    let top = Math.max(0, r.top);
+    let right = Math.min(innerWidth, r.right);
+    let bottom = Math.min(innerHeight, r.bottom);
+    for (let p = parentOf(el); p; p = parentOf(p)) {
+      const s = getComputedStyle(p);
+      if (s.overflowX === "visible" && s.overflowY === "visible") continue;
+      const pr = p.getBoundingClientRect();
+      const sx = p.offsetWidth ? pr.width / p.offsetWidth : 1;
+      const sy = p.offsetHeight ? pr.height / p.offsetHeight : 1;
+      const clipLeft = pr.left + p.clientLeft * sx;
+      const clipTop = pr.top + p.clientTop * sy;
+      const clipRight = clipLeft + p.clientWidth * sx;
+      const clipBottom = clipTop + p.clientHeight * sy;
+      if (s.overflowX !== "visible") {
+        left = Math.max(left, clipLeft);
+        right = Math.min(right, clipRight);
+      }
+      if (s.overflowY !== "visible") {
+        top = Math.max(top, clipTop);
+        bottom = Math.min(bottom, clipBottom);
       }
     }
+    return {
+      left,
+      top,
+      right,
+      bottom,
+      width: Math.max(0, right - left),
+      height: Math.max(0, bottom - top),
+    };
+  };
+  const scrollports = all.filter((el) => {
+    const s = getComputedStyle(el);
+    return el.scrollHeight > el.clientHeight + 1 && ["auto", "scroll", "overlay"].includes(s.overflowY);
+  });
+  const saved = scrollports.map((el) => [el, el.scrollTop, el.scrollLeft]);
+  const windowX = scrollX;
+  const windowY = scrollY;
+  const restore = () => {
+    for (const [el, top, left] of saved) {
+      el.scrollTop = top;
+      el.scrollLeft = left;
+    }
+    scrollTo(windowX, windowY);
+  };
+  const candidates = [{ el: null }, ...scrollports.map((el) => ({ el }))];
+  // Track geometry before moving each scrollport so a normal-flow grid row at the viewport bottom
+  // can be recognized as a bar. Unlike fixed/sticky bars, it stays still while its sibling scrolls.
+  try {
+    for (const candidate of candidates) {
+      restore();
+      if (candidate.el) {
+        candidate.el.scrollIntoView({ block: "nearest", inline: "nearest" });
+        await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+      }
+      candidate.before = new Map(all.map((el) => [el, measure(el)]));
+      if (candidate.el) candidate.el.scrollTop = candidate.el.scrollHeight;
+      else scrollTo(windowX, Math.max(0, document.documentElement.scrollHeight - innerHeight));
+      await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+
+      const bars = all.filter((el) => {
+        const s = getComputedStyle(el);
+        const r = measure(el);
+        return r.height > 2 && ["fixed", "sticky"].includes(s.position);
+      });
+      if (candidate.el) {
+        for (const el of all) {
+          const r = measure(el);
+          const prior = candidate.before.get(el);
+          if (
+            !prior ||
+            !sameRect(prior, r) ||
+            ["fixed", "sticky"].includes(getComputedStyle(el).position) ||
+            ancestors(el).includes(candidate.el) ||
+            r.height <= 2 ||
+            Math.abs(r.bottom - innerHeight) > 2
+          )
+            continue;
+          bars.push(el);
+        }
+      }
+
+      const texts = all.filter((el) => {
+        const s = getComputedStyle(el);
+        return ownText(el) && s.visibility !== "hidden" && s.display !== "none" && Number(s.opacity) > 0.05;
+      });
+      const seen = new Set();
+      for (const bar of bars) {
+        const b = visibleRect(bar);
+        if (b.width < 2 || b.height < 2) continue;
+        for (const el of texts) {
+          if (el === bar || ancestors(el).includes(bar) || pinned(el)) continue;
+          const r = visibleRect(el);
+          const w = Math.min(r.right, b.right) - Math.max(r.left, b.left);
+          const h = Math.min(r.bottom, b.bottom) - Math.max(r.top, b.top);
+          if (w > 2 && h > 2) {
+            const text = el.textContent.trim().replace(/\s+/g, " ").slice(0, 40);
+            const key = [text, b.left, b.top, b.right, b.bottom, r.top]
+              .map((part) => (typeof part === "number" ? Math.round(part) : part))
+              .join(":");
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push({
+              level: "error",
+              kind: "covered",
+              msg: `"${text}" stays under a fixed or bottom bar at the end of the page`,
+            });
+          }
+        }
+      }
+      await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    }
+  } finally {
+    restore();
   }
-  scrollTo(0, 0);
   return out;
 }
 
@@ -235,6 +353,39 @@ function auditInPage() {
       r.width > 2 &&
       r.height > 2
     );
+  };
+  const clippedRect = (el, rect = el.getBoundingClientRect()) => {
+    let left = Math.max(0, rect.left);
+    let top = Math.max(0, rect.top);
+    let right = Math.min(innerWidth, rect.right);
+    let bottom = Math.min(innerHeight, rect.bottom);
+    for (let p = parentOf(el); p; p = parentOf(p)) {
+      const s = getComputedStyle(p);
+      if (s.overflowX === "visible" && s.overflowY === "visible") continue;
+      const pr = p.getBoundingClientRect();
+      const sx = p.offsetWidth ? pr.width / p.offsetWidth : 1;
+      const sy = p.offsetHeight ? pr.height / p.offsetHeight : 1;
+      const clipLeft = pr.left + p.clientLeft * sx;
+      const clipTop = pr.top + p.clientTop * sy;
+      const clipRight = clipLeft + p.clientWidth * sx;
+      const clipBottom = clipTop + p.clientHeight * sy;
+      if (s.overflowX !== "visible") {
+        left = Math.max(left, clipLeft);
+        right = Math.min(right, clipRight);
+      }
+      if (s.overflowY !== "visible") {
+        top = Math.max(top, clipTop);
+        bottom = Math.min(bottom, clipBottom);
+      }
+    }
+    return {
+      left,
+      top,
+      right,
+      bottom,
+      width: Math.max(0, right - left),
+      height: Math.max(0, bottom - top),
+    };
   };
   // Shadow roots are part of the page: Lit components render into them.
   const deep = (root) =>
@@ -271,6 +422,10 @@ function auditInPage() {
       !(el.closest("svg") && el.tagName !== "svg") &&
       visible(el),
   );
+  const onScreen = els.filter((el) => {
+    const r = clippedRect(el);
+    return r.width > 2 && r.height > 2;
+  });
   const ownText = (el) => [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
   const isLeaf = (el) =>
     ownText(el) || ["IMG", "svg", "INPUT", "BUTTON", "SELECT", "TEXTAREA"].includes(el.tagName);
@@ -280,7 +435,9 @@ function auditInPage() {
   );
 
   // overlap: leaf elements that intersect and are not nested.
-  const rects = leaves.map((el) => [el, textRect(el)]);
+  const rects = leaves
+    .map((el) => [el, clippedRect(el, textRect(el))])
+    .filter(([, r]) => r.width > 2 && r.height > 2);
   for (let i = 0; i < rects.length; i++) {
     for (let j = i + 1; j < rects.length; j++) {
       const [a, ra] = rects[i];
@@ -364,8 +521,23 @@ function auditInPage() {
       const ps = getComputedStyle(p);
       if (ps.overflow === "visible" && ps.overflowX === "visible" && ps.overflowY === "visible") continue;
       const pr = p.getBoundingClientRect();
-      const cut = Math.max(pr.left - r.left, r.right - pr.right, pr.top - r.top, r.bottom - pr.bottom);
-      if (cut > 1 && isLeaf(el) && r.top < pr.bottom && r.left < pr.right)
+      const clip = clippedRect(el);
+      const cut = Math.max(
+        clip.left - r.left,
+        r.right - clip.right,
+        clip.top - r.top,
+        r.bottom - clip.bottom,
+      );
+      if (
+        cut > 1 &&
+        isLeaf(el) &&
+        clip.width > 2 &&
+        clip.height > 2 &&
+        r.top < pr.bottom &&
+        r.bottom > pr.top &&
+        r.left < pr.right &&
+        r.right > pr.left
+      )
         add("warn", "clipped", el, `cut off by ${Math.round(cut)} px (partly visible)`);
       break;
     }
@@ -404,8 +576,8 @@ function auditInPage() {
   // near-miss: siblings that are almost aligned. Stacked siblings should share a left edge;
   // side-by-side boxes of similar height should share a top edge. 1-3 px apart is probably a slip.
   const inFlow = (el) => !["absolute", "fixed"].includes(getComputedStyle(el).position);
-  for (const parent of new Set(els.map(parentOf).filter(Boolean))) {
-    const kids = kidsOf(parent).filter((k) => els.includes(k) && inFlow(k) && k.tagName !== "svg");
+  for (const parent of new Set(onScreen.map(parentOf).filter(Boolean))) {
+    const kids = kidsOf(parent).filter((k) => onScreen.includes(k) && inFlow(k) && k.tagName !== "svg");
     for (let i = 0; i < kids.length; i++) {
       for (let j = i + 1; j < kids.length; j++) {
         const a = kids[i].getBoundingClientRect();

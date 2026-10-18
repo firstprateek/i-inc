@@ -1,5 +1,7 @@
 # Architecture (since the 2026-10-17 redesign)
 
+The web app's shared Page, Wide, and Split templates are described in [layout.md](layout.md).
+
 The owner reviewed the design on 2026-10-17 and simplified it, so the company can run more on its
 own and sign in to each subscription once. This page is the current picture. Where it differs from
 [spec.md](spec.md), this page wins; the spec says so where it's affected.

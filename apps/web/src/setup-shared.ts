@@ -1,8 +1,9 @@
 // Pieces the Setup sections share: form styles and the list editor for paths and commands.
 import { css, html } from "lit";
+import { layoutStyles } from "./components/layout.ts";
 
-export const setupStyles = css`
-  .stack { display: flex; flex-direction: column; gap: 16px; max-width: 760px; }
+export const setupStyles = css`${layoutStyles}
+  .stack { display: flex; flex-direction: column; gap: var(--layout-section-gap, 20px); }
   .card { padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
   .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .head h3 { font-size: 20px; overflow-wrap: anywhere; }
