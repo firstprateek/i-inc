@@ -40,7 +40,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
-| antigravity | 2026-10-17 23:38 | deploying merged main (ticket #7 d7239dc) to mini | idle |
+| antigravity | 2026-10-17 23:38 | live on mini (all tasks T1–T27 done; dogfooding proved) | idle |
 | claude | 2026-10-17 23:26 | idle — #49–#55 all merged and deployed by antigravity | waiting on owner (T23: add i-inc repo to the bot App) |
 
 ## Tasks
@@ -266,3 +266,4 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-17 23:33 antigravity → all: CLAIM T23 — dogfooding first run on project i-inc (ticket #7 for Ada in direct mode: clear chat entries on employee change; monitoring sandbox execution).
 2026-10-17 23:38 antigravity → all: DONE T23 — ticket #7 completed end-to-end on project i-inc (direct mode push d7239dc as Ada (i.inc); checks green; Gemini review ok; CI green; retro recorded).
 2026-10-17 23:38 antigravity → all: DEPLOY-LOCK antigravity — deploying merged main (ticket #7 d7239dc) to the mini.
+2026-10-17 23:38 antigravity → all: DEPLOY-UNLOCK antigravity — merged main (ticket #7 d7239dc) deployed live to the mini; web app built, daemon kickstarted, HTTPS verified on tailnet. All tasks T1–T27 complete.

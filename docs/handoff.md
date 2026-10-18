@@ -18,10 +18,10 @@ Merged on `main` and live on the mini:
 | Live updates | Server-Sent Events stream (`GET /api/events`, C3, daemon PR #40 merged) broadcasting `ticket` and `office` updates with `: keepalive` heartbeats every 25 s, `x-accel-buffering: no`, and `highWaterMark: 64` backpressure handling; web app refetches reactively from the event stream (web PR #44 merged) |
 | Session transcripts | Session lifecycle & transcript storage (`GET /api/tickets/:id/sessions`, C4, PR #43 merged); transcript view on ticket page (`<inc-transcript>`, PR #45 merged) with failure isolation, secret redaction, and 500 items/session cap; broadened redaction for AWS AKIA IDs, URL credentials, unpadded base64, YAML/CLI flags, and single-quoted JSON without over-redacting keyboard keys (PR #54 merged) |
 | Web application | Mobile pass (1440x900 & 390x844, light/dark), installable PWA (manifest, icons, offline shell service worker), Setup screens (`<inc-setup>`), per-duty engine assignment in hiring (`<inc-hiring>`), phone board (`<inc-board>`), push notification opt-in, mobile bottom tab bar (`role="tab"`, haptic press, 44px+ targets, PR #50), instant optimistic chat with thinking indicator & retry (PR #49), Company brain / Handbook discoverability & team sections (PR #51), office tab route fix (PR #48), mobile touch audit & tap regression suite (PR #52), test teardown hygiene & ui-check sse stream fix (PR #53), and engine edit + delete routes for engines, accounts, teams, projects (C11, PR #55) |
-| Dogfooding | Project `i-inc` registered on the mini in direct mode (`checks`: install, check, typecheck, test; `autoRelease: false`; protected paths set) and assigned to Ada |
+| Dogfooding | Project `i-inc` registered on the mini in direct mode (`checks`: install, check, typecheck, test; `autoRelease: false`; protected paths set) and assigned to Ada; first ticket #7 completed autonomously end-to-end (Ada build on Claude, Gemini review, direct push to main `d7239dc`, CI green, retro knowledge recorded, follow-ups #8 and #9 filed) |
 
-All tasks T1–T22, T24–T27, and pipeline maintenance PRs #53–#55 (PRs #28–#55) are merged to `main` and deployed live on the Mac mini.
-All tests pass (`pnpm check && pnpm typecheck && pnpm test` — 406 tests passing across 41 test files).
+All tasks T1–T27 and pipeline maintenance PRs #53–#55 are merged to `main` and deployed live on the Mac mini.
+All tests pass (`pnpm check && pnpm typecheck && pnpm test` — 408 tests passing across 41 test files).
 
 ## Operations
 
@@ -62,9 +62,8 @@ Before the bot can work on tickets for a repository (e.g. `firstprateek/i-inc`),
 
 1. **Verify live experience on phone:**
    - Access `https://iinc.<tailnet>.ts.net/` on mobile: test PWA install, Push notification opt-in, live SSE updates on ticket board, and session transcript drawer.
-2. **Dogfood i-inc tickets:**
-   - Ensure `firstprateek/i-inc` is added to the GitHub App installation at `https://github.com/settings/installations`.
-   - File and run i-inc tickets end to end in direct mode on the mini. All prerequisite daemon routes (engine edit, resource deletions, broadened redaction, test quietness) are deployed in PRs #53–#55.
+2. **Continue dogfooding follow-up tickets:**
+   - Watch Ada pick up and run filed follow-up tickets #8 ("Reset chat state in willUpdate...") and #9 ("Keep chat draft per employee...").
 
 ## Decisions already made (don't reopen)
 
