@@ -14,13 +14,15 @@ same frame. The unauthenticated login screen uses the Page frame too.
 | **Split** | A full-width header above a 300px (280–320px) navigation/sidebar and flexible working pane. Use for chat, handbook/brain, and Setup sections. The header follows the outer frame's left and right tracks so it aligns with the sidebar and work pane. | Sidebar and working pane own their scroll positions. The app shell main stays fixed on Split routes so its scroll position cannot compete with either pane. |
 
 Login opts into a compact Page frame at `--compact-page-width` (24rem) so its title and form share
-one centred reading band. It remains Page layout and scrolls inside its bounded host on a short screen.
+one centred reading band. Its standalone host owns a bounded scroller and applies the shared
+`--layout-mobile-gutter` plus safe-area insets on all four edges, so login stays comfortably inset
+without relying on the authenticated shell's viewport padding.
 
 At widths below 1100px, Split navigation becomes a horizontally scrollable strip above the work area.
 At 900px and below, the app also switches its global navigation to the phone tab bar. The work area
 uses the remaining height; short landscape and keyboard-open chat states keep the conversation and
-composer useful. Login is outside the authenticated shell and has its own bounded scroller, including
-safe-area padding.
+composer useful. Login is outside the authenticated shell and has its own bounded scroller and
+safe-area-aware viewport gutter, independent of shell inset ownership.
 
 ## Shared API
 

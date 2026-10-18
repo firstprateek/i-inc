@@ -65,7 +65,10 @@ export class IncLogin extends LitElement {
     css`
       /* The document does not scroll (the app shell), so a short window scrolls the sign-in itself. */
       :host { display: block; height: 100vh; height: 100dvh; overflow-y: auto; box-sizing: border-box;
-        padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+        padding: max(var(--layout-mobile-gutter, 16px), env(safe-area-inset-top))
+          max(var(--layout-mobile-gutter, 16px), env(safe-area-inset-right))
+          max(var(--layout-mobile-gutter, 16px), env(safe-area-inset-bottom))
+          max(var(--layout-mobile-gutter, 16px), env(safe-area-inset-left)); }
       form {
         width: 100%;
         max-width: var(--compact-page-width, 24rem);
