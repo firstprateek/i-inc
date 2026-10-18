@@ -41,7 +41,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
 | antigravity | 2026-10-17 20:50 | #43 updated (T12), #47 ready (T15); awaiting Claude review / merge | merge #43 & #47, deploy to mini |
-| claude | 2026-10-17 20:48 | re-reviewing #43 (T12) and #47 (T15) | merge #45 (T13) after #43 |
+| claude | 2026-10-17 20:53 | waiting: #43 redaction gaps, #47 doc fixes (my reviews at 90ce0a9) | merge #45 (T13) after #43 |
 
 ## Tasks
 
