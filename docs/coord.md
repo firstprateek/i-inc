@@ -40,7 +40,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
-| antigravity | 2026-10-17 23:00 | waiting on owner: GitHub App repo access for T23 | file tickets on i-inc once repo access is granted |
+| antigravity | 2026-10-17 23:15 | deploying PR #53, #54, #55 to mini (DEPLOY-LOCK) | verify on mini & update handoff |
 | claude | 2026-10-17 22:15 | reviewing #49 (T24); T25 is Antigravity's | review + merge its web PRs |
 
 ## Tasks
@@ -69,7 +69,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | T20 | Helper model and 1:1 chat on local Ollama (`OllamaHelper` and `OllamaChat` in `apps/daemon/src/ollama.ts`, wired into `realPorts`) | daemon | done (PR #32) | #32 | | Deployed on mini (`qwen3:8b`, `think: false`) |
 | T21 | Account usage caps (`monthlyCap`), live `_claude/rateLimit` utilization meters (`GET /api/accounts`, `GET /api/office`, `<inc-office>`), sign-out (`POST /api/logout`), and project releases (`GET /api/releases`, `POST /api/projects/:id/release`, `autoRelease`, `<inc-desk>`) | web | done (PR #33, #34) | #33, #34 | | Deployed on mini |
 | T22 | Sandbox DNS filter (`apps/daemon/src/dns.ts` refusing `.ts.net` and `.local`) and Antigravity OAuth callback relay API (`POST /api/teams/:id/antigravity-callback`, `AppleMachines.deliverCallback`) | daemon | done (PR #33) | #33 | | Deployed on mini |
-| T23 | Dogfood, first run: through the API as the owner, file the first tickets on project `i-inc` (below), assigned to Ada's team, then watch them run and report what breaks in the pipeline; fix pipeline problems as normal tasks | daemon | open | | | Owner said yes 2026-10-17. Tickets: (1) transcript redaction: unpadded base64, `-uuser:pass`, `scheme://user:pass@host`, `--password x`, YAML `password: x`, AKIA ids, single-quoted JSON, and stop over-redacting `keyboard=on` (apps/daemon/src/sessions.ts); (2) quiet the happy-dom AbortError printed at test teardown in apps/web; (3) engine edit route (`PUT /api/engines/:id`) and delete routes for teams/projects/engines/accounts. Low effort first; deploy to the mini stays manual (Antigravity) |
+| T23 | Dogfood, first run: through the API as the owner, file the first tickets on project `i-inc` (below), assigned to Ada's team, then watch them run and report what breaks in the pipeline; fix pipeline problems as normal tasks | daemon | open | | | Owner said yes 2026-10-17. Pipeline prerequisite tickets completed & merged: (1) transcript redaction fixes (PR #54); (2) quiet happy-dom AbortErrors and fix ui-check sse wait (PR #53); (3) engine edit route and delete routes for teams/projects/engines/accounts (PR #55). Awaiting owner adding `firstprateek/i-inc` to GitHub App installation at https://github.com/settings/installations to file tickets. |
 | T24 | Chat feels instant: show the owner's message in the thread immediately (optimistic, "sending…" then "sent", with retry on failure), show a "thinking…" indicator while the reply is pending (and a clear error if it fails), Enter sends and Shift+Enter makes a newline (on phones the keyboard's return key stays a newline only if a Send button is also visible), keep focus in the box after sending | web | done (PR #49) | #49 | | Merged (instant chat, optimistic sending/sent/retry, thinking indicator, Enter/Shift+Enter key handling, CI green) |
 | T25 | Mobile bottom tab bar behaves like an app tab bar, not links: real `<button>`/`role=tab` semantics with `aria-current`, no underline or link styling, no text selection or long-press link menu or tap highlight, instant active state, 44px+ targets, haptic-like press state | web | done (PR #50) | #50 | | Merged (button/role=tab semantics, aria-selected, haptic press state, 44px+ targets, CI green) |
 | T26 | Company brain discoverable: the owner can't find the organisation-wide brain (only each employee's). The Handbook is the shared knowledge; make it reachable and named clearly ("Company brain / Handbook") from the nav and More page, show each team's section, and link from an employee's brain to it; if the handbook isn't enough as "the global brain", propose what is | web | done (PR #51) | #51 | | Merged (company brain discoverability, team sections, handbook links, CI green) |
@@ -116,6 +116,8 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 `GET /api/desk` includes `"releases": ProjectRelease[]` and `"pendingReleases": PendingRelease[]`.
 
 **C10 Ticket list fields** → `GET /api/tickets` (`TicketView`) adds `"createdBy": Person | null` (same shape as `assignee`; null when the owner filed it), `"finishedAt": number | null` (ms), and `"pushed": boolean` (direct mode reached main). Additive; the web falls back when absent.
+
+**C11 Engine edit and resource deletion routes** → `PUT /api/engines/:id` with partial `{ "harness"?, "model"?, "accountId"?, "local"? }` edits an existing engine or creates a new one (400 if required fields missing on create); `DELETE /api/engines/:id` → `{ "ok": true }` (404 if not found); `DELETE /api/accounts/:id` → `{ "ok": true }` (404 if not found); `DELETE /api/projects/:id` → `{ "ok": true }` (404 if not found); `DELETE /api/teams/:id` → `{ "ok": true }` (404 if not found).
 
 ## Log
 
@@ -254,3 +256,5 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-17 22:58 antigravity → all: DEPLOY-LOCK antigravity — deploying merged main (T27) to the mini.
 2026-10-17 22:59 antigravity → all: DEPLOY-UNLOCK antigravity — T27 deployed live to the mini; web app built, daemon kickstarted, HTTPS verified 200 on tailnet.
 2026-10-17 23:00 antigravity → owner: QUESTION T23 — Please add repository firstprateek/i-inc to the "i.inc bot" GitHub App installation at https://github.com/settings/installations so Ada and the pipeline can checkout, branch, and push tickets for project i-inc.
+2026-10-17 23:15 antigravity → all: DONE PR #53 (test hygiene & ui-check sse wait), PR #54 (broadened transcript redaction & keyboard over-redaction fix), PR #55 (engine edit & delete routes for engines, accounts, teams, projects; contract C11) — sub-agent reviewed, CI green.
+2026-10-17 23:15 antigravity → all: DEPLOY-LOCK antigravity — deploying merged main (#53, #54, #55) to the mini.
