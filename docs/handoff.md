@@ -16,17 +16,12 @@ Merged on `main` and live on the mini:
 | Caps & releases | Account `monthlyCap` and live Claude rate-limit utilization meters (`GET /api/accounts`, `GET /api/office`); project releases (`GET /api/releases`, `POST /api/projects/:id/release`, `autoRelease` setting, `<inc-desk>`) |
 | Web Push | Backend VAPID key file in `~/.config/i-inc/vapid.json`, dedicated `push_sent` SQLite table preventing duplicate notifications, startup baseline, 5 s timeout, triggering on `needs-you`, `report-ready`, and `main-red` (C2); web Push opt-in UI and service worker push handler (PR #46 merged) |
 | Live updates | Server-Sent Events stream (`GET /api/events`, C3, daemon PR #40 merged) broadcasting `ticket` and `office` updates with `: keepalive` heartbeats every 25 s, `x-accel-buffering: no`, and `highWaterMark: 64` backpressure handling; web app refetches reactively from the event stream (web PR #44 merged) |
+| Session transcripts | Session lifecycle & transcript storage (`GET /api/tickets/:id/sessions`, C4, PR #43 merged); transcript view on ticket page (`<inc-transcript>`, PR #45 merged) with failure isolation, secret redaction, and 500 items/session cap |
 | Web application | Mobile pass (1440x900 & 390x844, light/dark), installable PWA (manifest, icons, offline shell service worker), Setup screens (`<inc-setup>`), per-duty engine assignment in hiring (`<inc-hiring>`), phone board (`<inc-board>`), push notification opt-in |
 | Dogfooding | Project `i-inc` registered on the mini in direct mode (`checks`: install, check, typecheck, test; `autoRelease: false`; protected paths set) and assigned to Ada |
 
-Merged on `main` (awaiting deploy to the mini):
-- Live SSE updates: `GET /api/events` (C3, daemon PR #40 and web PR #44 merged).
-- Web Push opt-in UI: web PR #46 merged.
-
-In review:
-- Session transcripts: `GET /api/tickets/:id/sessions` (C4, daemon PR #43 and web PR #45).
-
-All tests pass (`pnpm check && pnpm typecheck && pnpm test`).
+All tasks T1–T22 (PRs #28–#47) are merged to `main` and deployed live on the Mac mini.
+All tests pass (`pnpm check && pnpm typecheck && pnpm test` — 355 tests passing).
 
 ## Operations
 
@@ -65,15 +60,12 @@ Before the bot can work on tickets for a repository (e.g. `firstprateek/i-inc`),
 
 ## Next steps, in order
 
-1. **Merge session transcripts:**
-   - Finalize and merge T12 (session transcripts, PR #43) in daemon.
-   - Review and merge its web counterpart T13 (PR #45). (T8 push opt-in UI PR #46 is merged, as are daemon PR #40 and web PR #44.)
-2. **Deploy to the mini:**
-   - Pull `main`, build web, restart the daemon with `launchctl kickstart`, and verify `/api/auth`.
-3. **Dogfood i-inc tickets:**
+1. **Verify live experience on phone:**
+   - Access `https://iinc.<tailnet>.ts.net/` on mobile: test PWA install, Push notification opt-in, live SSE updates on ticket board, and session transcript drawer.
+2. **Dogfood i-inc tickets:**
    - Ensure `firstprateek/i-inc` is added to the GitHub App installation.
    - File and run i-inc tickets end to end in direct mode on the mini.
-4. **Daemon gaps to address:**
+3. **Daemon gaps to address (owner's new goals):**
    - Add delete routes for teams, projects, engines, and accounts (currently missing from API).
    - Add an engine edit route (currently only full replacement via `PUT /api/engines/:id` is supported).
 
