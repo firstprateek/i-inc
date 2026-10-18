@@ -363,8 +363,8 @@ export class IncChat extends LitElement {
       .msgs { flex-grow: 1; padding: 20px 22px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
       .me, .them, .ticket { overflow-wrap: anywhere; }
       .msg-body { white-space: pre-wrap; }
-      .me { align-self: flex-end; max-width: 520px; padding: 11px 14px; border-radius: 16px 4px 16px 16px; background: var(--ink); color: var(--on-ink); }
-      .them { align-self: flex-start; max-width: 620px; padding: 11px 14px; border-radius: 4px 16px 16px 16px; background: var(--sunken); }
+      .me { align-self: flex-end; max-width: 520px; padding: 11px 14px; border-radius: 18px 18px 4px 18px; background: var(--ink); color: var(--on-ink); }
+      .them { align-self: flex-start; max-width: 620px; padding: 11px 14px; border-radius: 18px 18px 18px 4px; background: var(--sunken); }
       .them.thinking { display: inline-flex; align-items: center; gap: 8px; color: var(--ink-2); font-style: normal; }
       .them.thinking .dots { display: inline-flex; align-items: center; gap: 3px; }
       .them.thinking .dots span { width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: 0.3; animation: chat-dot-pulse 1.4s infinite ease-in-out both; }
@@ -387,6 +387,12 @@ export class IncChat extends LitElement {
       textarea { flex-grow: 1; min-width: 0; font: 16px/1.4 var(--body); min-height: 46px; max-height: 180px; padding: 11px 16px; border-radius: 20px;
         border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); resize: none; box-sizing: border-box; overflow-y: auto; }
       textarea:focus { outline: none; border-color: var(--ink); }
+      .send { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+        min-width: 40px; min-height: 40px; width: 44px; height: 44px; padding: 0; border-radius: 50%;
+        /* A transparent 2px ring keeps the drawn circle 40px inside a 44px tap target. */
+        border: 2px solid transparent; background-clip: padding-box; }
+      .send svg { width: 20px; height: 20px; display: block; }
+      .send:disabled { opacity: 0.4; cursor: default; }
       .empty { color: var(--ink-2); }
       .me .tag { display: inline-block; margin-bottom: 4px; }
       .urgent[aria-pressed="true"] { border: 2px solid var(--ink); padding: 0 17px; }
@@ -405,7 +411,8 @@ export class IncChat extends LitElement {
         form { position: sticky; bottom: calc(66px + env(safe-area-inset-bottom)); z-index: 5; flex-wrap: wrap;
           background: var(--surface); border-radius: 0 0 var(--radius) var(--radius); }
         form textarea { flex: 1 1 100%; }
-        form .btn { flex: 1 1 0; }
+        form .urgent { flex: 1 1 0; }
+        form .send { margin-left: auto; }
         .me .retry { min-height: 44px; padding: 6px 14px; font-size: 13px; }
       }
     `,
@@ -449,7 +456,9 @@ export class IncChat extends LitElement {
             @click=${() => {
               this.urgent = !this.urgent;
             }}>${this.urgent ? "✓ Urgent" : "Urgent"}</button>
-          <button class="btn" type="submit" ?disabled=${!this.draft.trim()}>Send</button>
+          <button class="btn send" type="submit" aria-label="Send" ?disabled=${!this.draft.trim()}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>
+          </button>
         </form>
       </section>
     </div>`;

@@ -34,7 +34,14 @@ export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyPr
       .actions { display: flex; gap: 8px; flex-wrap: wrap; }
       .actions .btn:first-child { flex-grow: 1; }
       h2 { font-size: 20px; margin-top: 18px; }
-      .empty { color: var(--ink-2); }
+      .clear { padding: 28px 20px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; margin-top: 4px; }
+      .clear .badge { width: 56px; height: 56px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+        background: var(--working-bg); color: var(--working-fg); margin-bottom: 6px; }
+      .clear .badge svg { width: 28px; height: 28px; display: block; }
+      .clear h2 { font-size: 22px; margin: 0; }
+      .clear p { margin: 0; color: var(--ink-2); font-size: 15px; line-height: 1.4; max-width: 30ch; }
+      .clear .links { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 12px; width: 100%; }
+      .clear .links .btn { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; min-width: 44px; box-sizing: border-box; text-decoration: none; }
     `,
   ];
 
@@ -49,8 +56,19 @@ export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyPr
       <h1>${n ? `${n} ${n === 1 ? "thing needs" : "things need"} you` : "Nothing needs you"}</h1>
       <div class="list">${needs.map((t) => this.ask(t))}${policies.map((p) => this.policy(p))}</div>
       ${ready.length ? html`<h2>Ready for you</h2><div class="list">${ready.map((t) => this.ready(t))}</div>` : ""}
-      ${!n && !ready.length ? html`<p class="empty">The team is working. Reports will land here.</p>` : ""}
+      ${!n && !ready.length ? this.allClear() : ""}
     `;
+  }
+
+  private allClear() {
+    return html`<div class="card clear" role="status">
+      <span class="badge" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>
+      <h2>All clear</h2>
+      <p>No tickets need your review or are waiting on employees</p>
+      <div class="links">
+        <a class="btn" href="#/board">Go to Board</a>
+        <a class="btn ghost" href="#/chat/ada">Chat with Ada</a>
+      </div></div>`;
   }
 
   private header(t: TicketView, what: string) {
