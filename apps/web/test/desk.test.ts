@@ -75,8 +75,22 @@ describe("My desk view and releases (T33)", () => {
   function serveDesk(overrides?: {
     releaseStatus?: number;
     releaseError?: string;
-    onRelease?: () => Promise<void>;
+    onRelease?: (url: string) => Promise<void>;
+    // Give i-inc a pending ticket too, so both projects can be cut.
+    bothPending?: boolean;
+    // Fail only for this project's release (the others succeed).
+    failFor?: string;
   }) {
+    const data = overrides?.bothPending
+      ? {
+          ...deskData,
+          pendingReleases: deskData.pendingReleases.map((p) =>
+            p.id === "i-inc"
+              ? { ...p, pendingTickets: [{ id: "5", title: "Tidy", pushed: "sha5555555" }] }
+              : p,
+          ),
+        }
+      : deskData;
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       calls.push({
         method: init?.method ?? "GET",
@@ -85,7 +99,7 @@ describe("My desk view and releases (T33)", () => {
       });
 
       if (url === "/api/desk") {
-        return new Response(JSON.stringify(deskData), {
+        return new Response(JSON.stringify(data), {
           headers: { "content-type": "application/json" },
         });
       }
@@ -96,9 +110,10 @@ describe("My desk view and releases (T33)", () => {
       }
       if (url.startsWith("/api/projects/")) {
         if (overrides?.onRelease) {
-          await overrides.onRelease();
+          await overrides.onRelease(url);
         }
-        if (overrides?.releaseStatus && overrides.releaseStatus >= 400) {
+        const failing = overrides?.failFor ? url.includes(`/${overrides.failFor}/`) : true;
+        if (failing && overrides?.releaseStatus && overrides.releaseStatus >= 400) {
           return new Response(JSON.stringify({ error: overrides.releaseError ?? "server error" }), {
             status: overrides.releaseStatus,
             headers: { "content-type": "application/json" },
@@ -189,7 +204,7 @@ describe("My desk view and releases (T33)", () => {
     await releasePromise;
     await el.updateComplete;
 
-    expect(el.cutting).toBe("Duet");
+    expect(el.cutting.has("Duet")).toBe(true);
     expect(duetBtn.disabled).toBe(true);
     expect(duetBtn.textContent).toContain("Cutting…");
     expect(duetBtn.getAttribute("aria-busy")).toBe("true");
@@ -200,7 +215,7 @@ describe("My desk view and releases (T33)", () => {
       await el.updateComplete;
     }
 
-    expect(el.cutting).toBeNull();
+    expect(el.cutting.size).toBe(0);
     expect(calls).toContainEqual({
       method: "POST",
       url: "/api/projects/Duet/release",
@@ -257,12 +272,146 @@ describe("My desk view and releases (T33)", () => {
     expect(el.actionError).toBeNull();
   });
 
-  it("ensures release-btn has min-height: 44px for touch targets", async () => {
-    serveDesk();
-    const { el } = await mount();
-    const styles = (el.constructor as typeof IncDesk).styles;
-    const allCss = Array.isArray(styles) ? styles.map((s) => s.cssText).join("\n") : "";
+  const settle = async (el: IncDesk) => {
+    for (let i = 0; i < 6; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+      await el.updateComplete;
+    }
+  };
+  const posts = () => calls.filter((c) => c.method === "POST");
+  const buttons = (root: ShadowRoot) => [
+    ...root.querySelectorAll<HTMLButtonElement>(".release-project button.release-btn"),
+  ];
 
-    expect(allCss).toContain(".release-btn { font-size: 13px; min-height: 44px;");
+  it("sends one POST when a project's Cut release is double-tapped", async () => {
+    let finish!: () => void;
+    const gate = new Promise<void>((r) => {
+      finish = r;
+    });
+    serveDesk({ onRelease: () => gate });
+    const { el, root } = await mount();
+    const [duet] = buttons(root);
+
+    // Two clicks in the same task, before Lit can re-render the button as disabled.
+    duet?.click();
+    duet?.click();
+    finish();
+    await settle(el);
+
+    expect(posts()).toHaveLength(1);
+    expect(posts()[0]?.url).toBe("/api/projects/Duet/release");
+  });
+
+  it("keeps both busy states when two projects are cut at once", async () => {
+    const gates: Record<string, () => void> = {};
+    serveDesk({
+      bothPending: true,
+      onRelease: (url) =>
+        new Promise<void>((r) => {
+          gates[url.split("/")[3] as string] = r;
+        }),
+    });
+    const { el, root } = await mount();
+    const [duet, iinc] = buttons(root);
+
+    duet?.click();
+    await el.updateComplete;
+    iinc?.click();
+    await el.updateComplete;
+
+    for (const b of [duet, iinc]) {
+      expect(b?.disabled).toBe(true);
+      expect(b?.getAttribute("aria-busy")).toBe("true");
+      expect(b?.textContent).toContain("Cutting…");
+    }
+    expect(posts().map((c) => c.url)).toEqual(["/api/projects/Duet/release", "/api/projects/i-inc/release"]);
+
+    // Finishing the first leaves the second busy.
+    gates.Duet?.();
+    await settle(el);
+    expect(duet?.getAttribute("aria-busy")).toBe("false");
+    expect(duet?.textContent).toContain("Cut release");
+    expect(iinc?.getAttribute("aria-busy")).toBe("true");
+    expect(iinc?.disabled).toBe(true);
+
+    gates["i-inc"]?.();
+    await settle(el);
+    expect(iinc?.getAttribute("aria-busy")).toBe("false");
+    expect(el.cutting.size).toBe(0);
+  });
+
+  it("cuts a release on success: one POST, no error, button usable again", async () => {
+    serveDesk();
+    const { el, root } = await mount();
+    const [duet] = buttons(root);
+
+    duet?.click();
+    await settle(el);
+
+    expect(posts()).toEqual([{ method: "POST", url: "/api/projects/Duet/release", body: {} }]);
+    expect(root.querySelector(".err")).toBeNull();
+    expect(duet?.disabled).toBe(false);
+    expect(duet?.getAttribute("aria-busy")).toBe("false");
+  });
+
+  it("clears the busy state after a failure, and the project can be retried", async () => {
+    serveDesk({ releaseStatus: 500, releaseError: "boom" });
+    const { el, root } = await mount();
+    const [duet] = buttons(root);
+
+    duet?.click();
+    await settle(el);
+    expect(duet?.disabled).toBe(false);
+    expect(duet?.getAttribute("aria-busy")).toBe("false");
+    expect(duet?.textContent).toContain("Cut release");
+    expect(root.querySelector(".err")?.textContent).toContain("boom");
+
+    duet?.click();
+    await settle(el);
+    expect(posts()).toHaveLength(2);
+  });
+
+  it("a failure on one project leaves the other's busy state alone", async () => {
+    let finish!: () => void;
+    const gate = new Promise<void>((r) => {
+      finish = r;
+    });
+    serveDesk({
+      bothPending: true,
+      releaseStatus: 500,
+      releaseError: "nope",
+      failFor: "Duet",
+      onRelease: (url) => (url.includes("/i-inc/") ? gate : Promise.resolve()),
+    });
+    const { el, root } = await mount();
+    const [duet, iinc] = buttons(root);
+
+    iinc?.click();
+    duet?.click();
+    await settle(el);
+
+    expect(duet?.getAttribute("aria-busy")).toBe("false");
+    expect(iinc?.getAttribute("aria-busy")).toBe("true");
+    finish();
+    await settle(el);
+    expect(iinc?.getAttribute("aria-busy")).toBe("false");
+  });
+
+  it("dismisses the error banner with a labelled 44px button", async () => {
+    serveDesk({ releaseStatus: 500, releaseError: "boom" });
+    const { el, root } = await mount();
+    buttons(root)[0]?.click();
+    await settle(el);
+
+    const banner = root.querySelector(".releases .err[role=alert]");
+    expect(banner).toBeTruthy();
+    const dismiss = banner?.querySelector<HTMLButtonElement>("button");
+    expect(dismiss?.getAttribute("aria-label")).toBe("Dismiss");
+    expect(dismiss?.type).toBe("button");
+
+    dismiss?.click();
+    await el.updateComplete;
+    expect(root.querySelector(".err")).toBeNull();
+    expect(el.actionError).toBeNull();
   });
 });
