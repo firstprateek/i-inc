@@ -44,26 +44,50 @@ export function redactSecrets(text: string): string {
   // 7. JWT-like tokens (eyJ...\.eyJ...\....)
   out = out.replace(/\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\b/g, "[redacted]");
 
-  // 8. curl credentials (-u user:pass or --user user:pass)
-  out = out.replace(/(-u\s+|--user\s+)([^\s:]+):([^\s"'&;]+)/gi, "$1$2:[redacted]");
+  // 8. AWS Access Key IDs (AKIA...)
+  out = out.replace(/\bAKIA[0-9A-Z]{16}\b/g, "[redacted]");
 
-  // 9. JSON-style: "password": "...", "api_key": "..."
-  out = out.replace(
-    /((\\"|")?[a-zA-Z0-9_-]*(?:token|key|secret|password)[a-zA-Z0-9_-]*\2\s*:\s*)(\\"|")[^"'\r\n]+?\3/gi,
-    "$1$3[redacted]$3",
-  );
+  // 9. URL credentials (scheme://user:pass@host)
+  out = out.replace(/([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)([^:\s/@]+):([^@\s/]+)@/gi, "$1$2:[redacted]@");
 
-  // 10. *TOKEN= / *KEY= / *SECRET= / *PASSWORD= query or env values
+  // 10. curl credentials (-u user:pass, -uuser:pass, --user user:pass)
+  out = out.replace(/(-u\s*|--user\s+)([^\s:]+):([^\s"'&;]+)/gi, "$1$2:[redacted]");
+
+  // 11. CLI flags (--password <val>, --token <val>, --secret <val>, --api-key <val>)
   out = out.replace(
-    /(?<=[?&]|\b)([a-zA-Z0-9_-]*(?:password|token|secret|key)[a-zA-Z0-9_-]*=)(?:(["'])([^\r\n"']+)\2|([^\s&;"']+))/gi,
+    /(?<=\s|^)(--(?:password|token|secret|api[-_]?key)\s+)(?:(["'])([^\r\n"']+)\2|([^\s&;"']+))/gi,
     "$1[redacted]",
   );
 
-  // 11. Long hex strings (32+ chars, containing both digits and hex letters)
+  // 12. YAML / config style (password: val, token: val, secret: val, api_key: val)
+  out = out.replace(
+    /(?<=\b(?:password|token|secret|api[-_]?key):\s+)(?:(["'])([^\r\n"']+)\1|([^\s\r\n#]+))/gi,
+    "[redacted]",
+  );
+
+  // 13. JSON-style: "password": "...", 'api_key': '...'
+  out = out.replace(
+    /((\\"|'|")?[a-zA-Z0-9_-]*(?:token|key|secret|password)[a-zA-Z0-9_-]*\2\s*:\s*)(\\"|'|")[^"'\r\n]+?\3/gi,
+    "$1$3[redacted]$3",
+  );
+
+  // 14. *TOKEN= / *KEY= / *SECRET= / *PASSWORD= query or env values (stops over-redacting keyboard=on)
+  out = out.replace(
+    /(?<=[?&]|\b)([a-zA-Z0-9_-]*(?:password|token|secret)[a-zA-Z0-9_-]*=|[a-zA-Z0-9_-]*(?:[-_]key|apikey|privatekey|accesskey|authkey|\bkey)(?:[-_][a-zA-Z0-9_-]+)?=)(?:(["'])([^\r\n"']+)\2|([^\s&;"']+))/gi,
+    "$1[redacted]",
+  );
+
+  // 15. Long hex strings (32+ chars, containing both digits and hex letters)
   out = out.replace(/\b(?=[0-9a-fA-F]*[0-9])(?=[0-9a-fA-F]*[a-fA-F])[0-9a-fA-F]{32,}\b/g, "[redacted]");
 
-  // 12. Base64 strings (20+ chars with padding = or ==)
+  // 16. Base64 strings with padding (= or ==)
   out = out.replace(/(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{20,}={1,2}(?![A-Za-z0-9+/=])/g, "[redacted]");
+
+  // 17. Unpadded base64 strings (32+ chars, containing lowercase, uppercase, and digits)
+  out = out.replace(
+    /(?<![A-Za-z0-9_./-])(?=[A-Za-z0-9+/]*[a-z])(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[0-9])[A-Za-z0-9+/]{32,}(?![A-Za-z0-9_./-])/g,
+    "[redacted]",
+  );
 
   return out;
 }
