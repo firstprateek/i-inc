@@ -31,6 +31,7 @@ import {
 import type { ChatLog } from "./chat.ts";
 import type { Db } from "./db.ts";
 import type { KnowledgeStore } from "./knowledge.ts";
+import type { LiveEvents } from "./live.ts";
 import type { NotificationPayload, PushService } from "./push.ts";
 import type { Registry } from "./registry.ts";
 import type { SqliteEventStore } from "./store.ts";
@@ -51,6 +52,7 @@ export interface DaemonDeps {
   knowledge: KnowledgeStore;
   db: Db;
   push?: PushService;
+  live?: LiveEvents;
   log?: (msg: string) => void;
 }
 

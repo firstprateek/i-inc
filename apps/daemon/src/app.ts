@@ -14,6 +14,7 @@ import { ChatLog } from "./chat.ts";
 import { Daemon, type DaemonDeps } from "./daemon.ts";
 import { openDb } from "./db.ts";
 import { KnowledgeStore } from "./knowledge.ts";
+import { LiveEvents } from "./live.ts";
 import { type PushService, WebPushSender } from "./push.ts";
 import { Registry } from "./registry.ts";
 import { migrate } from "./schema.ts";
@@ -35,6 +36,7 @@ export interface AppOptions extends ApiOptions {
   workspace?: FromRegistry<Workspace>;
   helper: HelperModel;
   chat: ChatSession;
+  live?: LiveEvents;
   log?: (msg: string) => void;
   push?: FromRegistry<PushService>;
   configDir?: string;
@@ -44,13 +46,27 @@ export async function createApp(o: AppOptions) {
   const db = await openDb(o.dbPath);
   migrate(db);
   const registry = new Registry(db);
+  const live = o.live ?? new LiveEvents();
+  registry.onChange = (kind) => {
+    if (kind === "employee" || kind === "team") {
+      live.notifyOffice();
+    }
+  };
+
   const make = <T>(port: FromRegistry<T>): T =>
     typeof port === "function" ? (port as (r: Registry) => T)(registry) : port;
+
+  const store = new SqliteEventStore(db);
+  store.onAppend = (id) => live.notifyTicket(id);
+
+  const tickets = new Tickets(db);
+  tickets.onChange = (id) => live.notifyTicket(id);
+
   const deps: DaemonDeps = {
     clock: o.clock,
-    store: new SqliteEventStore(db),
+    store,
     registry,
-    tickets: new Tickets(db),
+    tickets,
     machines: make(o.machines),
     agent: make(o.agent),
     harness: make(o.harness),
@@ -61,6 +77,7 @@ export async function createApp(o: AppOptions) {
     knowledge: new KnowledgeStore(o.knowledgeDir),
     db,
     push: o.push ? make(o.push) : new WebPushSender(registry, o.configDir ? { configDir: o.configDir } : {}),
+    live,
     ...(o.log ? { log: o.log } : {}),
   };
   const daemon = new Daemon(deps);
@@ -68,6 +85,7 @@ export async function createApp(o: AppOptions) {
   const handle = createApi(daemon, deps, {
     ...(o.token ? { token: o.token } : {}),
     ...(o.hosts ? { hosts: o.hosts } : {}),
+    ...(o.heartbeatMs !== undefined ? { heartbeatMs: o.heartbeatMs } : {}),
   });
-  return { db, deps, daemon, handle };
+  return { db, deps, daemon, handle, live };
 }
