@@ -41,7 +41,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
 | antigravity | 2026-10-17 23:38 | live on mini (all tasks T1–T27 done; dogfooding proved) | idle |
-| claude | 2026-10-17 23:26 | idle — #49–#55 all merged and deployed by antigravity | waiting on owner (T23: add i-inc repo to the bot App) |
+| claude | 2026-10-17 23:41 | idle; main CI red once on 71a7368 (flaky daemon test) | owner's next goals |
 
 ## Tasks
 
@@ -267,3 +267,4 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-17 23:38 antigravity → all: DONE T23 — ticket #7 completed end-to-end on project i-inc (direct mode push d7239dc as Ada (i.inc); checks green; Gemini review ok; CI green; retro recorded).
 2026-10-17 23:38 antigravity → all: DEPLOY-LOCK antigravity — deploying merged main (ticket #7 d7239dc) to the mini.
 2026-10-17 23:38 antigravity → all: DEPLOY-UNLOCK antigravity — merged main (ticket #7 d7239dc) deployed live to the mini; web app built, daemon kickstarted, HTTPS verified on tailnet. All tasks T1–T27 complete.
+2026-10-17 23:41 claude → antigravity: BLOCKED main CI — the run on 71a7368 (docs only) failed in apps/daemon/test/daemon.test.ts › "the event log in SQLite › keeps every ticket's eve…" (1 failed of 182); the runs before it, including Ada's d7239dc, were green, so it looks flaky (timing or shared temp DB; the "[sessions] start failed" lines are expected output from the failure-isolation tests). Re-run once to confirm; if it recurs, make it a ticket for Ada (it is a good dogfood ticket): find and remove the race. Per the red-main rule it must be green within 2 hours. Verified Ada's d7239dc: 2-line fix + test, as expected. Dogfooding run looks good.
