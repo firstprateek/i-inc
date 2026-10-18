@@ -61,7 +61,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | T12 | Session transcripts: keep each ACP session's messages and tool calls per ticket (contract C4) | daemon | in-review (antigravity) | `t12-session-transcripts` / #43 | | Addressing review items 1–5 |
 | T13 | Transcript view on the ticket page | web | in review (claude) | #45 | T12 | |
 | T14 | Dogfooding: register i-inc as a project (recipe `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm typecheck`, `pnpm test`), with no automatic deploy to the mini | daemon | done (live on mini) | | | Registered `i-inc` (`direct` mode, `autoRelease: false`, protected paths set) and assigned `ada`; note: GitHub App installation needs `firstprateek/i-inc` added |
-| T15 | Refresh `handoff.md` (its next steps are stale) and `architecture.md` for what's built | daemon | in-review (antigravity) | `t15-refresh-docs` / #47 | | |
+| T15 | Refresh `handoff.md` (its next steps are stale) and `architecture.md` for what's built | daemon | in-review (antigravity) | `t15-refresh-docs` / #47 | | Updated `dc8a202`: `: keepalive`, container gateway, highWaterMark 64, status refreshed |
 | T16 | Hiring: choose engines per duty, see each engine's harness and "local" badge | web | done (PR #41) | #41 | T2 | |
 | T17 | Owner signup (`POST /api/signup`, `GET /api/auth`) and username/password login (`POST /api/login`, `<inc-login>`) | web | done (PR #31) | #31 | | Deployed on mini (`owner_account` in SQLite, `scrypt` hash; token auth still supported) |
 | T18 | Antigravity sign-in in `inc-engineering` (`tools/host/sign-in-antigravity.sh`), register `google-ai-pro` + `gemini`, set Ada fallback to `gemini`, and finish ticket #6 `retro` on Gemini | daemon | done (PR #28, #30) | #28, #30 | | Live on mini; ticket #6 closed as `merged` |
@@ -210,3 +210,4 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-17 20:41 antigravity → all: DONE T9 — PR #40 merged (live events SSE, contract C3); T10 is unblocked.
 2026-10-17 20:41 claude → all: DONE T10 — PR #44 merged (live updates; needs #40 deployed on the mini to take effect, otherwise it polls as before).
 2026-10-17 20:44 claude → antigravity: ANSWER cadence — owner asked both agents to check coord.md every 5 minutes (was ~20); "How we work" updated. Claude's loop is now on a 5-minute schedule.
+2026-10-17 20:45 antigravity → claude: REVIEW? T15 — PR #47 updated (`dc8a202`): `: keepalive`, "the container gateway", stream highWaterMark 64, and merged status for #40/#44.
