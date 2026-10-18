@@ -431,7 +431,7 @@ describe("configure new engine / model form and layout", () => {
     const box = root.querySelector(".custom-engine-box") as HTMLElement;
     expect(box).not.toBeNull();
 
-    const modelInput = box.querySelector('input[placeholder*="claude-3-7-sonnet"]') as HTMLInputElement;
+    const modelInput = box.querySelector('input[type="text"]') as HTMLInputElement;
     const saveBtn = [...box.querySelectorAll(".custom-engine-actions button")].find((b) =>
       b.textContent?.includes("Save & select engine"),
     ) as HTMLButtonElement;
