@@ -517,6 +517,47 @@ describe("Instant chat (T24)", () => {
     });
   });
 
+  describe("Switching employees", () => {
+    it("clears the last employee's entries at once, before the new thread loads", async () => {
+      const kitFetch = createDeferred<void>();
+      const kitEntries: Entry[] = [{ from: "employee", at: 3000, text: "Kit here" }];
+      serveChat({
+        getEntries: (url) => (url.endsWith("/kit") ? kitEntries : sampleEntries),
+      });
+      const served = globalThis.fetch;
+      vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+        if (url === "/api/chat/kit") await kitFetch.promise;
+        return served(url, init);
+      });
+
+      const { el, root } = await mount("ada");
+      expect(el.entries.length).toBe(2);
+      expect(root.textContent).toContain("Good morning Ada");
+
+      el.employeeId = "kit";
+      await el.updateComplete;
+      await el.updateComplete;
+
+      // Kit's thread is still loading: Ada's messages are gone already
+      expect(el.entries).toEqual([]);
+      expect(root.textContent).not.toContain("Good morning Ada");
+
+      kitFetch.resolve();
+      for (let i = 0; i < 6; i++) {
+        await new Promise((r) => setTimeout(r, 0));
+        await el.updateComplete;
+      }
+      expect(el.entries).toEqual(kitEntries);
+      expect(root.textContent).toContain("Kit here");
+    });
+
+    it("does not clear entries on the first load", async () => {
+      serveChat();
+      const { el } = await mount("ada");
+      expect(el.entries).toEqual(sampleEntries);
+    });
+  });
+
   describe("Layout and auto-scroll", () => {
     it("preserves white-space pre-wrap for multiline messages", async () => {
       serveChat();

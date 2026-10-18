@@ -133,6 +133,8 @@ export class IncChat extends LitElement {
 
   override updated(changed: Map<string, unknown>): void {
     if (changed.has("employeeId") && changed.get("employeeId") !== undefined) {
+      // Drop the last employee's thread at once, so it never shows under the new one while loading.
+      this.entries = [];
       this.error = null;
       this.thinking = this.inFlightEmployees.has(this.employeeId);
       void this.load();
