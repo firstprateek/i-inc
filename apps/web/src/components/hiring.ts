@@ -1,19 +1,32 @@
-// Hiring (spec §5): who, which engines, and for a PA what may leave the house. Nothing is preset.
+// Hiring (spec §5): who, which engines, role instructions & prompt, and for a PA what may leave the house.
 
-import type { Duty, Employee, Engine, OutboundAction, OutboundRule, OutboundSetting } from "@i-inc/core";
+import type {
+  AgentHarness,
+  Duty,
+  Effort,
+  Employee,
+  Engine,
+  OutboundAction,
+  OutboundRule,
+  OutboundSetting,
+} from "@i-inc/core";
 import { css, html, LitElement } from "lit";
 import { api, refreshNow } from "../api.ts";
+import { type AccountCost, setupApi } from "../setup-api.ts";
 import { base } from "./shared.ts";
 
-const roles = [
+export const standardRoles = [
+  "CEO",
   "Senior Engineer",
   "Staff Engineer",
   "Product Manager",
   "UX Designer",
   "QA",
   "Personal Assistant",
-];
-const duties: Record<string, string[]> = {
+] as const;
+
+export const defaultDuties: Record<string, Duty[]> = {
+  CEO: ["plan", "review"],
   "Senior Engineer": ["build", "review", "verify"],
   "Staff Engineer": ["plan", "review"],
   "Product Manager": ["plan"],
@@ -21,6 +34,24 @@ const duties: Record<string, string[]> = {
   QA: ["verify"],
   "Personal Assistant": ["build"],
 };
+
+export const defaultPrompts: Record<string, string> = {
+  CEO: `You are the Chief Executive Officer at i.inc. You drive technical vision, strategic product direction, and organizational momentum. You synthesize complex business and technical requirements into crisp priorities, ensure architectural coherence across systems, delegate with clarity, and make decisive calls on technical and product trade-offs.`,
+  "Senior Engineer": `You are a Senior Engineer at i.inc. You write clean, robust, and well-tested code. You keep diffs focused, maintain backward compatibility, handle edge cases and errors gracefully, and ensure all checks and tests pass with high standards.`,
+  "Staff Engineer": `You are a Staff Engineer at i.inc. You focus on system architecture, technical leverage, cross-team design patterns, and high-leverage refactors. You spot structural problems early, define clear contracts, and guide engineering quality.`,
+  "Product Manager": `You are a Product Manager at i.inc. You champion the user experience and business outcomes. You turn ambiguity into actionable tickets with clear acceptance criteria (Done when), manage scope ruthlessly, and validate that finished work solves the actual user need.`,
+  "UX Designer": `You are a UX Designer at i.inc. You design intuitive, accessible, and responsive user experiences. You enforce high contrast, touch targets (≥44px), keyboard navigation, calm visual hierarchy, and delightful design details across desktop and mobile.`,
+  QA: `You are a QA Engineer at i.inc. You find failure modes before users do. You write rigorous automated test suites, verify edge cases, simulate network/token failures, and ensure regression-proof reliability.`,
+  "Personal Assistant": `You are a Personal Assistant at i.inc. You manage calendar holds, email drafting, and daily errands with extreme privacy and precision. You never execute external commitments without explicit confirmation, and you keep communications courteous, concise, and helpful.`,
+};
+
+export const dutyDescriptions: Record<Duty, { title: string; desc: string }> = {
+  plan: { title: "Plan", desc: "System design, step-by-step breakdown & architecture" },
+  build: { title: "Build", desc: "Write & edit code in the walled sandbox" },
+  verify: { title: "Verify", desc: "Run checks, test suites & proof verification" },
+  review: { title: "Review", desc: "Fresh-context code review for correctness & security" },
+};
+
 type Mode = "ask" | "rule" | "off";
 const outboundRows: { action: OutboundAction; label: string; rule: OutboundRule; ruleText: string }[] = [
   {
@@ -55,56 +86,99 @@ export class IncHiring extends LitElement {
     perDuty: { state: true },
     extraFallbacks: { state: true },
     engines: { state: true },
+    accounts: { state: true },
     name: { state: true },
     role: { state: true },
+    rolePreset: { state: true },
+    customRole: { state: true },
+    prompt: { state: true },
+    effort: { state: true },
+    dutiesSet: { state: true },
     engine: { state: true },
     fallback: { state: true },
     nights: { state: true },
     outbound: { state: true },
+    showNewEngineForm: { state: true },
+    newHarness: { state: true },
+    newModel: { state: true },
+    newAccountId: { state: true },
     error: { state: true },
     busy: { state: true },
   };
-  /** When set, the form edits this employee's engines instead of hiring someone new. */
+
+  /** When set, the form edits this employee's configuration instead of hiring someone new. */
   declare employeeId: string | undefined;
   declare team: Employee[];
   declare editing: Employee | null;
   declare perDuty: Partial<Record<Duty, string>>;
   declare extraFallbacks: string[];
   declare engines: Engine[];
+  declare accounts: AccountCost[];
   declare name: string;
   declare role: string;
+  declare rolePreset: string;
+  declare customRole: string;
+  declare prompt: string;
+  declare effort: Effort;
+  declare dutiesSet: Set<Duty>;
   declare engine: string;
   declare fallback: string;
   declare nights: boolean;
   declare outbound: Record<string, Mode>;
+  declare showNewEngineForm: boolean;
+  declare newHarness: AgentHarness;
+  declare newModel: string;
+  declare newAccountId: string;
   declare error: string | null;
   declare busy: boolean;
 
   constructor() {
     super();
     this.engines = [];
+    this.accounts = [];
     this.team = [];
     this.editing = null;
     this.perDuty = {};
     this.extraFallbacks = [];
     this.name = "";
+    this.rolePreset = "Senior Engineer";
     this.role = "Senior Engineer";
+    this.customRole = "";
+    this.prompt = defaultPrompts["Senior Engineer"] ?? "";
+    this.effort = "medium";
+    this.dutiesSet = new Set(defaultDuties["Senior Engineer"] ?? ["build"]);
     this.engine = "";
     this.fallback = "";
     this.nights = false;
     this.outbound = { "send-email": "ask", "calendar-hold": "ask", "accept-invite": "ask" };
+    this.showNewEngineForm = false;
+    this.newHarness = "claude-code";
+    this.newModel = "";
+    this.newAccountId = "";
     this.error = null;
     this.busy = false;
   }
 
   override async connectedCallback(): Promise<void> {
     super.connectedCallback();
-    const [engines, team] = await Promise.all([
-      api.engines().catch(() => [] as Engine[]),
-      api.employees().catch(() => [] as Employee[]),
-    ]);
-    this.engines = engines;
-    this.team = team;
+    try {
+      const [engines, team, accs] = await Promise.all([
+        api.engines().catch(() => [] as Engine[]),
+        api.employees().catch(() => [] as Employee[]),
+        setupApi
+          .accounts()
+          .then((a) => (Array.isArray(a) ? a : []))
+          .catch(() => [] as AccountCost[]),
+      ]);
+      this.engines = Array.isArray(engines) ? engines : [];
+      this.team = Array.isArray(team) ? team : [];
+      this.accounts = Array.isArray(accs) ? accs : [];
+      if (this.accounts.length && !this.newAccountId) {
+        this.newAccountId = this.accounts[0]?.id ?? "";
+      }
+    } catch {
+      // Keep defaults
+    }
     this.load();
   }
 
@@ -120,6 +194,12 @@ export class IncHiring extends LitElement {
     if (!e) {
       // Back from an edit to a blank hire.
       this.name = "";
+      this.rolePreset = "Senior Engineer";
+      this.role = "Senior Engineer";
+      this.customRole = "";
+      this.prompt = defaultPrompts["Senior Engineer"] ?? "";
+      this.effort = "medium";
+      this.dutiesSet = new Set(defaultDuties["Senior Engineer"] ?? ["build"]);
       this.engine = "";
       this.fallback = "";
       this.perDuty = {};
@@ -128,6 +208,12 @@ export class IncHiring extends LitElement {
     }
     this.name = e.name;
     this.role = e.role;
+    const isStandard = standardRoles.includes(e.role as (typeof standardRoles)[number]);
+    this.rolePreset = isStandard ? e.role : "custom";
+    this.customRole = isStandard ? "" : e.role;
+    this.prompt = e.prompt ?? defaultPrompts[e.role] ?? "";
+    this.effort = e.effort ?? "medium";
+    this.dutiesSet = new Set(e.duties?.length ? e.duties : (defaultDuties[e.role] ?? ["build"]));
     this.engine = e.engines.default;
     this.perDuty = { ...e.engines.perDuty };
     this.fallback = e.engines.fallbacks[0] ?? "";
@@ -139,7 +225,47 @@ export class IncHiring extends LitElement {
   }
 
   private get roleDuties(): Duty[] {
-    return (this.editing?.duties ?? duties[this.role] ?? ["build"]) as Duty[];
+    const arr = Array.from(this.dutiesSet);
+    return (arr.length ? arr : (defaultDuties[this.role] ?? ["build"])) as Duty[];
+  }
+
+  private selectRole(r: string) {
+    this.rolePreset = r;
+    this.engine = "";
+    this.fallback = "";
+    this.perDuty = {};
+    if (r === "custom") {
+      this.role = this.customRole.trim() || "Custom Role";
+      this.dutiesSet = new Set(["plan", "build", "verify", "review"]);
+      if (!this.prompt || Object.values(defaultPrompts).includes(this.prompt)) {
+        this.prompt = `You are ${this.role} at i.inc. Define your principles, goals, and execution standards.`;
+      }
+    } else {
+      this.role = r;
+      this.dutiesSet = new Set(defaultDuties[r] ?? ["build"]);
+      if (!this.prompt || Object.values(defaultPrompts).includes(this.prompt)) {
+        this.prompt = defaultPrompts[r] ?? "";
+      }
+    }
+  }
+
+  private onCustomRoleInput(val: string) {
+    this.customRole = val;
+    this.role = val.trim() || "Custom Role";
+  }
+
+  private toggleDuty(d: Duty) {
+    const next = new Set(this.dutiesSet);
+    if (next.has(d)) {
+      if (next.size > 1) next.delete(d); // require at least one duty
+    } else {
+      next.add(d);
+    }
+    this.dutiesSet = next;
+  }
+
+  private resetPrompt() {
+    this.prompt = defaultPrompts[this.role] ?? `You are ${this.role} at i.inc.`;
   }
 
   private chips(id: string) {
@@ -171,13 +297,53 @@ export class IncHiring extends LitElement {
     };
   }
 
+  private async createCustomEngine() {
+    const model = this.newModel.trim();
+    if (!model) return;
+    this.busy = true;
+    this.error = null;
+    const harness = this.newHarness;
+    const accountId = this.newAccountId || (this.accounts[0]?.id ?? "local");
+    const local = harness === "opencode" || accountId === "local";
+    const id = model
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "");
+    try {
+      await setupApi.saveEngine({ id, harness, model, accountId, local });
+      const updatedEngines = await api.engines().catch(() => [] as Engine[]);
+      this.engines = updatedEngines;
+      this.engine = id;
+      this.showNewEngineForm = false;
+      this.newModel = "";
+      refreshNow();
+    } catch (err) {
+      this.error = err instanceof Error ? err.message : String(err);
+    } finally {
+      this.busy = false;
+    }
+  }
+
   private async save(e: Event) {
     if (!this.editing) return this.hire(e);
     e.preventDefault();
     this.busy = true;
     this.error = null;
     try {
-      await api.updateEmployee(this.editing.id, { engines: this.engineSet() });
+      const payload: Partial<Employee> = { engines: this.engineSet() };
+      if (this.name && this.name !== this.editing.name) payload.name = this.name;
+      if (this.role && this.role !== this.editing.role) payload.role = this.role;
+      if (this.prompt && this.prompt !== (this.editing.prompt ?? defaultPrompts[this.editing.role] ?? "")) {
+        payload.prompt = this.prompt;
+      }
+      if (this.effort && this.effort !== (this.editing.effort ?? "medium")) {
+        payload.effort = this.effort;
+      }
+      const currentDuties = this.editing.duties ?? defaultDuties[this.editing.role] ?? ["build"];
+      if (this.roleDuties.slice().sort().join(",") !== currentDuties.slice().sort().join(",")) {
+        payload.duties = this.roleDuties;
+      }
+      await api.updateEmployee(this.editing.id, payload);
     } catch (err) {
       this.error = err instanceof Error ? err.message : String(err);
       this.busy = false;
@@ -210,6 +376,8 @@ export class IncHiring extends LitElement {
         name: this.name,
         role: this.role,
         duties: this.roleDuties,
+        prompt: this.prompt,
+        effort: this.effort,
         engines: this.engineSet(),
         ...(this.nights ? { workingHours: { from: 22, to: 7 } } : {}),
         ...(outbound ? { outbound } : {}),
@@ -228,21 +396,48 @@ export class IncHiring extends LitElement {
     base,
     css`
       form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; align-items: start; max-width: 1100px; }
-      .card { padding: 20px 22px; display: flex; flex-direction: column; gap: 12px; }
+      .card { padding: 20px 22px; display: flex; flex-direction: column; gap: 14px; }
       .wide { grid-column: 1 / -1; }
-      label { font-size: 13px; font-weight: 600; color: var(--ink-2); display: flex; flex-direction: column; gap: 4px; }
-      input[type="text"], select { font: 16px var(--body); min-height: 44px; padding: 0 12px; border-radius: 10px;
-        border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); }
+      label { font-size: 13px; font-weight: 600; color: var(--ink-2); display: flex; flex-direction: column; gap: 6px; }
+      input[type="text"], select, textarea {
+        font: 15px var(--body); min-height: 44px; padding: 10px 12px; border-radius: 10px;
+        border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); box-sizing: border-box;
+      }
+      textarea { font-family: inherit; line-height: 1.5; resize: vertical; min-height: 100px; }
       .pills { display: flex; flex-wrap: wrap; gap: 6px; }
-      .pill { font: 600 13px var(--body); min-height: 36px; padding: 0 12px; border-radius: 999px; cursor: pointer;
-        border: 1px solid var(--line-strong); background: transparent; color: var(--ink); }
-      .pill[aria-pressed="true"] { background: var(--ink); color: var(--on-ink); border-color: var(--ink); }
-      label, select { min-width: 0; max-width: 100%; box-sizing: border-box; }
-      .chips { display: inline-flex; gap: 6px; flex-wrap: wrap; }
-      .duties { min-width: 0; border: 1px solid var(--line); border-radius: 12px; margin: 0; padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+      .pill {
+        font: 600 13px var(--body); min-height: 38px; padding: 0 14px; border-radius: 999px; cursor: pointer;
+        border: 1px solid var(--line-strong); background: transparent; color: var(--ink); display: inline-flex;
+        align-items: center; justify-content: center; transition: all 0.15s ease;
+      }
+      .pill[aria-pressed="true"], .pill[aria-checked="true"] { background: var(--ink); color: var(--on-ink); border-color: var(--ink); }
+      .duties-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 4px; }
+      .duty-card {
+        display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--line);
+        border-radius: 10px; background: var(--surface); cursor: pointer; user-select: none;
+      }
+      .duty-card input[type="checkbox"] { width: 18px; height: 18px; margin-top: 2px; accent-color: var(--ink); }
+      .duty-info { display: flex; flex-direction: column; gap: 2px; }
+      .duty-title { font-size: 13px; font-weight: 700; color: var(--ink); }
+      .duty-desc { font-size: 11px; color: var(--ink-2); line-height: 1.3; }
+      .chips { display: inline-flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+      .duties { min-width: 0; border: 1px solid var(--line); border-radius: 12px; margin: 0; padding: 14px; display: flex; flex-direction: column; gap: 14px; }
       .duties legend { font-size: 13px; font-weight: 700; color: var(--ink-2); padding: 0 6px; }
+      .duty-explainer {
+        font-size: 12px; color: var(--ink-2); line-height: 1.5; background: var(--sunken);
+        padding: 10px 12px; border-radius: 8px; border-left: 3px solid var(--line-strong);
+      }
+      .duty-explainer p { margin: 0 0 4px 0; }
+      .duty-explainer p:last-child { margin: 0; }
+      .engine-header { display: flex; justify-content: space-between; align-items: center; }
+      .custom-engine-box {
+        padding: 14px; border: 1px dashed var(--line-strong); border-radius: 10px; background: var(--sunken);
+        display: flex; flex-direction: column; gap: 10px; margin-top: 8px;
+      }
+      .custom-engine-box h4 { margin: 0; font-size: 14px; color: var(--ink); }
+      .custom-engine-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
       .team { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
-      .team li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+      .team li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
       .team li:first-child { border-top: none; }
       .team a.btn { text-decoration: none; display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; font-size: 14px; }
       .submit a.btn { text-decoration: none; display: inline-flex; align-items: center; min-height: 44px; padding: 0 20px; }
@@ -251,10 +446,12 @@ export class IncHiring extends LitElement {
       .seg { display: flex; border: 1px solid var(--line-strong); border-radius: 999px; overflow: hidden; }
       .seg button { font: 600 13px var(--body); min-height: 36px; padding: 0 14px; border: none; background: transparent; color: var(--ink); cursor: pointer; }
       .seg button[aria-pressed="true"] { background: var(--ink); color: var(--on-ink); }
-      .check { flex-direction: row; align-items: center; gap: 8px; font-size: 15px; color: var(--ink); }
+      .check { flex-direction: row; align-items: center; gap: 8px; font-size: 15px; color: var(--ink); min-height: 44px; }
       .check input { width: 20px; height: 20px; }
-      .submit { display: flex; align-items: center; gap: 16px; }
-      .check { min-height: 44px; }
+      .submit { display: flex; align-items: center; gap: 16px; margin-top: 8px; }
+      .btn.small { min-height: 32px; padding: 0 10px; font-size: 12px; }
+      .err { color: var(--bar-crit, #d32f2f); font-size: 13px; }
+      .switching-explainer { font-size: 12px; color: var(--ink-2); line-height: 1.4; }
       @media (max-width: 800px) {
         form { grid-template-columns: minmax(0, 1fr); }
         .rows { grid-template-columns: 1fr; }
@@ -262,6 +459,8 @@ export class IncHiring extends LitElement {
         .pill { min-height: 44px; padding: 0 16px; }
         .seg { width: 100%; }
         .seg button { flex: 1; min-height: 44px; }
+        .duties-grid { grid-template-columns: 1fr; }
+        .custom-engine-grid { grid-template-columns: 1fr; }
         .rows .muted { margin-bottom: 8px; }
         .submit { flex-wrap: wrap; }
         .submit .btn { flex: 1 1 auto; }
@@ -297,36 +496,120 @@ export class IncHiring extends LitElement {
     const fallbackEngines = this.extraFallbacks.map(
       (id) => this.engines.find((e) => e.id === id)?.model ?? id,
     );
+
     return html`<form @submit=${this.save} aria-label=${editing ? `Edit ${editing.name}` : "Hire someone"}>
-      ${
-        editing
-          ? html`<section class="card wide">
-              <h2>${editing.name}</h2>
-              <span class="muted" style="font-size:14px">${editing.role} · ${editing.duties.join(", ")}</span>
-            </section>`
-          : html`<section class="card">
-        <h2>Who</h2>
+      <section class="card">
+        <h2>${editing ? `Edit ${editing.name}` : "Who & Role"}</h2>
         <label>Name <input type="text" required autocomplete="off" autocapitalize="words" enterkeyhint="done" .value=${this.name}
           @input=${(e: InputEvent) => {
             this.name = (e.target as HTMLInputElement).value;
           }}></label>
-        <div class="pills" role="group" aria-label="Role">
-          ${roles.map(
-            (r) => html`<button type="button" class="pill" aria-pressed=${r === this.role ? "true" : "false"}
-              @click=${() => {
-                this.role = r;
-                this.engine = "";
-                this.fallback = "";
-                this.perDuty = {};
-              }}>${r}</button>`,
-          )}
-        </div>
-        <span class="muted" style="font-size:13px">Duties: ${duties[this.role]?.join(", ")}</span>
-      </section>`
-      }
 
-      <section class="card ${editing ? "wide" : ""}">
-        <h2>Engines</h2>
+        <div>
+          <span style="font-size:13px;font-weight:600;color:var(--ink-2);display:block;margin-bottom:6px">Role</span>
+          <div class="pills" role="group" aria-label="Role">
+            ${standardRoles.map(
+              (
+                r,
+              ) => html`<button type="button" class="pill" aria-pressed=${r === this.rolePreset ? "true" : "false"}
+                @click=${() => this.selectRole(r)}>${r}</button>`,
+            )}
+            <button type="button" class="pill" aria-pressed=${this.rolePreset === "custom" ? "true" : "false"}
+              @click=${() => this.selectRole("custom")}>+ Custom Role</button>
+          </div>
+        </div>
+
+        ${
+          this.rolePreset === "custom"
+            ? html`<label>Custom Role Title
+                <input type="text" placeholder="e.g. Chief Executive Officer, Security Lead" .value=${this.customRole}
+                  @input=${(e: Event) => this.onCustomRoleInput((e.target as HTMLInputElement).value)} />
+              </label>`
+            : ""
+        }
+
+        <label>
+          <span>System prompt & role instructions</span>
+          <span class="muted" style="font-size:12px;font-weight:normal">
+            Defines how this agent reasons, makes decisions, and prioritizes work in chat, planning, and task execution.
+          </span>
+          <textarea rows="5" .value=${this.prompt} @input=${(e: Event) => {
+            this.prompt = (e.target as HTMLTextAreaElement).value;
+          }}></textarea>
+        </label>
+        <div style="display:flex;justify-content:flex-end">
+          <button type="button" class="btn ghost small" @click=${() => this.resetPrompt()}>Reset prompt to role default</button>
+        </div>
+
+        <div>
+          <span style="font-size:13px;font-weight:600;color:var(--ink-2);display:block">Pipeline Duties</span>
+          <span class="muted" style="font-size:12px;font-weight:normal;display:block;margin-bottom:6px">
+            Which stages of the company's development loop this employee can perform.
+          </span>
+          <div class="duties-grid">
+            ${(["plan", "build", "verify", "review"] as Duty[]).map(
+              (d) => html`<div class="duty-card" @click=${() => this.toggleDuty(d)}>
+                <input type="checkbox" .checked=${this.dutiesSet.has(d)} @click=${(e: Event) => e.stopPropagation()} @change=${() => this.toggleDuty(d)} />
+                <div class="duty-info">
+                  <span class="duty-title">${dutyDescriptions[d].title}</span>
+                  <span class="duty-desc">${dutyDescriptions[d].desc}</span>
+                </div>
+              </div>`,
+            )}
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Engines & Execution</h2>
+        <div class="engine-header">
+          <span style="font-weight:600;font-size:13px;color:var(--ink-2)">
+            ${this.roleDuties.length > 1 ? "Default engine" : "Engine"}
+          </span>
+          <button type="button" class="btn ghost small" @click=${() => {
+            this.showNewEngineForm = !this.showNewEngineForm;
+          }}>
+            ${this.showNewEngineForm ? "✕ Close" : "+ Configure new engine / model"}
+          </button>
+        </div>
+
+        ${
+          this.showNewEngineForm
+            ? html`<div class="custom-engine-box">
+                <h4>Configure new model or engine</h4>
+                <div class="custom-engine-grid">
+                  <label>Harness
+                    <select .value=${this.newHarness} @change=${(e: Event) => {
+                      this.newHarness = (e.target as HTMLSelectElement).value as AgentHarness;
+                    }}>
+                      <option value="claude-code">Claude Code (Anthropic)</option>
+                      <option value="antigravity">Antigravity (Gemini)</option>
+                      <option value="opencode">OpenCode (Local Ollama)</option>
+                    </select>
+                  </label>
+                  <label>Model ID
+                    <input type="text" placeholder="e.g. claude-3-7-sonnet" .value=${this.newModel}
+                      @input=${(e: Event) => {
+                        this.newModel = (e.target as HTMLInputElement).value;
+                      }} />
+                  </label>
+                  <label style="grid-column: 1 / -1">Account
+                    <select .value=${this.newAccountId} @change=${(e: Event) => {
+                      this.newAccountId = (e.target as HTMLSelectElement).value;
+                    }}>
+                      ${this.accounts.map((a) => html`<option value=${a.id}>${a.name || a.id}</option>`)}
+                    </select>
+                  </label>
+                </div>
+                <div style="display:flex;gap:8px;align-items:center;margin-top:4px">
+                  <button type="button" class="btn small" ?disabled=${!this.newModel.trim()} @click=${() => this.createCustomEngine()}>
+                    Save & select engine
+                  </button>
+                </div>
+              </div>`
+            : ""
+        }
+
         ${this.picker(
           this.roleDuties.length > 1 ? "Default engine" : "Engine",
           this.engine,
@@ -335,11 +618,35 @@ export class IncHiring extends LitElement {
           },
           "Choose an engine",
         )}
+
+        <div>
+          <span style="font-size:13px;font-weight:600;color:var(--ink-2);display:block">Default effort level</span>
+          <span class="muted" style="font-size:12px;font-weight:normal;display:block;margin-bottom:6px">Sets reasoning depth and gating rules for assigned tickets.</span>
+          <div class="pills" role="radiogroup" aria-label="Default effort level">
+            ${(["low", "medium", "high"] as const).map(
+              (eff) => html`<button type="button" class="pill" role="radio"
+                aria-checked=${this.effort === eff ? "true" : "false"}
+                aria-pressed=${this.effort === eff ? "true" : "false"}
+                @click=${() => {
+                  this.effort = eff;
+                }}>
+                <b>${eff.charAt(0).toUpperCase() + eff.slice(1)}</b>
+                <span class="muted" style="font-size:11px;margin-left:4px">
+                  ${eff === "low" ? "(fast / chore)" : eff === "medium" ? "(balanced)" : "(deep / gated)"}
+                </span>
+              </button>`,
+            )}
+          </div>
+        </div>
+
         ${
           this.roleDuties.length > 1 || Object.keys(this.perDuty).length
             ? html`<fieldset class="duties">
               <legend>Engine per duty</legend>
-              <span class="muted" style="font-size:13px">Pick a different engine for a duty, or leave it on the default.</span>
+              <div class="duty-explainer">
+                <p><strong>How pipeline duties work:</strong> Tickets in i.inc flow through four stages: <strong>Plan → Build → Verify → Review</strong>.</p>
+                <p class="muted">By default, your employee uses the primary engine for all stages. You can optionally assign specialized engines per stage below (e.g. Claude Opus or Gemini Pro for planning, and a faster engine for verification).</p>
+              </div>
               ${this.roleDuties.map((d) =>
                 this.picker(
                   dutyNames[d],
@@ -356,6 +663,7 @@ export class IncHiring extends LitElement {
             </fieldset>`
             : ""
         }
+
         ${this.picker(
           "If it's out of tokens or stuck",
           this.fallback,
@@ -366,6 +674,11 @@ export class IncHiring extends LitElement {
           this.engine,
         )}
         ${fallbackEngines.length ? html`<span class="muted" style="font-size:13px">Then: ${fallbackEngines.join(", ")}</span>` : ""}
+
+        <div class="switching-explainer">
+          <span><b>Model Switching Rules:</b> When out of tokens or stuck on checks, i.inc automatically pauses or cascades to the fallback engine. You can also specify fine-grained model-switching guidelines in the system prompt above.</span>
+        </div>
+
         ${this.pa ? html`<p class="note">Home data only goes to local engines, so only local engines are offered.</p>` : ""}
         ${
           editing

@@ -1,6 +1,6 @@
 // The brief a session starts from. Any engine can pick up a stage from it, so an engine switch or a
 // crash costs only the old session's in-context memory (spec §4, principle 5).
-import type { Ticket } from "./model.ts";
+import type { Employee, Ticket } from "./model.ts";
 import type { StageId } from "./stages.ts";
 import type { TicketState } from "./state.ts";
 
@@ -12,9 +12,12 @@ export function brief(
   machine: string[] = [],
   /** The builder commits and pushes; a reviewer or verifier only checks the branch out. */
   builds = true,
+  employee?: Employee,
 ): string {
   const lines = [
     `Ticket #${ticket.id} [${ticket.type}] ${ticket.title} · ${ticket.project} · effort ${ticket.effort}`,
+    ...(employee ? [`Assignee: ${employee.name}, ${employee.role}`] : []),
+    ...(employee?.prompt ? ["Role instructions:", employee.prompt] : []),
     "Done when:",
     ...ticket.doneWhen.map((d) => `- ${d}`),
     `Stage: ${stage}. Task: ${task}`,

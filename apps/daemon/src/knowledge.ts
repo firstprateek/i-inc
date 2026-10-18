@@ -66,15 +66,47 @@ export class KnowledgeStore {
   }
 
   /** A new hire's brain, from the template: a map, a personality page and the wiki's folders. */
-  ensureBrain(e: Pick<Employee, "id" | "name" | "role">): void {
+  ensureBrain(e: Pick<Employee, "id" | "name" | "role"> & { prompt?: string | undefined }): void {
+    const personality = [
+      `# Personality`,
+      ``,
+      `${e.name} is a ${e.role} at i.inc.`,
+      ...(e.prompt ? [``, `## Role Instructions`, ``, e.prompt] : []),
+      ``,
+    ].join("\n");
     this.create(
       { kind: "brain", id: e.id },
       {
         "INDEX.md": `# ${e.name}'s brain\n\n${e.role}. Pages are listed here as they are written.\n\n- [Personality](personality.md)\n`,
-        "personality.md": `# Personality\n\n${e.name} is a ${e.role} at i.inc.\n`,
+        "personality.md": personality,
       },
       `Brain created for ${e.name}`,
     );
+  }
+
+  /** Updates an employee's personality and role instructions in their brain repo. */
+  updatePersonality(id: Id, name: string, role: string, prompt?: string): void {
+    const repo: Repo = { kind: "brain", id };
+    if (!this.exists(repo)) {
+      this.ensureBrain({ id, name, role, ...(prompt !== undefined ? { prompt } : {}) });
+      return;
+    }
+    const dir = this.dir(repo);
+    const file = join(dir, "personality.md");
+    const content = [
+      `# Personality`,
+      ``,
+      `${name} is a ${role} at i.inc.`,
+      ...(prompt ? [``, `## Role Instructions`, ``, prompt] : []),
+      ``,
+    ].join("\n");
+    writeFileSync(file, content);
+    this.git(repo, "add", "personality.md");
+    try {
+      this.git(repo, "commit", "-q", "-m", `Update personality and role instructions for ${name}`);
+    } catch {
+      // No changes to commit
+    }
   }
 
   /**

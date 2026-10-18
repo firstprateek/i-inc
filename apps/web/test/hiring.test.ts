@@ -196,3 +196,105 @@ describe("editing someone's engines", () => {
     expect(put?.body).toEqual({ engines: { default: "opus", fallbacks: ["qwen"] } });
   });
 });
+
+describe("custom roles, system prompts, effort levels and explainers", () => {
+  it("allows hiring a CEO with CEO system prompt and duties", async () => {
+    serve();
+    const root = await mount();
+    const nameInput = root.querySelector('input[type="text"]') as HTMLInputElement;
+    nameInput.value = "Satya";
+    nameInput.dispatchEvent(new Event("input"));
+
+    const ceoPill = [...root.querySelectorAll(".pill")].find((b) => b.textContent?.trim() === "CEO");
+    (ceoPill as HTMLElement).click();
+    await settle(root.host);
+
+    const promptArea = root.querySelector("textarea") as HTMLTextAreaElement;
+    expect(promptArea.value).toContain("Chief Executive Officer at i.inc");
+
+    await pick(root, selects(root)[0] as HTMLSelectElement, "opus");
+    await submit(root);
+
+    const post = calls.find((c) => c.method === "POST");
+    const body = post?.body as Record<string, unknown>;
+    expect(body.name).toBe("Satya");
+    expect(body.role).toBe("CEO");
+    expect(body.duties).toEqual(["plan", "review"]);
+    expect(body.prompt).toContain("Chief Executive Officer at i.inc");
+    expect(body.effort).toBe("medium");
+  });
+
+  it("allows defining a custom role title, prompt, and effort level", async () => {
+    serve();
+    const root = await mount();
+    const nameInput = root.querySelector('input[type="text"]') as HTMLInputElement;
+    nameInput.value = "Grace";
+    nameInput.dispatchEvent(new Event("input"));
+
+    const customBtn = [...root.querySelectorAll(".pill")].find((b) =>
+      b.textContent?.includes("+ Custom Role"),
+    );
+    (customBtn as HTMLElement).click();
+    await settle(root.host);
+
+    const customRoleInput = root.querySelector(
+      'input[placeholder*="Chief Executive Officer"]',
+    ) as HTMLInputElement;
+    expect(customRoleInput).not.toBeNull();
+    customRoleInput.value = "Security Architect";
+    customRoleInput.dispatchEvent(new Event("input"));
+    await settle(root.host);
+
+    const promptArea = root.querySelector("textarea") as HTMLTextAreaElement;
+    promptArea.value = "You are the Security Architect. Audit all code for vulnerabilities.";
+    promptArea.dispatchEvent(new Event("input"));
+
+    const highEffort = [...root.querySelectorAll('.pill[role="radio"]')].find((b) =>
+      b.textContent?.includes("High"),
+    );
+    (highEffort as HTMLElement).click();
+    await settle(root.host);
+
+    await pick(root, selects(root)[0] as HTMLSelectElement, "gemini");
+    await submit(root);
+
+    const post = calls.find((c) => c.method === "POST");
+    const body = post?.body as Record<string, unknown>;
+    expect(body.name).toBe("Grace");
+    expect(body.role).toBe("Security Architect");
+    expect(body.prompt).toBe("You are the Security Architect. Audit all code for vulnerabilities.");
+    expect(body.effort).toBe("high");
+  });
+
+  it("renders educational duty explainer and model switching notes", async () => {
+    serve();
+    const root = await mount();
+    const dutyExplainer = root.querySelector(".duty-explainer");
+    expect(dutyExplainer?.textContent).toContain("How pipeline duties work");
+    expect(dutyExplainer?.textContent).toContain("Plan → Build → Verify → Review");
+
+    const switchingExplainer = root.querySelector(".switching-explainer");
+    expect(switchingExplainer?.textContent).toContain("Model Switching Rules");
+  });
+
+  it("updates prompt and effort when editing an existing employee", async () => {
+    serve();
+    const root = await mount("ada");
+    const promptArea = root.querySelector("textarea") as HTMLTextAreaElement;
+    promptArea.value = "Updated prompt for Ada: focus strictly on performance.";
+    promptArea.dispatchEvent(new Event("input"));
+
+    const highEffort = [...root.querySelectorAll('.pill[role="radio"]')].find((b) =>
+      b.textContent?.includes("High"),
+    );
+    (highEffort as HTMLElement).click();
+    await settle(root.host);
+
+    await submit(root);
+    const put = calls.find((c) => c.method === "PUT");
+    const body = put?.body as Record<string, unknown>;
+    expect(body.prompt).toBe("Updated prompt for Ada: focus strictly on performance.");
+    expect(body.effort).toBe("high");
+    expect(body.engines).toBeDefined();
+  });
+});

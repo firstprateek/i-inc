@@ -81,6 +81,10 @@ export interface Employee {
   outbound?: Partial<Record<OutboundAction, OutboundSetting>>;
   /** Which identity tint the avatar wears, chosen at hiring so no two look alike (see `pickTint`). */
   tint?: number;
+  /** Custom role system prompt or instructions defining how the agent acts, reasons, and executes tasks. */
+  prompt?: string;
+  /** Default effort level for tickets assigned to this employee. */
+  effort?: Effort;
 }
 
 /** Things a PA can propose that would leave the house in the owner's name (spec §7). */

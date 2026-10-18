@@ -680,7 +680,15 @@ async function session(
   }
   const text = o.fresh
     ? freshBrief(c.ticket, stage, task, c.p.harness.describe?.(c.ticket))
-    : brief(c.ticket, stage, c.s, task, c.p.harness.describe?.(c.ticket), isAssignee && duty !== "review");
+    : brief(
+        c.ticket,
+        stage,
+        c.s,
+        task,
+        c.p.harness.describe?.(c.ticket),
+        isAssignee && duty !== "review",
+        employee,
+      );
   await c.emit({
     type: "session-started",
     at: c.p.clock.now(),
