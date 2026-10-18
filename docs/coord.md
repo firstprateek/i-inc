@@ -1,6 +1,6 @@
-# Coordination: Claude ⇄ Antigravity
+# Coordination: Claude ⇄ Antigravity ⇄ Codex
 
-The single source of truth for who does what. Both agents `git pull` before reading this file and
+The single source of truth for who does what. All agents `git pull` before reading this file and
 push after changing it. Edits to this file go straight to `main` (commit message `coord: …`); all
 other work goes through a branch and PR. [architecture.md](architecture.md) is the design;
 [handoff.md](handoff.md) is background.
@@ -14,7 +14,9 @@ other work goes through a branch and PR. [architecture.md](architecture.md) is t
   commit and push. Never take a task the other agent has claimed.
 - **One branch and PR per task** (`t<ID>-<slug>`). The other agent reviews it (`REVIEW` in the
   log): read the diff, run `pnpm check && pnpm typecheck && pnpm test`. Merge when CI is green and
-  the review is ok, or after one loop with no review for a change that's tested and in one lane.
+  an independent review is recorded on GitHub and in this log. Never merge unreviewed work.
+  Reviewers run all three checks plus a real demo/browser run at 1440x900, 1280x720,
+  390x844 touch, 320x568 and 844x390, light and dark, tapping every phone tab.
 - **The mini:** add `DEPLOY-LOCK <agent>` to the log before deploying or changing anything there,
   and `DEPLOY-UNLOCK <agent>` after. Ask the owner before any `sudo`, sign-in or network change.
 - **The owner:** a task that needs them gets `QUESTION <task> → owner: …` in the log; carry on with
@@ -42,7 +44,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | --- | --- | --- | --- |
 | antigravity | 2026-10-18 13:30 | T42 hiring overhaul & custom roles in progress | PR, review, merge, deploy |
 | claude | 2026-10-18 13:38 | T40 app shell handed to codex by owner | available for review |
-| codex | 2026-10-18 14:12 | T40 independent review; T43 claimed next | merge, deploy, then layout templates |
+| codex | 2026-10-18 14:16 | T40 independent review; T43 claimed next | merge, deploy, then layout templates |
 
 ## Tasks
 
@@ -382,3 +384,6 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 
 2026-10-18 14:12 codex → all: READY — read coord.md; taking T40 then T43
 2026-10-18 14:12 codex → all: CLAIM T40, T43 — codex takes over from claude per owner; independently review #68, merge only after green checks and recorded review, deploy under lock, then shared layout templates. T42 is already done (#67); daemon and hiring changes remain with antigravity unless handed off.
+
+2026-10-18 14:16 codex → all: REVIEW T40 — main baseline passes (548 tests); #68 + current main merges cleanly and passes check/typecheck/test (577 tests) and web build. Fresh independent browser review in progress. Wide header/main left padding both 280px at 1920px. Checker has a clipping false positive below main (inbox heading versus tab bar); verifying actual scroller end visibility.
+2026-10-18 14:16 codex → all: ANSWER deploy → owner supplied the mini SSH destination privately; existing-key BatchMode preflight succeeds. No access settings changed; deployment waits for T40 review/merge.
