@@ -131,14 +131,21 @@ export class IncChat extends LitElement {
     void this.load();
   }
 
-  override updated(changed: Map<string, unknown>): void {
-    if (changed.has("employeeId") && changed.get("employeeId") !== undefined) {
-      // Drop the last employee's thread at once, so it never shows under the new one while loading.
+  private switched(changed: Map<string, unknown>): boolean {
+    return changed.has("employeeId") && changed.get("employeeId") !== undefined;
+  }
+
+  override willUpdate(changed: Map<string, unknown>): void {
+    if (this.switched(changed)) {
+      // Drop the last employee's thread before this render, so it never shows under the new one.
       this.entries = [];
       this.error = null;
       this.thinking = this.inFlightEmployees.has(this.employeeId);
-      void this.load();
     }
+  }
+
+  override updated(changed: Map<string, unknown>): void {
+    if (this.switched(changed)) void this.load();
     if (changed.has("entries") || changed.has("thinking")) {
       this.scrollToBottom();
     }

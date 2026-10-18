@@ -551,6 +551,47 @@ describe("Instant chat (T24)", () => {
       expect(root.textContent).toContain("Kit here");
     });
 
+    it("renders none of the last employee's messages in the first render after a switch", async () => {
+      serveChat({
+        getEntries: (url) =>
+          url.endsWith("/kit") ? [{ from: "employee", at: 3000, text: "Kit here" }] : sampleEntries,
+      });
+      const served = globalThis.fetch;
+      const threadFetches: string[] = [];
+      vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+        if (url.startsWith("/api/chat/")) threadFetches.push(url);
+        return served(url, init);
+      });
+      const { el, root } = await mount("ada");
+      expect(root.textContent).toContain("Good morning Ada");
+      threadFetches.length = 0;
+
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const rendered: string[] = [];
+      const updated = el.updated.bind(el);
+      el.updated = (changed) => {
+        rendered.push(root.textContent ?? "");
+        updated(changed);
+      };
+
+      el.employeeId = "kit";
+      await el.updateComplete;
+
+      // The switch is one update: the first render is already clear of Ada's thread
+      expect(rendered).toHaveLength(1);
+      expect(rendered[0]).not.toContain("Good morning Ada");
+      expect(el.isUpdatePending).toBe(false);
+
+      for (let i = 0; i < 6; i++) {
+        await new Promise((r) => setTimeout(r, 0));
+        await el.updateComplete;
+      }
+      expect(root.textContent).toContain("Kit here");
+      expect(threadFetches).toEqual(["/api/chat/kit"]);
+      expect(warn.mock.calls.flat().join(" ")).not.toMatch(/change-in-update/);
+      warn.mockRestore();
+    });
+
     it("does not clear entries on the first load", async () => {
       serveChat();
       const { el } = await mount("ada");
