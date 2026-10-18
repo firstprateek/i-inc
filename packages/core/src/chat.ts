@@ -44,9 +44,11 @@ export async function handleMessage(
   const pa = ctx.employee.role === "Personal Assistant";
 
   if (await helper.yesNo(isAsk, text)) {
+    const mentioned = inferProject(text, ctx.employee.projects);
+    const project = pa ? "Home" : (mentioned ?? ctx.current?.project ?? ctx.defaultProject);
     const ticket: DraftTicket = {
       title: firstLine(text),
-      project: pa ? "Home" : (ctx.current?.project ?? ctx.defaultProject),
+      project,
       type: pa ? "errand" : "feat",
       effort: pa ? "low" : "medium",
       doneWhen: [],
@@ -83,4 +85,15 @@ function firstLine(text: string): string {
   const line = text.trim().split("\n")[0] ?? "";
   const t = line.length > 80 ? `${line.slice(0, 77)}…` : line;
   return t.charAt(0).toUpperCase() + t.slice(1).replace(/[.!]$/, "");
+}
+
+export function inferProject(text: string, projects?: string[]): string | null {
+  if (!projects?.length) return null;
+  const candidates = [...projects].filter(Boolean).sort((a, b) => b.length - a.length);
+  for (const p of candidates) {
+    const escaped = p.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
+    const regex = new RegExp(`(^|[^a-zA-Z0-9_-])${escaped}([^a-zA-Z0-9_-]|$)`, "i");
+    if (regex.test(text)) return p;
+  }
+  return null;
 }

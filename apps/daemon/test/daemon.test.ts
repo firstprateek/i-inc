@@ -327,6 +327,44 @@ describe("chat", () => {
     expect(thread.find((e: { kind?: string }) => e.kind === "draft").confirmed).toBe(true);
   });
 
+  it("prioritizes employee's recent project and infers mentioned project in chat ask", async () => {
+    const app = await testApp();
+    // Seed a previous ticket for ada on Duet:
+    app.deps.tickets.create(
+      {
+        title: "Refunds are counted as spending",
+        project: "Duet",
+        type: "fix",
+        effort: "medium",
+        doneWhen: [],
+        assignee: "ada",
+      },
+      app.clock.now(),
+    );
+
+    // Give ada assigned projects ["website", "Duet"]:
+    const adaEmp = app.deps.registry.employees().find((e) => e.id === "ada");
+    if (!adaEmp) throw new Error("ada missing");
+    app.deps.registry.hire({
+      ...adaEmp,
+      projects: ["website", "Duet"],
+    });
+
+    // 1. Without mentioning a project, defaults to recent ticket project (Duet), not e.projects[0] (website)
+    const askRecent = await app.call("POST", "/api/chat/ada", { text: "Add more currency symbols" });
+    const draftRecent = askRecent.body.entries.at(-1);
+    const cardRecent = (await app.call("GET", `/api/tickets/${draftRecent.ticketId}`)).body.ticket;
+    expect(cardRecent.project).toBe("Duet");
+
+    // 2. When mentioning an assigned project ("website"), it infers "website"
+    const askMentioned = await app.call("POST", "/api/chat/ada", {
+      text: "Update hero CTA button on website",
+    });
+    const draftMentioned = askMentioned.body.entries.at(-1);
+    const cardMentioned = (await app.call("GET", `/api/tickets/${draftMentioned.ticketId}`)).body.ticket;
+    expect(cardMentioned.project).toBe("website");
+  });
+
   it("files a PA's ask as an errand straight away", async () => {
     const app = await testApp();
     const res = await app.call("POST", "/api/chat/pip", { text: "Find me flights to Bengaluru in December" });

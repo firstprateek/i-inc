@@ -574,7 +574,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
             engine: d.registry.engine(e.engines.default),
             current: current ? { ...current.r.ticket, assignee: e.id } : null,
             notes,
-            defaultProject: e.projects?.[0] ?? mine.at(-1)?.r.ticket.project ?? "General",
+            defaultProject: mine.at(-1)?.r.ticket.project ?? e.projects?.[0] ?? "General",
           },
           d.helper,
           d.chat,

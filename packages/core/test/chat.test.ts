@@ -1,6 +1,6 @@
 // Chat (spec §10, and design case 9, "A word with Kit").
 import { describe, expect, it } from "vitest";
-import { handleMessage, runTicket } from "../src/index.ts";
+import { handleMessage, inferProject, runTicket } from "../src/index.ts";
 import { FakeChat, FakeHelper } from "../src/testing/index.ts";
 import { engines, kit, pip, ports, refundsTicket } from "./fixtures.ts";
 
@@ -59,6 +59,48 @@ describe("a chat message", () => {
     });
   });
 
+  it("infers mentioned project from employee's assigned projects", async () => {
+    const kitWithProjects = { ...kit, projects: ["Duet", "i-inc"] };
+    const out = await handleMessage(
+      "Please add auto-refresh to i-inc desk view.",
+      {
+        employee: kitWithProjects,
+        engine: engine("sonnet"),
+        current: csv,
+        notes: "",
+        defaultProject: "Duet",
+      },
+      new FakeHelper(),
+      new FakeChat(),
+    );
+    expect(out).toEqual({
+      kind: "draft",
+      ticket: {
+        title: "Please add auto-refresh to i-inc desk view",
+        project: "i-inc",
+        type: "feat",
+        effort: "medium",
+        doneWhen: [],
+        assignee: "kit",
+      },
+    });
+  });
+
+  it("falls back to defaultProject when no project is mentioned and no current ticket", async () => {
+    const out = await handleMessage(
+      "Add export to CSV",
+      { employee: kit, engine: engine("sonnet"), current: null, notes: "", defaultProject: "Duet" },
+      new FakeHelper(),
+      new FakeChat(),
+    );
+    expect(out).toMatchObject({
+      kind: "draft",
+      ticket: {
+        project: "Duet",
+      },
+    });
+  });
+
   it("files a PA's ask as an errand straight away", async () => {
     const out = await handleMessage(
       "Find me flights to Bengaluru in December",
@@ -113,5 +155,31 @@ describe("a message mid-ticket", () => {
     expect(p.agent.callsFor("ada", "report")[0]?.brief).toContain(
       "Messages from the owner:\n- keep it behind a flag",
     );
+  });
+});
+
+describe("inferProject", () => {
+  it("returns null if projects array is empty or undefined", () => {
+    expect(inferProject("Work on Duet", [])).toBeNull();
+    expect(inferProject("Work on Duet", undefined)).toBeNull();
+  });
+
+  it("infers project matching word boundaries case-insensitively", () => {
+    const projects = ["Duet", "i-inc", "fintrack"];
+    expect(inferProject("Please fix issues in duet today", projects)).toBe("Duet");
+    expect(inferProject("In i-inc, polish mobile view", projects)).toBe("i-inc");
+    expect(inferProject("Let's focus on fintrack.", projects)).toBe("fintrack");
+  });
+
+  it("avoids substring false positives", () => {
+    const projects = ["inc", "Duet"];
+    expect(inferProject("coincidence happened", projects)).toBeNull();
+    expect(inferProject("singing duets together", projects)).toBeNull();
+    expect(inferProject("multi-inc-corp", projects)).toBeNull();
+  });
+
+  it("prioritizes more specific project when one name contains another", () => {
+    const projects = ["inc", "i-inc"];
+    expect(inferProject("Please fix bug in i-inc", projects)).toBe("i-inc");
   });
 });
