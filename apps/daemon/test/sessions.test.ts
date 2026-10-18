@@ -411,6 +411,42 @@ describe("Secret redaction", () => {
     expect(redactSecrets("api_key=mykey12345")).toBe("api_key=[redacted]");
   });
 
+  it("redacts JSON-style password and api_key fields", () => {
+    expect(redactSecrets('{"password": "hunter2", "api_key": "abcd1234"}')).toBe(
+      '{"password": "[redacted]", "api_key": "[redacted]"}',
+    );
+  });
+
+  it("redacts curl credentials (-u / --user)", () => {
+    expect(redactSecrets("curl -u user:pass https://example.com")).toBe(
+      "curl -u user:[redacted] https://example.com",
+    );
+    expect(redactSecrets("curl --user admin:secret123 https://example.com")).toBe(
+      "curl --user admin:[redacted] https://example.com",
+    );
+  });
+
+  it("redacts generalized token/key env variables (e.g. GITHUB_TOKEN)", () => {
+    expect(redactSecrets("GITHUB_TOKEN=abc123 curl -u user:pass x")).toBe(
+      "GITHUB_TOKEN=[redacted] curl -u user:[redacted] x",
+    );
+    expect(redactSecrets("MY_SECRET=shh export ACCESS_KEY=123")).toBe(
+      "MY_SECRET=[redacted] export ACCESS_KEY=[redacted]",
+    );
+  });
+
+  it("redacts long hex strings (32+ chars) and base64 strings while preserving paths", () => {
+    expect(
+      redactSecrets("key aaaaaaaaaa0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+    ).toBe("key [redacted]");
+    expect(redactSecrets("Z2l0aHViX3NlY3JldF9iYXNlNjRfdmFsdWVfdGhhdF9pc19sb25nX2Vub3VnaA==")).toBe(
+      "[redacted]",
+    );
+    expect(
+      redactSecrets("/Users/padi/Documents/projects/ai-projects/i-inc/apps/daemon/src/sessions.ts"),
+    ).toBe("/Users/padi/Documents/projects/ai-projects/i-inc/apps/daemon/src/sessions.ts");
+  });
+
   it("redacts items stored in SessionStore automatically", async () => {
     const db = await openDb(":memory:");
     migrate(db);

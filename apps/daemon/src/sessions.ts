@@ -44,11 +44,26 @@ export function redactSecrets(text: string): string {
   // 7. JWT-like tokens (eyJ...\.eyJ...\....)
   out = out.replace(/\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\b/g, "[redacted]");
 
-  // 8. password= / token= / secret= / api_key= query or env values
+  // 8. curl credentials (-u user:pass or --user user:pass)
+  out = out.replace(/(-u\s+|--user\s+)([^\s:]+):([^\s"'&;]+)/gi, "$1$2:[redacted]");
+
+  // 9. JSON-style: "password": "...", "api_key": "..."
   out = out.replace(
-    /(?<=[?&]|\b)(password|token|secret|api[-_]?key)=(?:(["'])([^\r\n"']+)\2|([^\s&;"']+))/gi,
-    "$1=[redacted]",
+    /((\\"|")?[a-zA-Z0-9_-]*(?:token|key|secret|password)[a-zA-Z0-9_-]*\2\s*:\s*)(\\"|")[^"'\r\n]+?\3/gi,
+    "$1$3[redacted]$3",
   );
+
+  // 10. *TOKEN= / *KEY= / *SECRET= / *PASSWORD= query or env values
+  out = out.replace(
+    /(?<=[?&]|\b)([a-zA-Z0-9_-]*(?:password|token|secret|key)[a-zA-Z0-9_-]*=)(?:(["'])([^\r\n"']+)\2|([^\s&;"']+))/gi,
+    "$1[redacted]",
+  );
+
+  // 11. Long hex strings (32+ chars, containing both digits and hex letters)
+  out = out.replace(/\b(?=[0-9a-fA-F]*[0-9])(?=[0-9a-fA-F]*[a-fA-F])[0-9a-fA-F]{32,}\b/g, "[redacted]");
+
+  // 12. Base64 strings (20+ chars with padding = or ==)
+  out = out.replace(/(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{20,}={1,2}(?![A-Za-z0-9+/=])/g, "[redacted]");
 
   return out;
 }
