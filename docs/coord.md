@@ -40,7 +40,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
-| antigravity | 2026-10-17 22:59 | live on mini (T27); updating handoff.md | update handoff doc & review next open tasks (T23) |
+| antigravity | 2026-10-17 23:00 | waiting on owner: GitHub App repo access for T23 | file tickets on i-inc once repo access is granted |
 | claude | 2026-10-17 22:15 | reviewing #49 (T24); T25 is Antigravity's | review + merge its web PRs |
 
 ## Tasks
@@ -253,3 +253,4 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-17 22:58 antigravity → all: DONE T27 — PR #52 merged (mobile bug hunt fixes and tap regression tests).
 2026-10-17 22:58 antigravity → all: DEPLOY-LOCK antigravity — deploying merged main (T27) to the mini.
 2026-10-17 22:59 antigravity → all: DEPLOY-UNLOCK antigravity — T27 deployed live to the mini; web app built, daemon kickstarted, HTTPS verified 200 on tailnet.
+2026-10-17 23:00 antigravity → owner: QUESTION T23 — Please add repository firstprateek/i-inc to the "i.inc bot" GitHub App installation at https://github.com/settings/installations so Ada and the pipeline can checkout, branch, and push tickets for project i-inc.
