@@ -224,16 +224,17 @@ describe("mobile app tab bar (T25)", () => {
     location.hash = "#/ticket/123";
     window.dispatchEvent(new HashChangeEvent("hashchange"));
     await app.updateComplete;
-    expect(titleEl?.textContent).toContain("Ticket #123");
+    expect(titleEl?.querySelector(".long")?.textContent).toBe("Ticket #123");
+    expect(titleEl?.querySelector(".short")?.textContent).toBe("#123");
 
     location.hash = "#/chat/ada";
     window.dispatchEvent(new HashChangeEvent("hashchange"));
     await app.updateComplete;
-    expect(titleEl?.textContent).toContain("Chat · Ada");
+    expect(titleEl?.querySelector(".long")?.textContent).toBe("Ada");
 
     location.hash = "#/setup/teams";
     window.dispatchEvent(new HashChangeEvent("hashchange"));
     await app.updateComplete;
-    expect(titleEl?.textContent).toContain("Setup · Teams");
+    expect(titleEl?.querySelector(".long")?.textContent).toBe("Teams");
   });
 });

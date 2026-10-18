@@ -19,6 +19,9 @@
   --needs-fg: #5a3a00;
   --needs-edge: #c48a12;
   --needs-surface: #fff9ea;
+  /* A dismissible error banner: the cream of --needs-*, with a dark-theme pair of its own. */
+  --banner-bg: #fce8b8;
+  --banner-fg: #5a3a00;
   --alarm: #c4452b;
   --alarm-fg: #8a2b17;
   --neutral-bg: #e6e8e3;
@@ -51,6 +54,8 @@
     --ink-2: #b4bcb6;
     --on-ink: #141816;
     --needs-surface: #2a2415;
+    --banner-bg: #3a2a14;
+    --banner-fg: #f6d9a6;
     --alarm-fg: #f28b76;
     --floor: #2a2721;
     --desk: #5b4a33;
@@ -74,6 +79,8 @@
   --ink-2: #b4bcb6;
   --on-ink: #141816;
   --needs-surface: #2a2415;
+  --banner-bg: #3a2a14;
+  --banner-fg: #f6d9a6;
   --alarm-fg: #f28b76;
   --floor: #2a2721;
   --desk: #5b4a33;

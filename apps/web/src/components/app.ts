@@ -115,6 +115,7 @@ export class IncApp extends LitElement {
       .more b { font-size: 17px; }
       .more span { font-size: 14px; color: var(--ink-2); }
       .mobile-view-title { display: none; }
+      .sign-out .short-icon { display: none; }
       @media (max-width: 900px) {
         header {
           position: sticky;
@@ -134,7 +135,9 @@ export class IncApp extends LitElement {
         }
         header nav { display: none; }
         .mobile-view-title {
-          display: inline-block;
+          display: block;
+          flex: 1 1 auto;
+          min-width: 0;
           font-family: var(--display);
           font-weight: 600;
           font-size: 17px;
@@ -143,10 +146,23 @@ export class IncApp extends LitElement {
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
-          max-width: calc(100vw - 160px);
-          vertical-align: middle;
         }
+        .mobile-view-title .short { display: none; }
+        .spacer { display: none; }
         .sign-out { min-height: 44px; }
+        @media (max-width: 420px) {
+          header { gap: 6px; }
+          .sign-out { width: 44px; padding: 0; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+          .sign-out .short-icon { display: block; }
+          .sign-out .label {
+            position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
+            clip-path: inset(50%); white-space: nowrap; border: 0;
+          }
+        }
+        @media (max-width: 359px) {
+          .mobile-view-title .long { display: none; }
+          .mobile-view-title .short { display: inline; }
+        }
         main { padding: 8px 16px calc(88px + env(safe-area-inset-bottom)); }
         .tabs {
           position: fixed;
@@ -251,38 +267,42 @@ export class IncApp extends LitElement {
     this.route = parse(location.hash);
   }
 
-  private viewTitle(): string {
+  // The mobile header title: the full name, and a short form used on very narrow screens (under 360px)
+  // so it never has to be cut off with an ellipsis.
+  private viewTitle(): { long: string; short: string } {
     const r = this.route;
+    const same = (t: string) => ({ long: t, short: t });
+    const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
     switch (r.view) {
       case "inbox":
-        return "Inbox";
+        return same("Inbox");
       case "office":
-        return "Office";
+        return same("Office");
       case "board":
-        return "Board";
+        return same("Board");
       case "ticket":
-        return r.id ? `Ticket #${r.id}` : "Ticket";
-      case "chat": {
-        if (r.id) {
-          const name = r.id.charAt(0).toUpperCase() + r.id.slice(1);
-          return `Chat · ${name}`;
-        }
-        return "Chats";
-      }
+        return r.id ? { long: `Ticket #${r.id}`, short: `#${r.id}` } : same("Ticket");
+      case "chat":
+        return r.id ? same(cap(r.id)) : same("Chats");
       case "desk":
-        return "My desk";
+        return { long: "My desk", short: "Desk" };
       case "handbook":
       case "brain":
-        return "Company brain";
+        return { long: "Company brain", short: "Brain" };
       case "hiring":
-        return "Hiring";
+        return same("Hiring");
       case "setup":
-        return `Setup · ${r.section.charAt(0).toUpperCase() + r.section.slice(1)}`;
+        return same(cap(r.section));
       case "more":
-        return "More";
+        return same("More");
       default:
-        return "";
+        return same("");
     }
+  }
+
+  private mobileTitle() {
+    const t = this.viewTitle();
+    return html`<span class="mobile-view-title" aria-hidden="true"><span class="long">${t.long}</span><span class="short">${t.short}</span></span>`;
   }
 
   override render() {
@@ -309,7 +329,7 @@ export class IncApp extends LitElement {
     return html`
       <header>
         <a class="mark" href="#/office">i.inc</a>
-        <span class="mobile-view-title" aria-hidden="true"> · ${this.viewTitle()}</span>
+        ${this.mobileTitle()}
         <nav aria-label="Views">
           ${link("office", "Office", v === "office")} ${link("board", "Board", v === "board" || v === "ticket")}
           ${link("chat", "Chat", v === "chat")}
@@ -323,7 +343,13 @@ export class IncApp extends LitElement {
             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"></path></svg>
         </button>
-        <button class="btn ghost sign-out" type="button" @click=${() => logout()}>Sign out</button>
+        <button class="btn ghost sign-out" type="button" @click=${() => logout()}>
+          <svg class="short-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline>
+            <line x1="21" y1="12" x2="9" y2="12"></line></svg>
+          <span class="label">Sign out</span>
+        </button>
       </header>
       <main>${this.offline ? html`<inc-offline></inc-offline>` : this.view()}</main>
       <nav class="tabs" role="tablist" aria-label="Views">

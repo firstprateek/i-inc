@@ -28,12 +28,13 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
     cutting: { state: true },
     actionError: { state: true },
   };
-  declare cutting: string | null;
+  // The projects whose release cut is in flight. Replaced (not mutated) on each change so Lit re-renders.
+  declare cutting: ReadonlySet<string>;
   declare actionError: string | null;
 
   constructor() {
     super();
-    this.cutting = null;
+    this.cutting = new Set();
     this.actionError = null;
   }
 
@@ -65,7 +66,12 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
       .release-project-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
       .spacer { flex-grow: 1; }
       .release-btn { font-size: 13px; min-height: 44px; padding: 0 16px; box-sizing: border-box; }
-      .err { background: var(--needs-bg); color: var(--needs-fg); border: 1px solid var(--alarm); border-radius: 10px; padding: 10px 12px; font-size: 14px; overflow-wrap: anywhere; }
+      .err { display: flex; align-items: center; gap: 8px; background: var(--banner-bg); color: var(--banner-fg); border: 1px solid var(--alarm);
+        border-radius: 10px; padding: 2px 2px 2px 12px; font-size: 14px; }
+      .err span { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; padding: 8px 0; }
+      .err button { flex-shrink: 0; width: 44px; height: 44px; border: 0; border-radius: 8px; background: transparent; color: inherit;
+        display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+      .err button:focus-visible { outline: 2px solid var(--reviewing-mark); outline-offset: -2px; }
       .pending-tickets { display: flex; flex-direction: column; gap: 4px; padding-left: 6px; }
       .pending-ticket { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
       .pending-ticket a { text-decoration: none; color: inherit; }
@@ -96,8 +102,17 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
     `,
   ];
 
+  private setCutting(projectId: string, on: boolean) {
+    const next = new Set(this.cutting);
+    if (on) next.add(projectId);
+    else next.delete(projectId);
+    this.cutting = next;
+  }
+
   private async cutRelease(projectId: string) {
-    this.cutting = projectId;
+    // A double-tap (or a tap before the re-render disables the button) must not send a second POST.
+    if (this.cutting.has(projectId)) return;
+    this.setCutting(projectId, true);
     this.actionError = null;
     try {
       await api.cutRelease(projectId);
@@ -105,7 +120,7 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
     } catch (err) {
       this.actionError = `Failed to cut release: ${err instanceof Error ? err.message : String(err)}`;
     } finally {
-      this.cutting = null;
+      this.setCutting(projectId, false);
     }
   }
 
@@ -164,11 +179,21 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
       </section>
       <section class="card panel releases">
         <h2>Releases</h2>
-        ${this.actionError ? html`<div class="err" role="alert">${this.actionError}</div>` : ""}
+        ${
+          this.actionError
+            ? html`<div class="err" role="alert"><span>${this.actionError}</span>
+              <button type="button" aria-label="Dismiss" @click=${() => {
+                this.actionError = null;
+              }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg></button></div>`
+            : ""
+        }
         ${
           (d.pendingReleases ?? []).length
             ? (d.pendingReleases ?? []).map((p) => {
                 const count = p.pendingTickets.length;
+                const key = p.project || p.id;
+                const busy = this.cutting.has(key);
                 return html`<div class="release-project">
                 <div class="release-project-header">
                   <b>${p.project || p.id}</b>
@@ -177,11 +202,11 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
                   <button
                     class="btn ${count ? "" : "ghost"} release-btn"
                     type="button"
-                    aria-busy=${this.cutting === (p.project || p.id) ? "true" : "false"}
-                    ?disabled=${count === 0 || this.cutting === (p.project || p.id)}
-                    @click=${() => this.cutRelease(p.project || p.id)}
+                    aria-busy=${busy ? "true" : "false"}
+                    ?disabled=${count === 0 || busy}
+                    @click=${() => this.cutRelease(key)}
                   >
-                    ${this.cutting === (p.project || p.id) ? "Cutting…" : "Cut release"}
+                    ${busy ? "Cutting…" : "Cut release"}
                   </button>
                 </div>
                 ${
