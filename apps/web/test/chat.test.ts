@@ -784,19 +784,69 @@ describe("Drafts across reloads (T10)", () => {
     expect(box(root).value).toBe("Left over");
   });
 
-  it("forgets the draft once it's sent", async () => {
-    const { postCalls } = serveChat();
+  it("keeps the stored draft until the send succeeds, then forgets it", async () => {
+    const post = createDeferred<Response>();
+    const { postCalls } = serveChat({ handlePost: () => post.promise });
     const first = await mount("ada");
     await type(first.el, first.root, "Send me");
     void first.el.send();
-    expect(localStorage.getItem("inc.chat.draft.ada")).toBeNull();
     await settle(first.el);
     expect(postCalls[0]?.body).toEqual({ text: "Send me" });
+    expect(box(first.root).value).toBe("");
+    expect(localStorage.getItem("inc.chat.draft.ada")).toBe("Send me");
+
+    post.resolve(
+      new Response(
+        JSON.stringify({ entries: [...sampleEntries, { from: "owner", at: 2000, text: "Send me" }] }),
+        {
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    await settle(first.el);
+    expect(localStorage.getItem("inc.chat.draft.ada")).toBeNull();
 
     const { el, root } = await reload();
     expect(el.draft).toBe("");
     expect(box(root).value).toBe("");
     expect(sendBtn(root).disabled).toBe(true);
+  });
+
+  it("keeps a new draft typed while a send is in flight", async () => {
+    const post = createDeferred<Response>();
+    serveChat({ handlePost: () => post.promise });
+    const { el, root } = await mount("ada");
+    await type(el, root, "First message");
+    void el.send();
+    await settle(el);
+    await type(el, root, "Second thought");
+
+    post.resolve(
+      new Response(JSON.stringify({ entries: sampleEntries }), {
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    await settle(el);
+    expect(localStorage.getItem("inc.chat.draft.ada")).toBe("Second thought");
+    expect(box(root).value).toBe("Second thought");
+  });
+
+  it("doesn't put the text of a send in flight back in the box when switching back", async () => {
+    const post = createDeferred<Response>();
+    serveChat({ handlePost: () => post.promise });
+    const { el, root } = await mount("ada");
+    await type(el, root, "Only once");
+    void el.send();
+    await settle(el);
+    el.employeeId = "kit";
+    await el.updateComplete;
+    el.employeeId = "ada";
+    await el.updateComplete;
+    expect(box(root).value).toBe("");
+    post.resolve(
+      new Response(JSON.stringify({ entries: [] }), { headers: { "content-type": "application/json" } }),
+    );
+    await settle(el);
   });
 
   it("removes the key when the box is cleared, rather than storing blank text", async () => {
@@ -809,7 +859,7 @@ describe("Drafts across reloads (T10)", () => {
     expect(localStorage.length).toBe(0);
   });
 
-  it("doesn't bring a failed send back as a draft, so it can't go twice", async () => {
+  it("brings a failed send back as a draft after a reload, but not in the same page", async () => {
     serveChat({
       handlePost: () =>
         new Response(JSON.stringify({ error: "Ollama timeout" }), {
@@ -822,11 +872,50 @@ describe("Drafts across reloads (T10)", () => {
     void first.el.send();
     await settle(first.el);
     expect(first.root.textContent).toContain("Retry");
-    expect(localStorage.getItem("inc.chat.draft.ada")).toBeNull();
+    expect(localStorage.getItem("inc.chat.draft.ada")).toBe("Try sending this");
+
+    // In this page the bubble's Retry owns the text, so the box stays empty.
+    first.el.employeeId = "kit";
+    await first.el.updateComplete;
+    first.el.employeeId = "ada";
+    await first.el.updateComplete;
+    expect(box(first.root).value).toBe("");
 
     const { el, root } = await reload();
-    expect(el.draft).toBe("");
-    expect(box(root).value).toBe("");
+    expect(el.draft).toBe("Try sending this");
+    expect(box(root).value).toBe("Try sending this");
+  });
+
+  it("forgets the stored draft once a Retry succeeds", async () => {
+    let fail = true;
+    serveChat({
+      handlePost: (_url, body) =>
+        fail
+          ? new Response(JSON.stringify({ error: "Ollama timeout" }), {
+              status: 504,
+              headers: { "content-type": "application/json" },
+            })
+          : new Response(
+              JSON.stringify({
+                entries: [
+                  ...sampleEntries,
+                  { from: "owner", at: 2000, text: (body as { text: string }).text },
+                ],
+              }),
+              { headers: { "content-type": "application/json" } },
+            ),
+    });
+    const { el, root } = await mount("ada");
+    await type(el, root, "Try again");
+    void el.send();
+    await settle(el);
+    expect(localStorage.getItem("inc.chat.draft.ada")).toBe("Try again");
+
+    fail = false;
+    (root.querySelector(".retry") as HTMLButtonElement).click();
+    await settle(el);
+    expect(root.textContent).not.toContain("Retry");
+    expect(localStorage.getItem("inc.chat.draft.ada")).toBeNull();
   });
 
   it("keeps a draft over 20 KB in memory only, and drops the older stored one", async () => {

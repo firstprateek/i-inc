@@ -1,4 +1,5 @@
-// Unsent chat drafts, kept in localStorage per employee so a reload doesn't lose them. Signing out
+// Unsent chat drafts, kept in localStorage per employee so a reload doesn't lose them. A sent draft stays
+// stored until the daemon takes it, so a failed send comes back after a reload. Signing out
 // or a 401 (showLogin) forgets them all, since a draft to a PA can hold home data.
 
 // A draft longer than this (in UTF-16 characters) stays in memory only, so one paste can't fill storage.
@@ -27,6 +28,11 @@ export const draftMemo = {
         // Storage is blocked outright.
       }
     }
+  },
+  /** Forget the stored draft if it's still the text that was just sent, and keep a newer one. */
+  clearIfSent(employeeId: string, sent: string): void {
+    const stored = draftMemo.get(employeeId);
+    if (stored !== null && stored.trim() === sent.trim()) draftMemo.set(employeeId, "");
   },
   clearAll(): void {
     try {

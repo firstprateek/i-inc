@@ -154,7 +154,8 @@ export class IncChat extends LitElement {
       this.entries = [];
       this.error = null;
       const last = changed.get("employeeId") as string;
-      if (last) this.keepDraft(last, this.draft);
+      // Memory only: onInput already stored it, and a sent draft stays stored until the send succeeds.
+      if (last) this.drafts.set(last, this.draft);
       this.draft = this.draftFor(this.employeeId);
       this.thinking = this.inFlightEmployees.has(this.employeeId);
     } else if (changed.has("employeeId") && this.employeeId) {
@@ -275,8 +276,10 @@ export class IncChat extends LitElement {
     combined.sort((a, b) => a.at - b.at);
     this.entries = combined;
 
+    // The box empties now and the bubble's Retry owns the text, but the stored draft stays until the
+    // send succeeds, so a failed send and a reload don't lose it.
     this.draft = "";
-    this.keepDraft(empId, "");
+    this.drafts.set(empId, "");
     this.urgent = false;
     this.error = null;
 
@@ -311,6 +314,7 @@ export class IncChat extends LitElement {
 
       entry.status = "sent";
       entry.error = undefined;
+      draftMemo.clearIfSent(empId, entry.text);
       // Remove from pending entries once delivered
       this.pendingEntries = this.pendingEntries.filter((p) => p.id !== entry.id);
 
