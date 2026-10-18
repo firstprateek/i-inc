@@ -3,7 +3,7 @@
 // the next stage boundary.
 import { css, html, LitElement } from "lit";
 import { refreshNow } from "../api.ts";
-import { hasNewFromOthers, isNearBottom } from "../chat-scroll.ts";
+import { hasNewFromOthers, isNearBottom, newFromOthers } from "../chat-scroll.ts";
 import { draftMemo } from "../drafts.ts";
 import { showLogin } from "../login.ts";
 import { avatar, base } from "./shared.ts";
@@ -109,6 +109,7 @@ export class IncChat extends LitElement {
     error: { state: true },
     picks: { state: true },
     newBelow: { state: true },
+    announcement: { state: true },
   };
   declare employeeId: string;
   declare threads: Thread[];
@@ -122,6 +123,8 @@ export class IncChat extends LitElement {
   declare picks: Record<string, string>;
   /** Something new arrived below while the reader was scrolled up: show "New messages". */
   declare newBelow: boolean;
+  /** What the polite status region says: the newest message from someone else, never the whole list. */
+  declare announcement: string;
 
   // Scroll state. Only the message list scrolls, never the page (no scrollIntoView, no window.scrollTo).
   /** The reader is at (or near) the bottom of the list, so new content should keep it pinned there. */
@@ -162,6 +165,7 @@ export class IncChat extends LitElement {
     this.error = null;
     this.picks = {};
     this.newBelow = false;
+    this.announcement = "";
   }
 
   override connectedCallback(): void {
@@ -215,6 +219,7 @@ export class IncChat extends LitElement {
       this.jumpPending = true;
       this.stick = true;
       this.newBelow = false;
+      this.announcement = "";
     } else if (changed.has("employeeId") && this.employeeId) {
       // First mount, or load() picking the first thread: bring back a draft from before a reload.
       this.draft = this.draftFor(this.employeeId);
@@ -229,6 +234,14 @@ export class IncChat extends LitElement {
   private planScroll(changed: Map<string, unknown>): void {
     this.pinAfterRender = false;
     if (changed.has("entries")) {
+      // Screen readers hear a new message from someone else, once, in the status region. Opening a
+      // thread (the whole list arriving) is silent: the list itself is aria-live="off".
+      if (!(this.jumpPending && this.entries.length > 0)) {
+        const fresh = newFromOthers((changed.get("entries") as Entry[] | undefined) ?? [], this.entries).at(
+          -1,
+        );
+        if (fresh) this.announcement = this.spoken(fresh);
+      }
       if (this.jumpPending && this.entries.length > 0) {
         // Opening a thread: jump (no animation) to the newest message.
         this.jumpPending = false;
@@ -258,6 +271,15 @@ export class IncChat extends LitElement {
       this.pinAfterRender = false;
       this.scrollToBottom();
     }
+  }
+
+  private spoken(e: Entry): string {
+    const who = (this.threads ?? []).find((t) => t.id === this.employeeId)?.name ?? "Employee";
+    const clip = (t: string) => (t.length > 240 ? `${t.slice(0, 240)}…` : t);
+    if ("kind" in e && e.kind === "draft") return `${who} drafted a ticket: ${e.title}`;
+    if ("kind" in e && e.kind === "errand") return `${who} started an errand: ${e.title}`;
+    const text = "text" in e ? (e.text ?? "") : "";
+    return e.from === "system" ? clip(text) : `${who}: ${clip(text)}`;
   }
 
   /** Jumps the message list (and only it) to the newest message. */
@@ -481,8 +503,13 @@ export class IncChat extends LitElement {
         padding: 20px max(22px, calc((100% - 760px) / 2)); display: flex; flex-direction: column; gap: 12px; }
       .msgs > * { flex: none; }
       .msgs:focus-visible { outline: 2px solid var(--reviewing-mark); outline-offset: -2px; }
+      /* A surface pill with an ink ring: legible over the page, a sunken reply bubble and an ink owner
+         bubble alike, in both themes (the plain .btn is ink, the very colour of the owner's bubble). */
       .jump { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 2;
-        display: inline-flex; align-items: center; gap: 6px; padding: 0 18px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18); }
+        display: inline-flex; align-items: center; gap: 6px; padding: 0 18px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+        background: var(--surface); color: var(--ink); border: 2px solid var(--ink); }
+      .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
+        clip-path: inset(50%); white-space: nowrap; border: 0; }
       .me, .them, .ticket { overflow-wrap: anywhere; }
       .msg-body { white-space: pre-wrap; }
       .me { align-self: flex-end; max-width: min(520px, 88%); padding: 11px 14px; border-radius: 18px 18px 4px 18px; background: var(--ink); color: var(--on-ink); }
@@ -507,7 +534,7 @@ export class IncChat extends LitElement {
         display: flex; flex-direction: column; gap: 8px; background: var(--surface); }
       /* The composer is pinned under the list and never scrolls away. */
       form { flex: none; padding: 12px max(16px, calc((100% - 760px) / 2)) 16px; border-top: 1px solid var(--line); display: flex; gap: 10px; align-items: flex-end; }
-      textarea { flex-grow: 1; min-width: 0; font: 16px/1.4 var(--body); min-height: 46px; max-height: min(180px, 26vh); padding: 11px 16px; border-radius: 20px;
+      textarea { flex-grow: 1; min-width: 0; font: 16px/1.4 var(--body); min-height: 46px; max-height: min(180px, 26vh); max-height: min(180px, 26dvh); padding: 11px 16px; border-radius: 20px;
         border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); resize: none; box-sizing: border-box; overflow-y: auto; }
       textarea:focus { outline: none; border-color: var(--ink); }
       .send { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
@@ -547,6 +574,17 @@ export class IncChat extends LitElement {
         form .send { margin-left: auto; }
         .me .retry { min-height: 44px; padding: 6px 14px; font-size: 13px; }
       }
+      /* A short phone screen (landscape, or the keyboard up): the conversation and composer get all of
+         it, so the people strip and the thread head step aside (switch threads by leaving the field,
+         or turning the phone back). On a touch screen the same goes while the message field is focused. */
+      @media (max-width: 900px) and (max-height: 520px) {
+        nav.card, .head { display: none; }
+        .wrap { grid-template-rows: minmax(0, 1fr); }
+      }
+      @media (max-width: 900px) and (pointer: coarse) {
+        .wrap:has(textarea:focus) nav.card, .wrap:has(textarea:focus) .head { display: none; }
+        .wrap:has(textarea:focus) { grid-template-rows: minmax(0, 1fr); }
+      }
     `,
   ];
 
@@ -567,7 +605,7 @@ export class IncChat extends LitElement {
             : ""
         }
         <div class="msgs-wrap">
-        <div class="msgs" role="log" tabindex="0" aria-label="Messages with ${me?.name ?? "the team"}" @scroll=${this.onScroll}>
+        <div class="msgs" role="log" aria-live="off" tabindex="0" aria-label="Messages with ${me?.name ?? "the team"}" @scroll=${this.onScroll}>
           ${this.entries.length ? this.entries.map((e) => this.entry(e)) : html`<p class="empty">Ask ${me?.name ?? "them"} anything, or ask for something new.</p>`}
           ${
             this.thinking
@@ -579,6 +617,7 @@ export class IncChat extends LitElement {
           }
           ${this.error ? html`<p class="error-msg" role="alert">${this.error}</p>` : ""}
         </div>
+        <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">${this.announcement}</div>
         ${
           this.newBelow
             ? html`<button class="btn jump" type="button" @click=${() => this.scrollToBottom()}>New messages <span aria-hidden="true">↓</span></button>`

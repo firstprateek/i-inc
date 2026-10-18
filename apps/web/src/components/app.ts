@@ -2,6 +2,7 @@ import { css, html, LitElement } from "lit";
 import { logout } from "../api.ts";
 import { connection, isOffline } from "../connection.ts";
 import { startLiveUpdates } from "../live.ts";
+import { arrive, ScrollMemory, stampEntry } from "../scroll-memory.ts";
 import { base } from "./shared.ts";
 import "./office.ts";
 import "./board.ts";
@@ -15,7 +16,7 @@ import "./offline.ts";
 import "./setup.ts";
 import { isSection, type Section } from "./setup.ts";
 
-type Route =
+export type Route =
   | { view: "office" | "board" | "desk" | "inbox" | "hiring" | "handbook" | "more" }
   | { view: "hiring"; id: string }
   | { view: "brain"; id: string }
@@ -45,6 +46,46 @@ export function parse(hash: string): Route {
     return { view };
   // Phones start at the inbox; desktops at the office (spec §10).
   return { view: matchMedia(`(max-width: ${phone}px)`).matches ? "inbox" : "office" };
+}
+
+const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+
+/** The view's name for the mobile header, the page heading and the tab title: the full name, and a
+ *  short form used on very narrow screens (under 360px) so it never has to be cut off. */
+export function routeName(r: Route): { long: string; short: string } {
+  const same = (t: string) => ({ long: t, short: t });
+  switch (r.view) {
+    case "inbox":
+      return same("Inbox");
+    case "office":
+      return same("Office");
+    case "board":
+      return same("Board");
+    case "ticket":
+      return r.id ? { long: `Ticket #${r.id}`, short: `#${r.id}` } : same("Ticket");
+    case "chat":
+      return r.id ? same(cap(r.id)) : same("Chats");
+    case "desk":
+      return { long: "My desk", short: "Desk" };
+    case "handbook":
+    case "brain":
+      return { long: "Company brain", short: "Brain" };
+    case "hiring":
+      return same("Hiring");
+    case "setup":
+      return same(cap(r.section));
+    case "more":
+      return same("More");
+    default:
+      return same("");
+  }
+}
+
+/** The browser tab / window title for a route: "Board · i.inc". */
+export function routeTitle(r: Route): string {
+  const name = routeName(r).long;
+  const where = r.view === "setup" ? `${name} · Setup` : r.view === "chat" && r.id ? `${name} · Chat` : name;
+  return where ? `${where} · i.inc` : "i.inc";
 }
 
 export type ViewCategory = "Workspace" | "Operations & Knowledge" | "Management";
@@ -206,10 +247,18 @@ export class IncApp extends LitElement {
   declare allViewsOpen: boolean;
   declare pinnedViews: string[];
   private stopLive: (() => void) | null = null;
+  // Scroll and focus across navigation (see scroll-memory.ts). <main> is the one scroll container.
+  private memory = new ScrollMemory();
+  private currentKey = "";
+  /** The page being left has already had its scroll position saved (navigate() runs before the hashchange). */
+  private left = false;
+  private settleToken = 0;
+  private lastView: Route["view"] = "office";
 
   constructor() {
     super();
     this.route = parse(location.hash);
+    this.lastView = this.route.view;
     this.theme = readTheme();
     this.offline = isOffline();
     this.allViewsOpen = false;
@@ -224,20 +273,36 @@ export class IncApp extends LitElement {
     document.addEventListener("keydown", this.onDocumentKeydown);
     this.stopLive = startLiveUpdates();
     applyTheme(this.theme);
+    // The shell keeps each page's scroll position itself, so the browser must not guess.
+    try {
+      history.scrollRestoration = "manual";
+    } catch {}
+    this.currentKey = stampEntry();
+    document.title = routeTitle(this.route);
   }
 
   override willUpdate(): void {
-    // The chat route is an app-like screen: exactly the viewport, with the panes scrolling inside it.
-    // Every other route is a document that scrolls as usual. The attribute styles the shell; the
-    // flag on <html> stops the document itself from being taller than the screen (see tokens.css).
-    const fill = this.route.view === "chat";
-    this.toggleAttribute("fill", fill);
-    if (fill) document.documentElement.dataset.fill = "";
-    else delete document.documentElement.dataset.fill;
+    // A route that owns its scrolling (the chat) lays its own panes out in <main>, which then does not
+    // scroll itself. Every other route scrolls <main>. The attribute drives the shell's styles.
+    this.toggleAttribute("own-scroll", this.route.view === "chat");
+  }
+
+  override updated(changed: Map<string, unknown>): void {
+    if (changed.has("route")) document.title = routeTitle(this.route);
+    if (changed.has("allViewsOpen") && this.allViewsOpen) this.keepDropdownInView();
+  }
+
+  /** The dropdown hangs off the "All views" button, which can sit far enough right that it would be
+   *  clipped by the viewport (the shell never scrolls sideways): slide it left to fit. */
+  private keepDropdownInView(): void {
+    const dd = this.renderRoot?.querySelector?.<HTMLElement>(".all-views-dropdown");
+    if (!dd) return;
+    dd.style.transform = "";
+    const over = dd.getBoundingClientRect().right - (document.documentElement.clientWidth - 12);
+    if (over > 0) dd.style.transform = `translateX(${-Math.ceil(over)}px)`;
   }
 
   override disconnectedCallback(): void {
-    delete document.documentElement.dataset.fill;
     removeEventListener("hashchange", this.onHash);
     connection.removeEventListener("change", this.onConnection);
     document.removeEventListener("click", this.onDocumentClick);
@@ -248,9 +313,63 @@ export class IncApp extends LitElement {
   }
 
   private onHash = () => {
+    this.leave();
+    const arrival = arrive(this.memory);
+    this.currentKey = arrival.key;
+    this.left = false;
+    const from = this.lastView;
     this.route = parse(location.hash);
+    this.lastView = this.route.view;
     this.allViewsOpen = false;
+    void this.settle(arrival.top, from);
   };
+
+  private main(): HTMLElement | null {
+    return this.renderRoot?.querySelector?.<HTMLElement>("main") ?? null;
+  }
+
+  /** Remembers where the page being left was scrolled, once per navigation. */
+  private leave(): void {
+    if (this.left) return;
+    this.left = true;
+    this.memory.save(this.currentKey, this.main()?.scrollTop ?? 0);
+  }
+
+  /**
+   * After a route change: put <main> at the top (a new page) or where it was (Back/Forward), then move
+   * focus to the page heading without scrolling. A page whose data is still loading is not tall enough
+   * yet, so a remembered position is retried for a moment, and given up on the moment the reader scrolls.
+   */
+  private async settle(top: number, from: Route["view"]): Promise<void> {
+    const token = ++this.settleToken;
+    await this.updateComplete;
+    const main = this.main();
+    if (!main || token !== this.settleToken) return;
+    main.scrollTop = top;
+    if (top > 0 && Math.round(main.scrollTop) < top - 1) {
+      const stop = () => {
+        this.settleToken++;
+      };
+      const events = ["wheel", "touchstart", "keydown", "pointerdown"] as const;
+      for (const ev of events) main.addEventListener(ev, stop, { once: true, passive: true });
+      const until = performance.now() + 1500;
+      const step = () => {
+        if (token !== this.settleToken) return;
+        main.scrollTop = top;
+        if (Math.round(main.scrollTop) >= top - 1 || performance.now() > until) return;
+        requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+      setTimeout(() => {
+        for (const ev of events) main.removeEventListener(ev, stop);
+      }, 1600);
+    }
+    // Moving between sections of the same view (a chat thread, a setup tab) from inside it keeps the
+    // reader's place; coming from anywhere else lands on the heading.
+    const inside = this.shadowRoot?.activeElement;
+    if (from === this.route.view && inside && main.contains(inside)) return;
+    this.renderRoot.querySelector<HTMLElement>("#view-heading")?.focus({ preventScroll: true });
+  }
 
   private onConnection = () => {
     this.offline = isOffline();
@@ -271,6 +390,14 @@ export class IncApp extends LitElement {
       const trigger = this.renderRoot?.querySelector?.<HTMLButtonElement>(".all-views-trigger");
       trigger?.focus();
     }
+  };
+
+  /** The link to the page you are already on does not navigate: like the tab bar, it goes to the top. */
+  private onHeaderClick = (e: MouseEvent) => {
+    const a = e.composedPath().find((n): n is HTMLAnchorElement => n instanceof HTMLAnchorElement);
+    if (!a || a.hash !== location.hash) return;
+    const main = this.main();
+    if (main) main.scrollTop = 0;
   };
 
   private toggleAllViews = (e?: Event) => {
@@ -322,10 +449,54 @@ export class IncApp extends LitElement {
   static override styles = [
     base,
     css`
-      header { display: flex; align-items: center; gap: 24px; padding: 12px 32px; }
+      /* The app shell (T40): the whole viewport is one grid. The header (and on phones the tab bar) are
+         rows of it, so they can never scroll away; <main> is the row that scrolls. */
+      :host {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto minmax(0, 1fr);
+        grid-template-areas: "header" "main";
+        height: 100vh;
+        height: 100dvh;
+        overflow: hidden;
+        position: relative;
+        background: var(--ground);
+        color: var(--ink);
+      }
+      header {
+        grid-area: header;
+        position: relative;
+        z-index: 20;
+        display: flex; align-items: center; gap: 24px;
+        padding: calc(12px + env(safe-area-inset-top)) max(32px, calc((100% - 1360px) / 2), env(safe-area-inset-right)) 12px max(32px, calc((100% - 1360px) / 2), env(safe-area-inset-left));
+        border-bottom: 1px solid var(--line);
+        background: var(--ground);
+        -webkit-user-select: none; user-select: none;
+      }
+      /* The one scroller of every ordinary route. */
+      main {
+        grid-area: main;
+        position: relative;
+        min-height: 0;
+        min-width: 0;
+        overflow-x: hidden;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        scrollbar-gutter: stable;
+        scrollbar-width: thin;
+        /* A centred column on wide screens: at least 32px of room, at most 1360px of content. */
+        padding: 20px max(32px, calc((100% - 1360px) / 2), env(safe-area-inset-right)) 28px max(32px, calc((100% - 1360px) / 2), env(safe-area-inset-left));
+      }
+      main:focus, #view-heading:focus { outline: none; }
+      .sr-only {
+        position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
+        clip-path: inset(50%); white-space: nowrap; border: 0;
+      }
+      header a, header button, .tabs button { -webkit-tap-highlight-color: transparent; cursor: pointer; }
       .mark { font-family: var(--display); font-weight: 700; font-size: 28px; letter-spacing: -0.8px; text-decoration: none;
         min-height: 44px; display: inline-flex; align-items: center; }
       nav { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+      .mark, nav a { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
       .pinned-links { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
       nav a { padding: 10px 14px; border-radius: 999px; font-weight: 600; font-size: 15px; text-decoration: none; }
       nav a[aria-current="page"] { background: var(--ink); color: var(--on-ink); }
@@ -371,7 +542,8 @@ export class IncApp extends LitElement {
         left: 0;
         width: 440px;
         max-width: calc(100vw - 32px);
-        max-height: calc(85vh - 60px);
+        max-height: calc(100vh - 110px);
+        max-height: calc(100dvh - 110px);
         overflow-y: auto;
         background: var(--surface);
         border: 1px solid var(--line);
@@ -629,7 +801,6 @@ export class IncApp extends LitElement {
       .icon { width: 44px; height: 44px; flex-shrink: 0; border-radius: 50%; border: 1px solid var(--line); background: transparent;
         color: var(--ink); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
       .sign-out { font-size: 13px; min-height: 36px; padding: 0 14px; }
-      main { padding: 4px 32px 28px; }
       h1.page { font-size: 30px; margin: 4px 0 14px; }
       .more { display: flex; flex-direction: column; gap: 10px; max-width: 560px; padding: 0; margin: 0; list-style: none; }
       .more a { display: flex; flex-direction: column; justify-content: center; gap: 2px; min-height: 64px; box-sizing: border-box;
@@ -638,15 +809,30 @@ export class IncApp extends LitElement {
       .more span { font-size: 14px; color: var(--ink-2); }
       .mobile-view-title { display: none; }
       .sign-out .short-icon { display: none; }
+      /* A narrow desktop window: keep the header to one row, since it no longer scrolls away. */
+      @media (min-width: 901px) and (max-width: 1240px) {
+        header { gap: 10px; padding-left: max(20px, env(safe-area-inset-left)); padding-right: max(20px, env(safe-area-inset-right)); }
+        .mark { font-size: 24px; }
+        nav, .pinned-links { gap: 2px; }
+        nav a { padding: 10px 9px; font-size: 14px; white-space: nowrap; }
+        .all-views-trigger { padding: 8px 10px; white-space: nowrap; }
+        .sign-out { width: 44px; padding: 0; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+        .sign-out .short-icon { display: block; }
+        .sign-out .label {
+          position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
+          clip-path: inset(50%); white-space: nowrap; border: 0;
+        }
+      }
       @media (max-width: 900px) {
+        /* Phones: header, main, tab bar are three rows of the grid. */
+        :host {
+          grid-template-rows: auto minmax(0, 1fr) auto;
+          grid-template-areas: "header" "main" "tabs";
+        }
         header {
-          position: sticky;
-          top: 0;
-          z-index: 10;
-          padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
+          padding: calc(10px + env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 10px max(16px, env(safe-area-inset-left));
           gap: 10px;
           background: var(--surface);
-          border-bottom: 1px solid var(--line);
         }
         @supports ((backdrop-filter: blur(20px)) or (-webkit-backdrop-filter: blur(20px))) and (background: color-mix(in srgb, red, blue)) {
           header {
@@ -685,17 +871,17 @@ export class IncApp extends LitElement {
           .mobile-view-title .long { display: none; }
           .mobile-view-title .short { display: inline; }
         }
-        main { padding: 8px 16px calc(88px + env(safe-area-inset-bottom)); }
+        main { padding: 12px max(16px, env(safe-area-inset-right)) 16px max(16px, env(safe-area-inset-left)); }
         .tabs {
-          position: fixed;
-          inset: auto 0 0 0;
-          z-index: 10;
+          grid-area: tabs;
+          position: relative;
+          z-index: 20;
           display: grid;
           grid-template-columns: repeat(5, 1fr);
           background: var(--surface);
           border-top: 1px solid var(--line);
           box-shadow: 0 -1px 3px rgba(0, 0, 0, 0.02);
-          padding: 4px 4px calc(8px + env(safe-area-inset-bottom));
+          padding: 4px max(4px, env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(4px, env(safe-area-inset-left));
           user-select: none;
           -webkit-user-select: none;
           -webkit-touch-callout: none;
@@ -782,59 +968,47 @@ export class IncApp extends LitElement {
       }
       @media (min-width: 901px) { .tabs { display: none; } }
 
-      /* The chat route: header, then the chat taking all the rest of the viewport, and on a phone the
-         tab bar in the flow below it instead of floating over the page. Nothing here scrolls the page. */
-      :host([fill]) { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
-      :host([fill]) header { flex: none; }
-      :host([fill]) main { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; padding: 4px 32px 20px; }
-      :host([fill]) inc-chat { flex: 1 1 0; min-height: 0; }
+      /* A route that owns its scrolling (the chat) turns <main> into a plain flex box that clips: the
+         route lays its panes out inside it and scrolls them itself. */
+      :host([own-scroll]) main {
+        overflow: hidden;
+        scrollbar-gutter: auto;
+        display: flex;
+        flex-direction: column;
+        padding-top: 16px;
+        padding-bottom: 20px;
+      }
+      :host([own-scroll]) inc-chat { flex: 1 1 0; min-height: 0; }
       @media (max-width: 900px) {
-        :host([fill]) main { padding: 0; }
-        :host([fill]) .tabs { position: static; flex: none; }
+        /* No padding of its own, but the notch's side insets stay (the bars handle top and bottom). */
+        :host([own-scroll]) main { padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left); }
+      }
+      /* Touch screens wider than a phone (a tablet): the "All views" controls get full-size targets. */
+      @media (pointer: coarse) {
+        .all-views-trigger { min-height: 44px; }
+        .close-btn, .reorder-btn { width: 44px; height: 44px; }
+        .reorder-btn { font-size: 12px; }
+        .pin-btn, .reset-btn { min-height: 44px; }
+        .view-link { min-height: 44px; }
       }
     `,
   ];
 
   private navigate(to: string) {
+    if (location.hash === `#/${to}`) {
+      // The tab you are already on: like an app's tab bar, take it back to the top.
+      const main = this.main();
+      if (main) main.scrollTop = 0;
+      return;
+    }
+    // Save the scroll position before the new page replaces this one in <main>.
+    this.leave();
     location.hash = `#/${to}`;
     this.route = parse(location.hash);
   }
 
-  // The mobile header title: the full name, and a short form used on very narrow screens (under 360px)
-  // so it never has to be cut off with an ellipsis.
-  private viewTitle(): { long: string; short: string } {
-    const r = this.route;
-    const same = (t: string) => ({ long: t, short: t });
-    const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
-    switch (r.view) {
-      case "inbox":
-        return same("Inbox");
-      case "office":
-        return same("Office");
-      case "board":
-        return same("Board");
-      case "ticket":
-        return r.id ? { long: `Ticket #${r.id}`, short: `#${r.id}` } : same("Ticket");
-      case "chat":
-        return r.id ? same(cap(r.id)) : same("Chats");
-      case "desk":
-        return { long: "My desk", short: "Desk" };
-      case "handbook":
-      case "brain":
-        return { long: "Company brain", short: "Brain" };
-      case "hiring":
-        return same("Hiring");
-      case "setup":
-        return same(cap(r.section));
-      case "more":
-        return same("More");
-      default:
-        return same("");
-    }
-  }
-
   private mobileTitle() {
-    const t = this.viewTitle();
+    const t = routeName(this.route);
     return html`<span class="mobile-view-title" aria-hidden="true"><span class="long">${t.long}</span><span class="short">${t.short}</span></span>`;
   }
 
@@ -984,7 +1158,7 @@ export class IncApp extends LitElement {
       ><span class="tab-pill" aria-hidden="true">${icon}</span><span class="tab-label">${label}</span></button>`;
 
     return html`
-      <header>
+      <header @click=${this.onHeaderClick}>
         <a class="mark" href="#/office">i.inc</a>
         ${this.mobileTitle()}
         <nav aria-label="Views">
@@ -1033,7 +1207,10 @@ export class IncApp extends LitElement {
           <span class="label">Sign out</span>
         </button>
       </header>
-      <main>${this.offline ? html`<inc-offline></inc-offline>` : this.view()}</main>
+      <main tabindex="-1">
+        <h1 id="view-heading" tabindex="-1" class=${v === "more" ? "page" : "sr-only"}>${routeName(this.route).long}</h1>
+        ${this.offline ? html`<inc-offline></inc-offline>` : this.view()}
+      </main>
       <nav class="tabs" role="tablist" aria-label="Views">
         ${tab("inbox", "Inbox", v === "inbox", inboxIcon)}
         ${tab("office", "Office", v === "office", officeIcon)}
@@ -1061,8 +1238,7 @@ export class IncApp extends LitElement {
       case "ticket":
         return html`<inc-ticket .ticketId=${this.route.id}></inc-ticket>`;
       case "more":
-        return html`<h1 class="page">More</h1>
-          <ul class="more">
+        return html`<ul class="more">
             ${[
               ["desk", "My desk", "Spend, where work waited, releases"],
               [

@@ -1,7 +1,7 @@
 // The chat's message list is the only thing that scrolls. These tests cover the scroll rules: near-bottom
 // detection, following new messages, the "New messages" button, and never scrolling the page.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { hasNewFromOthers, isNearBottom, NEAR_BOTTOM_PX } from "../src/chat-scroll.ts";
+import { hasNewFromOthers, isNearBottom, NEAR_BOTTOM_PX, newFromOthers } from "../src/chat-scroll.ts";
 import { type Entry, IncChat, type Thread } from "../src/components/chat.ts";
 
 describe("isNearBottom", () => {
@@ -212,5 +212,61 @@ describe("chat scrolling", () => {
     expect(state.top).toBe(2000 - 400);
     expect(windowScroll).not.toHaveBeenCalled();
     expect(intoView).not.toHaveBeenCalled();
+  });
+
+  // Screen readers: the list is a log that does not announce by itself (aria-live="off"), so opening or
+  // switching a thread does not read the whole conversation out; a polite status region speaks only
+  // the newest message from someone else.
+  it("keeps the list silent and announces only the newest message from someone else", async () => {
+    const { el, root, msgs } = await mount();
+    const status = root.querySelector('.sr-only[role="status"]') as HTMLElement;
+    expect(msgs.getAttribute("role")).toBe("log");
+    expect(msgs.getAttribute("aria-live")).toBe("off");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(status.textContent?.trim()).toBe("");
+
+    served = [
+      ...served,
+      { from: "owner", at: 9000, text: "my own message" },
+      { from: "employee", at: 9998, text: "first new" },
+      { from: "employee", at: 9999, text: "second new" },
+    ];
+    el.entries = served;
+    await settle(el);
+    expect(status.textContent?.trim()).toBe("Ada: second new");
+    expect(status.textContent).not.toContain("m0");
+
+    // A re-fetch with nothing new, or a switch to another thread, says nothing more.
+    el.entries = served.map((e) => ({ ...e }));
+    await settle(el);
+    expect(status.textContent?.trim()).toBe("Ada: second new");
+    served = thread(10, 7000);
+    el.employeeId = "kit";
+    await settle(el);
+    expect(status.textContent?.trim()).toBe("");
+  });
+
+  it("styles the New messages pill as a surface with an ink ring, so it shows over an owner bubble", () => {
+    const css = (IncChat.styles as unknown as { cssText: string }[]).map((c) => c.cssText).join("\n");
+    const rule = /\.jump\s*\{[^}]*\}/.exec(css)?.[0] ?? "";
+    expect(rule).toContain("background: var(--surface)");
+    expect(rule).toContain("border: 2px solid var(--ink)");
+  });
+
+  it("hides the people strip and thread head on a short phone screen, and keeps them otherwise", () => {
+    const css = (IncChat.styles as unknown as { cssText: string }[]).map((c) => c.cssText).join("\n");
+    expect(css).toMatch(
+      /@media \(max-width: 900px\) and \(max-height: 520px\)\s*\{[^}]*nav\.card, \.head \{ display: none; \}/,
+    );
+  });
+});
+
+describe("newFromOthers", () => {
+  it("lists new messages from others, oldest first, and never the owner's", () => {
+    const a: Entry = { from: "employee", at: 1, text: "a" };
+    const b: Entry = { from: "employee", at: 2, text: "b" };
+    const mine: Entry = { from: "owner", at: 3, text: "c" };
+    expect(newFromOthers([a], [a, b, mine])).toEqual([b]);
+    expect(newFromOthers([], [a, b])).toEqual([a, b]);
   });
 });

@@ -28,12 +28,17 @@ function key(e: Keyed): string {
   return `${e.from}|${e.at}|${e.kind ?? ""}|${e.ticketId ?? ""}|${e.text ?? ""}`;
 }
 
+/** What `next` holds from someone else that `prev` did not, oldest first: replies, draft tickets, errands. */
+export function newFromOthers<T extends Keyed>(prev: readonly Keyed[], next: readonly T[]): T[] {
+  const seen = new Set(prev.map(key));
+  return next.filter((e) => e.from !== "owner" && !seen.has(key(e)));
+}
+
 /**
  * True when `next` holds something from someone else that `prev` did not: a reply, a draft ticket,
  * an errand. The owner's own messages never count (sending always scrolls), and a re-fetch that
  * brings nothing new, or a status change on an existing message, does not either.
  */
 export function hasNewFromOthers(prev: readonly Keyed[], next: readonly Keyed[]): boolean {
-  const seen = new Set(prev.map(key));
-  return next.some((e) => e.from !== "owner" && !seen.has(key(e)));
+  return newFromOthers(prev, next).length > 0;
 }

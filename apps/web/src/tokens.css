@@ -34,6 +34,9 @@
   --bar-ok: #1d5234;
   --bar-warn: #7a4f00;
   --bar-crit: #c4452b;
+  /* Scrollbar thumb: at least 3:1 on the ground and on the surface; darker on hover. */
+  --scroll-thumb: #7d8680;
+  --scroll-thumb-hover: #59625d;
 
   /* Deterministic project badge colors (WCAG AA contrast > 7:1) */
   --proj-0-bg: #e2f0ef;
@@ -119,6 +122,8 @@
     --bar-ok: #48bb78;
     --bar-warn: #e0a32d;
     --bar-crit: #ff6b57;
+    --scroll-thumb: #6b756f;
+    --scroll-thumb-hover: #9aa39d;
     --neutral-bg: #2e3531;
     --neutral-fg: #c9cfc9;
     --screen: #0c0f0d;
@@ -193,6 +198,8 @@
   --bar-ok: #48bb78;
   --bar-warn: #e0a32d;
   --bar-crit: #ff6b57;
+  --scroll-thumb: #6b756f;
+  --scroll-thumb-hover: #9aa39d;
   --neutral-bg: #2e3531;
   --neutral-fg: #c9cfc9;
   --screen: #0c0f0d;
@@ -235,9 +242,14 @@
   color-scheme: dark;
 }
 
+/* The app shell (T40). The document never scrolls: <inc-app> is a grid exactly the height of the
+   viewport (header, main, and on phones the tab bar), and <main> is the one scroll container. */
 html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 html,
 body {
@@ -247,28 +259,12 @@ body {
   font-family: var(--body);
 }
 body {
-  min-height: 100vh;
-}
-
-/* Standalone on a notched phone: keep the shell out of the status bar, the notch and the home bar.
-   The bottom inset is handled where the tab bar is. */
-body {
-  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
-  box-sizing: border-box;
-}
-
-/* A route that fills the screen (the chat) pins the document to the viewport so only its inner panes
-   scroll. 100vh first, for browsers without dynamic viewport units. */
-html[data-fill],
-html[data-fill] body {
+  height: 100%;
   overflow: hidden;
+  overscroll-behavior: none;
 }
-html[data-fill] body {
-  min-height: 0;
-  height: 100vh;
-}
-@supports (height: 100dvh) {
-  html[data-fill] body {
-    height: 100dvh;
-  }
+/* The themed scrollbar, thin, for the page's one scroller (<main>) and the inner panes. Mirrored in
+   the shell's own styles, since shadow roots do not inherit these rules. */
+html {
+  scrollbar-color: var(--scroll-thumb) transparent;
 }
