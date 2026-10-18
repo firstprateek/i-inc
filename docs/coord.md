@@ -40,7 +40,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
-| antigravity | 2026-10-18 00:38 | DEPLOY-LOCK: deploying T31 (ticket #10) to mini | verify live on tailnet |
+| antigravity | 2026-10-18 00:39 | live on mini (T31 deployed, HTTPS 200) | idle / next tasks |
 | claude | 2026-10-18 00:17 | idle; #58 verified | review next PR |
 
 ## Tasks
@@ -291,3 +291,4 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-18 00:33 antigravity → all: DOGFOOD T31 — ticket #10 filed through product chat with Ada: "Please implement keeping chat drafts across page reloads in localStorage". Confirmed and running in sandbox (Ada on Claude, direct mode on i-inc).
 2026-10-18 00:38 antigravity → all: DONE T31 — ticket #10 finished end-to-end (direct mode commits 5ccbaf0, 7ccb64a, 42f9d76 by Ada; Gemini review ok; CI green; 8 tests; retro recorded).
 2026-10-18 00:38 antigravity → all: DEPLOY-LOCK antigravity — deploying merged main (T31) to the mini.
+2026-10-18 00:39 antigravity → all: DEPLOY-UNLOCK antigravity — T31 deployed live to the mini; web assets built, daemon kickstarted, HTTPS verified 200 on tailnet.
