@@ -22,6 +22,7 @@ interface Draft {
   followUpsPerDay: string;
   checks: string[];
   autoRelease: boolean;
+  defaultBranch?: string | undefined;
 }
 
 const fromProject = (p: Project): Draft => ({
@@ -31,6 +32,7 @@ const fromProject = (p: Project): Draft => ({
   followUpsPerDay: String(p.followUpsPerDay ?? policyDefaults.followUpsPerDay),
   checks: [...p.checks],
   autoRelease: p.autoRelease ?? policyDefaults.autoRelease,
+  ...(p.defaultBranch ? { defaultBranch: p.defaultBranch } : {}),
 });
 
 export class IncSetupProjects extends Loader<Project[]> {
@@ -338,6 +340,7 @@ export class IncSetupProjects extends Loader<Project[]> {
         protectedPaths: d.protectedPaths.map((x) => x.trim()).filter(Boolean),
         followUpsPerDay: perDay,
         autoRelease: d.autoRelease,
+        ...(d.defaultBranch ? { defaultBranch: d.defaultBranch } : {}),
       });
       const { [p.id]: _gone, ...rest } = this.drafts;
       this.drafts = rest;
@@ -437,11 +440,19 @@ export class IncSetupProjects extends Loader<Project[]> {
       <div class="seg" role="group" aria-label="Add Mode">
         <button type="button" aria-pressed=${this.addTab === "import" ? "true" : "false"}
           @click=${() => {
-            this.addTab = "import";
+            if (this.addTab !== "import") {
+              this.addTab = "import";
+              this.detectedInfo = null;
+              this.addNote = undefined;
+            }
           }}>Import from GitHub</button>
         <button type="button" aria-pressed=${this.addTab === "bootstrap" ? "true" : "false"}
           @click=${() => {
-            this.addTab = "bootstrap";
+            if (this.addTab !== "bootstrap") {
+              this.addTab = "bootstrap";
+              this.detectedInfo = null;
+              this.addNote = undefined;
+            }
           }}>Start new project</button>
       </div>
 

@@ -276,6 +276,74 @@ describe("projects", () => {
     expect(root.textContent).toContain("Saved");
   });
 
+  it("preserves defaultBranch when saving a project that specifies one", async () => {
+    serve();
+    const p = projects[0];
+    if (p) p.defaultBranch = "develop";
+    const root = await mount("inc-setup-projects");
+    const card = await openProject(root, "Duet");
+    button(card, "Direct").click();
+    await settle(root.host);
+    button(card, "Save").click();
+    await settle(root.host);
+    const put = calls.find((c) => c.method === "PUT");
+    expect(put?.url).toBe("/api/projects/Duet");
+    expect(put?.body).toMatchObject({
+      defaultBranch: "develop",
+    });
+    if (p) delete p.defaultBranch;
+  });
+
+  it("resets detectedInfo when switching between Import and Start tabs", async () => {
+    serve();
+    const root = await mount("inc-setup-projects");
+    button(root, "+ Add a project").click();
+    await settle(root.host);
+
+    const addCard = root.querySelector(".add-card");
+    const selectBtn = [...(addCard?.querySelectorAll("button") ?? [])].find(
+      (b) => b.textContent === "Select",
+    ) as HTMLButtonElement | undefined;
+    selectBtn?.click();
+    await settle(root.host);
+
+    const inst = root.host as unknown as { detectedInfo: unknown; addTab: string };
+    expect(inst.detectedInfo).not.toBeNull();
+
+    // Switch to Start tab
+    const startTab = [...(addCard?.querySelectorAll(".seg button") ?? [])].find(
+      (b) => b.textContent === "Start new project",
+    ) as HTMLButtonElement | undefined;
+    startTab?.click();
+    await settle(root.host);
+
+    expect(inst.detectedInfo).toBeNull();
+  });
+
+  it("exempts upstream GitHub routes from triggering isGatewayDown offline panel", async () => {
+    const { send } = await import("../src/api.ts");
+    const { isOffline } = await import("../src/connection.ts");
+
+    // Stub fetch returning 424 Failed Dependency on github route
+    vi.stubGlobal(
+      "fetch",
+      async () => new Response(JSON.stringify({ error: "Upstream failure" }), { status: 424 }),
+    );
+
+    const res = await send("/api/github/repos");
+    expect(res.status).toBe(424);
+    expect(isOffline()).toBe(false);
+
+    // Stub fetch returning 502 on upstream github route (exempt from taking app offline)
+    vi.stubGlobal(
+      "fetch",
+      async () => new Response(JSON.stringify({ error: "Upstream 502" }), { status: 502 }),
+    );
+    const res502 = await send("/api/github/repos");
+    expect(res502.status).toBe(502);
+    expect(isOffline()).toBe(false);
+  });
+
   it("refuses an empty recipe without calling the daemon", async () => {
     serve();
     const root = await mount("inc-setup-projects");

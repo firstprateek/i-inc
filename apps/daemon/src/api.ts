@@ -28,6 +28,7 @@ import type { Daemon, DaemonDeps } from "./daemon.ts";
 import {
   bootstrapRepo,
   inspectRepo,
+  isValidBranch,
   isValidRepo,
   listInstallationRepos,
   UpstreamGitHubError,
@@ -63,14 +64,21 @@ type Handler = (req: Request, params: Record<string, string>) => Promise<Respons
 function mapUpstreamError(e: unknown): { status: number; error: string } {
   if (e instanceof UpstreamGitHubError) {
     if (e.status === 504 || (e as { code?: string }).code === "ETIMEDOUT") {
-      return { status: 504, error: "upstream GitHub service timed out" };
+      return { status: 424, error: "upstream GitHub service timed out" };
     }
     if (e.status === 429) {
-      return { status: 503, error: "upstream GitHub rate limit exceeded" };
+      return { status: 424, error: "upstream GitHub rate limit exceeded" };
     }
-    return { status: 502, error: "upstream GitHub service failure" };
+    return { status: 424, error: "upstream GitHub service failure" };
   }
-  return { status: 502, error: "failed to communicate with GitHub" };
+  return { status: 424, error: "failed to communicate with GitHub" };
+}
+
+function githubLogMsg(e: unknown): string {
+  if (e instanceof UpstreamGitHubError) {
+    return `${e.method} ${e.endpoint} -> HTTP ${e.status}`;
+  }
+  return e instanceof Error ? e.message : String(e);
 }
 
 const inFlightBootstraps = new Set<string>();
@@ -496,8 +504,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         if (d.registry.projects().some((p) => p.id.toLowerCase() === normId && p.id !== id)) {
           return json({ error: `project ID "${id}" conflicts with an existing project` }, 409);
         }
-        if (typeof body.repo !== "string" || !/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(body.repo)) {
-          return json({ error: "repo must be owner/name on GitHub" }, 400);
+        if (typeof body.repo !== "string" || !isValidRepo(body.repo)) {
+          return json({ error: "repo must be valid owner/name on GitHub" }, 400);
         }
         if (!checks.length || !checks.every((c) => typeof c === "string" && c.trim())) {
           return json({ error: "checks must be the recipe's commands, in order" }, 400);
@@ -507,12 +515,9 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         }
         if (
           body.defaultBranch !== undefined &&
-          (typeof body.defaultBranch !== "string" ||
-            !body.defaultBranch.trim() ||
-            body.defaultBranch.length > 100 ||
-            !/^[A-Za-z0-9_.-]+$/.test(body.defaultBranch))
+          (typeof body.defaultBranch !== "string" || !isValidBranch(body.defaultBranch))
         ) {
-          return json({ error: "defaultBranch must be a valid branch name up to 100 characters" }, 400);
+          return json({ error: "defaultBranch must be a valid git branch name up to 100 characters" }, 400);
         }
         const paths = body.protectedPaths;
         if (
@@ -528,6 +533,11 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         if (body.autoRelease !== undefined && typeof body.autoRelease !== "boolean") {
           return json({ error: "autoRelease must be a boolean" }, 400);
         }
+        const existingProj = d.registry.project(id);
+        const defaultBranch =
+          typeof body.defaultBranch === "string" && body.defaultBranch.trim()
+            ? body.defaultBranch.trim()
+            : existingProj?.defaultBranch;
         d.registry.addProject({
           id,
           repo: body.repo,
@@ -536,7 +546,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           ...(paths ? { protectedPaths: paths as string[] } : {}),
           ...(perDay !== undefined ? { followUpsPerDay: perDay as number } : {}),
           ...(body.autoRelease !== undefined ? { autoRelease: body.autoRelease } : {}),
-          ...(typeof body.defaultBranch === "string" ? { defaultBranch: body.defaultBranch.trim() } : {}),
+          ...(defaultBranch ? { defaultBranch } : {}),
         });
         return json({ project: d.registry.project(id), policy: d.registry.projectPolicy(id) });
       },
@@ -562,7 +572,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           const repos = await listInstallationRepos(d.tokens, registered);
           return json({ repos });
         } catch (e) {
-          console.error("[github] failed to list repos:", e);
+          console.error(`[github] failed to list repos: ${githubLogMsg(e)}`);
           const { status, error } = mapUpstreamError(e);
           return json({ error, repos: [] }, status);
         }
@@ -591,7 +601,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           const result = await inspectRepo(d.tokens, owner, name);
           return json(result);
         } catch (e) {
-          console.error("[github] failed to inspect repo:", e);
+          console.error(`[github] failed to inspect repo: ${githubLogMsg(e)}`);
           const { status, error } = mapUpstreamError(e);
           return json({ error }, status);
         }
@@ -617,81 +627,78 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           return json({ error: `project "${id}" already exists` }, 409);
         }
 
-        const body = (await req.json().catch(() => ({}))) as {
-          repo?: unknown;
-          mode?: unknown;
-          template?: unknown;
-          description?: unknown;
-          employees?: unknown;
-          checks?: unknown;
-          protectedPaths?: unknown;
-          autoRelease?: unknown;
-          force?: unknown;
-          defaultBranch?: unknown;
-        };
-
-        if (typeof body.repo !== "string" || !isValidRepo(body.repo)) {
-          return json({ error: "repo must be valid owner/name on GitHub" }, 400);
-        }
-        const repo = body.repo;
-
-        if (body.mode !== undefined && body.mode !== "direct" && body.mode !== "owner-merges") {
-          return json({ error: 'mode must be "direct" or "owner-merges"' }, 400);
-        }
-        const mode = body.mode === "owner-merges" ? "owner-merges" : "direct";
-
-        if (
-          body.description !== undefined &&
-          (typeof body.description !== "string" || body.description.length > 500)
-        ) {
-          return json({ error: "description must be a string up to 500 characters" }, 400);
-        }
-
-        if (
-          body.defaultBranch !== undefined &&
-          (typeof body.defaultBranch !== "string" ||
-            !body.defaultBranch.trim() ||
-            body.defaultBranch.length > 100 ||
-            !/^[A-Za-z0-9_.-]+$/.test(body.defaultBranch))
-        ) {
-          return json({ error: "defaultBranch must be a valid branch name up to 100 characters" }, 400);
-        }
-
-        if (body.checks !== undefined) {
-          if (
-            !Array.isArray(body.checks) ||
-            body.checks.length > 20 ||
-            body.checks.some((c) => typeof c !== "string" || c.length > 200)
-          ) {
-            return json(
-              { error: "checks must be an array of at most 20 strings, up to 200 characters each" },
-              400,
-            );
-          }
-        }
-
-        if (body.protectedPaths !== undefined) {
-          if (
-            !Array.isArray(body.protectedPaths) ||
-            body.protectedPaths.length > 50 ||
-            body.protectedPaths.some((p) => typeof p !== "string" || p.length > 200)
-          ) {
-            return json(
-              { error: "protectedPaths must be an array of at most 50 strings, up to 200 characters each" },
-              400,
-            );
-          }
-        }
-
-        if (body.template !== undefined) {
-          const validTemplates = ["ts-node", "web", "python", "minimal"];
-          if (typeof body.template !== "string" || !validTemplates.includes(body.template)) {
-            return json({ error: `template must be one of: ${validTemplates.join(", ")}` }, 400);
-          }
-        }
-
         inFlightBootstraps.add(normalizedId);
         try {
+          const body = (await req.json().catch(() => ({}))) as {
+            repo?: unknown;
+            mode?: unknown;
+            template?: unknown;
+            description?: unknown;
+            employees?: unknown;
+            checks?: unknown;
+            protectedPaths?: unknown;
+            autoRelease?: unknown;
+            force?: unknown;
+            defaultBranch?: unknown;
+          };
+
+          if (typeof body.repo !== "string" || !isValidRepo(body.repo)) {
+            return json({ error: "repo must be valid owner/name on GitHub" }, 400);
+          }
+          const repo = body.repo;
+
+          if (body.mode !== undefined && body.mode !== "direct" && body.mode !== "owner-merges") {
+            return json({ error: 'mode must be "direct" or "owner-merges"' }, 400);
+          }
+          const mode = body.mode === "owner-merges" ? "owner-merges" : "direct";
+
+          if (
+            body.description !== undefined &&
+            (typeof body.description !== "string" || body.description.length > 500)
+          ) {
+            return json({ error: "description must be a string up to 500 characters" }, 400);
+          }
+
+          if (
+            body.defaultBranch !== undefined &&
+            (typeof body.defaultBranch !== "string" || !isValidBranch(body.defaultBranch))
+          ) {
+            return json({ error: "defaultBranch must be a valid git branch name up to 100 characters" }, 400);
+          }
+
+          if (body.checks !== undefined) {
+            if (
+              !Array.isArray(body.checks) ||
+              body.checks.length > 20 ||
+              body.checks.some((c) => typeof c !== "string" || c.length > 200)
+            ) {
+              return json(
+                { error: "checks must be an array of at most 20 strings, up to 200 characters each" },
+                400,
+              );
+            }
+          }
+
+          if (body.protectedPaths !== undefined) {
+            if (
+              !Array.isArray(body.protectedPaths) ||
+              body.protectedPaths.length > 50 ||
+              body.protectedPaths.some((p) => typeof p !== "string" || p.length > 200)
+            ) {
+              return json(
+                { error: "protectedPaths must be an array of at most 50 strings, up to 200 characters each" },
+                400,
+              );
+            }
+          }
+
+          if (body.template !== undefined) {
+            const validTemplates = ["ts-node", "web", "python", "minimal"];
+            if (typeof body.template !== "string" || !validTemplates.includes(body.template)) {
+              return json({ error: `template must be one of: ${validTemplates.join(", ")}` }, 400);
+            }
+          }
+
           if (d.tokens) {
             try {
               const registered = d.registry.projects().map((p) => p.repo);
@@ -704,7 +711,9 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
                 );
               }
             } catch (e) {
-              console.error("[github] failed to verify repo accessibility before bootstrap:", e);
+              console.error(
+                `[github] failed to verify repo accessibility before bootstrap: ${githubLogMsg(e)}`,
+              );
               const { status, error } = mapUpstreamError(e);
               return json({ error }, status);
             }
@@ -738,7 +747,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
                 );
               }
             } catch (e) {
-              console.error("[github] failed to inspect repo before bootstrap:", e);
+              console.error(`[github] failed to inspect repo before bootstrap: ${githubLogMsg(e)}`);
               const { status, error } = mapUpstreamError(e);
               return json({ error }, status);
             }
@@ -753,7 +762,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
               bootstrapped = res.bootstrapped;
               commits = res.commits;
             } catch (e) {
-              console.error("[github] failed to bootstrap repo:", e);
+              console.error(`[github] failed to bootstrap repo: ${githubLogMsg(e)}`);
               const { status } = mapUpstreamError(e);
               return json({ error: "failed to bootstrap starter files in repository" }, status);
             }

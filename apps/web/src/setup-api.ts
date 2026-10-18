@@ -23,6 +23,7 @@ export interface Project {
   protectedPaths?: string[];
   followUpsPerDay?: number;
   autoRelease?: boolean;
+  defaultBranch?: string;
 }
 
 export interface ProjectBody {
@@ -32,6 +33,7 @@ export interface ProjectBody {
   protectedPaths: string[];
   followUpsPerDay: number;
   autoRelease: boolean;
+  defaultBranch?: string;
 }
 
 export interface GitHubRepoSummary {

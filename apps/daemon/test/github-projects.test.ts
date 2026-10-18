@@ -3,9 +3,11 @@ import { createApi } from "../src/api.ts";
 import {
   bootstrapRepo,
   inspectRepo,
+  isValidBranch,
   isValidRepo,
   listInstallationRepos,
   type TokenSource,
+  UpstreamGitHubError,
 } from "../src/github.ts";
 import { testApp } from "./setup.ts";
 
@@ -488,11 +490,11 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
           headers: { host: "i.inc", authorization: `Bearer ${token}` },
         }),
       );
-      expect(res401.status).toBe(502);
+      expect(res401.status).toBe(424);
       const body401 = (await res401.json()) as { error: string };
       expect(body401.error).toBe("upstream GitHub service failure");
 
-      // 2. Upstream 429 mapped to 503
+      // 2. Upstream 429 mapped to 424
       globalThis.fetch = (async () => {
         return new Response(JSON.stringify({ message: "API rate limit exceeded" }), {
           status: 429,
@@ -506,11 +508,11 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
           headers: { host: "i.inc", authorization: `Bearer ${token}` },
         }),
       );
-      expect(res429.status).toBe(503);
+      expect(res429.status).toBe(424);
       const body429 = (await res429.json()) as { error: string };
       expect(body429.error).toBe("upstream GitHub rate limit exceeded");
 
-      // 3. Upstream timeout/abort mapped to 504
+      // 3. Upstream timeout/abort mapped to 424
       globalThis.fetch = (async (_url: string | URL | Request, _init?: RequestInit) => {
         const error = new Error("The operation was aborted");
         error.name = "AbortError";
@@ -523,7 +525,7 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
           headers: { host: "i.inc", authorization: `Bearer ${token}` },
         }),
       );
-      expect(resTimeout.status).toBe(504);
+      expect(resTimeout.status).toBe(424);
       const bodyTimeout = (await resTimeout.json()) as { error: string };
       expect(bodyTimeout.error).toBe("upstream GitHub service timed out");
     } finally {
@@ -634,5 +636,253 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it("validates git branches strictly per git-check-ref-format rules", () => {
+    // Valid branches
+    expect(isValidBranch("main")).toBe(true);
+    expect(isValidBranch("master")).toBe(true);
+    expect(isValidBranch("develop")).toBe(true);
+    expect(isValidBranch("feature/user-auth")).toBe(true);
+    expect(isValidBranch("release/v1.0.0")).toBe(true);
+    expect(isValidBranch("fix_123")).toBe(true);
+
+    // Invalid branches
+    expect(isValidBranch("")).toBe(false);
+    expect(isValidBranch("@")).toBe(false);
+    expect(isValidBranch("-x")).toBe(false);
+    expect(isValidBranch("--all")).toBe(false);
+    expect(isValidBranch("..")).toBe(false);
+    expect(isValidBranch("x.lock")).toBe(false);
+    expect(isValidBranch("feature/x.lock")).toBe(false);
+    expect(isValidBranch("feature/.x")).toBe(false);
+    expect(isValidBranch("feature/-x")).toBe(false);
+    expect(isValidBranch("feature//branch")).toBe(false);
+    expect(isValidBranch("feature@{1}")).toBe(false);
+    expect(isValidBranch("feat?name")).toBe(false);
+    expect(isValidBranch("feat:name")).toBe(false);
+    expect(isValidBranch("feat*")).toBe(false);
+    expect(isValidBranch("feat\\slash")).toBe(false);
+    expect(isValidBranch("a".repeat(101))).toBe(false);
+  });
+
+  it("ensures UpstreamGitHubError detail property is non-enumerable", () => {
+    const err = new UpstreamGitHubError(403, "GET", "/repos/owner/secret", "Bearer ghs_CANARY12345");
+    const keys = Object.keys(err);
+    expect(keys).not.toContain("detail");
+    const json = JSON.stringify(err);
+    expect(json).not.toContain("ghs_CANARY12345");
+    expect(err.detail).toBe("Bearer ghs_CANARY12345");
+  });
+
+  it("synchronously serializes concurrent bootstraps of the same project ID and rejects duplicates with 409", async () => {
+    const originalFetch = globalThis.fetch;
+    const app = await testApp();
+    const token = "test-auth-token";
+    const apiHandler = createApi(
+      app.daemon,
+      { ...app.deps, tokens: fakeTokenSource },
+      { token, hosts: ["i.inc"] },
+    );
+
+    try {
+      globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+        const u = String(url);
+        if (u.includes("/installation/repositories")) {
+          return new Response(
+            JSON.stringify({
+              repositories: [
+                {
+                  id: 1,
+                  name: "concurrent-repo",
+                  full_name: "firstprateek/concurrent-repo",
+                  owner: { login: "firstprateek" },
+                  private: true,
+                  default_branch: "main",
+                  description: "Concurrent repo",
+                  language: "TypeScript",
+                  size: 0,
+                  pushed_at: null,
+                },
+              ],
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
+        }
+        if (u.endsWith("/repos/firstprateek/concurrent-repo")) {
+          return new Response(JSON.stringify({ default_branch: "main", size: 0, pushed_at: null }), {
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (init?.method === "PUT") {
+          return new Response(JSON.stringify({ content: { sha: "abc123" } }), { status: 201 });
+        }
+        return new Response("Not found", { status: 404 });
+      }) as unknown as typeof fetch;
+
+      // Send 5 concurrent requests with casing variations of the same project ID
+      const ids = [
+        "concurrent-proj",
+        "Concurrent-Proj",
+        "CONCURRENT-PROJ",
+        "concurrent-Proj",
+        "Concurrent-proj",
+      ];
+      const requests = ids.map((id) =>
+        apiHandler(
+          new Request(`http://i.inc/api/projects/${id}/bootstrap`, {
+            method: "POST",
+            headers: {
+              host: "i.inc",
+              authorization: `Bearer ${token}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              repo: "firstprateek/concurrent-repo",
+              template: "minimal",
+            }),
+          }),
+        ),
+      );
+
+      const responses = await Promise.all(requests);
+      const statuses = responses.map((r) => r.status);
+      const successCount = statuses.filter((s) => s === 201).length;
+      const conflictCount = statuses.filter((s) => s === 409).length;
+
+      expect(successCount).toBe(1);
+      expect(conflictCount).toBe(4);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("handles existing file sha when resuming partial bootstrap with force: true", async () => {
+    let putAttempts = 0;
+    let getShaAttempts = 0;
+
+    const fakeFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url);
+      if (init?.method === "PUT") {
+        putAttempts++;
+        const body = JSON.parse(String(init.body)) as { sha?: string };
+        // For README.md, first PUT attempt returns 422 because file already exists and sha was omitted
+        if (u.includes("README.md") && !body.sha) {
+          return new Response(JSON.stringify({ message: 'Invalid request.\n\n"sha" wasn\'t supplied.' }), {
+            status: 422,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        // Second PUT with sha (and other new files) succeeds
+        return new Response(JSON.stringify({ content: { sha: "updated-sha-456" } }), { status: 200 });
+      }
+      if (u.includes("/contents/README.md") && init?.method === "GET") {
+        getShaAttempts++;
+        return new Response(JSON.stringify({ sha: "existing-sha-123" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("Not found", { status: 404 });
+    }) as unknown as typeof fetch;
+
+    const res = await bootstrapRepo(
+      fakeTokenSource,
+      {
+        repo: "firstprateek/resume-repo",
+        template: "minimal",
+        defaultBranch: "main",
+      },
+      { fetch: fakeFetch, api: "https://mock.github" },
+    );
+
+    expect(res.bootstrapped).toBe(true);
+    expect(getShaAttempts).toBeGreaterThanOrEqual(1);
+    expect(putAttempts).toBeGreaterThanOrEqual(2);
+  });
+
+  it("propagates upstream errors when reading package.json in inspectRepo", async () => {
+    const fakeFetch = (async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.endsWith("/repos/org/fail-repo")) {
+        return new Response(
+          JSON.stringify({ default_branch: "main", size: 500, pushed_at: "2026-10-18T00:00:00Z" }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (u.endsWith("/repos/org/fail-repo/contents")) {
+        return new Response(JSON.stringify([{ name: "package.json", type: "file" }]), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (u.endsWith("/repos/org/fail-repo/contents/package.json")) {
+        return new Response(JSON.stringify({ message: "Internal server error" }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("Not found", { status: 404 });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      inspectRepo(fakeTokenSource, "org", "fail-repo", { fetch: fakeFetch, api: "https://mock.github" }),
+    ).rejects.toThrow();
+  });
+
+  it("preserves existing defaultBranch on project PUT and enforces isValidRepo and isValidBranch", async () => {
+    const app = await testApp();
+    const token = "test-auth-token";
+    const apiHandler = createApi(app.daemon, app.deps, { token, hosts: ["i.inc"] });
+
+    // Seed existing project with defaultBranch: "develop"
+    app.deps.registry.addProject({
+      id: "my-branch-proj",
+      repo: "firstprateek/branch-repo",
+      checks: ["pnpm test"],
+      defaultBranch: "develop",
+    });
+
+    // 1. PUT without defaultBranch must preserve "develop"
+    const resSave = await apiHandler(
+      new Request("http://i.inc/api/projects/my-branch-proj", {
+        method: "PUT",
+        headers: { host: "i.inc", authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          repo: "firstprateek/branch-repo",
+          checks: ["pnpm test", "pnpm check"],
+          mode: "direct",
+        }),
+      }),
+    );
+    expect(resSave.status).toBe(200);
+    const updated = app.deps.registry.project("my-branch-proj");
+    expect(updated?.defaultBranch).toBe("develop");
+
+    // 2. Reject invalid repo with 400
+    const resBadRepo = await apiHandler(
+      new Request("http://i.inc/api/projects/my-branch-proj", {
+        method: "PUT",
+        headers: { host: "i.inc", authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          repo: "firstprateek/..",
+          checks: ["pnpm test"],
+        }),
+      }),
+    );
+    expect(resBadRepo.status).toBe(400);
+
+    // 3. Reject invalid branch with 400
+    const resBadBranch = await apiHandler(
+      new Request("http://i.inc/api/projects/my-branch-proj", {
+        method: "PUT",
+        headers: { host: "i.inc", authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          repo: "firstprateek/branch-repo",
+          checks: ["pnpm test"],
+          defaultBranch: "-x",
+        }),
+      }),
+    );
+    expect(resBadBranch.status).toBe(400);
   });
 });

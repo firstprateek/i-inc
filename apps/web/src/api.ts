@@ -75,7 +75,8 @@ export async function send(path: string, init?: RequestInit): Promise<Response> 
     report(false);
     throw new Error("Can't reach i.inc");
   }
-  report(!isGatewayDown(res.status));
+  const isUpstream = path.startsWith("/api/github/") || path.includes("/bootstrap");
+  report(!isGatewayDown(res.status) || isUpstream);
   return res;
 }
 

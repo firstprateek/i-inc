@@ -78,14 +78,24 @@ function sanitizedEndpoint(url: string): string {
 
 /** Structured error representing an upstream GitHub HTTP failure without leaking secrets or IDs. */
 export class UpstreamGitHubError extends Error {
-  constructor(
-    public readonly status: number,
-    public readonly method: string,
-    public readonly endpoint: string,
-    public readonly detail = "",
-  ) {
+  public readonly status: number;
+  public readonly method: string;
+  public readonly endpoint: string;
+  public readonly detail: string;
+
+  constructor(status: number, method: string, endpoint: string, detail = "") {
     super(`GitHub ${method} ${endpoint} failed with HTTP ${status}`);
     this.name = "UpstreamGitHubError";
+    this.status = status;
+    this.method = method;
+    this.endpoint = endpoint;
+    this.detail = detail;
+    Object.defineProperty(this, "detail", {
+      value: detail,
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    });
   }
 }
 
@@ -113,14 +123,20 @@ async function call(
     });
 
     let body: Record<string, unknown> = {};
-    try {
-      body = (await res.json()) as Record<string, unknown>;
-    } catch (_parseErr) {
-      if (controller.signal.aborted || init.signal?.aborted) {
-        throw new UpstreamGitHubError(504, method, sanitized, "timeout reading response body");
-      }
-      if (res.ok) {
-        throw new UpstreamGitHubError(502, method, sanitized, "invalid json from GitHub API");
+    const text = await res.text();
+    if (text.trim()) {
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed === "object") {
+          body = parsed as Record<string, unknown>;
+        }
+      } catch (_parseErr) {
+        if (controller.signal.aborted || init.signal?.aborted) {
+          throw new UpstreamGitHubError(504, method, sanitized, "timeout reading response body");
+        }
+        if (res.ok) {
+          throw new UpstreamGitHubError(502, method, sanitized, "invalid json from GitHub API");
+        }
       }
     }
 
@@ -161,6 +177,31 @@ export function isValidRepo(repo: string): boolean {
   if (name.endsWith(".git")) return false;
   if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(owner)) return false;
   if (!/^[A-Za-z0-9_.-]{1,100}$/.test(name)) return false;
+  return true;
+}
+
+/**
+ * Strictly validates a git branch / refname per git-check-ref-format rules.
+ * Disallows leading/trailing dots/slashes/dashes, double dots/slashes, .lock, controls, and shell metacharacters.
+ */
+export function isValidBranch(branch: string): boolean {
+  if (typeof branch !== "string") return false;
+  const b = branch.trim();
+  if (!b || b.length > 100) return false;
+  if (b === "@") return false;
+  if (b.startsWith("-") || b.startsWith(".") || b.startsWith("/")) return false;
+  if (b.endsWith(".") || b.endsWith("/") || b.endsWith(".lock")) return false;
+  if (b.includes("..") || b.includes("//") || b.includes("@{") || b.includes("\\")) return false;
+  for (let i = 0; i < b.length; i++) {
+    const code = b.charCodeAt(i);
+    if (code <= 32 || code === 127) return false;
+  }
+  if (/[~^:?*[]/.test(b)) return false;
+  const parts = b.split("/");
+  for (const part of parts) {
+    if (!part) return false;
+    if (part.startsWith(".") || part.endsWith(".lock") || part.startsWith("-")) return false;
+  }
   return true;
 }
 
@@ -594,8 +635,12 @@ export async function inspectRepo(
       if (!scripts.check && !scripts.typecheck && !scripts.test && scripts.build) {
         checks.push(`${runner} build`);
       }
-    } catch {
-      checks.push(hasBunLock ? "bun test" : "pnpm test");
+    } catch (err) {
+      if (err instanceof SyntaxError) {
+        checks.push(hasBunLock ? "bun test" : "pnpm test");
+      } else {
+        throw err;
+      }
     }
 
     if (checks.length === 1) {
@@ -693,19 +738,20 @@ export async function bootstrapRepo(
       ? opts.description.trim()
       : "Project managed by i.inc";
   const description = rawDesc.slice(0, 500);
-  const sanitizeToml = (s: string) =>
-    s
-      .replace(/\0/g, "")
-      .replace(/\\/g, "\\\\")
-      .replace(/"/g, '\\"')
-      .replace(/[\r\n\t]/g, " ")
-      .slice(0, 500);
+  const sanitizeToml = (s: string) => {
+    let clean = "";
+    for (let i = 0; i < s.length; i++) {
+      const code = s.charCodeAt(i);
+      clean += code < 32 || code === 127 ? " " : s[i];
+    }
+    return clean.replace(/\\/g, "\\\\").replace(/"/g, '\\"').trim().slice(0, 500);
+  };
 
   const tomlDesc = sanitizeToml(description);
   const tomlName = sanitizeToml(name).slice(0, 100);
 
   const rawBranch = typeof opts.defaultBranch === "string" ? opts.defaultBranch.trim() : "";
-  const defaultBranch = rawBranch && /^[A-Za-z0-9_.-]{1,100}$/.test(rawBranch) ? rawBranch : undefined;
+  const defaultBranch = rawBranch && isValidBranch(rawBranch) ? rawBranch : undefined;
 
   const files: Record<string, string> = {};
 
@@ -805,15 +851,55 @@ export async function bootstrapRepo(
   let commits = 0;
   for (const [path, content] of Object.entries(files)) {
     const encoded = Buffer.from(content, "utf8").toString("base64");
-    await call(f, `${api}/repos/${repo}/contents/${path}`, {
-      method: "PUT",
-      headers: authHeader,
-      body: JSON.stringify({
-        message: `Initialize ${path} (i.inc scaffold)`,
-        content: encoded,
-        ...(defaultBranch ? { branch: defaultBranch } : {}),
-      }),
-    });
+    const putFile = async (sha?: string) => {
+      const putRes = await call(f, `${api}/repos/${repo}/contents/${path}`, {
+        method: "PUT",
+        headers: authHeader,
+        body: JSON.stringify({
+          message: `Initialize ${path} (i.inc scaffold)`,
+          content: encoded,
+          ...(defaultBranch ? { branch: defaultBranch } : {}),
+          ...(sha ? { sha } : {}),
+        }),
+      });
+      if (!putRes || typeof putRes !== "object" || (!putRes.commit && !putRes.content)) {
+        throw new UpstreamGitHubError(
+          502,
+          "PUT",
+          `/repos/[owner]/[repo]/contents/${path}`,
+          "empty or invalid commit response",
+        );
+      }
+      return putRes;
+    };
+
+    try {
+      await putFile();
+    } catch (err) {
+      if (err instanceof UpstreamGitHubError && (err.status === 422 || err.status === 409)) {
+        // File already exists (e.g. from previous partial bootstrap); fetch existing SHA and retry PUT with SHA
+        let existingSha: string | undefined;
+        try {
+          const existing = await call(
+            f,
+            `${api}/repos/${repo}/contents/${path}${defaultBranch ? `?ref=${encodeURIComponent(defaultBranch)}` : ""}`,
+            { method: "GET", headers: authHeader },
+          );
+          if (typeof existing.sha === "string") {
+            existingSha = existing.sha;
+          }
+        } catch {
+          // If fetching existing SHA fails, rethrow the original PUT error
+        }
+        if (existingSha) {
+          await putFile(existingSha);
+        } else {
+          throw err;
+        }
+      } else {
+        throw err;
+      }
+    }
     commits++;
   }
 
