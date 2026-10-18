@@ -102,6 +102,20 @@ describe("hiring", () => {
     expect(chips).toEqual(["opencode", "local"]);
   });
 
+  it("keeps the engine creator inside its card and gives phones 44px targets", () => {
+    // jsdom has no layout, so this guards the rules; the widths were measured in a real browser.
+    const ctor = customElements.get("inc-hiring") as unknown as { styles: Array<{ cssText?: string }> };
+    const sheet = ctor.styles.map((x) => x.cssText ?? "").join("\n");
+    expect(sheet).toMatch(
+      /\.custom-engine-grid\s*\{[^}]*repeat\(auto-fit,\s*minmax\(min\(100%,\s*220px\),\s*1fr\)\)/,
+    );
+    expect(sheet).toMatch(/\.custom-engine-grid > \*\s*\{[^}]*min-width:\s*0/);
+    expect(sheet).toMatch(/\.custom-engine-grid input[^{]*\{[^}]*max-width:\s*100%/);
+    const phone = sheet.match(/@media \(max-width: 900px\)\s*\{([^@]*)\}\s*$/)?.[1] ?? "";
+    expect(phone).toMatch(/\.btn\.small\s*\{[^}]*min-height:\s*44px/);
+    expect(phone).toMatch(/\.note-link\s*\{[^}]*min-height:\s*44px/);
+  });
+
   it("creates a Codex engine on its account without a local badge or stale model default", async () => {
     serve();
     const root = await mount();

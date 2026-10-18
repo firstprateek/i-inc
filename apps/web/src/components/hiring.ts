@@ -12,6 +12,7 @@ import {
   harnessOptions,
   setupApi,
 } from "../setup-api.ts";
+import { LAYOUT_BREAKPOINTS } from "./layout.ts";
 import { base } from "./shared.ts";
 
 export const standardRoles = [
@@ -436,9 +437,13 @@ export class IncHiring extends LitElement {
         box-sizing: border-box; width: 100%; max-width: 100%; min-width: 0;
       }
       .custom-engine-box h4 { margin: 0; font-size: 14px; color: var(--ink); }
-      .custom-engine-grid { display: grid; grid-template-columns: 1fr; gap: 10px; width: 100%; min-width: 0; box-sizing: border-box; }
+      /* Fields share a row only when each gets 220px; a card narrower than that stacks them. */
+      .custom-engine-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 10px; width: 100%; min-width: 0; box-sizing: border-box; }
+      .custom-engine-grid > * { min-width: 0; }
       .custom-engine-grid label { width: 100%; min-width: 0; box-sizing: border-box; }
+      .custom-engine-grid input, .custom-engine-grid select { width: 100%; max-width: 100%; min-width: 0; }
       .custom-engine-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
+      .note-link { display: inline-flex; align-items: center; }
       .team { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
       .team li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
       .team li:first-child { border-top: none; }
@@ -466,6 +471,12 @@ export class IncHiring extends LitElement {
         .rows .muted { margin-bottom: 8px; }
         .submit { flex-wrap: wrap; }
         .submit .btn { flex: 1 1 auto; }
+      }
+      /* Phone: every control in the engine creator and prompt block is a 44px target (docs/layout.md). */
+      @media (max-width: ${LAYOUT_BREAKPOINTS.phone}px) {
+        .btn.small { min-height: 44px; padding: 0 16px; font-size: 14px; }
+        .note-link { display: flex; min-height: 44px; padding: 0; }
+        .engine-header { flex-wrap: wrap; gap: 8px; }
       }
     `,
   ];
@@ -605,7 +616,7 @@ export class IncHiring extends LitElement {
                     </select>
                   </label>
                 </div>
-                ${this.newHarness === "codex" ? html`<p class="note">Codex signs in on each team sandbox using a host helper. i.inc never asks for a Codex token. <a href="https://github.com/firstprateek/i-inc/blob/main/docs/codex.md" target="_blank" rel="noreferrer">Owner sign-in instructions</a>.</p>` : ""}
+                ${this.newHarness === "codex" ? html`<p class="note">Codex signs in on each team sandbox using a host helper. i.inc never asks for a Codex token. <a class="note-link" href="https://github.com/firstprateek/i-inc/blob/main/docs/codex.md" target="_blank" rel="noreferrer">Owner sign-in instructions</a></p>` : ""}
                 <div class="custom-engine-actions">
                   <button type="button" class="btn small" ?disabled=${!this.newModel.trim() || this.busy} @click=${() => this.createCustomEngine()}>
                     ${this.busy ? "Saving…" : "Save & select engine"}
