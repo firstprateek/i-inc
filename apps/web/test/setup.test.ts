@@ -13,9 +13,11 @@ const json = (body: unknown, status = 200) =>
 const engines = [
   { id: "opus", harness: "claude-code", model: "Claude Opus", accountId: "claude-pro", local: false },
   { id: "qwen", harness: "opencode", model: "qwen3", accountId: "local", local: true },
+  { id: "codex-main", harness: "codex", model: "owner-entered-model", accountId: "codex-pro", local: true },
 ];
 const accounts = [
   { id: "claude-pro", name: "Claude Pro", monthlyFee: 20, monthlyCap: 50 },
+  { id: "codex-pro", name: "Codex subscription" },
   { id: "local", name: "Local" },
 ];
 const teams: Team[] = [
@@ -53,7 +55,12 @@ const sandboxes: Sandbox[] = [
 ];
 
 function serve(
-  opts: { sandboxes?: "ok" | "404" | "fail"; putFails?: string; githubReposFails?: boolean } = {},
+  opts: {
+    sandboxes?: "ok" | "404" | "fail";
+    codexSignedIn?: boolean;
+    putFails?: string;
+    githubReposFails?: boolean;
+  } = {},
 ) {
   calls = [];
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
@@ -110,7 +117,10 @@ function serve(
     if (url === "/api/sandboxes") {
       if (opts.sandboxes === "404") return json({ error: "not found" }, 404);
       if (opts.sandboxes === "fail") return new Response("<html>nope</html>", { status: 500 });
-      return json({ sandboxes });
+      const rows = opts.codexSignedIn
+        ? sandboxes.map((s, i) => (i === 0 ? { ...s, signedIn: { ...s.signedIn, codex: true } } : s))
+        : sandboxes;
+      return json({ sandboxes: rows });
     }
     return json({ ok: true });
   });
@@ -500,9 +510,11 @@ describe("engines and accounts", () => {
     expect(rows.map((r) => r.getAttribute("title"))).toEqual([
       "Claude Opus · claude-code",
       "qwen3 · opencode · local",
+      "owner-entered-model · codex",
     ]);
     expect([...(rows[1]?.querySelectorAll(".chip") ?? [])].map((c) => c.textContent)).toEqual(["local"]);
     expect(rows[0]?.querySelector(".chip")).toBeNull();
+    expect(rows[2]?.querySelector(".chip")).toBeNull();
     expect(rows[0]?.textContent).toContain("Claude Pro");
     const cap = root.querySelector('input[aria-label="Monthly cap for Claude Pro"]') as HTMLInputElement;
     expect(cap.value).toBe("50");
@@ -534,6 +546,37 @@ describe("engines and accounts", () => {
     });
   });
 
+  it("adds a Codex engine to its account and never marks it local", async () => {
+    serve();
+    const root = await mount("inc-setup-engines");
+    const form = root.querySelector('section[aria-label="Add an engine"]') as HTMLElement;
+    await type(root, form.querySelector('[name="engine-id"]') as Element, "codex-main");
+    await type(root, form.querySelector('[name="engine-model"]') as Element, "owner-entered-model");
+    const harness = form.querySelector('[name="engine-harness"]') as HTMLSelectElement;
+    harness.value = "opencode";
+    harness.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(root.host);
+    const local = form.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    local.click();
+    await settle(root.host);
+    expect(local.checked).toBe(true);
+    harness.value = "codex";
+    harness.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(root.host);
+    const account = form.querySelector('[name="engine-account"]') as HTMLSelectElement;
+    account.value = "codex-pro";
+    account.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(local.disabled).toBe(true);
+    expect(local.checked).toBe(false);
+    await settle(root.host);
+    button(form, "Add engine").click();
+    await settle(root.host);
+    expect(calls.find((c) => c.method === "PUT")).toMatchObject({
+      url: "/api/engines/codex-main",
+      body: { harness: "codex", model: "owner-entered-model", accountId: "codex-pro", local: false },
+    });
+  });
+
   it("adds an account, and saves a cap without losing the fee", async () => {
     serve();
     const root = await mount("inc-setup-engines");
@@ -559,6 +602,22 @@ describe("engines and accounts", () => {
     });
   });
 
+  it("adds a Codex subscription account without asking for credentials", async () => {
+    serve();
+    const root = await mount("inc-setup-engines");
+    const form = root.querySelector('section[aria-label="Add an account"]') as HTMLElement;
+    await type(root, form.querySelector('[name="account-id"]') as Element, "codex-subscription");
+    await type(root, form.querySelector('[name="account-name"]') as Element, "Codex subscription");
+    button(form, "Add account").click();
+    await settle(root.host);
+    expect(calls.find((c) => c.method === "PUT")).toMatchObject({
+      url: "/api/accounts/codex-subscription",
+      body: { name: "Codex subscription" },
+    });
+    expect(form.querySelector('input[type="password"]')).toBeNull();
+    expect(form.textContent).not.toMatch(/token|secret|password/i);
+  });
+
   it("rejects a bad id before calling the daemon", async () => {
     serve();
     const root = await mount("inc-setup-engines");
@@ -582,7 +641,18 @@ describe("sandboxes", () => {
       "Claude: signed in",
       "Antigravity: not signed in",
       "GitHub: signed in",
+      "Codex: not signed in",
     ]);
+    expect(root.textContent).toContain("sh tools/host/sign-in-codex.sh engineering");
+    expect(root.querySelector('a[href*="docs/codex.md"]')?.textContent).toBe("Owner sign-in instructions");
+  });
+
+  it("shows Codex signed in when the optional status is true", async () => {
+    serve({ codexSignedIn: true });
+    const root = await mount("inc-setup-sandboxes");
+    const [engineering] = [...root.querySelectorAll("section.card")];
+    expect(engineering?.textContent).toContain("Codex: signed in");
+    expect(engineering?.textContent).not.toContain("sign-in-codex.sh");
   });
 
   it("shows an error state as an error", async () => {

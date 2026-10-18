@@ -35,7 +35,7 @@ describe("AppleMachines.inspectSandbox", () => {
       state: "missing",
       cpus: 6,
       memory: "12G",
-      signedIn: { claude: false, antigravity: false, github: false },
+      signedIn: { claude: false, antigravity: false, codex: false, github: false },
     });
     expect(calls).toEqual([{ bin: defaultMachineSettings.bin, args: ["machine", "ls"] }]);
   });
@@ -51,7 +51,7 @@ describe("AppleMachines.inspectSandbox", () => {
       if (args[1] === "ls") return listing;
       if (args[1] === "run") {
         // Mock probe output where claude and github are signed in
-        return "claude\ngithub\n";
+        return "claude\ncodex\ngithub\n";
       }
       return "";
     };
@@ -64,7 +64,7 @@ describe("AppleMachines.inspectSandbox", () => {
       state: "running",
       cpus: 6,
       memory: "12G",
-      signedIn: { claude: true, antigravity: false, github: true },
+      signedIn: { claude: true, antigravity: false, codex: true, github: true },
     });
 
     expect(calls).toHaveLength(2);
@@ -83,12 +83,16 @@ describe("AppleMachines.inspectSandbox", () => {
     ]);
     expect(calls[1]?.input).toContain("~/.claude/.credentials.json");
     expect(calls[1]?.input).toContain("~/.gemini/antigravity-acp/acp_token.json");
+    expect(calls[1]?.input).toContain("codex login status >/dev/null 2>&1 && echo codex");
+    // Codex is installed under ~/.local/bin, which non-login bash doesn't have on its PATH.
+    expect(calls[1]?.input).toMatch(/^export PATH="\$HOME\/\.local\/bin:\$PATH"; /);
     expect(calls[1]?.input).toContain("~/.config/gh/hosts.yml");
 
     // Check signedInCache was populated
     expect(m.signedInCache.get("inc-engineering")).toEqual({
       claude: true,
       antigravity: false,
+      codex: true,
       github: true,
     });
   });
@@ -113,17 +117,17 @@ describe("AppleMachines.inspectSandbox", () => {
       state: "stopped",
       cpus: 6,
       memory: "12G",
-      signedIn: { claude: false, antigravity: false, github: false },
+      signedIn: { claude: false, antigravity: false, codex: false, github: false },
     });
 
     // Never booted or probed!
     expect(calls).toEqual([{ bin: defaultMachineSettings.bin, args: ["machine", "ls"] }]);
 
     // If cache is set (e.g. from a prior ensureUp), uses the cached signedIn
-    m.signedInCache.set("inc-engineering", { claude: true, antigravity: true, github: false });
+    m.signedInCache.set("inc-engineering", { claude: true, antigravity: true, codex: true, github: false });
     calls.length = 0;
     const status2 = await m.inspectSandbox("engineering", { cpus: 6, memory: "12G" });
-    expect(status2.signedIn).toEqual({ claude: true, antigravity: true, github: false });
+    expect(status2.signedIn).toEqual({ claude: true, antigravity: true, codex: true, github: false });
     expect(calls).toEqual([{ bin: defaultMachineSettings.bin, args: ["machine", "ls"] }]);
   });
 
@@ -148,7 +152,7 @@ describe("AppleMachines.inspectSandbox", () => {
       state: "running",
       cpus: 6,
       memory: "12G",
-      signedIn: { claude: false, antigravity: false, github: false },
+      signedIn: { claude: false, antigravity: false, codex: false, github: false },
     });
     // Only machine ls was called
     expect(calls).toEqual([{ bin: defaultMachineSettings.bin, args: ["machine", "ls"] }]);

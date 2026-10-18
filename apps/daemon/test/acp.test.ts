@@ -34,6 +34,14 @@ const claude: Engine = {
   local: false,
 };
 
+const codex: Engine = {
+  id: "codex-engine",
+  harness: "codex",
+  model: "gpt-5-codex",
+  accountId: "openai-chatgpt",
+  local: false,
+};
+
 /** A fake ACP server: `script` answers each request; `sent` records what the client wrote. */
 function server(script: Script) {
   const stdin = new PassThrough();
@@ -270,6 +278,328 @@ describe("an ACP session", () => {
     ]);
   });
 
+  it("sets the configured Codex model, requested effort, and full-access mode before prompting", async () => {
+    const activeOptions = [
+      {
+        id: "model",
+        category: "model",
+        type: "select",
+        currentValue: codex.model,
+        options: [{ value: codex.model, name: "GPT-5 Codex" }],
+      },
+      {
+        id: "reasoning_effort",
+        category: "thought_level",
+        type: "select",
+        currentValue: "low",
+        options: ["low", "medium", "high"].map((value) => ({ value, name: value })),
+      },
+      {
+        id: "mode",
+        category: "mode",
+        type: "select",
+        currentValue: "workspace-write",
+        options: [
+          { value: "read-only", name: "Read only" },
+          { value: "workspace-write", name: "Workspace write" },
+          { value: "agent-full-access", name: "Full access" },
+        ],
+      },
+    ];
+    const s = server((method, _params, reply, id) => {
+      if (method === "initialize") reply({ id, result: { protocolVersion: 1, agentCapabilities: {} } });
+      if (method === "session/new") {
+        reply({
+          id,
+          result: {
+            sessionId: "s1",
+            configOptions: activeOptions.map((option) => ({ ...option, currentValue: "other" })),
+          },
+        });
+      }
+      if (method === "session/set_config_option") {
+        const configId = String((_params as Json).configId);
+        const value = String((_params as Json).value);
+        if (configId === "model") reply({ id, result: { configOptions: activeOptions } });
+        else
+          reply({
+            id,
+            result: { configOptions: activeOptions.map((option) => ({ ...option, currentValue: value })) },
+          });
+      }
+      if (method === "session/prompt") {
+        reply(update("agent_message_chunk", { content: { type: "text", text: "Codex report." } }));
+        reply(update("tool_call", { toolCallId: "edit-1", title: "Edit report.md", status: "pending" }));
+        reply(update("tool_call_update", { toolCallId: "edit-1", status: "completed" }));
+        setTimeout(() => reply({ id, result: { stopReason: "end_turn" } }), 5);
+      }
+    });
+    const transcript: NonNullable<SessionRequest["onTranscriptItem"]> extends (item: infer T) => void
+      ? T[]
+      : never[] = [];
+    const result = await agent(s).run(
+      request({ engine: codex, onTranscriptItem: (item) => transcript.push(item) }),
+    );
+
+    expect(result).toEqual({ kind: "done", output: "Codex report." });
+    expect(
+      s.sent
+        .filter((message) => message.method === "session/set_config_option")
+        .map((message) => message.params),
+    ).toEqual([
+      { sessionId: "s1", configId: "model", value: codex.model },
+      { sessionId: "s1", configId: "reasoning_effort", value: "medium" },
+      { sessionId: "s1", configId: "mode", value: "agent-full-access" },
+    ]);
+    expect(s.sent.find((message) => message.method === "session/prompt")).toBeDefined();
+    expect(transcript).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "text", text: "Codex report." }),
+        expect.objectContaining({ kind: "tool", id: "edit-1", status: "pending" }),
+        expect.objectContaining({ kind: "tool", id: "edit-1", status: "completed" }),
+      ]),
+    );
+  });
+
+  it("fails clearly when Codex doesn't advertise the configured model or effort", async () => {
+    const options = [
+      {
+        id: "model",
+        category: "model",
+        type: "select",
+        currentValue: "default",
+        options: [{ value: "other", name: "Other" }],
+      },
+      {
+        id: "reasoning_effort",
+        category: "thought_level",
+        type: "select",
+        currentValue: "low",
+        options: [{ value: "low", name: "Low" }],
+      },
+      {
+        id: "mode",
+        category: "mode",
+        type: "select",
+        currentValue: "workspace-write",
+        options: [{ value: "agent-full-access", name: "Full access" }],
+      },
+    ];
+    const s = server((method, _params, reply, id) => {
+      if (method === "initialize") reply({ id, result: { protocolVersion: 1 } });
+      if (method === "session/new") reply({ id, result: { sessionId: "s1", configOptions: options } });
+    });
+    expect(await agent(s).run(request({ engine: codex }))).toEqual({
+      kind: "stuck",
+      reason: "Codex ACP doesn't offer the configured model gpt-5-codex",
+    });
+    expect(s.sent.some((message) => message.method === "session/prompt")).toBe(false);
+
+    const effortServer = server((method, params, reply, id) => {
+      if (method === "initialize") reply({ id, result: { protocolVersion: 1 } });
+      if (method === "session/new")
+        reply({
+          id,
+          result: {
+            sessionId: "s1",
+            configOptions: [
+              {
+                id: "model",
+                category: "model",
+                type: "select",
+                currentValue: "other",
+                options: [{ value: codex.model, name: codex.model }],
+              },
+              {
+                id: "reasoning_effort",
+                category: "thought_level",
+                type: "select",
+                currentValue: "low",
+                options: [{ value: "low", name: "Low" }],
+              },
+              {
+                id: "mode",
+                category: "mode",
+                type: "select",
+                currentValue: "agent-full-access",
+                options: [{ value: "agent-full-access", name: "Full access" }],
+              },
+            ],
+          },
+        });
+      if (method === "session/set_config_option" && params.configId === "model")
+        reply({
+          id,
+          result: {
+            configOptions: [
+              {
+                id: "model",
+                category: "model",
+                type: "select",
+                currentValue: codex.model,
+                options: [{ value: codex.model, name: codex.model }],
+              },
+              {
+                id: "reasoning_effort",
+                category: "thought_level",
+                type: "select",
+                currentValue: "low",
+                options: [{ value: "low", name: "Low" }],
+              },
+              {
+                id: "mode",
+                category: "mode",
+                type: "select",
+                currentValue: "agent-full-access",
+                options: [{ value: "agent-full-access", name: "Full access" }],
+              },
+            ],
+          },
+        });
+    });
+    expect(await agent(effortServer).run(request({ engine: codex }))).toEqual({
+      kind: "stuck",
+      reason: "Codex ACP doesn't offer the configured medium reasoning effort",
+    });
+    expect(effortServer.sent.some((message) => message.method === "session/prompt")).toBe(false);
+  });
+
+  it("fails closed when Codex rejects a required ACP config selection", async () => {
+    const s = server((method, _params, reply, id) => {
+      if (method === "initialize") reply({ id, result: { protocolVersion: 1 } });
+      if (method === "session/new")
+        reply({
+          id,
+          result: {
+            sessionId: "s1",
+            configOptions: [
+              {
+                id: "model",
+                category: "model",
+                type: "select",
+                currentValue: "other",
+                options: [{ value: codex.model, name: codex.model }],
+              },
+              {
+                id: "reasoning_effort",
+                category: "thought_level",
+                type: "select",
+                currentValue: "medium",
+                options: [{ value: "medium", name: "Medium" }],
+              },
+              {
+                id: "mode",
+                category: "mode",
+                type: "select",
+                currentValue: "agent-full-access",
+                options: [{ value: "agent-full-access", name: "Full access" }],
+              },
+            ],
+          },
+        });
+      if (method === "session/set_config_option")
+        reply({ id, error: { code: -32602, message: "model selection rejected" } });
+    });
+    expect(await agent(s).run(request({ engine: codex }))).toEqual({
+      kind: "stuck",
+      reason: "Codex ACP couldn't select model gpt-5-codex: model selection rejected",
+    });
+    expect(s.sent.some((message) => message.method === "session/prompt")).toBe(false);
+  });
+
+  it("redacts tokens and control characters from upstream config errors and caps them at 200 characters", async () => {
+    const noisy = `bad\u0007 token ghp_abc123SECRET and Bearer eyJhbGci.tail and sk-live-xyz\nsecond line ${"z".repeat(400)}`;
+    const s = server((method, _params, reply, id) => {
+      if (method === "initialize") reply({ id, result: { protocolVersion: 1 } });
+      if (method === "session/new")
+        reply({
+          id,
+          result: {
+            sessionId: "s1",
+            configOptions: [
+              {
+                id: "model",
+                category: "model",
+                type: "select",
+                currentValue: "other",
+                options: [{ value: codex.model, name: codex.model }],
+              },
+            ],
+          },
+        });
+      if (method === "session/set_config_option") reply({ id, error: { code: -32602, message: noisy } });
+    });
+    const out = await agent(s).run(request({ engine: codex }));
+    expect(out.kind).toBe("stuck");
+    const reason = out.kind === "stuck" ? out.reason : "";
+    expect(reason).toContain(
+      "Codex ACP couldn't select model gpt-5-codex: bad token [redacted] and [redacted] and [redacted] second line z",
+    );
+    expect(reason).not.toMatch(/ghp_|eyJhbGci|sk-live/);
+    expect(reason).not.toContain("\u0007");
+    expect(reason).not.toContain("\n");
+    // the upstream part alone is at most 200 characters
+    expect(reason.length).toBeLessThanOrEqual("Codex ACP couldn't select model gpt-5-codex: ".length + 200);
+  });
+
+  it("reports Codex sign-in failure as actionable and maps usage-limit errors to fallback outcomes", async () => {
+    const auth = server((method, _params, reply, id) => {
+      if (method === "initialize")
+        reply({ id, result: { protocolVersion: 1, authMethods: [{ id: "chatgpt" }] } });
+      if (method === "session/new")
+        reply({ id, error: { code: -32000, message: "Authentication required" } });
+    });
+    expect(await agent(auth).run(request({ engine: codex }))).toEqual({
+      kind: "stuck",
+      reason: "codex needs a sign-in in Ada's machine",
+    });
+
+    const limited = server((method, _params, reply, id) => {
+      if (method === "initialize") reply({ id, result: { protocolVersion: 1 } });
+      if (method === "session/new")
+        reply({
+          id,
+          result: {
+            sessionId: "s1",
+            configOptions: [
+              {
+                id: "model",
+                category: "model",
+                type: "select",
+                currentValue: codex.model,
+                options: [{ value: codex.model, name: codex.model }],
+              },
+              {
+                id: "reasoning_effort",
+                category: "thought_level",
+                type: "select",
+                currentValue: "medium",
+                options: [{ value: "medium", name: "Medium" }],
+              },
+              {
+                id: "mode",
+                category: "mode",
+                type: "select",
+                currentValue: "agent-full-access",
+                options: [{ value: "agent-full-access", name: "Full access" }],
+              },
+            ],
+          },
+        });
+      if (method === "session/prompt")
+        reply({
+          id,
+          error: { code: -32603, message: "usageLimitExceeded: subscription usage limit reached" },
+        });
+    });
+    const rateLimits: { accountId: string; limit: AccountRateLimit }[] = [];
+    const out = await agent(limited, [], rateLimits).run(request({ engine: codex }));
+    expect(out).toMatchObject({ kind: "out-of-tokens", resetsAt: 3_601_000 });
+    expect(rateLimits).toEqual([
+      { accountId: codex.accountId, limit: { status: "rejected", resetsAt: 3_601_000, updatedAt: 1_000 } },
+    ]);
+  });
+
   it("treats a limit error with no reset time (Antigravity) as out of tokens for an hour and emits onRateLimit", async () => {
     const s = server(
       claudeLike((reply, id) => reply({ id, error: { code: -32603, message: "429 RESOURCE_EXHAUSTED" } })),
@@ -431,6 +761,26 @@ describe("Apple container machines", () => {
     expect(call?.args.join(" ")).not.toContain("sk-token");
     expect(call?.env.CLAUDE_CODE_OAUTH_TOKEN).toBe(token);
     expect(call?.env.I_INC_CWD).toBe("/home/employee/work/inc-1");
+  });
+
+  it("starts Codex with the dedicated ACP launcher", () => {
+    const seen: string[][] = [];
+    const launch = machineLaunch(noWalls, (_bin, args) => {
+      seen.push(args);
+      return Object.assign(new EventEmitter(), {
+        stdin: new PassThrough(),
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+        kill: () => true,
+      }) as unknown as ChildProcessWithoutNullStreams;
+    });
+    launch({
+      employeeId: "ada",
+      engine: { ...claude, id: "codex", harness: "codex" },
+      cwd: "/home/employee/work/inc-1",
+      env: {},
+    });
+    expect(seen[0]?.at(-1)).toBe("acp-codex");
   });
 
   it("refuses a variable name that isn't one, and an employee id that isn't one", () => {

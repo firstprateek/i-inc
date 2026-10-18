@@ -55,7 +55,7 @@ export class FakeMachines implements MachineProvider {
   readonly started: Id[] = [];
   readonly stopped: Id[] = [];
   readonly callbacks: { teamId: Id; url: string }[] = [];
-  sandboxSignIns?: Record<Id, { claude: boolean; antigravity: boolean; github: boolean }>;
+  sandboxSignIns?: Record<Id, { claude: boolean; antigravity: boolean; codex: boolean; github: boolean }>;
   teamMembers?: Record<Id, Id[]> | ((team: Id) => Id[]);
   sandboxStates?: Record<Id, "running" | "stopped" | "missing">;
 
@@ -79,6 +79,7 @@ export class FakeMachines implements MachineProvider {
     const signedIn = this.sandboxSignIns?.[team] ?? {
       claude: true,
       antigravity: false,
+      codex: false,
       github: true,
     };
     if (this.sandboxStates?.[team]) {

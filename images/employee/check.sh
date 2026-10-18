@@ -7,6 +7,8 @@
 # It needs no credentials: each harness only has to answer ACP's initialize.
 set -uo pipefail
 failed=0
+# Non-login bash, like the daemon's: the npm globals (Codex) live in ~/.local/bin.
+export PATH="$HOME/.local/bin:$PATH"
 pass() { echo "✓ $*"; }
 fail() {
   echo "✗ $*"
@@ -24,6 +26,7 @@ try() {
 [ "$HOME" = /home/employee ] && pass "HOME is /home/employee" || fail "HOME is $HOME"
 sudo -n true </dev/null 2>/dev/null && pass "sudo needs no password" || fail "sudo asks for a password"
 [ ! -e "$HOME/.claude/.credentials.json" ] && [ ! -e "$HOME/.gemini/antigravity-acp" ] &&
+  [ ! -e "$HOME/.codex/auth.json" ] &&
   pass "no credentials in the image" || fail "credentials in the image"
 
 try node node --version
@@ -32,6 +35,8 @@ try git git --version
 try gh gh --version
 try "Claude's ACP adapter" node -p \
   'require("/usr/local/lib/node_modules/@agentclientprotocol/claude-agent-acp/package.json").version'
+try "Codex's ACP adapter" codex-acp --version
+try "Codex CLI" codex --version
 try opencode opencode --version
 try "the Antigravity CLI" "$HOME/.local/bin/agy" --version
 try "Claude Code, for the sign-in" claude --version
@@ -41,6 +46,14 @@ if grep -q '"loggedIn": false' <<<"$status"; then
   pass "Claude isn't signed in yet: once per machine, with tools/host/sign-in-claude.sh"
 else
   fail "Claude is signed in already, in the image"
+fi
+codex_status=$(codex login status </dev/null 2>&1 || true)
+if grep -Eiq 'not logged in|no authentication' <<<"$codex_status"; then
+  pass "Codex isn't signed in yet: once per team, with tools/host/sign-in-codex.sh"
+elif grep -Eiq 'logged in using (chatgpt|api key)' <<<"$codex_status"; then
+  fail "Codex is signed in already, in the image"
+else
+  fail "Codex login status was not understood"
 fi
 [ -x "$HOME/.local/share/agy-acp-server/agy_acp_server.par" ] &&
   pass "Antigravity's ACP server is there" || fail "Antigravity's ACP server is missing"
@@ -61,7 +74,7 @@ if systemctl is-active --quiet docker.service; then fail "dockerd started at boo
 try "Docker, started by its socket" docker version --format '{{.Server.Version}}'
 
 # Each launcher must make its folder, start there, and answer initialize.
-for launcher in acp-claude acp-antigravity acp-opencode; do
+for launcher in acp-claude acp-antigravity acp-opencode acp-codex; do
   dir="$HOME/work/imagecheck-$launcher"
   node - "$launcher" "$dir" <<'JS'
 const { spawn } = require("node:child_process");

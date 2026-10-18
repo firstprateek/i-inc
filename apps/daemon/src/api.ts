@@ -81,6 +81,9 @@ function githubLogMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** What a model id may be: 1 to 100 of these characters, so no control characters or line breaks. */
+const validModel = /^[A-Za-z0-9._:/@+ -]{1,100}$/;
+
 const inFlightBootstraps = new Set<string>();
 
 export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) {
@@ -257,7 +260,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       "/api/engines/:id",
       async (req, { id = "" }) => {
         const b = (await req.json()) as Partial<Engine>;
-        const harnesses: AgentHarness[] = ["claude-code", "antigravity", "opencode"];
+        const harnesses: AgentHarness[] = ["claude-code", "antigravity", "opencode", "codex"];
         if (!/^[a-z0-9-]{1,40}$/.test(id))
           return json({ error: "an engine id is lowercase letters, digits and dashes" }, 400);
         const existing = d.registry.engines().find((e) => e.id === id);
@@ -267,11 +270,28 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         }
         const model = b.model ?? existing?.model;
         if (typeof model !== "string" || !model.trim()) return json({ error: "model names the model" }, 400);
+        // A model id from the owner (or a script) ends up in prompts, ACP calls and stuck reasons, so
+        // it's checked for every harness. A stored engine that the request doesn't touch is left alone.
+        if (b.model !== undefined && !validModel.test(model)) {
+          return json(
+            {
+              error:
+                "model must be 1 to 100 characters of letters, digits, spaces and . _ : / @ + - (no line breaks or other control characters)",
+            },
+            400,
+          );
+        }
         const accountId = b.accountId ?? existing?.accountId;
         if (typeof accountId !== "string" || !d.registry.accounts().some((a) => a.id === accountId)) {
           return json({ error: "accountId must be an account added with PUT /api/accounts/:id" }, 400);
         }
         const local = b.local !== undefined ? b.local === true : (existing?.local ?? false);
+        if (harness === "codex" && local) {
+          if (existing && existing.harness !== "codex") {
+            return json({ error: "Codex runs in the cloud and cannot be local; turn off Local first" }, 400);
+          }
+          return json({ error: "Codex is a cloud harness and cannot be marked local" }, 400);
+        }
         d.registry.addEngine({
           id,
           harness,
@@ -354,7 +374,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
               state: "error",
               cpus: size.cpus,
               memory: size.memory,
-              signedIn: { claude: false, antigravity: false, github: false },
+              signedIn: { claude: false, antigravity: false, codex: false, github: false },
             });
             continue;
           }
@@ -367,7 +387,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
               state: "error",
               cpus: size.cpus,
               memory: size.memory,
-              signedIn: { claude: false, antigravity: false, github: false },
+              signedIn: { claude: false, antigravity: false, codex: false, github: false },
             });
           }
         }

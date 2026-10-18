@@ -6,7 +6,7 @@ import type { TicketState } from "./state.ts";
 
 /** Home data goes only to local engines (spec §7). Errands are the tickets that carry it. */
 export function engineAllowed(ticket: Ticket, engine: Engine): boolean {
-  return ticket.type !== "errand" || engine.local;
+  return ticket.type !== "errand" || (engine.local && engine.harness !== "codex");
 }
 
 /** The engine for this duty right now: a switch rule's override wins, then the duty's engine, then the default. */

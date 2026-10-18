@@ -112,6 +112,9 @@ export class Registry implements Company {
     this.put("employee", e.id, { ...e, tint });
   }
   addEngine(e: Engine): void {
+    if (e.harness === "codex" && e.local) {
+      throw new Error("Codex is a cloud harness and cannot be marked local");
+    }
     this.put("engine", e.id, e);
   }
   addAccount(a: AccountCost): void {

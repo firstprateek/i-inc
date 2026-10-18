@@ -11,9 +11,9 @@
 #     user that matches the host's;
 #   - Node, pnpm, git, gh, and Docker, which starts on first use rather than at boot;
 #   - the harnesses: Claude's ACP adapter, which carries Claude Code's own binary (also `claude`, for
-#     signing the machine in), Antigravity's CLI and ACP server, and OpenCode, pinned to local
-#     models through the relay;
-#   - the launchers acp-claude, acp-antigravity and acp-opencode, one word each, because
+#     signing the machine in), Antigravity's CLI and ACP server, OpenCode pinned to local models
+#     through the relay, and Codex's pinned ACP adapter and CLI;
+#   - the launchers acp-claude, acp-antigravity, acp-opencode and acp-codex, one word each, because
 #     `machine run` re-splits its arguments. Each makes $I_INC_CWD and starts there.
 #
 # No credentials: each machine signs in once at hiring, and GitHub's token arrives per session with
@@ -27,6 +27,8 @@ ARG PNPM_VERSION=10.34.5
 ARG CLAUDE_ACP_VERSION=0.81.2
 ARG OPENCODE_VERSION=1.18.32
 ARG AGY_ACP_VERSION=1.2.1
+ARG CODEX_ACP_VERSION=2.2.2
+ARG CODEX_CLI_VERSION=0.160.1
 
 ENV container=container
 
@@ -76,7 +78,9 @@ RUN npm install -g --no-fund --no-audit \
       --allow-scripts=opencode-ai --strict-allow-scripts \
       "pnpm@$PNPM_VERSION" \
       "@agentclientprotocol/claude-agent-acp@$CLAUDE_ACP_VERSION" \
-      "opencode-ai@$OPENCODE_VERSION" && \
+      "opencode-ai@$OPENCODE_VERSION" \
+      "@agentclientprotocol/codex-acp@$CODEX_ACP_VERSION" \
+      "@openai/codex@$CODEX_CLI_VERSION" && \
     npm cache clean --force
 
 # `claude` is the Claude Code that Claude's adapter carries, for signing the machine in once
@@ -102,9 +106,9 @@ RUN userdel --remove ubuntu && \
 # Named one by one: Apple's builder silently skipped a whole-directory COPY. The ls fails the build
 # if they're missing.
 COPY acp-env.sh /usr/local/lib/i-inc/acp-env.sh
-COPY launchers/acp-claude launchers/acp-antigravity launchers/acp-opencode /usr/local/bin/
-RUN chmod 755 /usr/local/bin/acp-claude /usr/local/bin/acp-antigravity /usr/local/bin/acp-opencode && \
-    ls -l /usr/local/bin/acp-claude /usr/local/bin/acp-antigravity /usr/local/bin/acp-opencode
+COPY launchers/acp-claude launchers/acp-antigravity launchers/acp-opencode launchers/acp-codex /usr/local/bin/
+RUN chmod 755 /usr/local/bin/acp-claude /usr/local/bin/acp-antigravity /usr/local/bin/acp-opencode /usr/local/bin/acp-codex && \
+    ls -l /usr/local/bin/acp-claude /usr/local/bin/acp-antigravity /usr/local/bin/acp-opencode /usr/local/bin/acp-codex
 COPY opencode.json /home/employee/.config/opencode/opencode.json
 # Commits say "Co-Authored-By: Claude", without the model's name (Claude Code adds it by default).
 COPY claude-settings.json /home/employee/.claude/settings.json
@@ -114,7 +118,7 @@ RUN chown -R employee:employee /home/employee
 # checks the CLI against its SHA-512. The ACP server is a native binary, 999 MB unpacked.
 USER employee
 RUN export HOME=/home/employee && \
-    mkdir -p ~/.local/bin ~/work && \
+    mkdir -p ~/.local/bin ~/.codex ~/work && \
     npm config set prefix "$HOME/.local" && \
     curl -fsSL https://antigravity.google/cli/install.sh | bash && \
     zip="agy-acp-server-$AGY_ACP_VERSION-linux-arm64.zip" && \

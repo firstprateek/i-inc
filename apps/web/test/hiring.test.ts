@@ -1,12 +1,21 @@
 // Hiring and editing: the engine pickers show harness and "local", and saving sends engines per duty.
-import type { Employee, Engine } from "@i-inc/core";
+import type { Employee } from "@i-inc/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../src/components/hiring.ts";
+import type { Engine } from "../src/providers.ts";
 
 const engines: Engine[] = [
   { id: "opus", harness: "claude-code", model: "Claude Opus", accountId: "claude-pro", local: false },
   { id: "gemini", harness: "antigravity", model: "Gemini Pro", accountId: "google", local: false },
   { id: "qwen", harness: "opencode", model: "qwen3", accountId: "local", local: true },
+  { id: "codex", harness: "codex", model: "owner-entered-model", accountId: "codex-pro", local: true },
+];
+
+const accounts = [
+  { id: "claude-pro", name: "Claude Pro" },
+  { id: "google", name: "Google AI Pro" },
+  { id: "codex-pro", name: "Codex subscription" },
+  { id: "local", name: "Local" },
 ];
 
 const ada: Employee = {
@@ -22,6 +31,7 @@ let calls: { method: string; url: string; body: unknown }[] = [];
 
 function serve(team: Employee[] = [ada], failEmployees = false) {
   calls = [];
+  const createdEngines: Engine[] = [];
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     calls.push({
       method: init?.method ?? "GET",
@@ -30,7 +40,15 @@ function serve(team: Employee[] = [ada], failEmployees = false) {
     });
     const json = (b: unknown, status = 200) =>
       new Response(JSON.stringify(b), { status, headers: { "content-type": "application/json" } });
-    if (url === "/api/engines") return json({ engines });
+    if (url === "/api/engines" && (init?.method ?? "GET") === "GET")
+      return json({ engines: [...engines, ...createdEngines] });
+    if (url.startsWith("/api/engines/") && init?.method === "PUT") {
+      const id = decodeURIComponent(url.slice("/api/engines/".length));
+      const saved = { id, ...(JSON.parse(String(init.body)) as Omit<Engine, "id">) } as Engine;
+      createdEngines.push(saved);
+      return json({ engine: saved });
+    }
+    if (url === "/api/accounts") return json({ accounts, rateLimits: {} });
     if (url === "/api/employees" && (init?.method ?? "GET") === "GET")
       return failEmployees ? json({ error: "nope" }, 500) : json({ employees: team });
     return json({ ok: true });
@@ -77,10 +95,76 @@ describe("hiring", () => {
     const labels = [...(def?.querySelectorAll("option") ?? [])].map((o) => o.textContent?.trim());
     expect(labels).toContain("Claude Opus · claude-code");
     expect(labels).toContain("qwen3 · opencode · local");
+    expect(labels).toContain("owner-entered-model · codex");
 
     await pick(root, def as HTMLSelectElement, "qwen");
     const chips = [...root.querySelectorAll("label .chips .chip")].map((c) => c.textContent);
     expect(chips).toEqual(["opencode", "local"]);
+  });
+
+  it("keeps the engine creator inside its card and gives phones 44px targets", () => {
+    // jsdom has no layout, so this guards the rules; the widths were measured in a real browser.
+    const ctor = customElements.get("inc-hiring") as unknown as { styles: Array<{ cssText?: string }> };
+    const sheet = ctor.styles.map((x) => x.cssText ?? "").join("\n");
+    expect(sheet).toMatch(
+      /\.custom-engine-grid\s*\{[^}]*repeat\(auto-fit,\s*minmax\(min\(100%,\s*220px\),\s*1fr\)\)/,
+    );
+    expect(sheet).toMatch(/\.custom-engine-grid > \*\s*\{[^}]*min-width:\s*0/);
+    expect(sheet).toMatch(/\.custom-engine-grid input[^{]*\{[^}]*max-width:\s*100%/);
+    const phone = sheet.match(/@media \(max-width: 900px\)\s*\{([^@]*)\}\s*$/)?.[1] ?? "";
+    expect(phone).toMatch(/\.btn\.small\s*\{[^}]*min-height:\s*44px/);
+    expect(phone).toMatch(/\.note-link\s*\{[^}]*min-height:\s*44px/);
+  });
+
+  it("creates a Codex engine on its account without a local badge or stale model default", async () => {
+    serve();
+    const root = await mount();
+    const add = root.querySelector(".engine-header .btn") as HTMLButtonElement;
+    add.click();
+    await settle(root.host);
+    const form = root.querySelector(".custom-engine-box") as HTMLElement;
+    const harness = form.querySelector("select") as HTMLSelectElement;
+    await pick(root, harness, "codex");
+    const model = form.querySelector('input[type="text"]') as HTMLInputElement;
+    expect(model.placeholder).not.toMatch(/claude|gemini|gpt-/i);
+    model.value = "owner-entered-model";
+    model.dispatchEvent(new Event("input"));
+    await settle(root.host);
+    const account = form.querySelectorAll("select")[1] as HTMLSelectElement;
+    await pick(root, account, "codex-pro");
+    expect(form.textContent).toContain("Codex signs in on each team sandbox");
+    expect(form.querySelector('a[href*="docs/codex.md"]')?.textContent).toBe("Owner sign-in instructions");
+    (form.querySelector("button") as HTMLButtonElement).click();
+    await settle(root.host);
+    expect(
+      calls.find((c) => c.method === "PUT" && c.url === "/api/engines/owner-entered-model"),
+    ).toMatchObject({
+      body: { harness: "codex", model: "owner-entered-model", accountId: "codex-pro", local: false },
+    });
+    expect(root.querySelector(".custom-engine-box")).toBeNull();
+    expect(selects(root)[0]?.value).toBe("owner-entered-model");
+    expect([...root.querySelectorAll(".chips .chip")].some((chip) => chip.textContent === "local")).toBe(
+      false,
+    );
+  });
+
+  it("can hire with Codex as the default, per-duty engine, and fallback", async () => {
+    serve();
+    const root = await mount();
+    const name = root.querySelector('input[type="text"]') as HTMLInputElement;
+    name.value = "Nell";
+    name.dispatchEvent(new Event("input"));
+    await settle(root.host);
+    const [def, build, review, , fallback] = selects(root);
+    await pick(root, def as HTMLSelectElement, "codex");
+    await pick(root, build as HTMLSelectElement, "codex");
+    await pick(root, review as HTMLSelectElement, "gemini");
+    await pick(root, fallback as HTMLSelectElement, "qwen");
+    await submit(root);
+    expect(calls.find((c) => c.method === "POST")?.body).toMatchObject({
+      name: "Nell",
+      engines: { default: "codex", perDuty: { build: "codex", review: "gemini" }, fallbacks: ["qwen"] },
+    });
   });
 
   it("has a picker per duty of the role, each defaulting to the default engine", async () => {
@@ -347,7 +431,7 @@ describe("configure new engine / model form and layout", () => {
     const box = root.querySelector(".custom-engine-box") as HTMLElement;
     expect(box).not.toBeNull();
 
-    const modelInput = box.querySelector('input[placeholder*="claude-3-7-sonnet"]') as HTMLInputElement;
+    const modelInput = box.querySelector('input[type="text"]') as HTMLInputElement;
     const saveBtn = [...box.querySelectorAll(".custom-engine-actions button")].find((b) =>
       b.textContent?.includes("Save & select engine"),
     ) as HTMLButtonElement;

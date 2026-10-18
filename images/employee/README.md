@@ -13,6 +13,13 @@ cat images/employee/check.sh | container machine run -i -u employee -n inc-image
 container machine delete inc-imagecheck
 ```
 
+The image includes the pinned Codex ACP adapter and its matching Codex CLI, but no Codex sign-in.
+For an existing team sandbox, the owner can install those pins with
+`sh tools/host/provision-codex.sh <team-id>`; it checks the host walls and updates only that
+existing sandbox. Sign in separately with `sh tools/host/sign-in-codex.sh <team-id>` and check the
+boolean result with `sh tools/host/codex-status.sh <team-id>`. See [Codex sandbox setup](../../docs/codex.md)
+for the owner-run procedure.
+
 [`check.sh`](check.sh) needs no credentials. It checks the user, the tools, git's credential helper,
 that OpenCode offers only local models, and that Docker starts on first use. It also checks that
 each launcher starts in its folder and answers ACP's `initialize`.
