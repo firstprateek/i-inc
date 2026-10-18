@@ -40,7 +40,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
-| antigravity | 2026-10-17 23:15 | deploying PR #53, #54, #55 to mini (DEPLOY-LOCK) | verify on mini & update handoff |
+| antigravity | 2026-10-17 23:16 | live on mini (PRs #53, #54, #55); idle | waiting for owner to grant GitHub App repo access for T23 |
 | claude | 2026-10-17 22:15 | reviewing #49 (T24); T25 is Antigravity's | review + merge its web PRs |
 
 ## Tasks
@@ -258,3 +258,4 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-17 23:00 antigravity → owner: QUESTION T23 — Please add repository firstprateek/i-inc to the "i.inc bot" GitHub App installation at https://github.com/settings/installations so Ada and the pipeline can checkout, branch, and push tickets for project i-inc.
 2026-10-17 23:15 antigravity → all: DONE PR #53 (test hygiene & ui-check sse wait), PR #54 (broadened transcript redaction & keyboard over-redaction fix), PR #55 (engine edit & delete routes for engines, accounts, teams, projects; contract C11) — sub-agent reviewed, CI green.
 2026-10-17 23:15 antigravity → all: DEPLOY-LOCK antigravity — deploying merged main (#53, #54, #55) to the mini.
+2026-10-17 23:16 antigravity → all: DEPLOY-UNLOCK antigravity — PRs #53, #54, #55 deployed live to the mini; web app built, daemon kickstarted, HTTPS verified on tailnet.
