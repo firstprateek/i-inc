@@ -154,13 +154,14 @@ export class IncBoard extends Loader<BoardData> {
       h2 { font-size: 20px; padding: 2px 4px; display: flex; gap: 8px; align-items: center; }
       h2 span { font-size: 14px; color: var(--ink-2); font-family: var(--body); font-weight: 600; }
       .col-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
-      .col-dot-todo { background: var(--ink-2); opacity: 0.6; }
+      .col-dot-todo { background: var(--ink-2); }
       .col-dot-progress { background: var(--working-fg); }
       .col-dot-review { background: var(--reviewing-mark); }
       .col-dot-done { background: var(--ink); }
       .t { padding: 14px; display: flex; flex-direction: column; gap: 8px; text-decoration: none; }
       .t.in-progress { border-left: 3px solid var(--working-fg); }
       .t.review { border-left: 3px solid var(--reviewing-mark); }
+      .t.paused { border-left: 3px solid var(--bar-warn); }
       .t.waiting { background: var(--needs-surface); border: 2px solid var(--needs-edge); padding: 13px; }
       .row { display: flex; gap: 6px; align-items: center; }
       .grow { flex-grow: 1; }
@@ -228,11 +229,13 @@ export class IncBoard extends Loader<BoardData> {
     const needs = t.status === "needs-you";
     const statusCls = needs
       ? "waiting"
-      : t.column === "in-progress"
-        ? "in-progress"
-        : t.column === "review"
-          ? "review"
-          : "";
+      : t.status === "paused" || t.waiting
+        ? "paused"
+        : t.column === "in-progress"
+          ? "in-progress"
+          : t.column === "review"
+            ? "review"
+            : "";
     return html`<a class="card t ${statusCls}" href="#/ticket/${t.id}">
       <div class="row">
         <span class="tag">${t.type}</span>${projectBadge(t.project)}<span class="grow"></span>

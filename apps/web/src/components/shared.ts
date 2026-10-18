@@ -36,6 +36,15 @@ export const base = css`
     padding: 2px 8px;
     border-radius: 6px;
     white-space: nowrap;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .proj-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .proj-dot {
     width: 6px;
@@ -56,9 +65,9 @@ export const base = css`
   .proj-4 .proj-dot { background: var(--proj-4-dot); }
   .proj-5 { background: var(--proj-5-bg); color: var(--proj-5-fg); }
   .proj-5 .proj-dot { background: var(--proj-5-dot); }
-  .working { background: var(--working-bg); color: var(--working-fg); }
-  .reviewing { background: var(--reviewing-bg); color: var(--reviewing-fg); }
-  .needs { background: var(--needs-bg); color: var(--needs-fg); }
+  .working { background: var(--working-bg); color: var(--working-fg); border: 1px solid var(--working-edge); }
+  .reviewing { background: var(--reviewing-bg); color: var(--reviewing-fg); border: 1px solid var(--reviewing-edge); }
+  .needs { background: var(--needs-bg); color: var(--needs-fg); border: 1px solid var(--needs-edge); }
   .done { background: var(--ink); color: var(--on-ink); }
   .alarm { background: var(--alarm); color: #fff; }
   .avatar { flex-shrink: 0; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
@@ -89,16 +98,15 @@ export function projectIndex(name: string): number {
 /** A project tag chip with a colored dot indicator */
 export function projectBadge(name: string) {
   const idx = projectIndex(name);
-  return html`<span class="proj-badge proj-${idx}"><span class="proj-dot" aria-hidden="true"></span>${name}</span>`;
+  return html`<span class="proj-badge proj-${idx}" title=${name}><span class="proj-dot" aria-hidden="true"></span><span class="proj-name">${name}</span></span>`;
 }
 
 /** An employee's avatar, in the identity tint they were given at hiring. */
 export function avatar(p: { name: string; tint: number }, size = 36) {
   const tintIdx = Math.abs(p.tint % tints.length);
-  const [fallbackBg, fallbackFg] = tints[tintIdx] ?? ["#DAE1E8", "#1F2D3A"];
   const name = p.name;
   return html`<span class="avatar" aria-hidden="true"
-    style="width:${size}px;height:${size}px;background:var(--avatar-${tintIdx}-bg, ${fallbackBg});color:var(--avatar-${tintIdx}-fg, ${fallbackFg});font-size:${Math.round(size * 0.42)}px"
+    style="width:${size}px;height:${size}px;background:var(--avatar-${tintIdx}-bg);color:var(--avatar-${tintIdx}-fg);font-size:${Math.round(size * 0.42)}px"
     >${name.charAt(0)}</span>`;
 }
 
