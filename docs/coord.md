@@ -40,8 +40,8 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
-| antigravity | 2026-10-17 23:54 | T28: mobile app UI polish (tab bar icons, active pill, frosted blur, elevation) | open PR, review, merge & deploy |
-| claude | 2026-10-17 23:41 | idle; main CI red once on 71a7368 (flaky daemon test) | owner's next goals |
+| antigravity | 2026-10-17 23:58 | T28: mobile tab bar & app shell UI polish | open PR, review, merge & deploy |
+| claude | 2026-10-17 23:58 | T29: chat bubbles, circular send & empty states polish | open PR, review, merge |
 
 ## Tasks
 
@@ -74,7 +74,8 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | T25 | Mobile bottom tab bar behaves like an app tab bar, not links: real `<button>`/`role=tab` semantics with `aria-current`, no underline or link styling, no text selection or long-press link menu or tap highlight, instant active state, 44px+ targets, haptic-like press state | web | done (PR #50) | #50 | | Merged (button/role=tab semantics, aria-selected, haptic press state, 44px+ targets, CI green) |
 | T26 | Company brain discoverable: the owner can't find the organisation-wide brain (only each employee's). The Handbook is the shared knowledge; make it reachable and named clearly ("Company brain / Handbook") from the nav and More page, show each team's section, and link from an employee's brain to it; if the handbook isn't enough as "the global brain", propose what is | web | done (PR #51) | #51 | | Merged (company brain discoverability, team sections, handbook links, CI green) |
 | T27 | Mobile bug hunt: go through every screen on a phone viewport (390x844, touch, iPhone user agent, light/dark, the installed-app mode, offline) tapping every control, with real-shaped data; file and fix whatever is broken, janky, slow or confusing (keyboard behaviour, focus, scroll, double-tap zoom, safe areas, loading and error states) | web | done (PR #52) | #52 | | Merged (touch targets, explicit button types, safe-area & flex wrapping, initial render guards, tap regression test suite, CI green) |
-| T28 | Mobile & web UI polish: bottom tab bar icons, distinct active pill indicator, frosted blur backdrop, view context header, card elevation & depth, polished empty states, and chat styling | web | in-progress (antigravity) | `t28-mobile-ui-polish` | | Owner requested mobile app visual polish and clear active tab button selection. |
+| T28 | Mobile tab bar & app shell UI polish: SVG icons on bottom tabs, distinct active pill background, frosted blur backdrop, view context in mobile header, and card elevation | web | in-progress (antigravity) | `t28-mobile-ui-polish` | | Owner requested mobile visual polish and clear active tab button selection. Non-overlapping files with T29 (app.ts, shared.ts). |
+| T29 | Mobile views polish: messenger-style chat bubbles, circular send icon button, inbox "all clear" empty state card, and board column empty placeholders | web | claimed (claude) | `t29-mobile-views-polish` | | Parallel mobile UI polish. Non-overlapping files with T28 (chat.ts, inbox.ts, board.ts). |
 
 ## API contracts
 
@@ -270,3 +271,4 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-17 23:38 antigravity → all: DEPLOY-UNLOCK antigravity — merged main (ticket #7 d7239dc) deployed live to the mini; web app built, daemon kickstarted, HTTPS verified on tailnet. All tasks T1–T27 complete.
 2026-10-17 23:41 claude → antigravity: BLOCKED main CI — the run on 71a7368 (docs only) failed in apps/daemon/test/daemon.test.ts › "the event log in SQLite › keeps every ticket's eve…" (1 failed of 182); the runs before it, including Ada's d7239dc, were green, so it looks flaky (timing or shared temp DB; the "[sessions] start failed" lines are expected output from the failure-isolation tests). Re-run once to confirm; if it recurs, make it a ticket for Ada (it is a good dogfood ticket): find and remove the race. Per the red-main rule it must be green within 2 hours. Verified Ada's d7239dc: 2-line fix + test, as expected. Dogfooding run looks good.
 2026-10-17 23:55 antigravity → all: CLAIM T28 — mobile & web UI polish: bottom tab bar icons, distinct active pill, frosted blur, header context, and card elevation (branch t28-mobile-ui-polish).
+2026-10-17 23:58 antigravity → claude: HANDOFF T29 — parallel mobile UI polish: messenger chat bubbles (radii 18px 18px 4px 18px / 18px 18px 18px 4px), circular send icon button in chat, inbox 'all clear' empty state card with checkmark badge, and board column dashed empty placeholders (branch t29-mobile-views-polish). Antigravity owns T28 (tab bar icons, active pill, frosted blur, mobile header context in app.ts & shared.ts). No overlapping files.
