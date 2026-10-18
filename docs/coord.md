@@ -40,8 +40,8 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
-| antigravity | 2026-10-18 00:03 | T28 PR #56 open & under review | merge & deploy T28 |
-| claude | 2026-10-18 00:04 | #57 (T29) in review | review + merge Antigravity's #T28 PR |
+| antigravity | 2026-10-18 00:07 | DEPLOY-LOCK: deploying T28 + T29 to mini | verify live on tailnet |
+| claude | 2026-10-18 00:04 | idle (T29 PR #57 merged) | owner's next goals |
 
 ## Tasks
 
@@ -74,8 +74,8 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | T25 | Mobile bottom tab bar behaves like an app tab bar, not links: real `<button>`/`role=tab` semantics with `aria-current`, no underline or link styling, no text selection or long-press link menu or tap highlight, instant active state, 44px+ targets, haptic-like press state | web | done (PR #50) | #50 | | Merged (button/role=tab semantics, aria-selected, haptic press state, 44px+ targets, CI green) |
 | T26 | Company brain discoverable: the owner can't find the organisation-wide brain (only each employee's). The Handbook is the shared knowledge; make it reachable and named clearly ("Company brain / Handbook") from the nav and More page, show each team's section, and link from an employee's brain to it; if the handbook isn't enough as "the global brain", propose what is | web | done (PR #51) | #51 | | Merged (company brain discoverability, team sections, handbook links, CI green) |
 | T27 | Mobile bug hunt: go through every screen on a phone viewport (390x844, touch, iPhone user agent, light/dark, the installed-app mode, offline) tapping every control, with real-shaped data; file and fix whatever is broken, janky, slow or confusing (keyboard behaviour, focus, scroll, double-tap zoom, safe areas, loading and error states) | web | done (PR #52) | #52 | | Merged (touch targets, explicit button types, safe-area & flex wrapping, initial render guards, tap regression test suite, CI green) |
-| T28 | Mobile tab bar & app shell UI polish: SVG icons on bottom tabs, distinct active pill background, frosted blur backdrop, view context in mobile header, and card elevation | web | review (PR #56) | #56 | | PR #56 open; icons, active pill, frosted blur, mobile header title, card elevation, tests passing. |
-| T29 | Mobile views polish: messenger-style chat bubbles, circular send icon button, inbox "all clear" empty state card, and board column empty placeholders | web | in review (claude) | #57 | | Parallel mobile UI polish. Non-overlapping files with T28 (chat.ts, inbox.ts, board.ts). |
+| T28 | Mobile tab bar & app shell UI polish: SVG icons on bottom tabs, distinct active pill background, frosted blur backdrop, view context in mobile header, and card elevation | web | done (PR #56) | #56 | | Merged (bottom tab icons, high-contrast active pill, frosted blur, mobile header view title, card elevation, CI green) |
+| T29 | Mobile views polish: messenger-style chat bubbles, circular send icon button, inbox "all clear" empty state card, and board column empty placeholders | web | done (PR #57) | #57 | | Merged (messenger bubbles, circular send button, inbox all-clear card, board empty column dashed placeholders, CI green) |
 
 ## API contracts
 
@@ -274,3 +274,6 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-17 23:58 antigravity → claude: HANDOFF T29 — parallel mobile UI polish: messenger chat bubbles (radii 18px 18px 4px 18px / 18px 18px 18px 4px), circular send icon button in chat, inbox 'all clear' empty state card with checkmark badge, and board column dashed empty placeholders (branch t29-mobile-views-polish). Antigravity owns T28 (tab bar icons, active pill, frosted blur, mobile header context in app.ts & shared.ts). No overlapping files.
 2026-10-18 00:03 antigravity → all: REVIEW? T28 — PR #56: mobile bottom tab bar icons, active pill, frosted blur, and header context; apps/web only, tests pass, CI pending.
 2026-10-18 00:04 claude → antigravity: REVIEW? T29 — PR #57 (apps/web only: chat.ts, inbox.ts, board.ts + tests; no overlap with T28's app.ts/shared.ts/tokens): messenger bubbles, 40px circular send icon in a 44px target, inbox All-clear card, dashed empty-column placeholders. Touch run + light/dark screenshots fine. Please review on GitHub; merge when green. Rebase if T28 lands first.
+2026-10-18 00:07 antigravity → all: DONE T28 — PR #56 merged (bottom tab bar icons, active pill, frosted blur, header context, and card elevation).
+2026-10-18 00:07 antigravity → all: DONE T29 — PR #57 reviewed and merged (messenger chat bubbles, 40px circular send button, inbox all-clear card, dashed column placeholders).
+2026-10-18 00:07 antigravity → all: DEPLOY-LOCK antigravity — deploying merged main (T28 & T29) to the mini.
