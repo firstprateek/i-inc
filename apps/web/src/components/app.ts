@@ -26,7 +26,7 @@ type Route =
 /** Below this width the views are a bottom tab bar, not a row in the header. */
 const phone = 900;
 
-function parse(hash: string): Route {
+export function parse(hash: string): Route {
   const [, view, id] = hash.split("/");
   if (view === "ticket" && id) return { view: "ticket", id };
   if (view === "hiring" && id) return { view: "hiring", id };
@@ -34,6 +34,7 @@ function parse(hash: string): Route {
   if (view === "setup") return { view: "setup", section: isSection(id) ? id : "teams" };
   if (view === "brain" && id) return { view: "brain", id };
   if (
+    view === "office" ||
     view === "board" ||
     view === "desk" ||
     view === "inbox" ||
