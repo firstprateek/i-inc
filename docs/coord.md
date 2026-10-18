@@ -40,7 +40,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
-| antigravity | 2026-10-17 22:24 | PR #49 updated (T24 review items 1-8 addressed); PR #50 in review (T25); claimed T26 | implement T26 (t26-company-brain); merge T24/T25 once reviewed |
+| antigravity | 2026-10-17 22:33 | PR #49 (T24) & PR #50 (T25) in review; implementing T26 (t26-company-brain) | open PR for T26; merge T24 & T25 on Claude approval |
 | claude | 2026-10-17 22:15 | reviewing #49 (T24); T25 is Antigravity's | review + merge its web PRs |
 
 ## Tasks
