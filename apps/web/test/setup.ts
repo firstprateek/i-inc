@@ -1,8 +1,17 @@
 // Global test setup for @i-inc/web
 // Suppress noisy happy-dom teardown AbortErrors and unhandled connection errors from unmocked relative fetches.
+const safeString = (val: unknown): string => {
+  if (val instanceof Error) return val.stack ?? val.message;
+  if (typeof val === "string") return val;
+  try {
+    return JSON.stringify(val);
+  } catch {
+    return String(val);
+  }
+};
+
 const isNoise = (val: unknown): boolean => {
-  const str =
-    val instanceof Error ? (val.stack ?? val.message) : typeof val === "string" ? val : JSON.stringify(val);
+  const str = safeString(val);
   return (
     str.includes("AbortError") ||
     str.includes("The operation was aborted") ||
@@ -19,7 +28,7 @@ console.error = (...args: unknown[]) => {
 const origWrite = process.stderr.write;
 (process.stderr.write as unknown) = (chunk: unknown, ...args: unknown[]) => {
   if (isNoise(chunk)) return true;
-  return (origWrite as Function).apply(process.stderr, [chunk, ...args]);
+  return Reflect.apply(origWrite, process.stderr, [chunk, ...args]);
 };
 
 process.on("unhandledRejection", (reason: unknown) => {
