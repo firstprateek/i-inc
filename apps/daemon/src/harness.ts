@@ -72,22 +72,26 @@ export interface HarnessSettings {
   ci?: (ticket: Ticket, sha: string) => Promise<{ ok: true } | { ok: false; reason: string }>;
   /** How a project's work reaches main. Absent: owner-merges (rebase, and push the PR's branch). */
   policy?: (project: string) => ProjectPolicy;
+  /** The project's default branch (main, master, etc.). Default: main. */
+  defaultBranch?: (project: string) => string | undefined;
 }
 
 /** Direct mode: the files this ticket's work changes, against where it left main. */
-export function changedScript(worktree: string): string {
+export function changedScript(worktree: string, branch = "main"): string {
+  if (!/^[A-Za-z0-9_.-]{1,100}$/.test(branch)) throw new Error(`not a branch name: ${branch}`);
   return [
     `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
-    "git fetch --quiet origin main || { echo '@@fail git fetch'; exit 1; }",
-    "git diff --name-only \"$(git merge-base origin/main HEAD)\" | sed 's/^/@@changed /'",
+    `git fetch --quiet origin ${branch} || { echo '@@fail git fetch'; exit 1; }`,
+    `git diff --name-only "$(git merge-base origin/${branch} HEAD)" | sed 's/^/@@changed /'`,
   ].join("\n");
 }
 
 /** Direct mode: pushes the rebased work to main, or says main moved since the rebase. */
-export function pushMainScript(worktree: string): string {
+export function pushMainScript(worktree: string, branch = "main"): string {
+  if (!/^[A-Za-z0-9_.-]{1,100}$/.test(branch)) throw new Error(`not a branch name: ${branch}`);
   return [
     `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
-    "if out=$(git push --quiet origin HEAD:main 2>&1); then",
+    `if out=$(git push --quiet origin HEAD:${branch} 2>&1); then`,
     '  echo "@@pushed $(git rev-parse HEAD)"',
     "else",
     '  echo "$out"',
@@ -98,15 +102,16 @@ export function pushMainScript(worktree: string): string {
 }
 
 /** Direct mode: takes a commit back out of main, from a scratch worktree beside the ticket's. */
-export function revertScript(worktree: string, sha: string): string {
+export function revertScript(worktree: string, sha: string, branch = "main"): string {
   if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`not a commit: ${sha}`);
+  if (!/^[A-Za-z0-9_.-]{1,100}$/.test(branch)) throw new Error(`not a branch name: ${branch}`);
   return [
     `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
     "tmp=$(mktemp -d)",
     "for attempt in 1 2 3; do",
-    "  git fetch --quiet origin main || continue",
-    '  rm -rf "$tmp"; git worktree add --quiet --detach "$tmp" origin/main || continue',
-    `  if (cd "$tmp" && git revert --no-edit ${sha} >/dev/null && git push --quiet origin HEAD:main); then`,
+    `  git fetch --quiet origin ${branch} || continue`,
+    `  rm -rf "$tmp"; git worktree add --quiet --detach "$tmp" origin/${branch} || continue`,
+    `  if (cd "$tmp" && git revert --no-edit ${sha} >/dev/null && git push --quiet origin HEAD:${branch}); then`,
     '    git worktree remove --force "$tmp"; echo @@reverted; exit 0',
     "  fi",
     '  git worktree remove --force "$tmp" 2>/dev/null',
@@ -142,13 +147,14 @@ export function checksScript(worktree: string, recipe: string[], tail: number): 
 }
 
 /** Fetches main and rebases onto it. A conflict aborts the rebase and says so. */
-export function rebaseScript(worktree: string): string {
+export function rebaseScript(worktree: string, branch = "main"): string {
+  if (!/^[A-Za-z0-9_.-]{1,100}$/.test(branch)) throw new Error(`not a branch name: ${branch}`);
   return [
     `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
     // Uncommitted work would stop the rebase, and isn't a conflict.
     `if [ -n "$(git status --porcelain)" ]; then git status --porcelain | head -20 | sed 's/^/@@dirty /'; exit 3; fi`,
     "branch=$(git branch --show-current)",
-    "git fetch --quiet origin main || { echo '@@fail git fetch'; exit 1; }",
+    `git fetch --quiet origin ${branch} || { echo '@@fail git fetch'; exit 1; }`,
     // Whatever GitHub has on the branch must already be here, or the force-push would drop it. Its
     // commit is the lease the push holds to.
     `remote=$(git ls-remote origin "refs/heads/$branch" | cut -f1)`,
@@ -157,13 +163,13 @@ export function rebaseScript(worktree: string): string {
     '  git merge-base --is-ancestor "$remote" HEAD || { echo "@@diverged $remote"; exit 4; }',
     "fi",
     'echo "@@lease $remote"',
-    "if ! git rebase --quiet origin/main >/dev/null 2>&1; then",
+    `if ! git rebase --quiet origin/${branch} >/dev/null 2>&1; then`,
     "  git diff --name-only --diff-filter=U | sed 's/^/@@conflict /'",
     "  git rebase --abort",
     "  exit 2",
     "fi",
     // Pick-up's empty commit alone isn't work.
-    'if git diff --quiet origin/main HEAD; then echo "@@empty $(git rev-parse origin/main)"; exit 5; fi',
+    `if git diff --quiet origin/${branch} HEAD; then echo "@@empty $(git rev-parse origin/${branch})"; exit 5; fi`,
     "echo @@rebased",
   ].join("\n");
 }
@@ -211,6 +217,10 @@ export class MachineHarness implements Harness {
     return this.s.worktree(ticket.id);
   }
 
+  private defaultBranch(ticket: Ticket): string {
+    return this.s.defaultBranch?.(ticket.project) || "main";
+  }
+
   describe(ticket: Ticket): string[] {
     const recipe = this.s.recipe(ticket.project);
     return [
@@ -233,13 +243,14 @@ export class MachineHarness implements Harness {
     const policy = this.s.policy?.(ticket.project);
     if (policy?.mode === "direct") return this.directGates(ticket, policy, opts.ownerApproved === true);
     const env = (await this.s.github?.(ticket)) ?? {};
-    const rebased = await this.run(ticket.assignee, rebaseScript(this.worktree(ticket)), env);
+    const branch = this.defaultBranch(ticket);
+    const rebased = await this.run(ticket.assignee, rebaseScript(this.worktree(ticket), branch), env);
     if (rebased.code === 2) {
       const files = [...rebased.output.matchAll(/^@@conflict (.+)$/gm)].map((m) => m[1]);
       return {
         ok: false,
         conflict: true,
-        reason: `rebasing on main conflicts in ${files.join(", ") || "some files"}`,
+        reason: `rebasing on ${branch} conflicts in ${files.join(", ") || "some files"}`,
       };
     }
     const lines = (tag: string) =>
@@ -251,15 +262,15 @@ export class MachineHarness implements Harness {
         `the PR's branch has commits the worktree hasn't (${lines("diverged")[0]}), so it wasn't pushed over`,
       );
     }
-    if (rebased.code === 5) return no("the branch has no changes beyond main");
-    if (rebased.code !== 0) return no(`couldn't rebase on main: ${rebased.output.trim().slice(-300)}`);
+    if (rebased.code === 5) return no(`the branch has no changes beyond ${branch}`);
+    if (rebased.code !== 0) return no(`couldn't rebase on ${branch}: ${rebased.output.trim().slice(-300)}`);
     const lease = lines("lease")[0] ?? "";
     const checks = await this.runChecks(ticket);
     if (!checks.green) {
       return {
         ok: false,
         conflict: false,
-        reason: `the checks fail after rebasing on main: ${checks.failures.join("; ")}`,
+        reason: `the checks fail after rebasing on ${branch}: ${checks.failures.join("; ")}`,
       };
     }
     if (this.s.github) {
@@ -289,9 +300,10 @@ export class MachineHarness implements Harness {
   ): Promise<GatesResult> {
     const env = (await this.s.github?.(ticket)) ?? {};
     const worktree = this.worktree(ticket);
+    const branch = this.defaultBranch(ticket);
     const no = (reason: string): GatesResult => ({ ok: false, conflict: false, reason });
 
-    const changed = await this.run(ticket.assignee, changedScript(worktree), env);
+    const changed = await this.run(ticket.assignee, changedScript(worktree, branch), env);
     if (changed.code !== 0) return no(`couldn't read the change: ${changed.output.trim().slice(-300)}`);
     const files = [...changed.output.matchAll(/^@@changed (.+)$/gm)].map((m) => m[1] as string);
     const touched = files.filter((f) => isProtected(f, policy.protectedPaths));
@@ -305,14 +317,14 @@ export class MachineHarness implements Harness {
     }
 
     for (let attempt = 1; attempt <= 3; attempt++) {
-      const rebased = await this.run(ticket.assignee, rebaseScript(worktree), env);
+      const rebased = await this.run(ticket.assignee, rebaseScript(worktree, branch), env);
       const lines = (tag: string) =>
         [...rebased.output.matchAll(new RegExp(`^@@${tag} ?(.*)$`, "gm"))].map((m) => m[1]);
       if (rebased.code === 2) {
         return {
           ok: false,
           conflict: true,
-          reason: `rebasing on main conflicts in ${lines("conflict").join(", ") || "some files"}`,
+          reason: `rebasing on ${branch} conflicts in ${lines("conflict").join(", ") || "some files"}`,
         };
       }
       if (rebased.code === 3) return no(`the worktree has uncommitted changes: ${lines("dirty").join(", ")}`);
@@ -320,12 +332,13 @@ export class MachineHarness implements Harness {
         // After the owner's OK, the owner may have pushed it already (push-for-owner.sh).
         const main = lines("empty")[0];
         if (ownerApproved && main && /^[0-9a-f]{40}$/.test(main)) return { ok: true, pushed: main };
-        return no("the branch has no changes beyond main");
+        return no(`the branch has no changes beyond ${branch}`);
       }
-      if (rebased.code !== 0) return no(`couldn't rebase on main: ${rebased.output.trim().slice(-300)}`);
+      if (rebased.code !== 0) return no(`couldn't rebase on ${branch}: ${rebased.output.trim().slice(-300)}`);
       const checks = await this.runChecks(ticket);
-      if (!checks.green) return no(`the checks fail after rebasing on main: ${checks.failures.join("; ")}`);
-      const pushed = await this.run(ticket.assignee, pushMainScript(worktree), env);
+      if (!checks.green)
+        return no(`the checks fail after rebasing on ${branch}: ${checks.failures.join("; ")}`);
+      const pushed = await this.run(ticket.assignee, pushMainScript(worktree, branch), env);
       const sha = /^@@pushed ([0-9a-f]{40})$/m.exec(pushed.output)?.[1];
       if (sha) return { ok: true, pushed: sha };
       if (pushed.code !== 7) {
@@ -334,11 +347,11 @@ export class MachineHarness implements Harness {
         return no(
           workflows
             ? "GitHub won't let the bot push changes to workflows: the owner pushes this one (tools/host/push-for-owner.sh)"
-            : `couldn't push to main: ${pushed.output.trim().slice(-300)}`,
+            : `couldn't push to ${branch}: ${pushed.output.trim().slice(-300)}`,
         );
       }
     }
-    return no("main kept moving while the gates ran; try again");
+    return no(`${branch} kept moving while the gates ran; try again`);
   }
 
   /** Direct mode: CI on the commit pushed to main. */
@@ -349,7 +362,11 @@ export class MachineHarness implements Harness {
   /** Direct mode: reverts a commit on main that stayed red too long. */
   async revert(ticket: Ticket, sha: string): Promise<void> {
     const env = (await this.s.github?.(ticket)) ?? {};
-    const r = await this.run(ticket.assignee, revertScript(this.worktree(ticket), sha), env);
+    const r = await this.run(
+      ticket.assignee,
+      revertScript(this.worktree(ticket), sha, this.defaultBranch(ticket)),
+      env,
+    );
     if (!r.output.includes("@@reverted"))
       throw new Error(`couldn't revert ${sha}: ${r.output.trim().slice(-300)}`);
   }

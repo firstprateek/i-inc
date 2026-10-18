@@ -96,7 +96,7 @@ describe("the GitHub App", () => {
       { appId: "1", installationId: "2", privateKeyPath: "/unused" },
       { fetch: f, readKey: () => privateKey },
     );
-    await expect(app.token("firstprateek/duet")).rejects.toThrow("failed: 401 Bad credentials");
+    await expect(app.token("firstprateek/duet")).rejects.toThrow("failed with HTTP 401");
     await expect(app.token("duet")).rejects.toThrow("not a repo: duet");
   });
 

@@ -23,6 +23,7 @@ export interface Project {
   protectedPaths?: string[];
   followUpsPerDay?: number;
   autoRelease?: boolean;
+  defaultBranch?: string;
 }
 
 export interface ProjectBody {
@@ -32,6 +33,43 @@ export interface ProjectBody {
   protectedPaths: string[];
   followUpsPerDay: number;
   autoRelease: boolean;
+  defaultBranch?: string;
+}
+
+export interface GitHubRepoSummary {
+  fullName: string;
+  name: string;
+  owner: string;
+  private: boolean;
+  defaultBranch: string;
+  description: string | null;
+  language: string | null;
+  empty: boolean;
+  pushedAt: string | null;
+  alreadyRegistered: boolean;
+}
+
+export interface GitHubInspectResult {
+  id: string;
+  repo: string;
+  defaultBranch: string;
+  empty: boolean;
+  checks: string[];
+  protectedPaths: string[];
+  detected: string;
+}
+
+export interface BootstrapProjectBody {
+  repo: string;
+  mode?: MergeMode;
+  template?: "ts-node" | "web" | "python" | "minimal";
+  description?: string;
+  employees?: string[];
+  checks?: string[];
+  protectedPaths?: string[];
+  autoRelease?: boolean;
+  force?: boolean;
+  defaultBranch?: string;
 }
 
 /** One sandbox in `GET /api/sandboxes` (contract C1 in docs/coord.md). */
@@ -70,6 +108,16 @@ export const setupApi = {
     }),
   projects: () => call<{ projects: Project[] }>("GET", "/api/projects").then((r) => r.projects),
   saveProject: (id: string, body: ProjectBody) => call("PUT", `/api/projects/${enc(id)}`, body),
+  deleteProject: (id: string) => call<{ ok: boolean }>("DELETE", `/api/projects/${enc(id)}`),
+  githubRepos: () => call<{ repos: GitHubRepoSummary[] }>("GET", "/api/github/repos").then((r) => r.repos),
+  inspectRepo: (owner: string, name: string) =>
+    call<GitHubInspectResult>("GET", `/api/github/repos/${enc(owner)}/${enc(name)}/inspect`),
+  bootstrapProject: (id: string, body: BootstrapProjectBody) =>
+    call<{ project: Project; bootstrapped: boolean; commits: number }>(
+      "POST",
+      `/api/projects/${enc(id)}/bootstrap`,
+      body,
+    ),
   engines: () => call<{ engines: Engine[] }>("GET", "/api/engines").then((r) => r.engines),
   accounts: () => call<{ accounts: AccountCost[] }>("GET", "/api/accounts").then((r) => r.accounts),
   saveAccount: (a: AccountCost) =>

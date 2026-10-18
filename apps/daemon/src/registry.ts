@@ -26,6 +26,8 @@ export interface Project extends Partial<ProjectPolicy> {
   repo: string;
   /** The check recipe, in order: for Duet, install, lint, typecheck and test. */
   checks: string[];
+  /** Default branch for PR base and checkout (e.g. "main" or "master"). */
+  defaultBranch?: string;
 }
 
 /**

@@ -25,6 +25,14 @@ import {
   type SandboxStatus,
 } from "@i-inc/core";
 import type { Daemon, DaemonDeps } from "./daemon.ts";
+import {
+  bootstrapRepo,
+  inspectRepo,
+  isValidBranch,
+  isValidRepo,
+  listInstallationRepos,
+  UpstreamGitHubError,
+} from "./github.ts";
 import type { Change, Repo } from "./knowledge.ts";
 import type { PushSubscription } from "./push.ts";
 import type { NewTicket } from "./tickets.ts";
@@ -52,6 +60,28 @@ export interface ApiOptions {
 }
 
 type Handler = (req: Request, params: Record<string, string>) => Promise<Response>;
+
+function mapUpstreamError(e: unknown): { status: number; error: string } {
+  if (e instanceof UpstreamGitHubError) {
+    if (e.status === 504 || (e as { code?: string }).code === "ETIMEDOUT") {
+      return { status: 424, error: "upstream GitHub service timed out" };
+    }
+    if (e.status === 429) {
+      return { status: 424, error: "upstream GitHub rate limit exceeded" };
+    }
+    return { status: 424, error: "upstream GitHub service failure" };
+  }
+  return { status: 424, error: "failed to communicate with GitHub" };
+}
+
+function githubLogMsg(e: unknown): string {
+  if (e instanceof UpstreamGitHubError) {
+    return `${e.method} ${e.endpoint} -> HTTP ${e.status}`;
+  }
+  return e instanceof Error ? e.message : String(e);
+}
+
+const inFlightBootstraps = new Set<string>();
 
 export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) {
   /** The projects a chat draft for this employee can be filed under: the ones it works on (C12). */
@@ -461,6 +491,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           protectedPaths?: unknown;
           followUpsPerDay?: unknown;
           autoRelease?: unknown;
+          defaultBranch?: unknown;
         };
         const checks = Array.isArray(body.checks) ? body.checks : [];
         if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$/.test(id)) {
@@ -469,14 +500,24 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
             400,
           );
         }
-        if (typeof body.repo !== "string" || !/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(body.repo)) {
-          return json({ error: "repo must be owner/name on GitHub" }, 400);
+        const normId = id.toLowerCase();
+        if (d.registry.projects().some((p) => p.id.toLowerCase() === normId && p.id !== id)) {
+          return json({ error: `project ID "${id}" conflicts with an existing project` }, 409);
+        }
+        if (typeof body.repo !== "string" || !isValidRepo(body.repo)) {
+          return json({ error: "repo must be valid owner/name on GitHub" }, 400);
         }
         if (!checks.length || !checks.every((c) => typeof c === "string" && c.trim())) {
           return json({ error: "checks must be the recipe's commands, in order" }, 400);
         }
         if (body.mode !== undefined && body.mode !== "direct" && body.mode !== "owner-merges") {
           return json({ error: 'mode is "direct" or "owner-merges"' }, 400);
+        }
+        if (
+          body.defaultBranch !== undefined &&
+          (typeof body.defaultBranch !== "string" || !isValidBranch(body.defaultBranch))
+        ) {
+          return json({ error: "defaultBranch must be a valid git branch name up to 100 characters" }, 400);
         }
         const paths = body.protectedPaths;
         if (
@@ -492,6 +533,11 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         if (body.autoRelease !== undefined && typeof body.autoRelease !== "boolean") {
           return json({ error: "autoRelease must be a boolean" }, 400);
         }
+        const existingProj = d.registry.project(id);
+        const defaultBranch =
+          typeof body.defaultBranch === "string" && body.defaultBranch.trim()
+            ? body.defaultBranch.trim()
+            : existingProj?.defaultBranch;
         d.registry.addProject({
           id,
           repo: body.repo,
@@ -500,6 +546,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           ...(paths ? { protectedPaths: paths as string[] } : {}),
           ...(perDay !== undefined ? { followUpsPerDay: perDay as number } : {}),
           ...(body.autoRelease !== undefined ? { autoRelease: body.autoRelease } : {}),
+          ...(defaultBranch ? { defaultBranch } : {}),
         });
         return json({ project: d.registry.project(id), policy: d.registry.projectPolicy(id) });
       },
@@ -512,6 +559,266 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         const ok = d.registry.removeProject(id);
         if (!ok) return json({ error: "no such project" }, 404);
         return json({ ok: true });
+      },
+    ],
+
+    [
+      "GET",
+      "/api/github/repos",
+      async () => {
+        if (!d.tokens) return json({ repos: [] });
+        try {
+          const registered = d.registry.projects().map((p) => p.repo);
+          const repos = await listInstallationRepos(d.tokens, registered);
+          return json({ repos });
+        } catch (e) {
+          console.error(`[github] failed to list repos: ${githubLogMsg(e)}`);
+          const { status, error } = mapUpstreamError(e);
+          return json({ error, repos: [] }, status);
+        }
+      },
+    ],
+
+    [
+      "GET",
+      "/api/github/repos/:owner/:name/inspect",
+      async (_req, { owner = "", name = "" }) => {
+        if (!d.tokens) return json({ error: "GitHub integration is not configured" }, 400);
+        const repo = `${owner}/${name}`;
+        if (!isValidRepo(repo)) {
+          return json({ error: "invalid repository owner or name" }, 400);
+        }
+        try {
+          const registered = d.registry.projects().map((p) => p.repo);
+          const repos = await listInstallationRepos(d.tokens, registered);
+          const accessible = repos.some((r) => r.fullName.toLowerCase() === repo.toLowerCase());
+          if (!accessible) {
+            return json(
+              { error: `repository "${repo}" is not accessible in this GitHub App installation` },
+              403,
+            );
+          }
+          const result = await inspectRepo(d.tokens, owner, name);
+          return json(result);
+        } catch (e) {
+          console.error(`[github] failed to inspect repo: ${githubLogMsg(e)}`);
+          const { status, error } = mapUpstreamError(e);
+          return json({ error }, status);
+        }
+      },
+    ],
+
+    [
+      "POST",
+      "/api/projects/:id/bootstrap",
+      async (req, { id = "" }) => {
+        if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$/.test(id)) {
+          return json(
+            { error: "a project is named by up to 40 letters, digits, spaces, dots and dashes" },
+            400,
+          );
+        }
+
+        const normalizedId = id.trim().toLowerCase();
+        if (
+          inFlightBootstraps.has(normalizedId) ||
+          d.registry.projects().some((p) => p.id.toLowerCase() === normalizedId)
+        ) {
+          return json({ error: `project "${id}" already exists` }, 409);
+        }
+
+        inFlightBootstraps.add(normalizedId);
+        try {
+          const body = (await req.json().catch(() => ({}))) as {
+            repo?: unknown;
+            mode?: unknown;
+            template?: unknown;
+            description?: unknown;
+            employees?: unknown;
+            checks?: unknown;
+            protectedPaths?: unknown;
+            autoRelease?: unknown;
+            force?: unknown;
+            defaultBranch?: unknown;
+          };
+
+          if (typeof body.repo !== "string" || !isValidRepo(body.repo)) {
+            return json({ error: "repo must be valid owner/name on GitHub" }, 400);
+          }
+          const repo = body.repo;
+
+          if (body.mode !== undefined && body.mode !== "direct" && body.mode !== "owner-merges") {
+            return json({ error: 'mode must be "direct" or "owner-merges"' }, 400);
+          }
+          const mode = body.mode === "owner-merges" ? "owner-merges" : "direct";
+
+          if (
+            body.description !== undefined &&
+            (typeof body.description !== "string" || body.description.length > 500)
+          ) {
+            return json({ error: "description must be a string up to 500 characters" }, 400);
+          }
+
+          if (
+            body.defaultBranch !== undefined &&
+            (typeof body.defaultBranch !== "string" || !isValidBranch(body.defaultBranch))
+          ) {
+            return json({ error: "defaultBranch must be a valid git branch name up to 100 characters" }, 400);
+          }
+
+          if (body.checks !== undefined) {
+            if (
+              !Array.isArray(body.checks) ||
+              body.checks.length > 20 ||
+              body.checks.some((c) => typeof c !== "string" || c.length > 200)
+            ) {
+              return json(
+                { error: "checks must be an array of at most 20 strings, up to 200 characters each" },
+                400,
+              );
+            }
+          }
+
+          if (body.protectedPaths !== undefined) {
+            if (
+              !Array.isArray(body.protectedPaths) ||
+              body.protectedPaths.length > 50 ||
+              body.protectedPaths.some((p) => typeof p !== "string" || p.length > 200)
+            ) {
+              return json(
+                { error: "protectedPaths must be an array of at most 50 strings, up to 200 characters each" },
+                400,
+              );
+            }
+          }
+
+          if (body.template !== undefined) {
+            const validTemplates = ["ts-node", "web", "python", "minimal"];
+            if (typeof body.template !== "string" || !validTemplates.includes(body.template)) {
+              return json({ error: `template must be one of: ${validTemplates.join(", ")}` }, 400);
+            }
+          }
+
+          if (d.tokens) {
+            try {
+              const registered = d.registry.projects().map((p) => p.repo);
+              const repos = await listInstallationRepos(d.tokens, registered);
+              const accessible = repos.some((r) => r.fullName.toLowerCase() === repo.toLowerCase());
+              if (!accessible) {
+                return json(
+                  { error: `repository "${repo}" is not accessible in this GitHub App installation` },
+                  403,
+                );
+              }
+            } catch (e) {
+              console.error(
+                `[github] failed to verify repo accessibility before bootstrap: ${githubLogMsg(e)}`,
+              );
+              const { status, error } = mapUpstreamError(e);
+              return json({ error }, status);
+            }
+          }
+
+          let bootstrapped = false;
+          let commits = 0;
+          const force = body.force === true;
+
+          if (body.template && typeof body.template === "string") {
+            const validTemplates = ["ts-node", "web", "python", "minimal"];
+            if (!validTemplates.includes(body.template)) {
+              return json({ error: `template must be one of: ${validTemplates.join(", ")}` }, 400);
+            }
+            if (!d.tokens) {
+              return json({ error: "GitHub integration is required to bootstrap starter files" }, 400);
+            }
+
+            const [owner = "", name = ""] = repo.split("/");
+            try {
+              const inspect = await inspectRepo(d.tokens, owner, name);
+              if (!inspect.empty && !force) {
+                return json(
+                  {
+                    error:
+                      "repository is not empty (already contains commits from a previous or partial bootstrap); pass force: true to resume",
+                    empty: false,
+                    resumable: true,
+                  },
+                  409,
+                );
+              }
+            } catch (e) {
+              console.error(`[github] failed to inspect repo before bootstrap: ${githubLogMsg(e)}`);
+              const { status, error } = mapUpstreamError(e);
+              return json({ error }, status);
+            }
+
+            try {
+              const res = await bootstrapRepo(d.tokens, {
+                repo,
+                template: body.template as "ts-node" | "web" | "python" | "minimal",
+                ...(typeof body.description === "string" ? { description: body.description } : {}),
+                ...(typeof body.defaultBranch === "string" ? { defaultBranch: body.defaultBranch } : {}),
+              });
+              bootstrapped = res.bootstrapped;
+              commits = res.commits;
+            } catch (e) {
+              console.error(`[github] failed to bootstrap repo: ${githubLogMsg(e)}`);
+              const { status } = mapUpstreamError(e);
+              return json({ error: "failed to bootstrap starter files in repository" }, status);
+            }
+          }
+
+          let checks: string[] = [];
+          if (Array.isArray(body.checks) && body.checks.length > 0) {
+            checks = body.checks.filter((c): c is string => typeof c === "string" && Boolean(c.trim()));
+          } else if (body.template === "python") {
+            checks = ["pytest"];
+          } else if (body.template === "web") {
+            checks = ["pnpm install", "pnpm check", "pnpm test", "pnpm build"];
+          } else if (body.template === "minimal") {
+            checks = ["echo ok"];
+          } else {
+            checks = ["pnpm install", "pnpm test"];
+          }
+
+          const protectedPaths = Array.isArray(body.protectedPaths)
+            ? body.protectedPaths.filter((p): p is string => typeof p === "string" && Boolean(p.trim()))
+            : [".github/"];
+
+          const defaultBranch =
+            typeof body.defaultBranch === "string" && body.defaultBranch.trim()
+              ? body.defaultBranch.trim()
+              : undefined;
+
+          d.registry.addProject({
+            id,
+            repo,
+            checks,
+            mode,
+            protectedPaths,
+            autoRelease: body.autoRelease === true,
+            ...(defaultBranch ? { defaultBranch } : {}),
+          });
+
+          if (Array.isArray(body.employees)) {
+            const empIds = new Set(body.employees.filter((e): e is string => typeof e === "string"));
+            for (const emp of d.registry.employees()) {
+              if (empIds.has(emp.id)) {
+                const currentProjects = emp.projects ?? [];
+                if (!currentProjects.includes(id)) {
+                  d.registry.hire({
+                    ...emp,
+                    projects: [...currentProjects, id],
+                  });
+                }
+              }
+            }
+          }
+
+          return json({ project: d.registry.project(id), bootstrapped, commits }, 201);
+        } finally {
+          inFlightBootstraps.delete(normalizedId);
+        }
       },
     ],
     [
@@ -1177,6 +1484,14 @@ function authorized(req: Request, token: string): boolean {
   return [bearer, cookie].some((t) => t !== undefined && same(t, token));
 }
 
+function safeDecodeURIComponent(str: string): string | null {
+  try {
+    return decodeURIComponent(str);
+  } catch {
+    return null;
+  }
+}
+
 function match(pattern: string, path: string): Record<string, string> | null {
   const a = pattern.split("/");
   const b = path.split("/");
@@ -1184,8 +1499,11 @@ function match(pattern: string, path: string): Record<string, string> | null {
   const params: Record<string, string> = {};
   for (let i = 0; i < a.length; i++) {
     const seg = a[i] ?? "";
-    if (seg.startsWith(":")) params[seg.slice(1)] = decodeURIComponent(b[i] ?? "");
-    else if (seg !== b[i]) return null;
+    if (seg.startsWith(":")) {
+      const decoded = safeDecodeURIComponent(b[i] ?? "");
+      if (decoded === null) return null;
+      params[seg.slice(1)] = decoded;
+    } else if (seg !== b[i]) return null;
   }
   return params;
 }
