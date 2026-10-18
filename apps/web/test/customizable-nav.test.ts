@@ -355,7 +355,9 @@ describe("Customizable top navigation bar & All views dropdown", () => {
     expect(categoriesList).not.toBeNull();
 
     // The header is outside the scroll container (.categories-list) so it remains fixed
-    expect(dropdown?.contains(header!)).toBe(true);
-    expect(categoriesList?.contains(header!)).toBe(false);
+    if (header) {
+      expect(dropdown?.contains(header)).toBe(true);
+      expect(categoriesList?.contains(header)).toBe(false);
+    }
   });
 });

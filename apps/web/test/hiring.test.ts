@@ -298,3 +298,90 @@ describe("custom roles, system prompts, effort levels and explainers", () => {
     expect(body.engines).toBeDefined();
   });
 });
+
+describe("configure new engine / model form and layout", () => {
+  it("toggles the configure new engine box open and closed", async () => {
+    serve();
+    const root = await mount();
+    expect(root.querySelector(".custom-engine-box")).toBeNull();
+
+    const configBtn = [...root.querySelectorAll(".engine-header button")].find((b) =>
+      b.textContent?.includes("+ Configure new engine / model"),
+    ) as HTMLButtonElement;
+    expect(configBtn).toBeDefined();
+    configBtn.click();
+    await settle(root.host);
+
+    const box = root.querySelector(".custom-engine-box");
+    expect(box).not.toBeNull();
+    expect(box?.querySelector("h4")?.textContent).toBe("Configure new model or engine");
+    expect(configBtn.textContent).toContain("✕ Close");
+
+    // Close via header button
+    configBtn.click();
+    await settle(root.host);
+    expect(root.querySelector(".custom-engine-box")).toBeNull();
+
+    // Reopen and close via Cancel button
+    configBtn.click();
+    await settle(root.host);
+    const cancelBtn = [...root.querySelectorAll(".custom-engine-actions button")].find((b) =>
+      b.textContent?.includes("Cancel"),
+    ) as HTMLButtonElement;
+    expect(cancelBtn).toBeDefined();
+    cancelBtn.click();
+    await settle(root.host);
+    expect(root.querySelector(".custom-engine-box")).toBeNull();
+  });
+
+  it("creates and selects a custom engine without overflowing fields", async () => {
+    serve();
+    const root = await mount();
+
+    const configBtn = [...root.querySelectorAll(".engine-header button")].find((b) =>
+      b.textContent?.includes("+ Configure new engine / model"),
+    ) as HTMLButtonElement;
+    configBtn.click();
+    await settle(root.host);
+
+    const box = root.querySelector(".custom-engine-box") as HTMLElement;
+    expect(box).not.toBeNull();
+
+    const modelInput = box.querySelector('input[placeholder*="claude-3-7-sonnet"]') as HTMLInputElement;
+    const saveBtn = [...box.querySelectorAll(".custom-engine-actions button")].find((b) =>
+      b.textContent?.includes("Save & select engine"),
+    ) as HTMLButtonElement;
+
+    // Disabled when empty
+    expect(saveBtn.disabled).toBe(true);
+
+    modelInput.value = "claude-3-7-sonnet";
+    modelInput.dispatchEvent(new Event("input"));
+    await settle(root.host);
+    expect(saveBtn.disabled).toBe(false);
+
+    saveBtn.click();
+    await settle(root.host);
+
+    const put = calls.find((c) => c.url === "/api/engines/claude-3-7-sonnet");
+    expect(put).toBeDefined();
+    expect(put?.method).toBe("PUT");
+    expect(put?.body).toMatchObject({
+      model: "claude-3-7-sonnet",
+      harness: "claude-code",
+    });
+  });
+
+  it("enforces layout bounding styles so custom engine controls do not overflow", async () => {
+    serve();
+    await mount();
+    const styles = (customElements.get("inc-hiring") as unknown as { styles: { cssText: string }[] }).styles;
+    const cssText = styles.map((s) => s.cssText).join("\n");
+
+    expect(cssText).toContain(".custom-engine-box");
+    expect(cssText).toContain("max-width: 100%");
+    expect(cssText).toContain("box-sizing: border-box");
+    expect(cssText).toContain(".custom-engine-grid");
+    expect(cssText).toContain("grid-template-columns: 1fr");
+  });
+});
