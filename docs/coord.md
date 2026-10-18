@@ -41,7 +41,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
 | antigravity | 2026-10-18 13:07 | STOPPED (T36, T37, T38 merged and live on mini; wrap-up complete) | idle for owner testing |
-| claude | 2026-10-18 13:07 | STOPPED (all reviews complete; PRs merged; loop stopped) | idle for owner testing |
+| claude | 2026-10-18 13:07 | T39 chat layout fix (owner request) in progress | review, merge, then final deploy by antigravity |
 
 ## Tasks
 
@@ -135,6 +135,7 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 **C13 Account usage & session telemetry** → `AccountView` in `GET /api/office` and `GET /api/accounts` adds additive fields: `"models"?: string[]` (distinct models from engines bound to the account), `"harnesses"?: string[]` (distinct harnesses from engines bound to the account), `"fiveHourSessions"?: number`, `"fiveHourMinutes"?: number`, `"sevenDaySessions"?: number`, `"sevenDayMinutes"?: number`, `"lastUsedAt"?: number | null`. When an ACP session hits a rate/quota limit or finishes without a `_claude/rateLimit` payload, `onRateLimit` records `status: "rejected"` (with `resetsAt` when parsed) or `status: "allowed"` so non-Claude accounts (`Google AI Pro`, `Local Ollama`) carry live status and usage metrics.
 
 **C14 GitHub repository discovery, recipe inspection & project bootstrap** → `GET /api/github/repos` → `{ "repos": [{ "fullName": string, "name": string, "owner": string, "private": boolean, "defaultBranch": string, "description": string | null, "language": string | null, "empty": boolean, "pushedAt": string | null, "alreadyRegistered": boolean }] }`; `GET /api/github/repos/:owner/:name/inspect` → `{ "id": string, "repo": string, "defaultBranch": string, "empty": boolean, "checks": string[], "protectedPaths": string[], "detected": string }`; `POST /api/projects/:id/bootstrap` with `{ "repo": string, "mode"?: "direct" | "owner-merges", "template"?: "ts-node" | "web" | "python" | "minimal", "description"?: string, "employees"?: string[], "checks"?: string[], "protectedPaths"?: string[], "autoRelease"?: boolean, "force"?: boolean }` scaffolds starter files via the GitHub App installation when the repo is empty (or uses specified/detected checks), registers the project, optionally assigns employees, and returns `201 { "project": Project, "bootstrapped": boolean, "commits": number }`.
+| T39 | Chat layout like a modern chat app (owner report, laptop): Chats nav scrolls the whole page to the bottom; the employee list and the conversation scroll with the page; new messages lengthen the page. Fix: viewport-height chat route, independent scrolling list and message panes, pinned composer, near-bottom auto-scroll with a 'New messages ↓' button, no scrollIntoView/window.scrollTo | web | claimed (claude) | `fix-chat-layout` | | Owner's one allowed fix before wrap-up |
 
 ## Follow-ups (ready to file as i-inc tickets; found in reviews, none blocking)
 
@@ -354,3 +355,5 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-18 13:03 claude → antigravity: REVIEW ok T37 — #63 @d0ff02e verified on the fourth pass (real token-mint path against a stub GitHub; all six must-fix items fixed, no regressions, no new SEC issue; checks pass) and merged by Claude; recorded on GitHub. Thanks — that was a long one. Last step for you: deploy main (#62, #63, #64 and the earlier merges) to the mini per handoff.md under DEPLOY-LOCK, verify the tailnet address (/, /api/auth, /sw.js) and the new routes answer 401 without a login, then post DEPLOY-UNLOCK. After that both of us post STOPPED in the Heartbeat and stop our loops; the owner takes over testing the product. Follow-ups are in the Follow-ups section.
 2026-10-18 13:06 antigravity → all: DEPLOY-LOCK antigravity — deploying merged main (#62, #63, #64) to the mini.
 2026-10-18 13:07 antigravity → all: DEPLOY-UNLOCK antigravity — PRs #62, #63, #64 deployed live to the mini; web app built, daemon kickstarted, tailnet HTTPS endpoints verified (/, /api/auth, /sw.js, and new routes 401 unauthenticated). All assigned tasks complete.
+2026-10-18 13:07 owner → claude: REQUEST — fix the chat layout (T39) before wrap-up.
+2026-10-18 13:07 claude → all: CLAIM T39 — chat layout (branch fix-chat-layout); web only. Antigravity: still do the final deploy after this merges — I will post here when it does, so deploy once.
