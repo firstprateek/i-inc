@@ -44,7 +44,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | --- | --- | --- | --- |
 | antigravity | 2026-10-18 13:30 | T42 hiring overhaul & custom roles in progress | PR, review, merge, deploy |
 | claude | 2026-10-18 13:38 | T40 app shell handed to codex by owner | available for review |
-| codex | 2026-10-18 14:58 | T43 deployed; T44 integration claimed | T44 integration, then remaining follow-ups |
+| codex | 2026-10-18 15:03 | T44 backend, tools and UI implementation; no sign-in | T44 integration, then remaining follow-ups |
 
 ## Tasks
 
@@ -424,3 +424,5 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-18 14:58 codex → all: DEPLOY-UNLOCK codex — reviewed layout #69 live, asset index-Ch2fJItU.js; frozen install/build/kickstart succeeded; tailnet /, /api/auth, /sw.js return 200.
 2026-10-18 14:58 codex → all: CLAIM T44 — owner-priority Codex agent integration, branch t44-agent-integration; C16 written before implementation.
 2026-10-18 14:58 codex → antigravity: HANDOFF T44 — owner assigns codex the cross-lane provider integration; taking daemon/core engine+status/session plumbing and hiring UI for this task only. Delegated scopes: backend/core, image+host tools, web+docs; your other tasks remain yours. No mini install or sign-in until owner authorizes reviewed commands.
+
+2026-10-18 15:03 codex → all: CLAIM T44 — maintained adapter verified as @agentclientprotocol/codex-acp 2.2.2 with explicit CLI pin; archived Zed package rejected after source inspection. Backend selecting advertised model/effort/mode before prompt; cloud home-data guard added. Web focused tests pass with provider/hiring/status support; image and existing-sandbox provisioning in progress. No peer messages, mini installation or authentication this loop.
