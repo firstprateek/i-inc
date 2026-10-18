@@ -37,6 +37,11 @@ export type Entry =
       ticketId: string;
       title: string;
       confirmed: boolean;
+      /** C12: where the draft will be filed, whether that came from the message, and the options. */
+      project?: string | undefined;
+      inferred?: boolean | undefined;
+      ambiguous?: string[] | undefined;
+      choices?: string[] | undefined;
       status?: SendStatus | undefined;
     }
   | {
@@ -101,6 +106,7 @@ export class IncChat extends LitElement {
     busy: { state: true },
     thinking: { state: true },
     error: { state: true },
+    picks: { state: true },
   };
   declare employeeId: string;
   declare threads: Thread[];
@@ -110,6 +116,8 @@ export class IncChat extends LitElement {
   declare busy: boolean;
   declare thinking: boolean;
   declare error: string | null;
+  /** Projects the owner has picked for drafts not yet put on the board, by ticket. */
+  declare picks: Record<string, string>;
 
   // Track pending optimistic messages across employees to prevent cross-thread leaks
   private pendingEntries: (Entry & { from: "owner" })[] = [];
@@ -137,6 +145,7 @@ export class IncChat extends LitElement {
     this.busy = false;
     this.thinking = false;
     this.error = null;
+    this.picks = {};
   }
 
   override connectedCallback(): void {
@@ -366,8 +375,8 @@ export class IncChat extends LitElement {
     await this.executeSend(entry as Entry & { from: "owner" });
   }
 
-  private async confirm(ticketId: string) {
-    await json("POST", `/api/chat/${this.employeeId}/drafts/${ticketId}`);
+  private async confirm(ticketId: string, project?: string) {
+    await json("POST", `/api/chat/${this.employeeId}/drafts/${ticketId}`, project ? { project } : undefined);
     await this.load();
     refreshNow();
   }
@@ -416,6 +425,14 @@ export class IncChat extends LitElement {
       .send svg { width: 20px; height: 20px; display: block; }
       .send:disabled { opacity: 0.4; cursor: default; }
       .empty { color: var(--ink-2); }
+      .project { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 14px; }
+      .project .tag { margin: 0; }
+      .project label { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; color: var(--ink-2); }
+      .project select { font: 16px/1.2 var(--body); min-height: 44px; max-width: 100%; padding: 0 12px; border-radius: 12px;
+        border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); box-sizing: border-box; }
+      .project select:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+      .ticket .btn:disabled { opacity: 0.4; cursor: default; }
+      .project .hint { flex-basis: 100%; color: var(--ink-2); }
       .me .tag { display: inline-block; margin-bottom: 4px; }
       .urgent[aria-pressed="true"] { border: 2px solid var(--ink); padding: 0 17px; }
       .head > div { min-width: 0; }
@@ -492,6 +509,47 @@ export class IncChat extends LitElement {
     return "text" in e ? (e.text ?? null) : null;
   }
 
+  /** C12: the project a draft will be filed under, with a way to change it before it goes on the board. */
+  private projectRow(e: Extract<Entry, { kind: "draft" }>) {
+    // An older daemon sends neither: show nothing new.
+    if (e.inferred === undefined || !e.project) return "";
+    const picked = this.picks[e.ticketId];
+    const open = this.needsPick(e);
+    const chosen = picked ?? (open ? "" : e.project);
+    const options = e.choices?.includes(e.project) ? e.choices : [e.project, ...(e.choices ?? [])];
+    const changed = picked !== undefined && picked !== e.project;
+    return html`<div class="project">
+      <span>Project: <b>${chosen || "not chosen yet"}</b></span>
+      ${e.inferred && !changed && !e.confirmed ? html`<span class="tag">inferred</span>` : ""}
+      ${
+        !e.confirmed && (options.length > 1 || open)
+          ? html`<label>${open ? "Choose" : "Change"}
+              <select aria-label="Project for #${e.ticketId}" .value=${chosen}
+                @change=${(ev: Event) => {
+                  this.picks = { ...this.picks, [e.ticketId]: (ev.target as HTMLSelectElement).value };
+                }}>
+                ${open ? html`<option value="" ?selected=${chosen === ""} disabled>Choose a project…</option>` : ""}
+                ${options.map((o) => html`<option value=${o} ?selected=${o === chosen}>${o}</option>`)}
+              </select></label>`
+          : ""
+      }
+      ${
+        e.ambiguous?.length && !e.confirmed && open
+          ? html`<span class="hint">${
+              e.ambiguous.length > 1
+                ? html`This names more than one project (${e.ambiguous.join(", ")}). Pick one.`
+                : html`This names ${e.ambiguous.join(", ")}, which isn't one of this employee's projects. Pick one.`
+            }</span>`
+          : ""
+      }
+    </div>`;
+  }
+
+  /** A draft that named several projects waits for the owner to pick one before it goes on the board. */
+  private needsPick(e: Extract<Entry, { kind: "draft" }>): boolean {
+    return !e.confirmed && !!e.ambiguous?.length && !this.picks[e.ticketId];
+  }
+
   private entry(e: Entry) {
     if (e.from === "owner") {
       const statusText =
@@ -517,10 +575,11 @@ export class IncChat extends LitElement {
       return html`<div class="ticket">
         <span class="tag" style="align-self:flex-start">draft ticket</span>
         <b>${e.title}</b>
+        ${this.projectRow(e)}
         ${
           e.confirmed
             ? html`<a href="#/ticket/${e.ticketId}">On the board as #${e.ticketId}</a>`
-            : html`<div style="display:flex;flex-wrap:wrap;gap:8px"><button type="button" class="btn" @click=${() => this.confirm(e.ticketId)}>Put on the board</button>
+            : html`<div style="display:flex;flex-wrap:wrap;gap:8px"><button type="button" class="btn" ?disabled=${this.needsPick(e)} @click=${() => this.confirm(e.ticketId, this.picks[e.ticketId])}>Put on the board</button>
               <a class="btn ghost" href="#/ticket/${e.ticketId}" style="display:inline-flex;align-items:center;text-decoration:none">Open</a></div>`
         }
       </div>`;

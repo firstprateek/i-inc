@@ -5,7 +5,19 @@ import type { Db } from "./db.ts";
 export type ChatEntry =
   | { from: "owner"; at: number; text: string; urgent?: boolean }
   | { from: "employee"; at: number; text: string }
-  | { from: "employee"; at: number; kind: "draft"; ticketId: Id; title: string; confirmed: boolean }
+  | {
+      from: "employee";
+      at: number;
+      kind: "draft";
+      ticketId: Id;
+      title: string;
+      confirmed: boolean;
+      /** The project the draft will be filed under (C12), whether it came from the message, and the rest. */
+      project?: string;
+      inferred?: boolean;
+      ambiguous?: string[];
+      choices?: string[];
+    }
   | { from: "employee"; at: number; kind: "errand"; ticketId: Id; title: string }
   | { from: "system"; at: number; text: string };
 
@@ -34,8 +46,8 @@ export class ChatLog {
       .map((r) => JSON.parse(r.body) as ChatEntry);
   }
 
-  /** Marks a draft ticket in the thread as put on the board. */
-  confirm(employeeId: Id, ticketId: Id): void {
+  /** Marks a draft ticket in the thread as put on the board; `project` records the owner's choice. */
+  confirm(employeeId: Id, ticketId: Id, project?: string): void {
     const rows = this.db.all<{ seq: number; body: string }>(
       "SELECT seq, body FROM chat WHERE employee_id = ?",
       employeeId,
@@ -45,7 +57,11 @@ export class ChatLog {
       if ("kind" in e && e.kind === "draft" && e.ticketId === ticketId) {
         this.db.run(
           "UPDATE chat SET body = ? WHERE employee_id = ? AND seq = ?",
-          JSON.stringify({ ...e, confirmed: true }),
+          JSON.stringify({
+            ...e,
+            confirmed: true,
+            ...(project !== undefined && project !== e.project ? { project, inferred: false } : {}),
+          }),
           employeeId,
           r.seq,
         );

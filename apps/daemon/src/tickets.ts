@@ -62,7 +62,7 @@ export class Tickets {
   }
 
   all(): TicketRecord[] {
-    return this.rows("ORDER BY created_at");
+    return this.rows("ORDER BY created_at, CAST(id AS INTEGER)");
   }
 
   /** Assigns a ticket; `pickedAt` records a standing order picking it up (for its daily limit). */
@@ -75,6 +75,13 @@ export class Tickets {
       pickedAt,
       id,
     );
+    this.onChange?.(id);
+  }
+
+  setProject(id: Id, project: string): void {
+    const r = this.get(id);
+    if (!r) throw new Error(`no ticket ${id}`);
+    this.db.run("UPDATE tickets SET body = ? WHERE id = ?", JSON.stringify({ ...r.ticket, project }), id);
     this.onChange?.(id);
   }
 

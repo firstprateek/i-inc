@@ -327,6 +327,193 @@ describe("chat", () => {
     expect(thread.find((e: { kind?: string }) => e.kind === "draft").confirmed).toBe(true);
   });
 
+  it("prioritizes employee's recent project and infers mentioned project in chat ask", async () => {
+    const app = await testApp();
+    // Seed a previous ticket for ada on Duet:
+    app.deps.tickets.create(
+      {
+        title: "Refunds are counted as spending",
+        project: "Duet",
+        type: "fix",
+        effort: "medium",
+        doneWhen: [],
+        assignee: "ada",
+      },
+      app.clock.now(),
+    );
+
+    // Give ada assigned projects ["website", "Duet"]:
+    const adaEmp = app.deps.registry.employees().find((e) => e.id === "ada");
+    if (!adaEmp) throw new Error("ada missing");
+    app.deps.registry.hire({
+      ...adaEmp,
+      projects: ["website", "Duet"],
+    });
+
+    // 1. Without mentioning a project, defaults to recent ticket project (Duet), not e.projects[0] (website)
+    const askRecent = await app.call("POST", "/api/chat/ada", { text: "Add more currency symbols" });
+    const draftRecent = askRecent.body.entries.at(-1);
+    const cardRecent = (await app.call("GET", `/api/tickets/${draftRecent.ticketId}`)).body.ticket;
+    expect(cardRecent.project).toBe("Duet");
+
+    // 2. When mentioning an assigned project ("website"), it infers "website"
+    const askMentioned = await app.call("POST", "/api/chat/ada", {
+      text: "Update hero CTA button on website",
+    });
+    const draftMentioned = askMentioned.body.entries.at(-1);
+    const cardMentioned = (await app.call("GET", `/api/tickets/${draftMentioned.ticketId}`)).body.ticket;
+    expect(cardMentioned.project).toBe("website");
+  });
+
+  describe("which project a chat draft is filed under (C12)", () => {
+    async function withProjects(projects: string[]) {
+      const app = await testApp();
+      const ada = app.deps.registry.employees().find((e) => e.id === "ada");
+      if (!ada) throw new Error("ada missing");
+      app.deps.registry.hire({ ...ada, projects });
+      const file = (project: string, at = app.clock.now()) =>
+        app.deps.tickets.create(
+          { title: `On ${project}`, project, type: "fix", effort: "low", doneWhen: [], assignee: "ada" },
+          at,
+        );
+      const ask = async (text: string) =>
+        (await app.call("POST", "/api/chat/ada", { text })).body.entries.at(-1);
+      return { app, file, ask };
+    }
+
+    it("reports the inferred project, that it was inferred, and the choices", async () => {
+      const { ask } = await withProjects(["Duet", "i-inc"]);
+      expect(await ask("Add refunds to duet")).toMatchObject({
+        kind: "draft",
+        project: "Duet",
+        inferred: true,
+        choices: ["Duet", "i-inc"],
+      });
+      const plain = await ask("Add a thing");
+      expect(plain).toMatchObject({ project: "Duet", inferred: false });
+      expect(plain).not.toHaveProperty("ambiguous");
+    });
+
+    it("lists both names and infers nothing when two projects are named", async () => {
+      const { ask } = await withProjects(["Duet", "i-inc"]);
+      for (const text of ["Fix the duet bug in i-inc", "Fix i-inc and the duet bug"]) {
+        const draft = await ask(text);
+        expect(draft).toMatchObject({ kind: "draft", inferred: false });
+        expect([...draft.ambiguous].sort()).toEqual(["Duet", "i-inc"]);
+      }
+    });
+
+    it("breaks a recency tie by ticket order, and never leaves the employee's own projects", async () => {
+      const { app, file, ask } = await withProjects(["Duet", "i-inc"]);
+      file("Duet");
+      file("i-inc"); // same instant: the later ticket wins
+      expect((await ask("Add a thing")).project).toBe("i-inc");
+      file("elsewhere"); // newest, but not one of Ada's projects
+      expect((await ask("Add another thing")).project).toBe("i-inc");
+      const card = (await app.call("GET", `/api/tickets/${(await ask("Add one more")).ticketId}`)).body
+        .ticket;
+      expect(card.project).toBe("i-inc");
+    });
+
+    it("falls back to the first of Ada's projects when none of her tickets is on one", async () => {
+      const { file, ask } = await withProjects(["Duet", "i-inc"]);
+      file("elsewhere");
+      expect((await ask("Add a thing")).project).toBe("Duet");
+    });
+
+    it("files under the project the owner picks, and rejects one that isn't Ada's", async () => {
+      const { app, ask } = await withProjects(["Duet", "i-inc"]);
+      const draft = await ask("Add refunds to duet");
+      for (const project of ["elsewhere", "", 7, ["Duet"]]) {
+        const bad = await app.call("POST", `/api/chat/ada/drafts/${draft.ticketId}`, { project });
+        expect(bad.status).toBe(400);
+      }
+      let card = (await app.call("GET", `/api/tickets/${draft.ticketId}`)).body.ticket;
+      expect(card).toMatchObject({ held: true, project: "Duet" });
+
+      const ok = await app.call("POST", `/api/chat/ada/drafts/${draft.ticketId}`, { project: "i-inc" });
+      expect(ok.body).toEqual({ ok: true, project: "i-inc" });
+      card = (await app.call("GET", `/api/tickets/${draft.ticketId}`)).body.ticket;
+      expect(card).toMatchObject({ held: false, project: "i-inc" });
+      const entry = (await app.call("GET", "/api/chat/ada")).body.entries.find(
+        (e: { kind?: string }) => e.kind === "draft",
+      );
+      expect(entry).toMatchObject({ confirmed: true, project: "i-inc", inferred: false });
+    });
+
+    it("keeps the inferred project when confirmed without a body, or with the same project", async () => {
+      const { app, ask } = await withProjects(["Duet", "i-inc"]);
+      const a = await ask("Add refunds to duet");
+      expect((await app.call("POST", `/api/chat/ada/drafts/${a.ticketId}`)).body).toEqual({
+        ok: true,
+        project: "Duet",
+      });
+      const b = await ask("Add refunds to i-inc");
+      await app.call("POST", `/api/chat/ada/drafts/${b.ticketId}`, { project: "i-inc" });
+      const entry = (await app.call("GET", "/api/chat/ada")).body.entries.filter(
+        (e: { kind?: string }) => e.kind === "draft",
+      );
+      expect(entry[0]).toMatchObject({ project: "Duet", inferred: true, confirmed: true });
+      expect(entry[1]).toMatchObject({ project: "i-inc", inferred: true, confirmed: true });
+    });
+
+    it("infers a company project for an employee with no list (the demo's Kit)", async () => {
+      const app = await testApp();
+      const draft = (
+        await app.call("POST", "/api/chat/kit", { text: "Fix the Duet login bug" })
+      ).body.entries.at(-1);
+      expect(draft).toMatchObject({ kind: "draft", project: "Duet", inferred: true });
+      expect(draft.choices).toEqual(expect.arrayContaining(["Duet", "fintrack", "listy"]));
+    });
+
+    it("treats a project the employee can't use, named with one it can, as ambiguous", async () => {
+      const { app, ask } = await withProjects(["Duet", "fintrack"]);
+      const draft = await ask("Fix the duet bug and the listy export");
+      expect(draft).toMatchObject({ inferred: false });
+      expect([...draft.ambiguous].sort()).toEqual(["Duet", "listy"]);
+      expect(draft.choices).toEqual(["Duet", "fintrack"]);
+      const bad = await app.call("POST", `/api/chat/ada/drafts/${draft.ticketId}`, { project: "listy" });
+      expect(bad.status).toBe(400);
+    });
+
+    it("holds an ambiguous draft until the owner picks a project", async () => {
+      const { app, ask } = await withProjects(["Duet", "i-inc"]);
+      const draft = await ask("Fix the duet bug in i-inc");
+      const none = await app.call("POST", `/api/chat/ada/drafts/${draft.ticketId}`);
+      expect(none.status).toBe(400);
+      expect(none.body.error).toMatch(/choose a project/);
+      expect((await app.call("GET", `/api/tickets/${draft.ticketId}`)).body.ticket.held).toBe(true);
+      const ok = await app.call("POST", `/api/chat/ada/drafts/${draft.ticketId}`, { project: "Duet" });
+      expect(ok.body).toEqual({ ok: true, project: "Duet" });
+    });
+
+    it("answers 400, not 500, to a confirm body that isn't a JSON object", async () => {
+      const { app, ask } = await withProjects(["Duet", "i-inc"]);
+      const draft = await ask("Add refunds to duet");
+      for (const raw of ["null", "[]", '"Duet"', "7", "true", "{nope", '[{"project":"Duet"}]']) {
+        const res = await app.handle(
+          new Request(`http://i.inc/api/chat/ada/drafts/${draft.ticketId}`, {
+            method: "POST",
+            body: raw,
+            headers: { "content-type": "application/json" },
+          }),
+        );
+        expect(res.status).toBe(400);
+      }
+    });
+
+    it("lets an employee without a project list use any project the company has", async () => {
+      const app = await testApp();
+      await app.call("PUT", "/api/projects/zed", { repo: "x/y", checks: ["pnpm test"] });
+      const draft = (await app.call("POST", "/api/chat/kit", { text: "Add a thing" })).body.entries.at(-1);
+      expect(draft.choices).toContain("zed");
+      const ok = await app.call("POST", `/api/chat/kit/drafts/${draft.ticketId}`, { project: "zed" });
+      expect(ok.status).toBe(200);
+      const bad = await app.call("POST", "/api/chat/kit/drafts/9999", { project: "zed" });
+      expect(bad.status).toBe(404);
+    });
+  });
+
   it("files a PA's ask as an errand straight away", async () => {
     const app = await testApp();
     const res = await app.call("POST", "/api/chat/pip", { text: "Find me flights to Bengaluru in December" });

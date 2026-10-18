@@ -52,6 +52,8 @@ export interface ApiOptions {
 type Handler = (req: Request, params: Record<string, string>) => Promise<Response>;
 
 export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) {
+  /** The projects a chat draft for this employee can be filed under: the ones it works on (C12). */
+  const projectChoices = (e: Employee): string[] => e.projects ?? d.registry.projects().map((pr) => pr.id);
   const ports = {
     clock: d.clock,
     store: d.store,
@@ -567,6 +569,11 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
               `#${r.ticket.id} ${r.ticket.title}: ${s.status}${s.outputs.plan ? `. Plan: ${s.outputs.plan}` : ""}`,
           )
           .join("\n");
+        // The last project it worked on, but only one it may work on (the scheduler refuses the rest).
+        const recentProject = mine
+          .map(({ r }) => r.ticket.project)
+          .reverse()
+          .find((pr) => !e.projects || e.projects.includes(pr));
         const out = await handleMessage(
           said,
           {
@@ -574,7 +581,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
             engine: d.registry.engine(e.engines.default),
             current: current ? { ...current.r.ticket, assignee: e.id } : null,
             notes,
-            defaultProject: e.projects?.[0] ?? mine.at(-1)?.r.ticket.project ?? "General",
+            defaultProject: recentProject ?? e.projects?.[0] ?? "General",
+            companyProjects: d.registry.projects().map((pr) => pr.id),
           },
           d.helper,
           d.chat,
@@ -591,6 +599,12 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
             ticketId: t.id,
             title: t.title,
             confirmed: false,
+            project: t.project,
+            inferred: out.inferred,
+            ...(out.ambiguous ? { ambiguous: out.ambiguous } : {}),
+            choices: projectChoices(e).includes(t.project)
+              ? projectChoices(e)
+              : [...projectChoices(e), t.project],
           });
         }
         if (out.kind === "errand") {
@@ -623,13 +637,43 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     [
       "POST",
       "/api/chat/:id/drafts/:ticket",
-      async (_, p) => {
+      async (req, p) => {
         const r = d.tickets.get(p.ticket ?? "");
         if (!r?.hold || r.ticket.assignee !== p.id) return json({ error: "no such draft" }, 404);
+        // The owner may change the project before it goes on the board, but only to one of the employee's.
+        const raw = await req.text();
+        let parsed: unknown = {};
+        if (raw.trim() !== "") {
+          try {
+            parsed = JSON.parse(raw);
+          } catch {
+            return json({ error: "send a JSON object" }, 400);
+          }
+        }
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+          return json({ error: "send a JSON object" }, 400);
+        }
+        const body = parsed as { project?: unknown };
+        const emp = d.registry.employees().find((x) => x.id === p.id);
+        let project: string | undefined;
+        if (body.project !== undefined && body.project !== null) {
+          if (typeof body.project !== "string" || !emp || !projectChoices(emp).includes(body.project)) {
+            return json({ error: "that isn't one of this employee's projects" }, 400);
+          }
+          project = body.project;
+        }
+        // A draft that named several projects (or one the employee can't use) waits for the owner's pick.
+        const entry = d.chatLog
+          .thread(p.id ?? "")
+          .find((x) => "kind" in x && x.kind === "draft" && x.ticketId === r.ticket.id);
+        if (entry && "ambiguous" in entry && entry.ambiguous?.length && project === undefined) {
+          return json({ error: "choose a project first" }, 400);
+        }
+        if (project !== undefined && project !== r.ticket.project) d.tickets.setProject(r.ticket.id, project);
         d.tickets.setHold(r.ticket.id, false);
-        d.chatLog.confirm(p.id ?? "", r.ticket.id);
+        d.chatLog.confirm(p.id ?? "", r.ticket.id, project);
         await daemon.tick();
-        return json({ ok: true });
+        return json({ ok: true, project: project ?? r.ticket.project });
       },
     ],
 
