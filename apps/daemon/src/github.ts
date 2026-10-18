@@ -67,15 +67,24 @@ export function appJwt(appId: string, privateKey: string, nowMs: number): string
 /** Reads the App's key, refusing one that anyone but its owner can read. */
 export const readPrivateKey = readOwnerOnly;
 
+function sanitizedEndpoint(url: string): string {
+  return (
+    url
+      .replace(/https:\/\/[^/]+/, "")
+      .replace(/\/installations\/\d+/, "/installations/[id]")
+      .split("?")[0] ?? "/"
+  );
+}
+
 /** Structured error representing an upstream GitHub HTTP failure without leaking secrets or IDs. */
 export class UpstreamGitHubError extends Error {
   constructor(
     public readonly status: number,
     public readonly method: string,
     public readonly endpoint: string,
-    public readonly detail: string,
+    public readonly detail = "",
   ) {
-    super(`GitHub ${method} ${endpoint} failed: ${status} ${detail}`.trim());
+    super(`GitHub ${method} ${endpoint} failed with HTTP ${status}`);
     this.name = "UpstreamGitHubError";
   }
 }
@@ -88,6 +97,9 @@ async function call(
 ): Promise<Record<string, unknown>> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const method = init.method ?? "GET";
+  const sanitized = sanitizedEndpoint(url);
+
   try {
     const res = await f(url, {
       ...init,
@@ -99,19 +111,38 @@ async function call(
         ...init.headers,
       },
     });
-    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+
+    let body: Record<string, unknown> = {};
+    try {
+      body = (await res.json()) as Record<string, unknown>;
+    } catch (_parseErr) {
+      if (controller.signal.aborted || init.signal?.aborted) {
+        throw new UpstreamGitHubError(504, method, sanitized, "timeout reading response body");
+      }
+      if (res.ok) {
+        throw new UpstreamGitHubError(502, method, sanitized, "invalid json from GitHub API");
+      }
+    }
+
     if (!res.ok) {
-      const sanitized = url
-        .replace(/https:\/\/[^/]+/, "")
-        .replace(/\/installations\/\d+/, "/installations/[id]");
       throw new UpstreamGitHubError(
         res.status,
-        init.method ?? "GET",
+        method,
         sanitized,
         typeof body.message === "string" ? body.message : "",
       );
     }
     return body;
+  } catch (err) {
+    if (err instanceof UpstreamGitHubError) throw err;
+    if (
+      controller.signal.aborted ||
+      init.signal?.aborted ||
+      (err instanceof Error && err.name === "AbortError")
+    ) {
+      throw new UpstreamGitHubError(504, method, sanitized, "timeout");
+    }
+    throw new UpstreamGitHubError(502, method, sanitized, "network error");
   } finally {
     clearTimeout(timer);
   }
@@ -277,6 +308,8 @@ export interface CiOptions {
   api?: string;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** Branch name for branch rules (default: main). */
+  branch?: string;
   /** How long CI may take in all. */
   timeoutMs?: number;
   /** How long to wait for the first check to show up before deciding the repo has no CI. */
@@ -305,7 +338,10 @@ export async function waitForCi(
   const get = async (url: string) =>
     call(f, url, { method: "GET", headers: { authorization: `Bearer ${await tokens.token(repo)}` } });
 
-  const rules = (await get(`${api}/repos/${checkRepo(repo)}/rules/branches/main`)) as unknown;
+  const targetBranch = encodeURIComponent(o.branch ?? "main");
+  const rules = (await get(`${api}/repos/${checkRepo(repo)}/rules/branches/${targetBranch}`).catch(
+    () => [],
+  )) as unknown;
   const required = (Array.isArray(rules) ? (rules as Record<string, unknown>[]) : [])
     .filter((r) => r.type === "required_status_checks")
     .flatMap(
@@ -477,7 +513,8 @@ export async function inspectRepo(
   });
   const defaultBranch = String(repoMeta.default_branch ?? "main");
   const size = typeof repoMeta.size === "number" ? repoMeta.size : 0;
-  const empty = size === 0 && !repoMeta.pushed_at;
+  const pushedAt = typeof repoMeta.pushed_at === "string" ? repoMeta.pushed_at : null;
+  const empty = size === 0 || !pushedAt;
 
   const id = name
     .toLowerCase()
@@ -490,8 +527,8 @@ export async function inspectRepo(
       repo,
       defaultBranch,
       empty: true,
-      checks: ["pnpm install --frozen-lockfile", "pnpm check", "pnpm test"],
-      protectedPaths: ["package.json", "pnpm-lock.yaml"],
+      checks: ["pnpm install", "pnpm test"],
+      protectedPaths: [],
       detected: "empty",
     };
   }
@@ -503,8 +540,19 @@ export async function inspectRepo(
       headers: authHeader,
     });
     contents = Array.isArray(list) ? (list as Record<string, unknown>[]) : [];
-  } catch {
-    // repo contents not accessible or directory is empty
+  } catch (err) {
+    if (err instanceof UpstreamGitHubError && err.status === 404) {
+      return {
+        id,
+        repo,
+        defaultBranch,
+        empty: true,
+        checks: ["pnpm install", "pnpm test"],
+        protectedPaths: [],
+        detected: "empty",
+      };
+    }
+    throw err;
   }
 
   const fileNames = new Set(contents.map((c) => String(c.name ?? "")));
@@ -645,8 +693,19 @@ export async function bootstrapRepo(
       ? opts.description.trim()
       : "Project managed by i.inc";
   const description = rawDesc.slice(0, 500);
-  const tomlDesc = description.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r?\n/g, " ");
-  const tomlName = name.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const sanitizeToml = (s: string) =>
+    s
+      .replace(/\0/g, "")
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"')
+      .replace(/[\r\n\t]/g, " ")
+      .slice(0, 500);
+
+  const tomlDesc = sanitizeToml(description);
+  const tomlName = sanitizeToml(name).slice(0, 100);
+
+  const rawBranch = typeof opts.defaultBranch === "string" ? opts.defaultBranch.trim() : "";
+  const defaultBranch = rawBranch && /^[A-Za-z0-9_.-]{1,100}$/.test(rawBranch) ? rawBranch : undefined;
 
   const files: Record<string, string> = {};
 
@@ -685,7 +744,7 @@ export async function bootstrapRepo(
     files["src/index.ts"] =
       `export function greet(name = "World"): string {\n  return \`Hello, \${name}!\`;\n}\n`;
     files["test/index.test.ts"] =
-      `import { describe, expect, it } from "vitest";\nimport { greet } from "../src/index.js";\n\ndescribe("greet", () => {\n  it("greets by name", () => {\n    expect(greet(${JSON.stringify(name)})).toBe(${JSON.stringify(`Hello, ${name}!`)};\n  });\n});\n`;
+      `import { describe, expect, it } from "vitest";\nimport { greet } from "../src/index.js";\n\ndescribe("greet", () => {\n  it("greets by name", () => {\n    expect(greet(${JSON.stringify(name)})).toBe(${JSON.stringify(`Hello, ${name}!`)});\n  });\n});\n`;
     files["README.md"] = `# ${name}\n\n${description}\n`;
     files[".gitignore"] = "node_modules/\ndist/\n";
   } else if (template === "web") {
@@ -708,10 +767,27 @@ export async function bootstrapRepo(
       null,
       2,
     )}\n`;
+    files["tsconfig.json"] = `${JSON.stringify(
+      {
+        compilerOptions: {
+          target: "ES2022",
+          module: "ESNext",
+          moduleResolution: "bundler",
+          strict: true,
+          skipLibCheck: true,
+          jsx: "preserve",
+        },
+        include: ["src", "test"],
+      },
+      null,
+      2,
+    )}\n`;
     files["index.html"] =
       `<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <title>${name}</title>\n</head>\n<body>\n  <div id="app"></div>\n  <script type="module" src="/src/main.ts"></script>\n</body>\n</html>\n`;
     files["src/main.ts"] =
       `document.querySelector("#app")!.innerHTML = "<h1>" + ${JSON.stringify(name)} + "</h1>";\n`;
+    files["test/main.test.ts"] =
+      `import { describe, expect, it } from "vitest";\n\ndescribe("app", () => {\n  it("initializes", () => {\n    expect(true).toBe(true);\n  });\n});\n`;
     files["README.md"] = `# ${name}\n\n${description}\n`;
     files[".gitignore"] = "node_modules/\ndist/\n";
   } else if (template === "python") {
@@ -735,7 +811,7 @@ export async function bootstrapRepo(
       body: JSON.stringify({
         message: `Initialize ${path} (i.inc scaffold)`,
         content: encoded,
-        ...(opts.defaultBranch ? { branch: opts.defaultBranch } : {}),
+        ...(defaultBranch ? { branch: defaultBranch } : {}),
       }),
     });
     commits++;

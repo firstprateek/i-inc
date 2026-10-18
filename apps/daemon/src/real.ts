@@ -135,6 +135,7 @@ export function realPorts(o: RealOptions): Pick<
       new MachineHarness(
         {
           recipe: (project) => registry.project(project)?.checks,
+          defaultBranch: (project) => registry.project(project)?.defaultBranch,
           worktree: (ticketId) => workDir(ticketId, base),
           machine,
           policy: (project) => registry.projectPolicy(project),
@@ -145,8 +146,10 @@ export function realPorts(o: RealOptions): Pick<
                   return repo ? { GH_TOKEN: await github.tokens.token(repo) } : {};
                 },
                 ci: async (ticket, sha) => {
-                  const repo = registry.project(ticket.project)?.repo;
-                  return repo ? waitForCi(github.tokens, repo, sha) : { ok: true };
+                  const proj = registry.project(ticket.project);
+                  const repo = proj?.repo;
+                  const branch = proj?.defaultBranch ?? "main";
+                  return repo ? waitForCi(github.tokens, repo, sha, { branch }) : { ok: true };
                 },
               }
             : {}),

@@ -56,6 +56,7 @@ export class IncSetupProjects extends Loader<Project[]> {
     newProjectDesc: { state: true },
     newProjectChecks: { state: true },
     newProjectEmployees: { state: true },
+    newProjectDefaultBranch: { state: true },
     addNote: { state: true },
     allEmployees: { state: true },
   };
@@ -80,6 +81,7 @@ export class IncSetupProjects extends Loader<Project[]> {
   declare newProjectDesc: string;
   declare newProjectChecks: string[];
   declare newProjectEmployees: string[];
+  declare newProjectDefaultBranch: string;
   declare addNote: Note | undefined;
   declare allEmployees: Employee[];
 
@@ -103,8 +105,9 @@ export class IncSetupProjects extends Loader<Project[]> {
     this.newProjectMode = "direct";
     this.newProjectTemplate = "ts-node";
     this.newProjectDesc = "";
-    this.newProjectChecks = ["pnpm install --frozen-lockfile", "pnpm check", "pnpm test"];
+    this.newProjectChecks = ["pnpm install", "pnpm test"];
     this.newProjectEmployees = [];
+    this.newProjectDefaultBranch = "main";
     this.addNote = undefined;
     this.allEmployees = [];
   }
@@ -147,6 +150,7 @@ export class IncSetupProjects extends Loader<Project[]> {
       .template-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
       .template-btn { border: 1px solid var(--line); border-radius: 8px; padding: 8px; background: var(--surface); cursor: pointer; text-align: left; display: flex; flex-direction: column; gap: 2px; }
       .template-btn[aria-pressed="true"] { border-color: var(--reviewing-mark); background: var(--reviewing-bg); color: var(--reviewing-fg); }
+      .template-btn[aria-pressed="true"] .template-desc { color: inherit; opacity: 0.85; }
       .template-title { font-weight: 700; font-size: 13px; }
       .template-desc { font-size: 11px; color: var(--ink-2); }
       .employee-grid { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -197,15 +201,17 @@ export class IncSetupProjects extends Loader<Project[]> {
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-|-$/g, "");
+    if (r.defaultBranch) this.newProjectDefaultBranch = r.defaultBranch;
     this.inspecting = true;
     this.inspectError = null;
     try {
       const inspect: GitHubInspectResult = await setupApi.inspectRepo(r.owner, r.name);
       this.newProjectChecks = inspect.checks;
+      if (inspect.defaultBranch) this.newProjectDefaultBranch = inspect.defaultBranch;
       this.detectedInfo = `Detected: ${inspect.detected}${inspect.empty ? " (empty repo)" : ""}`;
     } catch (e) {
       this.inspectError = message(e);
-      this.newProjectChecks = ["pnpm install --frozen-lockfile", "pnpm check", "pnpm test"];
+      this.newProjectChecks = ["pnpm install", "pnpm test"];
     } finally {
       this.inspecting = false;
     }
@@ -229,24 +235,15 @@ export class IncSetupProjects extends Loader<Project[]> {
     this.busy = "add";
     try {
       if (this.addTab === "import") {
-        await setupApi.saveProject(id, {
+        await setupApi.bootstrapProject(id, {
           repo,
           checks: this.newProjectChecks.filter((c) => c.trim()),
           mode: this.newProjectMode,
           protectedPaths: [".github/"],
-          followUpsPerDay: 3,
           autoRelease: false,
+          ...(this.newProjectDefaultBranch ? { defaultBranch: this.newProjectDefaultBranch } : {}),
+          ...(this.newProjectEmployees.length ? { employees: this.newProjectEmployees } : {}),
         });
-        if (this.newProjectEmployees.length) {
-          for (const emp of this.allEmployees) {
-            if (this.newProjectEmployees.includes(emp.id)) {
-              const current = emp.projects ?? [];
-              if (!current.includes(id)) {
-                await api.updateEmployee(emp.id, { projects: [...current, id] });
-              }
-            }
-          }
-        }
       } else {
         if (
           !confirm(
@@ -271,6 +268,7 @@ export class IncSetupProjects extends Loader<Project[]> {
           template: this.newProjectTemplate,
           ...(force ? { force: true } : {}),
           ...(this.newProjectDesc.trim() ? { description: this.newProjectDesc.trim() } : {}),
+          ...(this.newProjectDefaultBranch ? { defaultBranch: this.newProjectDefaultBranch } : {}),
           ...(this.newProjectEmployees.length ? { employees: this.newProjectEmployees } : {}),
           checks: this.newProjectChecks,
           protectedPaths: [".github/"],
@@ -464,9 +462,11 @@ export class IncSetupProjects extends Loader<Project[]> {
             ${
               this.loadingRepos
                 ? html`<p class="muted">Scanning GitHub App repositories…</p>`
-                : repos.length === 0
-                  ? html`<p class="muted">${this.githubRepos?.length ? "No matching repositories." : "No repositories accessible via GitHub App."}</p>`
-                  : html`<div class="repo-list" role="list">
+                : this.reposError
+                  ? ""
+                  : repos.length === 0
+                    ? html`<p class="muted">${this.githubRepos?.length ? "No matching repositories." : "No repositories accessible via GitHub App."}</p>`
+                    : html`<div class="repo-list" role="list">
                       ${repos.map((r) => {
                         const selected = this.newProjectRepo === r.fullName;
                         return html`<div class="repo-item ${selected ? "selected" : ""}" role="listitem">
@@ -507,8 +507,9 @@ export class IncSetupProjects extends Loader<Project[]> {
                       this.newProjectTemplate = id;
                       if (id === "python") this.newProjectChecks = ["pytest"];
                       else if (id === "minimal") this.newProjectChecks = ["echo ok"];
-                      else
-                        this.newProjectChecks = ["pnpm install --frozen-lockfile", "pnpm check", "pnpm test"];
+                      else if (id === "web")
+                        this.newProjectChecks = ["pnpm install", "pnpm check", "pnpm test", "pnpm build"];
+                      else this.newProjectChecks = ["pnpm install", "pnpm test"];
                     }}>
                     <span class="template-title">${title}</span>
                     <span class="template-desc">${desc}</span>

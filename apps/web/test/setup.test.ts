@@ -321,10 +321,10 @@ describe("projects", () => {
     submitBtn?.click();
     await settle(root.host);
 
-    // Verify PUT was sent
-    const put = calls.find((c) => c.method === "PUT" && c.url === "/api/projects/my-service");
-    expect(put).toBeDefined();
-    expect(put?.body).toMatchObject({
+    // Verify bootstrap POST was sent
+    const post = calls.find((c) => c.method === "POST" && c.url === "/api/projects/my-service/bootstrap");
+    expect(post).toBeDefined();
+    expect(post?.body).toMatchObject({
       repo: "firstprateek/my-service",
       checks: ["pnpm install --frozen-lockfile", "pnpm test"],
       mode: "direct",
