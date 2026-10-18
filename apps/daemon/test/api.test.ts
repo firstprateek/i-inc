@@ -446,7 +446,7 @@ describe("GET /api/office with accounts and rate limits", () => {
     });
   });
 
-  it("enriches accounts with bound models, harnesses, telemetry, and default status", async () => {
+  it("enriches accounts with bound models, harnesses, and windowed telemetry", async () => {
     const app = await testApp();
     const now = app.clock.now();
 
@@ -468,15 +468,65 @@ describe("GET /api/office with accounts and rate limits", () => {
       local: true,
     });
 
-    // Seed session in ticket_sessions for gemini
+    // 1. Straddling session on 5h boundary: started 5.5h ago, ended 4.5h ago
+    // In 5h window: overlaps 4.5h ago to 5h ago = 30m active, 1 session
+    // In 7d window: 60m active, 1 session
     app.deps.db.run(
       "INSERT INTO ticket_sessions (ticket_id, stage, employee_id, engine_id, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?)",
       "t1",
       "build",
       "ada",
       "gemini",
-      now - 30 * 60_000,
+      now - Math.round(5.5 * 3_600_000),
+      now - Math.round(4.5 * 3_600_000),
+    );
+
+    // 2. Overlapping sessions: 3 sessions occurring during the same 10-minute interval (-30m to -20m)
+    // Should merge to 10 minutes, not 30 minutes!
+    for (let i = 0; i < 3; i++) {
+      app.deps.db.run(
+        "INSERT INTO ticket_sessions (ticket_id, stage, employee_id, engine_id, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?)",
+        `t-overlap-${i}`,
+        "build",
+        "ada",
+        "gemini",
+        now - 30 * 60_000,
+        now - 20 * 60_000,
+      );
+    }
+
+    // 3. Orphan running session: started 6 days ago with null ended_at
+    // Must be capped at 2 hours, so 0m in 5h window, 120m in 7d window!
+    app.deps.db.run(
+      "INSERT INTO ticket_sessions (ticket_id, stage, employee_id, engine_id, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?)",
+      "t-orphan",
+      "build",
+      "ada",
+      "gemini",
+      now - 6 * 24 * 3_600_000,
+      null,
+    );
+
+    // 4. Future start session: started in future (now + 1h), must be ignored!
+    app.deps.db.run(
+      "INSERT INTO ticket_sessions (ticket_id, stage, employee_id, engine_id, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?)",
+      "t-future",
+      "build",
+      "ada",
+      "gemini",
+      now + 3_600_000,
+      now + 2 * 3_600_000,
+    );
+
+    // 5. Negative duration session: ended before start, must be ignored!
+    app.deps.db.run(
+      "INSERT INTO ticket_sessions (ticket_id, stage, employee_id, engine_id, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?)",
+      "t-negative",
+      "build",
+      "ada",
+      "gemini",
       now - 10 * 60_000,
+      now - 20 * 60_000,
     );
 
     const res = await app.call("GET", "/api/accounts");
@@ -485,20 +535,61 @@ describe("GET /api/office with accounts and rate limits", () => {
     expect(google).toBeDefined();
     expect(google.models).toEqual(["gemini-2.5-pro"]);
     expect(google.harnesses).toEqual(["antigravity"]);
-    expect(google.fiveHourSessions).toBe(1);
-    expect(google.fiveHourMinutes).toBe(20);
-    expect(google.sevenDaySessions).toBe(1);
-    expect(google.sevenDayMinutes).toBe(20);
+    // 5h window: straddling session (1) + 3 overlapping sessions (3) = 4 sessions
+    // Active minutes: 30m (straddling) + 10m (merged overlapping) = 40m
+    expect(google.fiveHourSessions).toBe(4);
+    expect(google.fiveHourMinutes).toBe(40);
+
+    // 7d window: straddling (1) + 3 overlapping (3) + 1 orphan (1) = 5 sessions
+    // Active minutes: 60m (straddling) + 10m (merged overlapping) + 120m (capped orphan) = 190m
+    expect(google.sevenDaySessions).toBe(5);
+    expect(google.sevenDayMinutes).toBe(190);
 
     const local = res.body.accounts.find((a: { id: string }) => a.id === "local-acc");
     expect(local).toBeDefined();
     expect(local.models).toEqual(["qwen3:8b"]);
     expect(local.harnesses).toEqual(["opencode"]);
     expect(local.fiveHourSessions).toBe(0);
+    expect(local.fiveHourMinutes).toBe(0);
+  });
 
-    // Verify rate limit defaults: local account defaults to "local", cloud defaults to "ready"
-    expect(res.body.rateLimits["local-acc"]?.status).toBe("local");
-    expect(res.body.rateLimits["google-pro"]?.status).toBe("ready");
+  it("expires rejected limits past resetsAt and prevents downgrade of active unexpired rejected status", async () => {
+    const app = await testApp();
+    const now = app.clock.now();
+
+    // 1. Expired rejected limit: resetsAt is in the past
+    app.deps.registry.setAccountRateLimit("expired-acc", {
+      status: "rejected",
+      resetsAt: now - 60_000,
+      fiveHourUtilization: 1.0,
+      updatedAt: now - 120_000,
+    });
+
+    // 2. Active unexpired rejected limit
+    app.deps.registry.setAccountRateLimit("active-rejected", {
+      status: "rejected",
+      resetsAt: now + 3_600_000,
+      fiveHourUtilization: 0.95,
+      updatedAt: now,
+    });
+
+    // Attempt to downgrade active-rejected with an unexpired status
+    app.deps.registry.setAccountRateLimit("active-rejected", {
+      status: "allowed",
+      updatedAt: now + 1000,
+    });
+
+    const res = await app.call("GET", "/api/accounts");
+    expect(res.status).toBe(200);
+
+    // Expired account should no longer have status: "rejected"
+    expect(res.body.rateLimits["expired-acc"]?.status).toBeUndefined();
+    expect(res.body.rateLimits["expired-acc"]?.fiveHourUtilization).toBe(1.0);
+
+    // Active unexpired account must still have status: "rejected" (downgrade rejected)
+    expect(res.body.rateLimits["active-rejected"]?.status).toBe("rejected");
+    expect(res.body.rateLimits["active-rejected"]?.resetsAt).toBe(now + 3_600_000);
+    expect(res.body.rateLimits["active-rejected"]?.fiveHourUtilization).toBe(0.95);
   });
 });
 

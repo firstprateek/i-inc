@@ -170,7 +170,21 @@ export class Registry implements Company {
     this.put("usage", u.accountId, u);
   }
   setAccountRateLimit(accountId: Id, limit: AccountRateLimit): void {
-    this.put("rate_limit", accountId, limit);
+    const existing = this.accountRateLimits()[accountId];
+    const now = limit.updatedAt ?? Date.now();
+    if (
+      existing?.status === "rejected" &&
+      existing.resetsAt &&
+      existing.resetsAt > now &&
+      limit.status !== "rejected"
+    ) {
+      // Do not downgrade an unexpired rejected status
+      return;
+    }
+    this.put("rate_limit", accountId, {
+      ...existing,
+      ...limit,
+    });
   }
   accountRateLimits(): Record<Id, AccountRateLimit> {
     const rows = this.db.all<{ id: string; body: string }>(

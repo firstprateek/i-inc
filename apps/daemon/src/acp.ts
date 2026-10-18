@@ -322,12 +322,6 @@ export class AcpAgent implements Agent {
       this.transient.delete(`${r.employee.id}/${r.ticket.id}`);
       const output = (reply.trim() ? reply : answer).trim();
       if (!output) return stuck("the session ended without an answer");
-      if (!limit.rejected && !limit.fromMeta && r.engine.accountId) {
-        this.o.onRateLimit?.(r.engine.accountId, {
-          status: "allowed",
-          updatedAt: now(),
-        });
-      }
       return { kind: "done", output };
     } catch (e) {
       return stuck(e instanceof Error ? e.message : String(e));

@@ -57,6 +57,7 @@ export function migrate(db: Db): void {
       ended_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_ticket_sessions_ticket ON ticket_sessions(ticket_id, id);
+    CREATE INDEX IF NOT EXISTS idx_ticket_sessions_started_at ON ticket_sessions(started_at);
     CREATE TABLE IF NOT EXISTS ticket_session_items (
       session_id INTEGER NOT NULL,
       seq INTEGER NOT NULL,

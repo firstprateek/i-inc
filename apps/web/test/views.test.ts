@@ -428,7 +428,17 @@ describe("the office", () => {
                 updatedAt: 1000,
               },
               local: {
-                status: "local",
+                // Expired rejection: resetsAt in the past
+                status: "rejected",
+                resetsAt: Date.now() - 60_000,
+                updatedAt: 1000,
+              },
+              claude: {
+                // Out of range utilization: clamp text and bar
+                status: "rejected",
+                resetsAt: Date.now() + 3_600_000,
+                fiveHourUtilization: 1.5,
+                sevenDayUtilization: null as unknown as number,
                 updatedAt: 1000,
               },
             },
@@ -448,8 +458,21 @@ describe("the office", () => {
     expect(root.textContent).toContain("15 sessions · 65m active");
     expect(root.textContent).toContain("Local Ollama");
     expect(root.textContent).toContain("qwen3:8b");
-    expect(root.textContent).toContain("local");
     expect(root.textContent).toContain("2 sessions · 8m active");
+
+    // Expired rejection on local: alarm chip is NOT shown
+    expect(root.querySelector(".account-item:nth-child(2) .chip.alarm")).toBeNull();
+
+    // Verify role="meter" tracks exist and have valid ARIA attributes
+    const meters = root.querySelectorAll('.quota-bar-track[role="meter"]');
+    expect(meters.length).toBeGreaterThan(0);
+    for (const meter of meters) {
+      expect(meter.getAttribute("aria-valuemin")).toBe("0");
+      expect(meter.getAttribute("aria-valuemax")).toBe("100");
+      const val = Number(meter.getAttribute("aria-valuenow"));
+      expect(val).toBeGreaterThanOrEqual(0);
+      expect(val).toBeLessThanOrEqual(100);
+    }
   });
 });
 

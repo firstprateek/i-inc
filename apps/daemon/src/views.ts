@@ -252,6 +252,32 @@ export function deskView(all: Map<Id, TicketEvent[]>, registry: Registry, now: n
 }
 
 /** Enriches accounts with bound models, harnesses, 5h/7d session counts & active minutes, and lastUsedAt. */
+const MAX_RUNNING_SESSION_MS = 2 * 3_600_000; // 2 hours cap for unended sessions
+
+function mergeIntervalMinutes(intervals: [number, number][]): number {
+  if (intervals.length === 0) return 0;
+  intervals.sort((a, b) => a[0] - b[0]);
+  const first = intervals[0];
+  if (!first) return 0;
+  let totalMs = 0;
+  let currStart = first[0];
+  let currEnd = first[1];
+  for (let i = 1; i < intervals.length; i++) {
+    const item = intervals[i];
+    if (!item) continue;
+    const [s, e] = item;
+    if (s <= currEnd) {
+      currEnd = Math.max(currEnd, e);
+    } else {
+      totalMs += currEnd - currStart;
+      currStart = s;
+      currEnd = e;
+    }
+  }
+  totalMs += currEnd - currStart;
+  return Math.max(0, Math.round(totalMs / 60_000));
+}
+
 export function enrichAccounts(
   accounts: AccountCost[],
   registry: Registry,
@@ -265,8 +291,9 @@ export function enrichAccounts(
   let sessionRows: { engine_id: string; started_at: number; ended_at: number | null }[] = [];
   try {
     sessionRows = db.all<{ engine_id: string; started_at: number; ended_at: number | null }>(
-      "SELECT engine_id, started_at, ended_at FROM ticket_sessions WHERE started_at >= ? ORDER BY started_at DESC",
+      "SELECT engine_id, started_at, ended_at FROM ticket_sessions WHERE (ended_at IS NULL OR ended_at >= ?) AND started_at <= ? ORDER BY started_at DESC",
       sevenDaysAgo,
+      now,
     );
   } catch {
     // If ticket_sessions table is not yet created
@@ -276,8 +303,9 @@ export function enrichAccounts(
   if (sessionRows.length === 0) {
     try {
       eventRows = db.all<{ body: string; at: number }>(
-        "SELECT body, at FROM events WHERE type = 'session-started' AND at >= ? ORDER BY at DESC",
+        "SELECT body, at FROM events WHERE type = 'session-started' AND at >= ? AND at <= ? ORDER BY at DESC",
         sevenDaysAgo,
+        now,
       );
     } catch {}
   }
@@ -295,29 +323,48 @@ export function enrichAccounts(
     let lastUsedAt: number | null = null;
 
     if (sessionRows.length > 0) {
+      const intervals5: [number, number][] = [];
+      const intervals7: [number, number][] = [];
+
       for (const row of sessionRows) {
         if (!engineIds.has(row.engine_id)) continue;
-        const durationMinutes = Math.max(1, Math.round(((row.ended_at ?? now) - row.started_at) / 60_000));
-        sevenDaySessions++;
-        sevenDayMinutes += durationMinutes;
-        if (row.started_at >= fiveHoursAgo) {
-          fiveHourSessions++;
-          fiveHourMinutes += durationMinutes;
-        }
+        if (row.started_at > now) continue;
+
+        const effectiveEnd =
+          row.ended_at !== null && row.ended_at !== undefined
+            ? row.ended_at
+            : Math.min(now, row.started_at + MAX_RUNNING_SESSION_MS);
+        if (effectiveEnd <= row.started_at) continue;
+
         if (lastUsedAt === null || row.started_at > lastUsedAt) {
           lastUsedAt = row.started_at;
         }
+
+        const start5 = Math.max(row.started_at, fiveHoursAgo);
+        const end5 = Math.min(effectiveEnd, now);
+        if (end5 > start5) {
+          fiveHourSessions++;
+          intervals5.push([start5, end5]);
+        }
+
+        const start7 = Math.max(row.started_at, sevenDaysAgo);
+        const end7 = Math.min(effectiveEnd, now);
+        if (end7 > start7) {
+          sevenDaySessions++;
+          intervals7.push([start7, end7]);
+        }
       }
+
+      fiveHourMinutes = mergeIntervalMinutes(intervals5);
+      sevenDayMinutes = mergeIntervalMinutes(intervals7);
     } else if (eventRows.length > 0) {
       for (const er of eventRows) {
         try {
           const ev = JSON.parse(er.body) as { engineId?: string; at: number };
-          if (ev.engineId && engineIds.has(ev.engineId)) {
+          if (ev.engineId && engineIds.has(ev.engineId) && ev.at <= now) {
             sevenDaySessions++;
-            sevenDayMinutes += 2;
             if (ev.at >= fiveHoursAgo) {
               fiveHourSessions++;
-              fiveHourMinutes += 2;
             }
             if (lastUsedAt === null || ev.at > lastUsedAt) {
               lastUsedAt = ev.at;
@@ -340,23 +387,20 @@ export function enrichAccounts(
   });
 }
 
-/** Provides rate limits for all accounts, defaulting unmetered local accounts to 'local' and cloud accounts to 'ready'. */
+/** Provides rate limits for all accounts, expiring rejected limits past resetsAt without inventing statuses. */
 export function allRateLimits(
-  accounts: AccountCost[],
+  _accounts: AccountCost[],
   registry: Registry,
   now: number,
 ): Record<Id, AccountRateLimit> {
   const existing = registry.accountRateLimits();
-  const engines = registry.engines();
-  const out: Record<Id, AccountRateLimit> = { ...existing };
-  for (const a of accounts) {
-    if (!out[a.id]) {
-      const bound = engines.filter((e) => e.accountId === a.id);
-      const isLocal = bound.some((e) => e.local);
-      out[a.id] = {
-        status: isLocal ? "local" : "ready",
-        updatedAt: now,
-      };
+  const out: Record<Id, AccountRateLimit> = {};
+  for (const [id, rl] of Object.entries(existing)) {
+    if (rl.status === "rejected" && rl.resetsAt && rl.resetsAt <= now) {
+      const { status: _status, resetsAt: _resetsAt, ...rest } = rl;
+      out[id] = { ...rest, updatedAt: now };
+    } else {
+      out[id] = rl;
     }
   }
   return out;

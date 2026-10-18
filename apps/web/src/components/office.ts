@@ -56,11 +56,12 @@ export class IncOffice extends Loader<Data> {
       .account-name { font-weight: 700; font-size: 14px; }
       .font-small { font-size: 12px; }
       .quota-bars { display: flex; flex-direction: column; gap: 4px; }
-      .quota-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) 36px; gap: 8px; align-items: center; font-size: 12px; }
+      .quota-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 8px; align-items: center; font-size: 12px; }
       .quota-label { color: var(--ink-2); font-weight: 600; }
       .quota-bar-track { height: 8px; border-radius: 4px; background: var(--sunken); overflow: hidden; }
       .quota-bar { height: 100%; border-radius: 4px; background: var(--bar); min-width: 2px; }
-      .quota-val { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--ink-2); }
+      .quota-val { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--ink-2); white-space: nowrap; }
+      .quota-val.font-small { font-weight: 500; }
       .account-models { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
       .model-tag { font-size: 11px; padding: 1px 6px; border-radius: 6px; background: var(--sunken); color: var(--ink-2); font-family: var(--mono); }
       .activity-meters { display: flex; flex-direction: column; gap: 4px; margin-top: 2px; }
@@ -99,60 +100,77 @@ export class IncOffice extends Loader<Data> {
   }
 
   private accountsSection(accounts: AccountCost[], rateLimits?: Record<string, AccountRateLimit>) {
+    const now = Date.now();
     return html`<div class="card accounts-card">
       <h2>Accounts & quotas</h2>
       <div class="accounts-list">
         ${accounts.map((a) => {
           const rl = rateLimits?.[a.id];
+          const isRejected = rl?.status === "rejected" && (!rl.resetsAt || rl.resetsAt > now);
+          const isAllowed = rl?.status === "allowed";
+          const status = isRejected ? "rejected" : isAllowed ? "allowed" : null;
+          const statusTone = isRejected ? "alarm" : "done";
+
+          const rawU5 = rl?.fiveHourUtilization;
           const u5 =
-            rl?.fiveHourUtilization !== undefined ? Math.round((rl.fiveHourUtilization ?? 0) * 100) : null;
+            rawU5 !== undefined && rawU5 !== null
+              ? Math.min(100, Math.max(0, Math.round(rawU5 * 100)))
+              : null;
+          const rawU7 = rl?.sevenDayUtilization;
           const u7 =
-            rl?.sevenDayUtilization !== undefined ? Math.round((rl.sevenDayUtilization ?? 0) * 100) : null;
-          const status = rl?.status ?? (a.harnesses?.includes("opencode") ? "local" : "ready");
-          const statusTone =
-            status === "allowed" || status === "ready" || status === "local" ? "done" : "alarm";
+            rawU7 !== undefined && rawU7 !== null
+              ? Math.min(100, Math.max(0, Math.round(rawU7 * 100)))
+              : null;
+
+          const s5 = a.fiveHourSessions ?? 0;
+          const s7 = a.sevenDaySessions ?? 0;
+          const m5 = a.fiveHourMinutes ?? 0;
+          const m7 = a.sevenDayMinutes ?? 0;
+          const bar5 = Math.min(100, Math.max(0, Math.round((m5 / 300) * 100)));
+          const bar7 = Math.min(100, Math.max(0, Math.round((m7 / (7 * 24 * 60)) * 100)));
+          const s5Text = `${s5} ${s5 === 1 ? "session" : "sessions"}${a.fiveHourMinutes !== undefined ? ` · ${a.fiveHourMinutes}m active` : ""}`;
+          const s7Text = `${s7} ${s7 === 1 ? "session" : "sessions"}${a.sevenDayMinutes !== undefined ? ` · ${a.sevenDayMinutes}m active` : ""}`;
+
           return html`<div class="account-item">
             <div class="account-header">
               <span class="account-name">${a.name}</span>
               ${a.monthlyCap !== undefined ? html`<span class="muted font-small">Cap: $${a.monthlyCap}</span>` : ""}
-              <span class="chip ${statusTone}">${status}</span>
+              ${status ? html`<span class="chip ${statusTone}">${status}</span>` : ""}
             </div>
             ${a.models?.length ? html`<div class="account-models">${a.models.map((m) => html`<span class="model-tag">${m}</span>`)}</div>` : ""}
             ${
               rl && (u5 !== null || u7 !== null)
                 ? html`<div class="quota-bars">
-                  ${
-                    u5 !== null
-                      ? html`<div class="quota-row">
-                        <span class="quota-label">5h</span>
-                        <div class="quota-bar-track">
-                          <div class="quota-bar" style="width: ${Math.min(100, Math.max(0, u5))}%"></div>
-                        </div>
-                        <span class="quota-val">${u5}%</span>
-                      </div>`
-                      : ""
-                  }
-                  ${
-                    u7 !== null
-                      ? html`<div class="quota-row">
-                        <span class="quota-label">7d</span>
-                        <div class="quota-bar-track">
-                          <div class="quota-bar" style="width: ${Math.min(100, Math.max(0, u7))}%"></div>
-                        </div>
-                        <span class="quota-val">${u7}%</span>
-                      </div>`
-                      : ""
-                  }
+                  <div class="quota-row">
+                    <span class="quota-label">5h</span>
+                    <div class="quota-bar-track" role="meter" aria-label="5-hour utilization" aria-valuenow="${u5 ?? 0}" aria-valuemin="0" aria-valuemax="100">
+                      <div class="quota-bar" style="width: ${u5 ?? 0}%"></div>
+                    </div>
+                    <span class="quota-val">${u5 !== null ? `${u5}%` : "—"}</span>
+                  </div>
+                  <div class="quota-row">
+                    <span class="quota-label">7d</span>
+                    <div class="quota-bar-track" role="meter" aria-label="7-day utilization" aria-valuenow="${u7 ?? 0}" aria-valuemin="0" aria-valuemax="100">
+                      <div class="quota-bar" style="width: ${u7 ?? 0}%"></div>
+                    </div>
+                    <span class="quota-val">${u7 !== null ? `${u7}%` : "—"}</span>
+                  </div>
                 </div>`
                 : (a.fiveHourSessions !== undefined || a.sevenDaySessions !== undefined)
-                  ? html`<div class="activity-meters">
-                    <div class="activity-row">
+                  ? html`<div class="quota-bars activity-meters">
+                    <div class="quota-row">
                       <span class="quota-label">5h</span>
-                      <span class="activity-val">${a.fiveHourSessions ?? 0} sessions${a.fiveHourMinutes !== undefined ? ` · ${a.fiveHourMinutes}m active` : ""}</span>
+                      <div class="quota-bar-track" role="meter" aria-label="5-hour activity" aria-valuenow="${bar5}" aria-valuemin="0" aria-valuemax="100">
+                        <div class="quota-bar" style="width: ${bar5}%"></div>
+                      </div>
+                      <span class="quota-val font-small">${s5Text}</span>
                     </div>
-                    <div class="activity-row">
+                    <div class="quota-row">
                       <span class="quota-label">7d</span>
-                      <span class="activity-val">${a.sevenDaySessions ?? 0} sessions${a.sevenDayMinutes !== undefined ? ` · ${a.sevenDayMinutes}m active` : ""}</span>
+                      <div class="quota-bar-track" role="meter" aria-label="7-day activity" aria-valuenow="${bar7}" aria-valuemin="0" aria-valuemax="100">
+                        <div class="quota-bar" style="width: ${bar7}%"></div>
+                      </div>
+                      <span class="quota-val font-small">${s7Text}</span>
                     </div>
                   </div>`
                   : ""
