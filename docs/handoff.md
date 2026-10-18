@@ -14,14 +14,17 @@ Merged on `main` and live on the mini:
 | Engines & sandboxes | Teams share a sandbox (`inc-<team>`, 12G, 6 CPUs) with Claude (`claude-code`) and Antigravity (Google AI Pro, `antigravity`) signed in once; Antigravity OAuth callback relay (`POST /api/teams/:id/antigravity-callback`); OpenCode (`opencode`, `local: true`) using local Ollama via the container gateway relay (port 11434); local `OllamaHelper` (yes/no & intent classification) and `OllamaChat` (1:1 chat) |
 | Isolation & safety | Sandbox inspection (`GET /api/sandboxes`, C1) without booting stopped VMs on read; sandbox DNS filter (`apps/daemon/src/dns.ts`) refusing `.ts.net` and `.local`; firewall walls (`pf`) refreshed every minute; monthly scheduled host restart |
 | Caps & releases | Account `monthlyCap` and live Claude rate-limit utilization meters (`GET /api/accounts`, `GET /api/office`); project releases (`GET /api/releases`, `POST /api/projects/:id/release`, `autoRelease` setting, `<inc-desk>`) |
-| Web Push | Backend VAPID key file in `~/.config/i-inc/vapid.json`, dedicated `push_sent` SQLite table preventing duplicate notifications, startup baseline, 5 s timeout, triggering on `needs-you`, `report-ready`, and `main-red` (C2) |
-| Live updates | Server-Sent Events stream (`GET /api/events`, C3) broadcasting `ticket` and `office` updates with `: keepalive` heartbeats every 25 s, `x-accel-buffering: no`, and `highWaterMark: 64` backpressure handling; web app refetches reactively |
+| Web Push | Backend VAPID key file in `~/.config/i-inc/vapid.json`, dedicated `push_sent` SQLite table preventing duplicate notifications, startup baseline, 5 s timeout, triggering on `needs-you`, `report-ready`, and `main-red` (C2); web Push opt-in UI and service worker push handler (PR #46 merged) |
+| Live updates | Server-Sent Events stream (`GET /api/events`, C3, daemon PR #40 merged) broadcasting `ticket` and `office` updates with `: keepalive` heartbeats every 25 s, `x-accel-buffering: no`, and `highWaterMark: 64` backpressure handling; web app refetches reactively from the event stream (web PR #44 merged) |
 | Web application | Mobile pass (1440x900 & 390x844, light/dark), installable PWA (manifest, icons, offline shell service worker), Setup screens (`<inc-setup>`), per-duty engine assignment in hiring (`<inc-hiring>`), phone board (`<inc-board>`), push notification opt-in |
 | Dogfooding | Project `i-inc` registered on the mini in direct mode (`checks`: install, check, typecheck, test; `autoRelease: false`; protected paths set) and assigned to Ada |
 
+Merged on `main` (awaiting deploy to the mini):
+- Live SSE updates: `GET /api/events` (C3, daemon PR #40 and web PR #44 merged).
+- Web Push opt-in UI: web PR #46 merged.
+
 In review:
 - Session transcripts: `GET /api/tickets/:id/sessions` (C4, daemon PR #43 and web PR #45).
-- Web Push opt-in UI: web PR #46 (ready to merge).
 
 All tests pass (`pnpm check && pnpm typecheck && pnpm test`).
 
@@ -44,11 +47,9 @@ To deploy updates to the mini:
    ```sh
    launchctl kickstart -k gui/$(id -u)/inc.i.daemon
    ```
-4. Verify health:
+4. Verify auth:
    ```sh
-   curl -fsS https://iinc.<tailnet>.ts.net/api/health
-   # or check auth initialization:
-   curl -fsS https://iinc.<tailnet>.ts.net/api/auth
+   curl -sf https://iinc.<tailnet>.ts.net/api/auth
    ```
 
 ### Sandbox sign-in scripts (`tools/host`)
@@ -64,11 +65,11 @@ Before the bot can work on tickets for a repository (e.g. `firstprateek/i-inc`),
 
 ## Next steps, in order
 
-1. **Merge session transcripts and push UI:**
+1. **Merge session transcripts:**
    - Finalize and merge T12 (session transcripts, PR #43) in daemon.
-   - Review and merge its web counterpart T13 (PR #45), and merge T8 (PR #46, push opt-in UI).
+   - Review and merge its web counterpart T13 (PR #45). (T8 push opt-in UI PR #46 is merged, as are daemon PR #40 and web PR #44.)
 2. **Deploy to the mini:**
-   - Pull `main`, build web, restart the daemon with `launchctl kickstart`, and verify `/api/health` and `/api/auth`.
+   - Pull `main`, build web, restart the daemon with `launchctl kickstart`, and verify `/api/auth`.
 3. **Dogfood i-inc tickets:**
    - Ensure `firstprateek/i-inc` is added to the GitHub App installation.
    - File and run i-inc tickets end to end in direct mode on the mini.
