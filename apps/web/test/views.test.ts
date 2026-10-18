@@ -275,9 +275,10 @@ describe("the phone tab bar", () => {
     );
     location.hash = "#/more";
     const root = await mount("inc-app");
-    const tabs = [...(root.querySelectorAll(".tabs a") as NodeListOf<HTMLAnchorElement>)];
+    const tabs = [...(root.querySelectorAll(".tabs button") as NodeListOf<HTMLButtonElement>)];
     expect(tabs.map((a) => a.textContent?.trim())).toEqual(["Inbox", "Office", "Board", "Chats", "More"]);
     expect(tabs[4]?.getAttribute("aria-current")).toBe("page");
+    expect(tabs[4]?.getAttribute("aria-selected")).toBe("true");
     const more = [...(root.querySelectorAll(".more a") as NodeListOf<HTMLAnchorElement>)];
     expect(more.map((a) => a.getAttribute("href"))).toEqual([
       "#/desk",
