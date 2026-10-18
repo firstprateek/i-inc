@@ -1,60 +1,80 @@
 # Handoff: where i.inc stands, and what's next
 
-For the next session, local or cloud. Read this, then [CLAUDE.md](../CLAUDE.md) and the spec. It
-replaces the context the earlier cloud session had. Update it as you work, and remove each item as
-it lands.
+For the next session, local or cloud. Read this, then [CLAUDE.md](../CLAUDE.md) and [coord.md](coord.md).
+It replaces the context the earlier cloud session had. Update it as you work, and remove each item
+as it lands.
 
-## Where things stand (2026-10-17)
+## Where things stand
 
-Merged on `main`:
+Merged on `main` and live on the mini:
 
-| Milestone | What's there |
+| Area | What's there |
 | --- | --- |
-| M1 | Run on the mini. Answers are in [m1-findings.md](m1-findings.md) and scripts in `tools/m1/`. The machine `m1-test` still runs there. The walls and the Ollama relay now come back at boot (`tools/host/`, below) |
-| M2 | `packages/core`: the pipeline, engines and switch rules, the scheduler (reviewers and verifiers are scheduled like builds), errands, outbound permissions, My desk maths, knowledge routing, orientation. 64 tests |
-| M3 (part) | `apps/daemon`: SQLite, registry, tick loop, API, urgent chat interrupts, brains and the handbook as git repos, and the web login (`~/.config/i-inc/web-token` and `POST /api/login`). `apps/web`: every view and the sign-in form, light and dark. The daemon runs real employees by default (`real.ts`: ACP sessions in machines, the harness, credentials from `~/.config/i-inc/credentials.json`, projects and their recipes in the registry through `PUT /api/projects/:id`), or the scripted demo with `I_INC_DEMO=1` |
-| M3 adapters | `apps/daemon/src/acp.ts` (the real ACP client), `apps/daemon/src/harness.ts` (checks and gates in the machine), `apps/daemon/src/machines.ts` (Apple container, its commands checked on the mini) and `apps/daemon/src/github.ts` (the GitHub App's tokens, draft PRs and the bot's commit identity). Tested against a scripted ACP server and a recording `fetch`, and wired into real mode (`real.ts`) |
-| M3 image | `images/employee/`: the base image, built on the mini and checked in a throwaway machine, with Duet's recipe green in it ([its README](../images/employee/README.md)) and plain `Co-Authored-By: Claude` attribution. Everything in a machine runs as its user `employee` |
-| Redesign (2026-10-17) | [architecture.md](architecture.md): teams share a sandbox (`inc-<team>`, 12G, 6 CPUs); projects default to direct mode, where a fresh-context review of at most 2 rounds is followed by a push to main, CI on main (fix, or revert after 2 hours), and a report with up to 3 follow-up tickets; protected paths wait for the owner; GitHub sign-ins in sandboxes are renewed by the daemon; the container service starts at login and the mini restarts monthly |
-| GitHub | The App **i.inc bot** is set up: its key and ids are on the mini in `~/.config/i-inc`, it's installed on Duet only, and Duet's `main` has the ruleset. `tools/github-app/check.mjs` passes. The App still has the Workflows, Actions write and Pages permissions it was created with; the owner narrows them (below) |
-| First real ticket | 2026-10-01, on the mini: Ada (Claude, signed in inside her machine) took M1's README ticket from pick-up to a ready PR as the bot, firstprateek/duet#8. Her branch was made in her machine, three required CI checks passed, the gates waited for them, and the report became the PR body. It took three fixes on the way: Claude's "session limit" now pauses a ticket until the reset; the `acp-claude` launcher refreshes an expired sign-in before the adapter's parallel queries race to; and only a session's final answer counts as its output |
-| M4 (part) | Brain and handbook repos, edits applied from each retro, policies that wait for the owner, orientation, and the viewer |
+| Access & auth | Tailscale Service `svc:iinc` serves HTTPS on standard port 443 at `https://iinc.<tailnet>.ts.net` (`I_INC_HOSTS` configured; old `:8443` removed). Owner auth via `POST /api/signup`, `POST /api/login`, `POST /api/logout`, `GET /api/auth` with `scrypt` hashing in SQLite, `i_inc` cookie, and bearer token fallback |
+| Engines & sandboxes | Teams share a sandbox (`inc-<team>`, 12G, 6 CPUs) with Claude (`claude-code`) and Antigravity (Google AI Pro, `antigravity`) signed in once; Antigravity OAuth callback relay (`POST /api/teams/:id/antigravity-callback`); OpenCode (`opencode`, `local: true`) using local Ollama via the host relay (`192.168.64.1:11434`); local `OllamaHelper` (yes/no & intent classification) and `OllamaChat` (1:1 chat) |
+| Isolation & safety | Sandbox inspection (`GET /api/sandboxes`, C1) without booting stopped VMs on read; sandbox DNS filter (`apps/daemon/src/dns.ts`) refusing `.ts.net` and `.local`; firewall walls (`pf`) refreshed every minute; monthly scheduled host restart |
+| Caps & releases | Account `monthlyCap` and live Claude rate-limit utilization meters (`GET /api/accounts`, `GET /api/office`); project releases (`GET /api/releases`, `POST /api/projects/:id/release`, `autoRelease` setting, `<inc-desk>`) |
+| Web Push | Backend VAPID key file in `~/.config/i-inc/vapid.json`, dedicated `push_sent` SQLite table preventing duplicate notifications, startup baseline, 5 s timeout, triggering on `needs-you`, `report-ready`, and `main-red` (C2) |
+| Web application | Mobile pass (1440x900 & 390x844, light/dark), installable PWA (manifest, icons, offline shell service worker), Setup screens (`<inc-setup>`), per-duty engine assignment in hiring (`<inc-hiring>`), phone board (`<inc-board>`), push notification opt-in |
+| Dogfooding | Project `i-inc` registered on the mini in direct mode (`checks`: install, check, typecheck, test; `autoRelease: false`; protected paths set) and assigned to Ada |
 
-`pnpm check`, `pnpm typecheck` and `pnpm test` pass (162 tests). CI runs all three.
+In review:
+- Live SSE updates: `GET /api/events` (C3, daemon PR #40 and web PR #44).
+- Session transcripts: `GET /api/tickets/:id/sessions` (C4, daemon PR #43 and web PR #45).
+- Web Push opt-in UI: web PR #46.
 
-## Open questions for the owner
+All tests pass (`pnpm check && pnpm typecheck && pnpm test`).
 
-None right now.
+## Operations
+
+### Coordination source of truth
+[docs/coord.md](coord.md) is the single source of truth for who does what between agents (Claude and Antigravity). All task claiming, PR reviews, deploy locks, and heartbeats are recorded there. Edits to `coord.md` go straight to `main`; all other code changes go through a feature branch and PR.
+
+### Deploying to the mini
+To deploy updates to the mini:
+1. Pull latest `main`:
+   ```sh
+   cd ~/i-inc && git pull
+   ```
+2. Build web assets:
+   ```sh
+   pnpm --filter @i-inc/web build
+   ```
+3. Restart the daemon:
+   ```sh
+   launchctl kickstart -k gui/$(id -u)/inc.i.daemon
+   ```
+4. Verify health:
+   ```sh
+   curl -fsS https://iinc.<tailnet>.ts.net/api/health
+   # or check auth initialization:
+   curl -fsS https://iinc.<tailnet>.ts.net/api/auth
+   ```
+
+### Sandbox sign-in scripts (`tools/host`)
+Each team's sandbox signs in to harnesses once using host tools:
+- **Claude:** `sh tools/host/sign-in-claude.sh <team id> [cpus] [memory]` runs `claude auth login --claudeai` inside the machine and verifies sign-in status.
+- **Antigravity:** `sh tools/host/sign-in-antigravity.sh <team id> [cpus] [memory]` initiates the Google AI Pro sign-in flow and relays the local OAuth callback into the machine. The daemon also exposes `POST /api/teams/:id/antigravity-callback` to relay callbacks programmatically.
+
+### Adding repos to the GitHub App
+Before the bot can work on tickets for a repository (e.g. `firstprateek/i-inc`), the repository must be explicitly added to the **i.inc bot** GitHub App installation in GitHub settings:
+1. Navigate to GitHub `Settings` → `Applications` → `Installed GitHub Apps` → `i.inc bot` → `Configure`.
+2. Under **Repository access**, select and add the repository.
+3. Verify with `node tools/github-app/check.mjs`.
 
 ## Next steps, in order
 
-On 2026-10-17 the owner redesigned i.inc ([architecture.md](architecture.md)): a sandbox per team,
-signed in once to each subscription, and reviewed work pushed straight to main. The code is in; the
-mini runs it since 2026-10-17, with the Engineering team signed in to Claude once. Ask the owner before any `sudo` or change to the host.
-
-1. **Move the mini to the new design.**
-   - Update `~/i-inc` to `main`, rebuild the image (`images/employee`), and reinstall the daemon
-     (`tools/host/install-daemon.sh`, which now also starts Apple's container service at login and
-     adds the mini's tailnet name to `I_INC_HOSTS`).
-   - Register the team (`PUT /api/teams/engineering` with Ada), and sign its sandbox in once, with
-     the owner: `tools/host/sign-in-claude.sh engineering`. Antigravity's sign-in still needs its
-     callback relayed into the machine.
-   - Retire `inc-ada` and `m1-test`.
-   - The owner reinstalls the walls job with `sudo` (`install-walls.sh`), which adds the monthly
-     restart.
-2. **GitHub, for direct mode.** Done on 2026-10-17: Duet's `main` ruleset keeps only "no
-   force-push" and "no deletion", and the branches ruleset keeps the bot to `inc/**`. Still the
-   owner's:
-   - Narrow the App: no Workflows, Actions read-only, no Pages; accept it on the installation.
-   - Move Duet's release secrets into an environment limited to `main`.
-3. **The live test:** M1's README ticket (closed as Duet #8) again, in direct mode, end to end.
-4. **Later:** the helper model and chat on Ollama; Antigravity's sign-in relay and DNS in the
-   daemon; usage caps (M5); automatic releases; a retry button on the board.
-
-Lessons kept from earlier rounds: a new image doesn't reach existing sandboxes
-(`tools/host/update-machine.sh`); failed tickets retry with `POST /api/tickets/:id/retry`; report
-minutes count working time only; the adversarial review of 2026-10-01 and its fixes are in the
-history of #22.
+1. **Merge live updates, session transcripts, and push UI:**
+   - Finalize and merge T9 (SSE live updates, PR #40) and T12 (session transcripts, PR #43) in daemon.
+   - Review and merge their web counterparts: T10 (PR #44), T13 (PR #45), and T8 (PR #46).
+2. **Deploy to the mini:**
+   - Pull `main`, build web, restart the daemon with `launchctl kickstart`, and verify `/api/health` and `/api/auth`.
+3. **Dogfood i-inc tickets:**
+   - Ensure `firstprateek/i-inc` is added to the GitHub App installation.
+   - File and run i-inc tickets end to end in direct mode on the mini.
+4. **Daemon gaps to address:**
+   - Add delete routes for teams, projects, engines, and accounts (currently missing from API).
+   - Add an engine edit route (currently only full replacement via `PUT /api/engines/:id` is supported).
 
 ## Decisions already made (don't reopen)
 
@@ -69,7 +89,7 @@ history of #22.
     setup-token`, accepting that a full login reaches the owner's claude.ai connectors. A token in
     `~/.config/i-inc/credentials.json` still works for any account.
   - Cloud engines stay. A private cloud is only noted for later.
-  - Home data goes only to local models; the planned model is qwen3.8 27B, set up later.
+  - Home data goes only to local models; the local model runs on Ollama (`qwen3:8b`).
 - **Credentials:**
   - A session's credentials go into its machine with `container machine run -e NAME`, copied from
     the environment of that one `container` process. They're in no command line, never on the
