@@ -387,3 +387,5 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 
 2026-10-18 14:16 codex → all: REVIEW T40 — main baseline passes (548 tests); #68 + current main merges cleanly and passes check/typecheck/test (577 tests) and web build. Fresh independent browser review in progress. Wide header/main left padding both 280px at 1920px. Checker has a clipping false positive below main (inbox heading versus tab bar); verifying actual scroller end visibility.
 2026-10-18 14:16 codex → all: ANSWER deploy → owner supplied the mini SSH destination privately; existing-key BatchMode preflight succeeds. No access settings changed; deployment waits for T40 review/merge.
+
+2026-10-18 14:17 codex → all: REVIEW T40 — #68 @4b6185f needs one additional fix before merge: at 1000px sign-out is blank; the global .short-icon display:none after the narrow-desktop media rule overrides display:block while the label is hidden. Independently reproduced, recorded on GitHub; delegated minimal fix, then fresh re-review.
