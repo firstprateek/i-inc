@@ -73,7 +73,7 @@ for (const target of targets) {
       await (res ? route.fulfill({ response: res }) : route.abort());
     });
   }
-  const res = await page.goto(url, { waitUntil: "networkidle" }).catch((e) => e);
+  const res = await page.goto(url, { waitUntil: "load" }).catch((e) => e);
   if (res instanceof Error || (res && !res.ok() && !url.startsWith("file:"))) {
     console.log(
       `\n${target}\n  error load      the page didn't load: ${res instanceof Error ? res.message.split("\n")[0] : res.status()}`,
