@@ -3,6 +3,7 @@
 // the next stage boundary.
 import { css, html, LitElement } from "lit";
 import { refreshNow } from "../api.ts";
+import { hasNewFromOthers, isNearBottom } from "../chat-scroll.ts";
 import { draftMemo } from "../drafts.ts";
 import { showLogin } from "../login.ts";
 import { avatar, base } from "./shared.ts";
@@ -107,6 +108,7 @@ export class IncChat extends LitElement {
     thinking: { state: true },
     error: { state: true },
     picks: { state: true },
+    newBelow: { state: true },
   };
   declare employeeId: string;
   declare threads: Thread[];
@@ -118,6 +120,19 @@ export class IncChat extends LitElement {
   declare error: string | null;
   /** Projects the owner has picked for drafts not yet put on the board, by ticket. */
   declare picks: Record<string, string>;
+  /** Something new arrived below while the reader was scrolled up: show "New messages". */
+  declare newBelow: boolean;
+
+  // Scroll state. Only the message list scrolls, never the page (no scrollIntoView, no window.scrollTo).
+  /** The reader is at (or near) the bottom of the list, so new content should keep it pinned there. */
+  private stick = true;
+  /** A thread was just opened: jump to its newest message once its entries arrive. */
+  private jumpPending = true;
+  /** The owner just sent or retried a message: scroll to it whatever the position. */
+  private forceScroll = false;
+  /** willUpdate decided the list must be pinned to the bottom after this render. */
+  private pinAfterRender = false;
+  private resizeObserver: ResizeObserver | null = null;
 
   // Track pending optimistic messages across employees to prevent cross-thread leaks
   private pendingEntries: (Entry & { from: "owner" })[] = [];
@@ -146,12 +161,41 @@ export class IncChat extends LitElement {
     this.thinking = false;
     this.error = null;
     this.picks = {};
+    this.newBelow = false;
   }
 
   override connectedCallback(): void {
     super.connectedCallback();
     void this.load();
   }
+
+  override disconnectedCallback(): void {
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
+    super.disconnectedCallback();
+  }
+
+  override firstUpdated(): void {
+    // The list's own size changes (window resize, a taller composer): stay pinned if the reader was.
+    const msgs = this.msgsEl();
+    if (msgs && typeof ResizeObserver !== "undefined") {
+      this.resizeObserver = new ResizeObserver(() => {
+        if (this.stick) this.scrollToBottom();
+      });
+      this.resizeObserver.observe(msgs);
+    }
+  }
+
+  private msgsEl(): HTMLElement | null {
+    return (this.renderRoot?.querySelector(".msgs") as HTMLElement | null) ?? null;
+  }
+
+  private onScroll = () => {
+    const msgs = this.msgsEl();
+    if (!msgs) return;
+    this.stick = isNearBottom(msgs);
+    if (this.stick && this.newBelow) this.newBelow = false;
+  };
 
   private switched(changed: Map<string, unknown>): boolean {
     return changed.has("employeeId") && changed.get("employeeId") !== undefined;
@@ -167,9 +211,39 @@ export class IncChat extends LitElement {
       if (last) this.drafts.set(last, this.draft);
       this.draft = this.draftFor(this.employeeId);
       this.thinking = this.inFlightEmployees.has(this.employeeId);
+      // A new thread opens at its newest message, with nothing waiting below.
+      this.jumpPending = true;
+      this.stick = true;
+      this.newBelow = false;
     } else if (changed.has("employeeId") && this.employeeId) {
       // First mount, or load() picking the first thread: bring back a draft from before a reload.
       this.draft = this.draftFor(this.employeeId);
+    }
+    this.planScroll(changed);
+  }
+
+  /**
+   * Decides, before the DOM changes, whether the list follows what is about to be rendered. `stick`
+   * is the reader's position as of the last scroll event, i.e. before the new content made it taller.
+   */
+  private planScroll(changed: Map<string, unknown>): void {
+    this.pinAfterRender = false;
+    if (changed.has("entries")) {
+      if (this.jumpPending && this.entries.length > 0) {
+        // Opening a thread: jump (no animation) to the newest message.
+        this.jumpPending = false;
+        this.forceScroll = false;
+        this.pinAfterRender = true;
+      } else if (this.forceScroll) {
+        this.forceScroll = false;
+        this.pinAfterRender = true;
+      } else if (this.stick) {
+        this.pinAfterRender = true;
+      } else if (hasNewFromOthers((changed.get("entries") as Entry[] | undefined) ?? [], this.entries)) {
+        this.newBelow = true;
+      }
+    } else if (changed.has("thinking") || changed.has("error")) {
+      if (this.forceScroll || this.stick) this.pinAfterRender = true;
     }
   }
 
@@ -180,20 +254,19 @@ export class IncChat extends LitElement {
     } else if (changed.has("employeeId") && this.draft) {
       this.autoResize();
     }
-    if (changed.has("entries") || changed.has("thinking")) {
+    if (this.pinAfterRender) {
+      this.pinAfterRender = false;
       this.scrollToBottom();
     }
   }
 
+  /** Jumps the message list (and only it) to the newest message. */
   scrollToBottom(): void {
-    const msgs = this.renderRoot?.querySelector(".msgs") as HTMLElement | null;
-    if (msgs) {
-      msgs.scrollTop = msgs.scrollHeight;
-    }
-    const last = msgs?.lastElementChild as HTMLElement | null;
-    if (last && typeof last.scrollIntoView === "function") {
-      last.scrollIntoView({ block: "end", inline: "nearest" });
-    }
+    const msgs = this.msgsEl();
+    if (!msgs) return;
+    msgs.scrollTop = msgs.scrollHeight;
+    this.stick = true;
+    if (this.newBelow) this.newBelow = false;
   }
 
   isTouch(): boolean {
@@ -281,6 +354,7 @@ export class IncChat extends LitElement {
     };
 
     this.pendingEntries.push(optEntry);
+    this.forceScroll = true;
     const combined = [...this.entries, optEntry];
     combined.sort((a, b) => a.at - b.at);
     this.entries = combined;
@@ -296,7 +370,7 @@ export class IncChat extends LitElement {
     if (textarea) {
       textarea.value = "";
       textarea.style.height = "";
-      textarea.focus();
+      textarea.focus({ preventScroll: true });
     }
 
     void this.executeSend(optEntry);
@@ -313,7 +387,7 @@ export class IncChat extends LitElement {
     await this.updateComplete;
     this.scrollToBottom();
     const textarea = this.renderRoot?.querySelector("textarea") as HTMLTextAreaElement | null;
-    textarea?.focus();
+    textarea?.focus({ preventScroll: true });
 
     try {
       const res = await json<{ entries: Entry[] }>("POST", `/api/chat/${empId}`, {
@@ -371,6 +445,7 @@ export class IncChat extends LitElement {
     entry.status = "sending";
     entry.error = undefined;
     this.error = null;
+    this.forceScroll = true;
     this.entries = [...this.entries];
     await this.executeSend(entry as Entry & { from: "owner" });
   }
@@ -384,18 +459,34 @@ export class IncChat extends LitElement {
   static override styles = [
     base,
     css`
-      .wrap { display: flex; gap: 20px; align-items: stretch; min-height: 70vh; }
-      nav { width: 280px; flex-shrink: 0; padding: 10px; display: flex; flex-direction: column; gap: 2px; }
-      nav a { display: flex; gap: 12px; align-items: center; padding: 10px; border-radius: 14px; text-decoration: none; }
+      /* The chat fills whatever room the app shell gives it (the shell is exactly the viewport below the
+         header on this route), and each region scrolls by itself: the list, and the messages. */
+      :host { display: block; height: 100%; min-height: 0; }
+      .wrap { display: grid; grid-template-columns: 280px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 20px; height: 100%; min-height: 0; }
+      nav { min-height: 0; padding: 10px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; overscroll-behavior: contain; }
+      nav a { flex: none; display: flex; gap: 12px; align-items: center; padding: 10px; border-radius: 14px; text-decoration: none; min-height: 44px; box-sizing: border-box; }
       nav a[aria-current="true"] { background: var(--sunken); }
+      nav a > span:not(.avatar) { min-width: 0; }
       nav small { display: block; font-size: 13px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
-      .thread { flex-grow: 1; min-width: 0; display: flex; flex-direction: column; }
-      .head { padding: 16px 22px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 12px; }
-      .msgs { flex-grow: 1; padding: 20px 22px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+      .thread { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+      .head { flex: none; padding: 16px 22px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 12px; }
+      .head h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .head .btn { flex: none; }
+      /* The pane's one scrolling part. The "New messages" button floats over it, so it sits in a
+         positioned wrapper that does not scroll. */
+      .msgs-wrap { position: relative; flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; }
+      .msgs { flex: 1 1 0; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain;
+        scroll-behavior: auto; -webkit-overflow-scrolling: touch;
+        /* Wide screens: a centred, readable column (about 760px) with the scrollbar at the pane's edge. */
+        padding: 20px max(22px, calc((100% - 760px) / 2)); display: flex; flex-direction: column; gap: 12px; }
+      .msgs > * { flex: none; }
+      .msgs:focus-visible { outline: 2px solid var(--reviewing-mark); outline-offset: -2px; }
+      .jump { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 2;
+        display: inline-flex; align-items: center; gap: 6px; padding: 0 18px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18); }
       .me, .them, .ticket { overflow-wrap: anywhere; }
       .msg-body { white-space: pre-wrap; }
-      .me { align-self: flex-end; max-width: 520px; padding: 11px 14px; border-radius: 18px 18px 4px 18px; background: var(--ink); color: var(--on-ink); }
-      .them { align-self: flex-start; max-width: 620px; padding: 11px 14px; border-radius: 18px 18px 18px 4px; background: var(--sunken); }
+      .me { align-self: flex-end; max-width: min(520px, 88%); padding: 11px 14px; border-radius: 18px 18px 4px 18px; background: var(--ink); color: var(--on-ink); }
+      .them { align-self: flex-start; max-width: min(620px, 92%); padding: 11px 14px; border-radius: 18px 18px 18px 4px; background: var(--sunken); }
       .them.thinking { display: inline-flex; align-items: center; gap: 8px; color: var(--ink-2); font-style: normal; }
       .them.thinking .dots { display: inline-flex; align-items: center; gap: 3px; }
       .them.thinking .dots span { width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: 0.3; animation: chat-dot-pulse 1.4s infinite ease-in-out both; }
@@ -412,10 +503,11 @@ export class IncChat extends LitElement {
       .me .retry { font-size: 12px; font-weight: 600; padding: 4px 12px; min-height: 36px; min-width: 44px; border-radius: 8px; background: var(--surface); color: var(--ink); border: 1px solid var(--line-strong); cursor: pointer; touch-action: manipulation; }
       .error-msg { color: var(--alarm-fg, #8a2b17); background: var(--needs-bg, rgba(196, 69, 43, 0.1)); border: 1px solid var(--alarm, #c4452b); padding: 8px 12px; border-radius: 8px; font-size: 13px; margin: 0; align-self: flex-start; }
       .sys { align-self: center; font-size: 13px; color: var(--ink-2); }
-      .ticket { align-self: flex-start; max-width: 620px; border: 2px dashed var(--line-strong); border-radius: 16px; padding: 14px;
+      .ticket { align-self: flex-start; max-width: min(620px, 92%); border: 2px dashed var(--line-strong); border-radius: 16px; padding: 14px;
         display: flex; flex-direction: column; gap: 8px; background: var(--surface); }
-      form { padding: 12px 16px 16px; border-top: 1px solid var(--line); display: flex; gap: 10px; align-items: flex-end; }
-      textarea { flex-grow: 1; min-width: 0; font: 16px/1.4 var(--body); min-height: 46px; max-height: 180px; padding: 11px 16px; border-radius: 20px;
+      /* The composer is pinned under the list and never scrolls away. */
+      form { flex: none; padding: 12px max(16px, calc((100% - 760px) / 2)) 16px; border-top: 1px solid var(--line); display: flex; gap: 10px; align-items: flex-end; }
+      textarea { flex-grow: 1; min-width: 0; font: 16px/1.4 var(--body); min-height: 46px; max-height: min(180px, 26vh); padding: 11px 16px; border-radius: 20px;
         border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); resize: none; box-sizing: border-box; overflow-y: auto; }
       textarea:focus { outline: none; border-color: var(--ink); }
       .send { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
@@ -436,21 +528,22 @@ export class IncChat extends LitElement {
       .me .tag { display: inline-block; margin-bottom: 4px; }
       .urgent[aria-pressed="true"] { border: 2px solid var(--ink); padding: 0 17px; }
       .head > div { min-width: 0; }
-      @media (max-width: 800px) {
-        .wrap { flex-direction: column; min-height: 0; }
-        nav { width: auto; flex-direction: row; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
+      /* Phones (the app's own phone breakpoint): the list of people is a strip across the top, the
+         conversation fills the rest down to the tab bar, and the composer sits right above it. */
+      @media (max-width: 900px) {
+        .wrap { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 0; }
+        nav.card, .thread.card { border-radius: 0; border-left: 0; border-right: 0; box-shadow: none; }
+        nav { flex-direction: row; gap: 4px; padding: 6px 8px; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain;
+          scrollbar-width: none; border-top: 0; }
         nav::-webkit-scrollbar { display: none; }
-        nav a { flex-shrink: 0; min-height: 44px; box-sizing: border-box; }
+        nav a { gap: 8px; padding: 6px 12px; }
         nav small { display: none; }
-        .thread { min-height: 52vh; }
-        .head { padding: 12px 16px; }
-        .msgs { padding: 16px; }
-        .me, .them, .ticket { max-width: 88%; }
-        /* The composer stays above the tab bar while a long thread scrolls. */
-        form { position: sticky; bottom: calc(66px + env(safe-area-inset-bottom)); z-index: 5; flex-wrap: wrap;
-          background: var(--surface); border-radius: 0 0 var(--radius) var(--radius); }
+        .thread { border-bottom: 0; }
+        .head { padding: 8px 16px; }
+        .msgs { padding: 14px 16px; }
+        form { flex-wrap: wrap; padding: 10px 16px 12px; }
         form textarea { flex: 1 1 100%; }
-        form .urgent { flex: 1 1 0; }
+        form .urgent { flex: none; }
         form .send { margin-left: auto; }
         .me .retry { min-height: 44px; padding: 6px 14px; font-size: 13px; }
       }
@@ -473,7 +566,8 @@ export class IncChat extends LitElement {
           <span style="flex-grow:1"></span><a class="btn ghost" href="#/brain/${me.id}" style="display:inline-flex;align-items:center;text-decoration:none">Brain</a></div>`
             : ""
         }
-        <div class="msgs">
+        <div class="msgs-wrap">
+        <div class="msgs" role="log" tabindex="0" aria-label="Messages with ${me?.name ?? "the team"}" @scroll=${this.onScroll}>
           ${this.entries.length ? this.entries.map((e) => this.entry(e)) : html`<p class="empty">Ask ${me?.name ?? "them"} anything, or ask for something new.</p>`}
           ${
             this.thinking
@@ -484,6 +578,12 @@ export class IncChat extends LitElement {
               : ""
           }
           ${this.error ? html`<p class="error-msg" role="alert">${this.error}</p>` : ""}
+        </div>
+        ${
+          this.newBelow
+            ? html`<button class="btn jump" type="button" @click=${() => this.scrollToBottom()}>New messages <span aria-hidden="true">↓</span></button>`
+            : ""
+        }
         </div>
         <form @submit=${this.send}>
           <textarea enterkeyhint="send" autocomplete="off" autocapitalize="sentences" rows="1"

@@ -226,7 +226,18 @@ export class IncApp extends LitElement {
     applyTheme(this.theme);
   }
 
+  override willUpdate(): void {
+    // The chat route is an app-like screen: exactly the viewport, with the panes scrolling inside it.
+    // Every other route is a document that scrolls as usual. The attribute styles the shell; the
+    // flag on <html> stops the document itself from being taller than the screen (see tokens.css).
+    const fill = this.route.view === "chat";
+    this.toggleAttribute("fill", fill);
+    if (fill) document.documentElement.dataset.fill = "";
+    else delete document.documentElement.dataset.fill;
+  }
+
   override disconnectedCallback(): void {
+    delete document.documentElement.dataset.fill;
     removeEventListener("hashchange", this.onHash);
     connection.removeEventListener("change", this.onConnection);
     document.removeEventListener("click", this.onDocumentClick);
@@ -770,6 +781,17 @@ export class IncApp extends LitElement {
         }
       }
       @media (min-width: 901px) { .tabs { display: none; } }
+
+      /* The chat route: header, then the chat taking all the rest of the viewport, and on a phone the
+         tab bar in the flow below it instead of floating over the page. Nothing here scrolls the page. */
+      :host([fill]) { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+      :host([fill]) header { flex: none; }
+      :host([fill]) main { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; padding: 4px 32px 20px; }
+      :host([fill]) inc-chat { flex: 1 1 0; min-height: 0; }
+      @media (max-width: 900px) {
+        :host([fill]) main { padding: 0; }
+        :host([fill]) .tabs { position: static; flex: none; }
+      }
     `,
   ];
 
