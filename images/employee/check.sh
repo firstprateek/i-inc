@@ -7,6 +7,8 @@
 # It needs no credentials: each harness only has to answer ACP's initialize.
 set -uo pipefail
 failed=0
+# Non-login bash, like the daemon's: the npm globals (Codex) live in ~/.local/bin.
+export PATH="$HOME/.local/bin:$PATH"
 pass() { echo "✓ $*"; }
 fail() {
   echo "✗ $*"

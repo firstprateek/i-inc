@@ -268,7 +268,10 @@ export class AppleMachines implements MachineProvider {
   private async probeSignIn(
     machine: string,
   ): Promise<{ claude: boolean; antigravity: boolean; codex: boolean; github: boolean }> {
+    // The probe runs in non-login bash, and the sandbox's npm globals (the Codex CLI) live in
+    // ~/.local/bin, which that shell doesn't have on its PATH. The string is fixed: no input reaches it.
     const input =
+      'export PATH="$HOME/.local/bin:$PATH"; ' +
       "[ -s ~/.claude/.credentials.json ] && echo claude; [ -s ~/.gemini/antigravity-acp/acp_token.json ] && echo antigravity; codex login status >/dev/null 2>&1 && echo codex; [ -s ~/.config/gh/hosts.yml ] && echo github; true\n";
     const output = await this.exec(
       this.s.bin,

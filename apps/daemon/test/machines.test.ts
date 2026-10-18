@@ -84,6 +84,8 @@ describe("AppleMachines.inspectSandbox", () => {
     expect(calls[1]?.input).toContain("~/.claude/.credentials.json");
     expect(calls[1]?.input).toContain("~/.gemini/antigravity-acp/acp_token.json");
     expect(calls[1]?.input).toContain("codex login status >/dev/null 2>&1 && echo codex");
+    // Codex is installed under ~/.local/bin, which non-login bash doesn't have on its PATH.
+    expect(calls[1]?.input).toMatch(/^export PATH="\$HOME\/\.local\/bin:\$PATH"; /);
     expect(calls[1]?.input).toContain("~/.config/gh/hosts.yml");
 
     // Check signedInCache was populated
