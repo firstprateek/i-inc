@@ -106,6 +106,45 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("Circular send button (T29)", () => {
+  it("is an icon-only circle labelled Send, disabled while empty, and sends on click", async () => {
+    const { postCalls } = serveChat();
+    const { el, root } = await mount("ada");
+    const btn = root.querySelector("button[type=submit]") as HTMLButtonElement;
+    expect(btn.getAttribute("aria-label")).toBe("Send");
+    expect(btn.textContent?.trim()).toBe("");
+    expect(btn.querySelector("svg")).not.toBeNull();
+    expect(btn.disabled).toBe(true);
+    const styles = (IncChat.styles as unknown as { cssText: string }[]).map((s) => s.cssText).join("\n");
+    expect(styles).toMatch(/\.send\s*\{[^}]*border-radius:\s*50%/);
+    expect(styles).toMatch(/\.send\s*\{[^}]*min-width:\s*40px[^}]*min-height:\s*40px/);
+    expect(styles).toContain("18px 18px 4px 18px");
+    expect(styles).toContain("18px 18px 18px 4px");
+
+    const textarea = root.querySelector("textarea") as HTMLTextAreaElement;
+    textarea.value = "Hello circle";
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await el.updateComplete;
+    expect(btn.disabled).toBe(false);
+    btn.click();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(postCalls[0]?.body).toEqual({ text: "Hello circle" });
+  });
+
+  it("still sends on Enter on a keyboard device", async () => {
+    vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+    const { postCalls } = serveChat();
+    const { el, root } = await mount("ada");
+    const textarea = root.querySelector("textarea") as HTMLTextAreaElement;
+    textarea.value = "Enter sends";
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await el.updateComplete;
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", cancelable: true, bubbles: true }));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(postCalls[0]?.body).toEqual({ text: "Enter sends" });
+  });
+});
+
 describe("Instant chat (T24)", () => {
   it("renders owner message optimistically with 'sending…' immediately upon send", async () => {
     const deferred = createDeferred<Response>();

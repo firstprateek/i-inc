@@ -169,7 +169,8 @@ export class IncBoard extends Loader<BoardData> {
       .strip i.cur.review { background: var(--reviewing-mark); }
       .live, .who { font-size: 13px; color: var(--ink-2); }
       .who { display: flex; align-items: center; gap: 8px; }
-      .empty { font-size: 14px; color: var(--ink-2); padding: 4px; }
+      .empty { display: flex; align-items: center; justify-content: center; min-height: 64px; box-sizing: border-box; padding: 14px;
+        border: 2px dashed var(--line-strong); border-radius: 14px; font-size: 14px; color: var(--ink-2); }
       @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
     `,
   ];
@@ -190,7 +191,7 @@ export class IncBoard extends Loader<BoardData> {
         const list = tickets.filter((t) => t.column === id);
         return html`<section aria-label=${name}>
           <h2>${name}<span>${list.length}</span></h2>
-          ${list.length ? list.map((t) => this.card(t)) : html`<span class="empty">Nothing here.</span>`}
+          ${list.length ? list.map((t) => this.card(t)) : html`<div class="empty">Nothing here</div>`}
         </section>`;
       })}
     </div>`;

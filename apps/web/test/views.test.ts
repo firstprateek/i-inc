@@ -99,6 +99,21 @@ describe("the board", () => {
     expect(root.textContent).toContain("Juno is off until 22:00");
     expect(root.querySelectorAll(".strip i.cur")).toHaveLength(1);
   });
+
+  it("shows a dashed placeholder in empty columns only", async () => {
+    serve([view({ id: "1" })]);
+    const root = await mount("inc-board");
+    const placeholders = [...root.querySelectorAll("section")].map((s) => ({
+      name: s.getAttribute("aria-label"),
+      placeholder: s.querySelector(".empty")?.textContent?.trim() ?? null,
+    }));
+    expect(placeholders).toEqual([
+      { name: "To do", placeholder: "Nothing here" },
+      { name: "In progress", placeholder: null },
+      { name: "Review", placeholder: "Nothing here" },
+      { name: "Done", placeholder: "Nothing here" },
+    ]);
+  });
 });
 
 describe("the inbox", () => {
@@ -166,6 +181,36 @@ describe("the inbox", () => {
     serve([view({})]);
     const root = await mount("inc-inbox");
     expect(root.querySelector("h1")?.textContent).toBe("Nothing needs you");
+  });
+
+  it("shows a calm all-clear card with two links when nothing needs you and nothing is ready", async () => {
+    serve([view({})]);
+    const root = await mount("inc-inbox");
+    const card = root.querySelector(".clear");
+    expect(card).not.toBeNull();
+    expect(card?.querySelector("h2")?.textContent).toBe("All clear");
+    expect(card?.querySelector("svg")).not.toBeNull();
+    expect(card?.textContent).toContain("No tickets need your review or are waiting on employees");
+    const links = [...(card?.querySelectorAll("a.btn") ?? [])] as HTMLAnchorElement[];
+    expect(links.map((a) => [a.textContent?.trim(), a.getAttribute("href")])).toEqual([
+      ["Go to Board", "#/board"],
+      ["Chat with Ada", "#/chat/ada"],
+    ]);
+  });
+
+  it("leaves the all-clear card out when something needs the owner or is ready", async () => {
+    serve([view({ id: "3", status: "needs-you", needsYou: { kind: "plan-gate", plan: "x" } })]);
+    expect((await mount("inc-inbox")).querySelector(".clear")).toBeNull();
+    document.body.innerHTML = "";
+    serve([view({ id: "1", status: "ready", column: "review" })]);
+    expect((await mount("inc-inbox")).querySelector(".clear")).toBeNull();
+    document.body.innerHTML = "";
+    serve([], {
+      pages: [],
+      history: [],
+      awaiting: [{ id: "p", ticketId: "4", author: "G", at: 0, page: "m", text: "t" }],
+    });
+    expect((await mount("inc-inbox")).querySelector(".clear")).toBeNull();
   });
 });
 
