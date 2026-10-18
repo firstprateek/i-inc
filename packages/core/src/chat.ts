@@ -84,6 +84,7 @@ export async function handleMessage(
 
   const brief = [
     `You are ${ctx.employee.name}, ${ctx.employee.role}. The owner asks you a question in chat.`,
+    ctx.employee.prompt ? `Role instructions:\n${ctx.employee.prompt}` : "",
     "Answer briefly from what you know about your work. Don't start any work.",
     ctx.current ? `You are working on #${ctx.current.id} ${ctx.current.title} (${ctx.current.project}).` : "",
     ctx.notes ? `Your recent notes:\n${ctx.notes}` : "",

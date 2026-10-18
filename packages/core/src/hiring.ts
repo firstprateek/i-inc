@@ -20,10 +20,13 @@ export function hiringProblems(e: Employee, engines: Engine[], existing: Employe
   const problems: string[] = [];
   const byId = new Map(engines.map((x) => [x.id, x]));
   if (!e.name.trim()) problems.push("an employee needs a name");
+  if (!e.role?.trim()) problems.push("an employee needs a role");
   if (!/^[a-z0-9-]{1,32}$/.test(e.id))
     problems.push("the id must be 1-32 lowercase letters, digits or dashes");
   if (existing.some((x) => x.id === e.id)) problems.push(`someone called ${e.id} already works here`);
   if (e.duties.length === 0) problems.push("an employee needs at least one duty");
+  if (e.effort && !["low", "medium", "high"].includes(e.effort))
+    problems.push("effort must be low, medium or high");
 
   const chosen = [e.engines.default, ...Object.values(e.engines.perDuty ?? {}), ...e.engines.fallbacks];
   for (const id of chosen) if (!byId.has(id)) problems.push(`there is no engine ${id}`);

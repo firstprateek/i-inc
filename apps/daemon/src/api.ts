@@ -1010,6 +1010,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           duties: body.duties ?? ["build", "review"],
           engines: body.engines ?? { default: "", fallbacks: [] },
           switchRules: body.switchRules ?? defaultSwitchRules,
+          ...(body.prompt !== undefined ? { prompt: body.prompt } : {}),
+          ...(body.effort !== undefined ? { effort: body.effort } : {}),
           ...(body.projects ? { projects: body.projects } : {}),
           ...(body.standingOrders ? { standingOrders: body.standingOrders } : {}),
           ...(body.workingHours ? { workingHours: body.workingHours } : {}),
@@ -1056,6 +1058,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           ...(b.duties !== undefined ? { duties: b.duties } : {}),
           ...(b.engines !== undefined ? { engines: b.engines } : {}),
           ...(b.switchRules !== undefined ? { switchRules: b.switchRules } : {}),
+          ...(b.prompt !== undefined ? { prompt: b.prompt } : {}),
+          ...(b.effort !== undefined ? { effort: b.effort } : {}),
           ...(b.projects !== undefined ? { projects: b.projects } : {}),
           ...(b.standingOrders !== undefined ? { standingOrders: b.standingOrders } : {}),
           ...(b.workingHours !== undefined ? { workingHours: b.workingHours } : {}),
@@ -1069,6 +1073,9 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         );
         if (problems.length) return json({ error: problems.join("; "), problems }, 400);
         d.registry.hire(updated);
+        if (b.prompt !== undefined || b.role !== undefined || b.name !== undefined) {
+          d.knowledge.updatePersonality(id, updated.name, updated.role, updated.prompt);
+        }
         return json({ employee: d.registry.employee(id) });
       },
     ],
@@ -1165,6 +1172,12 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       "/api/tickets",
       async (req) => {
         const body = (await req.json()) as NewTicket;
+        if (!body.effort && body.assignee) {
+          try {
+            const emp = d.registry.employee(body.assignee);
+            if (emp.effort) body.effort = emp.effort;
+          } catch {}
+        }
         const problem = validate(body);
         if (problem) return json({ error: problem }, 400);
         const ticket = d.tickets.create(body, d.clock.now());
