@@ -170,34 +170,39 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           }
         };
 
-        const stream = new ReadableStream<Uint8Array>({
-          start(controller) {
-            controllerRef = controller;
-            if (req.signal?.aborted) {
+        const stream = new ReadableStream<Uint8Array>(
+          {
+            start(controller) {
+              controllerRef = controller;
+              if (req.signal?.aborted) {
+                cleanup();
+                try {
+                  controller.close();
+                } catch {}
+                return;
+              }
+
+              req.signal?.addEventListener("abort", onAbort);
+
+              send(": connected\n\n");
+
+              if (d.live) {
+                d.live.on("ticket", onTicket);
+                d.live.on("office", onOffice);
+              }
+
+              const interval = opts.heartbeatMs ?? 25_000;
+              timer = setInterval(() => {
+                send(": keepalive\n\n");
+              }, interval);
+              timer.unref?.();
+            },
+            cancel() {
               cleanup();
-              try {
-                controller.close();
-              } catch {}
-              return;
-            }
-
-            req.signal?.addEventListener("abort", onAbort);
-
-            if (d.live) {
-              d.live.on("ticket", onTicket);
-              d.live.on("office", onOffice);
-            }
-
-            const interval = opts.heartbeatMs ?? 25_000;
-            timer = setInterval(() => {
-              send(": keepalive\n\n");
-            }, interval);
-            timer.unref?.();
+            },
           },
-          cancel() {
-            cleanup();
-          },
-        });
+          { highWaterMark: 64 },
+        );
 
         return new Response(stream, {
           status: 200,

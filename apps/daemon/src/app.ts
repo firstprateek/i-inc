@@ -47,7 +47,11 @@ export async function createApp(o: AppOptions) {
   migrate(db);
   const registry = new Registry(db);
   const live = o.live ?? new LiveEvents();
-  registry.onChange = () => live.notifyOffice();
+  registry.onChange = (kind) => {
+    if (kind === "employee" || kind === "team") {
+      live.notifyOffice();
+    }
+  };
 
   const make = <T>(port: FromRegistry<T>): T =>
     typeof port === "function" ? (port as (r: Registry) => T)(registry) : port;

@@ -87,6 +87,9 @@ describe("live updates SSE API (GET /api/events)", () => {
 
     const reader = createEventReader(res);
 
+    const initial = await reader.next();
+    expect(initial).toBe(": connected");
+
     // 1. Create a ticket -> ticket event
     const ticket = app.deps.tickets.create(
       { ...refunds, type: "fix", effort: "medium" },
@@ -143,6 +146,155 @@ describe("live updates SSE API (GET /api/events)", () => {
     await reader.cancel();
   });
 
+  it("immediately sends : connected comment as first chunk on stream start", async () => {
+    const app = await testApp();
+    const abort = new AbortController();
+
+    const res = await app.handle(
+      new Request("http://i.inc/api/events", {
+        method: "GET",
+        signal: abort.signal,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const reader = createEventReader(res);
+
+    const first = await reader.next();
+    expect(first).toBe(": connected");
+
+    abort.abort();
+    await reader.cancel();
+  });
+
+  it("delivers 5 events fired in one tick and keeps stream open", async () => {
+    const app = await testApp();
+    const abort = new AbortController();
+
+    const res = await app.handle(
+      new Request("http://i.inc/api/events", {
+        method: "GET",
+        signal: abort.signal,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const reader = createEventReader(res);
+
+    const initial = await reader.next();
+    expect(initial).toBe(": connected");
+
+    // Fire 5 events in one synchronous tick
+    const ticketIds: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const ticket = app.deps.tickets.create(
+        { ...refunds, type: "fix", effort: "medium" },
+        app.deps.clock.now(),
+      );
+      ticketIds.push(ticket.id);
+    }
+
+    // Stream should remain open with active listeners
+    expect(app.live.listenerCount("ticket")).toBe(1);
+
+    // All 5 events are delivered
+    for (const id of ticketIds) {
+      const evt = await reader.next();
+      expect(evt).toEqual({
+        event: "ticket",
+        data: JSON.stringify({ id }),
+      });
+    }
+
+    // Still open and healthy
+    expect(app.live.listenerCount("ticket")).toBe(1);
+
+    abort.abort();
+    await reader.cancel();
+  });
+
+  it("narrows office events: engine/account writes do NOT emit office, team/employee writes do", async () => {
+    const app = await testApp();
+    const abort = new AbortController();
+
+    const res = await app.handle(
+      new Request("http://i.inc/api/events", {
+        method: "GET",
+        signal: abort.signal,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const reader = createEventReader(res);
+
+    const initial = await reader.next();
+    expect(initial).toBe(": connected");
+
+    // Account and engine writes should NOT trigger office events
+    app.deps.registry.addAccount({ id: "acct-test", name: "Test Account" });
+    app.deps.registry.addEngine({
+      id: "engine-test",
+      harness: "claude-code",
+      model: "claude-3-5-sonnet",
+      accountId: "acct-test",
+      local: false,
+    });
+    app.deps.registry.addProject({
+      id: "proj-test",
+      repo: "org/repo",
+      checks: ["test"],
+    });
+
+    // Employee write DOES emit office
+    const grace = app.deps.registry.employee("grace");
+    app.deps.registry.hire({
+      ...grace,
+      role: "Lead Architect",
+    });
+
+    // Next received event must be office (from employee write, not from earlier writes)
+    const empEvt = await reader.next();
+    expect(empEvt).toEqual({
+      event: "office",
+      data: "{}",
+    });
+
+    // Team write DOES emit office
+    app.deps.registry.addTeam({
+      id: "core-team",
+      name: "Core",
+      members: ["grace"],
+    });
+
+    const teamEvt = await reader.next();
+    expect(teamEvt).toEqual({
+      event: "office",
+      data: "{}",
+    });
+
+    // Also verify via API PUT calls
+    await app.call("PUT", "/api/accounts/acct-api", { name: "Acct API" });
+    await app.call("PUT", "/api/engines/engine-api", {
+      harness: "claude-code",
+      model: "claude-3-5-sonnet",
+      accountId: "acct-api",
+    });
+
+    await app.call("PUT", "/api/employees/ada", { role: "Principal Engineer" });
+    const apiEmpEvt = await reader.next();
+    expect(apiEmpEvt).toEqual({
+      event: "office",
+      data: "{}",
+    });
+
+    await app.call("PUT", "/api/teams/infra", { name: "Infra", members: ["ada"] });
+    const apiTeamEvt = await reader.next();
+    expect(apiTeamEvt).toEqual({
+      event: "office",
+      data: "{}",
+    });
+
+    abort.abort();
+    await reader.cancel();
+  });
+
   it("sends heartbeat comments on the configured interval", async () => {
     const app = await testApp();
     const handle = createApi(app.daemon, app.deps, {
@@ -159,6 +311,9 @@ describe("live updates SSE API (GET /api/events)", () => {
 
     expect(res.status).toBe(200);
     const reader = createEventReader(res);
+
+    const initial = await reader.next();
+    expect(initial).toBe(": connected");
 
     const chunk = await reader.next();
     expect(chunk).toBe(": keepalive");
@@ -232,8 +387,14 @@ describe("live updates SSE API (GET /api/events)", () => {
     expect(res.status).toBe(200);
     expect(app.live.listenerCount("ticket")).toBe(1);
 
-    // Enqueue without reading from res.body so desiredSize drops to <= 0
-    app.deps.tickets.create({ ...refunds, type: "fix", effort: "medium" }, app.deps.clock.now());
+    // High water mark is 64. Initial ": connected" occupies 1 chunk.
+    // Enqueue 63 events to fill the buffer to 64 queued chunks (desiredSize reaches 0).
+    for (let i = 0; i < 63; i++) {
+      app.deps.tickets.create({ ...refunds, type: "fix", effort: "medium" }, app.deps.clock.now());
+    }
+    // Stream is still open and listeners active
+    expect(app.live.listenerCount("ticket")).toBe(1);
+
     // Next event triggers desiredSize <= 0 drop
     app.deps.tickets.create({ ...refunds, type: "fix", effort: "medium" }, app.deps.clock.now());
 

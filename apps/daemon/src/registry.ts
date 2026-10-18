@@ -56,7 +56,7 @@ import type { AccountRateLimit } from "./view-types.ts";
 
 export type { AccountRateLimit };
 
-type Kind =
+export type RegistryKind =
   | "employee"
   | "engine"
   | "account"
@@ -70,8 +70,10 @@ type Kind =
   | "release"
   | "push_sub";
 
+type Kind = RegistryKind;
+
 export class Registry implements Company {
-  onChange?: () => void;
+  onChange?: (kind: RegistryKind) => void;
 
   constructor(private readonly db: Db) {}
 
@@ -82,7 +84,7 @@ export class Registry implements Company {
       id,
       JSON.stringify(body),
     );
-    this.onChange?.();
+    this.onChange?.(kind);
   }
 
   private list<T>(kind: Kind): T[] {
@@ -226,6 +228,7 @@ export class Registry implements Company {
   }
   removePushSubscription(endpoint: string): void {
     this.db.run("DELETE FROM company WHERE kind = ? AND id = ?", "push_sub", endpoint);
+    this.onChange?.("push_sub");
   }
   pushSubscriptions(): PushSubscription[] {
     return this.list<PushSubscription>("push_sub");
