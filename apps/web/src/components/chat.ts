@@ -114,12 +114,12 @@ export class IncChat extends LitElement {
   // Track pending optimistic messages across employees to prevent cross-thread leaks
   private pendingEntries: (Entry & { from: "owner" })[] = [];
   private inFlightEmployees = new Set<string>();
-  // Unsent text per employee, so a message typed to one is never sent to another. It's also kept in
-  // localStorage to survive a reload; the Map covers blocked storage.
+  // Unsent text per employee, so a message typed to one is never sent to another. The Map is always
+  // current for this page; localStorage only brings a draft back after a reload, when the Map is empty.
   private drafts = new Map<string, string>();
 
   private draftFor(employeeId: string): string {
-    return draftMemo.get(employeeId) ?? this.drafts.get(employeeId) ?? "";
+    return this.drafts.get(employeeId) ?? draftMemo.get(employeeId) ?? "";
   }
 
   private keepDraft(employeeId: string, text: string): void {

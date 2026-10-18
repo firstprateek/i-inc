@@ -1,7 +1,8 @@
 // Instant optimistic chat with thinking indicator, retry, and keyboard handling (T24).
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { api, logout } from "../src/api.ts";
 import { type Entry, IncChat, type Thread } from "../src/components/chat.ts";
+import { DRAFT_CAP } from "../src/drafts.ts";
 
 const sampleThreads: Thread[] = [
   { id: "ada", name: "Ada", tint: 0, role: "Engineering lead", last: null },
@@ -826,6 +827,54 @@ describe("Drafts across reloads (T10)", () => {
     const { el, root } = await reload();
     expect(el.draft).toBe("");
     expect(box(root).value).toBe("");
+  });
+
+  it("keeps a draft over 20 KB in memory only, and drops the older stored one", async () => {
+    serveChat();
+    const { el, root } = await mount("ada");
+    await type(el, root, "Short");
+    expect(localStorage.getItem("inc.chat.draft.ada")).toBe("Short");
+    const long = "x".repeat(DRAFT_CAP + 1);
+    await type(el, root, long);
+    expect(localStorage.getItem("inc.chat.draft.ada")).toBeNull();
+
+    el.employeeId = "kit";
+    await el.updateComplete;
+    el.employeeId = "ada";
+    await el.updateComplete;
+    expect(box(root).value).toBe(long);
+
+    const after = await reload();
+    expect(after.el.draft).toBe("");
+  });
+
+  it("stores a draft right at the 20 KB cap", async () => {
+    serveChat();
+    const { el, root } = await mount("ada");
+    const atCap = "x".repeat(DRAFT_CAP);
+    await type(el, root, atCap);
+    expect(localStorage.getItem("inc.chat.draft.ada")).toBe(atCap);
+  });
+
+  it("prefers the newer draft in memory when storage stops taking writes", async () => {
+    serveChat();
+    const { el, root } = await mount("ada");
+    await type(el, root, "First words");
+    const setItem = vi.spyOn(localStorage, "setItem").mockImplementation(() => {
+      throw new Error("QuotaExceededError");
+    });
+    // A spy on the instance outlives restoreAllMocks here, so undo it ourselves.
+    onTestFinished(() => setItem.mockRestore());
+    await type(el, root, "First words, and more");
+    expect(setItem).toHaveBeenCalled();
+    // The stale stored value goes rather than coming back after a reload.
+    expect(localStorage.getItem("inc.chat.draft.ada")).toBeNull();
+
+    el.employeeId = "kit";
+    await el.updateComplete;
+    el.employeeId = "ada";
+    await el.updateComplete;
+    expect(box(root).value).toBe("First words, and more");
   });
 
   it("still keeps drafts per employee in memory when storage is blocked", async () => {

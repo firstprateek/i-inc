@@ -1,5 +1,8 @@
 // Unsent chat drafts, kept in localStorage per employee so a reload doesn't lose them. Signing out
 // or a 401 (showLogin) forgets them all, since a draft to a PA can hold home data.
+
+// A draft longer than this (in UTF-16 characters) stays in memory only, so one paste can't fill storage.
+export const DRAFT_CAP = 20 * 1024;
 const prefix = "inc.chat.draft.";
 
 export const draftMemo = {
@@ -11,11 +14,18 @@ export const draftMemo = {
     }
   },
   set(employeeId: string, text: string): void {
+    const key = prefix + employeeId;
     try {
-      if (text.trim()) localStorage.setItem(prefix + employeeId, text);
-      else localStorage.removeItem(prefix + employeeId);
+      // Blank or oversized: drop the key, so an older draft can't come back after a reload.
+      if (text.trim() && text.length <= DRAFT_CAP) localStorage.setItem(key, text);
+      else localStorage.removeItem(key);
     } catch {
-      // Private mode or blocked storage: drafts last only for this page.
+      // Quota, private mode or blocked storage: drafts last only for this page. Don't leave a stale one.
+      try {
+        localStorage.removeItem(key);
+      } catch {
+        // Storage is blocked outright.
+      }
     }
   },
   clearAll(): void {
