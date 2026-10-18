@@ -808,6 +808,7 @@ export class IncApp extends LitElement {
       .more b { font-size: 17px; }
       .more span { font-size: 14px; color: var(--ink-2); }
       .mobile-view-title { display: none; }
+      .sign-out .short-icon { display: none; }
       /* A narrow desktop window: keep the header to one row, since it no longer scrolls away. */
       @media (min-width: 901px) and (max-width: 1240px) {
         header { gap: 10px; padding-left: max(20px, env(safe-area-inset-left)); padding-right: max(20px, env(safe-area-inset-right)); }
@@ -822,7 +823,6 @@ export class IncApp extends LitElement {
           clip-path: inset(50%); white-space: nowrap; border: 0;
         }
       }
-      .sign-out .short-icon { display: none; }
       @media (max-width: 900px) {
         /* Phones: header, main, tab bar are three rows of the grid. */
         :host {

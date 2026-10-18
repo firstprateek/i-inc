@@ -325,6 +325,15 @@ describe("the shell's layout rules", () => {
     expect(appCss).not.toMatch(/position:\s*(sticky|fixed)/);
   });
 
+  it("keeps the sign-out icon visible in the narrow desktop header", () => {
+    const narrowDesktop = appCss.indexOf("@media (min-width: 901px) and (max-width: 1240px)");
+    const defaultIcon = appCss.indexOf(".sign-out .short-icon { display: none; }");
+    expect(narrowDesktop).toBeGreaterThan(-1);
+    expect(defaultIcon).toBeGreaterThan(-1);
+    expect(defaultIcon).toBeLessThan(narrowDesktop);
+    expect(appCss.slice(narrowDesktop)).toMatch(/\.sign-out \.short-icon\s*\{\s*display:\s*block;/);
+  });
+
   it("main is the one scroller, and a route that owns its scrolling clips it", () => {
     has(
       appCss,
