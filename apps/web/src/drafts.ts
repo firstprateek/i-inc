@@ -1,5 +1,5 @@
 // Unsent chat drafts, kept in localStorage per employee so a reload doesn't lose them. Signing out
-// forgets them all, since a draft to a PA can hold home data.
+// or a 401 (showLogin) forgets them all, since a draft to a PA can hold home data.
 const prefix = "inc.chat.draft.";
 
 export const draftMemo = {

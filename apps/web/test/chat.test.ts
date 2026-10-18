@@ -1,6 +1,6 @@
 // Instant optimistic chat with thinking indicator, retry, and keyboard handling (T24).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { logout } from "../src/api.ts";
+import { api, logout } from "../src/api.ts";
 import { type Entry, IncChat, type Thread } from "../src/components/chat.ts";
 
 const sampleThreads: Thread[] = [
@@ -867,6 +867,45 @@ describe("Drafts across reloads (T10)", () => {
 
     expect(localStorage.getItem("inc.chat.draft.ada")).toBeNull();
     expect(localStorage.getItem("inc.chat.draft.pa")).toBeNull();
+    expect(localStorage.getItem("inc.new-ticket.project")).toBe("i-inc");
+  });
+
+  it("forgets every chat draft when the chat's session expires (401), and nothing else", async () => {
+    vi.stubGlobal(
+      "fetch",
+      async () =>
+        new Response(JSON.stringify({ error: "Sign in" }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    localStorage.setItem("inc.chat.draft.ada", "For Ada");
+    localStorage.setItem("inc.chat.draft.pa", "My address is…");
+    localStorage.setItem("inc.new-ticket.project", "i-inc");
+
+    await mount("ada");
+
+    expect(document.querySelector("inc-login")).not.toBeNull();
+    expect(localStorage.getItem("inc.chat.draft.ada")).toBeNull();
+    expect(localStorage.getItem("inc.chat.draft.pa")).toBeNull();
+    expect(localStorage.getItem("inc.new-ticket.project")).toBe("i-inc");
+  });
+
+  it("forgets chat drafts on a 401 from the board too", async () => {
+    vi.stubGlobal(
+      "fetch",
+      async () =>
+        new Response(JSON.stringify({ error: "Sign in" }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    localStorage.setItem("inc.chat.draft.ada", "For Ada");
+    localStorage.setItem("inc.new-ticket.project", "i-inc");
+
+    await expect(api.board()).rejects.toThrow();
+
+    expect(localStorage.getItem("inc.chat.draft.ada")).toBeNull();
     expect(localStorage.getItem("inc.new-ticket.project")).toBe("i-inc");
   });
 });

@@ -173,6 +173,17 @@ describe("turning notifications on", () => {
     expect(await enablePush(browser().env)).toBe("unavailable");
   });
 
+  it("forgets chat drafts when the session has expired (401)", async () => {
+    serve({ key: () => json({ error: "Sign in" }, 401) });
+    localStorage.setItem("inc.chat.draft.pa", "My address is…");
+    localStorage.setItem("inc.new-ticket.project", "i-inc");
+    await enablePush(browser().env).catch(() => {});
+    expect(localStorage.getItem("inc.chat.draft.pa")).toBeNull();
+    expect(localStorage.getItem("inc.new-ticket.project")).toBe("i-inc");
+    document.body.innerHTML = "";
+    localStorage.clear();
+  });
+
   it("is unsupported where it can't work, without prompting", async () => {
     const b = browser();
     expect(await enablePush({ ...b.env, hasPushManager: false })).toBe("unsupported");

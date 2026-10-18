@@ -2,6 +2,7 @@
 import { css, html, LitElement } from "lit";
 import { authStatus, login, signup } from "./api.ts";
 import { base } from "./components/shared.ts";
+import { draftMemo } from "./drafts.ts";
 
 export class IncLogin extends LitElement {
   static override properties = {
@@ -184,6 +185,8 @@ if (!customElements.get("inc-login")) {
 }
 
 export function showLogin(): void {
+  // Signed out or the session expired: forget unsent chat drafts, since one to a PA can hold home data.
+  draftMemo.clearAll();
   if (document.querySelector("inc-login")) return;
   document.body.innerHTML = "<inc-login></inc-login>";
 }
