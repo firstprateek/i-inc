@@ -120,19 +120,45 @@ export class IncApp extends LitElement {
         .sign-out { min-height: 44px; }
         main { padding: 0 16px calc(88px + env(safe-area-inset-bottom)); }
         .tabs { position: fixed; inset: auto 0 0 0; z-index: 10; display: grid; grid-template-columns: repeat(5, 1fr);
-          background: var(--surface); border-top: 1px solid var(--line); padding: 6px 4px calc(10px + env(safe-area-inset-bottom)); }
-        .tabs a { display: flex; flex-direction: column; align-items: center; gap: 2px; min-height: 44px; justify-content: center;
-          padding: 0; border-radius: 12px; font-size: 12px; font-weight: 600; text-decoration: none; }
-        .tabs a[aria-current="page"] { background: transparent; color: var(--ink); font-weight: 800; text-decoration: underline; }
+          background: var(--surface); border-top: 1px solid var(--line); padding: 6px 4px calc(10px + env(safe-area-inset-bottom));
+          user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+        .tabs button,
+        .tabs [role="tab"] { display: flex; flex-direction: column; align-items: center; gap: 2px; min-height: 44px; min-width: 44px;
+          justify-content: center; padding: 0; border: none; background: transparent; color: var(--ink-2);
+          font-family: inherit; font-size: 12px; font-weight: 600; text-decoration: none; cursor: pointer;
+          border-radius: 12px;
+          user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+          transition: transform 0.08s ease, opacity 0.08s ease; }
+        .tabs button:active,
+        .tabs [role="tab"]:active { transform: scale(0.92); opacity: 0.7; }
+        .tabs button[aria-current="page"],
+        .tabs [role="tab"][aria-current="page"],
+        .tabs button[aria-selected="true"],
+        .tabs [role="tab"][aria-selected="true"] { background: transparent; color: var(--ink); font-weight: 800; text-decoration: none; }
+        .tabs button:focus-visible,
+        .tabs [role="tab"]:focus-visible { outline: 2px solid var(--reviewing-mark); outline-offset: -2px; }
       }
       @media (min-width: 901px) { .tabs { display: none; } }
     `,
   ];
 
+  private navigate(to: string) {
+    location.hash = `#/${to}`;
+    this.route = parse(location.hash);
+  }
+
   override render() {
     const v = this.route.view;
     const link = (to: string, label: string, active: boolean) =>
       html`<a href="#/${to}" aria-current=${active ? "page" : "false"}>${label}</a>`;
+    const tab = (to: string, label: string, active: boolean) =>
+      html`<button
+        type="button"
+        role="tab"
+        aria-selected=${active ? "true" : "false"}
+        aria-current=${active ? "page" : "false"}
+        @click=${() => this.navigate(to)}
+      >${label}</button>`;
     return html`
       <header>
         <a class="mark" href="#/office">i.inc</a>
@@ -152,10 +178,10 @@ export class IncApp extends LitElement {
         <button class="btn ghost sign-out" type="button" @click=${() => logout()}>Sign out</button>
       </header>
       <main>${this.offline ? html`<inc-offline></inc-offline>` : this.view()}</main>
-      <nav class="tabs" aria-label="Views">
-        ${link("inbox", "Inbox", v === "inbox")} ${link("office", "Office", v === "office")}
-        ${link("board", "Board", v === "board" || v === "ticket")} ${link("chat", "Chats", v === "chat")}
-        ${link("more", "More", v === "more" || v === "desk" || v === "hiring" || v === "handbook" || v === "brain" || v === "setup")}
+      <nav class="tabs" role="tablist" aria-label="Views">
+        ${tab("inbox", "Inbox", v === "inbox")} ${tab("office", "Office", v === "office")}
+        ${tab("board", "Board", v === "board" || v === "ticket")} ${tab("chat", "Chats", v === "chat")}
+        ${tab("more", "More", v === "more" || v === "desk" || v === "hiring" || v === "handbook" || v === "brain" || v === "setup")}
       </nav>
     `;
   }

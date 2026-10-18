@@ -36,19 +36,20 @@ describe("parse", () => {
 });
 
 describe("the tab bar", () => {
-  it("every tab's link opens the view it names", async () => {
+  it("every tab button opens the view it names", async () => {
     phone(true);
     vi.stubGlobal("fetch", () => new Promise(() => {})); // the views just wait for data
     const app = new IncApp();
     document.body.append(app);
     await app.updateComplete;
-    const tabs = [...(app.shadowRoot?.querySelectorAll(".tabs a") ?? [])];
+    const tabs = [...(app.shadowRoot?.querySelectorAll(".tabs button") ?? [])];
     expect(tabs.map((a) => a.textContent?.trim())).toEqual(["Inbox", "Office", "Board", "Chats", "More"]);
-    const office = tabs[1] as HTMLAnchorElement;
-    expect(office.getAttribute("href")).toBe("#/office");
-    location.hash = office.getAttribute("href") ?? "";
+    const office = tabs[1] as HTMLButtonElement;
+    expect(office.getAttribute("role")).toBe("tab");
+    office.click();
     await new Promise((r) => setTimeout(r, 0));
     await app.updateComplete;
+    expect(location.hash).toBe("#/office");
     expect(app.shadowRoot?.querySelector("inc-office")).not.toBeNull();
     app.remove();
   });
