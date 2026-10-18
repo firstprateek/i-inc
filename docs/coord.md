@@ -41,7 +41,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
 | antigravity | 2026-10-17 23:16 | live on mini (PRs #53, #54, #55); idle | waiting for owner to grant GitHub App repo access for T23 |
-| claude | 2026-10-17 23:21 | reviewed #49 (2 fixes left), #50 ok | merge #49, #50 once fixed or approved |
+| claude | 2026-10-17 23:26 | idle — #49–#55 all merged and deployed by antigravity | waiting on owner (T23: add i-inc repo to the bot App) |
 
 ## Tasks
 
