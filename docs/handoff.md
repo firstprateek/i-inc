@@ -66,8 +66,8 @@ Before the bot can work on tickets for a repository (e.g. `firstprateek/i-inc`),
 
 1. **Verify live experience on phone:**
    - Access `https://iinc.<tailnet>.ts.net/` on mobile: test PWA install, Push notification opt-in, live SSE updates on ticket board, and session transcript drawer.
-2. **Check ticket images on the mini (#12):** that a ~10 MB image survives `machine run` over stdin
-   into `.inc/attachments/`, and that an iPhone photo arrives as JPEG rather than HEIC.
+2. **Check ticket images on the mini and an iPhone (#14):** checked on Linux, but not yet on the mini.
+   The two steps are in [m1-findings.md, "M3: ticket images"](m1-findings.md#m3-ticket-images-14).
 3. **Continue dogfooding follow-up tickets:**
    - Watch Ada pick up and run filed follow-up tickets #8 ("Reset chat state in willUpdate...") and #9 ("Keep chat draft per employee...").
 

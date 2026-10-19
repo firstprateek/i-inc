@@ -502,6 +502,39 @@ pass through the machine's login shell, so values with spaces or `;` are safe. C
 started this way in `m1-test` and answered `initialize`. `machineLaunch` now passes every variable
 like this.
 
+## M3: ticket images (#14)
+
+**Not yet run on the mini or an iPhone.** #14 was worked from an employee machine (Ubuntu 24.04),
+which can't reach the mini, so what's below was checked on Linux. The two checks that need the real
+hardware are at the end.
+
+Checked on Linux on 2026-10-19:
+
+| Check | Result |
+| --- | --- |
+| Six images of exactly 10 MB, one multipart `POST /api/tickets` | Taken (201), stored in `ticket_attachments` |
+| The same six, copied in with `attachmentScript` over stdin into `bash -s` | All six in `.inc/attachments/`, with the same SHA-256 as what was uploaded. `git status` stays clean |
+| How long that copy took | **About 1.6 s per image.** Bash reads a script from a pipe one byte at a time, and the image was a 14 MB heredoc in the script |
+| After the fix | About 25 ms per image. The image's base64 now comes after the script's last line, which hands the rest of stdin to `base64 -d` |
+| A HEIC file in the form (`image/heic`, or `.heic` with no type) | Refused before upload: "IMG_0042.HEIC is a HEIC photo, which a ticket can't take. Pick it from Photo Library, which sends it as JPEG, or set Settings > Camera > Formats to Most Compatible." The daemon refuses one anyway, by its bytes |
+
+`apps/daemon/test/workspace.test.ts` now runs the whole Linux path, from the upload to the worktree,
+for six 10 MB images.
+
+Over `container machine run -i`, stdin also goes through the container's relay into the machine, so
+the old heredoc would likely have been slower still. Still to check on the mini:
+
+1. **Six 10 MB images at pick-up.** File a ticket with six photos of about 10 MB each, from the web
+   app on the mini, and let an employee pick it up. Then compare the hashes:
+   `shasum -a 256 <the originals>` on the Mac, and
+   `container machine run -n <machine> -u employee -- sha256sum <worktree>/.inc/attachments/*`.
+   Also note how long pick-up took after the draft PR's push.
+2. **An iPhone photo in Safari.** On the iPhone, with the Camera format left at High Efficiency, use
+   the app over the tailnet and add a photo three ways: from Photo Library, Take Photo and Choose File
+   (Files). Expected: the first two arrive as JPEG (the ticket's thumbnail shows it, and the file in
+   `.inc/attachments/` ends in `.jpg`), and the third is refused with the message above. Note any 48 MP photo
+   whose JPEG comes out over 10 MB; the form refuses it as "over 10 MB".
+
 ## What the spec should change
 
 **Changed in this PR** (docs/spec.md):
