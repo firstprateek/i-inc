@@ -19,8 +19,8 @@ walls=${I_INC_WALLS_MARKER:-/var/run/i-inc-walls.ok}
 }
 
 # Keep the CLI's human-readable identity output in memory; status is intentionally just a boolean.
-status=$("$c" machine run -u employee -n "$machine" -- sh -c \
-  'PATH=/home/employee/.local/bin:$PATH exec codex login status' 2>&1 || true)
+status=$("$c" machine run -u employee -n "$machine" -- \
+  /home/employee/.local/bin/codex login status 2>&1 || true)
 if printf '%s\n' "$status" | grep -Eiq '^Logged in using (ChatGPT|API key|workload identity)'; then
   echo true
 elif printf '%s\n' "$status" | grep -Eiq 'not logged in|no authentication detected'; then
