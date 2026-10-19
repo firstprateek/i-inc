@@ -1,6 +1,6 @@
 // Fold a ticket's events into the state the pipeline decides from. Pure.
 import type { Decision, Finding, HelperDuty, NeedsYou, TicketEvent } from "./events.ts";
-import type { Id, Proposal, PullRequestRef } from "./model.ts";
+import type { Id, Proposal, PullRequestRef, TicketAttachment } from "./model.ts";
 import type { StageId } from "./stages.ts";
 
 export interface SessionRecord {
@@ -52,6 +52,12 @@ export interface TicketState {
   handedFrom: Id | null;
   /** The owner's chat messages about this ticket. A session sees those sent before its stage began. */
   messages: { at: number; text: string; urgent?: boolean }[];
+  /** Images the owner added after filing the ticket, with when. */
+  attachments: (TicketAttachment & { at: number })[];
+  /** The highest image number in each employee's worktree. */
+  copiedUpTo: Record<Id, number>;
+  /** When each employee's last session on this ticket started. */
+  lastSessionAt: Record<Id, number>;
   /** The last session was stopped by an urgent message. Cleared when the next session starts. */
   interruptedByOwner: boolean;
   stageStartedAt: number | null;
@@ -112,6 +118,9 @@ export function emptyState(): TicketState {
     assignee: null,
     handedFrom: null,
     messages: [],
+    attachments: [],
+    copiedUpTo: {},
+    lastSessionAt: {},
     interruptedByOwner: false,
     stageStartedAt: null,
     failure: null,
@@ -151,6 +160,7 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
         status: "running",
         interrupted: true,
         interruptedByOwner: false,
+        lastSessionAt: { ...s.lastSessionAt, [e.employeeId]: e.at },
         sessions: [
           ...s.sessions,
           { stage: e.stage, employeeId: e.employeeId, engineId: e.engineId, resume: e.resume },
@@ -264,6 +274,12 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
           startedAt: s.startedAt,
           sessions: s.sessions,
           switches: s.switches,
+          // The worktree stays, and so do the images in it.
+          pr: s.pr,
+          prFor: s.prFor,
+          attachments: s.attachments,
+          copiedUpTo: s.copiedUpTo,
+          lastSessionAt: s.lastSessionAt,
           finished: beforeBuild,
           outputs: s.outputs.plan === undefined ? {} : { plan: s.outputs.plan },
           ownerNote: e.note ?? "changes requested",
@@ -318,6 +334,21 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
           ...s.messages,
           e.urgent ? { at: e.at, text: e.text, urgent: true } : { at: e.at, text: e.text },
         ],
+      };
+    case "owner-attached":
+      return {
+        ...s,
+        attachments: [
+          ...s.attachments,
+          ...e.attachments
+            .filter((a) => !s.attachments.some((x) => x.n === a.n))
+            .map((a) => ({ ...a, at: e.at })),
+        ],
+      };
+    case "attachments-copied":
+      return {
+        ...s,
+        copiedUpTo: { ...s.copiedUpTo, [e.employeeId]: Math.max(e.upTo, s.copiedUpTo[e.employeeId] ?? 0) },
       };
     case "session-interrupted":
       return { ...s, interrupted: true, interruptedByOwner: true };

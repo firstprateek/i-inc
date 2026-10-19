@@ -171,6 +171,8 @@ export interface Harness {
  */
 export interface Workspace {
   open(ticket: Ticket, builder: Employee): Promise<PullRequestRef>;
+  /** Copies the ticket's images numbered `ns` into the worktree in `employee`'s machine. */
+  attach?(ticket: Ticket, employee: Employee, ns: number[]): Promise<void>;
   ready(ticket: Ticket, pr: PullRequestRef, report: string): Promise<void>;
 }
 

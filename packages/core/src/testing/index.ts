@@ -122,7 +122,10 @@ export class FakeWorkspace implements Workspace {
   /** Whose machine each open was for. */
   readonly openedFor: Id[] = [];
   readonly readied: { ticketId: Id; pr: PullRequestRef; report: string }[] = [];
+  /** The images copied in after pick-up, by whose machine. */
+  readonly attached: { ticketId: Id; employeeId: Id; ns: number[] }[] = [];
   failOpen: string | null = null;
+  failAttach: string | null = null;
   async open(ticket: Ticket, builder: Employee): Promise<PullRequestRef> {
     if (this.failOpen) throw new Error(this.failOpen);
     this.opened.push(ticket.id);
@@ -133,6 +136,10 @@ export class FakeWorkspace implements Workspace {
       nodeId: `PR_${ticket.id}`,
       branch: `inc/${ticket.id}-${builder.id}`,
     };
+  }
+  async attach(ticket: Ticket, employee: Employee, ns: number[]): Promise<void> {
+    if (this.failAttach) throw new Error(this.failAttach);
+    this.attached.push({ ticketId: ticket.id, employeeId: employee.id, ns });
   }
   async ready(ticket: Ticket, pr: PullRequestRef, report: string): Promise<void> {
     this.readied.push({ ticketId: ticket.id, pr, report });

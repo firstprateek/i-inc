@@ -1,6 +1,6 @@
 // A ticket's history is an append-only list of events (spec §9, "Durable state").
 // Everything the pipeline knows is folded from these, so a crash loses nothing that was appended.
-import type { FollowUp, Id, KnowledgeEdit, Proposal, PullRequestRef } from "./model.ts";
+import type { FollowUp, Id, KnowledgeEdit, Proposal, PullRequestRef, TicketAttachment } from "./model.ts";
 import type { StageId } from "./stages.ts";
 
 export type NeedsYou =
@@ -79,6 +79,10 @@ export type TicketEvent =
   | { type: "policy-decided"; at: number; editId: string; approved: boolean }
   | { type: "reassigned"; at: number; from: Id; to: Id }
   | { type: "owner-message"; at: number; text: string; urgent?: boolean }
+  /** The owner added images to a ticket after filing it; the bytes stay in the daemon. */
+  | { type: "owner-attached"; at: number; attachments: TicketAttachment[] }
+  /** The ticket's images up to number `upTo` are in `employeeId`'s worktree. */
+  | { type: "attachments-copied"; at: number; employeeId: Id; upTo: number }
   /** The owner stopped a session with an urgent message; the stage starts again with it. */
   | { type: "session-interrupted"; at: number; stage: StageId; reason: string }
   /** The stage needs another employee, and the scheduler will pick one (spec §6, "Assignment and scheduling"). */

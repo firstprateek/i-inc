@@ -76,8 +76,9 @@ export async function runTicket(p: Ports, original: Ticket, opts: RunOptions = {
   for (let i = 0; i < maxSteps; i++) {
     const s = fold(await p.store.read(original.id));
     const now = p.clock.now();
-    // A handoff changes who builds; the ticket, branch, plan and notes stay.
-    const ticket = s.assignee ? { ...original, assignee: s.assignee } : original;
+    // A handoff changes who builds; the ticket, branch, plan and notes stay. Images the owner added
+    // since this run began come from the events.
+    const ticket = withAttachments(s.assignee ? { ...original, assignee: s.assignee } : original, s);
     const builder = p.company.employee(ticket.assignee);
 
     if (!s.created) {
@@ -227,7 +228,7 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     const { workspace } = c.p;
     if (workspace && c.plan.stages.includes("build") && !c.s.pr) {
       const pr = await openWorkspace(c, c.builder, "pickup");
-      if (pr) await c.emit(pr, finished(c, "pickup"));
+      if (pr) await c.emit(...pr, finished(c, "pickup"));
       return;
     }
     await c.emit(finished(c, "pickup"));
@@ -764,7 +765,9 @@ async function session(
   if (isAssignee && c.p.workspace && c.s.pr && c.s.prFor !== employee.id) {
     const pr = await openWorkspace(c, employee, stage);
     if (!pr) return null;
-    await c.emit(pr);
+    await c.emit(...pr);
+  } else if (isAssignee && c.s.pr && c.s.prFor === employee.id && !(await copyAttachments(c, employee))) {
+    return null;
   }
   const text = o.fresh
     ? freshBrief(c.ticket, stage, task, c.p.harness.describe?.(c.ticket))
@@ -874,17 +877,56 @@ const passing =
  * Makes the ticket's worktree and branch in `employee`'s machine, with its draft PR. A passing
  * hiccup is thrown, so the daemon tries again at its next tick; anything else fails the ticket.
  */
-async function openWorkspace(c: Step, employee: Employee, stage: StageId): Promise<TicketEvent | null> {
+async function openWorkspace(c: Step, employee: Employee, stage: StageId): Promise<TicketEvent[] | null> {
   const workspace = c.p.workspace;
   if (!workspace) return null;
   try {
     const pr = await workspace.open(c.ticket, employee);
-    return { type: "pr-opened", at: c.p.clock.now(), pr, employeeId: employee.id };
+    const at = c.p.clock.now();
+    // Opening copies every image the ticket has so far.
+    const upTo = Math.max(0, ...(c.ticket.attachments ?? []).map((a) => a.n));
+    return [
+      { type: "pr-opened", at, pr, employeeId: employee.id },
+      ...(upTo ? [{ type: "attachments-copied", at, employeeId: employee.id, upTo } as const] : []),
+    ];
   } catch (err) {
     if (passing.test(errorText(err))) throw err;
     await c.emit(failed(c, stage, `couldn't open the branch and draft PR: ${errorText(err)}`));
     return null;
   }
+}
+
+/**
+ * Copies images the owner added since the worktree was made into it, before the builder's next
+ * session. Returns false when the copy failed and the ticket with it; a passing hiccup is thrown.
+ */
+async function copyAttachments(c: Step, employee: Employee): Promise<boolean> {
+  const workspace = c.p.workspace;
+  const upTo = c.s.copiedUpTo[employee.id] ?? 0;
+  const ns = (c.ticket.attachments ?? []).map((a) => a.n).filter((n) => n > upTo);
+  if (!workspace?.attach || !ns.length) return true;
+  try {
+    await workspace.attach(c.ticket, employee, ns);
+  } catch (err) {
+    if (passing.test(errorText(err))) throw err;
+    await c.emit(failed(c, c.s.active as StageId, `couldn't copy the owner's images: ${errorText(err)}`));
+    return false;
+  }
+  await c.emit({
+    type: "attachments-copied",
+    at: c.p.clock.now(),
+    employeeId: employee.id,
+    upTo: Math.max(...ns),
+  });
+  return true;
+}
+
+/** The ticket with the images the owner added after filing it, in order. */
+function withAttachments(ticket: Ticket, s: TicketState): Ticket {
+  const known = ticket.attachments ?? [];
+  const added = s.attachments.filter((a) => !known.some((k) => k.n === a.n)).map(({ at: _, ...a }) => a);
+  if (!added.length) return ticket;
+  return { ...ticket, attachments: [...known, ...added].sort((a, b) => a.n - b.n) };
 }
 
 function failed(c: Step, stage: StageId, reason: string): TicketEvent {

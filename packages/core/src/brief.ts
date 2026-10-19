@@ -71,6 +71,15 @@ export function brief(
   if (switched?.stage === stage) lines.push(`Engine switched from ${switched.from}: ${switched.reason}.`);
   if (state.lastAnswer?.note) lines.push(`Owner's note: ${state.lastAnswer.note}`);
   if (state.ownerNote) lines.push(`The owner asked for changes: ${state.ownerNote}`);
+  // Images added while a session ran, or while the ticket waited, are news to its next session.
+  const last = employee ? state.lastSessionAt[employee.id] : undefined;
+  const added = last === undefined ? [] : state.attachments.filter((a) => a.at >= last);
+  if (added.length) {
+    lines.push(
+      "The owner added images since your last session (open them):",
+      ...added.map((a) => `- ${attachmentPath(a)}`),
+    );
+  }
   // Messages reach the employee at the next stage boundary; urgent ones at the next session (spec §10, "Chat").
   const delivered = state.messages.filter(
     (m) => m.urgent || (state.stageStartedAt !== null && m.at <= state.stageStartedAt),
