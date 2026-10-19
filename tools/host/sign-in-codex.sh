@@ -20,6 +20,6 @@ walls=${I_INC_WALLS_MARKER:-/var/run/i-inc-walls.ok}
   exit 1
 }
 
-"$c" machine run -it -u employee -n "$machine" -- sh -c \
-  'PATH=/home/employee/.local/bin:$PATH exec codex login --device-auth'
+"$c" machine run -it -u employee -n "$machine" -- \
+  /home/employee/.local/bin/codex login --device-auth
 sh "$(dirname "$0")/codex-status.sh" "$id"

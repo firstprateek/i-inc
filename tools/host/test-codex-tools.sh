@@ -16,7 +16,7 @@ if [ "$1" = machine ] && [ "$2" = inspect ]; then
 fi
 case " $* " in
   *" sudo tee "*) cat >/dev/null ;;
-  *" codex login status "*) printf '%s\n' "${I_INC_TEST_LOGIN_STATUS:-Not logged in}" ;;
+  *"/home/employee/.local/bin/codex login status "*) printf '%s\n' "${I_INC_TEST_LOGIN_STATUS:-Not logged in}" ;;
   *" codex-acp --version "*) echo '@agentclientprotocol/codex-acp 2.2.2' ;;
   *" codex --version "*) echo 'codex-cli 0.160.1' ;;
 esac
@@ -74,8 +74,17 @@ export I_INC_TEST_MACHINE_EXISTS=true
 export I_INC_TEST_LOGIN_STATUS='Logged in using ChatGPT'
 status=$(sh "$root/tools/host/codex-status.sh" demo-team)
 [ "$status" = true ] || { echo "signed-in Codex status was not boolean true" >&2; exit 1; }
+grep -Fxq '<machine><run><-u><employee><-n><inc-demo-team><--></home/employee/.local/bin/codex><login><status>' "$tmp/calls" || {
+  echo "status did not invoke the pinned Codex CLI with exact argv" >&2; exit 1;
+}
 export I_INC_TEST_LOGIN_STATUS='Not logged in'
 status=$(sh "$root/tools/host/codex-status.sh" demo-team)
 [ "$status" = false ] || { echo "signed-out Codex status was not boolean false" >&2; exit 1; }
+
+: >"$tmp/calls"
+sh "$root/tools/host/sign-in-codex.sh" demo-team >/dev/null
+grep -Fxq '<machine><run><-it><-u><employee><-n><inc-demo-team><--></home/employee/.local/bin/codex><login><--device-auth>' "$tmp/calls" || {
+  echo "sign-in did not invoke the pinned Codex CLI with exact argv" >&2; exit 1;
+}
 
 echo "Codex host helper regressions passed"
