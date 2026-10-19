@@ -1,6 +1,7 @@
 // The board (spec §10): To do → In progress → Review → Done, across projects and Home.
 import { css, html } from "lit";
 import { api, refreshNow, type TicketEvent, type TicketView } from "../api.ts";
+import { waitingLine, waitsForAssignee } from "../assign.ts";
 import { Loader } from "./loader.ts";
 import "./new-ticket.ts";
 import { LAYOUT_BREAKPOINTS, layoutStyles } from "./layout.ts";
@@ -176,6 +177,12 @@ export class IncBoard extends Loader<BoardData> {
       .strip i.cur.paused { background: var(--bar); }
       .strip i.cur.failed { background: var(--alarm); }
       .strip i.cur.review { background: var(--reviewing-mark); }
+      .slot { position: relative; min-width: 0; }
+      .t.has-assign { padding-bottom: 70px; }
+      .assign { position: absolute; left: 14px; bottom: 14px; display: inline-flex; align-items: center; justify-content: center;
+        min-width: 44px; box-sizing: border-box; text-decoration: none; }
+      .waits { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; line-height: 1.4; color: var(--ink-2); min-width: 0; overflow-wrap: anywhere; }
+      .waits i { width: 8px; height: 8px; border-radius: 50%; background: var(--needs-fg); flex-shrink: 0; margin-top: 5px; }
       .live, .who { font-size: 13px; color: var(--ink-2); min-width: 0; }
       .who { display: flex; align-items: center; gap: 8px; }
       .empty { display: flex; align-items: center; justify-content: center; min-height: 64px; box-sizing: border-box; padding: 14px;
@@ -237,7 +244,8 @@ export class IncBoard extends Loader<BoardData> {
           : t.column === "review"
             ? "review"
             : "";
-    return html`<a class="card t ${statusCls}" href="#/ticket/${t.id}">
+    const assign = waitsForAssignee(t);
+    const card = html`<a class="card t ${statusCls} ${assign ? "has-assign" : ""}" href="#/ticket/${t.id}">
       <div class="row">
         <span class="tag">${t.type}</span>${projectBadge(t.project)}<span class="grow"></span>
         ${needs ? html`<span class="chip needs">Needs you</span>` : ""}${t.held ? html`<span class="chip">On hold</span>` : ""}<span class="muted" style="font-size:12px;font-weight:700">#${t.id}</span>
@@ -255,12 +263,19 @@ export class IncBoard extends Loader<BoardData> {
               )}
             </div>`
       }
-      <div class="live">${t.waiting ? capital(t.waiting) : t.status === "queued" ? "Queued" : t.live}</div>
+      ${
+        t.waiting
+          ? html`<div class="waits"><i aria-hidden="true"></i><span>${waitingLine(t.waiting, t.waitingUntil)}</span></div>`
+          : html`<div class="live">${t.status === "queued" ? "Queued" : t.live}</div>`
+      }
       ${t.assignee ? html`<div class="who">${avatar(t.assignee, 24)} ${t.assignee.name}</div>` : ""}
     </a>`;
+    // The Assign… link sits beside the card link (a link can't hold another): it opens the ticket's
+    // "Who should do this?" card.
+    return assign
+      ? html`<div class="slot">${card}<a class="btn assign" href="#/ticket/${t.id}/assign" aria-label="Assign ticket #${t.id}: ${t.title}">Assign…</a></div>`
+      : card;
   }
 }
-
-const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 customElements.define("inc-board", IncBoard);

@@ -45,6 +45,7 @@ export function ticketView(
   events: TicketEvent[],
   registry: Registry,
   waiting: string | null,
+  waitingUntil: number | null = null,
 ): TicketView {
   const assigneeId = s.assignee ?? r.ticket.assignee;
   const assignee = assigneeId ? personOf(registry, assigneeId) : null;
@@ -85,6 +86,7 @@ export function ticketView(
     live: liveLine(events, registry),
     needsYou: s.needsYou,
     waiting,
+    ...(waiting && waitingUntil ? { waitingUntil } : {}),
     report: s.status === "ready" ? assembleReport({ ...r.ticket, assignee: assigneeId }, s, registry) : null,
     failure: s.failure,
     outcome: s.outcome,

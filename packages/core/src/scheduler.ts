@@ -64,11 +64,14 @@ export interface Waiting {
 export interface Plan {
   starts: Start[];
   waiting: Waiting[];
+  /** For a ticket waiting on an account block or usage cap: when it resets (epoch ms). */
+  resets?: Record<Id, number>;
 }
 
 export function schedule(snap: Snapshot, company: Pick<Company, "engine">): Plan {
   const starts: Start[] = [];
   const waiting: Waiting[] = [];
+  const resets: Record<Id, number> = {};
   const taken = new Set(snap.busy);
   const holding = new Set(snap.holding ?? []);
   const picked = { ...snap.pickedUpToday };
@@ -89,6 +92,18 @@ export function schedule(snap: Snapshot, company: Pick<Company, "engine">): Plan
     }
     return null;
   };
+
+  /** When an account block or usage cap on this employee's build engine ends, if one is in force. */
+  const resetAt = (e: Employee): number | undefined => {
+    const engine = company.engine(e.engines.perDuty?.build ?? e.engines.default);
+    const times = [
+      snap.capReachedUntil[e.id],
+      snap.capReachedUntil[engine.accountId],
+      snap.accountsBlockedUntil[engine.accountId],
+    ].filter((x): x is number => x !== undefined && x > snap.now);
+    return times.length ? Math.max(...times) : undefined;
+  };
+  const isReset = (why: string) => /usage cap|to reset/.test(why);
 
   // A pending review goes ahead of starting a new build.
   for (const p of [...snap.pending].sort((a, b) => a.since - b.since)) {
@@ -127,6 +142,8 @@ export function schedule(snap: Snapshot, company: Pick<Company, "engine">): Plan
       }
       const why = available(e, "build");
       if (why) {
+        const until = isReset(why) ? resetAt(e) : undefined;
+        if (until) resets[t.id] = until;
         waiting.push({ ticketId: t.id, reason: why });
         continue;
       }
@@ -148,16 +165,15 @@ export function schedule(snap: Snapshot, company: Pick<Company, "engine">): Plan
       picked[taker.id] = (picked[taker.id] ?? 0) + 1;
       starts.push({ employeeId: taker.id, ticketId: t.id, as: "build", by: "standing-order" });
     } else {
-      waiting.push({
-        ticketId: t.id,
-        reason: takers.length
-          ? (available(takers[0] as Employee, "build") ?? "")
-          : "unassigned, and no standing order covers it",
-      });
+      const first = takers[0];
+      const why = first ? (available(first, "build") ?? "") : "unassigned, and no standing order covers it";
+      const until = first && isReset(why) ? resetAt(first) : undefined;
+      if (until) resets[t.id] = until;
+      waiting.push({ ticketId: t.id, reason: why });
     }
   }
 
-  return { starts, waiting };
+  return { starts, waiting, ...(Object.keys(resets).length ? { resets } : {}) };
 }
 
 /** One ticket as the scheduler sees it: who builds it, and its folded state. */

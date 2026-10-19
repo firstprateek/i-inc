@@ -131,6 +131,25 @@ describe("the scheduler", () => {
     ]);
   });
 
+  it("says when a blocked account or a usage cap resets, only for the tickets waiting on one", () => {
+    const plan = schedule(
+      snap({
+        localHour: 14,
+        accountsBlockedUntil: { "claude-pro": 5_000 },
+        capReachedUntil: { kit: 9_999 },
+        backlog: [
+          item("blocked", { assignee: "ada" }),
+          item("capped", { assignee: "kit" }),
+          item("night", { assignee: "juno" }),
+          item("orphan", { type: "feat" }),
+        ],
+      }),
+      company,
+    );
+    expect(plan.resets).toEqual({ blocked: 5_000, capped: 9_999 });
+    expect(schedule(snap({ backlog: [item("orphan")] }), company).resets).toBeUndefined();
+  });
+
   it("wraps working hours past midnight", () => {
     expect(withinHours({ from: 22, to: 7 }, 23)).toBe(true);
     expect(withinHours({ from: 22, to: 7 }, 3)).toBe(true);

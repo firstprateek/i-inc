@@ -39,6 +39,8 @@
   /* Scrollbar thumb: at least 3:1 on the ground and on the surface; darker on hover. */
   --scroll-thumb: #7d8680;
   --scroll-thumb-hover: #59625d;
+  /* The edge of a form control (input, select): at least 3:1 on the surface and the ground. */
+  --control-edge: #7d8680;
 
   /* Deterministic project badge colors (WCAG AA contrast > 7:1) */
   --proj-0-bg: #e2f0ef;
@@ -135,6 +137,7 @@
     --bar-crit: #ff6b57;
     --scroll-thumb: #6b756f;
     --scroll-thumb-hover: #9aa39d;
+    --control-edge: #6b756f;
     --neutral-bg: #2e3531;
     --neutral-fg: #c9cfc9;
     --screen: #0c0f0d;
@@ -211,6 +214,7 @@
   --bar-crit: #ff6b57;
   --scroll-thumb: #6b756f;
   --scroll-thumb-hover: #9aa39d;
+  --control-edge: #6b756f;
   --neutral-bg: #2e3531;
   --neutral-fg: #c9cfc9;
   --screen: #0c0f0d;

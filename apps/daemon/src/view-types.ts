@@ -36,7 +36,10 @@ export interface TicketView {
   /** One line of what's happening now, e.g. "Checks · 2 failing". */
   live: string;
   needsYou: NeedsYou | null;
+  /** The scheduler's reason this ticket isn't running, as it sends it (the web app words it for people). */
   waiting: string | null;
+  /** When an account or usage cap resets, when `waiting` is about that (epoch ms). */
+  waitingUntil?: number;
   report: Report | null;
   failure: TicketState["failure"];
   outcome: TicketState["outcome"];

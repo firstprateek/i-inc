@@ -1,9 +1,11 @@
 // The quick new-ticket form on the board: a title, optional details, a project and an effort,
 // posted to the ticket-creation API, with any images: picked (the camera or the photo library on a
 // phone) or pasted as a screenshot. Built to be used one-handed on a phone.
+import type { Employee } from "@i-inc/core";
 import { css, html, LitElement } from "lit";
-import { api, imageRules, type NewTicketBody, refreshNow } from "../api.ts";
-import { base } from "./shared.ts";
+import { api, imageRules, type NewTicketBody, refreshNow, type TicketView } from "../api.ts";
+import { assignees, NOBODY_LABEL, optionLabel } from "../assign.ts";
+import { base, selectField } from "./shared.ts";
 
 type Effort = NewTicketBody["effort"];
 type Kind = NewTicketBody["type"];
@@ -61,6 +63,10 @@ export class IncNewTicket extends LitElement {
     error: { state: true },
     filed: { state: true },
     images: { state: true },
+    employees: { state: true },
+    recent: { state: true },
+    assignee: { state: true },
+    assigneeChosen: { state: true },
   };
   declare open: boolean;
   declare projects: string[];
@@ -73,6 +79,11 @@ export class IncNewTicket extends LitElement {
   declare error: string | null;
   declare filed: { id: string; title: string } | null;
   declare images: Picked[];
+  declare employees: Employee[];
+  declare recent: TicketView[];
+  /** The employee picked, or "" for nobody yet. Follows the project until the owner chooses. */
+  declare assignee: string;
+  declare assigneeChosen: boolean;
 
   constructor() {
     super();
@@ -86,6 +97,10 @@ export class IncNewTicket extends LitElement {
     this.busy = false;
     this.error = null;
     this.filed = null;
+    this.employees = [];
+    this.recent = [];
+    this.assignee = "";
+    this.assigneeChosen = false;
     this.images = [];
   }
 
@@ -140,14 +155,35 @@ export class IncNewTicket extends LitElement {
         this.projects = ps.map((p) => p.id);
         // Default to the last project used, else the first one.
         if (!this.projects.includes(this.project)) this.project = this.projects[0] ?? "";
+        this.followProject();
       })
       .catch((e) => {
         this.error = e instanceof Error ? e.message : String(e);
       });
+    // Who can take it is a nicety: the form still files a ticket if these don't load.
+    void Promise.all([api.employees().catch(() => []), api.board().catch(() => [])]).then(([e, t]) => {
+      this.employees = Array.isArray(e) ? e : [];
+      this.recent = Array.isArray(t) ? t : [];
+      this.followProject();
+    });
+  }
+
+  /** The people offered for the chosen project, the usual one first. */
+  private get choices(): Employee[] {
+    return assignees(this.employees, this.project, this.recent);
+  }
+
+  /** Default to the project's usual employee, unless the owner picked someone who still fits. */
+  private followProject(): void {
+    const options = this.choices;
+    if (this.assigneeChosen && (this.assignee === "" || options.some((e) => e.id === this.assignee))) return;
+    this.assigneeChosen = false;
+    this.assignee = options[0]?.id ?? "";
   }
 
   static override styles = [
     base,
+    selectField,
     css`
       :host { display: block; }
       .box { padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
@@ -155,9 +191,9 @@ export class IncNewTicket extends LitElement {
       h2 { font-size: 18px; }
       form { display: flex; flex-direction: column; gap: 12px; }
       label, fieldset { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 700; color: var(--ink-2); border: 0; padding: 0; margin: 0; min-width: 0; }
-      input, select, textarea {
+      input, textarea {
         font: 16px var(--body); color: var(--ink); background: var(--surface); box-sizing: border-box; width: 100%;
-        min-height: 44px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line-strong);
+        min-height: 44px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--control-edge);
       }
       textarea { padding: 10px 12px; min-height: 76px; resize: vertical; line-height: 1.35; }
       input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 1px; }
@@ -213,6 +249,7 @@ export class IncNewTicket extends LitElement {
           type: this.kind,
           effort: this.effort,
           doneWhen,
+          ...(this.assignee ? { assignee: this.assignee } : {}),
         },
         this.images.map((p) => p.file),
       );
@@ -273,6 +310,7 @@ export class IncNewTicket extends LitElement {
             </div>
             <select name="project" .value=${this.project} @change=${(e: Event) => {
               this.project = (e.target as HTMLSelectElement).value;
+              this.followProject();
             }}>
               ${this.projects.map((p) => html`<option value=${p} ?selected=${p === this.project}>${p}</option>`)}
             </select>
@@ -285,6 +323,15 @@ export class IncNewTicket extends LitElement {
             </select>
           </label>
         </div>
+        <label>Assign to
+          <select name="assignee" @change=${(e: Event) => {
+            this.assignee = (e.target as HTMLSelectElement).value;
+            this.assigneeChosen = true;
+          }}>
+            ${this.choices.map((e) => html`<option value=${e.id} .selected=${e.id === this.assignee}>${optionLabel(e)}</option>`)}
+            <option value="" .selected=${this.assignee === ""}>${NOBODY_LABEL}</option>
+          </select>
+        </label>
         <fieldset>
           <legend>Effort</legend>
           <div class="seg">

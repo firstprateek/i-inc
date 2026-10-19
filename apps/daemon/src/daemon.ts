@@ -68,6 +68,8 @@ export class Daemon {
   private readonly sessions = new Map<Id, { employeeId: Id; controller: AbortController }>();
   /** Why each ticket that didn't start is waiting, from the last tick. */
   waiting: Waiting[] = [];
+  /** For a waiting ticket blocked by an account or usage cap: when it resets (epoch ms). */
+  waitingUntil: Record<Id, number> = {};
 
   constructor(private readonly d: DaemonDeps) {}
 
@@ -273,6 +275,7 @@ export class Daemon {
     };
     const plan = schedule(snap, this.d.registry);
     this.waiting = plan.waiting;
+    this.waitingUntil = plan.resets ?? {};
 
     for (const start of plan.starts) {
       if (start.as !== "build") await assignHelper(this.ports, start.ticketId, start.as, start.employeeId);

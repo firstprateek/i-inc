@@ -2,6 +2,23 @@
 // and docs/layout.md). Colours come from tokens.css, each with one role (status, identity, action, alarm, neutral).
 import { css, html } from "lit";
 
+/**
+ * A form select that keeps a long choice on one line (ellipsis, clear of the arrow) and has an edge
+ * you can see (--control-edge, 3:1). Native look is dropped so the arrow can't cover the text.
+ */
+export const selectField = css`
+  select {
+    appearance: none; -webkit-appearance: none;
+    font: 16px var(--body); color: var(--ink); background-color: var(--surface); box-sizing: border-box; width: 100%;
+    min-height: 44px; padding: 0 40px 0 12px; border-radius: 10px; border: 1px solid var(--control-edge);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    background-image: linear-gradient(45deg, transparent 50%, var(--ink-2) 50%), linear-gradient(135deg, var(--ink-2) 50%, transparent 50%);
+    background-position: calc(100% - 20px) calc(50% + 1px), calc(100% - 14px) calc(50% + 1px);
+    background-size: 6px 6px; background-repeat: no-repeat;
+  }
+  select:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 1px; }
+`;
+
 export const base = css`
   :host { display: block; color: var(--ink); font-family: var(--body); }
   h1, h2, h3 { font-family: var(--display); font-weight: 700; margin: 0; letter-spacing: -0.3px; }
