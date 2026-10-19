@@ -161,13 +161,7 @@ export class GitHubWorkspace implements Workspace {
       const tail = r.output.trim().split("\n").slice(-5).join("\n");
       throw new Error(`git in ${builder.name}'s machine failed: ${tail}`);
     }
-    for (const file of this.o.attachments?.(ticket.id) ?? []) {
-      const a = await this.o.run(builder.id, attachmentScript({ worktree, file }));
-      if (a.code !== 0 || !a.output.includes("@@attached")) {
-        const tail = a.output.trim().split("\n").slice(-5).join("\n");
-        throw new Error(`couldn't copy ${file.name} into ${builder.name}'s machine: ${tail}`);
-      }
-    }
+    await this.attach(ticket, builder);
     // Direct mode: a local branch; the reviewed work is pushed to main at the gates.
     if (direct) return { branch };
     const pr =
@@ -185,6 +179,19 @@ export class GitHubWorkspace implements Workspace {
         ].join("\n"),
       }));
     return { number: pr.number, url: pr.url, nodeId: pr.nodeId, branch };
+  }
+
+  /** Copies the ticket's images into the worktree: those numbered `ns`, or all of them. */
+  async attach(ticket: Ticket, employee: Employee, ns?: number[]): Promise<void> {
+    const worktree = this.o.worktree(ticket.id);
+    for (const file of this.o.attachments?.(ticket.id) ?? []) {
+      if (ns && !ns.includes(file.n)) continue;
+      const a = await this.o.run(employee.id, attachmentScript({ worktree, file }));
+      if (a.code !== 0 || !a.output.includes("@@attached")) {
+        const tail = a.output.trim().split("\n").slice(-5).join("\n");
+        throw new Error(`couldn't copy ${file.name} into ${employee.name}'s machine: ${tail}`);
+      }
+    }
   }
 
   async ready(ticket: Ticket, pr: PullRequestRef, report: string): Promise<void> {

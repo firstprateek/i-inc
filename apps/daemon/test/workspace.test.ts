@@ -51,6 +51,7 @@ const ada: Employee = {
   engines: { default: "opus", fallbacks: [] },
   switchRules: defaultSwitchRules,
 };
+const kit: Employee = { ...ada, id: "kit", name: "Kit" };
 
 /** An origin with one commit on main, and a machine's work folder. */
 function setup() {
@@ -283,6 +284,24 @@ describe("the GitHub workspace", () => {
       attachments: () => [{ n: 1, name: "a.png", mime: "image/png", size: 2, data }],
     });
     await expect(failing.ws.open(ticket, ada)).rejects.toThrow("couldn't copy a.png into Ada's machine");
+  });
+
+  it("copies only the images it's given into a worktree that's already there, in that machine", async () => {
+    const runs: { employee: string; script: string }[] = [];
+    const data = new Uint8Array([0x89, 0x50]);
+    const { ws } = workspace({
+      run: async (employee, script) => {
+        runs.push({ employee, script });
+        return { code: 0, output: "@@attached\n" };
+      },
+      attachments: () => [1, 2, 3].map((n) => ({ n, name: `${n}.png`, mime: "image/png", size: 2, data })),
+    });
+    // Twice, as after a crash between the copy and its event: the script leaves a file that's there.
+    for (let i = 0; i < 2; i++) await ws.attach(ticket, kit, [2, 3]);
+    expect(runs.map((r) => r.employee)).toEqual(["kit", "kit", "kit", "kit"]);
+    expect(runs[0]?.script).toContain("cd '/home/employee/work/inc-7'");
+    expect(runs.map((r) => r.script.match(/attachments\/(\d)-/)?.[1])).toEqual(["2", "3", "2", "3"]);
+    expect(runs.every((r) => r.script.includes("if [ ! -f"))).toBe(true);
   });
 
   it("writes the report into the PR and marks it ready, once", async () => {

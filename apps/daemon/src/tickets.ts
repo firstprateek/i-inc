@@ -17,7 +17,7 @@ export interface NewTicket {
   createdBy?: Id;
 }
 
-/** An image the owner sends with a new ticket, already checked by the API. */
+/** An image the owner sends with a ticket, already checked by the API. */
 export interface NewAttachment {
   name: string;
   mime: string;
@@ -50,6 +50,16 @@ export function safeName(name: string, mime: string): string {
   return `${stem || "image"}.${ext}`;
 }
 
+/** Metadata for new images, numbered on from `after`. */
+function numbered(images: NewAttachment[], after: number): TicketAttachment[] {
+  return images.map((f, i) => ({
+    n: after + i + 1,
+    name: safeName(f.name, f.mime),
+    mime: f.mime,
+    size: f.data.byteLength,
+  }));
+}
+
 export interface TicketRecord {
   ticket: Ticket;
   priority: number;
@@ -67,12 +77,7 @@ export class Tickets {
   create(input: NewTicket, now: number, images: NewAttachment[] = []): Ticket {
     const [row] = this.db.all<{ n: number }>("SELECT COUNT(*) AS n FROM tickets");
     const id = String((row?.n ?? 0) + 1);
-    const attachments = images.map((f, i) => ({
-      n: i + 1,
-      name: safeName(f.name, f.mime),
-      mime: f.mime,
-      size: f.data.byteLength,
-    }));
+    const attachments = numbered(images, 0);
     const ticket: Ticket = {
       id,
       title: input.title,
@@ -95,21 +100,48 @@ export class Tickets {
         input.hold ? 1 : 0,
         now,
       );
-      attachments.forEach((a, i) => {
-        this.db.run(
-          "INSERT INTO ticket_attachments (ticket_id, seq, name, mime, size, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-          id,
-          a.n,
-          a.name,
-          a.mime,
-          a.size,
-          images[i]?.data ?? new Uint8Array(),
-          now,
-        );
-      });
+      this.insertImages(id, attachments, images, now);
     });
     this.onChange?.(id);
     return ticket;
+  }
+
+  /** Adds images to a ticket that already exists, numbered after its last one. Returns the new ones. */
+  attach(id: Id, images: NewAttachment[], now: number): TicketAttachment[] {
+    let added: TicketAttachment[] = [];
+    this.db.transaction(() => {
+      const r = this.get(id);
+      if (!r) throw new Error(`no ticket ${id}`);
+      const [row] = this.db.all<{ n: number | null }>(
+        "SELECT MAX(seq) AS n FROM ticket_attachments WHERE ticket_id = ?",
+        id,
+      );
+      added = numbered(images, row?.n ?? 0);
+      const attachments = [...(r.ticket.attachments ?? []), ...added];
+      this.db.run(
+        "UPDATE tickets SET body = ? WHERE id = ?",
+        JSON.stringify({ ...r.ticket, attachments }),
+        id,
+      );
+      this.insertImages(id, added, images, now);
+    });
+    this.onChange?.(id);
+    return added;
+  }
+
+  private insertImages(id: Id, attachments: TicketAttachment[], images: NewAttachment[], now: number): void {
+    attachments.forEach((a, i) => {
+      this.db.run(
+        "INSERT INTO ticket_attachments (ticket_id, seq, name, mime, size, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        id,
+        a.n,
+        a.name,
+        a.mime,
+        a.size,
+        images[i]?.data ?? new Uint8Array(),
+        now,
+      );
+    });
   }
 
   /** One attachment with its bytes, or all of a ticket's when `n` is absent. */
