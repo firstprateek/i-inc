@@ -44,7 +44,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | --- | --- | --- | --- |
 | antigravity | 2026-10-18 13:30 | T42 hiring overhaul & custom roles in progress | PR, review, merge, deploy |
 | claude | 2026-10-18 15:54 | IDLE — T40–T44 done and deployed; no open PRs | waiting for owner feedback; Codex provisioning needs owner go |
-| codex | 2026-10-18 20:36 | T47 Codex sign-in helper path bug reproduced on mini | fix absolute CLI path, test, review, deploy helper, resume owner sign-in |
+| codex | 2026-10-18 20:41 | T47 merged; deploying script-only sign-in helper fix | verify status helper, then owner resumes interactive sign-in |
 
 ## Tasks
 
@@ -97,7 +97,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | T44 | Add Codex CLI agent support end to end: hiring/engine/account selection, ACP harness and sandbox/image wiring, sign-in tools and status, pipeline/fallback/session integration, tests and docs; owner signs in later for joint verification | daemon + web | done (PR #70) | `t44-agent-integration` / #70 | T43 | Contract C16; owner request 2026-10-18; next after current layout work; no sign-in during implementation |
 | T45 | Pin All views dropdown header: fix the top section with title and close (✕) button so it stays pinned/sticky at the top while scrolling the catalog list | web | done (PR #71) | #71 | | Owner request 2026-10-18 |
 | T46 | Fix custom engine configuration overflow in hiring view: inputs, selects, labels and action buttons fit cleanly without container or card boundary overflow | web | done (PR #72) | #72 | T42 | Owner request 2026-10-18 |
-| T47 | Fix Codex owner sign-in/status helpers failing to find the sandbox-local CLI after successful provisioning; use the pinned absolute path and guard it with host-helper regressions | daemon | claimed (codex) | `fix/codex-sign-in-path` | T44 | Owner reproduced immediately after provisioning; no credentials involved |
+| T47 | Fix Codex owner sign-in/status helpers failing to find the sandbox-local CLI after successful provisioning; use the pinned absolute path and guard it with host-helper regressions | daemon | done (PR #73) | #73 | T44 | Owner reproduced immediately after provisioning; no credentials involved |
 
 ## API contracts
 
@@ -444,3 +444,7 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-18 16:18 codex → all: DONE T44 provisioning — owner ran `tools/host/provision-codex.sh engineering`; engineering sandbox reports codex-acp 2.2.2 and codex-cli 0.160.1 provisioned. Internal-browser reproduction on current main confirmed Codex appears under “Configure new engine / model” and immediately joins default/per-duty/fallback pickers after an engine record is saved. Waiting on the owner's later interactive sign-in, account-entitled model configuration, and one live-ticket verification.
 
 2026-10-18 20:36 codex → all: CLAIM T47 — owner reproduced `could not read Codex sign-in status` after provisioning. Read-only mini diagnostic found `/home/employee/.local/bin/codex` installed and reporting `Not logged in`, while the helper's nested `sh -c` PATH lookup reports `codex: command not found`. Fixing both sign-in and status helpers to invoke the pinned absolute path, adding argv regressions, then independent review before deploy. No credentials read and no sign-in attempted by codex.
+
+2026-10-18 20:41 codex → all: REVIEW ok T47 — #73 @8cc6eb6 independently reviewed with no findings; GitHub review recorded. `pnpm check`, `pnpm typecheck`, `pnpm test` (622 tests plus host regression), diff check and CI pass. Reviewed status helper real-run on mini returned `false`; no sign-in performed.
+2026-10-18 20:41 codex → all: DONE T47 — #73 merged at 86e227f; sign-in and status helpers now call the pinned sandbox CLI by absolute path, with exact-argv regression coverage.
+2026-10-18 20:41 codex → all: DEPLOY-LOCK codex — deploying merged script-only T47 helper fix to the mini via fast-forward pull; no install, sign-in, sudo, daemon restart, or system/network change.
