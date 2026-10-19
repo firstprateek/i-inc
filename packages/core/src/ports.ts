@@ -1,7 +1,16 @@
 // The core has no I/O. Everything outside it comes through these ports: the daemon plugs in ACP
 // sessions, Apple container machines and SQLite; tests plug in the fakes in ./testing.
 import type { TicketEvent } from "./events.ts";
-import type { Duty, Employee, Engine, Id, ProjectPolicy, PullRequestRef, Ticket } from "./model.ts";
+import type {
+  AgentHarness,
+  Duty,
+  Employee,
+  Engine,
+  Id,
+  ProjectPolicy,
+  PullRequestRef,
+  Ticket,
+} from "./model.ts";
 import type { StageId } from "./stages.ts";
 
 export interface Clock {
@@ -13,6 +22,9 @@ export interface EventStore {
   append(ticketId: Id, events: TicketEvent[]): Promise<void>;
 }
 
+/** Why a sandbox's machine won't boot (see classifyBootFailure in the daemon's machines.ts). */
+export type SandboxFaultKind = "stale-hostname" | "container-service-down" | "unknown";
+
 export interface SandboxStatus {
   team: Id;
   machine: string;
@@ -20,6 +32,39 @@ export interface SandboxStatus {
   cpus: number;
   memory: string;
   signedIn: { claude: boolean; antigravity: boolean; codex: boolean; github: boolean };
+  /** With `state: "error"` (contract C18): why it can't start, in plain words, and what fixes it. */
+  reason?: string;
+  kind?: SandboxFaultKind;
+  /** When the daemon next tries to boot it (epoch ms). */
+  retryAt?: number;
+}
+
+/** A sandbox that failed to boot and is waiting out its backoff. */
+export interface SandboxFault {
+  machine: string;
+  kind: SandboxFaultKind;
+  /** The full sentence for Setup > Sandboxes. */
+  reason: string;
+  /** The short form tickets show: "the engineering sandbox can't start (restart the container service on the Mac mini)". */
+  waiting: string;
+  since: number;
+  retryAt: number;
+  attempts: number;
+}
+
+/**
+ * Something that couldn't start (a sandbox that won't boot, an engine that won't launch). It is not
+ * the ticket's fault: a builder's ticket waits, and a helper is skipped (T50).
+ */
+export class StartupError extends Error {
+  constructor(
+    message: string,
+    /** Epoch ms when trying again is worthwhile, when known. */
+    readonly retryAt?: number,
+  ) {
+    super(message);
+    this.name = "StartupError";
+  }
 }
 
 /** Makes sure an employee's machine is up before a session runs on it. */
@@ -31,6 +76,15 @@ export interface MachineProvider {
   deliverCallback?(teamId: Id, url: string): Promise<void>;
   /** Checks sandbox VM state and sign-ins for a team. */
   inspectSandbox?(team: Id, size: { cpus: number; memory: string }): Promise<SandboxStatus>;
+  /** The boot failure holding an employee's sandbox in backoff, if there is one. Reads memory only. */
+  sandboxFault?(employeeId: Id): SandboxFault | undefined;
+  /**
+   * Whether an employee's sandbox is signed in to a harness, from the last probe: undefined when it
+   * hasn't been probed yet.
+   */
+  signedIn?(employeeId: Id, harness: AgentHarness): boolean | undefined;
+  /** Clears a sandbox's backoff and tries to boot it now (contract C18). Returns its new state. */
+  retrySandbox?(team: Id, size: { cpus: number; memory: string }): Promise<SandboxStatus>;
 }
 
 export interface SessionRequest {
@@ -69,7 +123,8 @@ export interface TicketSessionTranscript {
 export type SessionOutcome =
   | { kind: "done"; output: string }
   | { kind: "out-of-tokens"; resetsAt: number }
-  | { kind: "stuck"; reason: string }
+  /** `startup`: the engine never got going (it wouldn't launch, or needs a sign-in), as opposed to failing mid-work. */
+  | { kind: "stuck"; reason: string; startup?: true }
   | { kind: "interrupted"; reason: string };
 
 /** Runs one ACP session to the end of its step. */
@@ -130,6 +185,17 @@ export interface Company {
   projectPolicy?(project: string): ProjectPolicy;
   /** Every engine, so a reviewer can run on a different one from the builder's. */
   engines?(): Engine[];
+  /**
+   * Why an employee can't run this engine for this duty right now, or null: their team's sandbox is
+   * in backoff, or (for a reviewer or verifier) its harness isn't known to be signed in there.
+   */
+  engineBlock?(employeeId: Id, engineId: Id, duty: Duty): EngineBlock | null;
+}
+
+export interface EngineBlock {
+  reason: string;
+  /** When it is worth trying again (epoch ms), if known. */
+  until?: number;
 }
 
 /**

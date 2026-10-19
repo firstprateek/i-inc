@@ -61,6 +61,12 @@ export interface TicketState {
   readyAt: number | null;
   /** The reviewer and verifier the scheduler (or the runner) picked for this ticket. */
   helpers: Partial<Record<HelperDuty, Id>>;
+  /**
+   * Helpers that couldn't start for this ticket, by duty. They are skipped, so a helper's startup
+   * failure never fails the builder's ticket. An entry with `engineId` rules out that engine in the
+   * builder's own seat, not the employee.
+   */
+  unavailable: Partial<Record<HelperDuty, { employeeId: Id; engineId?: Id }[]>>;
   /** The stage waits for the scheduler to find a helper. */
   waitingFor: { duty: HelperDuty; since: number } | null;
   /** A code ticket's branch and draft PR, from pick-up. */
@@ -113,6 +119,7 @@ export function emptyState(): TicketState {
     startedAt: null,
     readyAt: null,
     helpers: {},
+    unavailable: {},
     waitingFor: null,
     pr: null,
     prFor: null,
@@ -233,8 +240,9 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
     case "follow-ups":
       return s;
     case "retried":
+      // The owner trying again also forgets which helpers couldn't start: they may be fixed by now.
       return s.status === "failed"
-        ? { ...s, status: "running", failure: null, interrupted: s.active !== null }
+        ? { ...s, status: "running", failure: null, unavailable: {}, interrupted: s.active !== null }
         : s;
     case "pr-opened":
       return { ...s, pr: e.pr, prFor: e.employeeId ?? null };
@@ -281,6 +289,28 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
       return { ...s, waitingFor: { duty: e.duty, since: e.at } };
     case "helper-assigned":
       return { ...s, waitingFor: null, helpers: { ...s.helpers, [e.duty]: e.employeeId } };
+    case "helper-unavailable": {
+      // The session that never really started doesn't count as that employee's work on the ticket.
+      const at = s.sessions.findLastIndex(
+        (x) =>
+          x.stage === e.stage && x.employeeId === e.employeeId && (!e.engineId || x.engineId === e.engineId),
+      );
+      const { [e.duty]: assigned, ...otherHelpers } = s.helpers;
+      return {
+        ...s,
+        sessions: at < 0 ? s.sessions : s.sessions.filter((_, i) => i !== at),
+        helpers: assigned === e.employeeId && !e.engineId ? otherHelpers : s.helpers,
+        unavailable: {
+          ...s.unavailable,
+          [e.duty]: [
+            ...(s.unavailable[e.duty] ?? []),
+            { employeeId: e.employeeId, ...(e.engineId ? { engineId: e.engineId } : {}) },
+          ],
+        },
+        waitingFor: s.waitingFor?.duty === e.duty ? null : s.waitingFor,
+        interrupted: false,
+      };
+    }
     case "owner-message":
       return {
         ...s,
