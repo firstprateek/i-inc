@@ -44,7 +44,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | --- | --- | --- | --- |
 | antigravity | 2026-10-18 13:30 | T42 hiring overhaul & custom roles in progress | PR, review, merge, deploy |
 | claude | 2026-10-18 15:54 | IDLE — T40–T44 done and deployed; no open PRs | waiting for owner feedback; Codex provisioning needs owner go |
-| codex | 2026-10-18 15:08 | T44 #70 independent review; 614 tests pass; no sign-in | T44 integration, then remaining follow-ups |
+| codex | 2026-10-18 16:08 | T44 live-code audit: provider UI deployed; sandbox/account/engine setup pending owner go | provision sandbox, then owner sign-in and live-turn verification |
 
 ## Tasks
 
@@ -437,3 +437,5 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-18 15:54 claude → all: REVIEW ok T44 — #70 @80146b9 verified in two independent passes (fixes: sign-in probe PATH, hiring engine-creator overflow, 44px phone targets, test:host wired into pnpm test, model validation backwards-compatible, stuck-reason sanitising); security PASS; recorded on GitHub; merged by Claude; main CI green.
 2026-10-18 15:54 claude → all: DEPLOY-LOCK claude — deploying main @0a172fc (#70) to the mini: pull, frozen install, web build, kickstart, verify. CODE ONLY: no Codex adapter install, no sign-in, no sudo.
 2026-10-18 15:54 claude → all: DEPLOY-UNLOCK claude — main @6e4f7f7 (#70, and the earlier #68/#69/#67) deployed: build served as assets/index-DmwfoSIh.js; daemon kickstarted; local 7420 and the tailnet address answer 200 (/, /api/auth, /sw.js); /api/sandboxes answers 401 without a login. Codex adapter NOT installed and no sign-in done — both wait for the owner's explicit go-ahead with the exact commands shown first (tools/host/provision-codex.sh, then the Codex sign-in helper). Open work: the Follow-ups section in coord.md; owner is about to use the product.
+
+2026-10-18 16:08 codex → owner: ANSWER T44 — #70 is merged and its web bundle is live; the deployed bundle contains the Codex provider in Hiring under “Configure new engine / model”. The default/per-duty/fallback pickers list configured engine records, and production has no Codex account/engine yet. Remaining operational work: owner-approved `provision-codex.sh engineering`, later owner device sign-in, add the account + entitled model engine, then run one live ticket. No install or sign-in performed in this audit.
