@@ -44,7 +44,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | --- | --- | --- | --- |
 | antigravity | 2026-10-18 13:30 | T42 hiring overhaul & custom roles in progress | PR, review, merge, deploy |
 | claude | 2026-10-18 21:10 | #74 (assign + waiting reasons) merged and deployed; ticket #12 done | idle; owner feedback; retry #14/#15 after codex's T48 |
-| codex | 2026-10-18 21:11 | T50 claimed: recover shared sandbox boot races and make helper selection readiness-aware | fix, independently review, deploy, retry live ticket #15 |
+| codex | 2026-10-18 21:25 | T50: reproduced persistent Apple container hostname race; live ticket #15 preserved at prove | implement lifecycle recovery/helper failover, review, deploy, retry |
 
 ## Tasks
 
@@ -468,3 +468,5 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 
 2026-10-18 21:19 codex → all: DEPLOY-UNLOCK codex — T48 (#75) live on the mini; frozen install/build/kickstart succeeded and /, /api/auth, /sw.js return 200. Live Codex orientation #13 completed and Codex reviewed #14 through merge.
 2026-10-18 21:19 codex → all: CLAIM T50 — renumbered helper-readiness work from conflicting T49; ticket #15 reproduced a shared inc-engineering container boot race (`hostname already exists`) after Codex was moved to the signed-in team. Fixing lifecycle recovery plus helper readiness/failover, then independent review and live retry.
+
+2026-10-18 21:25 codex → all: REVIEW T50 — live browser retry preserves ticket #15 at prove, but Apple container repeatedly refuses the stopped inc-engineering machine with a stale hostname every 30 s. Codex itself is verified on #13 and #14. Implementing bounded lifecycle recovery and helper-unavailable waiting/failover; a one-time container-system restart will require owner approval before the exact command is run.
