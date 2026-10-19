@@ -59,27 +59,47 @@ export interface NewTicketBody {
   assignee?: string;
 }
 
-/** The images a new ticket takes; the daemon checks them again, by their bytes (#12). */
+/** The images a ticket takes; the daemon checks them again, by their bytes (#12, #15). */
 export const imageRules = {
   types: ["image/png", "image/jpeg", "image/webp", "image/gif"],
+  /** At a time. */
   count: 6,
   bytes: 10 * 1024 * 1024,
+  /** On one ticket, in all. */
+  perTicket: 24,
 };
 
 /**
- * Files a ticket. With images it's one multipart request, so the ticket is never picked up before
- * its images arrive; the `x-i-inc-upload` header is what lets the daemon take a write that isn't JSON.
+ * Sends images, with any JSON `fields`, as one multipart request. The `x-i-inc-upload` header is
+ * what lets the daemon take a write that isn't JSON.
  */
+async function upload<T>(path: string, images: File[], fields: Record<string, unknown> = {}): Promise<T> {
+  const form = new FormData();
+  for (const [k, v] of Object.entries(fields)) form.set(k, JSON.stringify(v));
+  for (const f of images) form.append("image", f, f.name);
+  const res = await send(path, { method: "POST", headers: { "x-i-inc-upload": "1" }, body: form });
+  if (res.status === 401) showLogin();
+  const data = (await res.json().catch(() => ({}))) as T & { error?: string };
+  if (!res.ok) throw new Error(data.error ?? `POST ${path}: ${res.status}`);
+  return data;
+}
+
+/** Files a ticket. With images it's one request, so the ticket is never picked up before they arrive. */
 async function createTicket(t: NewTicketBody, images: File[] = []): Promise<{ ticket: { id: string } }> {
   if (!images.length) return call("POST", "/api/tickets", t);
-  const form = new FormData();
-  form.set("ticket", JSON.stringify(t));
-  for (const f of images) form.append("image", f, f.name);
-  const res = await send("/api/tickets", { method: "POST", headers: { "x-i-inc-upload": "1" }, body: form });
-  if (res.status === 401) showLogin();
-  const data = (await res.json().catch(() => ({}))) as { ticket: { id: string }; error?: string };
-  if (!res.ok) throw new Error(data.error ?? `POST /api/tickets: ${res.status}`);
-  return data;
+  return upload("/api/tickets", images, { ticket: t });
+}
+
+/** The owner's decision on a ready ticket; a request for changes may bring images. */
+async function decide(
+  id: string,
+  decision: "approve" | "changes" | "reject",
+  note?: string,
+  images: File[] = [],
+): Promise<unknown> {
+  const body = note ? { decision, note } : { decision };
+  const path = `/api/tickets/${id}/decide`;
+  return images.length ? upload(path, images, { decision: body }) : call("POST", path, body);
 }
 
 export interface OfficeResponse {
@@ -202,8 +222,9 @@ export const api = {
   revert: (repo: string, commit: string) => call("POST", `/api/knowledge/${repo}/revert`, { commit }),
   decidePolicy: (id: string, approved: boolean) =>
     call("POST", `/api/knowledge/policies/${encodeURIComponent(id)}`, { approved }),
-  decide: (id: string, decision: "approve" | "changes" | "reject", note?: string) =>
-    call("POST", `/api/tickets/${id}/decide`, note ? { decision, note } : { decision }),
+  decide,
+  /** Adds images to a ticket that isn't done; its builder gets them at their next session. */
+  attach: (id: string, images: File[]) => upload(`/api/tickets/${id}/attachments`, images),
   /** Assigns a ticket that has not started (C17). */
   assign: (id: string, to: string) =>
     call<{ ok: true; ticket: TicketView }>("POST", `/api/tickets/${encodeURIComponent(id)}/assign`, { to }),

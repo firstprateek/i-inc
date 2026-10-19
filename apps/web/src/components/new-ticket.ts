@@ -5,6 +5,7 @@ import type { Employee } from "@i-inc/core";
 import { css, html, LitElement } from "lit";
 import { api, imageRules, type NewTicketBody, refreshNow, type TicketView } from "../api.ts";
 import { assignees, NOBODY_LABEL, optionLabel } from "../assign.ts";
+import { ImagePicker, imagePickerStyles } from "./image-picker.ts";
 import { base, selectField } from "./shared.ts";
 
 type Effort = NewTicketBody["effort"];
@@ -21,22 +22,6 @@ const kinds: [Kind, string][] = [
   ["chore", "Chore"],
   ["errand", "Errand"],
 ];
-
-/** A picked image and its preview URL, revoked when it's removed. */
-interface Picked {
-  file: File;
-  url: string;
-}
-
-/**
- * An iPhone photo that wasn't turned into JPEG on the way: Safari should send a photo picked from the
- * photo library as JPEG, but a HEIC picked from Files can come as it is, even with no type (#14).
- */
-const isHeic = (f: File) => /^image\/hei[cf]/.test(f.type) || (!f.type && /\.hei[cf]$/i.test(f.name));
-const preview = (f: File) => (typeof URL.createObjectURL === "function" ? URL.createObjectURL(f) : "");
-const forget = (p: Picked) => {
-  if (p.url && typeof URL.revokeObjectURL === "function") URL.revokeObjectURL(p.url);
-};
 
 const memo = {
   get(key: string): string | null {
@@ -67,7 +52,6 @@ export class IncNewTicket extends LitElement {
     busy: { state: true },
     error: { state: true },
     filed: { state: true },
-    images: { state: true },
     employees: { state: true },
     recent: { state: true },
     assignee: { state: true },
@@ -83,12 +67,12 @@ export class IncNewTicket extends LitElement {
   declare busy: boolean;
   declare error: string | null;
   declare filed: { id: string; title: string } | null;
-  declare images: Picked[];
   declare employees: Employee[];
   declare recent: TicketView[];
   /** The employee picked, or "" for nobody yet. Follows the project until the owner chooses. */
   declare assignee: string;
   declare assigneeChosen: boolean;
+  private readonly picker = new ImagePicker(this, { id: "images" });
 
   constructor() {
     super();
@@ -106,54 +90,6 @@ export class IncNewTicket extends LitElement {
     this.recent = [];
     this.assignee = "";
     this.assigneeChosen = false;
-    this.images = [];
-  }
-
-  override disconnectedCallback(): void {
-    super.disconnectedCallback();
-    this.images.forEach(forget);
-    this.images = [];
-  }
-
-  /** Adds what fits the rules, and says why anything else was left out. */
-  private addImages(files: File[]) {
-    const problems: string[] = [];
-    const next = [...this.images];
-    for (const f of files) {
-      const label = f.name || "The pasted image";
-      if (isHeic(f))
-        problems.push(
-          `${label} is a HEIC photo, which a ticket can't take. Pick it from Photo Library, which sends it as JPEG, or set Settings > Camera > Formats to Most Compatible.`,
-        );
-      else if (!imageRules.types.includes(f.type)) problems.push(`${label} isn't a PNG, JPEG, WebP or GIF.`);
-      else if (f.size > imageRules.bytes) problems.push(`${label} is over 10 MB.`);
-      else if (next.length >= imageRules.count)
-        problems.push(`A ticket takes at most ${imageRules.count} images.`);
-      else next.push({ file: f, url: preview(f) });
-    }
-    this.images = next;
-    this.error = problems.length ? [...new Set(problems)].join(" ") : null;
-  }
-
-  private removeImage(p: Picked) {
-    forget(p);
-    this.images = this.images.filter((x) => x !== p);
-  }
-
-  private paste(e: ClipboardEvent) {
-    const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
-    if (!files.length) return; // text pastes as usual
-    e.preventDefault();
-    // A pasted screenshot is often called image.png: number them so each has its own name.
-    this.addImages(
-      files.map((f, i) =>
-        f.name && f.name !== "image.png"
-          ? f
-          : new File([f], `screenshot-${this.images.length + i + 1}.${f.type.split("/")[1] ?? "png"}`, {
-              type: f.type,
-            }),
-      ),
-    );
   }
 
   override connectedCallback(): void {
@@ -193,6 +129,7 @@ export class IncNewTicket extends LitElement {
   static override styles = [
     base,
     selectField,
+    imagePickerStyles,
     css`
       :host { display: block; }
       .box { padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
@@ -221,13 +158,6 @@ export class IncNewTicket extends LitElement {
       .ok a { font-weight: 700; }
       .bad { background: var(--needs-bg); color: var(--needs-fg); border: 1px solid var(--alarm); }
       .btn:disabled { opacity: 0.6; cursor: default; }
-      .images { display: flex; flex-direction: column; gap: 8px; font-size: 13px; font-weight: 700; color: var(--ink-2); }
-      .images .hint { font-weight: 400; }
-      .pick { align-self: flex-start; }
-      .thumbs { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px; }
-      .thumbs li { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-      .thumbs img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); }
-      .thumbs .btn { min-height: 44px; width: 100%; }
       @media (max-width: 420px) { .pair { grid-template-columns: 1fr; } }
     `,
   ];
@@ -245,6 +175,7 @@ export class IncNewTicket extends LitElement {
     }
     this.busy = true;
     this.error = null;
+    this.picker.problem = null;
     this.filed = null;
     try {
       const doneWhen = this.details
@@ -260,7 +191,7 @@ export class IncNewTicket extends LitElement {
           doneWhen,
           ...(this.assignee ? { assignee: this.assignee } : {}),
         },
-        this.images.map((p) => p.file),
+        this.picker.files,
       );
       memo.set("project", this.project);
       memo.set("kind", this.kind);
@@ -268,8 +199,7 @@ export class IncNewTicket extends LitElement {
       this.filed = { id: ticket.id, title };
       this.title = "";
       this.details = "";
-      this.images.forEach(forget);
-      this.images = [];
+      this.picker.clear();
       refreshNow();
     } catch (err) {
       this.error = err instanceof Error ? err.message : String(err);
@@ -297,7 +227,7 @@ export class IncNewTicket extends LitElement {
           this.open = false;
         }}>Close</button>
       </div>
-      <form @submit=${this.submit} @paste=${this.paste} novalidate>
+      <form @submit=${this.submit} @paste=${this.picker.paste} novalidate>
         <label>Title
           <input name="title" type="text" autocomplete="off" autocapitalize="sentences" enterkeyhint="next"
             placeholder="What should the team do?" .value=${this.title}
@@ -355,8 +285,11 @@ export class IncNewTicket extends LitElement {
             )}
           </div>
         </fieldset>
-        ${this.picker()}
-        ${this.error ? html`<div class="note bad" role="alert">${this.error}</div>` : ""}
+        ${this.picker.render({
+          label: "Images (optional)",
+          hint: `Screenshots or photos, up to ${imageRules.count}, 10 MB each. You can paste a screenshot too.`,
+        })}
+        ${this.problem() ? html`<div class="note bad" role="alert">${this.problem()}</div>` : ""}
         ${this.filed ? this.success() : ""}
         <div class="actions">
           <button class="btn" type="submit" ?disabled=${this.busy}>${this.busy ? "Filing…" : "File ticket"}</button>
@@ -365,35 +298,9 @@ export class IncNewTicket extends LitElement {
     </div>`;
   }
 
-  private picker() {
-    const full = this.images.length >= imageRules.count;
-    return html`<div class="images" role="group" aria-labelledby="images-label">
-      <span id="images-label">Images (optional)</span>
-      <span class="hint">Screenshots or photos, up to ${imageRules.count}, 10 MB each. You can paste a screenshot too.</span>
-      <input id="image-input" type="file" name="images" accept=${imageRules.types.join(",")} multiple hidden
-        @change=${(e: Event) => {
-          const input = e.target as HTMLInputElement;
-          this.addImages([...(input.files ?? [])]);
-          input.value = ""; // so picking the same file again still fires
-        }} />
-      ${
-        this.images.length
-          ? html`<ul class="thumbs">
-            ${this.images.map(
-              (p) => html`<li>
-                <img src=${p.url} alt=${p.file.name} />
-                <button type="button" class="btn ghost" aria-label="Remove ${p.file.name}"
-                  @click=${() => this.removeImage(p)}>Remove</button>
-              </li>`,
-            )}
-          </ul>`
-          : ""
-      }
-      <button type="button" class="btn ghost pick" ?disabled=${full}
-        @click=${() => this.renderRoot.querySelector<HTMLInputElement>("#image-input")?.click()}>
-        ${full ? `${imageRules.count} images added` : this.images.length ? "Add more images" : "Add images"}
-      </button>
-    </div>`;
+  /** A problem with the form, or with the images just picked. */
+  private problem(): string | null {
+    return [this.error, this.picker.problem].filter(Boolean).join(" ") || null;
   }
 
   private success() {

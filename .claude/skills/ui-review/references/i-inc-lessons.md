@@ -93,3 +93,7 @@ paths, branch names, structured briefs).
     scrollers were never checked at their ends. → Intersect overlap and covered geometry with every
     overflow ancestor across shadow roots and the viewport; inspect each app scrollport's end and
     restore its position. Keep below-fold contrast and text overflow checks active.
+21. **A label that repeats its button (tells 3, 10).** The ticket page's picker was labelled "Add
+    images" right above an "Add images" button, and it sat above the ticket's status line. → A
+    group's label names the thing ("More images"), the button names the action; and what a ticket
+    is doing comes before what you can add to it.

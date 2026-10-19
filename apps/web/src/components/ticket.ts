@@ -2,8 +2,9 @@
 // timeline from its event log (spec §6, §10).
 import type { Employee } from "@i-inc/core";
 import { css, html } from "lit";
-import { api, refreshNow, type TicketEvent, type TicketView } from "../api.ts";
+import { api, imageRules, refreshNow, type TicketEvent, type TicketView } from "../api.ts";
 import { assignees, notStarted, optionLabel, waitingLine } from "../assign.ts";
+import { ImagePicker, imagePickerStyles } from "./image-picker.ts";
 import { Loader } from "./loader.ts";
 import "./transcript.ts";
 import { layoutStyles } from "./layout.ts";
@@ -35,6 +36,13 @@ export class IncTicket extends Loader<Data> {
     this.anchored = false;
     this.requestUpdate();
   };
+  /** Room left on the ticket for images, after the ones it has. */
+  private room = () => imageRules.perTicket - (this.data?.ticket.attachments?.length ?? 0);
+  private full = (room: number) =>
+    room ? `You can add ${room} more images now.` : `A ticket takes at most ${imageRules.perTicket} images.`;
+  /** Images for the ticket as it is, and images with a request for changes. */
+  private readonly adding = new ImagePicker(this, { id: "add", room: this.room, full: this.full });
+  private readonly reply = new ImagePicker(this, { id: "reply", room: this.room, full: this.full });
 
   constructor() {
     super();
@@ -91,6 +99,8 @@ export class IncTicket extends Loader<Data> {
     try {
       await fn();
       this.note = "";
+      this.adding.clear();
+      this.reply.clear();
       refreshNow();
       this.dispatchEvent(new CustomEvent("changed", { bubbles: true, composed: true }));
     } catch (e) {
@@ -104,6 +114,7 @@ export class IncTicket extends Loader<Data> {
     base,
     layoutStyles,
     selectField,
+    imagePickerStyles,
     css`
       .wrap { display: flex; flex-direction: column; gap: var(--layout-section-gap, 20px); align-items: stretch; }
       .main { flex-grow: 1; min-width: 0; padding: 26px 30px; display: flex; flex-direction: column; gap: 18px; }
@@ -140,6 +151,9 @@ export class IncTicket extends Loader<Data> {
       .shots { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 10px; }
       .shots a { display: block; width: 112px; height: 112px; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); }
       .shots img { width: 100%; height: 100%; object-fit: cover; display: block; }
+      .reply { display: flex; flex-direction: column; gap: 12px; }
+      .reply textarea { width: 100%; box-sizing: border-box; min-height: 88px; }
+      .problem { margin: 0; font-size: 14px; color: var(--needs-fg); }
       @media (max-width: 600px) {
         h2 { font-size: 22px; }
         .shots a { width: 96px; height: 96px; }
@@ -174,6 +188,7 @@ export class IncTicket extends Loader<Data> {
         ${this.error ? html`<p role="alert">${this.error}</p>` : ""}
         ${notStarted(t) ? this.assignCard(t) : ""}
         ${this.body(t)}
+        ${t.status !== "done" && t.status !== "ready" ? this.addImages(t) : ""}
         <inc-transcript .ticketId=${t.id}></inc-transcript>
       </section>
       <aside class="card" aria-label="Timeline">
@@ -192,6 +207,30 @@ export class IncTicket extends Loader<Data> {
           <img src=${a.url} alt=${a.name} loading="lazy" /></a></li>`,
       )}
     </ul>`;
+  }
+
+  /** More images for a ticket that isn't done; its builder gets them at their next session. */
+  private addImages(t: TicketView) {
+    const n = this.adding.images.length;
+    return html`<div class="reply" @paste=${this.adding.paste}>
+      ${this.adding.render({
+        label: "More images",
+        hint: `${
+          t.status === "queued"
+            ? "They go with the ticket when it's picked up."
+            : `${t.assignee?.name ?? "The builder"} sees them at their next session.`
+        } Up to ${imageRules.count} at a time, 10 MB each. You can paste a screenshot too.`,
+      })}
+      ${this.adding.problem ? html`<p class="problem" role="alert">${this.adding.problem}</p>` : ""}
+      ${
+        n
+          ? html`<div class="actions">
+            <button type="button" class="btn" ?disabled=${this.busy}
+              @click=${() => this.act(() => api.attach(t.id, this.adding.files))}>${n === 1 ? "Send 1 image" : `Send ${n} images`}</button>
+          </div>`
+          : ""
+      }
+    </div>`;
   }
 
   private body(t: TicketView) {
@@ -239,13 +278,22 @@ export class IncTicket extends Loader<Data> {
         <dl><dt>What changed</dt><dd>${r.judgment || "The builder's draft is empty."}</dd></dl>
         <div class="actions">
           <button type="button" class="btn" ?disabled=${this.busy} @click=${() => this.act(() => api.decide(id, "approve"))}>Approve and merge</button>
+          <button type="button" class="btn ghost" ?disabled=${this.busy} @click=${() => this.act(() => api.decide(id, "reject"))}>Reject</button>
+        </div>
+        <div class="reply" @paste=${this.reply.paste}>
           <textarea aria-label="What to change" placeholder="What should change?" .value=${this.note}
             @input=${(e: InputEvent) => {
               this.note = (e.target as HTMLTextAreaElement).value;
             }}></textarea>
-          <button type="button" class="btn ghost" ?disabled=${this.busy || !this.note.trim()}
-            @click=${() => this.act(() => api.decide(id, "changes", this.note))}>Request changes</button>
-          <button type="button" class="btn ghost" ?disabled=${this.busy} @click=${() => this.act(() => api.decide(id, "reject"))}>Reject</button>
+          ${this.reply.render({
+            label: "Images (optional)",
+            hint: `Show what should change: up to ${imageRules.count}, 10 MB each. You can paste a screenshot too.`,
+          })}
+          ${this.reply.problem ? html`<p class="problem" role="alert">${this.reply.problem}</p>` : ""}
+          <div class="actions">
+            <button type="button" class="btn ghost" ?disabled=${this.busy || !this.note.trim()}
+              @click=${() => this.act(() => api.decide(id, "changes", this.note, this.reply.files))}>Request changes</button>
+          </div>
         </div>`;
     }
     if (t.status === "failed") {
@@ -338,6 +386,10 @@ export class IncTicket extends Loader<Data> {
         return item(html`<b>Report ready</b>`);
       case "owner-decided":
         return item(`You decided: ${e.decision}`);
+      case "owner-attached":
+        return item(
+          e.attachments.length === 1 ? "You added an image" : `You added ${e.attachments.length} images`,
+        );
       case "reassigned":
         return item(`Handed from ${e.from} to ${e.to}`);
       case "failed":
