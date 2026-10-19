@@ -28,6 +28,11 @@ interface Picked {
   url: string;
 }
 
+/**
+ * An iPhone photo that wasn't turned into JPEG on the way: Safari should send a photo picked from the
+ * photo library as JPEG, but a HEIC picked from Files can come as it is, even with no type (#14).
+ */
+const isHeic = (f: File) => /^image\/hei[cf]/.test(f.type) || (!f.type && /\.hei[cf]$/i.test(f.name));
 const preview = (f: File) => (typeof URL.createObjectURL === "function" ? URL.createObjectURL(f) : "");
 const forget = (p: Picked) => {
   if (p.url && typeof URL.revokeObjectURL === "function") URL.revokeObjectURL(p.url);
@@ -116,7 +121,11 @@ export class IncNewTicket extends LitElement {
     const next = [...this.images];
     for (const f of files) {
       const label = f.name || "The pasted image";
-      if (!imageRules.types.includes(f.type)) problems.push(`${label} isn't a PNG, JPEG, WebP or GIF.`);
+      if (isHeic(f))
+        problems.push(
+          `${label} is a HEIC photo, which a ticket can't take. Pick it from Photo Library, which sends it as JPEG, or set Settings > Camera > Formats to Most Compatible.`,
+        );
+      else if (!imageRules.types.includes(f.type)) problems.push(`${label} isn't a PNG, JPEG, WebP or GIF.`);
       else if (f.size > imageRules.bytes) problems.push(`${label} is over 10 MB.`);
       else if (next.length >= imageRules.count)
         problems.push(`A ticket takes at most ${imageRules.count} images.`);

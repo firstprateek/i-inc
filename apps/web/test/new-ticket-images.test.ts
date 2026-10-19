@@ -100,6 +100,15 @@ describe("images on the new-ticket form", () => {
     await el.updateComplete;
     expect(r.querySelector("[role=alert]")?.textContent).toContain("logo.svg isn't a PNG, JPEG, WebP or GIF");
 
+    pick(r, [new File(["x"], "IMG_0042.HEIC", { type: "image/heic" }), new File(["x"], "IMG_0043.heic")]);
+    await el.updateComplete;
+    expect(names(r)).toEqual([]);
+    const heic = r.querySelector("[role=alert]")?.textContent ?? "";
+    expect(heic).toContain(
+      "IMG_0042.HEIC is a HEIC photo, which a ticket can't take. Pick it from Photo Library",
+    );
+    expect(heic).toContain("IMG_0043.heic is a HEIC photo");
+
     pick(r, [png("huge.png", 10 * 1024 * 1024 + 1)]);
     await el.updateComplete;
     expect(r.querySelector("[role=alert]")?.textContent).toContain("huge.png is over 10 MB");
