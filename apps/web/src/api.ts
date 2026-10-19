@@ -55,6 +55,8 @@ export interface NewTicketBody {
   type: "fix" | "feat" | "chore" | "errand";
   effort: "low" | "medium" | "high";
   doneWhen: string[];
+  /** Who does it. Left out, nobody is assigned and only a standing order can pick it up. */
+  assignee?: string;
 }
 
 /** The images a new ticket takes; the daemon checks them again, by their bytes (#12). */
@@ -201,6 +203,9 @@ export const api = {
     call("POST", `/api/knowledge/policies/${encodeURIComponent(id)}`, { approved }),
   decide: (id: string, decision: "approve" | "changes" | "reject", note?: string) =>
     call("POST", `/api/tickets/${id}/decide`, note ? { decision, note } : { decision }),
+  /** Assigns a ticket that has not started (C17). */
+  assign: (id: string, to: string) =>
+    call<{ ok: true; ticket: TicketView }>("POST", `/api/tickets/${encodeURIComponent(id)}/assign`, { to }),
   retry: (id: string): Promise<void> => call("POST", `/api/tickets/${id}/retry`, {}),
   retryTicket: (id: string): Promise<void> => call("POST", `/api/tickets/${id}/retry`, {}),
 };

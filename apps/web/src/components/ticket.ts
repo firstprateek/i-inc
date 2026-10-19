@@ -1,15 +1,20 @@
 // One ticket: the report or the question waiting for you, the actions that fit its state, and the
 // timeline from its event log (spec §6, §10).
+import type { Employee } from "@i-inc/core";
 import { css, html } from "lit";
 import { api, refreshNow, type TicketEvent, type TicketView } from "../api.ts";
+import { assignees, notStarted, optionLabel, waitingLine } from "../assign.ts";
 import { Loader } from "./loader.ts";
 import "./transcript.ts";
 import { layoutStyles } from "./layout.ts";
-import { base, check, projectBadge } from "./shared.ts";
+import { base, check, projectBadge, selectField } from "./shared.ts";
 
 interface Data {
   ticket: TicketView;
   events: TicketEvent[];
+  /** Only for a ticket that has not started: who could take it, and the board for who worked here last. */
+  employees?: Employee[];
+  recent?: TicketView[];
 }
 
 export class IncTicket extends Loader<Data> {
@@ -18,22 +23,67 @@ export class IncTicket extends Loader<Data> {
     ticketId: {},
     busy: { state: true },
     note: { state: true },
+    pick: { state: true },
   };
   declare ticketId: string;
   declare busy: boolean;
   declare note: string;
+  /** The employee chosen in "Who should do this?"; empty until the owner picks, then the default shows. */
+  declare pick: string;
+  private anchored = false;
+  private onHash = () => {
+    this.anchored = false;
+    this.requestUpdate();
+  };
 
   constructor() {
     super();
     this.ticketId = "";
     this.busy = false;
     this.note = "";
+    this.pick = "";
   }
 
-  protected fetch = () => api.ticket(this.ticketId);
+  protected fetch = async (): Promise<Data> => {
+    const r = await api.ticket(this.ticketId);
+    if (!notStarted(r.ticket)) return r;
+    // The assign card needs the team and the board; the ticket still shows if they don't load.
+    const [employees, recent] = await Promise.all([
+      api.employees().catch(() => []),
+      api.board().catch(() => []),
+    ]);
+    return {
+      ...r,
+      employees: Array.isArray(employees) ? employees : [],
+      recent: Array.isArray(recent) ? recent : [],
+    };
+  };
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    window.addEventListener("hashchange", this.onHash);
+  }
+
+  override disconnectedCallback(): void {
+    window.removeEventListener("hashchange", this.onHash);
+    super.disconnectedCallback();
+  }
 
   override updated(changed: Map<string, unknown>): void {
-    if (changed.has("ticketId") && changed.get("ticketId") !== undefined) void this.reload();
+    if (changed.has("ticketId") && changed.get("ticketId") !== undefined) {
+      this.pick = "";
+      this.anchored = false;
+      void this.reload();
+    }
+    // "Assign…" on a board card opens #/ticket/<id>/assign: bring the card into view and focus it.
+    if (!this.anchored && location.hash.endsWith("/assign")) {
+      const card = this.renderRoot.querySelector<HTMLElement>("#assign");
+      if (card) {
+        this.anchored = true;
+        card.scrollIntoView?.({ block: "center" });
+        card.querySelector<HTMLElement>("select")?.focus({ preventScroll: true });
+      }
+    }
   }
 
   private async act(fn: () => Promise<unknown>) {
@@ -53,6 +103,7 @@ export class IncTicket extends Loader<Data> {
   static override styles = [
     base,
     layoutStyles,
+    selectField,
     css`
       .wrap { display: flex; flex-direction: column; gap: var(--layout-section-gap, 20px); align-items: stretch; }
       .main { flex-grow: 1; min-width: 0; padding: 26px 30px; display: flex; flex-direction: column; gap: 18px; }
@@ -68,6 +119,13 @@ export class IncTicket extends Loader<Data> {
       .ask ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; font: 14px/1.5 var(--body); }
       .ask code { font-family: var(--mono); font-size: 13px; }
       .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+      .waits { margin: 0; display: flex; align-items: center; gap: 8px; font-size: 14px; line-height: 1.4; color: var(--ink-2); overflow-wrap: anywhere; }
+      .waits i { width: 8px; height: 8px; border-radius: 50%; background: var(--needs-fg); flex-shrink: 0; }
+      .assign h3 { font-size: 18px; margin: 0; }
+      .assign p { margin: 0; font-size: 14px; line-height: 1.45; }
+      .assign .pick { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+      .assign label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 700; color: var(--ink-2); flex: 1 1 240px; min-width: 0; }
+      .assign .btn:disabled { opacity: 0.6; cursor: default; }
       textarea { font: 16px var(--body); padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line-strong);
         background: var(--surface); color: var(--ink); min-height: 44px; flex-grow: 1; min-width: 220px; }
       aside { width: auto; padding: 22px 24px; display: flex; flex-direction: column; gap: 12px; }
@@ -92,6 +150,9 @@ export class IncTicket extends Loader<Data> {
         /* Answers are thumb-sized and full width, with the note box above its button. */
         .actions { flex-direction: column; align-items: stretch; }
         .actions .btn { width: 100%; white-space: normal; }
+        .assign .pick { flex-direction: column; align-items: stretch; }
+        .assign label { flex: 0 0 auto; }
+        .assign .btn { width: 100%; }
         textarea { min-width: 0; min-height: 88px; }
       }
     `,
@@ -109,7 +170,9 @@ export class IncTicket extends Loader<Data> {
         </div>
         <h2>${t.title}</h2>
         ${this.images(t)}
+        ${t.waiting ? html`<p class="waits"><i aria-hidden="true"></i><span>${waitingLine(t.waiting, t.waitingUntil)}</span></p>` : ""}
         ${this.error ? html`<p role="alert">${this.error}</p>` : ""}
+        ${notStarted(t) ? this.assignCard(t) : ""}
         ${this.body(t)}
         <inc-transcript .ticketId=${t.id}></inc-transcript>
       </section>
@@ -193,7 +256,50 @@ export class IncTicket extends Loader<Data> {
         </div></div>`;
     }
     if (t.status === "done") return html`<p><span class="chip done">${t.outcome}</span></p>`;
-    return html`<p class="muted">${t.waiting ?? (t.status === "queued" ? "Queued" : t.live)}</p>`;
+    if (t.waiting) return "";
+    return html`<p class="muted">${t.status === "queued" ? "Queued" : t.live}</p>`;
+  }
+
+  /** The team for this ticket's project, the usual employee first. */
+  private options(t: TicketView): Employee[] {
+    return assignees(this.data?.employees ?? [], t.project, this.data?.recent ?? []);
+  }
+
+  /** Who the select shows: the owner's pick, else who is assigned now, else the usual employee. */
+  private choice(t: TicketView): string {
+    const options = this.options(t);
+    return (
+      options.find((e) => e.id === this.pick)?.id ??
+      options.find((e) => e.id === t.assignee?.id)?.id ??
+      options[0]?.id ??
+      ""
+    );
+  }
+
+  /** "Who should do this?" for a ticket that hasn't started: pick an employee on the project and assign. */
+  private assignCard(t: TicketView) {
+    const options = this.options(t);
+    if (!options.length) {
+      return html`<div class="ask assign" id="assign" role="group" aria-labelledby="assign-h">
+        <h3 id="assign-h">Who should do this?</h3>
+        <p>Nobody works on ${t.project} yet. Add the project to an employee, or <a href="#/hiring">hire someone</a>.</p>
+      </div>`;
+    }
+    const chosen = this.choice(t);
+    return html`<div class="ask assign" id="assign" role="group" aria-labelledby="assign-h">
+      <h3 id="assign-h">Who should do this?</h3>
+      <p>${t.assignee ? `${t.assignee.name} is assigned. Pick someone else to change it.` : "Pick who works on it. It starts as soon as they're free."}</p>
+      <div class="pick">
+        <label>Assign to
+          <select name="assignee" @change=${(e: Event) => {
+            this.pick = (e.target as HTMLSelectElement).value;
+          }}>
+            ${options.map((e) => html`<option value=${e.id} .selected=${e.id === chosen}>${optionLabel(e)}</option>`)}
+          </select>
+        </label>
+        <button type="button" class="btn" ?disabled=${this.busy} @click=${() => this.act(() => api.assign(t.id, this.choice(t)))}>Assign</button>
+      </div>
+    </div>`;
   }
 
   private line(e: TicketEvent) {

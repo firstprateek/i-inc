@@ -96,7 +96,7 @@ describe("the board", () => {
       { name: "Review", titles: ["CSV import"] },
       { name: "Done", titles: [] },
     ]);
-    expect(root.textContent).toContain("Juno is off until 22:00");
+    expect(root.textContent).toContain("Waiting: Juno starts at 22:00");
     expect(root.querySelectorAll(".strip i.cur")).toHaveLength(1);
   });
 

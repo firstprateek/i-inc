@@ -106,7 +106,14 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     for (const r of d.tickets.all()) {
       const events = await d.store.read(r.ticket.id);
       out.push(
-        ticketView(r, await daemon.state(r.ticket.id), events, d.registry, waiting.get(r.ticket.id) ?? null),
+        ticketView(
+          r,
+          await daemon.state(r.ticket.id),
+          events,
+          d.registry,
+          waiting.get(r.ticket.id) ?? null,
+          daemon.waitingUntil[r.ticket.id] ?? null,
+        ),
       );
     }
     return out;
@@ -1237,9 +1244,16 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         const r = d.tickets.get(p.id ?? "");
         if (!r) return json({ error: "no such ticket" }, 404);
         const events = await d.store.read(r.ticket.id);
-        const waiting = daemon.waiting.find((w) => w.ticketId === r.ticket.id)?.reason ?? null;
+        const wait = daemon.waiting.find((w) => w.ticketId === r.ticket.id);
         return json({
-          ticket: ticketView(r, await daemon.state(r.ticket.id), events, d.registry, waiting),
+          ticket: ticketView(
+            r,
+            await daemon.state(r.ticket.id),
+            events,
+            d.registry,
+            wait?.reason ?? null,
+            daemon.waitingUntil[r.ticket.id] ?? null,
+          ),
           events,
         });
       },
@@ -1291,7 +1305,22 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         } catch {
           return json({ error: `no employee ${to}` }, 400);
         }
+        // A ticket nobody has started has no work to hand over: it is assigned, which is what the
+        // scheduler reads (a "reassigned" event on a ticket that never ran changes nothing).
+        const r = d.tickets.get(p.id ?? "");
+        if (r && !(await daemon.state(r.ticket.id)).created) return assignUnstarted(r.ticket.id, to);
         return act(p.id, null, () => handOff(ports, p.id ?? "", to));
+      },
+    ],
+
+    // C17: the owner picks who does a ticket that hasn't started (the one the scheduler can't place).
+    [
+      "POST",
+      "/api/tickets/:id/assign",
+      async (req, p) => {
+        const { to } = (await req.json()) as { to?: Id };
+        if (!d.tickets.get(p.id ?? "")) return json({ error: "no such ticket" }, 404);
+        return assignUnstarted(p.id ?? "", to);
       },
     ],
 
@@ -1406,6 +1435,39 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
   }
 
   /** Appends the owner's action if the ticket is in the right state, then runs the ticket on. */
+  /** Assigns a ticket that has not started (C17) and lets the scheduler start it. */
+  async function assignUnstarted(id: Id, to: Id | undefined): Promise<Response> {
+    const r = d.tickets.get(id);
+    if (!r) return json({ error: "no such ticket" }, 404);
+    let employee: Employee;
+    try {
+      employee = d.registry.employee(to ?? "");
+    } catch {
+      return json({ error: `no employee ${to ?? ""}`.trim() }, 400);
+    }
+    if ((await daemon.state(id)).created) {
+      return json({ error: `ticket ${id} already started — use handoff` }, 409);
+    }
+    if (employee.projects && !employee.projects.includes(r.ticket.project)) {
+      return json({ error: `${employee.name} doesn't work on ${r.ticket.project}` }, 409);
+    }
+    d.tickets.assign(id, employee.id, null);
+    await daemon.tick();
+    const fresh = d.tickets.get(id) as NonNullable<ReturnType<typeof d.tickets.get>>;
+    const wait = daemon.waiting.find((w) => w.ticketId === id);
+    return json({
+      ok: true,
+      ticket: ticketView(
+        fresh,
+        await daemon.state(id),
+        await d.store.read(id),
+        d.registry,
+        wait?.reason ?? null,
+        daemon.waitingUntil[id] ?? null,
+      ),
+    });
+  }
+
   async function act(id: string | undefined, needs: "needs-you" | "ready" | null, fn: () => Promise<void>) {
     if (!id || !d.tickets.get(id)) return json({ error: "no such ticket" }, 404);
     const s = await daemon.state(id);

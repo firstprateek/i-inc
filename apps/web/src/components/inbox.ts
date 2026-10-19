@@ -1,6 +1,7 @@
 // The phone inbox (spec §10): what needs you and what's ready, each answerable in one tap.
 import { css, html } from "lit";
 import { api, type PolicyProposal, refreshNow, type TicketView } from "../api.ts";
+import { waitingLine, waitsForAssignee } from "../assign.ts";
 import { layoutStyles } from "./layout.ts";
 import { Loader } from "./loader.ts";
 import { protectedOk } from "./protected-card.ts";
@@ -33,6 +34,9 @@ export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyPr
       .who { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); min-width: 0; max-width: 100%; flex-wrap: wrap; }
       .who b { color: var(--ink); }
       .who span { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; max-width: 100%; }
+      .waits { margin: 0; display: flex; align-items: flex-start; gap: 8px; font-size: 14px; line-height: 1.4; color: var(--ink-2); overflow-wrap: anywhere; }
+      .waits i { width: 8px; height: 8px; border-radius: 50%; background: var(--needs-fg); flex-shrink: 0; margin-top: 6px; }
+      .actions a.btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; box-sizing: border-box; }
       .q { font-size: 17px; font-weight: 700; line-height: 1.3; overflow-wrap: anywhere; min-width: 0; }
       .actions { display: flex; gap: 8px; flex-wrap: wrap; }
       .actions .btn:first-child { flex-grow: 1; }
@@ -54,10 +58,12 @@ export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyPr
     const needs = this.data.tickets.filter((t) => t.status === "needs-you");
     const ready = this.data.tickets.filter((t) => t.status === "ready");
     const policies = this.data.policies;
-    const n = needs.length + policies.length;
+    // A ticket nobody can start until the owner picks someone is the owner's to fix.
+    const unassigned = this.data.tickets.filter(waitsForAssignee);
+    const n = needs.length + policies.length + unassigned.length;
     return html`
       <p class="summary">${n ? `${n} ${n === 1 ? "thing needs" : "things need"} you` : "Nothing needs you"}</p>
-      <div class="list">${needs.map((t) => this.ask(t))}${policies.map((p) => this.policy(p))}</div>
+      <div class="list">${needs.map((t) => this.ask(t))}${unassigned.map((t) => this.unassigned(t))}${policies.map((p) => this.policy(p))}</div>
       ${ready.length ? html`<h2>Ready for you</h2><div class="list">${ready.map((t) => this.ready(t))}</div>` : ""}
       ${!n && !ready.length ? this.allClear() : ""}
     `;
@@ -76,7 +82,26 @@ export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyPr
 
   private header(t: TicketView, what: string) {
     return html`<div class="who">${t.assignee ? avatar(t.assignee, 28) : ""}
-      <span><b>${t.assignee?.name ?? "Unassigned"}</b> · ${what} · ${projectBadge(t.project)}</span></div>`;
+      <span><b>${t.assignee?.name ?? "Unassigned"}</b> · ${what} · ${projectBadge(t.project)}</span></div>
+      ${this.wait(t)}`;
+  }
+
+  /** Why the ticket isn't running, in plain words. */
+  private wait(t: TicketView) {
+    return t.waiting
+      ? html`<p class="waits"><i aria-hidden="true"></i><span>${waitingLine(t.waiting, t.waitingUntil)}</span></p>`
+      : "";
+  }
+
+  private unassigned(t: TicketView) {
+    return html`<div class="card item waiting">
+      <div class="who"><span><b>#${t.id}</b> · not started · ${projectBadge(t.project)}</span></div>
+      <div class="q">${t.title}</div>
+      ${this.wait(t)}
+      <div class="actions">
+        <a class="btn" href="#/ticket/${t.id}/assign" aria-label="Assign ticket #${t.id}: ${t.title}">Assign…</a>
+        <a class="btn ghost" href="#/ticket/${t.id}">Open</a>
+      </div></div>`;
   }
 
   private ask(t: TicketView) {
