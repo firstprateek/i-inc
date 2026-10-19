@@ -11,6 +11,7 @@ import {
   type Harness,
   harnessOptions,
   setupApi,
+  type Team,
 } from "../setup-api.ts";
 import { LAYOUT_BREAKPOINTS } from "./layout.ts";
 import { base } from "./shared.ts";
@@ -80,6 +81,8 @@ export class IncHiring extends LitElement {
   static override properties = {
     employeeId: { type: String },
     team: { state: true },
+    teams: { state: true },
+    selectedTeamId: { state: true },
     perDuty: { state: true },
     extraFallbacks: { state: true },
     engines: { state: true },
@@ -106,6 +109,8 @@ export class IncHiring extends LitElement {
   /** When set, the form edits this employee's configuration instead of hiring someone new. */
   declare employeeId: string | undefined;
   declare team: Employee[];
+  declare teams: Team[];
+  declare selectedTeamId: string;
   declare editing: Employee | null;
   declare perDuty: Partial<Record<Duty, string>>;
   declare extraFallbacks: string[];
@@ -134,6 +139,8 @@ export class IncHiring extends LitElement {
     this.engines = [];
     this.accounts = [];
     this.team = [];
+    this.teams = [];
+    this.selectedTeamId = "";
     this.editing = null;
     this.perDuty = {};
     this.extraFallbacks = [];
@@ -159,9 +166,10 @@ export class IncHiring extends LitElement {
   override async connectedCallback(): Promise<void> {
     super.connectedCallback();
     try {
-      const [engines, team, accs] = await Promise.all([
+      const [engines, team, teams, accs] = await Promise.all([
         api.engines().catch(() => [] as Engine[]),
         api.employees().catch(() => [] as Employee[]),
+        setupApi.teams().catch(() => [] as Team[]),
         setupApi
           .accounts()
           .then((a) => (Array.isArray(a) ? a : []))
@@ -169,6 +177,8 @@ export class IncHiring extends LitElement {
       ]);
       this.engines = Array.isArray(engines) ? engines : [];
       this.team = Array.isArray(team) ? team : [];
+      this.teams = Array.isArray(teams) ? teams : [];
+      if (this.teams.length === 1) this.selectedTeamId = this.teams[0]?.id ?? "";
       this.accounts = Array.isArray(accs) ? accs : [];
       if (this.accounts.length && !this.newAccountId) {
         this.newAccountId = this.accounts[0]?.id ?? "";
@@ -378,6 +388,7 @@ export class IncHiring extends LitElement {
         prompt: this.prompt,
         effort: this.effort,
         engines: this.engineSet(),
+        ...(this.selectedTeamId ? { teamId: this.selectedTeamId } : {}),
         ...(this.nights ? { workingHours: { from: 22, to: 7 } } : {}),
         ...(outbound ? { outbound } : {}),
       });
@@ -399,7 +410,7 @@ export class IncHiring extends LitElement {
       .wide { grid-column: 1 / -1; }
       label { font-size: 13px; font-weight: 600; color: var(--ink-2); display: flex; flex-direction: column; gap: 6px; min-width: 0; width: 100%; box-sizing: border-box; }
       input[type="text"], select, textarea {
-        font: 15px var(--body); min-height: 44px; padding: 10px 12px; border-radius: 10px;
+        font: 16px var(--body); min-height: 44px; padding: 10px 12px; border-radius: 10px;
         border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); box-sizing: border-box;
         width: 100%; max-width: 100%; min-width: 0;
       }
@@ -517,6 +528,20 @@ export class IncHiring extends LitElement {
           @input=${(e: InputEvent) => {
             this.name = (e.target as HTMLInputElement).value;
           }}></label>
+
+        ${
+          !editing && this.teams.length
+            ? html`<label>Team
+          <select aria-label="Team" data-value=${this.selectedTeamId} ?disabled=${this.teams.length === 1}
+            @change=${(e: Event) => {
+              this.selectedTeamId = (e.target as HTMLSelectElement).value;
+            }}>
+            ${this.teams.length > 1 ? html`<option value="">Choose a team</option>` : ""}
+            ${this.teams.map((team) => html`<option value=${team.id}>${team.name}</option>`)}
+          </select>
+        </label>`
+            : ""
+        }
 
         <div>
           <span style="font-size:13px;font-weight:600;color:var(--ink-2);display:block;margin-bottom:6px">Role</span>
@@ -738,7 +763,7 @@ export class IncHiring extends LitElement {
       }
 
       <div class="submit wide">
-        <button class="btn" type="submit" ?disabled=${this.busy || !this.name.trim() || !this.engine}>${
+        <button class="btn" type="submit" ?disabled=${this.busy || !this.name.trim() || !this.engine || (!editing && this.teams.length > 1 && !this.selectedTeamId)}>${
           editing ? "Save engines" : `Hire ${this.name.trim() || "them"}`
         }</button>
         ${editing ? html`<a class="btn ghost" href="#/hiring">Cancel</a>` : ""}
