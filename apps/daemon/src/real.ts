@@ -159,8 +159,9 @@ export function realPorts(o: RealOptions): Pick<
     ...(github
       ? {
           tokens: github.tokens,
-          workspace: (registry) =>
+          workspace: (registry, tickets) =>
             new GitHubWorkspace({
+              attachments: (ticketId) => tickets.attachments(ticketId),
               project: (name) => registry.project(name),
               policy: (project) => registry.projectPolicy(project),
               tokens: github.tokens,

@@ -23,8 +23,11 @@ import { SessionStore } from "./sessions.ts";
 import { SqliteEventStore } from "./store.ts";
 import { Tickets } from "./tickets.ts";
 
-/** A port, or a way to make it from the registry (real mode's recipes and usage live there). */
-export type FromRegistry<T> = T | ((registry: Registry) => T);
+/**
+ * A port, or a way to make it from the registry (real mode's recipes and usage live there) and the
+ * backlog (the workspace reads a ticket's images from it).
+ */
+export type FromRegistry<T> = T | ((registry: Registry, tickets: Tickets) => T);
 
 export interface AppOptions extends ApiOptions {
   dbPath: string;
@@ -57,14 +60,14 @@ export async function createApp(o: AppOptions) {
     }
   };
 
+  const tickets = new Tickets(db);
+  tickets.onChange = (id) => live.notifyTicket(id);
+
   const make = <T>(port: FromRegistry<T>): T =>
-    typeof port === "function" ? (port as (r: Registry) => T)(registry) : port;
+    typeof port === "function" ? (port as (r: Registry, t: Tickets) => T)(registry, tickets) : port;
 
   const store = new SqliteEventStore(db);
   store.onAppend = (id) => live.notifyTicket(id);
-
-  const tickets = new Tickets(db);
-  tickets.onChange = (id) => live.notifyTicket(id);
 
   const deps: DaemonDeps = {
     clock: o.clock,

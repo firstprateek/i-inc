@@ -51,6 +51,12 @@ describe("images on a new ticket", () => {
       { n: 2, name: "receipt.jpg", mime: "image/jpeg", size: jpeg.byteLength },
     ]);
 
+    const view = await (await get(`/api/tickets/${id}`)).json();
+    expect(view.ticket.attachments.map((a: { url: string }) => a.url)).toEqual([
+      `/api/tickets/${id}/attachments/1`,
+      `/api/tickets/${id}/attachments/2`,
+    ]);
+
     const res = await get(`/api/tickets/${id}/attachments/1`);
     expect(res.status).toBe(200);
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(png);

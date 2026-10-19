@@ -91,6 +91,14 @@ export function ticketView(
     createdBy,
     finishedAt,
     pushed,
+    ...(r.ticket.attachments?.length
+      ? {
+          attachments: r.ticket.attachments.map((a) => ({
+            ...a,
+            url: `/api/tickets/${encodeURIComponent(r.ticket.id)}/attachments/${a.n}`,
+          })),
+        }
+      : {}),
   };
 }
 

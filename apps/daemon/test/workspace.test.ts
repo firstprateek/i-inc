@@ -1,7 +1,7 @@
 // Pick-up's branch and draft PR. The git script runs in real bash with real git, against a local
 // origin, with HOME in a temp folder so it can't touch the real global git config.
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Employee, Ticket } from "@i-inc/core";
@@ -9,7 +9,8 @@ import { defaultSwitchRules } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
 import { FineGrainedToken, type PullRequests } from "../src/github.ts";
 import type { RunScript } from "../src/harness.ts";
-import { branchName, GitHubWorkspace, openScript } from "../src/workspace.ts";
+import type { AttachmentFile } from "../src/tickets.ts";
+import { attachmentScript, branchName, GitHubWorkspace, openScript } from "../src/workspace.ts";
 
 const home = mkdtempSync(join(tmpdir(), "inc-home-"));
 const env = { ...process.env, HOME: home, GIT_CONFIG_GLOBAL: join(home, ".gitconfig") };
@@ -100,10 +101,44 @@ describe("pick-up's git", () => {
     expect((await localScript("kit", script(origin, other))).output).toContain("@@pushed");
     expect(git(join(other, "inc-7"), "rev-parse", "HEAD")).toBe(git(wt, "rev-parse", "HEAD"));
   });
+
+  it("writes the owner's images into the worktree, out of git's sight, and is safe to repeat", async () => {
+    const { root, origin } = setup();
+    const work = join(root, "machine-a");
+    await localScript("ada", script(origin, work));
+    const wt = join(work, "inc-7");
+    // Bigger than one base64 line, with every byte value, so the wrapping and decoding are both tried.
+    const data = new Uint8Array(Array.from({ length: 1000 }, (_, i) => i % 256));
+    const file = { n: 1, name: "chart.png", mime: "image/png", size: data.byteLength, data };
+    for (let i = 0; i < 2; i++) {
+      const r = await localScript("ada", attachmentScript({ worktree: wt, file }));
+      expect(r.code, r.output).toBe(0);
+      expect(r.output).toContain("@@attached");
+    }
+    expect(new Uint8Array(readFileSync(join(wt, ".inc/attachments/1-chart.png")))).toEqual(data);
+    expect(git(wt, "status", "--porcelain")).toBe("");
+    const exclude = readFileSync(
+      git(wt, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude"),
+      "utf8",
+    );
+    expect(exclude.split("\n").filter((l) => l === ".inc/")).toHaveLength(1);
+  });
+
+  it("refuses a name that isn't safe in a path", () => {
+    const data = new Uint8Array([1]);
+    expect(() =>
+      attachmentScript({
+        worktree: "/w",
+        file: { n: 1, name: "../x.png", mime: "image/png", size: 1, data },
+      }),
+    ).toThrow(/not a safe path/);
+  });
 });
 
 describe("the GitHub workspace", () => {
-  function workspace(o: { run?: RunScript; existing?: boolean; draft?: boolean } = {}) {
+  function workspace(
+    o: { run?: RunScript; existing?: boolean; draft?: boolean; attachments?: () => AttachmentFile[] } = {},
+  ) {
     const calls: string[] = [];
     const seen: Record<string, string>[] = [];
     const prs = {
@@ -138,6 +173,7 @@ describe("the GitHub workspace", () => {
           seen.push(env);
           return { code: 0, output: "@@pushed\n" };
         }),
+      ...(o.attachments ? { attachments: o.attachments } : {}),
     });
     return { ws, calls, seen };
   }
@@ -164,6 +200,35 @@ describe("the GitHub workspace", () => {
       "git in Ada's machine failed: fatal: could not read Username",
     );
     await expect(workspace().ws.open({ ...ticket, project: "Nope" }, ada)).rejects.toThrow("no project Nope");
+  });
+
+  it("copies each of the owner's images in after the worktree is made, without the token", async () => {
+    const scripts: { script: string; env: Record<string, string> }[] = [];
+    const data = new Uint8Array([0x89, 0x50]);
+    const { ws } = workspace({
+      run: async (_e, script, env = {}) => {
+        scripts.push({ script, env });
+        return { code: 0, output: scripts.length === 1 ? "@@pushed\n" : "@@attached\n" };
+      },
+      attachments: () => [
+        { n: 1, name: "a.png", mime: "image/png", size: 2, data },
+        { n: 2, name: "b.png", mime: "image/png", size: 2, data },
+      ],
+    });
+    await ws.open(ticket, ada);
+    expect(scripts).toHaveLength(3);
+    expect(scripts[1]?.script).toContain(".inc/attachments/1-a.png");
+    expect(scripts[2]?.script).toContain(".inc/attachments/2-b.png");
+    expect(scripts[1]?.env).toEqual({});
+
+    const failing = workspace({
+      run: async (_e, script) => ({
+        code: script.includes("@@IMAGE") ? 1 : 0,
+        output: "@@pushed\ndisk full",
+      }),
+      attachments: () => [{ n: 1, name: "a.png", mime: "image/png", size: 2, data }],
+    });
+    await expect(failing.ws.open(ticket, ada)).rejects.toThrow("couldn't copy a.png into Ada's machine");
   });
 
   it("writes the report into the PR and marks it ready, once", async () => {

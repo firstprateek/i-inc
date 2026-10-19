@@ -4,10 +4,18 @@
 // report stage writes the PR's body and takes it out of draft. Both are safe to repeat: a crash, a
 // handoff or a new machine finds the branch and the PR that are already there.
 import { dirname } from "node:path";
-import type { Employee, ProjectPolicy, PullRequestRef, Ticket, Workspace } from "@i-inc/core";
+import {
+  attachmentPath,
+  type Employee,
+  type ProjectPolicy,
+  type PullRequestRef,
+  type Ticket,
+  type Workspace,
+} from "@i-inc/core";
 import type { PullRequests, TokenSource } from "./github.ts";
 import type { RunScript } from "./harness.ts";
 import type { Project } from "./registry.ts";
+import type { AttachmentFile } from "./tickets.ts";
 
 export interface WorkspaceOptions {
   project: (name: string) => Project | undefined;
@@ -22,6 +30,8 @@ export interface WorkspaceOptions {
   policy?: (project: string) => ProjectPolicy;
   /** Where the repo is cloned from; tests use a local path. */
   remote?: (repo: string) => string;
+  /** The images the owner attached to a ticket, with their bytes. */
+  attachments?: (ticketId: string) => AttachmentFile[];
 }
 
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -94,6 +104,32 @@ export function openScript(o: {
   ].join("\n");
 }
 
+/**
+ * Writes one of the owner's images into the worktree, under `.inc/`, which git is told to ignore
+ * (`info/exclude`, so it isn't a change to the repo). One image per script keeps each one small.
+ * An image that's already there is left alone: attachments never change.
+ */
+export function attachmentScript(o: { worktree: string; file: AttachmentFile }): string {
+  const path = attachmentPath(o.file);
+  if (!/^[A-Za-z0-9._/-]+$/.test(path) || path.includes("..")) throw new Error(`not a safe path: ${path}`);
+  const base64 = Buffer.from(o.file.data)
+    .toString("base64")
+    .replace(/.{1,76}/g, "$&\n");
+  return [
+    "set -e",
+    `cd ${quote(o.worktree)}`,
+    "EXCLUDE=$(git rev-parse --git-path info/exclude)",
+    'mkdir -p "$(dirname "$EXCLUDE")" .inc/attachments',
+    `grep -qxF .inc/ "$EXCLUDE" 2>/dev/null || echo .inc/ >> "$EXCLUDE"`,
+    `if [ ! -f ${path} ]; then`,
+    `  base64 -d > ${path}.part <<'@@IMAGE'`,
+    `${base64}@@IMAGE`,
+    `  mv ${path}.part ${path}`,
+    "fi",
+    "echo @@attached",
+  ].join("\n");
+}
+
 export class GitHubWorkspace implements Workspace {
   constructor(private readonly o: WorkspaceOptions) {}
 
@@ -123,6 +159,13 @@ export class GitHubWorkspace implements Workspace {
     if (r.code !== 0 || !r.output.includes(direct ? "@@ready" : "@@pushed")) {
       const tail = r.output.trim().split("\n").slice(-5).join("\n");
       throw new Error(`git in ${builder.name}'s machine failed: ${tail}`);
+    }
+    for (const file of this.o.attachments?.(ticket.id) ?? []) {
+      const a = await this.o.run(builder.id, attachmentScript({ worktree, file }));
+      if (a.code !== 0 || !a.output.includes("@@attached")) {
+        const tail = a.output.trim().split("\n").slice(-5).join("\n");
+        throw new Error(`couldn't copy ${file.name} into ${builder.name}'s machine: ${tail}`);
+      }
     }
     // Direct mode: a local branch; the reviewed work is pushed to main at the gates.
     if (direct) return { branch };

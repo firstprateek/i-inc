@@ -1,5 +1,15 @@
 // The shapes the API returns, kept apart from the daemon's code so the web app can import them.
-import type { Id, NeedsYou, ProjectRelease, Report, Spend, StageId, TicketState, Wait } from "@i-inc/core";
+import type {
+  Id,
+  NeedsYou,
+  ProjectRelease,
+  Report,
+  Spend,
+  StageId,
+  TicketAttachment,
+  TicketState,
+  Wait,
+} from "@i-inc/core";
 
 export type Column = "todo" | "in-progress" | "review" | "done";
 
@@ -33,6 +43,8 @@ export interface TicketView {
   createdBy?: Person | null;
   finishedAt?: number | null;
   pushed?: boolean;
+  /** The owner's images, each with the URL that serves it. */
+  attachments?: (TicketAttachment & { url: string })[];
 }
 
 export type EmployeeState =
