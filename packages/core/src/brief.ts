@@ -1,6 +1,6 @@
 // The brief a session starts from. Any engine can pick up a stage from it, so an engine switch or a
 // crash costs only the old session's in-context memory (spec §4, principle 5).
-import type { Employee, Ticket } from "./model.ts";
+import { attachmentPath, type Employee, type Ticket } from "./model.ts";
 import type { StageId } from "./stages.ts";
 import type { TicketState } from "./state.ts";
 
@@ -20,6 +20,7 @@ export function brief(
     ...(employee?.prompt ? ["Role instructions:", employee.prompt] : []),
     "Done when:",
     ...ticket.doneWhen.map((d) => `- ${d}`),
+    ...images(ticket),
     `Stage: ${stage}. Task: ${task}`,
   ];
   if (state.pr?.url) {
@@ -88,7 +89,14 @@ export function freshBrief(ticket: Ticket, stage: StageId, task: string, machine
     `Ticket #${ticket.id} [${ticket.type}] ${ticket.title} · ${ticket.project}`,
     "Done when:",
     ...ticket.doneWhen.map((d) => `- ${d}`),
+    ...images(ticket),
     `Stage: ${stage}. Task: ${task}`,
     ...(machine.length ? ["Your machine and the checks:", ...machine.map((m) => `- ${m}`)] : []),
   ].join("\n");
+}
+
+/** The owner's images, as files in the worktree, so any engine that can read a file can see them. */
+function images(ticket: Ticket): string[] {
+  if (!ticket.attachments?.length) return [];
+  return ["Images from the owner (open them):", ...ticket.attachments.map((a) => `- ${attachmentPath(a)}`)];
 }

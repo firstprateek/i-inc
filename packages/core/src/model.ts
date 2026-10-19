@@ -195,4 +195,18 @@ export interface Ticket {
   labels?: string[];
   /** The agent that filed it, for a follow-up; absent when the owner did. */
   createdBy?: Id;
+  /** Images the owner attached when filing it; the bytes live in the daemon. */
+  attachments?: TicketAttachment[];
 }
+
+/** An image on a ticket. `name` is already safe as a file name. */
+export interface TicketAttachment {
+  n: number;
+  name: string;
+  mime: string;
+  size: number;
+}
+
+/** Where an attachment lands in the ticket's worktree, which is the session's working folder. */
+export const attachmentPath = (a: Pick<TicketAttachment, "n" | "name">) =>
+  `.inc/attachments/${a.n}-${a.name}`;
