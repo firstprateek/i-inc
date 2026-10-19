@@ -1,16 +1,19 @@
 // Pick-up's branch and draft PR. The git script runs in real bash with real git, against a local
 // origin, with HOME in a temp folder so it can't touch the real global git config.
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Employee, Ticket } from "@i-inc/core";
 import { defaultSwitchRules } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
+import { createApi, imageLimits } from "../src/api.ts";
 import { FineGrainedToken, type PullRequests } from "../src/github.ts";
 import type { RunScript } from "../src/harness.ts";
 import type { AttachmentFile } from "../src/tickets.ts";
 import { attachmentScript, branchName, GitHubWorkspace, openScript } from "../src/workspace.ts";
+import { refunds, testApp } from "./setup.ts";
 
 const home = mkdtempSync(join(tmpdir(), "inc-home-"));
 const env = { ...process.env, HOME: home, GIT_CONFIG_GLOBAL: join(home, ".gitconfig") };
@@ -122,6 +125,57 @@ describe("pick-up's git", () => {
       "utf8",
     );
     expect(exclude.split("\n").filter((l) => l === ".inc/")).toHaveLength(1);
+
+    // Damaged on the way in: the script fails, and no image is left behind under its name.
+    const broken = attachmentScript({ worktree: wt, file: { ...file, n: 2 } }).replace(/\n[^\n]*$/, "\n!!!!");
+    const r = await localScript("ada", broken);
+    expect(r.code).not.toBe(0);
+    expect(r.output).not.toContain("@@attached");
+    expect(existsSync(join(wt, ".inc/attachments/2-chart.png"))).toBe(false);
+  });
+
+  // #14: the biggest ticket the form takes, from the upload to the worktree, through stdin as
+  // `machine run -i -- bash -s` sends it.
+  it("lands six images of 10 MB each in the worktree with the same bytes", { timeout: 60_000 }, async () => {
+    const { root, origin } = setup();
+    const work = join(root, "machine-a");
+    await localScript("ada", script(origin, work));
+    const wt = join(work, "inc-7");
+
+    const app = await testApp();
+    const handle = createApi(app.daemon, app.deps, { token: "t0ken", hosts: ["127.0.0.1:7420"] });
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe1]);
+    const images = Array.from({ length: imageLimits.count }, () =>
+      Buffer.concat([jpeg, randomBytes(imageLimits.bytes - jpeg.length)]),
+    );
+    const form = new FormData();
+    form.set("ticket", JSON.stringify(refunds));
+    images.forEach((data, i) => {
+      form.append("image", new Blob([data as BlobPart], { type: "image/jpeg" }), `IMG_000${i + 1}.jpeg`);
+    });
+    const res = await handle(
+      new Request("http://127.0.0.1:7420/api/tickets", {
+        method: "POST",
+        body: form,
+        headers: { host: "127.0.0.1:7420", authorization: "Bearer t0ken", "x-i-inc-upload": "1" },
+      }),
+    );
+    expect(res.status).toBe(201);
+    const { ticket: filed } = (await res.json()) as { ticket: { id: string } };
+
+    const files = app.deps.tickets.attachments(filed.id);
+    expect(files).toHaveLength(imageLimits.count);
+    for (const file of files) {
+      const r = await localScript("ada", attachmentScript({ worktree: wt, file }));
+      expect(r.code, r.output).toBe(0);
+    }
+    const sha = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
+    images.forEach((data, i) => {
+      const landed = readFileSync(join(wt, `.inc/attachments/${i + 1}-IMG_000${i + 1}.jpg`));
+      expect(landed.byteLength).toBe(imageLimits.bytes);
+      expect(sha(landed)).toBe(sha(data));
+    });
+    expect(git(wt, "status", "--porcelain")).toBe("");
   });
 
   it("refuses a name that isn't safe in a path", () => {
@@ -223,7 +277,7 @@ describe("the GitHub workspace", () => {
 
     const failing = workspace({
       run: async (_e, script) => ({
-        code: script.includes("@@IMAGE") ? 1 : 0,
+        code: script.includes("base64 -d") ? 1 : 0,
         output: "@@pushed\ndisk full",
       }),
       attachments: () => [{ n: 1, name: "a.png", mime: "image/png", size: 2, data }],

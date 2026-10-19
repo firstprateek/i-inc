@@ -108,6 +108,10 @@ export function openScript(o: {
  * Writes one of the owner's images into the worktree, under `.inc/`, which git is told to ignore
  * (`info/exclude`, so it isn't a change to the repo). One image per script keeps each one small.
  * An image that's already there is left alone: attachments never change.
+ *
+ * The image's base64 comes after the script's last line, which hands the rest of stdin to
+ * `base64 -d`. Bash reads a script from a pipe a byte at a time, so a 10 MB image as a heredoc
+ * took over a second and a half to read on Linux; this way it takes milliseconds (#14).
  */
 export function attachmentScript(o: { worktree: string; file: AttachmentFile }): string {
   const path = attachmentPath(o.file);
@@ -121,12 +125,9 @@ export function attachmentScript(o: { worktree: string; file: AttachmentFile }):
     "EXCLUDE=$(git rev-parse --git-path info/exclude)",
     'mkdir -p "$(dirname "$EXCLUDE")" .inc/attachments',
     `grep -qxF .inc/ "$EXCLUDE" 2>/dev/null || echo .inc/ >> "$EXCLUDE"`,
-    `if [ ! -f ${path} ]; then`,
-    `  base64 -d > ${path}.part <<'@@IMAGE'`,
-    `${base64}@@IMAGE`,
-    `  mv ${path}.part ${path}`,
-    "fi",
-    "echo @@attached",
+    // One line, so bash has read all of it before base64 (or cat) takes the rest of stdin.
+    `if [ -f ${path} ]; then cat > /dev/null; else base64 -d > ${path}.part; mv ${path}.part ${path}; fi; echo @@attached`,
+    base64,
   ].join("\n");
 }
 
