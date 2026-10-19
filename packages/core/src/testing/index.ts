@@ -110,6 +110,10 @@ export class FakeMachines implements MachineProvider {
       signedIn,
     };
   }
+
+  async retrySandbox(team: Id, size: { cpus: number; memory: string }): Promise<SandboxStatus> {
+    return this.inspectSandbox(team, size);
+  }
 }
 
 /** Records the branches it opens and the PRs it marks ready. Set `failOpen` to make pick-up fail. */

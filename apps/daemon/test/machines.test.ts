@@ -1,5 +1,12 @@
+import { StartupError } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
-import { AppleMachines, defaultMachineSettings, type Exec } from "../src/machines.ts";
+import {
+  AppleMachines,
+  BOOT_FAILURES,
+  classifyBootFailure,
+  defaultMachineSettings,
+  type Exec,
+} from "../src/machines.ts";
 
 const { wallsMarker: _, ...noWalls } = defaultMachineSettings;
 
@@ -156,5 +163,160 @@ describe("AppleMachines.inspectSandbox", () => {
     });
     // Only machine ls was called
     expect(calls).toEqual([{ bin: defaultMachineSettings.bin, args: ["machine", "ls"] }]);
+  });
+});
+
+describe("boot failure classification & BOOT_FAILURES", () => {
+  it("classifies stale-hostname errors", () => {
+    const err = new Error(
+      'failed to create machine: hostname(s) already exist: ["inc-engineering.machine."]',
+    );
+    const res = classifyBootFailure(err);
+    expect(res.kind).toBe("stale-hostname");
+    expect(BOOT_FAILURES[res.kind].fix).toContain("container system stop && container system start");
+  });
+
+  it("classifies container-service-down errors", () => {
+    const err = new Error("cannot connect to container service: connection refused");
+    const res = classifyBootFailure(err);
+    expect(res.kind).toBe("container-service-down");
+    expect(BOOT_FAILURES[res.kind].fix).toContain("container system start");
+  });
+
+  it("classifies unknown errors", () => {
+    const err = new Error("something weird happened");
+    const res = classifyBootFailure(err);
+    expect(res.kind).toBe("unknown");
+    expect(BOOT_FAILURES[res.kind].fix).toContain("container machine ls");
+  });
+});
+
+describe("AppleMachines recovery, exponential backoff, and state change logging", () => {
+  it("recovers transient boot failures with machine stop and retry once", async () => {
+    const calls: string[] = [];
+    let bootAttempts = 0;
+    const exec: Exec = async (_bin, args) => {
+      calls.push(args.join(" "));
+      if (args[0] === "machine" && args[1] === "run") {
+        bootAttempts++;
+        if (bootAttempts === 1) {
+          throw new Error("failed to run: machine state unexpected");
+        }
+        return "";
+      }
+      return "";
+    };
+    const logs: string[] = [];
+    const m = new AppleMachines(
+      noWalls,
+      exec,
+      async () => {},
+      () => 1000,
+      (msg) => logs.push(msg),
+    );
+    await m.ensureUp("ada");
+
+    expect(calls).toContain("machine stop inc-ada");
+    expect(bootAttempts).toBe(2);
+    expect(m.sandboxFault("ada")).toBeUndefined();
+  });
+
+  it("enters exponential backoff on persistent boot failure and throws StartupError", async () => {
+    const calls: string[] = [];
+    const exec: Exec = async (_bin, args) => {
+      calls.push(args.join(" "));
+      if (args[0] === "machine" && args[1] === "run") {
+        throw new Error('hostname(s) already exist: ["inc-ada.machine."]');
+      }
+      return "";
+    };
+    const logs: string[] = [];
+    let currentTime = 1_000_000;
+    const m = new AppleMachines(
+      noWalls,
+      exec,
+      async () => {},
+      () => currentTime,
+      (msg) => logs.push(msg),
+    );
+
+    // First attempt: backoff 30s
+    await expect(m.ensureUp("ada")).rejects.toBeInstanceOf(StartupError);
+    const fault1 = m.sandboxFault("ada");
+    expect(fault1).toBeDefined();
+    expect(fault1?.kind).toBe("stale-hostname");
+    expect(fault1?.attempts).toBe(1);
+    expect(fault1?.retryAt).toBe(currentTime + 30_000);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain("[sandbox:inc-ada]");
+
+    // Immediate retry while in backoff throws StartupError without calling container CLI again
+    calls.length = 0;
+    await expect(m.ensureUp("ada")).rejects.toBeInstanceOf(StartupError);
+    expect(calls).toHaveLength(0);
+    // No duplicate log line for same state
+    expect(logs).toHaveLength(1);
+
+    // After 30s, next attempt: backoff 60s
+    currentTime += 30_000;
+    await expect(m.ensureUp("ada")).rejects.toBeInstanceOf(StartupError);
+    const fault2 = m.sandboxFault("ada");
+    expect(fault2?.attempts).toBe(2);
+    expect(fault2?.retryAt).toBe(currentTime + 60_000);
+
+    // Inspect shows state: error with reason, kind, and retryAt
+    const listing =
+      "NAME     CREATED  IP  CPUS  MEMORY  DISK  STATE\ninc-ada  -        -   4     6G      3.6G  stopped";
+    const execWithLs: Exec = async (_bin, args) => {
+      if (args[1] === "ls") return listing;
+      return "";
+    };
+    const mInspect = new AppleMachines(
+      noWalls,
+      execWithLs,
+      async () => {},
+      () => currentTime,
+      () => {},
+    );
+    // biome-ignore lint/suspicious/noExplicitAny: test inspecting private faults map
+    (mInspect as any).faults.set("inc-ada", fault2);
+    const status = await mInspect.inspectSandbox("ada", { cpus: 6, memory: "12G" });
+    expect(status.state).toBe("error");
+    expect(status.kind).toBe("stale-hostname");
+    expect(status.reason).toContain("container-apiserver still holds");
+    expect(status.retryAt).toBe(fault2?.retryAt);
+  });
+
+  it("retrySandbox clears backoff and attempts immediate boot", async () => {
+    let failBoot = true;
+    const calls: string[] = [];
+    const exec: Exec = async (_bin, args) => {
+      calls.push(args.join(" "));
+      if (args[0] === "machine" && args[1] === "run") {
+        if (failBoot) throw new Error('hostname(s) already exist: ["inc-ada.machine."]');
+        return "";
+      }
+      if (args[1] === "ls") {
+        return "NAME     CREATED  IP  CPUS  MEMORY  DISK  STATE\ninc-ada  -        -   6     12G     3.6G  running";
+      }
+      return "";
+    };
+    const logs: string[] = [];
+    const m = new AppleMachines(
+      noWalls,
+      exec,
+      async () => {},
+      () => 1000,
+      (msg) => logs.push(msg),
+    );
+    await expect(m.ensureUp("ada")).rejects.toBeInstanceOf(StartupError);
+    expect(m.sandboxFault("ada")).toBeDefined();
+
+    // Now owner fixes problem (service restarted) and calls retrySandbox
+    failBoot = false;
+    const status = await m.retrySandbox("ada", { cpus: 6, memory: "12G" });
+    expect(status.state).toBe("running");
+    expect(status.reason).toBeUndefined();
+    expect(m.sandboxFault("ada")).toBeUndefined();
   });
 });

@@ -915,6 +915,58 @@ describe("GET /api/sandboxes (contract C1)", () => {
   });
 });
 
+describe("POST /api/sandboxes/:team/retry (contract C18)", () => {
+  it("returns 404 for an unknown team", async () => {
+    const app = await testApp();
+    const res = await app.call("POST", "/api/sandboxes/unknown-team/retry", {});
+    expect(res.status).toBe(404);
+    expect(res.body.error).toContain("no team unknown-team");
+  });
+
+  it("rate-limits retry requests to 1 per 10s per team (returns 429)", async () => {
+    const app = await testApp();
+    await app.call("PUT", "/api/teams/devs", { name: "Devs", members: ["ada"] });
+    const res1 = await app.call("POST", "/api/sandboxes/devs/retry", {});
+    expect(res1.status).toBe(200);
+    expect(res1.body.ok).toBe(true);
+
+    const res2 = await app.call("POST", "/api/sandboxes/devs/retry", {});
+    expect(res2.status).toBe(429);
+    expect(res2.body.error).toContain("too many retry requests");
+  });
+
+  it("retries sandbox boot, ticks daemon, and returns updated sandbox status", async () => {
+    const app = await testApp();
+    await app.call("PUT", "/api/teams/devs", { name: "Devs", members: ["ada"] });
+    const machines = app.deps.machines as FakeMachines;
+    let retried = false;
+    machines.retrySandbox = async (team: string, size: { cpus: number; memory: string }) => {
+      retried = true;
+      return {
+        team,
+        machine: `inc-${team}`,
+        state: "running",
+        cpus: size.cpus,
+        memory: size.memory,
+        signedIn: { claude: true, antigravity: false, codex: false, github: true },
+      };
+    };
+
+    const res = await app.call("POST", "/api/sandboxes/devs/retry", {});
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.sandbox).toEqual({
+      team: "devs",
+      machine: "inc-devs",
+      state: "running",
+      cpus: 6,
+      memory: "12G",
+      signedIn: { claude: true, antigravity: false, codex: false, github: true },
+    });
+    expect(retried).toBe(true);
+  });
+});
+
 describe("TicketView Contract C10 fields (createdBy, finishedAt, pushed)", () => {
   it("populates createdBy, finishedAt, and pushed properly", async () => {
     const app = await testApp();

@@ -36,6 +36,7 @@ import {
 } from "./github.ts";
 import type { Change, Repo } from "./knowledge.ts";
 import type { PushSubscription } from "./push.ts";
+import { defaultTeam } from "./registry.ts";
 import type { NewAttachment, NewTicket } from "./tickets.ts";
 import {
   allRateLimits,
@@ -88,6 +89,7 @@ const validModel = /^[A-Za-z0-9._:/@+ -]{1,100}$/;
 const inFlightBootstraps = new Set<string>();
 
 export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) {
+  const lastSandboxRetry = new Map<string, number>();
   /** The projects a chat draft for this employee can be filed under: the ones it works on (C12). */
   const projectChoices = (e: Employee): string[] => e.projects ?? d.registry.projects().map((pr) => pr.id);
   const ports = {
@@ -400,6 +402,41 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           }
         }
         return json({ sandboxes });
+      },
+    ],
+
+    [
+      "POST",
+      "/api/sandboxes/:team/retry",
+      async (_req, { team = "" }) => {
+        const found =
+          d.registry.teams().find((t) => t.id === team) ??
+          (team === defaultTeam.id ? defaultTeam : undefined);
+        if (!found) return json({ error: `no team ${team}` }, 404);
+        const now = d.clock.now();
+        const last = lastSandboxRetry.get(team) ?? 0;
+        if (now - last < 10_000) {
+          return json({ error: "too many retry requests, try again shortly" }, 429);
+        }
+        lastSandboxRetry.set(team, now);
+        const size = found.sandbox ?? { cpus: 6, memory: "12G" };
+        let sandbox: SandboxStatus;
+        if (d.machines.retrySandbox) {
+          sandbox = await d.machines.retrySandbox(team, size);
+        } else if (d.machines.inspectSandbox) {
+          sandbox = await d.machines.inspectSandbox(team, size);
+        } else {
+          sandbox = {
+            team,
+            machine: `inc-${team}`,
+            state: "error",
+            cpus: size.cpus,
+            memory: size.memory,
+            signedIn: { claude: false, antigravity: false, codex: false, github: false },
+          };
+        }
+        void daemon.tick().catch(() => {});
+        return json({ ok: true, sandbox });
       },
     ],
 

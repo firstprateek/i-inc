@@ -23,7 +23,42 @@ const signIns: [keyof Sandbox["signedIn"], string][] = [
 ];
 
 export class IncSetupSandboxes extends Loader<Data> {
+  static override properties = {
+    ...Loader.properties,
+    retrying: { state: true },
+    retryErrors: { state: true },
+  };
+  declare retrying: Set<string>;
+  declare retryErrors: Record<string, string>;
+
+  constructor() {
+    super();
+    this.retrying = new Set();
+    this.retryErrors = {};
+  }
+
   protected fetch = async (): Promise<Data> => ({ sandboxes: await setupApi.sandboxes() });
+
+  private async retry(team: string) {
+    this.retrying = new Set([...this.retrying, team]);
+    const errors = { ...this.retryErrors };
+    delete errors[team];
+    this.retryErrors = errors;
+    try {
+      const updated = await setupApi.retrySandbox(team);
+      if (this.data?.sandboxes) {
+        this.data = {
+          sandboxes: this.data.sandboxes.map((s) => (s.team === team ? updated : s)),
+        };
+      }
+    } catch (err) {
+      this.retryErrors = { ...this.retryErrors, [team]: err instanceof Error ? err.message : String(err) };
+    } finally {
+      const next = new Set(this.retrying);
+      next.delete(team);
+      this.retrying = next;
+    }
+  }
 
   static override styles = [
     base,
@@ -36,6 +71,7 @@ export class IncSetupSandboxes extends Loader<Data> {
       .subs li.in { background: var(--working-bg); color: var(--working-fg); border-color: transparent; }
       .subs li.out { color: var(--ink-2); }
       .failed { border-color: var(--alarm); }
+      .actions { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
       .codex-help { margin: 8px 0 0; }
     `,
   ];
@@ -56,7 +92,24 @@ export class IncSetupSandboxes extends Loader<Data> {
           <span class="sub">${s.cpus} CPUs · ${s.memory}</span>
         </div>
         <p class="sub">${s.machine}</p>
-        ${s.state === "error" ? html`<p class="bad" role="alert">This sandbox is in an error state, so its team can't work.</p>` : ""}
+        ${
+          s.state === "error"
+            ? html`
+          <p class="bad" role="alert">${s.reason || "This sandbox is in an error state, so its team can't work."}</p>
+          <div class="actions">
+            <button
+              class="btn"
+              type="button"
+              ?disabled=${this.retrying.has(s.team)}
+              @click=${() => this.retry(s.team)}
+            >
+              ${this.retrying.has(s.team) ? "Retrying…" : "Retry now"}
+            </button>
+            ${this.retryErrors[s.team] ? html`<span class="bad" role="alert">${this.retryErrors[s.team]}</span>` : ""}
+          </div>
+        `
+            : ""
+        }
         <ul class="subs" aria-label="Signed in to">
           ${signIns.map(([key, name]) => {
             const on = s.signedIn?.[key] === true;

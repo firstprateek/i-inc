@@ -166,6 +166,8 @@ export function liveLine(events: TicketEvent[], registry: Registry): string {
         return `${capitalize(e.stage)} · starting again with your urgent message`;
       case "helper-wanted":
         return `${capitalize(e.stage)} · waits for a ${e.duty === "review" ? "reviewer" : "verifier"}`;
+      case "helper-unavailable":
+        return `${capitalize(e.stage)} · ${nameOf(registry, e.employeeId)} unavailable: ${e.reason}`;
       case "stage-started":
         return capitalize(e.stage);
     }
