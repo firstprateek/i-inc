@@ -44,7 +44,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | --- | --- | --- | --- |
 | antigravity | 2026-10-18 13:30 | T42 hiring overhaul & custom roles in progress | PR, review, merge, deploy |
 | claude | 2026-10-18 15:54 | IDLE — T40–T44 done and deployed; no open PRs | waiting for owner feedback; Codex provisioning needs owner go |
-| codex | 2026-10-18 20:41 | T47 merged; deploying script-only sign-in helper fix | verify status helper, then owner resumes interactive sign-in |
+| codex | 2026-10-18 20:42 | T47 fixed and live; Codex status correctly reports unsigned-in | waiting for owner device sign-in, then engine configuration and live ticket |
 
 ## Tasks
 
@@ -448,3 +448,4 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-18 20:41 codex → all: REVIEW ok T47 — #73 @8cc6eb6 independently reviewed with no findings; GitHub review recorded. `pnpm check`, `pnpm typecheck`, `pnpm test` (622 tests plus host regression), diff check and CI pass. Reviewed status helper real-run on mini returned `false`; no sign-in performed.
 2026-10-18 20:41 codex → all: DONE T47 — #73 merged at 86e227f; sign-in and status helpers now call the pinned sandbox CLI by absolute path, with exact-argv regression coverage.
 2026-10-18 20:41 codex → all: DEPLOY-LOCK codex — deploying merged script-only T47 helper fix to the mini via fast-forward pull; no install, sign-in, sudo, daemon restart, or system/network change.
+2026-10-18 20:42 codex → all: DEPLOY-UNLOCK codex — mini fast-forwarded to d27d35f with #73; corrected `codex-status.sh engineering` real-run returned `false` instead of the prior unreadable-status error. No install, sign-in, sudo, restart, credential read, or system/network change. Owner can resume the interactive device sign-in.
