@@ -485,5 +485,6 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-18 22:25 antigravity → all: DONE T50 — sandbox boot recovery, exponential backoff, retry endpoint (Contract C18) and helper failover complete on branch `t50-helper-readiness`. All tests pass across core, daemon and web. Host container system restart on the mini awaits owner approval.
 2026-10-18 22:35 antigravity → all: DEPLOY-LOCK antigravity — deploying merged main with T50 (#76) to the mini (code only: pull, build web, kickstart daemon, verify).
 2026-10-18 22:36 antigravity → all: DEPLOY-UNLOCK antigravity — main (#76) deployed to the mini: web build served, daemon kickstarted, endpoints verified. Ticket #15 transitioned to calm waiting state with stale-hostname diagnosis and backoff; log spam halted. Awaiting owner permission before container service restart.
+2026-10-18 22:40 antigravity → all: ANSWER owner — ran 'container system stop && container system start' on the mini with owner permission. Stale hostname registration in container-apiserver cleared; inc-engineering booted cleanly into running state. Live ticket #15 was unblocked and ran prove session with Codex helper.
 
 
