@@ -57,6 +57,29 @@ export interface NewTicketBody {
   doneWhen: string[];
 }
 
+/** The images a new ticket takes; the daemon checks them again, by their bytes (#12). */
+export const imageRules = {
+  types: ["image/png", "image/jpeg", "image/webp", "image/gif"],
+  count: 6,
+  bytes: 10 * 1024 * 1024,
+};
+
+/**
+ * Files a ticket. With images it's one multipart request, so the ticket is never picked up before
+ * its images arrive; the `x-i-inc-upload` header is what lets the daemon take a write that isn't JSON.
+ */
+async function createTicket(t: NewTicketBody, images: File[] = []): Promise<{ ticket: { id: string } }> {
+  if (!images.length) return call("POST", "/api/tickets", t);
+  const form = new FormData();
+  form.set("ticket", JSON.stringify(t));
+  for (const f of images) form.append("image", f, f.name);
+  const res = await send("/api/tickets", { method: "POST", headers: { "x-i-inc-upload": "1" }, body: form });
+  if (res.status === 401) showLogin();
+  const data = (await res.json().catch(() => ({}))) as { ticket: { id: string }; error?: string };
+  if (!res.ok) throw new Error(data.error ?? `POST /api/tickets: ${res.status}`);
+  return data;
+}
+
 export interface OfficeResponse {
   employees: DeskEntry[];
   accounts?: AccountCost[];
@@ -147,7 +170,7 @@ export const api = {
   logout,
   board: () => call<{ tickets: TicketView[] }>("GET", "/api/board").then((r) => r.tickets),
   projects: () => call<{ projects: { id: string }[] }>("GET", "/api/projects").then((r) => r.projects),
-  createTicket: (t: NewTicketBody) => call<{ ticket: { id: string } }>("POST", "/api/tickets", t),
+  createTicket,
   office: () => call<OfficeResponse>("GET", "/api/office"),
   desk: () => call<DeskView>("GET", "/api/desk"),
   releases: () => call<{ releases: ProjectRelease[]; pending: PendingRelease[] }>("GET", "/api/releases"),

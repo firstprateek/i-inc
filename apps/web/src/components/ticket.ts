@@ -79,8 +79,12 @@ export class IncTicket extends Loader<Data> {
       ol li i.bad { background: var(--alarm); }
       ol li i.rev { background: var(--reviewing-mark); }
       ol li i.you { background: var(--needs-edge); }
+      .shots { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 10px; }
+      .shots a { display: block; width: 112px; height: 112px; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); }
+      .shots img { width: 100%; height: 100%; object-fit: cover; display: block; }
       @media (max-width: 600px) {
         h2 { font-size: 22px; }
+        .shots a { width: 96px; height: 96px; }
         .main { padding: 18px; }
         aside { padding: 18px; }
         dl { grid-template-columns: 1fr; gap: 2px 0; }
@@ -104,6 +108,7 @@ export class IncTicket extends Loader<Data> {
           <span class="muted" style="font-size:13px;font-weight:700">#${t.id}</span>
         </div>
         <h2>${t.title}</h2>
+        ${this.images(t)}
         ${this.error ? html`<p role="alert">${this.error}</p>` : ""}
         ${this.body(t)}
         <inc-transcript .ticketId=${t.id}></inc-transcript>
@@ -113,6 +118,17 @@ export class IncTicket extends Loader<Data> {
         <ol>${events.map((e) => this.line(e)).filter((x) => x !== null)}</ol>
       </aside>
     </div>`;
+  }
+
+  /** The owner's images, each opening at full size. */
+  private images(t: TicketView) {
+    if (!t.attachments?.length) return "";
+    return html`<ul class="shots" aria-label="Images from the owner">
+      ${t.attachments.map(
+        (a) => html`<li><a href=${a.url} target="_blank" rel="noopener" aria-label="Open ${a.name}">
+          <img src=${a.url} alt=${a.name} loading="lazy" /></a></li>`,
+      )}
+    </ul>`;
   }
 
   private body(t: TicketView) {
