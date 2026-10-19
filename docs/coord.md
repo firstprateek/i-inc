@@ -42,7 +42,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
-| antigravity | 2026-10-18 13:30 | T42 hiring overhaul & custom roles in progress | PR, review, merge, deploy |
+| antigravity | 2026-10-18 22:35 | T50 merged (#76), deploying code to mini | await owner approval for container restart, retry ticket #15 |
 | claude | 2026-10-18 22:01 | STOPPED — all remaining work handed to antigravity (see the HANDOFF line in the Log) | — |
 | codex | 2026-10-18 21:25 | T50: reproduced persistent Apple container hostname race; live ticket #15 preserved at prove | implement lifecycle recovery/helper failover, review, deploy, retry |
 
@@ -99,7 +99,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | T46 | Fix custom engine configuration overflow in hiring view: inputs, selects, labels and action buttons fit cleanly without container or card boundary overflow | web | done (PR #72) | #72 | T42 | Owner request 2026-10-18 |
 | T47 | Fix Codex owner sign-in/status helpers failing to find the sandbox-local CLI after successful provisioning; use the pinned absolute path and guard it with host-helper regressions | daemon | done (PR #73) | #73 | T44 | Owner reproduced immediately after provisioning; no credentials involved |
 | T48 | Assign new hires to a configured team/sandbox: Hiring selects a team, employee creation updates that team's membership atomically, and a single configured team is the backward-compatible default | daemon + web | done (PR #75) | #75 | T44 | Also supports moving existing employees atomically so live Codex can be repaired without recreation |
-| T50 | A helper whose engine cannot start must not fail the builder's ticket: recover shared sandbox boot races; skip ineligible/unavailable helpers, select another eligible reviewer/verifier or surface a waiting reason; use team sandbox sign-in/readiness in eligibility | core + daemon + web | done | `t50-helper-readiness` | T48 | Contract C18; live ticket #15 preserved at prove |
+| T50 | A helper whose engine cannot start must not fail the builder's ticket: recover shared sandbox boot races; skip ineligible/unavailable helpers, select another eligible reviewer/verifier or surface a waiting reason; use team sandbox sign-in/readiness in eligibility | core + daemon + web | done (PR #76) | #76 | T48 | Contract C18; live ticket #15 preserved at prove |
 
 ## API contracts
 
@@ -483,3 +483,5 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 6) Heartbeat: Claude row set to STOPPED; Claude's 5-minute loop is cancelled (it only ever ran while its session was open). If Codex comes back it can take review duties — leave a log line to avoid duplicates.
 2026-10-18 22:01 claude → antigravity: NOTE T50 — partial work saved for you on branch `wip/t50-helper-failover-core` (NOT a PR; one commit on top of origin/main@14d393a, core only; 117 core tests pass, typecheck passes; rebase it before use). DONE there: `helper-unavailable` event (events.ts), per-duty `unavailable` list in state.ts (cleared by an owner retry), `SessionOutcome` stuck gets `startup?: true` + `StartupError`/`SandboxFault`/`EngineBlock` types and optional `Company.engineBlock` / `MachineProvider.sandboxFault|signedIn|retrySandbox` in ports.ts, runner.ts: a helper that fails to start records the event and does not fail the ticket (next helper → builder's seat on a different engine → wait), scheduler.ts: `engineBlock` makes an employee ineligible and sets waitingUntil, reason 'waits for a reviewer who can start', test fakes (`FakeCompany.blocks`, `FakeMachines.bootFailures`), packages/core/test/helper-failover.test.ts (18 tests). NOT DONE: daemon side (machines.ts boot classification + constant, safe stop-and-retry-once, backoff, one log line per state change, /api/sandboxes reason/retryAt, POST /api/sandboxes/:team/retry + C18, setting `startup: true` in acp.ts, implementing `engineBlock` in daemon.ts/registry.ts), calm ticket waiting during backoff, `helper-unavailable` timeline text (web ticket.ts + views.ts liveLine), Setup > Sandboxes row + Retry now, docs/handoff.md runbook, Playwright checks.
 2026-10-18 22:25 antigravity → all: DONE T50 — sandbox boot recovery, exponential backoff, retry endpoint (Contract C18) and helper failover complete on branch `t50-helper-readiness`. All tests pass across core, daemon and web. Host container system restart on the mini awaits owner approval.
+2026-10-18 22:35 antigravity → all: DEPLOY-LOCK antigravity — deploying merged main with T50 (#76) to the mini (code only: pull, build web, kickstart daemon, verify).
+
