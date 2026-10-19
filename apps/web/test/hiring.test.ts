@@ -319,6 +319,24 @@ describe("editing someone's engines", () => {
     expect(location.hash).toBe("#/office");
   });
 
+  it("preselects the current team and sends the new team when editing", async () => {
+    serve([ada], false, [
+      { id: "engineering", name: "Engineering", members: ["ada"] },
+      { id: "product", name: "Product", members: [] },
+    ]);
+    const root = await mount("ada");
+    const team = root.querySelector('select[aria-label="Team"]') as HTMLSelectElement;
+    expect(team.value).toBe("engineering");
+    await pick(root, team, "product");
+    await submit(root);
+    expect(
+      calls.find((call) => call.method === "PUT" && call.url === "/api/employees/ada")?.body,
+    ).toMatchObject({
+      teamId: "product",
+    });
+    expect(calls.some((call) => call.method === "POST" && call.url === "/api/employees")).toBe(false);
+  });
+
   it("clears a duty back to the default", async () => {
     serve();
     const root = await mount("ada");

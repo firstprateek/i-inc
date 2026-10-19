@@ -187,7 +187,7 @@ export const api = {
   hire: (e: Partial<Employee> & { teamId?: string }) =>
     call<{ employee: Employee }>("POST", "/api/employees", e),
   employees: () => call<{ employees: Employee[] }>("GET", "/api/employees").then((r) => r.employees),
-  updateEmployee: (id: string, e: Partial<Employee>) =>
+  updateEmployee: (id: string, e: Partial<Employee> & { teamId?: string }) =>
     call<{ employee: Employee }>("PUT", `/api/employees/${encodeURIComponent(id)}`, e),
   teams: () =>
     call<{ teams: { id: string; name: string; members: (string | { id: string; name?: string })[] }[] }>(

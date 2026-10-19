@@ -1046,7 +1046,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         };
         const problems = hiringProblems(hire, d.registry.engines(), d.registry.employees());
         if (problems.length) return json({ error: problems.join("; "), problems }, 400);
-        if (teamId) d.registry.hireInTeam(hire, teamId);
+        if (teamId) d.registry.saveEmployeeInTeam(hire, teamId);
         else d.registry.hire(hire);
         // A brain from the template, and orientation as the first ticket (spec §5, "Hiring").
         d.knowledge.ensureBrain(hire);
@@ -1078,7 +1078,12 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         } catch {
           return json({ error: "no such employee" }, 404);
         }
-        const b = (await req.json()) as Partial<Employee>;
+        const b = (await req.json()) as Partial<Employee> & { teamId?: unknown };
+        if (b.teamId !== undefined) {
+          if (typeof b.teamId !== "string" || !d.registry.teams().some((team) => team.id === b.teamId)) {
+            return json({ error: "teamId must name an existing team" }, 400);
+          }
+        }
         const updated: Employee = {
           ...existing,
           ...(b.name !== undefined ? { name: b.name } : {}),
@@ -1100,7 +1105,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           d.registry.employees().filter((e) => e.id !== id),
         );
         if (problems.length) return json({ error: problems.join("; "), problems }, 400);
-        d.registry.hire(updated);
+        if (typeof b.teamId === "string") d.registry.saveEmployeeInTeam(updated, b.teamId);
+        else d.registry.hire(updated);
         if (b.prompt !== undefined || b.role !== undefined || b.name !== undefined) {
           d.knowledge.updatePersonality(id, updated.name, updated.role, updated.prompt);
         }

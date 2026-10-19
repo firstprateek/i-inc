@@ -198,6 +198,9 @@ export class IncHiring extends LitElement {
     const e = this.employeeId ? this.team.find((x) => x.id === this.employeeId) : undefined;
     if (e === (this.editing ?? undefined)) return;
     this.editing = e ?? null;
+    this.selectedTeamId =
+      this.teams.find((team) => e && team.members.includes(e.id))?.id ??
+      (this.teams.length === 1 ? (this.teams[0]?.id ?? "") : "");
     if (!e) {
       // Back from an edit to a blank hire.
       this.name = "";
@@ -339,7 +342,8 @@ export class IncHiring extends LitElement {
     this.busy = true;
     this.error = null;
     try {
-      const payload: Partial<Employee> = { engines: this.engineSet() };
+      const payload: Partial<Employee> & { teamId?: string } = { engines: this.engineSet() };
+      if (this.selectedTeamId) payload.teamId = this.selectedTeamId;
       if (this.name && this.name !== this.editing.name) payload.name = this.name;
       if (this.role && this.role !== this.editing.role) payload.role = this.role;
       if (this.prompt && this.prompt !== (this.editing.prompt ?? defaultPrompts[this.editing.role] ?? "")) {
@@ -530,7 +534,7 @@ export class IncHiring extends LitElement {
           }}></label>
 
         ${
-          !editing && this.teams.length
+          this.teams.length
             ? html`<label>Team
           <select aria-label="Team" data-value=${this.selectedTeamId} ?disabled=${this.teams.length === 1}
             @change=${(e: Event) => {
@@ -763,7 +767,7 @@ export class IncHiring extends LitElement {
       }
 
       <div class="submit wide">
-        <button class="btn" type="submit" ?disabled=${this.busy || !this.name.trim() || !this.engine || (!editing && this.teams.length > 1 && !this.selectedTeamId)}>${
+        <button class="btn" type="submit" ?disabled=${this.busy || !this.name.trim() || !this.engine || (this.teams.length > 1 && !this.selectedTeamId)}>${
           editing ? "Save engines" : `Hire ${this.name.trim() || "them"}`
         }</button>
         ${editing ? html`<a class="btn ghost" href="#/hiring">Cancel</a>` : ""}

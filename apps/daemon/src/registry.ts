@@ -157,8 +157,8 @@ export class Registry implements Company {
   setTeam(t: Team): void {
     this.db.transaction(() => this.setTeamInTransaction(t));
   }
-  /** Hires and assigns in one database transaction so the employee never falls back to Company. */
-  hireInTeam(e: Employee, teamId: Id): void {
+  /** Saves an employee and assigns them in one transaction, without a Company fallback. */
+  saveEmployeeInTeam(e: Employee, teamId: Id): void {
     this.db.transaction(() => {
       this.hire(e);
       const team = this.teams().find((candidate) => candidate.id === teamId);

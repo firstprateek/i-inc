@@ -249,6 +249,48 @@ describe("PUT /api/employees/:id", () => {
     expect(after.role).toBe("Principal Engineer");
   });
 
+  it("moves an existing employee to another team without creating orientation", async () => {
+    const app = await testApp();
+    await app.call("PUT", "/api/teams/engineering", { name: "Engineering", members: ["ada"] });
+    await app.call("PUT", "/api/teams/product", { name: "Product", members: [] });
+    const beforeTickets = app.deps.db.all<{ count: number }>("SELECT COUNT(*) AS count FROM tickets")[0]
+      ?.count;
+
+    const res = await app.call("PUT", "/api/employees/ada", { teamId: "product" });
+    expect(res.status).toBe(200);
+    expect(app.deps.registry.teamOf("ada").id).toBe("product");
+    expect(app.deps.registry.teams().find((team) => team.id === "engineering")?.members).not.toContain("ada");
+    expect(app.deps.registry.teams().find((team) => team.id === "product")?.members).toContain("ada");
+    expect(app.deps.db.all<{ count: number }>("SELECT COUNT(*) AS count FROM tickets")[0]?.count).toBe(
+      beforeTickets,
+    );
+  });
+
+  it("rejects an unknown team without changing the employee or its current membership", async () => {
+    const app = await testApp();
+    await app.call("PUT", "/api/teams/engineering", { name: "Engineering", members: ["ada"] });
+    const before = app.deps.registry.employee("ada");
+    const beforeTickets = app.deps.db.all<{ count: number }>("SELECT COUNT(*) AS count FROM tickets")[0]
+      ?.count;
+
+    const res = await app.call("PUT", "/api/employees/ada", { name: "Changed", teamId: "missing" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("teamId must name an existing team");
+    expect(app.deps.registry.employee("ada")).toEqual(before);
+    expect(app.deps.registry.teamOf("ada").id).toBe("engineering");
+    expect(app.deps.db.all<{ count: number }>("SELECT COUNT(*) AS count FROM tickets")[0]?.count).toBe(
+      beforeTickets,
+    );
+  });
+
+  it("preserves team membership when an update omits teamId", async () => {
+    const app = await testApp();
+    await app.call("PUT", "/api/teams/engineering", { name: "Engineering", members: ["ada"] });
+    const res = await app.call("PUT", "/api/employees/ada", { name: "Ada Lovelace" });
+    expect(res.status).toBe(200);
+    expect(app.deps.registry.teamOf("ada").id).toBe("engineering");
+  });
+
   it("validates employee updates with hiringProblems", async () => {
     const app = await testApp();
 
