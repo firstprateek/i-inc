@@ -2,8 +2,8 @@
 // It's served on 127.0.0.1, reached through an SSH tunnel. Other web pages the owner has open can
 // still send it requests, so: only known Host headers (no DNS rebinding), writes must be JSON (which
 // another site can't send without a CORS preflight, and none is ever allowed), and an Origin from
-// anywhere else is refused. A bearer token can guard it as well. The one exception to JSON, a new
-// ticket with images, must carry a custom header, which needs a preflight too (see isUpload).
+// anywhere else is refused. A bearer token can guard it as well. The one exception to JSON, images
+// for a ticket, must carry a custom header, which needs a preflight too (see isUpload).
 
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import {
@@ -1267,6 +1267,28 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     ],
 
     [
+      "POST",
+      "/api/tickets/:id/attachments",
+      async (req, p) => {
+        const r = d.tickets.get(p.id ?? "");
+        if (!r) return json({ error: "no such ticket" }, 404);
+        if ((await daemon.state(r.ticket.id)).status === "done") {
+          return json({ error: `ticket ${r.ticket.id} is done` }, 409);
+        }
+        const upload = await readUpload(req);
+        if ("error" in upload) return json({ error: upload.error }, upload.status);
+        const images = await readImages(upload.form);
+        if ("error" in images) return json({ error: images.error }, images.status);
+        if (!images.length) return json({ error: "add at least one image" }, 400);
+        const problem = roomFor(r.ticket.id, images.length);
+        if (problem) return json({ error: problem }, 400);
+        const attachments = await attachImages(r.ticket.id, images);
+        await daemon.tick();
+        return json({ attachments }, 201);
+      },
+    ],
+
+    [
       "GET",
       "/api/tickets/:id/attachments/:n",
       async (_, p) => {
@@ -1335,11 +1357,35 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       "POST",
       "/api/tickets/:id/decide",
       async (req, p) => {
-        const { decision, note } = (await req.json()) as {
-          decision: "approve" | "changes" | "reject";
-          note?: string;
-        };
-        return act(p.id, "ready", () => decide(ports, p.id ?? "", decision, note));
+        type Body = { decision: "approve" | "changes" | "reject"; note?: string };
+        // "Not quite" may come with images, as a `decision` JSON field and `image` files.
+        let body: Body;
+        let images: NewAttachment[] = [];
+        if (isMultipart(req)) {
+          const upload = await readUpload(req);
+          if ("error" in upload) return json({ error: upload.error }, upload.status);
+          const raw = upload.form.get("decision");
+          try {
+            body = JSON.parse(typeof raw === "string" ? raw : "") as Body;
+          } catch {
+            return json({ error: "the decision field must be JSON" }, 400);
+          }
+          const read = await readImages(upload.form);
+          if ("error" in read) return json({ error: read.error }, read.status);
+          images = read;
+          if (images.length && body.decision !== "changes") {
+            return json({ error: "images go with a request for changes" }, 400);
+          }
+          const problem = d.tickets.get(p.id ?? "") ? roomFor(p.id ?? "", images.length) : null;
+          if (problem) return json({ error: problem }, 400);
+        } else {
+          body = (await req.json()) as Body;
+        }
+        return act(p.id, "ready", async () => {
+          // The images come first, so the Build session that follows the decision has them.
+          if (images.length) await attachImages(p.id ?? "", images);
+          await decide(ports, p.id ?? "", body.decision, body.note);
+        });
       },
     ],
 
@@ -1482,6 +1528,25 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     if (key === "handbook") return { kind: "handbook" };
     const id = key.startsWith("brain:") ? key.slice(6) : null;
     return id && d.registry.employees().some((e) => e.id === id) ? { kind: "brain", id } : null;
+  }
+
+  /** Why a ticket can't take `count` more images, or null when it can. */
+  function roomFor(id: Id, count: number): string | null {
+    const has = d.tickets.get(id)?.ticket.attachments?.length ?? 0;
+    return has + count > imageLimits.perTicket
+      ? `a ticket takes at most ${imageLimits.perTicket} images, and this one has ${has}`
+      : null;
+  }
+
+  /**
+   * Stores images for a ticket that exists, and records them in its events, so a run that's under
+   * way copies them into the worktree before its next session.
+   */
+  async function attachImages(id: Id, images: NewAttachment[]) {
+    const at = d.clock.now();
+    const attachments = d.tickets.attach(id, images, at);
+    await d.store.append(id, [{ type: "owner-attached", at, attachments }]);
+    return attachments;
   }
 
   /** Appends the owner's action if the ticket is in the right state, then runs the ticket on. */
@@ -1677,19 +1742,25 @@ function match(pattern: string, path: string): Record<string, string> | null {
   return params;
 }
 
-/** The images a new ticket may carry (#12). */
-export const imageLimits = { count: 6, bytes: 10 * 1024 * 1024 };
+/** The images a ticket may carry: `count` per request (#12), `perTicket` in all (#15). */
+export const imageLimits = { count: 6, bytes: 10 * 1024 * 1024, perTicket: 24 };
+
+/** The paths that take images: a new ticket, more for one, and a "Not quite" reply. */
+const uploadPaths = /^\/api\/tickets(?:\/[A-Za-z0-9_-]+\/(?:attachments|decide))?$/;
+
+const isMultipart = (req: Request) =>
+  (req.headers.get("content-type") ?? "").startsWith("multipart/form-data");
 
 /**
- * A new ticket with images comes as multipart/form-data, which another site could send without a
- * CORS preflight. So it must also carry the `x-i-inc-upload` header, which no other site can add
- * without a preflight, and none is ever allowed: the JSON-only wall holds.
+ * Images come as multipart/form-data, which another site could send without a CORS preflight. So
+ * they must also carry the `x-i-inc-upload` header, which no other site can add without a
+ * preflight, and none is ever allowed: the JSON-only wall holds.
  */
 function isUpload(req: Request, path: string): boolean {
   return (
     req.method === "POST" &&
-    path === "/api/tickets" &&
-    (req.headers.get("content-type") ?? "").startsWith("multipart/form-data") &&
+    uploadPaths.test(path) &&
+    isMultipart(req) &&
     req.headers.get("x-i-inc-upload") === "1"
   );
 }
@@ -1705,34 +1776,27 @@ export function sniffImage(b: Uint8Array): string | null {
   return null;
 }
 
-type TicketUpload = { body: NewTicket; images: NewAttachment[] } | { error: string; status: number };
+type Refused = { error: string; status: number };
 
-/** A new ticket as JSON, or as a `ticket` JSON field and up to six `image` files. */
-async function readTicket(req: Request): Promise<TicketUpload> {
-  if (!(req.headers.get("content-type") ?? "").startsWith("multipart/form-data")) {
-    return { body: (await req.json()) as NewTicket, images: [] };
-  }
+/** A multipart upload's form, refused early when it's bigger than the images it may carry. */
+async function readUpload(req: Request): Promise<{ form: FormData } | Refused> {
+  if (!isMultipart(req)) return { error: "send images as multipart/form-data", status: 400 };
   const max = imageLimits.count * imageLimits.bytes + 1024 * 1024;
   if (Number(req.headers.get("content-length") ?? 0) > max) {
     return { error: `at most ${imageLimits.count} images of 10 MB each`, status: 413 };
   }
-  let form: FormData;
   try {
-    form = await req.formData();
+    return { form: await req.formData() };
   } catch {
     return { error: "couldn't read the upload", status: 400 };
   }
-  const raw = form.get("ticket");
-  if (typeof raw !== "string") return { error: "the upload needs a ticket field", status: 400 };
-  let body: NewTicket;
-  try {
-    body = JSON.parse(raw) as NewTicket;
-  } catch {
-    return { error: "the ticket field must be JSON", status: 400 };
-  }
+}
+
+/** A form's `image` files, each checked by its bytes. Every path that takes images checks them here. */
+async function readImages(form: FormData): Promise<NewAttachment[] | Refused> {
   const files = form.getAll("image");
   if (files.length > imageLimits.count) {
-    return { error: `at most ${imageLimits.count} images per ticket`, status: 400 };
+    return { error: `at most ${imageLimits.count} images at a time`, status: 400 };
   }
   const images: NewAttachment[] = [];
   for (const f of files) {
@@ -1743,6 +1807,24 @@ async function readTicket(req: Request): Promise<TicketUpload> {
     if (!mime) return { error: `${f.name || "an image"} isn't a PNG, JPEG, WebP or GIF`, status: 400 };
     images.push({ name: f.name, mime, data });
   }
+  return images;
+}
+
+/** A new ticket as JSON, or as a `ticket` JSON field and up to six `image` files. */
+async function readTicket(req: Request): Promise<{ body: NewTicket; images: NewAttachment[] } | Refused> {
+  if (!isMultipart(req)) return { body: (await req.json()) as NewTicket, images: [] };
+  const upload = await readUpload(req);
+  if ("error" in upload) return upload;
+  const raw = upload.form.get("ticket");
+  if (typeof raw !== "string") return { error: "the upload needs a ticket field", status: 400 };
+  let body: NewTicket;
+  try {
+    body = JSON.parse(raw) as NewTicket;
+  } catch {
+    return { error: "the ticket field must be JSON", status: 400 };
+  }
+  const images = await readImages(upload.form);
+  if ("error" in images) return images;
   return { body, images };
 }
 
