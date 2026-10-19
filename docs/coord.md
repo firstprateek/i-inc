@@ -44,7 +44,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | --- | --- | --- | --- |
 | antigravity | 2026-10-18 13:30 | T42 hiring overhaul & custom roles in progress | PR, review, merge, deploy |
 | claude | 2026-10-18 15:54 | IDLE — T40–T44 done and deployed; no open PRs | waiting for owner feedback; Codex provisioning needs owner go |
-| codex | 2026-10-18 20:42 | T47 fixed and live; Codex status correctly reports unsigned-in | waiting for owner device sign-in, then engine configuration and live ticket |
+| codex | 2026-10-18 20:55 | T48 live Codex orientation exposed missing team assignment for new hires | add team selection/assignment, review, deploy, retry ticket #13 |
 
 ## Tasks
 
@@ -98,6 +98,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | T45 | Pin All views dropdown header: fix the top section with title and close (✕) button so it stays pinned/sticky at the top while scrolling the catalog list | web | done (PR #71) | #71 | | Owner request 2026-10-18 |
 | T46 | Fix custom engine configuration overflow in hiring view: inputs, selects, labels and action buttons fit cleanly without container or card boundary overflow | web | done (PR #72) | #72 | T42 | Owner request 2026-10-18 |
 | T47 | Fix Codex owner sign-in/status helpers failing to find the sandbox-local CLI after successful provisioning; use the pinned absolute path and guard it with host-helper regressions | daemon | done (PR #73) | #73 | T44 | Owner reproduced immediately after provisioning; no credentials involved |
+| T48 | Assign new hires to a configured team/sandbox: Hiring selects a team, employee creation updates that team's membership atomically, and a single configured team is the backward-compatible default | daemon + web | claimed (codex) | `fix/hiring-team-assignment` | T44 | Live Codex orientation #13 mapped the unassigned hire to unprovisioned `inc-company`; signed-in `inc-engineering` ACP probe succeeds |
 
 ## API contracts
 
@@ -449,3 +450,6 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-18 20:41 codex → all: DONE T47 — #73 merged at 86e227f; sign-in and status helpers now call the pinned sandbox CLI by absolute path, with exact-argv regression coverage.
 2026-10-18 20:41 codex → all: DEPLOY-LOCK codex — deploying merged script-only T47 helper fix to the mini via fast-forward pull; no install, sign-in, sudo, daemon restart, or system/network change.
 2026-10-18 20:42 codex → all: DEPLOY-UNLOCK codex — mini fast-forwarded to d27d35f with #73; corrected `codex-status.sh engineering` real-run returned `false` instead of the prior unreadable-status error. No install, sign-in, sudo, restart, credential read, or system/network change. Owner can resume the interactive device sign-in.
+
+2026-10-18 20:55 codex → all: CLAIM T48 — live T44 verification added ChatGPT + `gpt-6.1-sol` (advertised by the signed-in adapter), hired Codex, and created orientation ticket #13. The turn failed because new hires are not assigned to a configured team, so registry fallback launched unprovisioned `inc-company`; direct full ACP turns in signed-in `inc-engineering` pass. Adding explicit Hiring team selection plus single-team default, then retrying #13 after reviewed deploy.
+2026-10-18 20:55 codex → antigravity: HANDOFF T48 — this T44 live-verification blocker needs the employee-create API and Hiring UI; codex is taking only this focused daemon+web team-assignment scope. Please do not duplicate it; your other daemon work remains yours.
