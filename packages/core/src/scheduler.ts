@@ -68,7 +68,7 @@ export interface Plan {
   resets?: Record<Id, number>;
 }
 
-export function schedule(snap: Snapshot, company: Pick<Company, "engine">): Plan {
+export function schedule(snap: Snapshot, company: Pick<Company, "engine" | "engineBlock">): Plan {
   const starts: Start[] = [];
   const waiting: Waiting[] = [];
   const resets: Record<Id, number> = {};
@@ -90,6 +90,9 @@ export function schedule(snap: Snapshot, company: Pick<Company, "engine">): Plan
     if (blocked !== undefined && blocked > snap.now) {
       return `${e.name} waits for ${engine.accountId} to reset`;
     }
+    // Their sandbox can't start, or (for a reviewer or verifier) their engine isn't signed in there.
+    const block = company.engineBlock?.(e.id, engine.id, duty);
+    if (block) return block.reason;
     return null;
   };
 
@@ -100,10 +103,11 @@ export function schedule(snap: Snapshot, company: Pick<Company, "engine">): Plan
       snap.capReachedUntil[e.id],
       snap.capReachedUntil[engine.accountId],
       snap.accountsBlockedUntil[engine.accountId],
+      company.engineBlock?.(e.id, engine.id, "build")?.until,
     ].filter((x): x is number => x !== undefined && x > snap.now);
     return times.length ? Math.max(...times) : undefined;
   };
-  const isReset = (why: string) => /usage cap|to reset/.test(why);
+  const isReset = (why: string) => /usage cap|to reset|sandbox can't start/.test(why);
 
   // A pending review goes ahead of starting a new build.
   for (const p of [...snap.pending].sort((a, b) => a.since - b.since)) {
@@ -113,7 +117,9 @@ export function schedule(snap: Snapshot, company: Pick<Company, "engine">): Plan
       waiting.push({ ticketId: p.ticketId, reason: `${name} is busy` });
       continue;
     }
-    const candidates = snap.employees.filter((e) => e.duties.includes(p.duty) && !p.exclude.includes(e.id));
+    const withDuty = snap.employees.filter((e) => e.duties.includes(p.duty) && e.id !== p.builder);
+    const candidates = withDuty.filter((e) => !p.exclude.includes(e.id));
+    const noun = p.duty === "review" ? "reviewer" : "verifier";
     const free = candidates.find((e) => available(e, p.duty) === null);
     if (free) {
       taken.add(free.id);
@@ -123,8 +129,11 @@ export function schedule(snap: Snapshot, company: Pick<Company, "engine">): Plan
       waiting.push({
         ticketId: p.ticketId,
         reason: candidates[0]
-          ? `waits for a ${p.duty === "review" ? "reviewer" : "verifier"}: ${available(candidates[0], p.duty)}`
-          : `no one else has the ${p.duty} duty`,
+          ? `waits for a ${noun}: ${available(candidates[0], p.duty)}`
+          : withDuty.length
+            ? // Everyone with the duty already failed to start for this ticket.
+              `waits for a ${noun} who can start`
+            : `no one else has the ${p.duty} duty`,
       });
     }
   }

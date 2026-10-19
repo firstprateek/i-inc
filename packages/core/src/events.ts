@@ -84,4 +84,18 @@ export type TicketEvent =
   /** The stage needs another employee, and the scheduler will pick one (spec §6, "Assignment and scheduling"). */
   | { type: "helper-wanted"; at: number; stage: StageId; duty: HelperDuty }
   | { type: "helper-assigned"; at: number; duty: HelperDuty; employeeId: Id }
+  /**
+   * A reviewer or verifier couldn't start (its engine didn't launch, wasn't signed in, or its sandbox
+   * wouldn't boot). The builder's ticket carries on: this employee (on `engineId`, when it was the
+   * builder's own seat on another engine) is skipped for this duty and another is picked.
+   */
+  | {
+      type: "helper-unavailable";
+      at: number;
+      stage: StageId;
+      duty: HelperDuty;
+      employeeId: Id;
+      engineId?: Id;
+      reason: string;
+    }
   | { type: "failed"; at: number; stage: StageId; reason: string; tried: string[] };
