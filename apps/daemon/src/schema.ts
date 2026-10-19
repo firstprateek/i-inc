@@ -69,5 +69,15 @@ export function migrate(db: Db): void {
       PRIMARY KEY (session_id, seq)
     );
     CREATE INDEX IF NOT EXISTS idx_ticket_session_items_session ON ticket_session_items(session_id, seq);
+    CREATE TABLE IF NOT EXISTS ticket_attachments (
+      ticket_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      mime TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      data BLOB NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (ticket_id, seq)
+    );
   `);
 }

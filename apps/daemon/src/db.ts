@@ -2,7 +2,7 @@
 // runs on both. Only what the daemon needs: exec, run, all, and a transaction.
 
 export type Row = Record<string, unknown>;
-export type Param = string | number | null;
+export type Param = string | number | null | Uint8Array;
 
 export interface Db {
   exec(sql: string): void;

@@ -2,7 +2,8 @@
 // It's served on 127.0.0.1, reached through an SSH tunnel. Other web pages the owner has open can
 // still send it requests, so: only known Host headers (no DNS rebinding), writes must be JSON (which
 // another site can't send without a CORS preflight, and none is ever allowed), and an Origin from
-// anywhere else is refused. A bearer token can guard it as well.
+// anywhere else is refused. A bearer token can guard it as well. The one exception to JSON, a new
+// ticket with images, must carry a custom header, which needs a preflight too (see isUpload).
 
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import {
@@ -35,7 +36,7 @@ import {
 } from "./github.ts";
 import type { Change, Repo } from "./knowledge.ts";
 import type { PushSubscription } from "./push.ts";
-import type { NewTicket } from "./tickets.ts";
+import type { NewAttachment, NewTicket } from "./tickets.ts";
 import {
   allRateLimits,
   deskView,
@@ -1191,7 +1192,9 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       "POST",
       "/api/tickets",
       async (req) => {
-        const body = (await req.json()) as NewTicket;
+        const upload = await readTicket(req);
+        if ("error" in upload) return json({ error: upload.error }, upload.status);
+        const { body, images } = upload;
         if (!body.effort && body.assignee) {
           try {
             const emp = d.registry.employee(body.assignee);
@@ -1200,9 +1203,30 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         }
         const problem = validate(body);
         if (problem) return json({ error: problem }, 400);
-        const ticket = d.tickets.create(body, d.clock.now());
+        const ticket = d.tickets.create(body, d.clock.now(), images);
         await daemon.tick();
         return json({ ticket }, 201);
+      },
+    ],
+
+    [
+      "GET",
+      "/api/tickets/:id/attachments/:n",
+      async (_, p) => {
+        const n = Number(p.n);
+        const [file] = Number.isInteger(n) && n > 0 ? d.tickets.attachments(p.id ?? "", n) : [];
+        if (!file) return json({ error: "no such image" }, 404);
+        return new Response(file.data, {
+          headers: {
+            "content-type": file.mime,
+            "content-length": String(file.size),
+            "x-content-type-options": "nosniff",
+            // The name is already letters, digits, dots, dashes and underscores (tickets.ts).
+            "content-disposition": `inline; filename="${file.name}"`,
+            "content-security-policy": "default-src 'none'; sandbox",
+            "cache-control": "private, max-age=86400",
+          },
+        });
       },
     ],
 
@@ -1422,7 +1446,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       ) {
         return json({ error: "cross-site request refused" }, 403);
       }
-      if (!(req.headers.get("content-type") ?? "").startsWith("application/json")) {
+      if (!(req.headers.get("content-type") ?? "").startsWith("application/json") && !isUpload(req, path)) {
         return json({ error: "writes must be application/json" }, 415);
       }
     }
@@ -1539,6 +1563,75 @@ function match(pattern: string, path: string): Record<string, string> | null {
     } else if (seg !== b[i]) return null;
   }
   return params;
+}
+
+/** The images a new ticket may carry (#12). */
+export const imageLimits = { count: 6, bytes: 10 * 1024 * 1024 };
+
+/**
+ * A new ticket with images comes as multipart/form-data, which another site could send without a
+ * CORS preflight. So it must also carry the `x-i-inc-upload` header, which no other site can add
+ * without a preflight, and none is ever allowed: the JSON-only wall holds.
+ */
+function isUpload(req: Request, path: string): boolean {
+  return (
+    req.method === "POST" &&
+    path === "/api/tickets" &&
+    (req.headers.get("content-type") ?? "").startsWith("multipart/form-data") &&
+    req.headers.get("x-i-inc-upload") === "1"
+  );
+}
+
+/** The image types a ticket takes, told by their leading bytes. No SVG: it can carry script. */
+export function sniffImage(b: Uint8Array): string | null {
+  const starts = (sig: number[], at = 0) => sig.every((x, i) => b[at + i] === x);
+  const ascii = (t: string) => [...t].map((c) => c.charCodeAt(0));
+  if (starts([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return "image/png";
+  if (starts([0xff, 0xd8, 0xff])) return "image/jpeg";
+  if (starts(ascii("GIF87a")) || starts(ascii("GIF89a"))) return "image/gif";
+  if (starts(ascii("RIFF")) && starts(ascii("WEBP"), 8)) return "image/webp";
+  return null;
+}
+
+type TicketUpload = { body: NewTicket; images: NewAttachment[] } | { error: string; status: number };
+
+/** A new ticket as JSON, or as a `ticket` JSON field and up to six `image` files. */
+async function readTicket(req: Request): Promise<TicketUpload> {
+  if (!(req.headers.get("content-type") ?? "").startsWith("multipart/form-data")) {
+    return { body: (await req.json()) as NewTicket, images: [] };
+  }
+  const max = imageLimits.count * imageLimits.bytes + 1024 * 1024;
+  if (Number(req.headers.get("content-length") ?? 0) > max) {
+    return { error: `at most ${imageLimits.count} images of 10 MB each`, status: 413 };
+  }
+  let form: FormData;
+  try {
+    form = await req.formData();
+  } catch {
+    return { error: "couldn't read the upload", status: 400 };
+  }
+  const raw = form.get("ticket");
+  if (typeof raw !== "string") return { error: "the upload needs a ticket field", status: 400 };
+  let body: NewTicket;
+  try {
+    body = JSON.parse(raw) as NewTicket;
+  } catch {
+    return { error: "the ticket field must be JSON", status: 400 };
+  }
+  const files = form.getAll("image");
+  if (files.length > imageLimits.count) {
+    return { error: `at most ${imageLimits.count} images per ticket`, status: 400 };
+  }
+  const images: NewAttachment[] = [];
+  for (const f of files) {
+    if (typeof f === "string") return { error: "each image must be a file", status: 400 };
+    if (f.size > imageLimits.bytes) return { error: `${f.name || "an image"} is over 10 MB`, status: 400 };
+    const data = new Uint8Array(await f.arrayBuffer());
+    const mime = sniffImage(data);
+    if (!mime) return { error: `${f.name || "an image"} isn't a PNG, JPEG, WebP or GIF`, status: 400 };
+    images.push({ name: f.name, mime, data });
+  }
+  return { body, images };
 }
 
 function validate(t: Partial<NewTicket>): string | null {
