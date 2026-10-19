@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { liveLine } from "../src/views.ts";
 import { refunds, testApp } from "./setup.ts";
 
 describe("the event log in SQLite", () => {
@@ -541,5 +542,23 @@ describe("chat", () => {
     });
     const events = (await app.call("GET", "/api/tickets/1")).body.events;
     expect(events.at(-1)).toMatchObject({ type: "owner-message", text: "Keep it behind a flag" });
+  });
+
+  it("formats helper-unavailable event in liveLine with stage, helper name and reason", async () => {
+    const app = await testApp();
+    const line = liveLine(
+      [
+        {
+          type: "helper-unavailable",
+          at: 1000,
+          stage: "review",
+          duty: "review",
+          employeeId: "kit",
+          reason: "the sandbox can't start",
+        },
+      ],
+      app.deps.registry,
+    );
+    expect(line).toBe("Review · Kit unavailable: the sandbox can't start");
   });
 });

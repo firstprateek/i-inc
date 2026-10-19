@@ -392,6 +392,7 @@ describe("an ACP session", () => {
     expect(await agent(s).run(request({ engine: codex }))).toEqual({
       kind: "stuck",
       reason: "Codex ACP doesn't offer the configured model gpt-5-codex",
+      startup: true,
     });
     expect(s.sent.some((message) => message.method === "session/prompt")).toBe(false);
 
@@ -460,6 +461,7 @@ describe("an ACP session", () => {
     expect(await agent(effortServer).run(request({ engine: codex }))).toEqual({
       kind: "stuck",
       reason: "Codex ACP doesn't offer the configured medium reasoning effort",
+      startup: true,
     });
     expect(effortServer.sent.some((message) => message.method === "session/prompt")).toBe(false);
   });
@@ -503,6 +505,7 @@ describe("an ACP session", () => {
     expect(await agent(s).run(request({ engine: codex }))).toEqual({
       kind: "stuck",
       reason: "Codex ACP couldn't select model gpt-5-codex: model selection rejected",
+      startup: true,
     });
     expect(s.sent.some((message) => message.method === "session/prompt")).toBe(false);
   });
@@ -552,6 +555,7 @@ describe("an ACP session", () => {
     expect(await agent(auth).run(request({ engine: codex }))).toEqual({
       kind: "stuck",
       reason: "codex needs a sign-in in Ada's machine",
+      startup: true,
     });
 
     const limited = server((method, _params, reply, id) => {
@@ -643,7 +647,11 @@ describe("an ACP session", () => {
         reply({ id, error: { code: -32000, message: "Authentication required" } });
     });
     const out = await agent(s).run(request({ engine: { ...claude, harness: "antigravity" } }));
-    expect(out).toEqual({ kind: "stuck", reason: "antigravity needs a sign-in in Ada's machine" });
+    expect(out).toEqual({
+      kind: "stuck",
+      reason: "antigravity needs a sign-in in Ada's machine",
+      startup: true,
+    });
   });
 
   it("is stuck, not hung, when the agent dies mid-session", async () => {
@@ -714,7 +722,7 @@ describe("Apple container machines", () => {
     const m = new AppleMachines(noWalls, async () => {
       throw new Error("XPC connection error: the container service isn't running");
     });
-    await expect(m.ensureUp("ada")).rejects.toThrow("container service isn't running");
+    await expect(m.ensureUp("ada")).rejects.toThrow("container service");
     expect(m.running()).toEqual([]);
   });
 

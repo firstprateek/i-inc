@@ -8,6 +8,8 @@ import {
   type BacklogItem,
   type ChatSession,
   type Clock,
+  type Company,
+  type Duty,
   fold,
   type Harness,
   type HelperModel,
@@ -23,6 +25,7 @@ import {
   type SessionOutcome,
   type SessionRequest,
   type Snapshot,
+  StartupError,
   schedule,
   type Ticket,
   type TicketEvent,
@@ -76,13 +79,54 @@ export class Daemon {
   /** Employees whose machines are up, as far as this daemon knows. */
   private readonly awake = new Set<Id>();
 
+  get company(): Company {
+    const reg = this.d.registry;
+    const isContact = reg.isContact;
+    const projectPolicy = reg.projectPolicy;
+    return {
+      employee: (id) => reg.employee(id),
+      engine: (id) => reg.engine(id),
+      pickEmployee: (duty, ticket, exclude) => reg.pickEmployee(duty, ticket, exclude),
+      ...(isContact ? { isContact: (address) => isContact.call(reg, address) } : {}),
+      ...(projectPolicy ? { projectPolicy: (project) => projectPolicy.call(reg, project) } : {}),
+      engines: () => reg.engines(),
+      engineBlock: (employeeId: Id, engineId: Id, duty: Duty) => {
+        const fault = this.d.machines.sandboxFault?.(employeeId);
+        if (fault && this.d.clock.now() < fault.retryAt) {
+          return { reason: fault.waiting, until: fault.retryAt };
+        }
+        if (duty === "review" || duty === "verify") {
+          const eng = reg.engine(engineId);
+          const signedIn = this.d.machines.signedIn?.(employeeId, eng.harness);
+          if (signedIn === false) {
+            return { reason: `${eng.harness} is not signed in for this team` };
+          }
+        }
+        return null;
+      },
+    };
+  }
+
   private get ports(): Ports {
-    const { clock, store, harness, registry, sessions } = this.d;
-    const machines = {
+    const { clock, store, harness, sessions } = this.d;
+    const m = this.d.machines;
+    const stop = m.stop;
+    const deliverCallback = m.deliverCallback;
+    const inspectSandbox = m.inspectSandbox;
+    const sandboxFault = m.sandboxFault;
+    const signedIn = m.signedIn;
+    const retrySandbox = m.retrySandbox;
+    const machines: MachineProvider = {
       ensureUp: async (id: Id) => {
-        await this.d.machines.ensureUp(id);
+        await m.ensureUp(id);
         this.awake.add(id);
       },
+      ...(stop ? { stop: (id) => stop.call(m, id) } : {}),
+      ...(deliverCallback ? { deliverCallback: (team, url) => deliverCallback.call(m, team, url) } : {}),
+      ...(inspectSandbox ? { inspectSandbox: (team, size) => inspectSandbox.call(m, team, size) } : {}),
+      ...(sandboxFault ? { sandboxFault: (id) => sandboxFault.call(m, id) } : {}),
+      ...(signedIn ? { signedIn: (id, harness) => signedIn.call(m, id, harness) } : {}),
+      ...(retrySandbox ? { retrySandbox: (team, size) => retrySandbox.call(m, team, size) } : {}),
     };
     const agent: Agent = {
       run: async (req: SessionRequest): Promise<SessionOutcome> => {
@@ -139,7 +183,15 @@ export class Daemon {
       },
     };
     const { workspace } = this.d;
-    return { clock, store, machines, agent, harness, company: registry, ...(workspace ? { workspace } : {}) };
+    return {
+      clock,
+      store,
+      machines,
+      agent,
+      harness,
+      company: this.company,
+      ...(workspace ? { workspace } : {}),
+    };
   }
 
   async state(id: Id): Promise<TicketState> {
@@ -182,12 +234,23 @@ export class Daemon {
 
     this.checkAutoReleases(records, states, now);
 
+    const sandboxWaiting: Waiting[] = [];
+    const sandboxWaitingUntil: Record<Id, number> = {};
+
     // Paused tickets run again (the runner returns at once if the wait isn't over), and so do running
     // ones that nothing is driving, e.g. after a restart.
     for (const r of records) {
       const s = states.get(r.ticket.id);
-      if (s?.created && (s.status === "paused" || (s.status === "running" && !s.waitingFor)))
+      if (s?.created && (s.status === "paused" || (s.status === "running" && !s.waitingFor))) {
+        const builder = s.assignee ?? r.ticket.assignee;
+        const fault = this.d.machines.sandboxFault?.(builder);
+        if (fault && now < fault.retryAt) {
+          sandboxWaiting.push({ ticketId: r.ticket.id, reason: fault.waiting });
+          sandboxWaitingUntil[r.ticket.id] = fault.retryAt;
+          continue;
+        }
         this.run(r.ticket.id);
+      }
     }
 
     const builderOf = (id: Id, fallback: Id) => states.get(id)?.assignee ?? fallback;
@@ -273,9 +336,9 @@ export class Daemon {
       pending,
       backlog,
     };
-    const plan = schedule(snap, this.d.registry);
-    this.waiting = plan.waiting;
-    this.waitingUntil = plan.resets ?? {};
+    const plan = schedule(snap, this.company);
+    this.waiting = [...plan.waiting, ...sandboxWaiting];
+    this.waitingUntil = { ...(plan.resets ?? {}), ...sandboxWaitingUntil };
 
     for (const start of plan.starts) {
       if (start.as !== "build") await assignHelper(this.ports, start.ticketId, start.as, start.employeeId);
@@ -304,7 +367,17 @@ export class Daemon {
         // A stage finished or wants a helper: someone may be free now, or a reviewer is needed.
         if (r.status !== "paused") void this.tick().catch(() => {});
       })
-      .catch((e: unknown) => this.d.log?.(`ticket ${id} stopped: ${String(e)}`))
+      .catch((e: unknown) => {
+        if (e instanceof StartupError) {
+          const existing = this.waiting.find((w) => w.ticketId === id);
+          if (existing) existing.reason = e.message;
+          else this.waiting.push({ ticketId: id, reason: e.message });
+          if (e.retryAt) this.waitingUntil[id] = e.retryAt;
+          this.d.log?.(`ticket ${id} waiting: ${e.message}`);
+          return;
+        }
+        this.d.log?.(`ticket ${id} stopped: ${String(e)}`);
+      })
       .finally(() => {
         this.running.delete(id);
         this.sessions.delete(id);

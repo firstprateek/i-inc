@@ -51,6 +51,9 @@ const sandboxes: Sandbox[] = [
     cpus: 6,
     memory: "12G",
     signedIn: { claude: false, antigravity: false, github: false },
+    reason:
+      "Apple container service is not responding — start the container service on the Mac mini: container system start",
+    retryAt: 1700000000000,
   },
 ];
 
@@ -121,6 +124,20 @@ function serve(
         ? sandboxes.map((s, i) => (i === 0 ? { ...s, signedIn: { ...s.signedIn, codex: true } } : s))
         : sandboxes;
       return json({ sandboxes: rows });
+    }
+    if (url.startsWith("/api/sandboxes/") && url.endsWith("/retry") && method === "POST") {
+      const team = url.slice("/api/sandboxes/".length, -"/retry".length);
+      return json({
+        ok: true,
+        sandbox: {
+          team,
+          machine: `inc-${team}`,
+          state: "running",
+          cpus: 6,
+          memory: "12G",
+          signedIn: { claude: true, antigravity: false, github: false },
+        },
+      });
     }
     return json({ ok: true });
   });
@@ -655,13 +672,27 @@ describe("sandboxes", () => {
     expect(engineering?.textContent).not.toContain("sign-in-codex.sh");
   });
 
-  it("shows an error state as an error", async () => {
+  it("shows an error state as an error with reason and Retry now button", async () => {
     serve();
     const root = await mount("inc-setup-sandboxes");
     const home = root.querySelector('section[aria-label="inc-home"]') as HTMLElement;
     expect(home.querySelector(".chip")?.textContent).toBe("Error");
     expect(home.querySelector(".chip")?.classList.contains("alarm")).toBe(true);
-    expect(home.querySelector('[role="alert"]')?.textContent).toContain("error state");
+    expect(home.querySelector('[role="alert"]')?.textContent).toContain(
+      "Apple container service is not responding",
+    );
+
+    const retryBtn = home.querySelector(".actions button") as HTMLButtonElement;
+    expect(retryBtn).not.toBeNull();
+    expect(retryBtn.textContent?.trim()).toBe("Retry now");
+
+    retryBtn.click();
+    await settle(root.host);
+
+    expect(calls).toContainEqual(
+      expect.objectContaining({ method: "POST", url: "/api/sandboxes/home/retry" }),
+    );
+    expect(home.querySelector(".chip")?.textContent).toBe("Running");
   });
 
   it.each(["404", "fail"] as const)("falls back to a quiet line when the request is %s", async (mode) => {

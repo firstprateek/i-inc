@@ -56,6 +56,22 @@ Each team's sandbox signs in to harnesses once using host tools:
 
 - **Codex:** follow [Codex setup](codex.md) to provision the pinned harness in new or existing team machines, then run `sh tools/host/sign-in-codex.sh <team id>` when the owner is ready. The device-code flow stays in the sandbox; Setup → Sandboxes reports only sign-in status. No login is performed as part of deployment.
 
+### Sandbox won't boot: hostname already exists
+When macOS or Apple's container framework terminates abruptly or gets out of sync, `container-apiserver` can retain a stale registration (`hostname(s) already exist: ["inc-<team>.machine."]`). The daemon automatically recovers from transient machine failures using safe `container machine stop <name>` retries and exponential backoff (30s → 1m → 2m … up to 10m) without churning tickets.
+
+If the machine enters persistent `stale-hostname` backoff (visible in Setup > Sandboxes and ticket waiting line):
+1. **Never delete** the machine, its volumes, or disks.
+2. Ask the owner before restarting the container daemon on the host.
+3. Once approved, restart the Apple container service on the Mac mini:
+   ```sh
+   container system stop && container system start
+   ```
+4. Verify the machine state:
+   ```sh
+   container machine ls
+   ```
+5. In i.inc web under Setup > Sandboxes, click **Retry now** (or call `POST /api/sandboxes/:team/retry`) to immediately wake the team sandbox and resume tickets at their current stage.
+
 ### Adding repos to the GitHub App
 Before the bot can work on tickets for a repository (e.g. `firstprateek/i-inc`), the repository must be explicitly added to the **i.inc bot** GitHub App installation in GitHub settings:
 1. Navigate to GitHub `Settings` → `Applications` → `Installed GitHub Apps` → `i.inc bot` → `Configure`.

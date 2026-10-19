@@ -83,6 +83,9 @@ export interface Sandbox {
   cpus: number;
   memory: string;
   signedIn: { claude: boolean; antigravity: boolean; github: boolean; codex?: boolean };
+  reason?: string;
+  kind?: string;
+  retryAt?: number;
 }
 
 /** The daemon's defaults for a project with no policy of its own (defaultProjectPolicy in the core). */
@@ -139,5 +142,9 @@ export const setupApi = {
     call<{ sandboxes: Sandbox[] }>("GET", "/api/sandboxes").then(
       (r) => (Array.isArray(r.sandboxes) ? r.sandboxes : null),
       () => null,
+    ),
+  retrySandbox: (team: string): Promise<Sandbox> =>
+    call<{ ok: boolean; sandbox: Sandbox }>("POST", `/api/sandboxes/${enc(team)}/retry`, {}).then(
+      (r) => r.sandbox,
     ),
 };

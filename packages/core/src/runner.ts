@@ -18,7 +18,7 @@ import {
   type Ticket,
 } from "./model.ts";
 import { decideOutbound } from "./outbound.ts";
-import type { Ports } from "./ports.ts";
+import { type Ports, StartupError } from "./ports.ts";
 import { assembleReport, type Report, reportMarkdown } from "./report.ts";
 import { planFor, type StageId, type StagePlan } from "./stages.ts";
 import { fold, type TicketState } from "./state.ts";
@@ -297,17 +297,21 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
       if (out !== null) await c.emit(checkpoint(c, "prove", out));
       return;
     }
-    const verifier = await helper(c, "verify");
-    if (verifier === "none") {
+    const seat = await verifySeat(c);
+    if (seat === "none") {
       await c.emit(finished(c, "prove", "no one on the team has the verify duty"));
       return;
     }
-    if (verifier === "wait") return;
+    if (seat === "wait") return;
+    const verifier = "employee" in seat ? seat.employee : seat;
     const out = await session(
       c,
       "verify",
       verifier,
       'Check each done-when item against the running app, as a black box. Reply as JSON: {"items":[{"doneWhen","pass","evidence"}]}.',
+      "employee" in seat
+        ? { fresh: true, helperFor: "verify", ...(seat.engineId ? { engineId: seat.engineId } : {}) }
+        : { helperFor: "verify" },
     );
     if (out === null) return;
     const items = parseJson<{ items: { doneWhen: string; pass: boolean; evidence: string }[] }>(out)?.items;
@@ -341,7 +345,7 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     const direct = c.policy.mode === "direct";
     const needsVerdict = r.round === 0 || (r.addressed && r.round < c.plan.reviewRounds);
     if (needsVerdict) {
-      const seat = direct ? await reviewSeat(c) : await helper(c, "review");
+      const seat = direct ? await reviewSeat(c) : await helperOrWait(c, "review");
       if (seat === "none") {
         await c.emit(finished(c, "review", "no one on the team has the review duty"));
         return;
@@ -366,8 +370,8 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
         reviewer,
         task,
         "employee" in seat
-          ? { fresh: true, ...(seat.engineId ? { engineId: seat.engineId } : {}) }
-          : { fresh: direct },
+          ? { fresh: true, helperFor: "review", ...(seat.engineId ? { engineId: seat.engineId } : {}) }
+          : { fresh: direct, helperFor: "review" },
       );
       if (out === null) return;
       const verdict = parseJson<{ approved: boolean; findings: Finding[] }>(out);
@@ -516,23 +520,67 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
   },
 };
 
+type Seat = Employee | { employee: Employee; engineId?: Id };
+
 /**
- * Direct mode's reviewer (decided 2026-10-17): another employee with the review duty if there is one;
- * otherwise a fresh session in the builder's seat, on a different engine from the builder's when the
- * company has one. Either way the reviewer sees only the ticket and the diff.
+ * Direct mode's reviewer (decided 2026-10-17): another employee with the review duty if there is one
+ * who can start; otherwise a fresh session in the builder's seat, on a different engine from the
+ * builder's when the company has one. Either way the reviewer sees only the ticket and the diff.
  */
-async function reviewSeat(c: Step): Promise<{ employee: Employee; engineId?: Id } | Employee | "wait"> {
+async function reviewSeat(c: Step): Promise<Seat | "wait"> {
   const other = await helper(c, "review");
-  if (other !== "none") return other;
+  if (other === "none" || other === "exhausted") return ownSeat(c, "review");
+  return other;
+}
+
+/**
+ * The verifier: another employee who can start, else the builder's seat on a different engine (a
+ * fresh session, so it still checks as a black box), else wait. "none": no one else has the duty.
+ */
+async function verifySeat(c: Step): Promise<Seat | "none" | "wait"> {
+  const other = await helper(c, "verify");
+  if (other !== "exhausted") return other;
+  const own = await ownSeat(c, "verify", true);
+  if (own) return own;
+  await wantHelper(c, "verify");
+  return "wait";
+}
+
+/** A reviewer or verifier outside direct mode: "exhausted" (no one left who can start) waits. */
+async function helperOrWait(c: Step, duty: HelperDuty): Promise<Employee | "none" | "wait"> {
+  const other = await helper(c, duty);
+  if (other !== "exhausted") return other;
+  await wantHelper(c, duty);
+  return "wait";
+}
+
+/**
+ * The builder's own seat as a fresh reviewer or verifier, on an engine different from the builder's
+ * when there is one that is usable (not ruled out for this ticket, not blocked). `needDifferent`
+ * returns null when there isn't.
+ */
+function ownSeat(c: Step, duty: HelperDuty, needDifferent: true): { employee: Employee; engineId: Id } | null;
+function ownSeat(c: Step, duty: HelperDuty): { employee: Employee; engineId?: Id };
+function ownSeat(
+  c: Step,
+  duty: HelperDuty,
+  needDifferent = false,
+): { employee: Employee; engineId?: Id } | null {
   const own = engineFor(c.builder, "build", c.s, true);
   const ownEngine = c.p.company.engine(own);
+  const ruledOut = (c.s.unavailable[duty] ?? [])
+    .filter((u) => u.employeeId === c.builder.id && u.engineId)
+    .map((u) => u.engineId);
   const different = (c.p.company.engines?.() ?? []).find(
     (e) =>
       e.id !== own &&
       (e.harness !== ownEngine.harness || e.accountId !== ownEngine.accountId) &&
       engineAllowed(c.ticket, e) &&
-      !c.s.paused,
+      !c.s.paused &&
+      !ruledOut.includes(e.id) &&
+      !c.p.company.engineBlock?.(c.builder.id, e.id, duty),
   );
+  if (!different && needDifferent) return null;
   return { employee: c.builder, ...(different ? { engineId: different.id } : {}) };
 }
 
@@ -638,13 +686,26 @@ async function directReport(c: Step): Promise<void> {
 
 /**
  * The reviewer or verifier for this ticket: the one already assigned, or "none" when no one else has
- * the duty. Otherwise "wait": the runner picked one itself, or asked the scheduler for one.
+ * the duty. Otherwise "wait": the runner picked one itself, or asked the scheduler for one. People who
+ * couldn't start for this ticket, or whose sandbox or sign-in isn't ready, are passed over; when that
+ * leaves no one, "exhausted".
  */
-async function helper(c: Step, duty: HelperDuty): Promise<Employee | "none" | "wait"> {
+async function helper(c: Step, duty: HelperDuty): Promise<Employee | "none" | "exhausted" | "wait"> {
   const assigned = c.s.helpers[duty];
   if (assigned && assigned !== c.ticket.assignee) return c.p.company.employee(assigned);
-  const pick = c.p.company.pickEmployee(duty, c.ticket, [c.ticket.assignee]);
-  if (!pick) return "none";
+  if (!c.p.company.pickEmployee(duty, c.ticket, [c.ticket.assignee])) return "none";
+  const skip = [
+    c.ticket.assignee,
+    ...(c.s.unavailable[duty] ?? []).filter((u) => !u.engineId).map((u) => u.employeeId),
+  ];
+  let pick: Employee | undefined;
+  for (;;) {
+    pick = c.p.company.pickEmployee(duty, c.ticket, skip);
+    if (!pick) return "exhausted";
+    const engineId = engineFor(pick, duty, c.s, false);
+    if (!c.p.company.engineBlock?.(pick.id, engineId, duty)) break;
+    skip.push(pick.id);
+  }
   const at = c.p.clock.now();
   await c.emit(
     c.opts.helpers === "scheduler"
@@ -654,13 +715,19 @@ async function helper(c: Step, duty: HelperDuty): Promise<Employee | "none" | "w
   return "wait";
 }
 
+/** Asks the scheduler for a helper even though everyone with the duty is out: it says why it waits. */
+async function wantHelper(c: Step, duty: HelperDuty): Promise<void> {
+  if (c.opts.helpers !== "scheduler" || c.s.waitingFor) return;
+  await c.emit({ type: "helper-wanted", at: c.p.clock.now(), stage: c.s.active as StageId, duty });
+}
+
 /** Runs one session. Returns its output, or null when it paused, switched engine, escalated or failed. */
 async function session(
   c: Step,
   duty: Duty,
   employee: Employee,
   task: string,
-  o: { engineId?: Id; fresh?: boolean } = {},
+  o: { engineId?: Id; fresh?: boolean; helperFor?: HelperDuty } = {},
 ): Promise<string | null> {
   const stage = c.s.active as StageId;
   const isAssignee = employee.id === c.ticket.assignee;
@@ -671,7 +738,28 @@ async function session(
     return null;
   }
 
-  await c.p.machines.ensureUp(employee.id);
+  // A reviewer or verifier that can't start never fails the builder's ticket: it is skipped, and
+  // another seat is picked. The builder's own default engine is the exception (switch rules apply).
+  const helperDuty =
+    o.helperFor !== undefined && (!isAssignee || o.engineId !== undefined) ? o.helperFor : null;
+  const unavailable = async (reason: string): Promise<null> => {
+    await c.emit({
+      type: "helper-unavailable",
+      at: c.p.clock.now(),
+      stage,
+      duty: helperDuty as HelperDuty,
+      employeeId: employee.id,
+      ...(isAssignee ? { engineId } : {}),
+      reason,
+    });
+    return null;
+  };
+  try {
+    await c.p.machines.ensureUp(employee.id);
+  } catch (err) {
+    if (helperDuty && err instanceof StartupError) return unavailable(err.message);
+    throw err;
+  }
   // After a handoff the new builder's machine has no worktree yet: make it before its first session.
   if (isAssignee && c.p.workspace && c.s.pr && c.s.prFor !== employee.id) {
     const pr = await openWorkspace(c, employee, stage);
@@ -717,6 +805,7 @@ async function session(
     await c.emit({ type: "out-of-tokens", at: c.p.clock.now(), stage, engineId, resetsAt: out.resetsAt });
     return null;
   }
+  if (helperDuty && out.startup) return unavailable(out.reason);
   await stuck(c, employee, duty, `the agent is stuck: ${out.reason}`);
   return null;
 }

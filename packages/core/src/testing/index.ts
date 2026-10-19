@@ -17,6 +17,7 @@ import type {
   CiResult,
   Clock,
   Company,
+  EngineBlock,
   EventStore,
   GatesResult,
   Harness,
@@ -59,7 +60,12 @@ export class FakeMachines implements MachineProvider {
   teamMembers?: Record<Id, Id[]> | ((team: Id) => Id[]);
   sandboxStates?: Record<Id, "running" | "stopped" | "missing">;
 
+  /** Employees whose machine won't start, with the error `ensureUp` throws (T50). */
+  readonly bootFailures = new Map<Id, Error>();
+
   async ensureUp(employeeId: Id): Promise<void> {
+    const failure = this.bootFailures.get(employeeId);
+    if (failure) throw failure;
     this.started.push(employeeId);
   }
   async stop(employeeId: Id): Promise<void> {
@@ -103,6 +109,10 @@ export class FakeMachines implements MachineProvider {
       memory: size.memory,
       signedIn,
     };
+  }
+
+  async retrySandbox(team: Id, size: { cpus: number; memory: string }): Promise<SandboxStatus> {
+    return this.inspectSandbox(team, size);
   }
 }
 
@@ -327,6 +337,17 @@ export class FakeCompany implements Company {
   }
   pickEmployee(duty: Duty, _ticket: Ticket, exclude: Id[]): Employee | undefined {
     return [...this.employees.values()].find((e) => e.duties.includes(duty) && !exclude.includes(e.id));
+  }
+  /** Employees (or engines) that can't run right now, as the daemon reports them (T50). */
+  readonly blocks: { employee?: Id; engine?: Id; duty?: Duty; block: EngineBlock }[] = [];
+  engineBlock(employeeId: Id, engineId: Id, duty: Duty): EngineBlock | null {
+    const hit = this.blocks.find(
+      (b) =>
+        (!b.employee || b.employee === employeeId) &&
+        (!b.engine || b.engine === engineId) &&
+        (!b.duty || b.duty === duty),
+    );
+    return hit?.block ?? null;
   }
 }
 

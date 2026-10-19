@@ -342,6 +342,8 @@ export class IncTicket extends Loader<Data> {
         return item(`Handed from ${e.from} to ${e.to}`);
       case "failed":
         return item(`Failed: ${e.reason}`, "bad");
+      case "helper-unavailable":
+        return item(`${e.duty === "review" ? "Reviewer" : "Verifier"} unavailable: ${e.reason}`, "bad");
       case "closed":
         return item(html`<b>${e.outcome}</b>`);
       default:

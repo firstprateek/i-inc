@@ -114,7 +114,7 @@ export function realPorts(o: RealOptions): Pick<
 
   return {
     machines: (registry) => {
-      machines = new AppleMachines(teams(registry), o.exec);
+      machines = new AppleMachines(teams(registry), o.exec, undefined, now, o.log);
       return machines;
     },
     agent: (registry) =>

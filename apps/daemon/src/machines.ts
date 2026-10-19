@@ -10,8 +10,49 @@
 // succeeds on a machine that's already stopped.
 import { type ChildProcessWithoutNullStreams, execFile, spawn } from "node:child_process";
 import { statSync } from "node:fs";
-import type { Id, MachineProvider, SandboxStatus } from "@i-inc/core";
+import {
+  type AgentHarness,
+  type Id,
+  type MachineProvider,
+  type SandboxFault,
+  type SandboxFaultKind,
+  type SandboxStatus,
+  StartupError,
+} from "@i-inc/core";
 import type { AgentProcess, Launch } from "./acp.ts";
+
+export const BOOT_FAILURES: Record<SandboxFaultKind, { reason: string; fix: string; waiting: string }> = {
+  "stale-hostname": {
+    reason: "container-apiserver still holds the machine's hostname from an earlier boot",
+    fix: "restart the container service on the Mac mini: container system stop && container system start",
+    waiting: "the engineering sandbox can't start (restart the container service on the Mac mini)",
+  },
+  "container-service-down": {
+    reason: "Apple container service is not responding",
+    fix: "start the container service on the Mac mini: container system start",
+    waiting: "the container service is down on the Mac mini (run container system start)",
+  },
+  unknown: {
+    reason: "the sandbox failed to boot",
+    fix: "check container machine ls on the Mac mini",
+    waiting: "the sandbox failed to boot (check container machine ls on the Mac mini)",
+  },
+};
+
+export function classifyBootFailure(err: unknown): { kind: SandboxFaultKind; message: string } {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/hostname\(s\)\s+already\s+exist/i.test(msg)) {
+    return { kind: "stale-hostname", message: msg };
+  }
+  if (
+    /connection refused|cannot connect to container service|container service isn't running|is the container service running|container service is not responding/i.test(
+      msg,
+    )
+  ) {
+    return { kind: "container-service-down", message: msg };
+  }
+  return { kind: "unknown", message: msg };
+}
 
 export interface MachineSettings {
   /** Path to the `container` CLI. */
@@ -116,11 +157,16 @@ export class AppleMachines implements MachineProvider {
     string,
     { claude: boolean; antigravity: boolean; codex: boolean; github: boolean }
   >();
+  private readonly faults = new Map<string, SandboxFault>();
+  private readonly attempts = new Map<string, number>();
+  private readonly lastLogged = new Map<string, string>();
 
   constructor(
     private readonly s: MachineSettings = defaultMachineSettings,
     private readonly exec: Exec = execDefault,
     private readonly sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+    private readonly now: () => number = Date.now,
+    private readonly log?: (msg: string) => void,
   ) {}
 
   async ensureUp(employeeId: Id): Promise<void> {
@@ -131,10 +177,14 @@ export class AppleMachines implements MachineProvider {
       working.add(employeeId);
       return;
     }
+    const currentTime = this.now();
+    const fault = this.faults.get(name);
+    if (fault && currentTime < fault.retryAt) {
+      throw new StartupError(fault.waiting, fault.retryAt);
+    }
     const size = this.s.sizeFor?.(name) ?? { cpus: this.s.cpus, memory: this.s.memory };
     try {
-      // Boots the machine if it's stopped (0.6 s), and does nothing if it's running.
-      await this.boot(name);
+      await this.bootWithRecovery(name);
     } catch (err) {
       if (!/notFound|not found/.test(err instanceof Error ? err.message : String(err))) throw err;
       // No such machine yet: make it with the flags M1 used.
@@ -152,9 +202,112 @@ export class AppleMachines implements MachineProvider {
         this.s.image,
       ]);
       // Boot it here rather than in its first job.
-      await this.boot(name);
+      await this.bootWithRecovery(name);
     }
     this.up.set(name, new Set([employeeId]));
+  }
+
+  /**
+   * Boots a machine with safe recovery and exponential backoff on failure (T50).
+   */
+  private async bootWithRecovery(name: string): Promise<void> {
+    try {
+      await this.boot(name);
+      if (this.faults.has(name) || this.attempts.has(name)) {
+        this.faults.delete(name);
+        this.attempts.delete(name);
+        this.lastLogged.delete(name);
+        this.logStateChange(name, "running", "recovered and running");
+      }
+    } catch (err) {
+      if (/notFound|not found/i.test(err instanceof Error ? err.message : String(err))) {
+        throw err;
+      }
+      // Safe automatic recovery inside the sandbox layer only: machine stop, retry once
+      try {
+        try {
+          await this.exec(this.s.bin, ["machine", "stop", name]);
+        } catch {
+          // ignore error stopping if already stopped
+        }
+        await this.boot(name);
+        if (this.faults.has(name) || this.attempts.has(name)) {
+          this.faults.delete(name);
+          this.attempts.delete(name);
+          this.lastLogged.delete(name);
+          this.logStateChange(name, "running", "recovered after safe machine stop");
+        }
+        return;
+      } catch (recoveryErr) {
+        if (
+          /notFound|not found/i.test(recoveryErr instanceof Error ? recoveryErr.message : String(recoveryErr))
+        ) {
+          throw recoveryErr;
+        }
+        const failure = classifyBootFailure(recoveryErr || err);
+        const attempts = (this.attempts.get(name) ?? 0) + 1;
+        this.attempts.set(name, attempts);
+        const backoffMs = Math.min(30_000 * 2 ** (attempts - 1), 600_000);
+        const currentTime = this.now();
+        const retryAt = currentTime + backoffMs;
+        const info = BOOT_FAILURES[failure.kind];
+        const teamName = name.replace(/^inc-/, "");
+        const waiting =
+          failure.kind === "stale-hostname"
+            ? `the ${teamName} sandbox can't start (restart the container service on the Mac mini)`
+            : info.waiting;
+        const fault: SandboxFault = {
+          machine: name,
+          kind: failure.kind,
+          reason: `${info.reason} — ${info.fix}`,
+          waiting,
+          since: this.faults.get(name)?.since ?? currentTime,
+          retryAt,
+          attempts,
+        };
+        this.faults.set(name, fault);
+        this.logStateChange(
+          name,
+          `fault:${failure.kind}`,
+          `boot failed (${failure.kind}): ${fault.reason}; retrying in ${Math.round(backoffMs / 1000)}s`,
+        );
+        throw new StartupError(fault.waiting, fault.retryAt);
+      }
+    }
+  }
+
+  private logStateChange(machine: string, stateKey: string, stateDescription: string): void {
+    if (this.lastLogged.get(machine) === stateKey) return;
+    this.lastLogged.set(machine, stateKey);
+    this.log?.(`[sandbox:${machine}] ${stateDescription}`);
+  }
+
+  sandboxFault(employeeId: Id): SandboxFault | undefined {
+    const name = machineOf(this.s, employeeId);
+    return this.faults.get(name);
+  }
+
+  signedIn(employeeId: Id, harness: AgentHarness): boolean | undefined {
+    const name = machineOf(this.s, employeeId);
+    const cached = this.signedInCache.get(name);
+    if (!cached) return undefined;
+    if (harness === "claude-code") return cached.claude;
+    if (harness === "antigravity") return cached.antigravity;
+    if (harness === "codex") return cached.codex;
+    return true;
+  }
+
+  async retrySandbox(team: Id, size: { cpus: number; memory: string }): Promise<SandboxStatus> {
+    const machine = machineName(team);
+    this.faults.delete(machine);
+    this.attempts.delete(machine);
+    this.lastLogged.delete(machine);
+    try {
+      await this.bootWithRecovery(machine);
+    } catch {
+      // faults will be updated if it fails
+    }
+    return this.inspectSandbox(team, size);
   }
 
   /**
@@ -225,8 +378,23 @@ export class AppleMachines implements MachineProvider {
     if (!/^[a-z0-9-]{1,32}$/.test(team)) throw new Error(`not a team id: ${team}`);
     const machine = machineName(team);
     const defaultSignedIn = { claude: false, antigravity: false, codex: false, github: false };
+    const fault = this.faults.get(machine);
 
-    const listing = await this.exec(this.s.bin, ["machine", "ls"]);
+    let listing = "";
+    try {
+      listing = await this.exec(this.s.bin, ["machine", "ls"]);
+    } catch {
+      return {
+        team,
+        machine,
+        state: "error",
+        cpus: size.cpus,
+        memory: size.memory,
+        signedIn: defaultSignedIn,
+        ...(fault ? { reason: fault.reason, kind: fault.kind, retryAt: fault.retryAt } : {}),
+      };
+    }
+
     const lines = listing
       .split("\n")
       .slice(1)
@@ -244,7 +412,12 @@ export class AppleMachines implements MachineProvider {
       };
     }
 
-    const state: "running" | "stopped" = entry.includes("running") ? "running" : "stopped";
+    const inFault = Boolean(fault && this.now() < fault.retryAt);
+    const state: "running" | "stopped" | "error" = inFault
+      ? "error"
+      : entry.includes("running")
+        ? "running"
+        : "stopped";
 
     let signedIn = this.signedInCache.get(machine) ?? defaultSignedIn;
     if (wallsUp(this.s) && state === "running") {
@@ -262,6 +435,7 @@ export class AppleMachines implements MachineProvider {
       cpus: size.cpus,
       memory: size.memory,
       signedIn,
+      ...(fault && inFault ? { reason: fault.reason, kind: fault.kind, retryAt: fault.retryAt } : {}),
     };
   }
 

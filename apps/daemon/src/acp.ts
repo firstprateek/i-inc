@@ -257,15 +257,15 @@ export class AcpAgent implements Agent {
         clientInfo: { name: "i.inc", version: "0.1.0" },
       });
       if (init.error)
-        return stuck(`the ${r.engine.harness} ACP server didn't start: ${upstreamReason(init.error)}`);
+        return stuck(`the ${r.engine.harness} ACP server didn't start: ${upstreamReason(init.error)}`, true);
 
       const created = await rpc.request("session/new", { cwd: this.o.cwdFor(r.ticket.id), mcpServers: [] });
       if (created.error) {
         const e = created.error as Json;
         // "Authentication required": sign-ins need the owner (spec §5), so the switch rules take over.
         if (e.code === -32000)
-          return stuck(`${r.engine.harness} needs a sign-in in ${r.employee.name}'s machine`);
-        return stuck(`${r.engine.harness} couldn't open a session: ${upstreamReason(e)}`);
+          return stuck(`${r.engine.harness} needs a sign-in in ${r.employee.name}'s machine`, true);
+        return stuck(`${r.engine.harness} couldn't open a session: ${upstreamReason(e)}`, true);
       }
       const session = (created.result ?? {}) as Json;
       const sessionId = String(session.sessionId);
@@ -322,7 +322,7 @@ export class AcpAgent implements Agent {
             (choices) => choices.find((choice) => bypassMode.test(choice.value))?.value,
           );
         } catch (e) {
-          return stuck(e instanceof Error ? e.message : String(e));
+          return stuck(e instanceof Error ? e.message : String(e), true);
         }
       } else {
         const modes = (((session.modes as Json | undefined)?.availableModes ?? []) as Json[]).map((m) =>
@@ -386,7 +386,12 @@ export class AcpAgent implements Agent {
       if (!output) return stuck("the session ended without an answer");
       return { kind: "done", output };
     } catch (e) {
-      return stuck(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      const isStartup =
+        /didn't start|needs a sign-in|exited \(\d+\)|couldn't open a session|Authentication required/i.test(
+          msg,
+        );
+      return stuck(msg, isStartup);
     } finally {
       flushText();
       rpc.close();
@@ -394,8 +399,8 @@ export class AcpAgent implements Agent {
   }
 }
 
-function stuck(reason: string): SessionOutcome {
-  return { kind: "stuck", reason };
+function stuck(reason: string, startup?: boolean): SessionOutcome {
+  return { kind: "stuck", reason, ...(startup ? { startup: true } : {}) };
 }
 
 function message(e: unknown): string {
