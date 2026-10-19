@@ -150,6 +150,58 @@ describe("owner signup and login API", () => {
   });
 });
 
+describe("POST /api/employees team assignment", () => {
+  const hire = { name: "Nell", duties: ["build"], engines: { default: "opus", fallbacks: [] } };
+
+  it("assigns a new hire to the requested team and removes stale membership elsewhere", async () => {
+    const app = await testApp();
+    await app.call("PUT", "/api/teams/old", { name: "Old", members: ["ada"] });
+    await app.call("PUT", "/api/teams/target", { name: "Target", members: [] });
+    app.deps.registry.addTeam({ id: "stale", name: "Stale", members: ["nell"] });
+
+    const res = await app.call("POST", "/api/employees", { ...hire, teamId: "target" });
+    expect(res.status).toBe(201);
+    const teams = (await app.call("GET", "/api/teams")).body.teams;
+    expect(teams.find((team: { id: string }) => team.id === "target").members).toContain("nell");
+    expect(teams.find((team: { id: string }) => team.id === "stale").members).not.toContain("nell");
+    expect(app.deps.registry.teamOf("nell").id).toBe("target");
+  });
+
+  it("rejects an unknown team before creating the employee", async () => {
+    const app = await testApp();
+    await app.call("PUT", "/api/teams/engineering", { name: "Engineering", members: [] });
+    const res = await app.call("POST", "/api/employees", { ...hire, teamId: "missing" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("teamId must name an existing team");
+    expect(app.deps.registry.employees().some((employee) => employee.id === "nell")).toBe(false);
+  });
+
+  it("defaults to the only configured team", async () => {
+    const app = await testApp();
+    await app.call("PUT", "/api/teams/engineering", { name: "Engineering", members: [] });
+    const res = await app.call("POST", "/api/employees", hire);
+    expect(res.status).toBe(201);
+    expect(app.deps.registry.teamOf("nell").id).toBe("engineering");
+  });
+
+  it("requires a selection when multiple teams are configured", async () => {
+    const app = await testApp();
+    await app.call("PUT", "/api/teams/engineering", { name: "Engineering", members: [] });
+    await app.call("PUT", "/api/teams/design", { name: "Design", members: [] });
+    const res = await app.call("POST", "/api/employees", hire);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("choose a team before hiring");
+    expect(app.deps.registry.employees().some((employee) => employee.id === "nell")).toBe(false);
+  });
+
+  it("keeps the Company fallback when no teams exist", async () => {
+    const app = await testApp();
+    const res = await app.call("POST", "/api/employees", hire);
+    expect(res.status).toBe(201);
+    expect(app.deps.registry.teamOf("nell").id).toBe("company");
+  });
+});
+
 describe("PUT /api/employees/:id", () => {
   it("returns 404 if employee does not exist", async () => {
     const app = await testApp();
@@ -195,6 +247,48 @@ describe("PUT /api/employees/:id", () => {
     );
     expect(after.name).toBe("Ada Lovelace");
     expect(after.role).toBe("Principal Engineer");
+  });
+
+  it("moves an existing employee to another team without creating orientation", async () => {
+    const app = await testApp();
+    await app.call("PUT", "/api/teams/engineering", { name: "Engineering", members: ["ada"] });
+    await app.call("PUT", "/api/teams/product", { name: "Product", members: [] });
+    const beforeTickets = app.deps.db.all<{ count: number }>("SELECT COUNT(*) AS count FROM tickets")[0]
+      ?.count;
+
+    const res = await app.call("PUT", "/api/employees/ada", { teamId: "product" });
+    expect(res.status).toBe(200);
+    expect(app.deps.registry.teamOf("ada").id).toBe("product");
+    expect(app.deps.registry.teams().find((team) => team.id === "engineering")?.members).not.toContain("ada");
+    expect(app.deps.registry.teams().find((team) => team.id === "product")?.members).toContain("ada");
+    expect(app.deps.db.all<{ count: number }>("SELECT COUNT(*) AS count FROM tickets")[0]?.count).toBe(
+      beforeTickets,
+    );
+  });
+
+  it("rejects an unknown team without changing the employee or its current membership", async () => {
+    const app = await testApp();
+    await app.call("PUT", "/api/teams/engineering", { name: "Engineering", members: ["ada"] });
+    const before = app.deps.registry.employee("ada");
+    const beforeTickets = app.deps.db.all<{ count: number }>("SELECT COUNT(*) AS count FROM tickets")[0]
+      ?.count;
+
+    const res = await app.call("PUT", "/api/employees/ada", { name: "Changed", teamId: "missing" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("teamId must name an existing team");
+    expect(app.deps.registry.employee("ada")).toEqual(before);
+    expect(app.deps.registry.teamOf("ada").id).toBe("engineering");
+    expect(app.deps.db.all<{ count: number }>("SELECT COUNT(*) AS count FROM tickets")[0]?.count).toBe(
+      beforeTickets,
+    );
+  });
+
+  it("preserves team membership when an update omits teamId", async () => {
+    const app = await testApp();
+    await app.call("PUT", "/api/teams/engineering", { name: "Engineering", members: ["ada"] });
+    const res = await app.call("PUT", "/api/employees/ada", { name: "Ada Lovelace" });
+    expect(res.status).toBe(200);
+    expect(app.deps.registry.teamOf("ada").id).toBe("engineering");
   });
 
   it("validates employee updates with hiringProblems", async () => {

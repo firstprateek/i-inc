@@ -29,7 +29,11 @@ const ada: Employee = {
 
 let calls: { method: string; url: string; body: unknown }[] = [];
 
-function serve(team: Employee[] = [ada], failEmployees = false) {
+function serve(
+  team: Employee[] = [ada],
+  failEmployees = false,
+  configuredTeams: { id: string; name: string; members: string[] }[] = [],
+) {
   calls = [];
   const createdEngines: Engine[] = [];
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
@@ -49,6 +53,7 @@ function serve(team: Employee[] = [ada], failEmployees = false) {
       return json({ engine: saved });
     }
     if (url === "/api/accounts") return json({ accounts, rateLimits: {} });
+    if (url === "/api/teams") return json({ teams: configuredTeams });
     if (url === "/api/employees" && (init?.method ?? "GET") === "GET")
       return failEmployees ? json({ error: "nope" }, 500) : json({ employees: team });
     return json({ ok: true });
@@ -223,6 +228,49 @@ describe("hiring", () => {
     expect(ids).toEqual(["", "qwen"]);
   });
 
+  it("defaults to the only team and sends its id with the hire", async () => {
+    serve([ada], false, [{ id: "engineering", name: "Engineering", members: ["ada"] }]);
+    const root = await mount();
+    const team = root.querySelector('select[aria-label="Team"]') as HTMLSelectElement;
+    expect(team.value).toBe("engineering");
+    expect(team.disabled).toBe(true);
+    const name = root.querySelector('input[type="text"]') as HTMLInputElement;
+    name.value = "Nell";
+    name.dispatchEvent(new Event("input"));
+    await pick(root, selects(root).find((select) => select !== team) as HTMLSelectElement, "opus");
+    await submit(root);
+    expect(calls.find((call) => call.method === "POST")?.body).toMatchObject({ teamId: "engineering" });
+    expect(team.getAttribute("aria-label")).toBe("Team");
+  });
+
+  it("requires a team selection when multiple teams are available", async () => {
+    serve([ada], false, [
+      { id: "engineering", name: "Engineering", members: [] },
+      { id: "design", name: "Design", members: [] },
+    ]);
+    const root = await mount();
+    const team = root.querySelector('select[aria-label="Team"]') as HTMLSelectElement;
+    expect(team).toBeTruthy();
+    expect(team.value).toBe("");
+    expect(root.querySelector('option[value=""]')?.textContent).toBe("Choose a team");
+    const name = root.querySelector('input[type="text"]') as HTMLInputElement;
+    name.value = "Nell";
+    name.dispatchEvent(new Event("input"));
+    await pick(root, selects(root).find((select) => select !== team) as HTMLSelectElement, "opus");
+    const submitButton = root.querySelector('.submit button[type="submit"]') as HTMLButtonElement;
+    expect(submitButton.disabled).toBe(true);
+    await pick(root, team, "design");
+    expect(submitButton.disabled).toBe(false);
+    await submit(root);
+    expect(calls.find((call) => call.method === "POST")?.body).toMatchObject({ teamId: "design" });
+  });
+
+  it("does not show the team picker when there are no configured teams", async () => {
+    serve();
+    const root = await mount();
+    expect(root.querySelector('select[aria-label="Team"]')).toBeNull();
+  });
+
   it("works when the team can't be fetched", async () => {
     serve([], true);
     const root = await mount();
@@ -269,6 +317,24 @@ describe("editing someone's engines", () => {
       },
     });
     expect(location.hash).toBe("#/office");
+  });
+
+  it("preselects the current team and sends the new team when editing", async () => {
+    serve([ada], false, [
+      { id: "engineering", name: "Engineering", members: ["ada"] },
+      { id: "product", name: "Product", members: [] },
+    ]);
+    const root = await mount("ada");
+    const team = root.querySelector('select[aria-label="Team"]') as HTMLSelectElement;
+    expect(team.value).toBe("engineering");
+    await pick(root, team, "product");
+    await submit(root);
+    expect(
+      calls.find((call) => call.method === "PUT" && call.url === "/api/employees/ada")?.body,
+    ).toMatchObject({
+      teamId: "product",
+    });
+    expect(calls.some((call) => call.method === "POST" && call.url === "/api/employees")).toBe(false);
   });
 
   it("clears a duty back to the default", async () => {

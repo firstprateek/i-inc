@@ -153,6 +153,28 @@ export class Registry implements Company {
   addTeam(t: Team): void {
     this.put("team", t.id, t);
   }
+  /** Saves team membership with the same one-team-at-a-time rule as the setup API. */
+  setTeam(t: Team): void {
+    this.db.transaction(() => this.setTeamInTransaction(t));
+  }
+  /** Saves an employee and assigns them in one transaction, without a Company fallback. */
+  saveEmployeeInTeam(e: Employee, teamId: Id): void {
+    this.db.transaction(() => {
+      this.hire(e);
+      const team = this.teams().find((candidate) => candidate.id === teamId);
+      if (!team) throw new Error(`no team ${teamId}`);
+      this.setTeamInTransaction({ ...team, members: [...team.members.filter((id) => id !== e.id), e.id] });
+    });
+  }
+  private setTeamInTransaction(team: Team): void {
+    const members = new Set(team.members);
+    for (const other of this.teams()) {
+      if (other.id !== team.id && other.members.some((member) => members.has(member))) {
+        this.addTeam({ ...other, members: other.members.filter((member) => !members.has(member)) });
+      }
+    }
+    this.addTeam(team);
+  }
   teams(): Team[] {
     return this.list<Team>("team");
   }

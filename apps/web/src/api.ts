@@ -186,9 +186,10 @@ export const api = {
   answer: (id: string, answer: "approve" | "reject" | "builder" | "reviewer", note?: string) =>
     call("POST", `/api/tickets/${id}/answer`, note ? { answer, note } : { answer }),
   engines: () => call<{ engines: Engine[] }>("GET", "/api/engines").then((r) => r.engines),
-  hire: (e: Partial<Employee>) => call<{ employee: Employee }>("POST", "/api/employees", e),
+  hire: (e: Partial<Employee> & { teamId?: string }) =>
+    call<{ employee: Employee }>("POST", "/api/employees", e),
   employees: () => call<{ employees: Employee[] }>("GET", "/api/employees").then((r) => r.employees),
-  updateEmployee: (id: string, e: Partial<Employee>) =>
+  updateEmployee: (id: string, e: Partial<Employee> & { teamId?: string }) =>
     call<{ employee: Employee }>("PUT", `/api/employees/${encodeURIComponent(id)}`, e),
   teams: () =>
     call<{ teams: { id: string; name: string; members: (string | { id: string; name?: string })[] }[] }>(
