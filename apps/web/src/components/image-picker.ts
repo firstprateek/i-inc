@@ -128,15 +128,22 @@ export class ImagePicker implements ReactiveController {
       }} />`;
   }
 
-  /** The picked images, each with a way to remove it. */
-  thumbs() {
+  /**
+   * The picked images, each with a way to remove it. Compact (for the chat composer) puts a small
+   * remove button beside each image, so the strip doesn't crowd out the conversation on a phone.
+   */
+  thumbs(o: { compact?: boolean } = {}) {
     return this.images.length
-      ? html`<ul class="thumbs">
+      ? html`<ul class="thumbs ${o.compact ? "compact" : ""}">
           ${this.images.map(
             (p) => html`<li>
               <img src=${p.url} alt=${p.file.name} />
-              <button type="button" class="btn ghost" aria-label="Remove ${p.file.name}"
-                @click=${() => this.remove(p)}>Remove</button>
+              <button type="button" class=${o.compact ? "remove" : "btn ghost"} aria-label="Remove ${p.file.name}"
+                @click=${() => this.remove(p)}>${
+                  o.compact
+                    ? html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg>`
+                    : "Remove"
+                }</button>
             </li>`,
           )}
         </ul>`
@@ -167,4 +174,12 @@ export const imagePickerStyles = css`
   .thumbs li { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
   .thumbs img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); }
   .thumbs .btn { min-height: 44px; width: 100%; }
+  .thumbs.compact { display: flex; flex-wrap: wrap; gap: 8px 14px; }
+  .thumbs.compact li { flex-direction: row; align-items: center; gap: 2px; }
+  .thumbs.compact img { width: 64px; height: 64px; }
+  .thumbs .remove { flex: none; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: none;
+    display: grid; place-items: center; cursor: pointer; color: var(--ink-2); }
+  .thumbs .remove:hover { background: var(--sunken); color: var(--ink); }
+  .thumbs .remove:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
+  .thumbs .remove svg { width: 20px; height: 20px; }
 `;

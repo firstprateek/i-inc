@@ -617,7 +617,6 @@ export class IncChat extends LitElement {
       /* Images picked for the current ticket, above the message field. */
       .attach { padding: 12px max(16px, calc((100% - 760px) / 2)) 0; display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: var(--ink-2); }
       .attach .for b { color: var(--ink); }
-      .attach .thumbs { grid-template-columns: repeat(auto-fill, minmax(88px, 104px)); }
       .attach .problem { margin: 0; color: var(--alarm-fg, #8a2b17); }
       .add-images { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 44px; height: 44px; padding: 0; border-radius: 50%; }
       .add-images svg { width: 22px; height: 22px; display: block; }
@@ -751,7 +750,7 @@ export class IncChat extends LitElement {
     const name = (this.threads ?? []).find((t) => t.id === this.employeeId)?.name ?? "They";
     return html`<div class="attach" role="group" aria-label="Images for #${c.id}">
       <span class="for"><b>For #${c.id}</b> ${c.title} · ${name} sees them at their next session.</span>
-      ${this.picker.thumbs()}
+      ${this.picker.thumbs({ compact: true })}
       ${this.picker.problem ? html`<p class="problem" role="alert">${this.picker.problem}</p>` : ""}
     </div>`;
   }

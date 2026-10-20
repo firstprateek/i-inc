@@ -124,6 +124,11 @@ describe("images with a chat message", () => {
     expect(problem).toContain("IMG_0042.HEIC is a HEIC photo, which a ticket can't take.");
     expect(problem).toContain("huge.png is over 10 MB.");
     expect(thumbs(r)).toEqual(["screenshot-1.png"]);
+
+    (r.querySelector('[aria-label="Remove screenshot-1.png"]') as HTMLButtonElement).click();
+    await el.updateComplete;
+    expect(thumbs(r)).toEqual([]);
+    expect(sendButton(r).disabled).toBe(true);
   });
 
   it("takes no more than the ticket has room for", async () => {
