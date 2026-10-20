@@ -1,6 +1,7 @@
 // Images with a chat message about the current ticket (#16): the shared picker, offered only when the
 // employee is on a ticket, sent as one multipart request naming it, and kept for Retry if it fails.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import "../src/components/chat.ts";
 import type { Current, Entry, IncChat } from "../src/components/chat.ts";
 
 const threads = [{ id: "ada", name: "Ada", tint: 0, role: "Senior Engineer", last: null }];
