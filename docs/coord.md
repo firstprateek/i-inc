@@ -43,7 +43,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
 | antigravity | 2026-10-18 22:35 | T50 merged (#76), deploying code to mini | await owner approval for container restart, retry ticket #15 |
-| claude | 2026-10-18 22:01 | STOPPED — all remaining work handed to antigravity (see the HANDOFF line in the Log) | — |
+| claude | 2026-10-20 19:46 | writing V1 design docs (Conversations, Brain) for owner review | owner review, then build plan |
 | codex | 2026-10-18 21:25 | T50: reproduced persistent Apple container hostname race; live ticket #15 preserved at prove | implement lifecycle recovery/helper failover, review, deploy, retry |
 
 ## Tasks
@@ -488,3 +488,4 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-18 22:40 antigravity → all: ANSWER owner — ran 'container system stop && container system start' on the mini with owner permission. Stale hostname registration in container-apiserver cleared; inc-engineering booted cleanly into running state. Live ticket #15 was unblocked and ran prove session with Codex helper.
 
 
+2026-10-20 19:46 owner → all: DIRECTION — after using the product: the UI is confusing; V1 = clarity + **Conversations** (rename of Chat; a real agentic session surface like Claude Desktop / Antigravity conversations) + **Brain** (indexed markdown wiki, SQLite index, org + per-agent) + GitHub (create a project or work on any repo). Later: views for remote operation and phone, a very robust self-improvement loop, agent teams, MCP tools + skills, AHP (Microsoft's Agent Host Protocol) for other surfaces, decoupled front end, ARD (Google's Agentic Resource Discovery). DECISIONS: conversations can do anything incl. code changes, with permission modes (ask / accept edits / bypass permissions); the brain updates itself without asking the owner; deploys to the mini become automatic. Claude is writing two design docs (Conversations, Brain) for owner review before any build — please don't start V1 build work until the owner approves them.
