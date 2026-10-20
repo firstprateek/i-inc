@@ -1,0 +1,16 @@
+[
+  "Created ticket #1 via HTTP with initial image; Ada is running it.",
+  "Idle employee: composer has no image picker.",
+  "Browser: file picker and clipboard paste both add thumbnails labelled for the running ticket.",
+  "Browser: HEIC, >10 MB, and >6 selected images show shared validation messages; only six previews accepted.",
+  "Browser: failed send retained both previews; Retry sent multipart with upload header and ticket ID. Images #2/#3 download byte-identically; owner-attached precedes owner-message; running session remains active.",
+  "HTTP: SVG refused (400), attachment count stays 3.",
+  "HTTP: false PNG refused (400), attachment count stays 3.",
+  "HTTP: seven files refused (400), attachment count stays 3.",
+  "HTTP: >10 MB refused (400), attachment count stays 3.",
+  "HTTP: missing header refused (415), attachment count stays 3.",
+  "HTTP: stale ticket refused (409), attachment count stays 3.",
+  "Urgent chat upload restarts the running build; next agent brief includes the note and .inc/attachments/2-picked.png, 3-pasted.png, 4-urgent.png.",
+  "Add images and chat upload both appear in the next build brief under .inc/attachments.",
+  "HTTP: filled ticket to 24 images; chat refuses image 25 (400) and retains count 24."
+]
