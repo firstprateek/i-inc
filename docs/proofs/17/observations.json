@@ -1,0 +1,207 @@
+{
+  "transport": "HTTP daemon; real bash/git; separate filesystem roots replacing remote machine transport; scripted agent and GitHub PR service",
+  "runs": [
+    {
+      "mode": "owner-merges",
+      "ticket": "1",
+      "status": "ready",
+      "sessions": [
+        {
+          "ticket": "1",
+          "employee": "quinn",
+          "duty": "verify",
+          "machine": "/tmp/inc-17-proof-BIlcOS/verifier",
+          "paths": [".inc/attachments/1-chart.png", ".inc/attachments/2-receipt.jpg"],
+          "hashes": [
+            "6b1048f8a6d40bac0b2954c18fefa40c4ea7a96120fc2e54b7317c0e43c2bbec",
+            "182ec5026ca614a89c8f85403c15c02c56e98f8ef1c4b90440be267885b5fc8a"
+          ],
+          "clean": true,
+          "brief": "Ticket #1 [feat] Images owner-merges · owner-merges · effort medium\nAssignee: Quinn, QA\nDone when:\n- images reach review\nImages from the owner (open them):\n- .inc/attachments/1-chart.png\n- .inc/attachments/2-receipt.jpg\nStage: prove. Task: Check each done-when item against the running app, as a black box. Reply as JSON: {\"items\":[{\"doneWhen\",\"pass\",\"evidence\"}]}.\nBranch: inc/1-images-owner-merges, with draft PR https://github.com/fixture/repo/pull/1. Check it out in your machine; don't push to it.\nPlan:\nApproach: change the sorter and add a test that reproduces the bug.\nStages done: pickup, plan, build, checks\nThe last check run passed."
+        },
+        {
+          "ticket": "1",
+          "employee": "kit",
+          "duty": "review",
+          "machine": "/tmp/inc-17-proof-BIlcOS/reviewer",
+          "paths": [".inc/attachments/1-chart.png", ".inc/attachments/2-receipt.jpg"],
+          "hashes": [
+            "6b1048f8a6d40bac0b2954c18fefa40c4ea7a96120fc2e54b7317c0e43c2bbec",
+            "182ec5026ca614a89c8f85403c15c02c56e98f8ef1c4b90440be267885b5fc8a"
+          ],
+          "clean": true,
+          "brief": "Ticket #1 [feat] Images owner-merges · owner-merges · effort medium\nAssignee: Kit, Senior Engineer\nDone when:\n- images reach review\nImages from the owner (open them):\n- .inc/attachments/1-chart.png\n- .inc/attachments/2-receipt.jpg\nStage: review. Task: Check out the branch in your machine and run it. Reply as JSON: {\"approved\": boolean, \"findings\":[{\"severity\":\"blocking\"|\"should-fix\"|\"nit\",\"where\",\"text\"}]}, checking the builder's claims against the diff.\nBranch: inc/1-images-owner-merges, with draft PR https://github.com/fixture/repo/pull/1. Check it out in your machine; don't push to it.\nPlan:\nApproach: change the sorter and add a test that reproduces the bug.\nStages done: pickup, plan, build, checks, prove\nThe last check run passed."
+        }
+      ],
+      "events": [
+        {
+          "type": "attachments-copied",
+          "at": 1792470686919,
+          "employeeId": "ada",
+          "upTo": 2
+        },
+        {
+          "type": "session-started",
+          "at": 1792470686920,
+          "stage": "plan",
+          "employeeId": "ada",
+          "engineId": "opus",
+          "resume": false
+        },
+        {
+          "type": "session-started",
+          "at": 1792470686920,
+          "stage": "build",
+          "employeeId": "ada",
+          "engineId": "opus",
+          "resume": false
+        },
+        {
+          "type": "attachments-copied",
+          "at": 1792470686938,
+          "employeeId": "quinn",
+          "upTo": 2
+        },
+        {
+          "type": "session-started",
+          "at": 1792470686938,
+          "stage": "prove",
+          "employeeId": "quinn",
+          "engineId": "flash",
+          "resume": false
+        },
+        {
+          "type": "attachments-copied",
+          "at": 1792470686957,
+          "employeeId": "kit",
+          "upTo": 2
+        },
+        {
+          "type": "session-started",
+          "at": 1792470686957,
+          "stage": "review",
+          "employeeId": "kit",
+          "engineId": "sonnet",
+          "resume": false
+        },
+        {
+          "type": "session-started",
+          "at": 1792470686958,
+          "stage": "report",
+          "employeeId": "ada",
+          "engineId": "opus",
+          "resume": false
+        }
+      ]
+    },
+    {
+      "mode": "direct",
+      "ticket": "2",
+      "status": "done",
+      "sessions": [
+        {
+          "ticket": "2",
+          "employee": "quinn",
+          "duty": "verify",
+          "machine": "/tmp/inc-17-proof-BIlcOS/verifier",
+          "paths": [".inc/attachments/1-chart.png", ".inc/attachments/2-receipt.jpg"],
+          "hashes": [
+            "6b1048f8a6d40bac0b2954c18fefa40c4ea7a96120fc2e54b7317c0e43c2bbec",
+            "182ec5026ca614a89c8f85403c15c02c56e98f8ef1c4b90440be267885b5fc8a"
+          ],
+          "clean": null,
+          "brief": "Ticket #2 [feat] Images direct · direct · effort medium\nAssignee: Quinn, QA\nDone when:\n- images reach review\nImages from the owner (open them):\n- .inc/attachments/1-chart.png\n- .inc/attachments/2-receipt.jpg\nStage: prove. Task: Check each done-when item against the running app, as a black box. Reply as JSON: {\"items\":[{\"doneWhen\",\"pass\",\"evidence\"}]}.\nBranch: inc/2-images-direct, local, in this folder. Commit to it, but don't push: after a review, i.inc pushes it to main.\nPlan:\nApproach: change the sorter and add a test that reproduces the bug.\nStages done: pickup, plan, build, checks\nThe last check run passed."
+        },
+        {
+          "ticket": "2",
+          "employee": "kit",
+          "duty": "review",
+          "machine": "/tmp/inc-17-proof-BIlcOS/reviewer",
+          "paths": [".inc/attachments/1-chart.png", ".inc/attachments/2-receipt.jpg"],
+          "hashes": [
+            "6b1048f8a6d40bac0b2954c18fefa40c4ea7a96120fc2e54b7317c0e43c2bbec",
+            "182ec5026ca614a89c8f85403c15c02c56e98f8ef1c4b90440be267885b5fc8a"
+          ],
+          "clean": null,
+          "brief": "Ticket #2 [feat] Images direct · direct\nDone when:\n- images reach review\nImages from the owner (open them):\n- .inc/attachments/1-chart.png\n- .inc/attachments/2-receipt.jpg\nStage: review. Task: Review this change with fresh eyes. It's the diff of this folder against main: `git diff origin/main`, committed or not. Run what you need, but don't change any files. Reply as JSON: {\"approved\": boolean, \"findings\":[{\"severity\":\"blocking\"|\"should-fix\"|\"nit\",\"where\",\"text\"}]}."
+        }
+      ],
+      "events": [
+        {
+          "type": "attachments-copied",
+          "at": 1792470687013,
+          "employeeId": "ada",
+          "upTo": 2
+        },
+        {
+          "type": "session-started",
+          "at": 1792470687013,
+          "stage": "plan",
+          "employeeId": "ada",
+          "engineId": "opus",
+          "resume": false
+        },
+        {
+          "type": "session-started",
+          "at": 1792470687014,
+          "stage": "build",
+          "employeeId": "ada",
+          "engineId": "opus",
+          "resume": false
+        },
+        {
+          "type": "attachments-copied",
+          "at": 1792470687018,
+          "employeeId": "quinn",
+          "upTo": 2
+        },
+        {
+          "type": "session-started",
+          "at": 1792470687018,
+          "stage": "prove",
+          "employeeId": "quinn",
+          "engineId": "flash",
+          "resume": false
+        },
+        {
+          "type": "attachments-copied",
+          "at": 1792470687023,
+          "employeeId": "kit",
+          "upTo": 2
+        },
+        {
+          "type": "session-started",
+          "at": 1792470687023,
+          "stage": "review",
+          "employeeId": "kit",
+          "engineId": "sonnet",
+          "resume": false
+        },
+        {
+          "type": "session-started",
+          "at": 1792470687023,
+          "stage": "report",
+          "employeeId": "ada",
+          "engineId": "opus",
+          "resume": false
+        },
+        {
+          "type": "session-started",
+          "at": 1792470687024,
+          "stage": "retro",
+          "employeeId": "ada",
+          "engineId": "opus",
+          "resume": false
+        },
+        {
+          "type": "session-started",
+          "at": 1792470687024,
+          "stage": "retro",
+          "employeeId": "kit",
+          "engineId": "sonnet",
+          "resume": false
+        }
+      ]
+    }
+  ]
+}
