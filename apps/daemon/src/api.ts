@@ -906,6 +906,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         return json({
           employee: { id: e.id, name: e.name, tint: e.tint ?? 0, role: e.role },
           entries: d.chatLog.thread(e.id),
+          current: currentView((await workOf(e)).current),
         });
       },
     ],
@@ -916,9 +917,13 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       async (req, p) => {
         const e = d.registry.employees().find((x) => x.id === p.id);
         if (!e) return json({ error: "no such employee" }, 404);
-        const { text, urgent } = (await req.json()) as { text?: string; urgent?: boolean };
-        if (!text?.trim()) return json({ error: "say something" }, 400);
-        const said = text.trim();
+        const message = await readMessage(req);
+        if ("error" in message) return json({ error: message.error }, message.status);
+        const { text, urgent, ticket, images } = message;
+        const said = text?.trim() ?? "";
+        if (!said && !images.length) return json({ error: "say something" }, 400);
+        const { mine, current } = await workOf(e);
+        if (images.length) return imageNote(e, current, { said, urgent, ticket, images });
         d.chatLog.add(
           e.id,
           urgent
@@ -926,15 +931,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
             : { from: "owner", at: d.clock.now(), text: said },
         );
 
-        // What the employee is on now, and a few notes from its recent tickets.
-        const mine = [];
-        for (const r of d.tickets.all()) {
-          const s = fold(await d.store.read(r.ticket.id));
-          if ((s.assignee ?? r.ticket.assignee) === e.id) mine.push({ r, s });
-        }
-        const current = mine.find(
-          ({ s }) => s.created && ["running", "paused", "needs-you"].includes(s.status),
-        );
+        // A few notes from its recent tickets.
         const notes = mine
           .slice(-3)
           .map(
@@ -1003,7 +1000,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           });
         }
         if (out.kind === "unavailable") d.chatLog.add(e.id, { from: "system", at, text: out.reason });
-        return json({ entries: d.chatLog.thread(e.id) });
+        return json({ entries: d.chatLog.thread(e.id), current: currentView((await workOf(e)).current) });
       },
     ],
 
@@ -1530,6 +1527,73 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     return id && d.registry.employees().some((e) => e.id === id) ? { kind: "brain", id } : null;
   }
 
+  /** The employee's tickets, oldest first, and the one it is on now (running, paused or waiting on the owner). */
+  async function workOf(e: Employee) {
+    const mine = [];
+    for (const r of d.tickets.all()) {
+      const s = fold(await d.store.read(r.ticket.id));
+      if ((s.assignee ?? r.ticket.assignee) === e.id) mine.push({ r, s });
+    }
+    const current = mine.find(({ s }) => s.created && ["running", "paused", "needs-you"].includes(s.status));
+    return { mine, current };
+  }
+
+  /** What the chat composer needs to know about the current ticket: where images would go, and the room left. */
+  function currentView(c: Awaited<ReturnType<typeof workOf>>["current"]) {
+    if (!c) return null;
+    const { id, title, attachments } = c.r.ticket;
+    return { id, title, images: attachments?.length ?? 0 };
+  }
+
+  /**
+   * A chat message with images (#16). The composer said which ticket they're for, so it skips the
+   * helper and goes to that ticket as a note, the same way "Add images" and a note each would.
+   */
+  async function imageNote(
+    e: Employee,
+    current: Awaited<ReturnType<typeof workOf>>["current"],
+    m: { said: string; urgent: boolean; ticket: Id | undefined; images: NewAttachment[] },
+  ): Promise<Response> {
+    if (!current || current.r.ticket.id !== m.ticket) {
+      const error = current
+        ? `${e.name} is on #${current.r.ticket.id} now, not #${m.ticket ?? "?"}`
+        : `${e.name} isn't on a ticket now`;
+      return json({ error, current: currentView(current) }, 409);
+    }
+    const id = current.r.ticket.id;
+    const problem = roomFor(id, m.images.length);
+    if (problem) return json({ error: problem }, 400);
+    // The images come first, so a session that starts on the note has them.
+    const attachments = await attachImages(id, m.images);
+    const at = d.clock.now();
+    d.chatLog.add(e.id, {
+      from: "owner",
+      at,
+      text: m.said,
+      ...(m.urgent ? { urgent: true } : {}),
+      images: { ticketId: id, ns: attachments.map((a) => a.n) },
+    });
+    if (m.said) {
+      await d.store.append(id, [
+        m.urgent
+          ? { type: "owner-message", at, text: m.said, urgent: true }
+          : { type: "owner-message", at, text: m.said },
+      ]);
+    }
+    const stopped = m.urgent && daemon.interrupt(id, e.id);
+    const these = attachments.length === 1 ? "the image" : `the ${attachments.length} images`;
+    d.chatLog.add(e.id, {
+      from: "system",
+      at,
+      text: stopped
+        ? `${e.name} stopped to read this, and carries on from there.`
+        : m.urgent || !m.said
+          ? `${e.name} will see ${m.said ? `this and ${these}` : these} when their next session starts.`
+          : `${e.name} will see ${these} when their next session starts, and this at the next stage boundary.`,
+    });
+    return json({ entries: d.chatLog.thread(e.id), current: currentView((await workOf(e)).current) });
+  }
+
   /** Why a ticket can't take `count` more images, or null when it can. */
   function roomFor(id: Id, count: number): string | null {
     const has = d.tickets.get(id)?.ticket.attachments?.length ?? 0;
@@ -1745,8 +1809,8 @@ function match(pattern: string, path: string): Record<string, string> | null {
 /** The images a ticket may carry: `count` per request (#12), `perTicket` in all (#15). */
 export const imageLimits = { count: 6, bytes: 10 * 1024 * 1024, perTicket: 24 };
 
-/** The paths that take images: a new ticket, more for one, and a "Not quite" reply. */
-const uploadPaths = /^\/api\/tickets(?:\/[A-Za-z0-9_-]+\/(?:attachments|decide))?$/;
+/** The paths that take images: a new ticket, more for one, a "Not quite" reply, and a chat message. */
+const uploadPaths = /^\/api\/(?:tickets(?:\/[A-Za-z0-9_-]+\/(?:attachments|decide))?|chat\/[A-Za-z0-9_-]+)$/;
 
 const isMultipart = (req: Request) =>
   (req.headers.get("content-type") ?? "").startsWith("multipart/form-data");
@@ -1808,6 +1872,37 @@ async function readImages(form: FormData): Promise<NewAttachment[] | Refused> {
     images.push({ name: f.name, mime, data });
   }
   return images;
+}
+
+/** A chat message as JSON, or as a `message` JSON field (naming the ticket) and up to six `image` files. */
+async function readMessage(
+  req: Request,
+): Promise<{ text?: string; urgent: boolean; ticket?: Id; images: NewAttachment[] } | Refused> {
+  type Body = { text?: unknown; urgent?: unknown; ticket?: unknown };
+  let body: Body;
+  let images: NewAttachment[] = [];
+  if (isMultipart(req)) {
+    const upload = await readUpload(req);
+    if ("error" in upload) return upload;
+    const raw = upload.form.get("message");
+    try {
+      body = JSON.parse(typeof raw === "string" ? raw : "") as Body;
+    } catch {
+      return { error: "the message field must be JSON", status: 400 };
+    }
+    const read = await readImages(upload.form);
+    if ("error" in read) return read;
+    images = read;
+  } else {
+    body = (await req.json()) as Body;
+  }
+  if (typeof body !== "object" || body === null) return { error: "send a JSON object", status: 400 };
+  return {
+    ...(typeof body.text === "string" ? { text: body.text } : {}),
+    urgent: body.urgent === true,
+    ...(typeof body.ticket === "string" ? { ticket: body.ticket } : {}),
+    images,
+  };
 }
 
 /** A new ticket as JSON, or as a `ticket` JSON field and up to six `image` files. */

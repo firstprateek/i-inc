@@ -3,7 +3,14 @@ import type { Id } from "@i-inc/core";
 import type { Db } from "./db.ts";
 
 export type ChatEntry =
-  | { from: "owner"; at: number; text: string; urgent?: boolean }
+  | {
+      from: "owner";
+      at: number;
+      text: string;
+      urgent?: boolean;
+      /** Images sent with the message (#16): stored on that ticket, as its numbers. */
+      images?: { ticketId: Id; ns: number[] };
+    }
   | { from: "employee"; at: number; text: string }
   | {
       from: "employee";

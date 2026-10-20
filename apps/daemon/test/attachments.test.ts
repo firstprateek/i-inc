@@ -1,6 +1,7 @@
 // Images on a new ticket (#12): one multipart request, checked by their leading bytes, stored with the
 // ticket and served back behind the owner's auth. Images added to it later, or with a "Not quite"
-// reply (#15), get the same checks and reach the builder's next session.
+// reply (#15), or with a chat message about the current ticket (#16), get the same checks and reach
+// the builder's next session.
 import { describe, expect, it } from "vitest";
 import { createApi, sniffImage } from "../src/api.ts";
 import { safeName } from "../src/tickets.ts";
@@ -336,6 +337,156 @@ describe("images with a 'Not quite' reply", () => {
     const r = await gate.send(`/api/tickets/${gate.id}/decide`, one, as({ decision: "changes" }));
     expect(r).toEqual({ status: 409, body: { error: `ticket ${gate.id} is needs-you, not ready` } });
     expect(gate.app.deps.tickets.attachments(gate.id)).toHaveLength(1);
+  });
+});
+
+describe("images with a chat message", () => {
+  /** A ticket with one image whose build session hangs, so Ada is on it now. */
+  async function building() {
+    const g = await guarded();
+    g.app.agent.on({ stage: "build" }, { kind: "hang" });
+    const r = await g.upload([{ data: png, name: "chart.png" }]);
+    const id = (r.body.ticket as { id: string }).id;
+    while (!g.app.agent.callsFor("ada", "build").length) await new Promise((res) => setTimeout(res, 0));
+    g.app.clock.advance(1);
+    const say = (
+      files: { data: Uint8Array; name: string }[],
+      message: Record<string, unknown> = {},
+      headers: Record<string, string> = {},
+    ) =>
+      g.send("/api/chat/ada", files, {
+        fields: { message: JSON.stringify({ ticket: id, ...message }) },
+        headers,
+      });
+    return { ...g, id, say };
+  }
+
+  it("stores the images on the running ticket with the note, without stopping its session", async () => {
+    const { app, id, say, get } = await building();
+    expect((await (await get("/api/chat/ada")).json()).current).toEqual({
+      id,
+      title: refunds.title,
+      images: 1,
+    });
+
+    const r = await say([{ data: jpeg, name: "receipt.jpeg" }], { text: "Match this receipt" });
+    expect(r.status).toBe(200);
+    expect(app.deps.tickets.get(id)?.ticket.attachments?.map((a) => a.name)).toEqual([
+      "chart.png",
+      "receipt.jpg",
+    ]);
+    const events = await app.deps.store.read(id);
+    const kinds = events.map((e) => e.type);
+    expect(kinds.slice(-2)).toEqual(["owner-attached", "owner-message"]);
+    expect(events.at(-1)).toMatchObject({ type: "owner-message", text: "Match this receipt" });
+    expect(app.helper.asked).toEqual([]);
+    expect(app.agent.callsFor("ada", "build")).toHaveLength(1);
+
+    const entries = r.body.entries as Record<string, unknown>[];
+    expect(entries.at(-2)).toMatchObject({
+      from: "owner",
+      text: "Match this receipt",
+      images: { ticketId: id, ns: [2] },
+    });
+    expect(entries.at(-1)).toMatchObject({
+      from: "system",
+      text: "Ada will see the image when their next session starts, and this at the next stage boundary.",
+    });
+    expect(r.body.current).toEqual({ id, title: refunds.title, images: 2 });
+
+    // The session ends (here the owner stops it); the next one has the image.
+    app.daemon.interrupt(id, "ada");
+    await app.daemon.idle();
+    expect(app.agent.callsFor("ada", "build")[1]?.brief).toContain(
+      "The owner added images since your last session (open them):\n- .inc/attachments/2-receipt.jpg",
+    );
+  });
+
+  it("stops the session for an urgent message, and the next brief has the note and the image", async () => {
+    const { app, say } = await building();
+    const r = await say([{ data: jpeg, name: "wanted.jpg" }], { text: "Use this layout", urgent: true });
+    expect((r.body.entries as { text: string }[]).at(-1)?.text).toBe(
+      "Ada stopped to read this, and carries on from there.",
+    );
+    await app.daemon.idle();
+    const builds = app.agent.callsFor("ada", "build");
+    expect(builds).toHaveLength(2);
+    expect(builds[1]?.brief).toContain("- Use this layout");
+    expect(builds[1]?.brief).toContain(".inc/attachments/2-wanted.jpg");
+  });
+
+  it("takes images with no text, and records no note", async () => {
+    const { app, id, say } = await building();
+    const r = await say([
+      { data: png, name: "a.png" },
+      { data: png, name: "b.png" },
+    ]);
+    expect(r.status).toBe(200);
+    expect((r.body.entries as { text: string }[]).slice(-2)).toMatchObject([
+      { from: "owner", text: "", images: { ticketId: id, ns: [2, 3] } },
+      { from: "system", text: "Ada will see the 2 images when their next session starts." },
+    ]);
+    expect((await app.deps.store.read(id)).map((e) => e.type)).not.toContain("owner-message");
+  });
+
+  it.each([
+    ["an SVG", [{ data: svg, name: "x.svg" }], /isn't a PNG/],
+    ["a file whose bytes aren't its type", [{ data: svg, name: "x.png" }], /isn't a PNG/],
+    ["more than six at a time", Array.from({ length: 7 }, () => ({ data: png, name: "a.png" })), /at most 6/],
+    ["an image over 10 MB", [{ data: new Uint8Array(10 * 1024 * 1024 + 1), name: "big.png" }], /over 10 MB/],
+  ])("refuses %s and stores nothing", async (_what, files, error) => {
+    const { app, id, say } = await building();
+    const before = app.deps.chatLog.thread("ada").length;
+    const r = await say(files, { text: "see this" });
+    expect(r.status).toBe(400);
+    expect(String(r.body.error)).toMatch(error);
+    expect(app.deps.tickets.attachments(id)).toHaveLength(1);
+    expect(app.deps.chatLog.thread("ada")).toHaveLength(before);
+  });
+
+  it("stops at 24 images on the ticket", async () => {
+    const { app, id, send, say } = await building();
+    const six = Array.from({ length: 6 }, () => ({ data: png, name: "a.png" }));
+    for (let i = 0; i < 3; i++) expect((await send(`/api/tickets/${id}/attachments`, six)).status).toBe(201);
+    expect(await say(six, { text: "and these" })).toEqual({
+      status: 400,
+      body: { error: "a ticket takes at most 24 images, and this one has 19" },
+    });
+    expect(app.deps.tickets.attachments(id)).toHaveLength(19);
+  });
+
+  it("refuses a ticket that isn't the current one, no current ticket, no header and an unknown employee", async () => {
+    const { app, id, say, send } = await building();
+    const one = [{ data: png, name: "a.png" }];
+    expect(await say(one, { text: "x", ticket: "99" })).toEqual({
+      status: 409,
+      body: { error: `Ada is on #${id} now, not #99`, current: { id, title: refunds.title, images: 1 } },
+    });
+    expect((await say(one, { text: "x" }, { "x-i-inc-upload": "" })).status).toBe(415);
+    expect(
+      (await send("/api/chat/nobody", one, { fields: { message: JSON.stringify({ ticket: id }) } })).status,
+    ).toBe(404);
+    expect((await send("/api/chat/ada", one, { fields: { message: "{" } })).status).toBe(400);
+    // Kit has no ticket on the go.
+    expect(
+      await send("/api/chat/kit", one, { fields: { message: JSON.stringify({ text: "x", ticket: id }) } }),
+    ).toEqual({ status: 409, body: { error: "Kit isn't on a ticket now", current: null } });
+    // The header opens the chat thread, not its drafts.
+    expect((await send("/api/chat/ada/drafts/1", one)).status).toBe(415);
+    expect(app.deps.tickets.attachments(id)).toHaveLength(1);
+  });
+
+  it("still sends a plain JSON message through the helper", async () => {
+    const { app, id, post } = await building();
+    const r = await post("/api/chat/ada", { text: "Keep this one small" });
+    expect(r.status).toBe(200);
+    expect(app.helper.asked.length).toBeGreaterThan(0);
+    expect((await app.deps.store.read(id)).at(-1)).toMatchObject({
+      type: "owner-message",
+      text: "Keep this one small",
+    });
+    expect((r.body.entries as Record<string, unknown>[]).at(-2)).not.toHaveProperty("images");
+    expect(r.body.current).toEqual({ id, title: refunds.title, images: 1 });
   });
 });
 
