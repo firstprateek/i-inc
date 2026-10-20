@@ -6,13 +6,19 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Employee, Ticket } from "@i-inc/core";
-import { defaultSwitchRules } from "@i-inc/core";
+import { defaultProjectPolicy, defaultSwitchRules } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
 import { createApi, imageLimits } from "../src/api.ts";
 import { FineGrainedToken, type PullRequests } from "../src/github.ts";
 import type { RunScript } from "../src/harness.ts";
 import type { AttachmentFile } from "../src/tickets.ts";
-import { attachmentScript, branchName, GitHubWorkspace, openScript } from "../src/workspace.ts";
+import {
+  attachmentScript,
+  branchName,
+  checkoutScript,
+  GitHubWorkspace,
+  openScript,
+} from "../src/workspace.ts";
 import { refunds, testApp } from "./setup.ts";
 
 const home = mkdtempSync(join(tmpdir(), "inc-home-"));
@@ -312,5 +318,149 @@ describe("the GitHub workspace", () => {
     const done = workspace({ draft: false });
     await done.ws.ready(ticket, pr, "## report");
     expect(done.calls).toEqual(["body 4"]);
+  });
+});
+
+// #17: a reviewer or verifier on another team works in another machine. Each machine has its own
+// work folder at the same path; here, a root per machine stands in for it.
+describe("a reviewer's machine", () => {
+  const grace: Employee = { ...ada, id: "grace", name: "Grace", duties: ["review"] };
+  const branch = branchName(ticket);
+  const png = (n: number) => new Uint8Array(Array.from({ length: 300 }, (_, i) => (i * n) % 256));
+  const files: AttachmentFile[] = [1, 2].map((n) => ({
+    n,
+    name: `${n}.png`,
+    mime: "image/png",
+    size: 300,
+    data: png(n),
+  }));
+
+  /** Ada's machine, and a machine per employee in `machines` (Ada's by default). */
+  function office(machines: Record<string, string> = {}, mode: "owner-merges" | "direct" = "owner-merges") {
+    const { root, origin } = setup();
+    const machine = (id: string) => join(root, machines[id] ?? "machine-a");
+    const runs: string[] = [];
+    const ws = new GitHubWorkspace({
+      project: () => ({ id: "Duet", repo: "o/duet", checks: ["true"] }),
+      tokens: new FineGrainedToken("ghs_x"),
+      prs: {
+        find: async () => ({ number: 4, url: "https://github.com/o/duet/pull/4", nodeId: "PR_4" }),
+      } as unknown as PullRequests,
+      identity: async (e) => ({
+        name: `${e.name} (i.inc)`,
+        email: "1+i-inc-bot[bot]@users.noreply.github.com",
+      }),
+      worktree: (id) => `/MACHINE/work/inc-${id}`,
+      remote: () => origin,
+      policy: () => ({ ...defaultProjectPolicy, mode }),
+      run: (employee, script, extra) => {
+        runs.push(employee);
+        return localScript(employee, script.replaceAll("/MACHINE", machine(employee)), extra);
+      },
+      attachments: () => files,
+    });
+    const wt = (id: string) => join(machine(id), "work/inc-7");
+    return { ws, wt, origin, runs };
+  }
+
+  it("gets the branch and the ticket's images, out of git's sight", async () => {
+    const { ws, wt } = office({ grace: "machine-b" });
+    await ws.open({ ...ticket, attachments: files }, ada);
+    await ws.checkout(ticket, grace);
+    await ws.attach(ticket, grace, [1, 2]);
+
+    const b = wt("grace");
+    expect(b).not.toBe(wt("ada"));
+    expect(git(b, "rev-parse", "HEAD")).toBe(git(wt("ada"), "rev-parse", "HEAD"));
+    expect(git(b, "branch", "--show-current")).toBe(branch);
+    for (const f of files) {
+      expect(new Uint8Array(readFileSync(join(b, `.inc/attachments/${f.n}-${f.n}.png`)))).toEqual(f.data);
+    }
+    expect(git(b, "status", "--porcelain")).toBe("");
+    // It never commits, so it carries no author.
+    expect(() => git(b, "config", "--worktree", "--get", "user.name")).toThrow();
+  });
+
+  it("moves to the builder's next push on a later round, and is safe to repeat", async () => {
+    const { ws, wt } = office({ grace: "machine-b" });
+    await ws.open(ticket, ada);
+    for (let i = 0; i < 2; i++) await ws.checkout(ticket, grace);
+    await ws.attach(ticket, grace, [1]);
+
+    writeFileSync(join(wt("ada"), "fix.ts"), "export {};\n");
+    git(wt("ada"), "add", "fix.ts");
+    git(wt("ada"), "commit", "-q", "-m", "fix: the findings");
+    git(wt("ada"), "push", "-q", "origin", branch);
+    await ws.checkout(ticket, grace);
+    await ws.attach(ticket, grace, [2]);
+
+    const b = wt("grace");
+    expect(git(b, "rev-parse", "HEAD")).toBe(git(wt("ada"), "rev-parse", "HEAD"));
+    expect(existsSync(join(b, "fix.ts"))).toBe(true);
+    expect(existsSync(join(b, ".inc/attachments/1-1.png"))).toBe(true);
+    expect(existsSync(join(b, ".inc/attachments/2-2.png"))).toBe(true);
+    expect(git(b, "status", "--porcelain")).toBe("");
+  });
+
+  it("leaves the builder's own worktree alone on a shared machine, author and unpushed work too", async () => {
+    const { ws, wt } = office();
+    await ws.open(ticket, ada);
+    const a = wt("ada");
+    writeFileSync(join(a, "wip.ts"), "export {};\n");
+    git(a, "add", "wip.ts");
+    git(a, "commit", "-q", "-m", "wip");
+    const head = git(a, "rev-parse", "HEAD");
+
+    await ws.checkout(ticket, grace);
+    await ws.attach(ticket, grace, [1]);
+    expect(wt("grace")).toBe(a);
+    expect(git(a, "rev-parse", "HEAD")).toBe(head);
+    expect(git(a, "config", "--worktree", "--get", "user.name")).toBe("Ada (i.inc)");
+    expect(() => git(a, "config", "--worktree", "--get", "i-inc.copy")).toThrow();
+    expect(existsSync(join(a, ".inc/attachments/1-1.png"))).toBe(true);
+  });
+
+  it("keeps images already copied into a plain folder, and stops resetting a copy once it's handed to a builder", async () => {
+    const { ws, wt, origin } = office({ grace: "machine-b", kit: "machine-b" });
+    await ws.open(ticket, ada);
+    // The launcher's folder, holding an image from before the checkout.
+    await ws.attach(ticket, grace, [1]);
+    expect(existsSync(join(wt("grace"), ".git"))).toBe(false);
+    await ws.checkout(ticket, grace);
+    const b = wt("grace");
+    expect(git(b, "rev-parse", "HEAD")).toBe(git(wt("ada"), "rev-parse", "HEAD"));
+    expect(new Uint8Array(readFileSync(join(b, ".inc/attachments/1-1.png")))).toEqual(files[0]?.data);
+    expect(existsSync(`${b}.pre-checkout`)).toBe(false);
+    expect(git(b, "status", "--porcelain")).toBe("");
+
+    // Handed to Kit, on the same machine: the copy becomes his worktree, and a review leaves it alone.
+    await ws.open(ticket, kit);
+    expect(git(b, "config", "--worktree", "--get", "user.name")).toBe("Kit (i.inc)");
+    writeFileSync(join(b, "wip.ts"), "export {};\n");
+    git(b, "add", "wip.ts");
+    git(b, "commit", "-q", "-m", "wip");
+    const head = git(b, "rev-parse", "HEAD");
+    await ws.checkout(ticket, grace);
+    expect(git(b, "rev-parse", "HEAD")).toBe(head);
+    expect(git(origin, "rev-parse", branch)).not.toBe(head);
+  });
+
+  it("in direct mode, fetches nothing and copies the images into a plain folder", async () => {
+    const { ws, wt, runs } = office({ grace: "machine-b" }, "direct");
+    await ws.open(ticket, ada);
+    runs.length = 0;
+    await ws.checkout(ticket, grace);
+    expect(runs).toEqual([]);
+    await ws.attach(ticket, grace, [1, 2]);
+    expect(existsSync(join(wt("grace"), ".inc/attachments/2-2.png"))).toBe(true);
+  });
+
+  it("says what git said when the checkout fails, and refuses a branch name that isn't safe", async () => {
+    const { ws } = office({ grace: "machine-b" });
+    // No pick-up: the branch isn't on origin.
+    await expect(ws.checkout(ticket, grace)).rejects.toThrow("git in Grace's machine failed");
+    expect(() => checkoutScript({ remote: "o", repoDir: "/r", worktree: "/w", branch: "a b" })).toThrow(
+      /not a branch name/,
+    );
   });
 });

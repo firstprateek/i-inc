@@ -92,6 +92,8 @@ export function openScript(o: {
     "  fi",
     "fi",
     `cd ${worktree}`,
+    // A reviewer's copy that becomes a builder's worktree (a handoff) is never reset again.
+    "git config --worktree --unset i-inc.copy || true",
     `git config --worktree user.name ${quote(o.name)}`,
     `git config --worktree user.email ${quote(o.email)}`,
     ...(o.push === false
@@ -101,6 +103,50 @@ export function openScript(o: {
           `git push --quiet -u origin ${branch}`,
           "echo @@pushed",
         ]),
+  ].join("\n");
+}
+
+/**
+ * The branch, checked out for a reviewer or verifier in its own machine (spec §6, stage 6), at its
+ * latest pushed commit. A worktree that's already there and isn't a review copy (the builder's, on
+ * a team's shared machine) is left alone. A review copy is marked, and only a marked copy is moved
+ * to a later commit. It sets no author: it never commits or pushes.
+ */
+export function checkoutScript(o: {
+  remote: string;
+  repoDir: string;
+  worktree: string;
+  branch: string;
+}): string {
+  if (!/^[A-Za-z0-9._/-]+$/.test(o.branch)) throw new Error(`not a branch name: ${o.branch}`);
+  const [remote, repoDir, worktree, branch] = [o.remote, o.repoDir, o.worktree, o.branch].map(quote);
+  const aside = quote(`${o.worktree}.pre-checkout`);
+  return [
+    "set -e",
+    `if git -C ${worktree} rev-parse --is-inside-work-tree >/dev/null 2>&1; then`,
+    `  if [ "$(git -C ${worktree} config --worktree --get i-inc.copy 2>/dev/null || true)" != review ]; then`,
+    "    echo @@ready; exit 0",
+    "  fi",
+    `  git -C ${worktree} fetch --quiet --prune origin`,
+    `  git -C ${worktree} checkout --quiet -B ${branch} origin/${o.branch}`,
+    `  git -C ${worktree} reset --quiet --hard origin/${o.branch}`,
+    "  echo @@ready; exit 0",
+    "fi",
+    `if [ ! -d ${repoDir}/.git ]; then git clone --quiet ${remote} ${repoDir}; fi`,
+    `cd ${repoDir}`,
+    "git config extensions.worktreeConfig true",
+    "git fetch --quiet --prune origin",
+    // The folder may hold the images already, or the launcher's empty folder: set it aside, then
+    // put back what isn't in the branch.
+    `rm -rf ${aside}`,
+    `if [ -e ${worktree} ]; then mv ${worktree} ${aside}; fi`,
+    `git worktree add --quiet -B ${branch} ${worktree} origin/${o.branch}`,
+    `git -C ${worktree} config --worktree i-inc.copy review`,
+    `EXCLUDE=$(git -C ${worktree} rev-parse --path-format=absolute --git-path info/exclude)`,
+    'mkdir -p "$(dirname "$EXCLUDE")"',
+    `grep -qxF .inc/ "$EXCLUDE" 2>/dev/null || echo .inc/ >> "$EXCLUDE"`,
+    `if [ -e ${aside} ]; then cp -an ${aside}/. ${worktree}/; rm -rf ${aside}; fi`,
+    "echo @@ready",
   ].join("\n");
 }
 
@@ -121,10 +167,14 @@ export function attachmentScript(o: { worktree: string; file: AttachmentFile }):
     .replace(/.{1,76}/g, "$&\n");
   return [
     "set -e",
+    // A reviewer's folder may not be a checkout (direct mode on another team's machine).
+    `mkdir -p ${quote(o.worktree)}`,
     `cd ${quote(o.worktree)}`,
-    "EXCLUDE=$(git rev-parse --git-path info/exclude)",
-    'mkdir -p "$(dirname "$EXCLUDE")" .inc/attachments',
-    `grep -qxF .inc/ "$EXCLUDE" 2>/dev/null || echo .inc/ >> "$EXCLUDE"`,
+    "mkdir -p .inc/attachments",
+    "if EXCLUDE=$(git rev-parse --git-path info/exclude 2>/dev/null); then",
+    '  mkdir -p "$(dirname "$EXCLUDE")"',
+    `  grep -qxF .inc/ "$EXCLUDE" 2>/dev/null || echo .inc/ >> "$EXCLUDE"`,
+    "fi",
     // One line, so bash has read all of it before base64 (or cat) takes the rest of stdin.
     `if [ -f ${path} ]; then cat > /dev/null; else base64 -d > ${path}.part; mv ${path}.part ${path}; fi; echo @@attached`,
     base64,
@@ -179,6 +229,28 @@ export class GitHubWorkspace implements Workspace {
         ].join("\n"),
       }));
     return { number: pr.number, url: pr.url, nodeId: pr.nodeId, branch };
+  }
+
+  /**
+   * Checks the branch out in a reviewer's or verifier's machine. Direct mode keeps the branch in
+   * the builder's machine, so there is nothing to fetch: the images alone are copied there.
+   */
+  async checkout(ticket: Ticket, employee: Employee): Promise<void> {
+    if (this.o.policy?.(ticket.project).mode === "direct") return;
+    const { repo } = this.project(ticket);
+    const worktree = this.o.worktree(ticket.id);
+    const script = checkoutScript({
+      remote: this.o.remote?.(repo) ?? `https://github.com/${repo}.git`,
+      repoDir: `${dirname(worktree)}/${repo.split("/")[1]}`,
+      worktree,
+      branch: branchName(ticket),
+    });
+    const token = await this.o.tokens.token(repo);
+    const r = await this.o.run(employee.id, script, { GH_TOKEN: token });
+    if (r.code !== 0 || !r.output.includes("@@ready")) {
+      const tail = r.output.trim().split("\n").slice(-5).join("\n");
+      throw new Error(`git in ${employee.name}'s machine failed: ${tail}`);
+    }
   }
 
   /** Copies the ticket's images into the worktree: those numbered `ns`, or all of them. */
