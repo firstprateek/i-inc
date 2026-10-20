@@ -301,7 +301,7 @@ describe("the GitHub workspace", () => {
     expect(runs.map((r) => r.employee)).toEqual(["kit", "kit", "kit", "kit"]);
     expect(runs[0]?.script).toContain("cd '/home/employee/work/inc-7'");
     expect(runs.map((r) => r.script.match(/attachments\/(\d)-/)?.[1])).toEqual(["2", "3", "2", "3"]);
-    expect(runs.every((r) => r.script.includes("if [ ! -f"))).toBe(true);
+    expect(runs.every((r) => r.script.includes("then cat > /dev/null"))).toBe(true);
   });
 
   it("writes the report into the PR and marks it ready, once", async () => {
