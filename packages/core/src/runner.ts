@@ -768,6 +768,10 @@ async function session(
     await c.emit(...pr);
   } else if (isAssignee && c.s.pr && c.s.prFor === employee.id && !(await copyAttachments(c, employee))) {
     return null;
+  } else if (helperDuty && !isAssignee && c.p.workspace && c.s.pr) {
+    // A reviewer or verifier may be on another team's machine: it gets the branch and the images too.
+    const why = await readyHelper(c, employee);
+    if (why !== null) return unavailable(why);
   }
   const text = o.fresh
     ? freshBrief(c.ticket, stage, task, c.p.harness.describe?.(c.ticket))
@@ -919,6 +923,32 @@ async function copyAttachments(c: Step, employee: Employee): Promise<boolean> {
     upTo: Math.max(...ns),
   });
   return true;
+}
+
+/**
+ * Checks the branch out in a reviewer's or verifier's machine and copies in the images it doesn't
+ * have yet. Returns why it couldn't, or null; a passing hiccup is thrown.
+ */
+async function readyHelper(c: Step, employee: Employee): Promise<string | null> {
+  const workspace = c.p.workspace;
+  const upTo = c.s.copiedUpTo[employee.id] ?? 0;
+  const ns = (c.ticket.attachments ?? []).map((a) => a.n).filter((n) => n > upTo);
+  try {
+    await workspace?.checkout?.(c.ticket, employee);
+    if (workspace?.attach && ns.length) await workspace.attach(c.ticket, employee, ns);
+  } catch (err) {
+    if (passing.test(errorText(err))) throw err;
+    return `couldn't ready ${employee.name}'s machine: ${errorText(err)}`;
+  }
+  if (workspace?.attach && ns.length) {
+    await c.emit({
+      type: "attachments-copied",
+      at: c.p.clock.now(),
+      employeeId: employee.id,
+      upTo: Math.max(...ns),
+    });
+  }
+  return null;
 }
 
 /** The ticket with the images the owner added after filing it, in order. */

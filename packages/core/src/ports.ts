@@ -173,6 +173,11 @@ export interface Workspace {
   open(ticket: Ticket, builder: Employee): Promise<PullRequestRef>;
   /** Copies the ticket's images numbered `ns` into the worktree in `employee`'s machine. */
   attach?(ticket: Ticket, employee: Employee, ns: number[]): Promise<void>;
+  /**
+   * Makes the ticket's branch readable in a reviewer's or verifier's machine, at its latest pushed
+   * commit. Never pushes, and never touches a builder's worktree that is already there.
+   */
+  checkout?(ticket: Ticket, employee: Employee): Promise<void>;
   ready(ticket: Ticket, pr: PullRequestRef, report: string): Promise<void>;
 }
 

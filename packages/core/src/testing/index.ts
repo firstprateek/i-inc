@@ -124,12 +124,18 @@ export class FakeWorkspace implements Workspace {
   readonly readied: { ticketId: Id; pr: PullRequestRef; report: string }[] = [];
   /** The images copied in after pick-up, by whose machine. */
   readonly attached: { ticketId: Id; employeeId: Id; ns: number[] }[] = [];
+  /** The branch checked out in a reviewer's or verifier's machine, by whose machine, in order. */
+  readonly checkedOut: { ticketId: Id; employeeId: Id }[] = [];
+  /** Every open, checkout and attach, in order. */
+  readonly calls: string[] = [];
   failOpen: string | null = null;
   failAttach: string | null = null;
+  failCheckout: string | null = null;
   async open(ticket: Ticket, builder: Employee): Promise<PullRequestRef> {
     if (this.failOpen) throw new Error(this.failOpen);
     this.opened.push(ticket.id);
     this.openedFor.push(builder.id);
+    this.calls.push(`open ${builder.id}`);
     return {
       number: Number(ticket.id),
       url: `https://github.com/owner/repo/pull/${ticket.id}`,
@@ -140,6 +146,12 @@ export class FakeWorkspace implements Workspace {
   async attach(ticket: Ticket, employee: Employee, ns: number[]): Promise<void> {
     if (this.failAttach) throw new Error(this.failAttach);
     this.attached.push({ ticketId: ticket.id, employeeId: employee.id, ns });
+    this.calls.push(`attach ${employee.id} ${ns.join(",")}`);
+  }
+  async checkout(ticket: Ticket, employee: Employee): Promise<void> {
+    if (this.failCheckout) throw new Error(this.failCheckout);
+    this.checkedOut.push({ ticketId: ticket.id, employeeId: employee.id });
+    this.calls.push(`checkout ${employee.id}`);
   }
   async ready(ticket: Ticket, pr: PullRequestRef, report: string): Promise<void> {
     this.readied.push({ ticketId: ticket.id, pr, report });
