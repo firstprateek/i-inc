@@ -1,0 +1,76 @@
+{
+  "ticket": 15,
+  "implementationCommit": "ffd101e",
+  "method": "Built web app in Chromium and HTTP requests to Bun daemon on 127.0.0.1:57200; isolated SQLite database; real GitHubWorkspace scripts in local Git worktrees; scripted agent, machine, helper and check ports; no remote GitHub or real ACP sessions.",
+  "checks": [
+    "Chromium: existing running ticket accepts image via picker and Send 1 image; session remains running and copy is deferred.",
+    "Running ticket: next Ada session (report) receives added-images brief and byte-identical file at entry; API event order owner-attached < attachments-copied < session-started.",
+    "Chromium: Request changes sends multipart image and note; next Build sees both, with reply.png already copied byte-for-byte.",
+    "Chromium: waiting ticket accepts image without answering the plan gate; approving through HTTP starts Build with the image present and announced.",
+    "Live HTTP validation matrix: new ticket, existing attachments and Not quite all reject SVG, spoofed PNG, seven images and >10 MiB with 400 and no stored additions.",
+    "Live HTTP: upload header required (415), unknown ticket 404, done ticket 409; fetched image bytes match; six/request accepted, 24/ticket accepted, overflow rejected atomically including Not quite. No browser page errors."
+  ],
+  "sessionEntryEvidence": [
+    {
+      "ticket": "1",
+      "stage": "report",
+      "employee": "ada",
+      "files": [
+        {
+          "name": "1-running.png",
+          "sha256": "6b1048f8a6d40bac0b2954c18fefa40c4ea7a96120fc2e54b7317c0e43c2bbec"
+        }
+      ],
+      "briefEvidence": [
+        "- .inc/attachments/1-running.png",
+        "The owner added images since your last session (open them):",
+        "- .inc/attachments/1-running.png"
+      ]
+    },
+    {
+      "ticket": "1",
+      "stage": "build",
+      "employee": "ada",
+      "files": [
+        {
+          "name": "1-running.png",
+          "sha256": "6b1048f8a6d40bac0b2954c18fefa40c4ea7a96120fc2e54b7317c0e43c2bbec"
+        },
+        {
+          "name": "2-reply.png",
+          "sha256": "6b1048f8a6d40bac0b2954c18fefa40c4ea7a96120fc2e54b7317c0e43c2bbec"
+        }
+      ],
+      "briefEvidence": [
+        "- .inc/attachments/1-running.png",
+        "- .inc/attachments/2-reply.png",
+        "The owner asked for changes: Match the attached layout",
+        "The owner added images since your last session (open them):",
+        "- .inc/attachments/2-reply.png"
+      ]
+    },
+    {
+      "ticket": "2",
+      "stage": "build",
+      "employee": "ada",
+      "files": [
+        {
+          "name": "1-waiting.png",
+          "sha256": "6b1048f8a6d40bac0b2954c18fefa40c4ea7a96120fc2e54b7317c0e43c2bbec"
+        }
+      ],
+      "briefEvidence": [
+        "- .inc/attachments/1-waiting.png",
+        "The owner added images since your last session (open them):",
+        "- .inc/attachments/1-waiting.png"
+      ]
+    }
+  ],
+  "requiredChecks": {
+    "pnpm install --frozen-lockfile": "passed",
+    "pnpm check": "passed (169 files)",
+    "pnpm typecheck": "passed (all three packages)",
+    "pnpm test": "passed: core 103, daemon 250, web 315; host regressions passed",
+    "pnpm --filter @i-inc/web build": "passed"
+  }
+}
