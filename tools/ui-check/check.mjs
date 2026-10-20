@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // ui-check: render pages in Chromium and report layout problems a screenshot hides.
 //
-//   node tools/ui-check/check.mjs [--out dir] [--size 1440x900] [--dark] <file.html | url> ...
+//   node tools/ui-check/check.mjs [--out dir] [--size 1440x900] [--dark] [--before setup.js] <file.html | url> ...
+//
+// --before runs a script in each page once it has loaded, as the body of an async function, to bring
+// it to the state under review (paste an image, open a menu). Its last await settles before the audit.
 //
 // For each page it saves a full-page screenshot and prints findings:
 //   overlap     two visible leaf elements (text, images, icons, controls) intersect
@@ -21,7 +24,7 @@
 // set PW_CHROMIUM to point at another executable.
 
 import { execSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -35,15 +38,19 @@ const args = process.argv.slice(2);
 let outDir = "ui-check-out";
 let size = null;
 let dark = false;
+let before = null;
 const targets = [];
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--out") outDir = args[++i];
   else if (args[i] === "--size") size = args[++i];
   else if (args[i] === "--dark") dark = true;
+  else if (args[i] === "--before") before = readFileSync(args[++i], "utf8");
   else targets.push(args[i]);
 }
 if (targets.length === 0) {
-  console.error("usage: check.mjs [--out dir] [--size WxH] [--dark] <file.html | url> ...");
+  console.error(
+    "usage: check.mjs [--out dir] [--size WxH] [--dark] [--before setup.js] <file.html | url> ...",
+  );
   process.exit(2);
 }
 const requestedSize = size?.split("x").map(Number) ?? null;
@@ -86,6 +93,11 @@ for (const target of targets) {
     continue;
   }
   await page.evaluate(() => document.fonts.ready);
+  if (before) {
+    // A string expression goes through DevTools, so the page's CSP (no eval) doesn't block it.
+    await page.evaluate(`(async () => {\n${before}\n})()`);
+    await page.waitForTimeout(300);
+  }
 
   // Size the viewport to the page's fixed root (design artboards) unless told otherwise.
   const dims = requestedSize

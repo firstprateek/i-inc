@@ -94,7 +94,7 @@ checker and look at the screenshots. Add new lessons there when a review finds a
 - `pnpm --filter @i-inc/web build`, then `I_INC_DEMO=1 pnpm --filter @i-inc/daemon start`: the daemon
   in demo mode on http://127.0.0.1:7420, serving the web app (Bun; `bun:sqlite` on the host,
   `node:sqlite` in tests). `pnpm --filter @i-inc/web dev` runs the app with hot reload against it.
-- `node tools/ui-check/check.mjs [--out dir] [--size WxH] [--dark] <file.html | url> ...`: render pages in
+- `node tools/ui-check/check.mjs [--out dir] [--size WxH] [--dark] [--before setup.js] <file.html | url> ...`: render pages in
   Chromium and report overlap, covered text, overflow, contrast, near-miss alignment, missing
   accessible names and fonts that didn't load. Exits 1 on errors.
 

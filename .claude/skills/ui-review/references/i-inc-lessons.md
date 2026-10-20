@@ -97,3 +97,8 @@ paths, branch names, structured briefs).
     images" right above an "Add images" button, and it sat above the ticket's status line. → A
     group's label names the thing ("More images"), the button names the action; and what a ticket
     is doing comes before what you can add to it.
+22. **A remove button laid over a thumbnail (overlap).** The chat composer's first try put a ×
+    on each image's corner, with a 44 px tap target that overhung the image and reached the next
+    one, so a tap meant for one image could remove another. → Put small controls beside what they act
+    on, not over it. To check a state the page doesn't open in (images picked, a menu open), give
+    the checker a `--before` script that sets it up.

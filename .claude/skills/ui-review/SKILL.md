@@ -22,6 +22,9 @@ The lessons file is what went wrong in i.inc before; check those first.
 node tools/ui-check/check.mjs --out ui-check-out <file.html | url> ...
 ```
 
+To review a state the page doesn't open in (an image pasted, a menu open), pass
+`--before setup.js`: it runs in each page after load, as the body of an async function.
+
 It renders each page in Chromium (Playwright, with Chrome DevTools Protocol checks), saves a
 screenshot, and reports:
 
