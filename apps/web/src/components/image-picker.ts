@@ -1,11 +1,11 @@
 // Picking images for a ticket: from the camera or the photo library on a phone, or pasted as a
-// screenshot. Shared by the new-ticket form and the ticket page. It's a controller, not an element,
-// so its input and thumbnails live in the host's own shadow root and form.
+// screenshot. Shared by the new-ticket form, the ticket page and the chat composer. It's a controller,
+// not an element, so its input and thumbnails live in the host's own shadow root and form.
 import { css, html, type ReactiveController, type ReactiveControllerHost } from "lit";
 import { imageRules } from "../api.ts";
 
 /** A picked image and its preview URL, revoked when it's removed. */
-interface Picked {
+export interface Picked {
   file: File;
   url: string;
 }
@@ -16,7 +16,7 @@ interface Picked {
  */
 const isHeic = (f: File) => /^image\/hei[cf]/.test(f.type) || (!f.type && /\.hei[cf]$/i.test(f.name));
 const preview = (f: File) => (typeof URL.createObjectURL === "function" ? URL.createObjectURL(f) : "");
-const forget = (p: Picked) => {
+export const forget = (p: Picked) => {
   if (p.url && typeof URL.revokeObjectURL === "function") URL.revokeObjectURL(p.url);
 };
 
@@ -104,6 +104,45 @@ export class ImagePicker implements ReactiveController {
     );
   };
 
+  /** Hands the picked images to the caller, who now owns their preview URLs, and empties the picker. */
+  take(): Picked[] {
+    const taken = this.images;
+    this.images = [];
+    this.problem = null;
+    this.host.requestUpdate();
+    return taken;
+  }
+
+  /** Opens the file dialog (the camera or photo library on a phone). */
+  open(): void {
+    this.host.renderRoot.querySelector<HTMLInputElement>(`#${this.o.id}-input`)?.click();
+  }
+
+  /** The hidden file input; `open()` clicks it. */
+  input() {
+    return html`<input id="${this.o.id}-input" type="file" name="images" accept=${imageRules.types.join(",")} multiple hidden
+      @change=${(e: Event) => {
+        const input = e.target as HTMLInputElement;
+        this.add([...(input.files ?? [])]);
+        input.value = ""; // so picking the same file again still fires
+      }} />`;
+  }
+
+  /** The picked images, each with a way to remove it. */
+  thumbs() {
+    return this.images.length
+      ? html`<ul class="thumbs">
+          ${this.images.map(
+            (p) => html`<li>
+              <img src=${p.url} alt=${p.file.name} />
+              <button type="button" class="btn ghost" aria-label="Remove ${p.file.name}"
+                @click=${() => this.remove(p)}>Remove</button>
+            </li>`,
+          )}
+        </ul>`
+      : "";
+  }
+
   /** The label, the hint, the thumbnails and the button; the host shows `problem` where it fits. */
   render(o: { label: string; hint: string }) {
     const { id } = this.o;
@@ -111,27 +150,9 @@ export class ImagePicker implements ReactiveController {
     return html`<div class="images" role="group" aria-labelledby="${id}-label">
       <span id="${id}-label">${o.label}</span>
       <span class="hint">${o.hint}</span>
-      <input id="${id}-input" type="file" name="images" accept=${imageRules.types.join(",")} multiple hidden
-        @change=${(e: Event) => {
-          const input = e.target as HTMLInputElement;
-          this.add([...(input.files ?? [])]);
-          input.value = ""; // so picking the same file again still fires
-        }} />
-      ${
-        this.images.length
-          ? html`<ul class="thumbs">
-            ${this.images.map(
-              (p) => html`<li>
-                <img src=${p.url} alt=${p.file.name} />
-                <button type="button" class="btn ghost" aria-label="Remove ${p.file.name}"
-                  @click=${() => this.remove(p)}>Remove</button>
-              </li>`,
-            )}
-          </ul>`
-          : ""
-      }
-      <button type="button" class="btn ghost pick" ?disabled=${full}
-        @click=${() => this.host.renderRoot.querySelector<HTMLInputElement>(`#${id}-input`)?.click()}>
+      ${this.input()}
+      ${this.thumbs()}
+      <button type="button" class="btn ghost pick" ?disabled=${full} @click=${() => this.open()}>
         ${full ? (this.images.length ? `${this.images.length} images added` : "No room for more images") : this.images.length ? "Add more images" : "Add images"}
       </button>
     </div>`;

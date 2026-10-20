@@ -1,11 +1,12 @@
 // Chat (spec §10): one thread per employee. Questions get answers; asks become draft tickets you put
 // on the board with one tap (a PA's asks become errands at once); notes reach a working employee at
-// the next stage boundary.
+// the next stage boundary. A message about the current ticket can bring images, stored on it (#16).
 import { css, html, LitElement } from "lit";
-import { refreshNow } from "../api.ts";
+import { imageRules, refreshNow } from "../api.ts";
 import { hasNewFromOthers, isNearBottom, newFromOthers } from "../chat-scroll.ts";
 import { draftMemo } from "../drafts.ts";
 import { showLogin } from "../login.ts";
+import { forget, ImagePicker, imagePickerStyles, type Picked } from "./image-picker.ts";
 import { LAYOUT_BREAKPOINTS, layoutStyles } from "./layout.ts";
 import { avatar, base } from "./shared.ts";
 
@@ -19,6 +20,11 @@ export type Entry =
       at: number;
       text: string;
       urgent?: boolean | undefined;
+      /** Images sent with it, as their numbers on that ticket. */
+      images?: { ticketId: string; ns: number[] } | undefined;
+      /** Images on their way, kept in memory for Retry, and the ticket they're for. */
+      picked?: Picked[] | undefined;
+      ticket?: string | undefined;
       status?: SendStatus | undefined;
       error?: string | undefined;
     }
@@ -65,6 +71,13 @@ export type Entry =
       status?: SendStatus | undefined;
     };
 
+/** The ticket the employee is on now: where images in the composer go, and how many it has. */
+export interface Current {
+  id: string;
+  title: string;
+  images: number;
+}
+
 export interface Thread {
   id: string;
   name: string;
@@ -73,21 +86,46 @@ export interface Thread {
   last: Entry | null;
 }
 
-async function json<T>(method: string, url: string, body?: unknown, timeoutMs = 45_000): Promise<T> {
+/** A refused request, with what the daemon said about the current ticket, if anything. */
+class Refused extends Error {
+  constructor(
+    message: string,
+    readonly current: Current | null | undefined,
+  ) {
+    super(message);
+  }
+}
+
+async function json<T>(
+  method: string,
+  url: string,
+  body?: unknown,
+  timeoutMs = 45_000,
+  images: File[] = [],
+): Promise<T> {
   const signal =
     typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
       ? AbortSignal.timeout(timeoutMs)
       : undefined;
+  // With images, one multipart request: the message as a JSON field, and the header that lets the
+  // daemon take a write that isn't JSON.
+  const form = new FormData();
+  if (images.length) {
+    form.set("message", JSON.stringify(body ?? {}));
+    for (const f of images) form.append("image", f, f.name);
+  }
   const res = await fetch(url, {
     method,
     ...(signal ? { signal } : {}),
     ...(method === "GET"
       ? {}
-      : { headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) }),
+      : images.length
+        ? { headers: { "x-i-inc-upload": "1" }, body: form }
+        : { headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) }),
   });
   if (res.status === 401) showLogin();
-  const data = (await res.json()) as T & { error?: string };
-  if (!res.ok) throw new Error(data.error ?? `${res.status}`);
+  const data = (await res.json()) as T & { error?: string; current?: Current | null };
+  if (!res.ok) throw new Refused(data.error ?? `${res.status}`, data.current);
   return data;
 }
 
@@ -111,6 +149,7 @@ export class IncChat extends LitElement {
     picks: { state: true },
     newBelow: { state: true },
     announcement: { state: true },
+    current: { state: true },
   };
   declare employeeId: string;
   declare threads: Thread[];
@@ -126,6 +165,16 @@ export class IncChat extends LitElement {
   declare newBelow: boolean;
   /** What the polite status region says: the newest message from someone else, never the whole list. */
   declare announcement: string;
+  /** The ticket the employee is on now, or null: images can only go with a message about one. */
+  declare current: Current | null;
+  private readonly picker = new ImagePicker(this, {
+    id: "chat",
+    room: () => imageRules.perTicket - (this.current?.images ?? 0),
+    full: (room) =>
+      room
+        ? `You can add ${room} more images now.`
+        : `A ticket takes at most ${imageRules.perTicket} images.`,
+  });
 
   // Scroll state. Only the message list scrolls, never the page (no scrollIntoView, no window.scrollTo).
   /** The reader is at (or near) the bottom of the list, so new content should keep it pinned there. */
@@ -167,6 +216,7 @@ export class IncChat extends LitElement {
     this.picks = {};
     this.newBelow = false;
     this.announcement = "";
+    this.current = null;
   }
 
   override connectedCallback(): void {
@@ -221,6 +271,9 @@ export class IncChat extends LitElement {
       this.stick = true;
       this.newBelow = false;
       this.announcement = "";
+      // Images picked were for the last employee's ticket.
+      this.current = null;
+      this.picker.clear();
     } else if (changed.has("employeeId") && this.employeeId) {
       // First mount, or load() picking the first thread: bring back a draft from before a reload.
       this.draft = this.draftFor(this.employeeId);
@@ -303,9 +356,10 @@ export class IncChat extends LitElement {
       if (!this.employeeId && this.threads[0]) this.employeeId = this.threads[0].id;
       if (this.employeeId) {
         const empId = this.employeeId;
-        const res = await json<{ entries: Entry[] }>("GET", `/api/chat/${empId}`);
+        const res = await json<{ entries: Entry[]; current?: Current | null }>("GET", `/api/chat/${empId}`);
         // Only update entries if employee hasn't switched during fetch
         if (this.employeeId === empId) {
+          this.setCurrent(res.current);
           const myPending = this.pendingEntries.filter(
             (e) => e.employeeId === empId && (e.status === "sending" || e.status === "error"),
           );
@@ -322,6 +376,13 @@ export class IncChat extends LitElement {
         this.error = e instanceof Error ? e.message : String(e);
       }
     }
+  }
+
+  /** A different ticket (or none) means the picked images no longer have a place to go. */
+  private setCurrent(next: Current | null | undefined): void {
+    if (next === undefined) return;
+    if (next?.id !== this.current?.id) this.picker.clear();
+    this.current = next;
   }
 
   private onInput = (e: Event) => {
@@ -360,7 +421,8 @@ export class IncChat extends LitElement {
   async send(e?: Event) {
     e?.preventDefault();
     const text = this.draft.trim();
-    if (!text || !this.employeeId) return;
+    const withImages = !!this.current && this.picker.images.length > 0;
+    if ((!text && !withImages) || !this.employeeId) return;
 
     const msgId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const urgent = this.urgent;
@@ -373,6 +435,7 @@ export class IncChat extends LitElement {
       at: Date.now(),
       text,
       ...(urgent ? { urgent: true } : {}),
+      ...(withImages && this.current ? { picked: this.picker.take(), ticket: this.current.id } : {}),
       status: "sending",
     };
 
@@ -413,19 +476,30 @@ export class IncChat extends LitElement {
     textarea?.focus({ preventScroll: true });
 
     try {
-      const res = await json<{ entries: Entry[] }>("POST", `/api/chat/${empId}`, {
-        text: entry.text,
-        ...(entry.urgent ? { urgent: true } : {}),
-      });
+      const res = await json<{ entries: Entry[]; current?: Current | null }>(
+        "POST",
+        `/api/chat/${empId}`,
+        {
+          text: entry.text,
+          ...(entry.urgent ? { urgent: true } : {}),
+          ...(entry.picked?.length ? { ticket: entry.ticket } : {}),
+        },
+        undefined,
+        entry.picked?.map((p) => p.file),
+      );
 
       entry.status = "sent";
       entry.error = undefined;
       draftMemo.clearIfSent(empId, entry.text);
+      // The daemon has the images now, and the thread shows its own copies.
+      entry.picked?.forEach(forget);
+      entry.picked = undefined;
       // Remove from pending entries once delivered
       this.pendingEntries = this.pendingEntries.filter((p) => p.id !== entry.id);
 
       // Only update this.entries if the user is still viewing this employee's thread!
       if (this.employeeId === empId) {
+        this.setCurrent(res.current);
         if (res.entries && res.entries.length > 0) {
           const merged: Entry[] = res.entries.map((item) => ({ ...item }));
           for (let i = merged.length - 1; i >= 0; i--) {
@@ -451,6 +525,8 @@ export class IncChat extends LitElement {
       entry.status = "error";
       entry.error = errMsg;
       if (this.employeeId === empId) {
+        // The ticket may have moved on since the page loaded: show where images would go now.
+        if (err instanceof Refused) this.setCurrent(err.current);
         this.error = errMsg;
         this.entries = [...this.entries];
       }
@@ -482,6 +558,7 @@ export class IncChat extends LitElement {
   static override styles = [
     base,
     layoutStyles,
+    imagePickerStyles,
     css`
       /* The chat fills whatever room the app shell gives it (the shell is exactly the viewport below the
          header on this route), and each region scrolls by itself: the list, and the messages. */
@@ -535,7 +612,19 @@ export class IncChat extends LitElement {
       .ticket { align-self: flex-start; max-width: min(620px, 92%); border: 2px dashed var(--line-strong); border-radius: 16px; padding: 14px;
         display: flex; flex-direction: column; gap: 8px; background: var(--surface); }
       /* The composer is pinned under the list and never scrolls away. */
-      form { flex: none; padding: 12px max(16px, calc((100% - 760px) / 2)) 16px; border-top: 1px solid var(--line); display: flex; gap: 10px; align-items: flex-end; }
+      .composer { flex: none; border-top: 1px solid var(--line); }
+      form { padding: 12px max(16px, calc((100% - 760px) / 2)) 16px; display: flex; gap: 10px; align-items: flex-end; }
+      /* Images picked for the current ticket, above the message field. */
+      .attach { padding: 12px max(16px, calc((100% - 760px) / 2)) 0; display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: var(--ink-2); }
+      .attach .for b { color: var(--ink); }
+      .attach .thumbs { grid-template-columns: repeat(auto-fill, minmax(88px, 104px)); }
+      .attach .problem { margin: 0; color: var(--alarm-fg, #8a2b17); }
+      .add-images { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 44px; height: 44px; padding: 0; border-radius: 50%; }
+      .add-images svg { width: 22px; height: 22px; display: block; }
+      .add-images:disabled { opacity: 0.4; cursor: default; }
+      .me .sent-images { list-style: none; margin: 0 0 6px; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+      .me .sent-images img { display: block; width: 88px; height: 88px; object-fit: cover; border-radius: 10px; background: var(--surface); }
+      .me .sent-images a { display: block; border-radius: 10px; }
       textarea { flex-grow: 1; min-width: 0; font: 16px/1.4 var(--body); min-height: 46px; max-height: min(180px, 26vh); max-height: min(180px, 26dvh); padding: 11px 16px; border-radius: 20px;
         border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); resize: none; box-sizing: border-box; overflow-y: auto; }
       textarea:focus { outline: none; border-color: var(--ink); }
@@ -571,7 +660,7 @@ export class IncChat extends LitElement {
         .msgs { padding: 14px 16px; }
         form { flex-wrap: wrap; padding: 10px 16px 12px; }
         form textarea { flex: 1 1 100%; }
-        form .urgent { flex: none; }
+        form .urgent, form .add-images { flex: none; }
         form .send { margin-left: auto; }
         .me .retry { min-height: 44px; padding: 6px 14px; font-size: 13px; }
       }
@@ -625,7 +714,9 @@ export class IncChat extends LitElement {
             : ""
         }
         </div>
-        <form @submit=${this.send}>
+        <div class="composer">
+        ${this.attachments()}
+        <form @submit=${this.send} @paste=${this.current ? this.picker.paste : null}>
           <textarea enterkeyhint="send" autocomplete="off" autocapitalize="sentences" rows="1"
             aria-label="Message ${me?.name ?? ""}" placeholder="Message ${me?.name ?? ""}" .value=${this.draft}
             @input=${this.onInput}
@@ -635,18 +726,55 @@ export class IncChat extends LitElement {
             @click=${() => {
               this.urgent = !this.urgent;
             }}>${this.urgent ? "✓ Urgent" : "Urgent"}</button>
-          <button class="btn send" type="submit" aria-label="Send" ?disabled=${!this.draft.trim()}>
+          ${
+            this.current
+              ? html`${this.picker.input()}<button class="btn ghost add-images" type="button"
+                  aria-label="Add images for #${this.current.id}" title="Add images for #${this.current.id} ${this.current.title}"
+                  ?disabled=${this.picker.images.length >= this.picker.room} @click=${() => this.picker.open()}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/></svg>
+                </button>`
+              : ""
+          }
+          <button class="btn send" type="submit" aria-label="Send" ?disabled=${!this.draft.trim() && !(this.current && this.picker.images.length)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>
           </button>
         </form>
+        </div>
       </section>
+    </div>`;
+  }
+
+  /** The images picked for the current ticket, and why any weren't taken. */
+  private attachments() {
+    const c = this.current;
+    if (!c || (!this.picker.images.length && !this.picker.problem)) return "";
+    const name = (this.threads ?? []).find((t) => t.id === this.employeeId)?.name ?? "They";
+    return html`<div class="attach" role="group" aria-label="Images for #${c.id}">
+      <span class="for"><b>For #${c.id}</b> ${c.title} · ${name} sees them at their next session.</span>
+      ${this.picker.thumbs()}
+      ${this.picker.problem ? html`<p class="problem" role="alert">${this.picker.problem}</p>` : ""}
     </div>`;
   }
 
   private preview(e: Entry | null): string | null {
     if (!e) return null;
     if ("kind" in e && e.kind) return e.kind === "draft" ? `Drafted: ${e.title}` : `Errand: ${e.title}`;
+    if (e.from === "owner" && !e.text && e.images) return images(e.images.ns.length);
     return "text" in e ? (e.text ?? null) : null;
+  }
+
+  /** The images on a message: the daemon's copies once sent, the local previews until then. */
+  private sentImages(e: Entry & { from: "owner" }) {
+    const sent = e.images;
+    if (sent) {
+      return html`<ul class="sent-images">${sent.ns.map((n) => {
+        const url = `/api/tickets/${sent.ticketId}/attachments/${n}`;
+        const name = `image ${n} on #${sent.ticketId}`;
+        return html`<li><a href=${url} target="_blank" rel="noopener" aria-label="Open ${name}"><img src=${url} alt=${name} loading="lazy" /></a></li>`;
+      })}</ul>`;
+    }
+    if (!e.picked?.length) return "";
+    return html`<ul class="sent-images">${e.picked.map((p) => html`<li><img src=${p.url} alt=${p.file.name} /></li>`)}</ul>`;
   }
 
   /** C12: the project a draft will be filed under, with a way to change it before it goes on the board. */
@@ -700,7 +828,7 @@ export class IncChat extends LitElement {
             : e.status === "error"
               ? "failed"
               : null;
-      return html`<div class="me ${e.status ?? ""}">${e.urgent ? html`<span class="tag">urgent</span><br>` : ""}<div class="msg-body">${e.text}</div>${
+      return html`<div class="me ${e.status ?? ""}">${e.urgent ? html`<span class="tag">urgent</span><br>` : ""}${this.sentImages(e)}${e.text ? html`<div class="msg-body">${e.text}</div>` : ""}${
         statusText
           ? html`<div class="meta"><span class="status ${e.status}" aria-live="polite">${statusText}</span>${
               e.status === "error"
@@ -731,6 +859,8 @@ export class IncChat extends LitElement {
     return html`<div class="them"><div class="msg-body">${"text" in e ? e.text : ""}</div></div>`;
   }
 }
+
+const images = (n: number) => (n === 1 ? "1 image" : `${n} images`);
 
 if (!customElements.get("inc-chat")) {
   customElements.define("inc-chat", IncChat);
