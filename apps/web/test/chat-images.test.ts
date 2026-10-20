@@ -1,6 +1,7 @@
 // Images with a chat message about the current ticket (#16): the shared picker, offered only when the
 // employee is on a ticket, sent as one multipart request naming it, and kept for Retry if it fails.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { refreshNow } from "../src/api.ts";
 import "../src/components/chat.ts";
 import type { Current, Entry, IncChat } from "../src/components/chat.ts";
 
@@ -8,10 +9,15 @@ const threads = [{ id: "ada", name: "Ada", tint: 0, role: "Senior Engineer", las
 const building: Current = { id: "9", title: "The chart is cut off", images: 1 };
 
 let posts: { url: string; headers: Headers; body: unknown }[] = [];
+/** Moves the employee to another ticket, or off one, as the daemon would between requests. */
+let moveTo: (next: Current | null) => void = () => {};
 
 function serve(o: { current?: Current | null; post?: () => Response } = {}) {
   posts = [];
-  const current = o.current === undefined ? building : o.current;
+  let current = o.current === undefined ? building : o.current;
+  moveTo = (next) => {
+    current = next;
+  };
   let entries: Entry[] = [];
   const reply = (body: unknown, status = 200) =>
     new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -228,6 +234,56 @@ describe("images with a chat message", () => {
     expect(r.querySelector(".add-images")?.getAttribute("aria-label")).toBe("Add images for #10");
     // The failed message keeps its images and the ticket they were for.
     expect(r.querySelectorAll(".me .sent-images img")).toHaveLength(1);
+  });
+
+  it("offers the picker once an idle employee starts a ticket, and takes it away when they finish", async () => {
+    serve({ current: null });
+    const { el, r } = await mount();
+    expect(r.querySelector(".add-images")).toBeNull();
+
+    moveTo(building);
+    refreshNow({ tickets: new Set(["9"]), office: true });
+    await tick(el);
+    expect(r.querySelector(".add-images")?.getAttribute("aria-label")).toBe("Add images for #9");
+    expect(paste(r, [png("chart.png")]).defaultPrevented).toBe(true);
+    await el.updateComplete;
+    expect(thumbs(r)).toHaveLength(1);
+
+    moveTo(null);
+    refreshNow();
+    await tick(el);
+    expect(r.querySelector(".add-images")).toBeNull();
+    expect(thumbs(r)).toHaveLength(0);
+  });
+
+  it("sends images to the ticket the employee moved to, not the one the page loaded with", async () => {
+    serve();
+    const { el, r } = await mount();
+    moveTo({ id: "10", title: "Dark mode", images: 0 });
+    refreshNow({ tickets: new Set(["10"]), office: false });
+    await tick(el);
+    expect(r.querySelector(".add-images")?.getAttribute("aria-label")).toBe("Add images for #10");
+
+    pick(r, [png("chart.png")]);
+    await el.updateComplete;
+    sendButton(r).click();
+    await tick(el);
+    const form = posts[0]?.body as FormData;
+    expect(JSON.parse(String(form.get("message")))).toEqual({ text: "", ticket: "10" });
+  });
+
+  it("stops listening for refreshes once it's gone", async () => {
+    serve();
+    const { el } = await mount();
+    el.remove();
+    const calls = vi.fn();
+    vi.stubGlobal("fetch", async () => {
+      calls();
+      return new Response("{}");
+    });
+    refreshNow();
+    await tick(el);
+    expect(calls).not.toHaveBeenCalled();
   });
 
   it("still sends a message without images as JSON", async () => {

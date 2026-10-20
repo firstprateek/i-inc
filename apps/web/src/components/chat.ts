@@ -2,7 +2,7 @@
 // on the board with one tap (a PA's asks become errands at once); notes reach a working employee at
 // the next stage boundary. A message about the current ticket can bring images, stored on it (#16).
 import { css, html, LitElement } from "lit";
-import { imageRules, refreshNow } from "../api.ts";
+import { imageRules, refresh, refreshNow } from "../api.ts";
 import { hasNewFromOthers, isNearBottom, newFromOthers } from "../chat-scroll.ts";
 import { draftMemo } from "../drafts.ts";
 import { showLogin } from "../login.ts";
@@ -221,10 +221,12 @@ export class IncChat extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback();
+    refresh.addEventListener("refresh", this.onRefresh);
     void this.load();
   }
 
   override disconnectedCallback(): void {
+    refresh.removeEventListener("refresh", this.onRefresh);
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
     super.disconnectedCallback();
@@ -375,6 +377,22 @@ export class IncChat extends LitElement {
       if (this.employeeId === targetEmployeeId) {
         this.error = e instanceof Error ? e.message : String(e);
       }
+    }
+  }
+
+  // A live event or an action elsewhere: the employee may have started, finished or changed tickets,
+  // so ask again where images would go. Any ticket's event can be the one they just started, so this
+  // doesn't filter by scope.
+  private onRefresh = () => void this.loadCurrent();
+
+  private async loadCurrent(): Promise<void> {
+    const empId = this.employeeId;
+    if (!empId) return;
+    try {
+      const res = await json<{ current?: Current | null }>("GET", `/api/chat/${empId}`);
+      if (this.employeeId === empId) this.setCurrent(res.current);
+    } catch {
+      // Keep what we have: the next refresh, or a send's 409, brings it up to date.
     }
   }
 
