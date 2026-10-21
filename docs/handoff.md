@@ -71,8 +71,11 @@ newer commits are tried. The last 5 releases are kept. Nothing needs root.
   prints the plan and changes nothing; `sh tools/host/install-deployer.sh --apply` does it (seeds
   `~/i-inc-releases` from `~/i-inc`'s HEAD, points the daemon plist at `~/i-inc-releases/current`
   keeping its environment, restarts the daemon and checks its health, loads `inc.i.deployer`; the old
-  daemon plist is kept as `inc.i.daemon.plist.pre-deployer`). `sh tools/host/install-deployer.sh --rollback-install`
-  restores it and removes the deployer.
+  daemon plist is kept as `inc.i.daemon.plist.pre-deployer`; the edit is exact and a second run changes nothing).
+  `install-daemon.sh` keeps the daemon on `~/i-inc-releases/current` once the deployer is installed; a copy
+  from a checkout older than that change would reset the daemon plist to `~/i-inc`, so run
+  `install-deployer.sh --apply` again if you ever do that. `sh tools/host/install-deployer.sh --rollback-install`
+  restores it, removes the deployer and checks the restored daemon's health.
 
 Before the deployer is installed, deploy by hand:
 1. `cd ~/i-inc && git pull`

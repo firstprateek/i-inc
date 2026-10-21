@@ -3,6 +3,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -17,10 +18,13 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-const repo = resolve(import.meta.dirname, "../../..");
-const script = join(repo, "tools/host/install-deployer.sh");
-const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+const source = resolve(import.meta.dirname, "../../..");
 
+// The mini's layout: the checkout is ~/i-inc and the releases are ~/i-inc-releases, so the checkout's
+// path is a prefix of the releases' path.
+let repo: string;
+let script: string;
+let head: string;
 let home: string;
 let bin: string;
 let log: string;
@@ -44,6 +48,22 @@ function fake(name: string, body: string) {
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "i-inc-install-"));
+  repo = join(home, "i-inc");
+  script = join(repo, "tools/host/install-deployer.sh");
+  mkdirSync(join(repo, "tools/host"), { recursive: true });
+  mkdirSync(join(repo, "apps/deployer/src"), { recursive: true });
+  for (const f of ["install-deployer.sh", "inc.i.deployer.plist"]) {
+    copyFileSync(join(source, "tools/host", f), join(repo, "tools/host", f));
+  }
+  writeFileSync(join(repo, "apps/deployer/src/main.ts"), "// stub\n");
+  for (const args of [
+    ["init", "-q"],
+    ["add", "-A"],
+    ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x"],
+  ]) {
+    execFileSync("git", args, { cwd: repo });
+  }
+  head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
   bin = join(home, "fakebin");
   log = join(home, "calls.log");
   mkdirSync(bin);
@@ -125,7 +145,8 @@ describe("install-deployer.sh --apply", () => {
     const dplist = readFileSync(join(agents(), "inc.i.daemon.plist"), "utf8");
     expect(dplist).toContain(`${releases}/current/apps/daemon/src/main.ts`);
     expect(dplist).toContain(`${releases}/current/apps/daemon`);
-    expect(dplist).not.toContain(repo);
+    expect(dplist).not.toContain(`<string>${repo}/`);
+    expect(dplist).not.toContain(`<string>${repo}</string>`);
     expect(dplist).toContain("mini.tailnet.ts.net:8443,mini.tailnet.ts.net");
 
     // The deployer runs from the checkout and has no placeholders left.
@@ -166,6 +187,17 @@ describe("install-deployer.sh --apply", () => {
     expect(existsSync(join(agents(), "inc.i.deployer.plist"))).toBe(false);
   });
 
+  it("a second run leaves the plist byte for byte as the first made it, even though ~/i-inc is a prefix of ~/i-inc-releases", () => {
+    expect(install(["--apply"]).code).toBe(0);
+    const once = readFileSync(join(agents(), "inc.i.daemon.plist"), "utf8");
+    expect(once).toContain(`<string>${home}/i-inc-releases/current/apps/daemon/src/main.ts</string>`);
+    expect(once).not.toContain("-releases/current-releases");
+    for (let i = 0; i < 2; i++) expect(install(["--apply"]).code).toBe(0);
+    expect(readFileSync(join(agents(), "inc.i.daemon.plist"), "utf8")).toBe(once);
+    // And a dry run after the install proposes no change to the daemon plist.
+    expect(install(["--dry-run"]).out).toContain("already points at");
+  });
+
   it("refuses without an installed daemon", () => {
     rmSync(join(agents(), "inc.i.daemon.plist"));
     const r = install(["--apply"]);
@@ -188,6 +220,13 @@ describe("install-deployer.sh --rollback-install", () => {
     expect(existsSync(join(home, "i-inc-releases", head))).toBe(true);
   });
 
+  it("checks the restored daemon's health, and says so when it is not healthy", () => {
+    expect(install(["--apply"]).code).toBe(0);
+    const bad = install(["--rollback-install"], { FAKE_VERSION: "0".repeat(40) });
+    expect(bad.code).toBe(1);
+    expect(bad.out).toContain("WARNING: the daemon did not report version");
+  });
+
   it("with --dry-run only prints, and fails clearly with nothing to restore", () => {
     expect(install(["--rollback-install", "--dry-run"]).err).toContain("nothing to restore");
     expect(install(["--rollback-install"]).code).toBe(1);
@@ -195,6 +234,25 @@ describe("install-deployer.sh --rollback-install", () => {
 
   it("rejects unknown options", () => {
     expect(install(["--wat"]).code).toBe(2);
+  });
+});
+
+describe("install-daemon.sh after the deployer is installed", () => {
+  it("keeps the daemon on ~/i-inc-releases/current instead of resetting it to the checkout", () => {
+    expect(install(["--apply"]).code).toBe(0);
+    mkdirSync(join(home, "Library/Logs"), { recursive: true });
+    writeFileSync(join(home, "Library/Logs/i-inc-daemon.log"), "");
+    for (const f of ["install-daemon.sh", "inc.i.daemon.plist", "inc.i.container.plist"]) {
+      copyFileSync(join(source, "tools/host", f), join(repo, "tools/host", f));
+    }
+    const r = spawnSync("sh", [join(repo, "tools/host/install-daemon.sh")], {
+      encoding: "utf8",
+      env: { HOME: home, PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin` },
+    });
+    expect(r.stdout).toContain("the deployer is installed");
+    const plist = readFileSync(join(agents(), "inc.i.daemon.plist"), "utf8");
+    expect(plist).toContain(`<string>${home}/i-inc-releases/current/apps/daemon/src/main.ts</string>`);
+    expect(plist).not.toContain(`<string>${repo}/`);
   });
 });
 

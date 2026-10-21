@@ -96,13 +96,24 @@ reload() {
 if [ "$action" = rollback ]; then
   say "==> putting the old daemon plist back and removing the deployer"
   [ -f "$backup" ] || fail "no $backup: nothing to restore"
+  head_now=$(git -C "$repo" rev-parse HEAD)
   run launchctl bootout "gui/$uid/inc.i.deployer" 2>/dev/null || true
   run rm -f "$eplist"
   run launchctl bootout "gui/$uid/inc.i.daemon" 2>/dev/null || true
   run cp "$backup" "$dplist"
   run launchctl bootstrap "gui/$uid" "$dplist"
-  say "done. The daemon runs from $repo again. $releases is left in place:"
-  say "delete it with rm -rf when you no longer want it."
+  if [ "$dry" = 1 ]; then
+    say "    then wait for GET /api/health to report $(printf %s "$head_now" | cut -c1-7)"
+    exit 0
+  fi
+  if wait_for_version "$head_now"; then
+    say "the daemon runs from $repo again (version $(printf %s "$head_now" | cut -c1-7))."
+  else
+    say "WARNING: the daemon did not report version $head_now on /api/health after the restore."
+    say "See $home/Library/Logs/i-inc-daemon.log, and check $dplist."
+    exit 1
+  fi
+  say "$releases is left in place: delete it with rm -rf when you no longer want it."
   exit 0
 fi
 
@@ -132,7 +143,12 @@ else
 fi
 new=$(mktemp)
 trap 'rm -f "$new"' EXIT HUP INT TERM
-sed -e "s#$repo#$releases/current#g" "$dplist" >"$new"
+# An exact edit: only a <string> that is the checkout path itself, or starts with "<checkout>/", is
+# rewritten. (A bare prefix match would also hit ~/i-inc-releases, which starts with ~/i-inc.)
+esc_repo=$(printf '%s' "$repo" | sed 's/[][\.*^$#]/\\&/g')
+esc_rel=$(printf '%s' "$releases/current" | sed 's/[\&#]/\\&/g')
+sed -e "s#<string>$esc_repo</string>#<string>$esc_rel</string>#g" \
+  -e "s#<string>$esc_repo/#<string>$esc_rel/#g" "$dplist" >"$new"
 if cmp -s "$dplist" "$new"; then
   say "    already points at $releases/current"
   changed=0
@@ -182,6 +198,8 @@ fi
 reload inc.i.deployer "$eplist"
 
 say "==> done"
+say "    NOTE: re-running tools/host/install-daemon.sh from a checkout older than this change resets the"
+say "    daemon plist to $repo. If that happens, run this script again."
 say "    watch it:   tail -f $log"
 say "    deploys:    tail -n 5 $home/.i-inc/deploys.jsonl   (and My desk, under Releases)"
 say "    pause it:   launchctl bootout gui/$uid/inc.i.deployer"
