@@ -11,6 +11,7 @@ import type {
   Workspace,
 } from "@i-inc/core";
 import { type AgentBackend, NoAgentBackend } from "./ahp/backend.ts";
+import { ConversationPush, type ConversationPushOptions } from "./ahp/conversation-push.ts";
 import { agentsFromRegistry, ConversationService } from "./ahp/conversations.ts";
 import { AhpHost, type TransportLimits } from "./ahp/host.ts";
 import { AhpTransport } from "./ahp/transport.ts";
@@ -74,6 +75,10 @@ export interface AppOptions extends ApiOptions {
   /** What runs the agents behind conversations. Default: nothing yet (the session host, T59b). */
   ahpBackend?: FromRegistry<AgentBackend>;
   ahpLimits?: Partial<TransportLimits>;
+  /** Timings of the conversation pushes (T65), for tests: the grace, the re-look, a long reply, the scheduler. */
+  ahpPush?: Partial<
+    Pick<ConversationPushOptions, "graceMs" | "recheckMs" | "longTurnMs" | "maxWaitMs" | "schedule">
+  >;
   /** Let an AHP client upgrade without credentials and push the token with `authenticate` (off by default). */
   ahpDeferredAuth?: boolean;
 }
@@ -151,6 +156,17 @@ export async function createApp(o: AppOptions) {
   };
   const conversations = new ConversationService(db, host, registry, o.clock);
   deps.conversations = conversations;
+  // A permission or a question nobody is looking at becomes a push that opens the card (T65).
+  const conversationPush = new ConversationPush({
+    host,
+    conversations,
+    registry,
+    db,
+    push: deps.push,
+    now: () => o.clock.now(),
+    ...(o.log ? { log: o.log } : {}),
+    ...o.ahpPush,
+  });
   const transport = new AhpTransport(host, {
     ...(token ? { token } : {}),
     ...(o.hosts ? { hosts: o.hosts } : {}),
@@ -224,6 +240,6 @@ export async function createApp(o: AppOptions) {
     live,
     storage,
     deploys,
-    ahp: { host, transport, conversations, backend },
+    ahp: { host, transport, conversations, backend, push: conversationPush },
   };
 }

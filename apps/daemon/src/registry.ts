@@ -16,7 +16,7 @@ import {
 } from "@i-inc/core";
 import type { UsageReport } from "./acp.ts";
 import type { Db } from "./db.ts";
-import type { PushSubscription } from "./push.ts";
+import type { NotifySettings, PushSubscription } from "./push.ts";
 
 /** A repo employees work on, and the checks its tickets must pass (spec §6, stages 4 and 8). */
 export interface Project extends Partial<ProjectPolicy> {
@@ -54,6 +54,8 @@ export interface Settings {
   currency: string;
   /** Retention and cleanup settings the owner changed (T52); the rest keep their defaults. */
   storage?: Partial<StorageSettings>;
+  /** What the owner chose to be notified about (T65); the rest keep their defaults. */
+  notify?: Partial<NotifySettings>;
 }
 
 const defaultSettings: Settings = { utcOffsetMinutes: 0, pricePerKWh: 0, currency: "USD" };

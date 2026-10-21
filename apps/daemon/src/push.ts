@@ -34,7 +34,32 @@ export interface NotificationPayload {
   title: string;
   body: string;
   url: string;
+  /** One notification per tag: a newer one replaces the older (T65 uses one tag per conversation). */
+  tag?: string;
+  /** Not a notification: close the one with this tag (the request it was about has been answered). */
+  resolve?: boolean;
 }
+
+/**
+ * What the owner wants to hear about beyond tickets (T65). Stored with the company settings, so it
+ * applies to every device that has push on.
+ */
+export interface NotifySettings {
+  /** A conversation's agent is waiting for a permission or an answer and nobody is looking. */
+  conversationsNeedMe: boolean;
+  /** A turn the owner started ran for a while and finished, and nobody is looking. */
+  longReplyFinished: boolean;
+}
+
+export const defaultNotify: NotifySettings = { conversationsNeedMe: true, longReplyFinished: false };
+
+export const notifyKeys = Object.keys(defaultNotify) as (keyof NotifySettings)[];
+
+/** The stored settings over the defaults. */
+export const notifySettings = (stored: Partial<NotifySettings> | undefined): NotifySettings => ({
+  conversationsNeedMe: stored?.conversationsNeedMe ?? defaultNotify.conversationsNeedMe,
+  longReplyFinished: stored?.longReplyFinished ?? defaultNotify.longReplyFinished,
+});
 
 export interface PushService {
   publicKey(): string;

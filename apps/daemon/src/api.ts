@@ -57,7 +57,7 @@ import {
 import { sniffImage } from "./images.ts";
 import type { Change, Repo } from "./knowledge.ts";
 import { type ProposalStatus, RECOVERED_BODY } from "./proposals.ts";
-import type { PushSubscription } from "./push.ts";
+import { type NotifySettings, notifyKeys, notifySettings, type PushSubscription } from "./push.ts";
 import { defaultTeam, type Project } from "./registry.ts";
 import type { NewAttachment, NewTicket } from "./tickets.ts";
 import {
@@ -704,6 +704,30 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         }
         await d.push?.unsubscribe(b.endpoint.trim());
         return json({ ok: true });
+      },
+    ],
+
+    // C2 (T65): what the owner is notified about, beyond tickets. One setting for every device.
+    [
+      "GET",
+      "/api/push/settings",
+      async () => json({ settings: notifySettings(d.registry.settings().notify) }),
+    ],
+
+    [
+      "PUT",
+      "/api/push/settings",
+      async (req) => {
+        const body = await readObject(req);
+        if (body === null) return json({ error: "send a JSON object of settings" }, 400);
+        const patch: Partial<NotifySettings> = {};
+        for (const [key, value] of Object.entries(body)) {
+          if (!(notifyKeys as string[]).includes(key)) return json({ error: `unknown setting ${key}` }, 400);
+          if (typeof value !== "boolean") return json({ error: `${key} must be true or false` }, 400);
+          patch[key as keyof NotifySettings] = value;
+        }
+        d.registry.setSettings({ notify: { ...d.registry.settings().notify, ...patch } });
+        return json({ settings: notifySettings(d.registry.settings().notify) });
       },
     ],
 
