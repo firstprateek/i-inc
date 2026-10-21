@@ -180,8 +180,8 @@ function scan(code: string, l: Lang, json: boolean): Token[] {
     }
     if (l.block && code.startsWith(l.block[0], i)) {
       const close = code.indexOf(l.block[1], i + l.block[0].length);
+      probe.work?.((close < 0 ? code.length : close) - i); // what the search looked at
       const end = close < 0 ? code.length : close + l.block[1].length;
-      probe.work?.(end - i);
       push("com", code.slice(i, end));
       i = end;
       continue;
@@ -268,8 +268,8 @@ function markupTokens(code: string): Token[] {
     if (code.startsWith("<!--", i)) {
       // A comment ends at the first `-->`, or runs to the end of the text; either way the scan moves on.
       const close = code.indexOf("-->", i + 4);
+      probe.work?.((close < 0 ? code.length : close) - i); // what the search looked at
       const end = close < 0 ? code.length : close + 3;
-      probe.work?.(end - i);
       out.push({ t: "com", s: code.slice(i, end) });
       i = end;
       continue;
