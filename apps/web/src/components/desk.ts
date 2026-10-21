@@ -1,7 +1,8 @@
 import { css, html } from "lit";
-import { api, call, type DeskView, type NamedChange, refreshNow } from "../api.ts";
+import { api, type DeskView, type NamedChange, refreshNow } from "../api.ts";
 import { describe } from "./knowledge.ts";
 import { LAYOUT_BREAKPOINTS, layoutStyles } from "./layout.ts";
+import "./deploys.ts";
 import { Loader } from "./loader.ts";
 import { base, projectBadge } from "./shared.ts";
 
@@ -20,32 +21,10 @@ const waitNames: Record<string, string> = {
   "owner-decision": "Your decisions",
 };
 
-/** One line of the deployer's record (contract C21): GET /api/deploys. */
-interface Deploy {
-  at: number;
-  sha: string;
-  from: string | null;
-  outcome: "deployed" | "rolled-back" | "failed-build" | "failed-smoke" | "skipped-ci";
-  reason: string;
-  durationMs: number;
-}
-
-const deployNames: Record<Deploy["outcome"], string> = {
-  deployed: "Deployed",
-  "rolled-back": "Rolled back",
-  "failed-build": "Build failed",
-  "failed-smoke": "Smoke test failed",
-  "skipped-ci": "Skipped: CI failed",
-};
-
-const when = (at: number) => new Date(at).toISOString().slice(0, 16).replace("T", " ");
-const took = (ms: number) =>
-  ms < 1000 ? "" : ms < 90_000 ? `${Math.round(ms / 1000)} s` : `${Math.round(ms / 60_000)} min`;
-
 const hours = (h: number) => (h < 1 ? `${Math.round(h * 60)} min` : `${h.toFixed(1)} h`);
 const money = (n: number) => `$${n.toFixed(n < 10 ? 2 : 0)}`;
 
-export class IncDesk extends Loader<DeskView & { learned: NamedChange[]; deploys: Deploy[] }> {
+export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
   static override properties = {
     ...Loader.properties,
     cutting: { state: true },
@@ -61,14 +40,7 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[]; deploys
     this.actionError = null;
   }
 
-  protected fetch = async () => ({
-    ...(await api.desk()),
-    learned: await api.learned(),
-    // An older daemon has no /api/deploys: show no list rather than an error.
-    deploys: await call<{ deploys: Deploy[] }>("GET", "/api/deploys")
-      .then((r) => r.deploys)
-      .catch(() => [] as Deploy[]),
-  });
+  protected fetch = async () => ({ ...(await api.desk()), learned: await api.learned() });
 
   static override styles = [
     base,
@@ -116,13 +88,6 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[]; deploys
       .recent-release-header { display: flex; align-items: center; gap: 8px; font-size: 13px; }
       .recent-release-meta { font-size: 12px; }
       .pending-ticket a, .learned a { overflow-wrap: anywhere; }
-      .deploys { display: flex; flex-direction: column; gap: 4px; }
-      .deploy { display: flex; flex-direction: column; gap: 2px; padding: 6px 0; border-top: 1px solid var(--line); font-size: 13px; }
-      .deploy:first-child { border-top: none; }
-      .deploy-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-      .deploy-outcome { font-weight: 700; }
-      .deploy.bad .deploy-outcome { color: var(--alarm); }
-      .deploy-reason { color: var(--ink-2); overflow-wrap: anywhere; }
       @media (max-width: ${LAYOUT_BREAKPOINTS.phone}px) {
         .grid > * { grid-column: 1 / -1 !important; }
         .grid > .tile { grid-column: span 6 !important; }
@@ -288,22 +253,7 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[]; deploys
             </div>`
             : html`<span class="note">No releases cut yet.</span>`
         }
-        <h3>Deploys</h3>
-        ${
-          (d.deploys ?? []).length
-            ? html`<div class="deploys">${(d.deploys ?? []).slice(0, 8).map(
-                (x) => html`<div class="deploy ${x.outcome === "deployed" ? "" : "bad"}">
-                  <div class="deploy-head">
-                    <span class="deploy-outcome">${deployNames[x.outcome] ?? x.outcome}</span>
-                    <span class="font-mono">${x.sha.slice(0, 7)}</span>
-                    <span class="spacer"></span>
-                    <small class="muted">${when(x.at)}${took(x.durationMs) ? ` · ${took(x.durationMs)}` : ""}</small>
-                  </div>
-                  ${x.reason ? html`<span class="deploy-reason">${x.reason}</span>` : ""}
-                </div>`,
-              )}</div>`
-            : html`<span class="note">No deploys yet. New commits with green CI go live by themselves once the deployer is installed.</span>`
-        }
+        <inc-deploys></inc-deploys>
       </section>
     </div>`;
   }
