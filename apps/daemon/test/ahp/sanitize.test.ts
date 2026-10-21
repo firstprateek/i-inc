@@ -57,10 +57,13 @@ describe("redaction leaves no secret at any position", () => {
 });
 
 /**
- * The best of three runs, in ms: a machine busy with other test files can slow one run by a factor
- * of two, but not all three, and a pattern that backtracks costs seconds, not milliseconds.
+ * The best of several runs, in ms. How long a run takes depends on how busy the machine is, so the
+ * tests ask how the time GROWS: four times the text must cost less than six times the time (a pattern
+ * that backtracks is quadratic or worse: sixteen times at least, and seconds at 64 KB). A run too
+ * short to measure counts as fast. The absolute limits (50 ms for 64 KB, 200 ms for an action) are
+ * checked when I_INC_BENCH is set, on a quiet machine.
  */
-const fastest = <T>(fn: () => T, runs = 3): { ms: number; value: T } => {
+const fastest = <T>(fn: () => T, runs = 5): { ms: number; value: T } => {
   let best = Number.POSITIVE_INFINITY;
   let value = undefined as T;
   for (let i = 0; i < runs; i++) {
@@ -70,13 +73,16 @@ const fastest = <T>(fn: () => T, runs = 3): { ms: number; value: T } => {
   }
   return { ms: best, value };
 };
+const bench = !!process.env.I_INC_BENCH;
+/** Time of the full-size input, and whether it grew linearly from a quarter of it. */
+function scaling<T>(whole: () => T, quarter: () => unknown): { ms: number; linear: boolean; value: T } {
+  quarter(); // warm up
+  const small = fastest(quarter).ms;
+  const big = fastest(whole);
+  return { ms: big.ms, linear: big.ms < 8 || big.ms / Math.max(small, 0.5) < 6, value: big.value };
+}
 
 describe("hostile input costs milliseconds", () => {
-  const time = (f: () => unknown) => {
-    const t = performance.now();
-    f();
-    return performance.now() - t;
-  };
   it("takes 60 KB of one letter, of hex, of base64 and of dotted words without stalling", () => {
     for (const text of [
       "z".repeat(65_536),
@@ -86,7 +92,12 @@ describe("hostile input costs milliseconds", () => {
       `${"key-".repeat(13_000)}=`,
       `${"https:".repeat(10_000)}`,
     ]) {
-      expect(time(() => redactText(text))).toBeLessThan(400);
+      const r = scaling(
+        () => redactText(text),
+        () => redactText(text.slice(0, text.length / 4)),
+      );
+      expect(r.linear).toBe(true);
+      if (bench) expect(r.ms).toBeLessThan(400);
     }
   });
   it("drops a long unbroken run, with its length, and keeps ordinary lines whole", () => {
@@ -100,7 +111,7 @@ describe("hostile input costs milliseconds", () => {
   });
 });
 
-describe("hostile input costs milliseconds, of every class", () => {
+describe("hostile input costs time linear in its length, of every class", () => {
   const N = 65_536;
   const rep = (x: string) => x.repeat(Math.ceil(N / x.length)).slice(0, N);
   const lcg = (alphabet: string) => {
@@ -161,31 +172,47 @@ describe("hostile input costs milliseconds, of every class", () => {
     emptyValues: rep("password: ''"),
   };
   for (const [name, text] of Object.entries(classes)) {
-    it(`redacts 64 KB of ${name} in under 50 ms`, () => {
-      redactText(text.slice(0, 1024)); // warm up the regex engine
-      const { ms, value: out } = fastest(() => redactText(text));
-      expect(ms).toBeLessThan(50);
-      expect(out.length).toBeLessThanOrEqual(text.length * 2);
+    it(`redacts 64 KB of ${name} in time linear in its length`, () => {
+      const r = scaling(
+        () => redactText(text),
+        () => redactText(text.slice(0, N / 4)),
+      );
+      expect(r.linear).toBe(true);
+      expect(r.value.length).toBeLessThanOrEqual(text.length * 2);
+      if (bench) expect(r.ms).toBeLessThan(50);
     });
   }
 
-  it("keeps a whole maximum-size action, sixteen such strings, under 200 ms", () => {
+  it("keeps a whole maximum-size action, sixteen such strings, linear in its size", () => {
     const names = Object.keys(classes);
-    const content = Array.from({ length: 16 }, (_, i) => ({
-      type: "text",
-      text: classes[names[(i * 3) % names.length] as string],
-    }));
-    const { ms, value: out } = fastest(() =>
-      sanitizeAction({ result: { content } }, { maxString: 64 * 1024, maxAction: 1024 * 1024 }),
+    // the same four strings over again, so sixteen of them are four times the work of four
+    const four = [0, 5, 11, 20].map((k) => classes[names[k % names.length] as string]);
+    const action = (n: number) => ({
+      result: { content: Array.from({ length: n }, (_, i) => ({ type: "text", text: four[i % 4] })) },
+    });
+    const caps = { maxString: 64 * 1024, maxAction: 1024 * 1024 };
+    const r = scaling(
+      () => sanitizeAction(action(16), caps),
+      () => sanitizeAction(action(4), caps),
     );
-    expect(ms).toBeLessThan(200);
-    expect(JSON.stringify(out).length).toBeLessThanOrEqual(1024 * 1024 + 1000);
+    expect(r.linear).toBe(true);
+    expect(JSON.stringify(r.value).length).toBeLessThanOrEqual(1024 * 1024 + 1000);
+    if (bench) expect(r.ms).toBeLessThan(200);
     // and 64 KB blocks of blanks, the worst class for the old redactor, sixteen at a time
-    const blanks = Array.from({ length: 16 }, (_, i) => ({
-      type: "text",
-      text: [" ", "\n", "\t", "\r\n"][i % 4]?.repeat(N / 2),
-    }));
-    expect(fastest(() => sanitizeAction({ result: { content: blanks } })).ms).toBeLessThan(200);
+    const blanks = (n: number) => ({
+      result: {
+        content: Array.from({ length: n }, (_, i) => ({
+          type: "text",
+          text: [" ", "\n", "\t", "\r\n"][i % 4]?.repeat(N / 2),
+        })),
+      },
+    });
+    const b = scaling(
+      () => sanitizeAction(blanks(16)),
+      () => sanitizeAction(blanks(4)),
+    );
+    expect(b.linear).toBe(true);
+    if (bench) expect(b.ms).toBeLessThan(200);
   });
 });
 

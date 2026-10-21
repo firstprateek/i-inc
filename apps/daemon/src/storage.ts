@@ -101,6 +101,8 @@ export interface StorageDeps {
   memory?: () => NodeJS.MemoryUsage;
   /** How long after truncating a log to wait before checking its start (default 2 s). */
   logSettleMs?: number;
+  /** Replaces that wait with an action (tests). */
+  logSettle?: () => Promise<void>;
 }
 
 export interface FsUsage {
@@ -657,6 +659,7 @@ export class Storage {
           keep: settings.logKeep,
           dryRun,
           ...(this.d.logSettleMs !== undefined ? { settleMs: this.d.logSettleMs } : {}),
+          ...(this.d.logSettle ? { settle: this.d.logSettle } : {}),
         });
         for (const l of out.logs.filter((x) => x.nulAtStart)) {
           this.log(

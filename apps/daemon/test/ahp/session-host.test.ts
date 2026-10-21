@@ -752,6 +752,35 @@ describe("mapper and brief details", () => {
     expect(t.host.chatState(c.chat)?.turns[0]?.state).toBe(TurnState.Complete);
   });
 
+  it("runs a steering message as the next turn, ahead of the queue, without interrupting the one running (what the docs say)", async () => {
+    const t = await sessionRig();
+    const c = await t.create();
+    const a = await t.client(c);
+    a.dispatch(c.chat, turnStarted("slow work", "t1"));
+    await until(() => t.sandbox.last.prompts.length === 1, 2000, "the first prompt");
+    const pending = (kind: string, id: string, text: string) =>
+      a.dispatch(c.chat, {
+        type: ActionType.ChatPendingMessageSet,
+        kind,
+        id,
+        message: { text, origin: { kind: "user" } },
+      });
+    pending("queued", "q1", "plain queued");
+    pending("steering", "s1", "plain steer");
+    await new Promise((r) => setTimeout(r, 120));
+    // nothing was injected into the running turn: no cancel, no second prompt, the turn is still going
+    expect(t.sandbox.last.received.some((m) => m.method === "session/cancel")).toBe(false);
+    expect(t.sandbox.last.prompts).toHaveLength(1);
+    expect(t.host.chatState(c.chat)?.activeTurn?.id).toBe("t1");
+    expect(t.host.chatState(c.chat)?.steeringMessage?.id).toBe("s1");
+    // Stop interrupts it, and the steering message is the next prompt, then the queued one
+    a.dispatch(c.chat, { type: ActionType.ChatTurnCancelled, turnId: "t1", duration: 0 });
+    await until(() => t.sandbox.last.prompts.length === 3, 4000, "both pending messages to run");
+    const text = (i: number) => JSON.stringify(t.sandbox.last.prompts[i]?.blocks);
+    expect(text(1)).toContain("plain steer");
+    expect(text(2)).toContain("plain queued");
+  });
+
   it("takes the agent's title for an unnamed conversation, and never over the owner's", async () => {
     const t = await sessionRig();
     const c = await t.create();
