@@ -130,6 +130,19 @@ export async function createApp(o: AppOptions) {
     ...(o.brainHome ? { home: o.brainHome } : {}),
   });
 
+  // A change of team (or an employee who leaves) takes their copy out of the machine they worked in.
+  const registryChanged = registry.onChange;
+  registry.onChange = (kind) => {
+    registryChanged?.(kind);
+    // After the change has settled (a team change is several writes in one transaction).
+    if (kind === "employee" || kind === "team") {
+      setTimeout(
+        () => void brainFeed?.reconcile().catch((e) => o.log?.(`brain: couldn't tidy copies: ${String(e)}`)),
+        0,
+      ).unref?.();
+    }
+  };
+
   const deps: DaemonDeps = {
     brainFeed,
     clock: o.clock,

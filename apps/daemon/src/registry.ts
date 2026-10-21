@@ -189,6 +189,16 @@ export class Registry implements Company {
   teamOf(employeeId: Id): Team {
     return this.teams().find((t) => t.members.includes(employeeId)) ?? defaultTeam;
   }
+  /** The other employees who work in the same sandbox as this one. */
+  machineMates(employeeId: Id): Id[] {
+    const team = this.teamOf(employeeId);
+    const teams = this.teams();
+    const named = teams.some((t) => t.id === team.id);
+    const claimed = new Set(teams.flatMap((t) => t.members));
+    return this.employees()
+      .filter((e) => e.id !== employeeId && (named ? team.members.includes(e.id) : !claimed.has(e.id)))
+      .map((e) => e.id);
+  }
   /** How a project's work reaches main: its own settings over the defaults (direct). */
   projectPolicy(project: string): ProjectPolicy {
     const p = this.project(project);

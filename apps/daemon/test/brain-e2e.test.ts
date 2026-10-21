@@ -138,6 +138,39 @@ describe("a ticket stage", () => {
   });
 });
 
+describe("a PA's session", () => {
+  it("carries its home data in an errand, and none of it into work that goes to a repository", async () => {
+    const w = await world();
+    const ports = (w.app.daemon as unknown as { ports: { agent: { run: (r: Any) => Promise<Any> } } }).ports;
+    const run = async (type: Ticket["type"], title: string) => {
+      const ticket = w.app.deps.tickets.create(
+        {
+          title,
+          project: type === "errand" ? "Home" : "Duet",
+          type,
+          effort: "low",
+          doneWhen: [],
+          assignee: "pip",
+        },
+        w.clock.now(),
+      );
+      await ports.agent.run({
+        ticket,
+        stage: "work",
+        duty: "build",
+        employee: w.app.deps.registry.employee("pip"),
+        engine: w.app.deps.registry.engine("qwen"),
+        brief: "do it",
+      });
+      return (w.fake.last.prompts[0]?.blocks ?? []).map((b: Any) => b.text).join("\n");
+    };
+    expect(await run("errand", "Book the dentist")).toContain("homedata");
+    expect(await run("fix", "Dentist Duet fix")).not.toContain("homedata");
+    // Nothing of Pip's reached the engineers' machine in any of it.
+    expect(w.runs.every((x) => x.employeeId === "pip" || !x.script.includes("homedata"))).toBe(true);
+  });
+});
+
 describe("a conversation", () => {
   it("adds the matching pages to a turn once, publishes them for the context panel, and counts the agent's reads", async () => {
     const w = await world();

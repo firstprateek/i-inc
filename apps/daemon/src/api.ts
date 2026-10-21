@@ -20,6 +20,7 @@ import {
   handOff,
   hiringProblems,
   type Id,
+  isHomeEmployee,
   knowledgeLog,
   type ProjectRelease,
   type ProposedEdit,
@@ -27,6 +28,7 @@ import {
   retry,
   type SandboxStatus,
   type Scope,
+  sharedHomeProblems,
   type Ticket,
   type TicketState,
 } from "@i-inc/core";
@@ -120,6 +122,11 @@ const longRunning = new Set([
 
 export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) {
   const lastSandboxRetry = new Map<string, number>();
+  /** The employees who work in a team's sandbox. */
+  const membersOf = (teamId: string): Employee[] => {
+    const team = d.registry.teams().find((t) => t.id === teamId);
+    return d.registry.employees().filter((e) => team?.members.includes(e.id));
+  };
   const startedAt = d.clock.now();
   const gh = new GitHubProjects(d.tokens, {
     now: () => d.clock.now(),
@@ -635,6 +642,12 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         ) {
           return json({ error: 'sandbox is {"cpus": 6, "memory": "12G"}' }, 400);
         }
+        // A PA's home data must not share a sandbox (and a Unix user) with anyone else.
+        const crowd = sharedHomeProblems(
+          b.name,
+          d.registry.employees().filter((e) => (members as string[]).includes(e.id)),
+        );
+        if (crowd.length) return json({ error: crowd.join("; "), problems: crowd }, 400);
         d.registry.setTeam({
           id,
           name: b.name,
@@ -1516,11 +1529,16 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         const body = (await req.json()) as Partial<Employee> & { teamId?: unknown };
         const teams = d.registry.teams();
         let teamId: string | undefined;
+        // A PA (home data) gets a team and sandbox of its own unless the owner names a team, which
+        // must then be empty (checked below).
+        let ownTeam = false;
         if (body.teamId !== undefined) {
           if (typeof body.teamId !== "string" || !teams.some((team) => team.id === body.teamId)) {
             return json({ error: "teamId must name an existing team" }, 400);
           }
           teamId = body.teamId;
+        } else if (isHomeEmployee({ role: body.role ?? "" })) {
+          ownTeam = true;
         } else if (teams.length === 1) {
           teamId = teams[0]?.id;
         } else if (teams.length > 1) {
@@ -1547,6 +1565,19 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         };
         const problems = hiringProblems(hire, d.registry.engines(), d.registry.employees());
         if (problems.length) return json({ error: problems.join("; "), problems }, 400);
+        if (teamId) {
+          const team = d.registry.teams().find((t) => t.id === teamId);
+          const crowd = sharedHomeProblems(team?.name ?? teamId, [...membersOf(teamId), hire]);
+          if (crowd.length) return json({ error: crowd.join("; "), problems: crowd }, 400);
+        }
+        if (ownTeam) {
+          let n = 0;
+          const base = `home-${hire.id}`.slice(0, 32);
+          const taken = new Set(d.registry.teams().map((t) => t.id));
+          teamId = base;
+          while (taken.has(teamId)) teamId = `${base.slice(0, 29)}-${++n}`;
+          d.registry.addTeam({ id: teamId, name: `${hire.name}'s home`, members: [] });
+        }
         if (teamId) d.registry.saveEmployeeInTeam(hire, teamId);
         else d.registry.hire(hire);
         // A brain from the template, and orientation as the first ticket (spec §5, "Hiring").
@@ -1606,6 +1637,25 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           d.registry.employees().filter((e) => e.id !== id),
         );
         if (problems.length) return json({ error: problems.join("; "), problems }, 400);
+        // Where the employee will work: the team named, or (for a change of role into a home-data role)
+        // the one it is in now. A PA never shares a sandbox with anyone.
+        const target =
+          typeof b.teamId === "string"
+            ? b.teamId
+            : b.role !== undefined && isHomeEmployee(updated) && !isHomeEmployee(existing)
+              ? d.registry.teamOf(id).id
+              : undefined;
+        if (target !== undefined) {
+          const named = d.registry.teams().find((t) => t.id === target);
+          const crowd = sharedHomeProblems(named?.name ?? "The company's sandbox", [
+            ...(named
+              ? membersOf(target)
+              : d.registry.machineMates(id).map((m) => d.registry.employee(m))
+            ).filter((m) => m.id !== id),
+            updated,
+          ]);
+          if (crowd.length) return json({ error: crowd.join("; "), problems: crowd }, 400);
+        }
         if (typeof b.teamId === "string") d.registry.saveEmployeeInTeam(updated, b.teamId);
         else d.registry.hire(updated);
         if (b.prompt !== undefined || b.role !== undefined || b.name !== undefined) {

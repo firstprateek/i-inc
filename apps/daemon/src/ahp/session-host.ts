@@ -374,6 +374,8 @@ export class SessionHost implements AgentBackend {
         title: title && title !== DEFAULT_TITLE ? title : undefined,
         project: live.info.project,
         fresh: blank,
+        // A conversation on a project can push to a repository; a PA's home data stays out of it.
+        allowHome: live.info.project === null,
       });
       this.publishBrain(live, ctx.conversationPages);
       return ctx.text;

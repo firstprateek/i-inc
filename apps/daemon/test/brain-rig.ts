@@ -24,6 +24,8 @@ export function cleanRigs(): void {
 export interface Run {
   employeeId: string;
   script: string;
+  /** The machine named for the script, when it isn't the employee's own. */
+  machine?: string | undefined;
 }
 
 /**
@@ -38,8 +40,13 @@ export async function brainRig(o: { delivered?: boolean; real?: boolean } = {}) 
   const logs: string[] = [];
   const runs: Run[] = [];
   const failing = { next: false };
-  const local = async (employeeId: string, script: string) => {
-    runs.push({ employeeId, script });
+  const local = async (
+    employeeId: string,
+    script: string,
+    _env?: Record<string, string>,
+    opts?: { machine?: string },
+  ) => {
+    runs.push({ employeeId, script, machine: opts?.machine });
     if (failing.next) return { code: 1, output: "boom" };
     const r = spawnSync("bash", ["-s"], { input: script, encoding: "utf8", maxBuffer: 1 << 28 });
     return { code: r.status ?? 1, output: `${r.stdout}${r.stderr}` };
@@ -51,9 +58,9 @@ export async function brainRig(o: { delivered?: boolean; real?: boolean } = {}) 
         machine: noWalls,
         exec: async () => "",
         launch: fake.launch,
-        runScript: async (employeeId, script) =>
-          /__INC_TAR__|\.snapshot\.id/.test(script)
-            ? local(employeeId, script)
+        runScript: async (employeeId, script, _env, opts) =>
+          /__INC_TAR__|\.snapshot\.id|@@removed/.test(script)
+            ? local(employeeId, script, {}, opts)
             : { code: 0, output: "@@ready\n" },
         log: (m) => logs.push(m),
       })
@@ -71,6 +78,8 @@ export async function brainRig(o: { delivered?: boolean; real?: boolean } = {}) 
   });
   seedDemo(app.deps.registry);
   app.deps.registry.addTeam({ id: "engineering", name: "Engineering", members: ["ada", "kit"] });
+  // A PA works alone in its sandbox (hiring makes this team; the demo cast was seeded without one).
+  app.deps.registry.addTeam({ id: "home-pip", name: "Pip's home", members: ["pip"] });
   app.daemon.ensureKnowledge();
   const feed = app.deps.brainFeed;
   if (!o.real && o.delivered !== false) feed.deliver = local;
@@ -96,9 +105,22 @@ export async function brainRig(o: { delivered?: boolean; real?: boolean } = {}) 
   };
   /** Where an employee's copy is on the fake sandbox. */
   const copy = (employeeId: string, ...rest: string[]) => join(sandbox, employeeId, ...rest);
+  const call = async (method: string, path: string, body?: unknown) => {
+    const res = await app.handle(
+      new Request(`http://i.inc${path}`, {
+        method,
+        ...(method === "GET"
+          ? {}
+          : { body: JSON.stringify(body ?? {}), headers: { "content-type": "application/json" } }),
+      }),
+    );
+    // biome-ignore lint/suspicious/noExplicitAny: tests read the API's JSON loosely.
+    return { status: res.status, body: (await res.json()) as Record<string, any> };
+  };
   return {
     app,
     logs,
+    call,
     fake,
     feed,
     runs,

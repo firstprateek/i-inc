@@ -111,6 +111,7 @@ export function migrate(db: Db): void {
       employee_id TEXT NOT NULL,
       snapshot_id TEXT NOT NULL,
       files TEXT NOT NULL,
+      pending TEXT NOT NULL DEFAULT '[]',
       at INTEGER NOT NULL,
       PRIMARY KEY (machine, employee_id)
     );

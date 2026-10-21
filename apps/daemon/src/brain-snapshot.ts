@@ -119,6 +119,12 @@ export function applyScript(o: ApplyOptions): string {
   ].join("\n");
 }
 
+/** Takes a whole copy out of a sandbox (the employee moved to another team, left, or may not have one). */
+export function removeScript(rootDir: string): string {
+  if (!root.test(rootDir) || rootDir.split("/").length < 5) throw new Error(`not a copy folder: ${rootDir}`);
+  return `rm -rf -- '${rootDir}' && echo @@removed\n`;
+}
+
 /** Asks whether the sandbox still holds exactly this snapshot (it can be wiped by a storage clean-up). */
 export function verifyScript(rootDir: string, id: string): string {
   if (!root.test(rootDir) || !idShape.test(id)) throw new Error("not a copy folder or snapshot id");
@@ -127,6 +133,8 @@ export function verifyScript(rootDir: string, id: string): string {
 
 export interface ApplyResult {
   kind: "synced" | "current" | "need-full" | "failed";
+  /** `brain search` works in that sandbox. */
+  search: boolean;
   applied?: number;
   removed?: number;
   /** Files whose local edits were kept (they differ from the baseline). */
@@ -137,16 +145,18 @@ export interface ApplyResult {
 export function parseApply(code: number, output: string): ApplyResult {
   const lines = output.split("\n");
   const kept = lines.filter((l) => l.startsWith("@@kept ")).map((l) => l.slice(7));
-  if (lines.some((l) => l.startsWith("@@need-full"))) return { kind: "need-full", kept };
+  const search = !lines.some((l) => l.startsWith("@@warn no-search"));
+  if (lines.some((l) => l.startsWith("@@need-full"))) return { kind: "need-full", kept, search };
   const synced = lines.find((l) => l.startsWith("@@synced "));
   if (code === 0 && synced) {
     const n = (k: string) => Number(new RegExp(`${k}=(\\d+)`).exec(synced)?.[1] ?? 0);
-    return { kind: "synced", applied: n("applied"), removed: n("removed"), kept };
+    return { kind: "synced", applied: n("applied"), removed: n("removed"), kept, search };
   }
-  if (code === 0 && lines.some((l) => l.startsWith("@@current"))) return { kind: "current", kept };
+  if (code === 0 && lines.some((l) => l.startsWith("@@current"))) return { kind: "current", kept, search };
   const fail = lines.find((l) => l.startsWith("@@fail "));
   return {
     kind: "failed",
+    search,
     kept,
     detail: (fail ? fail.slice(7) : output.trim().split("\n").slice(-3).join(" ")).slice(0, 200),
   };
