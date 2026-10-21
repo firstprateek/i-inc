@@ -389,7 +389,11 @@ export class AhpHost {
     ch.sinceSnapshot = snapshotDue ? 0 : ch.sinceSnapshot + 1;
     const env: ActionEnvelope = { channel, action, serverSeq: seq, origin };
     this.broadcast(channel, env);
-    this.hooks.onApplied?.(channel, action);
+    try {
+      this.hooks.onApplied?.(channel, action);
+    } catch (e) {
+      this.log(`ahp: onApplied failed for ${action.type}: ${e instanceof Error ? e.message : e}`);
+    }
     if (
       ch.c.kind === "chat" &&
       action.type !== ActionType.ChatDelta &&
@@ -724,7 +728,8 @@ export class AhpHost {
       conn.authed = true;
       return null;
     }
-    if (++conn.authFailures >= 3) this.drop(conn, 1008, "authentication failed");
+    // Dropped after the error has gone out, so the client knows why.
+    if (++conn.authFailures >= 3) queueMicrotask(() => this.drop(conn, 1008, "authentication failed"));
     throw new RpcError(AhpErrorCodes.AuthRequired, "that token is not accepted", { resources: [] });
   }
 
@@ -1466,8 +1471,14 @@ export class AhpHost {
             return false;
           const t = (action as { turnId?: string }).turnId;
           if (t !== undefined && t !== turnId) return false;
-          this.emit(chat, action);
-          return true;
+          try {
+            this.emit(chat, action);
+            return true;
+          } catch (e) {
+            // The write failed (disk full?): the state did not move, so the agent is told it was dropped.
+            this.log(`ahp: dropped ${action.type} on ${chat}: ${e instanceof Error ? e.message : e}`);
+            return false;
+          }
         },
       },
     };
@@ -1485,13 +1496,23 @@ export class AhpHost {
           message: e instanceof Error ? e.message : String(e),
         };
       }
-      this.finishTurn(chat, run, outcome);
+      try {
+        this.finishTurn(chat, run, outcome);
+      } catch (e) {
+        this.log(
+          `ahp: could not record the end of turn ${turnId} on ${chat}: ${e instanceof Error ? e.message : e}`,
+        );
+      }
     })();
     run.done = done;
     this.tails.set(chat, done);
     void done.then(() => {
       if (this.runs.get(chat) === run) this.runs.delete(chat);
-      this.drain(chat);
+      try {
+        this.drain(chat);
+      } catch (e) {
+        this.log(`ahp: could not start the next message on ${chat}: ${e instanceof Error ? e.message : e}`);
+      }
     });
   }
 

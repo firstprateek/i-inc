@@ -23,6 +23,8 @@ export interface TransportOptions {
   keepaliveMs?: number;
   /** How long a client that upgraded without credentials has to authenticate. */
   authDeadlineMs?: number;
+  /** The WebSocket's idle timeout in seconds (Bun closes a socket with no traffic for this long). */
+  idleTimeoutSec?: number;
 }
 
 export const AHP_PATH = "/ahp";
@@ -97,7 +99,7 @@ export class AhpTransport {
       // Frames above this are closed by the server itself (1009), before they are buffered whole.
       maxPayloadLength: this.host.limits.maxMessageBytes,
       // The server's HTTP idle timeout is 60 s; pings every 25 s (below) keep a quiet socket well inside it.
-      idleTimeout: 60,
+      idleTimeout: this.o.idleTimeoutSec ?? 60,
       sendPings: true,
       backpressureLimit: this.host.limits.maxBufferedBytes * 2,
       closeOnBackpressureLimit: true,

@@ -4,15 +4,15 @@ import { describe, expect, it } from "vitest";
 import {
   ActionType,
   PendingMessageKind,
-  ROOT,
   ResponsePartKind,
+  ROOT,
   SessionStatus,
   ToolCallCancellationReason,
   ToolCallConfirmationReason,
   ToolCallStatus,
   TurnState,
 } from "../../src/ahp/wire.ts";
-import { gate, ScriptedBackend, rig, turnStarted, userMessage } from "./support.ts";
+import { gate, rig, ScriptedBackend, turnStarted, userMessage } from "./support.ts";
 
 const settle = () => new Promise<void>((r) => setTimeout(r, 0));
 const confirm = (turnId: string, toolCallId: string, approved: boolean, optionId?: string) =>
@@ -56,7 +56,11 @@ describe("handshake", () => {
     const junk = await c.rpc("initialize", { channel: ROOT, protocolVersions: ["one"], clientId: "x" });
     expect(junk.error).toMatchObject({ code: -32602 });
     // offered a list, it picks 1.0.0
-    const ok = await c.rpc("initialize", { channel: ROOT, protocolVersions: ["0.9.0", "1.0.0"], clientId: "x" });
+    const ok = await c.rpc("initialize", {
+      channel: ROOT,
+      protocolVersions: ["0.9.0", "1.0.0"],
+      clientId: "x",
+    });
     expect(ok.result).toMatchObject({ protocolVersion: "1.0.0" });
   });
 
@@ -141,7 +145,9 @@ describe("subscribe, snapshot and ordered actions", () => {
     };
     c.dispatch(one.chat, turnStarted("work"));
     await settle();
-    const running = (await c.call("listSessions", { channel: ROOT })).items.find((s: any) => s.resource === one.session);
+    const running = (await c.call("listSessions", { channel: ROOT })).items.find(
+      (s: any) => s.resource === one.session,
+    );
     expect(running.status & SessionStatus.InProgress).toBeTruthy();
     g.resolve();
     await t.host.idle();
@@ -253,7 +259,12 @@ describe("first confirmation wins", () => {
     const call = (c: typeof a) =>
       c.state(chat).activeTurn.responseParts.find((p: any) => p.kind === ResponsePartKind.ToolCall).toolCall;
     expect(call(a).status).toBe(ToolCallStatus.PendingConfirmation);
-    expect(call(b).options.map((o: any) => o.id)).toEqual(["allow-once", "allow-always", "reject-once", "reject-always"]);
+    expect(call(b).options.map((o: any) => o.id)).toEqual([
+      "allow-once",
+      "allow-always",
+      "reject-once",
+      "reject-always",
+    ]);
     const need = t.host.sessionState(session)?.inputNeeded ?? [];
     expect(need).toHaveLength(1);
     expect(need[0]).toMatchObject({ kind: "toolConfirmation", chat });
@@ -346,7 +357,10 @@ describe("cancel", () => {
     expect(await aborted.promise).toBe(true);
     const turn = t.host.chatState(chat)?.turns[0];
     expect(turn?.state).toBe(TurnState.Cancelled);
-    expect(turn?.responseParts[0]).toMatchObject({ kind: ResponsePartKind.Markdown, content: "partial answer" }); // partial text kept
+    expect(turn?.responseParts[0]).toMatchObject({
+      kind: ResponsePartKind.Markdown,
+      content: "partial answer",
+    }); // partial text kept
     const tc = turn?.responseParts.find((p) => p.kind === ResponsePartKind.ToolCall);
     expect(tc && "toolCall" in tc ? tc.toolCall.status : "").toBe(ToolCallStatus.Cancelled); // the pending card is gone
     expect(t.host.sessionState(session)?.inputNeeded).toBeUndefined();
@@ -387,9 +401,24 @@ describe("turns and pending messages", () => {
     await settle();
     a.dispatch(chat, turnStarted("two", "t2"));
     expect(a.rejections()[0]?.rejectionReason).toMatch(/already running/);
-    a.dispatch(chat, { type: ActionType.ChatPendingMessageSet, kind: PendingMessageKind.Queued, id: "q1", message: userMessage("two") });
-    a.dispatch(chat, { type: ActionType.ChatPendingMessageSet, kind: PendingMessageKind.Queued, id: "q2", message: userMessage("three") });
-    a.dispatch(chat, { type: ActionType.ChatPendingMessageSet, kind: PendingMessageKind.Steering, id: "s1", message: userMessage("steer") });
+    a.dispatch(chat, {
+      type: ActionType.ChatPendingMessageSet,
+      kind: PendingMessageKind.Queued,
+      id: "q1",
+      message: userMessage("two"),
+    });
+    a.dispatch(chat, {
+      type: ActionType.ChatPendingMessageSet,
+      kind: PendingMessageKind.Queued,
+      id: "q2",
+      message: userMessage("three"),
+    });
+    a.dispatch(chat, {
+      type: ActionType.ChatPendingMessageSet,
+      kind: PendingMessageKind.Steering,
+      id: "s1",
+      message: userMessage("steer"),
+    });
     expect(t.host.chatState(chat)?.queuedMessages?.map((m) => m.id)).toEqual(["q1", "q2"]);
     expect(t.host.chatState(chat)?.steeringMessage?.id).toBe("s1");
     g.resolve();
@@ -412,14 +441,32 @@ describe("turns and pending messages", () => {
       if (run.message.text === "hold") await g.promise;
       return { kind: "complete" };
     };
-    a.dispatch(chat, { type: ActionType.ChatPendingMessageSet, kind: PendingMessageKind.Queued, id: "q0", message: userMessage("hold") });
+    a.dispatch(chat, {
+      type: ActionType.ChatPendingMessageSet,
+      kind: PendingMessageKind.Queued,
+      id: "q0",
+      message: userMessage("hold"),
+    });
     await settle();
     expect(t.host.chatState(chat)?.activeTurn?.message.text).toBe("hold");
-    for (const [id, text] of [["q1", "b"], ["q2", "c"], ["q3", "d"]] as const) {
-      a.dispatch(chat, { type: ActionType.ChatPendingMessageSet, kind: PendingMessageKind.Queued, id, message: userMessage(text) });
+    for (const [id, text] of [
+      ["q1", "b"],
+      ["q2", "c"],
+      ["q3", "d"],
+    ] as const) {
+      a.dispatch(chat, {
+        type: ActionType.ChatPendingMessageSet,
+        kind: PendingMessageKind.Queued,
+        id,
+        message: userMessage(text),
+      });
     }
     a.dispatch(chat, { type: ActionType.ChatQueuedMessagesReordered, order: ["q3", "q1"] });
-    a.dispatch(chat, { type: ActionType.ChatPendingMessageRemoved, kind: PendingMessageKind.Queued, id: "q1" });
+    a.dispatch(chat, {
+      type: ActionType.ChatPendingMessageRemoved,
+      kind: PendingMessageKind.Queued,
+      id: "q1",
+    });
     expect(t.host.chatState(chat)?.queuedMessages?.map((m) => m.id)).toEqual(["q3", "q2"]);
     g.resolve();
     await t.host.idle();
@@ -476,7 +523,12 @@ describe("validation of what clients send", () => {
     a.dispatch(chat, { type: "chat/nonsense" });
     a.dispatch(chat, { type: ActionType.SessionTitleChanged, title: "wrong channel" });
     a.dispatch(chat, "not an object" as never);
-    a.dispatch(chat, { type: ActionType.ChatToolCallComplete, turnId: "t", toolCallId: "x", result: { success: true, pastTenseMessage: "forged" } });
+    a.dispatch(chat, {
+      type: ActionType.ChatToolCallComplete,
+      turnId: "t",
+      toolCallId: "x",
+      result: { success: true, pastTenseMessage: "forged" },
+    });
     a.dispatch(chat, { type: "chat/truncated" });
     expect(a.rejections().map((r) => r.rejectionReason)).toEqual([
       "chat/delta is not client-dispatchable",
@@ -496,21 +548,67 @@ describe("validation of what clients send", () => {
     await a.init([ROOT, chat]);
     const bad = (m: unknown, why: RegExp) => {
       const n = a.rejections().length;
-      a.dispatch(chat, { type: ActionType.ChatTurnStarted, turnId: crypto.randomUUID(), startedAt: new Date().toISOString(), message: m });
+      a.dispatch(chat, {
+        type: ActionType.ChatTurnStarted,
+        turnId: crypto.randomUUID(),
+        startedAt: new Date().toISOString(),
+        message: m,
+      });
       expect(a.rejections()[n]?.rejectionReason).toMatch(why);
     };
     bad({ text: "x", origin: { kind: "agent" } }, /user origin/);
     bad({ origin: { kind: "user" } }, /needs text/);
     bad({ text: "x".repeat(200_001), origin: { kind: "user" } }, /at most 200000/);
-    bad({ text: "x", origin: { kind: "user" }, attachments: Array(7).fill({ type: "simple", label: "l" }) }, /at most 6/);
-    bad({ text: "x", origin: { kind: "user" }, attachments: [{ type: "chat", label: "l", resource: "ahp-chat:/x" }] }, /not supported/);
+    bad(
+      { text: "x", origin: { kind: "user" }, attachments: Array(7).fill({ type: "simple", label: "l" }) },
+      /at most 6/,
+    );
+    bad(
+      {
+        text: "x",
+        origin: { kind: "user" },
+        attachments: [{ type: "chat", label: "l", resource: "ahp-chat:/x" }],
+      },
+      /not supported/,
+    );
     const notImage = Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'/>").toString("base64");
-    bad({ text: "x", origin: { kind: "user" }, attachments: [{ type: "embeddedResource", label: "x.svg", data: notImage, contentType: "image/svg+xml" }] }, /isn't a PNG/);
+    bad(
+      {
+        text: "x",
+        origin: { kind: "user" },
+        attachments: [
+          { type: "embeddedResource", label: "x.svg", data: notImage, contentType: "image/svg+xml" },
+        ],
+      },
+      /isn't a PNG/,
+    );
     const big = Buffer.alloc(1024 * 1024 + 1, 65).toString("base64");
-    bad({ text: "x", origin: { kind: "user" }, attachments: [{ type: "embeddedResource", label: "big.txt", data: big, contentType: "text/plain" }] }, /over 1 MB/);
-    a.dispatch(chat, { type: ActionType.ChatTurnStarted, turnId: "", startedAt: new Date().toISOString(), message: userMessage("x") });
-    a.dispatch(chat, { type: ActionType.ChatTurnStarted, turnId: "ok", startedAt: "yesterday-ish", message: userMessage("x") });
-    expect(a.rejections().slice(-2).map((r) => r.rejectionReason)).toEqual(["turnId must be a short string", "startedAt must be a timestamp"]);
+    bad(
+      {
+        text: "x",
+        origin: { kind: "user" },
+        attachments: [{ type: "embeddedResource", label: "big.txt", data: big, contentType: "text/plain" }],
+      },
+      /over 1 MB/,
+    );
+    a.dispatch(chat, {
+      type: ActionType.ChatTurnStarted,
+      turnId: "",
+      startedAt: new Date().toISOString(),
+      message: userMessage("x"),
+    });
+    a.dispatch(chat, {
+      type: ActionType.ChatTurnStarted,
+      turnId: "ok",
+      startedAt: "yesterday-ish",
+      message: userMessage("x"),
+    });
+    expect(
+      a
+        .rejections()
+        .slice(-2)
+        .map((r) => r.rejectionReason),
+    ).toEqual(["turnId must be a short string", "startedAt must be a timestamp"]);
     expect(t.host.chatState(chat)?.activeTurn).toBeUndefined();
   });
 
@@ -519,17 +617,30 @@ describe("validation of what clients send", () => {
     const { chat } = await t.session();
     const a = t.client();
     await a.init([ROOT, chat]);
-    const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(9000, 7)]);
+    const png = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.alloc(9000, 7),
+    ]);
     const data = png.toString("base64");
     let seen: any;
     t.backend.script = async (run) => {
       seen = run.message.attachments;
       return { kind: "complete" };
     };
-    a.dispatch(chat, turnStarted("look", "t1", { attachments: [{ type: "embeddedResource", label: "shot.png", data, contentType: "image/png" }] }));
+    a.dispatch(
+      chat,
+      turnStarted("look", "t1", {
+        attachments: [{ type: "embeddedResource", label: "shot.png", data, contentType: "image/png" }],
+      }),
+    );
     await t.host.idle();
     // what the agent was handed: the image itself
-    expect(seen[0]).toMatchObject({ type: "embeddedResource", label: "shot.png", contentType: "image/png", data });
+    expect(seen[0]).toMatchObject({
+      type: "embeddedResource",
+      label: "shot.png",
+      contentType: "image/png",
+      data,
+    });
     // what the log and every client's state hold: a reference, not 12 KB of base64
     const kept = t.host.chatState(chat)?.turns[0]?.message.attachments?.[0] as any;
     expect(kept.type).toBe("resource");
@@ -538,7 +649,10 @@ describe("validation of what clients send", () => {
     const read = await a.call("resourceRead", { channel: ROOT, uri: kept.uri });
     expect(read).toMatchObject({ encoding: "base64", contentType: "image/png" });
     expect(Buffer.from(read.data, "base64").equals(png)).toBe(true);
-    expect((await a.rpc("resourceRead", { channel: ROOT, uri: "ahp-content:/ffffffffffffffffffffffffffffffff" })).error).toBeTruthy();
+    expect(
+      (await a.rpc("resourceRead", { channel: ROOT, uri: "ahp-content:/ffffffffffffffffffffffffffffffff" }))
+        .error,
+    ).toBeTruthy();
     expect((await a.rpc("resourceRead", { channel: ROOT, uri: "file:///etc/passwd" })).error).toBeTruthy();
   });
 });
@@ -550,7 +664,12 @@ describe("session config", () => {
     const a = t.client();
     await a.init([ROOT, session]);
     const cfg = t.host.sessionState(session)?.config;
-    expect(cfg?.schema.properties.mode?.enumLabels).toEqual(["Always ask", "Accept edits", "Plan only", "Bypass permissions"]);
+    expect(cfg?.schema.properties.mode?.enumLabels).toEqual([
+      "Always ask",
+      "Accept edits",
+      "Plan only",
+      "Bypass permissions",
+    ]);
     expect(cfg?.values.mode).toBe("bypass");
     a.dispatch(session, { type: ActionType.SessionConfigChanged, config: { mode: "plan" } });
     await settle();
@@ -592,7 +711,9 @@ describe("session config", () => {
     const t = await rig();
     const made = await t.host.createSession({ provider: "fake", config: { mode: "plan" } });
     expect(t.host.sessionState(made.session)?.config?.values.mode).toBe("plan");
-    await expect(t.host.createSession({ provider: "fake", config: { mode: "yolo" } })).rejects.toThrow(/not a valid mode/);
+    await expect(t.host.createSession({ provider: "fake", config: { mode: "yolo" } })).rejects.toThrow(
+      /not a valid mode/,
+    );
     await expect(t.host.createSession({ provider: "other" })).rejects.toThrow(/no agent for provider/);
     t.backend.failOpen = new Error("sandbox did not start");
     await expect(t.host.createSession({ provider: "fake" })).rejects.toThrow(/sandbox did not start/);
@@ -613,7 +734,9 @@ describe("chats", () => {
     await a.call("createChat", { channel: session, chat: second });
     expect(t.host.sessionState(session)?.chats.map((c) => c.resource)).toEqual([chat, second]);
     expect(a.state<any>(session).chats).toHaveLength(2);
-    expect((await a.rpc("createChat", { channel: session, chat: second })).error).toMatchObject({ code: -32010 });
+    expect((await a.rpc("createChat", { channel: session, chat: second })).error).toMatchObject({
+      code: -32010,
+    });
     expect((await a.rpc("disposeChat", { channel: chat })).error).toMatchObject({ code: -32011 });
     await a.subscribe(second);
     await a.call("disposeChat", { channel: second });
@@ -678,7 +801,15 @@ describe("paging long chats", () => {
     expect(b.state<any>(chat).turnsNextCursor).toBe("before:t3");
     await b.call("fetchTurns", { channel: chat }); // no cursor: the next older page
     await b.call("fetchTurns", { channel: chat, cursor: "before:t1" });
-    expect(b.state<any>(chat).turns.map((x: any) => x.id)).toEqual(["t0", "t1", "t2", "t3", "t4", "t5", "t6"]);
+    expect(b.state<any>(chat).turns.map((x: any) => x.id)).toEqual([
+      "t0",
+      "t1",
+      "t2",
+      "t3",
+      "t4",
+      "t5",
+      "t6",
+    ]);
     expect(b.state<any>(chat).turnsNextCursor).toBeUndefined();
     expect(await b.call("fetchTurns", { channel: chat })).toBeNull(); // nothing older
     // the paging actions are for this client alone and use no serverSeq
@@ -692,8 +823,12 @@ describe("paging long chats", () => {
     const b = t.client();
     await b.init([ROOT]);
     await b.subscribe(chat, { turns: 1 });
-    expect((await b.rpc("fetchTurns", { channel: chat, cursor: "before:t0" })).error).toMatchObject({ code: -32602 });
-    expect((await b.rpc("fetchTurns", { channel: chat, cursor: "bogus" })).error).toMatchObject({ code: -32602 });
+    expect((await b.rpc("fetchTurns", { channel: chat, cursor: "before:t0" })).error).toMatchObject({
+      code: -32602,
+    });
+    expect((await b.rpc("fetchTurns", { channel: chat, cursor: "bogus" })).error).toMatchObject({
+      code: -32602,
+    });
     expect(a.state<any>(chat).turns).toHaveLength(5); // a holds everything and was told nothing
     expect(a.envelopes.some((e) => e.action.type === ActionType.ChatTurnsLoaded)).toBe(false);
     a.dispatch(chat, turnStarted("live", "t5"));

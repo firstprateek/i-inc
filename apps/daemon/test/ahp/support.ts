@@ -16,15 +16,18 @@ import {
   type ChatAction,
   ConfirmationOptionKind,
   type Json,
+  ResponsePartKind,
   ROOT,
   reduce,
-  ResponsePartKind,
   type StateAction,
   ToolCallConfirmationReason,
   ToolCallStatus,
   USER_ORIGIN,
 } from "../../src/ahp/wire.ts";
 import { openDb } from "../../src/db.ts";
+
+// biome-ignore lint/suspicious/noExplicitAny: tests read protocol JSON loosely, the way a client would.
+export type Any = any;
 
 export class FakeSocket implements Socket {
   /** Every frame the host sent, parsed. */
@@ -91,7 +94,7 @@ export class TestClient {
   }
 
   /** Like rpc, but throws on an error response and returns the result. */
-  async call(method: string, params: Json = {}): Promise<any> {
+  async call(method: string, params: Json = {}): Promise<Any> {
     const res = await this.rpc(method, params);
     if (res.error) throw new Error(`${method}: ${JSON.stringify(res.error)}`);
     return res.result;
@@ -102,7 +105,7 @@ export class TestClient {
     this.absorb();
   }
 
-  async init(subs: string[] = [ROOT]): Promise<Json> {
+  async init(subs: string[] = [ROOT]): Promise<Any> {
     const r = await this.call("initialize", {
       channel: ROOT,
       protocolVersions: ["1.0.0"],
@@ -110,12 +113,13 @@ export class TestClient {
       initialSubscriptions: subs,
     });
     this.lastSeq = r.serverSeq;
-    for (const s of r.snapshots) this.states.set(s.resource, { kind: kindOf(s.resource), state: s.state } as ChannelState);
+    for (const s of r.snapshots)
+      this.states.set(s.resource, { kind: kindOf(s.resource), state: s.state } as ChannelState);
     this.absorb();
     return r;
   }
 
-  async subscribe(channel: string, view?: Json): Promise<any> {
+  async subscribe(channel: string, view?: Json): Promise<Any> {
     const r = await this.call("subscribe", { channel, ...(view ? { view } : {}) });
     this.states.set(channel, { kind: kindOf(channel), state: r.snapshot.state } as ChannelState);
     this.lastSeq = Math.max(this.lastSeq, r.snapshot.fromSeq);
@@ -156,17 +160,23 @@ export class TestClient {
     this.absorb();
     return this.envelopes.filter((e) => e.rejectionReason);
   }
-  state<T = any>(channel: string): T {
+  state<T = Any>(channel: string): T {
     this.absorb();
     return this.states.get(channel)?.state as T;
   }
 
   /** Sends reconnect on this (fresh) connection and applies the result like a real client. */
-  async reconnect(lastSeen: number, subs: string[]): Promise<any> {
-    const r = await this.call("reconnect", { channel: ROOT, clientId: this.clientId, lastSeenServerSeq: lastSeen, subscriptions: subs });
+  async reconnect(lastSeen: number, subs: string[]): Promise<Any> {
+    const r = await this.call("reconnect", {
+      channel: ROOT,
+      clientId: this.clientId,
+      lastSeenServerSeq: lastSeen,
+      subscriptions: subs,
+    });
     if (r.type === "snapshot") {
-      for (const s of r.snapshots) this.states.set(s.resource, { kind: kindOf(s.resource), state: s.state } as ChannelState);
-      this.lastSeq = r.snapshots.length ? Math.max(...r.snapshots.map((s: any) => s.fromSeq)) : lastSeen;
+      for (const s of r.snapshots)
+        this.states.set(s.resource, { kind: kindOf(s.resource), state: s.state } as ChannelState);
+      this.lastSeq = r.snapshots.length ? Math.max(...r.snapshots.map((s: Any) => s.fromSeq)) : lastSeen;
     } else {
       for (const e of r.actions as Envelope[]) {
         const c = this.states.get(e.channel);
@@ -186,10 +196,16 @@ export class TestClient {
 export const kindOf = (uri: string): "root" | "session" | "chat" =>
   uri === ROOT ? "root" : uri.startsWith("ahp-session:") ? "session" : "chat";
 
-export const userMessage = (text: string, extra: Json = {}): Message => ({ text, origin: USER_ORIGIN, ...extra }) as Message;
+export const userMessage = (text: string, extra: Json = {}): Message =>
+  ({ text, origin: USER_ORIGIN, ...extra }) as Message;
 
-export function turnStarted(text: string, turnId = crypto.randomUUID(), extra: Json = {}): Json {
-  return { type: ActionType.ChatTurnStarted, turnId, startedAt: new Date().toISOString(), message: userMessage(text, extra) };
+export function turnStarted(text: string, turnId: string = crypto.randomUUID(), extra: Json = {}): Json {
+  return {
+    type: ActionType.ChatTurnStarted,
+    turnId,
+    startedAt: new Date().toISOString(),
+    message: userMessage(text, extra),
+  };
 }
 
 /** A deferred value, to hold a scripted agent at a point until the test lets it go. */
@@ -287,13 +303,23 @@ export class ScriptedBackend implements AgentBackend {
 
   // Script helpers
   text(run: TurnRun, content: string, id = `${run.turnId}:md`): void {
-    run.emit({ type: ActionType.ChatResponsePart, turnId: run.turnId, part: { kind: ResponsePartKind.Markdown, id, content } });
+    run.emit({
+      type: ActionType.ChatResponsePart,
+      turnId: run.turnId,
+      part: { kind: ResponsePartKind.Markdown, id, content },
+    });
   }
   delta(run: TurnRun, content: string, id = `${run.turnId}:md`): void {
     run.emit({ type: ActionType.ChatDelta, turnId: run.turnId, partId: id, content });
   }
   tool(run: TurnRun, id: string, name = "execute", title = `Run ${id}`): void {
-    run.emit({ type: ActionType.ChatToolCallStart, turnId: run.turnId, toolCallId: id, toolName: name, displayName: title });
+    run.emit({
+      type: ActionType.ChatToolCallStart,
+      turnId: run.turnId,
+      toolCallId: id,
+      toolName: name,
+      displayName: title,
+    });
     run.emit({
       type: ActionType.ChatToolCallReady,
       turnId: run.turnId,
@@ -312,7 +338,13 @@ export class ScriptedBackend implements AgentBackend {
   }
   /** A tool call that waits for the owner: pending-confirmation with the four ACP-style options. */
   ask(run: TurnRun, id: string): Promise<ToolAnswer> {
-    run.emit({ type: ActionType.ChatToolCallStart, turnId: run.turnId, toolCallId: id, toolName: "execute", displayName: "Run rm -rf build" });
+    run.emit({
+      type: ActionType.ChatToolCallStart,
+      turnId: run.turnId,
+      toolCallId: id,
+      toolName: "execute",
+      displayName: "Run rm -rf build",
+    });
     run.emit({
       type: ActionType.ChatToolCallReady,
       turnId: run.turnId,
