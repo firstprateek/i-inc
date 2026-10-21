@@ -46,13 +46,13 @@ type Row = {
   done_when: string;
 };
 
-/** Titles that differ only in case, spacing or end punctuation are the same proposal. */
+/** Titles that differ only in case, spacing, quotes or end punctuation are the same proposal. */
 export function normalTitle(title: string): string {
   return title
     .normalize("NFKC")
     .toLowerCase()
     .replace(/\s+/g, " ")
-    .replace(/^[\s.!?:;,-]+|[\s.!?:;,-]+$/g, "");
+    .replace(/^[\s.!?:;,\-"'`\u201c\u201d\u2018\u2019]+|[\s.!?:;,\-"'`\u201c\u201d\u2018\u2019]+$/g, "");
 }
 
 function stored(r: Row): StoredProposal {
