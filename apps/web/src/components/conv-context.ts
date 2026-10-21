@@ -9,6 +9,7 @@ import { ahp } from "../ahp/hub.ts";
 import type { AccountRateLimit, Conversation } from "../api.ts";
 import {
   brainPages,
+  brainScopeLabel,
   type ChangedFile,
   changedFiles,
   latestPlan,
@@ -86,6 +87,10 @@ export class IncConvContext extends LitElement {
       .meter .fill { height: 100%; background: var(--bar-ok); }
       .meter .fill.warn { background: var(--bar-warn); } .meter .fill.crit { background: var(--bar-crit); }
       .muted { color: var(--ink-2); font-size: 13.5px; margin: 0; }
+      .brain li { font-size: 14px; line-height: 1.4; overflow-wrap: anywhere; }
+      .brain a { color: var(--ink); }
+      .tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--line); color: var(--ink-2); font-size: 11.5px; font-weight: 600; }
+      .tag.warn { border-color: var(--alarm); color: var(--alarm-fg); }
     `,
   ];
 
@@ -167,7 +172,14 @@ export class IncConvContext extends LitElement {
         ${
           brain.length
             ? html`<section aria-labelledby="h-brain"><h3 id="h-brain">Brain pages used</h3>
-          <ul>${brain.map((p) => html`<li>${p.id ? html`<a href="#/company/brain/${conv.employeeId}">${p.title}</a>` : p.title}</li>`)}</ul></section>`
+          <ul class="brain">${brain.map(
+            (
+              p,
+            ) => html`<li>${p.href ? html`<a href=${p.href} title=${p.slug ?? p.title}>${p.title}</a>` : p.title}
+              ${p.scope ? html`<span class="tag">${brainScopeLabel(p.scope)}</span>` : nothing}
+              ${p.read ? html`<span class="tag">opened</span>` : nothing}
+              ${p.untrusted ? html`<span class="tag warn" title="Built from web pages, issues or other people's repos">untrusted</span>` : nothing}</li>`,
+          )}</ul></section>`
             : nothing
         }
         <section aria-labelledby="h-usage"><h3 id="h-usage">Usage</h3>

@@ -6,13 +6,17 @@ apply() {
   if tar -tvf "$tmp/in.tar" | awk 'substr($1,1,1)!="-"{bad=1} END{exit !bad}'; then echo "@@fail the archive holds more than plain files"; return 1; fi
   if tar -tf "$tmp/in.tar" | grep -Eq '^/|(^|/)\.\.(/|$)|\\'; then echo "@@fail an unsafe path in the archive"; return 1; fi
   mkdir -p "$R" && cd "$R" || { echo "@@fail can't enter $R"; return 1; }
-  # A copy holds no symlinks: nothing it writes can lead out of it.
-  find . -path ./.git -prune -o -type l -print -delete | sed 's/^/@@unlinked /'
   if [ ! -d .git ]; then
     git init -q -b main . || { echo "@@fail git init"; return 1; }
     printf '.bin/\n.snapshot*\n' > .git/info/exclude
   fi
   BR=refs/inc/baseline
+  # A copy holds no symlinks: nothing it writes can lead out of it. A link that stood where a page or
+  # folder of the baseline is goes, and what it hid is put back from the baseline.
+  find . -path ./.git -prune -o -type l -print0 | while IFS= read -r -d '' l; do
+    l=${l#./}; rm -f -- "$l"; echo "@@unlinked $l"
+    git rev-parse -q --verify "$BR" >/dev/null && git checkout -q "$BR" -- "$l" 2>/dev/null
+  done
   old=$(git rev-parse -q --verify "$BR" || true)
   head=$(git rev-parse -q --verify HEAD || true)
 

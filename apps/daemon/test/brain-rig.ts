@@ -26,7 +26,9 @@ export async function brainRig(o: { delivered?: boolean } = {}) {
   const sandbox = mkdtempSync(join(tmpdir(), "i-inc-sbx-"));
   dirs.push(knowledgeDir, sandbox);
   const clock = new FakeClock();
+  const logs: string[] = [];
   const app = await createApp({
+    log: (m) => logs.push(m),
     dbPath: ":memory:",
     knowledgeDir,
     configDir: join(knowledgeDir, "config"),
@@ -76,6 +78,7 @@ export async function brainRig(o: { delivered?: boolean } = {}) {
   const copy = (employeeId: string, ...rest: string[]) => join(sandbox, employeeId, ...rest);
   return {
     app,
+    logs,
     feed,
     runs,
     failing,

@@ -48,6 +48,18 @@ export interface TicketSession {
   startedAt: number;
   endedAt: number | null;
   items: TranscriptItem[];
+  /** The brain pages this session was given or opened (contract C19); absent when there were none. */
+  brain?: BrainUse[];
+}
+
+/** A brain page that went into a session, or that the agent opened (contract C19). */
+export interface BrainUse {
+  scope: string;
+  slug: string;
+  title: string;
+  updated: string | null;
+  via: "search" | "link" | "read";
+  untrusted?: boolean;
 }
 
 /** What POST /api/tickets takes from the owner (daemon NewTicket). */
