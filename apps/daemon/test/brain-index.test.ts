@@ -422,3 +422,26 @@ describe("startup", () => {
     raw.close();
   });
 });
+
+describe("short dev words", () => {
+  it("finds pages for queries made of words like fix, use, new and get", async () => {
+    const { index, commit } = await setup();
+    commit("handbook", {
+      "facts/fixes.md": page("How to fix flaky builds", "fix", "Fix by rerunning."),
+      "facts/new.md": page("Creating a new service", "new", "Use the template."),
+    });
+    for (const [q, slug] of [
+      ["fix", "facts/fixes"],
+      ["new", "facts/new"],
+      ["use", "facts/new"],
+    ] as const) {
+      expect(retrieve(index, { query: q, scopes: ["company"] }).map((p) => p.slug)).toContain(slug);
+    }
+    // Only function words: the raw words are searched instead of nothing.
+    const withThe = page("The", "the", "to be or not to be, that is the question");
+    commit("handbook", { "facts/the.md": withThe });
+    expect(retrieve(index, { query: "to be or not", scopes: ["company"] }).map((p) => p.slug)).toEqual([
+      "facts/the",
+    ]);
+  });
+});

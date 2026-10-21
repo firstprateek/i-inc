@@ -5,14 +5,14 @@ import { type Scope, scopeKind } from "./knowledge.ts";
 
 // ---- The query -------------------------------------------------------------------------------------
 
+/** True function words only: "fix", "use", "new" and "get" are real searches in a dev wiki. */
 const stopWords = new Set(
   `a about above after again all also am an and any are as at be because been before being below
   between both but by can could did do does doing down during each few for from further had has have
   having he her here hers him his how i if in into is it its itself just let me more most my no nor
   not now of off on once only or other our out over own same she should so some such than that the
   their them then there these they this those through to too under until up us very was we were what
-  when where which while who whom why will with would you your yours get got make made use used
-  using need needs want wants like also etc via per new one two see add fix`
+  when where which while who whom why will with would you your yours`
     .split(/\s+/)
     .filter(Boolean),
 );
@@ -28,24 +28,29 @@ export interface QueryOptions {
  * An FTS5 MATCH expression from free text: lowercase words (letters and digits only), stop-words and
  * noise dropped, the most repeated words first, capped in count, each in double quotes and joined with
  * OR. Nothing from the input except [\p{L}\p{N}] ever reaches the expression, so it can't be turned
- * into FTS syntax (NEAR, column filters, `*`, parentheses, unbalanced quotes). Empty when no words.
+ * into FTS syntax (NEAR, column filters, `*`, parentheses, unbalanced quotes). Empty when no words;
+ * when every word is a stop-word, those words are used rather than nothing.
  */
 export function buildQuery(text: string, o: QueryOptions = {}): string {
   const maxTerms = o.maxTerms ?? 24;
   const scan = text.length > (o.maxScan ?? 65_536) ? text.slice(0, o.maxScan ?? 65_536) : text;
   const seen = new Map<string, { n: number; at: number }>();
+  const stops = new Map<string, { n: number; at: number }>();
   let at = 0;
   for (const m of scan.toLowerCase().matchAll(/[\p{L}\p{N}]+/gu)) {
     const w = m[0];
     at++;
-    if (w.length < 2 || w.length > 32 || stopWords.has(w)) continue;
+    if (w.length < 2 || w.length > 32) continue;
     if (/^\d+$/.test(w) && w.length > 6) continue;
     if (/^[0-9a-f]{12,}$/.test(w)) continue; // hashes and ids
-    const hit = seen.get(w);
+    const into = stopWords.has(w) ? stops : seen;
+    const hit = into.get(w);
     if (hit) hit.n++;
-    else seen.set(w, { n: 1, at });
+    else into.set(w, { n: 1, at });
   }
-  return [...seen.entries()]
+  // A query made only of stop-words still searches, with the raw words: better than finding nothing.
+  const terms = seen.size ? seen : stops;
+  return [...terms.entries()]
     .sort(([, a], [, b]) => Math.min(b.n, 3) - Math.min(a.n, 3) || a.at - b.at)
     .slice(0, maxTerms)
     .map(([w]) => `"${w}"`)

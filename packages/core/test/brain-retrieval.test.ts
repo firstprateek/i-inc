@@ -16,10 +16,21 @@ import {
 describe("buildQuery", () => {
   it("keeps the meaningful words, quoted and OR-ed, and drops stop-words, punctuation and short noise", () => {
     expect(buildQuery("How do I reset the Vitest mocks, again? (see #12)")).toBe(
-      '"reset" OR "vitest" OR "mocks" OR "12"',
+      '"reset" OR "vitest" OR "mocks" OR "see" OR "12"',
     );
     expect(buildQuery("")).toBe("");
-    expect(buildQuery("the and of to a")).toBe("");
+    expect(buildQuery("... ?! --")).toBe("");
+  });
+
+  it("keeps dev words like fix, use, new and get, and falls back to stop-words when that is all there is", () => {
+    for (const w of ["fix", "use", "new", "get", "add", "make", "need", "see"]) {
+      expect(buildQuery(w), w).toBe(`"${w}"`);
+    }
+    expect(buildQuery("how to fix the build")).toBe('"fix" OR "build"');
+    expect(buildQuery("the and of to")).toBe('"the" OR "and" OR "of" OR "to"');
+    expect(buildQuery("What is it?")).toBe('"what" OR "is" OR "it"');
+    // Stop-words never dilute a query that has real words.
+    expect(buildQuery("what is the vitest")).toBe('"vitest"');
   });
 
   it("puts repeated words first and caps the number of terms", () => {
@@ -167,7 +178,7 @@ describe("retrieve", () => {
 
   it("returns nothing for a query with no usable words or no scopes", () => {
     const src = fake([{ scope: "company", slug: "a", score: 1 }]);
-    expect(retrieve(src, { query: "the of and", scopes })).toEqual([]);
+    expect(retrieve(src, { query: "?! ... --", scopes })).toEqual([]);
     expect(retrieve(src, { query: "vitest", scopes: [] })).toEqual([]);
   });
 });
