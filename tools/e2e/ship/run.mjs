@@ -372,7 +372,12 @@ async function flow(browser, combo) {
       (await api("GET", `/api/conversations/${b.id}`)).body.conversation.title === "plain add a readme line",
     "the title",
   );
-  await control({ op: "write", conversation: b.id, path: "README.md", text: "duet\nA second line.\n" });
+  await control({
+    op: "write",
+    conversation: b.id,
+    path: "README.md",
+    text: `duet\nA second line (${combo.name}).\n`,
+  });
   await openShipMenu(page);
   await page.getByRole("menuitem", { name: /Open a PR/ }).click();
   const pdialog = page.getByRole("dialog", { name: "Open a pull request" });
@@ -427,7 +432,7 @@ async function flow(browser, combo) {
     op: "write",
     conversation: c.id,
     path: "src/notes.ts",
-    text: "export const notes = ['first'];\n",
+    text: `export const notes = ['${combo.name}'];\n`,
   });
   await page.waitForTimeout(600);
   await openShipMenu(page);
@@ -458,7 +463,7 @@ async function flow(browser, combo) {
   );
   ok(
     (await control({ op: "git", repo: "acme/notes", args: ["show", "main:src/notes.ts"] })).out.includes(
-      "first",
+      combo.name,
     ),
     `${combo.name}: the reviewed work reached main`,
   );
