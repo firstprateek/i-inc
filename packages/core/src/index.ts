@@ -7,6 +7,7 @@ export * from "./hiring.ts";
 export * from "./knowledge.ts";
 export * from "./model.ts";
 export * from "./outbound.ts";
+export * from "./page.ts";
 export * from "./ports.ts";
 export * from "./report.ts";
 export * from "./runner.ts";
