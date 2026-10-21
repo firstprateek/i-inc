@@ -150,6 +150,16 @@ export class Daemon {
     this.busyHooks.push(hook);
   }
 
+  /** Machines that something other than a ticket is using (live conversation agents), by name. */
+  private readonly machineHooks: Array<(machine: string) => boolean> = [];
+  onMachineBusy(hook: (machine: string) => boolean): void {
+    this.machineHooks.push(hook);
+  }
+  /** An employee's machine was started by something else (a conversation): it is stopped and cleaned like the rest. */
+  noteAwake(id: Id): void {
+    this.awake.add(id);
+  }
+
   /** Counts a turn as running until it settles. */
   async track<T>(turn: Promise<T>): Promise<T> {
     this.turns++;
@@ -166,6 +176,7 @@ export class Daemon {
    */
   async machineBusy(machine: string): Promise<boolean> {
     const at = (id: Id) => this.storage?.machineOf(id) === machine;
+    if (this.machineHooks.some((h) => h(machine))) return true;
     if ([...this.sessions.values()].some((s) => at(s.employeeId))) return true;
     for (const id of this.running.keys()) {
       const record = this.d.tickets.get(id);
@@ -520,12 +531,13 @@ export class Daemon {
     if (storage) {
       for (const id of this.awake) {
         const m = storage.machineOf(id);
-        if (m && (busy.has(id) || inSession.has(id))) inUse.add(m);
+        if (m && (busy.has(id) || inSession.has(id) || this.machineHooks.some((h) => h(m)))) inUse.add(m);
       }
     }
     for (const id of [...this.awake]) {
       if (busy.has(id) || inSession.has(id)) continue;
       const machine = storage?.machineOf(id);
+      if (machine && this.machineHooks.some((h) => h(machine))) continue;
       if (storage && machine && !inUse.has(machine)) {
         if (storage.holding(machine)) continue;
         if (storage.due(machine)) {

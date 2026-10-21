@@ -18,6 +18,7 @@ import type {
   SessionTranscriptItem,
   Ticket,
 } from "@i-inc/core";
+import type { Reap } from "./reaper.ts";
 import type { AccountRateLimit } from "./registry.ts";
 import { capText } from "./sessions.ts";
 
@@ -25,6 +26,8 @@ type Json = Record<string, unknown>;
 
 /** The ACP server's stdio, however it was started. */
 export interface AgentProcess {
+  /** The launch's token in the sandbox (reaper.ts); the fakes in tests have none. */
+  agentId?: string;
   stdin: Writable;
   stdout: Readable;
   stderr: Readable;
@@ -67,6 +70,8 @@ export interface AcpOptions {
   onRateLimit?: (accountId: Id, limit: AccountRateLimit) => void;
   now?: () => number;
   log?: (msg: string) => void;
+  /** Stops an agent an earlier daemon left running in the sandbox, before each launch (reaper.ts). */
+  reap?: Reap;
   /** How long a cancelled session gets to wind down before it's killed. */
   cancelGraceMs?: number;
   /** When an engine's limits show only as errors (Antigravity), how long to wait before trying again. */
@@ -89,9 +94,9 @@ export function extractRateLimit(rl: Record<string, unknown>, now = Date.now()):
   };
 }
 
-const bypassMode = /bypass|yolo|allow.?all|full.?access|dangerous/i;
+export const bypassMode = /bypass|yolo|allow.?all|full.?access|dangerous/i;
 // Claude Code says "You've hit your session limit · resets 3:30am (UTC)" (seen on the mini).
-const limitError =
+export const limitError =
   /rate.?limit|usage limit|session limit|weekly limit|hit your .{0,20}limit|(?<!disk )quota|resource.?exhausted|\b429\b|too many requests|limit reached/i;
 
 /** Transient errors in a row for one ticket before it counts as stuck. */
@@ -137,7 +142,27 @@ export class AcpAgent implements Agent {
   /** Transient errors in a row, per employee and ticket. */
   private readonly transient = new Map<string, number>();
 
+  /** Sessions in progress, for `shutdown`. */
+  private readonly open = new Map<Rpc, Id>();
+  private shuttingDown = false;
+
   constructor(private readonly o: AcpOptions) {}
+
+  /**
+   * The daemon is going down: close every session's stdin, kill what is still there after `graceMs`,
+   * (the caller then sweeps the sandboxes for any agent that ignored both: reaper.ts). A ticket whose session
+   * ends this way is picked up again by the scheduler when the daemon returns.
+   */
+  async shutdown(graceMs = 2500): Promise<void> {
+    this.shuttingDown = true;
+    const rpcs = [...this.open.entries()];
+    for (const [rpc] of rpcs) rpc.close(graceMs);
+    await Promise.race([
+      Promise.all(rpcs.map(([rpc]) => rpc.waitExit())),
+      new Promise<void>((r) => setTimeout(r, graceMs + 200).unref?.()),
+    ]);
+    for (const [rpc] of rpcs) rpc.kill();
+  }
 
   /** Entries in the transient-retry counter: it should be empty once nothing is retrying. */
   footprint(): { transient: number } {
@@ -146,13 +171,14 @@ export class AcpAgent implements Agent {
 
   async run(r: SessionRequest): Promise<SessionOutcome> {
     const now = this.o.now ?? Date.now;
-    const proc = this.o.launch({
-      employeeId: r.employee.id,
-      engine: r.engine,
-      cwd: this.o.cwdFor(r.ticket.id),
-      env: await this.o.credentials(r.engine, r.ticket, r.duty, r.employee.id),
-    });
+    if (this.shuttingDown) return stuck("the daemon is stopping", true);
+    const cwd = this.o.cwdFor(r.ticket.id);
+    const env = await this.o.credentials(r.engine, r.ticket, r.duty, r.employee.id);
+    // An agent a dead daemon left on this ticket would work in the same folder as the new one.
+    await this.o.reap?.(r.employee.id, { cwd });
+    const proc = this.o.launch({ employeeId: r.employee.id, engine: r.engine, cwd, env });
     const rpc = new Rpc(proc, this.o.log);
+    this.open.set(rpc, r.employee.id);
     let limit: { rejected: boolean; resetsAt: number | null; fromMeta?: boolean } = {
       rejected: false,
       resetsAt: null,
@@ -406,6 +432,7 @@ export class AcpAgent implements Agent {
       // interrupted, ran out of tokens, or never comes back) must not leave an entry behind.
       if (!retrying) this.transient.delete(`${r.employee.id}/${r.ticket.id}`);
       flushText();
+      this.open.delete(rpc);
       rpc.close();
     }
   }
@@ -435,7 +462,7 @@ export function upstreamReason(e: unknown): string {
 }
 
 /** Select options can be nested by an ACP peer to group related choices. */
-function configChoices(config: Json): { value: string; name: string }[] {
+export function configChoices(config: Json): { value: string; name: string }[] {
   const choices: { value: string; name: string }[] = [];
   const visit = (value: unknown) => {
     if (!value || typeof value !== "object") return;
@@ -464,7 +491,7 @@ function toMs(v: unknown): number | null {
   return null;
 }
 
-function usageReport(accountId: Id, rl: Json): UsageReport {
+export function usageReport(accountId: Id, rl: Json): UsageReport {
   const windows = Object.entries((rl.unifiedWindows ?? {}) as Record<string, Json>).map(([name, w]) => ({
     name,
     utilization: Number(w.utilization ?? 0),
@@ -547,10 +574,20 @@ class Rpc {
     }
   }
 
-  close(): void {
+  close(graceMs = 3000): void {
     try {
       this.p.stdin.end();
     } catch {}
-    setTimeout(() => this.p.kill(), 3000).unref?.();
+    setTimeout(() => this.p.kill(), graceMs).unref?.();
+  }
+
+  kill(): void {
+    try {
+      this.p.kill();
+    } catch {}
+  }
+
+  waitExit(): Promise<void> {
+    return this.exited ? Promise.resolve() : this.p.exited.then(() => {});
   }
 }

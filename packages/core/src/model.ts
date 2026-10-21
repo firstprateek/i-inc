@@ -140,6 +140,8 @@ export interface PullRequestRef {
   url?: string;
   /** GitHub's id for the PR, which marking it ready needs. */
   nodeId?: string;
+  /** Something the owner should know about how the branch was opened (a local branch with unpushed commits was backed up). */
+  note?: string;
 }
 
 /** How a project's work reaches main (decided 2026-10-17). */

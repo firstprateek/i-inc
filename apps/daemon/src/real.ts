@@ -6,6 +6,9 @@
 // registry. The helper model and chat use Ollama on the host.
 import type { Employee, Id } from "@i-inc/core";
 import { AcpAgent, type Launch } from "./acp.ts";
+import type { AgentBackend } from "./ahp/backend.ts";
+import { agentsFromRegistry } from "./ahp/conversations.ts";
+import { SessionHost } from "./ahp/session-host.ts";
 import type { AppOptions } from "./app.ts";
 import { type Credentials, credentialsFor } from "./config.ts";
 import { commitIdentity, PullRequests, type TokenSource, waitForCi } from "./github.ts";
@@ -20,8 +23,9 @@ import {
   workDir,
 } from "./machines.ts";
 import { OllamaChat, OllamaHelper, type OllamaOptions } from "./ollama.ts";
+import { type Reap, reaper, reapMachines } from "./reaper.ts";
 import type { Registry } from "./registry.ts";
-import { GitHubWorkspace } from "./workspace.ts";
+import { GitHubWorkspace, prepareConversationCopy, removeCopyScript } from "./workspace.ts";
 
 export interface RealOptions {
   credentials: Credentials;
@@ -54,10 +58,15 @@ const loginEveryMs = 25 * 60_000;
 
 export function realPorts(o: RealOptions): Pick<
   AppOptions,
-  "machines" | "agent" | "harness" | "workspace" | "tokens" | "helper" | "chat"
+  "machines" | "agent" | "harness" | "workspace" | "tokens" | "helper" | "chat" | "ahpBackend"
 > & {
   /** Renews the GitHub sign-in of every sandbox in use. main.ts calls it on a timer. */
   keepLoginsFresh: () => Promise<void>;
+  /**
+   * Stops the agents an earlier daemon left running in every sandbox that is up (never starting one),
+   * all machines at once. main.ts calls it at startup, before anything launches, and with `all` at shutdown.
+   */
+  sweepAgents: (o?: { all?: boolean; timeoutMs?: number }) => Promise<number>;
 } {
   const base = o.machine ?? defaultMachineSettings;
   const now = o.now ?? Date.now;
@@ -91,6 +100,13 @@ export function realPorts(o: RealOptions): Pick<
     return runner;
   };
   let machines: AppleMachines | undefined;
+  // Agents a dead daemon left running in a sandbox are stopped before a new one starts for the same
+  // work (reaper.ts), and the sandboxes are swept once at startup.
+  let reapOnce: Reap | undefined;
+  const reap = (registry: Registry): Reap => {
+    reapOnce ??= reaper(run(registry), o.log, (employeeId) => machineOf(teams(registry), employeeId));
+    return reapOnce;
+  };
 
   // Each sandbox is signed in to GitHub as the bot, for all the App's repos, renewed before it
   // expires. A session's token in its environment would stop working after an hour; this doesn't.
@@ -120,6 +136,7 @@ export function realPorts(o: RealOptions): Pick<
     agent: (registry) =>
       new AcpAgent({
         launch: o.launch ?? machineLaunch(teams(registry)),
+        reap: reap(registry),
         // The account's credential if it has one (machines sign in themselves by default), and the
         // ticket's ports. GitHub comes from the sandbox's sign-in.
         credentials: async (engine, ticket, _duty, employeeId) => {
@@ -169,11 +186,49 @@ export function realPorts(o: RealOptions): Pick<
               identity,
               worktree: (ticketId) => workDir(ticketId, base),
               run: run(registry),
+              ...(o.log ? { log: o.log } : {}),
             }),
         }
       : {}),
+    // Conversations: long-lived agent sessions in the same team sandboxes, behind the AHP host.
+    ahpBackend: (registry): AgentBackend =>
+      new SessionHost({
+        launch: o.launch ?? machineLaunch(teams(registry)),
+        reap: reap(registry),
+        agents: () => agentsFromRegistry(registry),
+        engine: (id) => registry.engines().find((e) => e.id === id),
+        teamOf: (employeeId) => registry.teamOf(employeeId).id,
+        workingCopy: async (c) => {
+          if (c.project !== null && !github) {
+            throw new Error("the GitHub App isn't set up yet, so a conversation can't work on a project");
+          }
+          return prepareConversationCopy(
+            {
+              project: (name) => registry.project(name),
+              tokens: github?.tokens ?? { token: async () => "" },
+              identity,
+              run: run(registry),
+            },
+            { employee: registry.employee(c.employeeId), project: c.project, branch: c.branch, cwd: c.cwd },
+          );
+        },
+        removeCopy: async (c) => {
+          await run(registry)(c.employeeId, removeCopyScript({ worktree: c.cwd, branch: c.branch }));
+        },
+        credentials: async (engine, c) => {
+          await signIn(registry, c.employeeId);
+          return { ...account(engine), I_INC_PORTS: portsFor(`conv-${c.id}`) };
+        },
+        employeeKnown: (employeeId) => registry.employees().some((e) => e.id === employeeId),
+        effort: (employeeId) => registry.employee(employeeId).effort ?? "medium",
+        onUsage: (u) => registry.recordUsage(u),
+        onRateLimit: (accountId, limit) => registry.setAccountRateLimit(accountId, limit),
+        now,
+        ...(o.log ? { log: o.log } : {}),
+      }),
     helper: new OllamaHelper(o.ollama),
     chat: new OllamaChat(o.ollama),
+    sweepAgents: async (opts) => (machines ? reapMachines(machines, o.log, opts) : 0),
     keepLoginsFresh: async () => {
       if (!machines || !registryRef) return;
       const registry = registryRef;

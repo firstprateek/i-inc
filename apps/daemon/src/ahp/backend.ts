@@ -10,7 +10,19 @@ import type {
   Message,
   SessionConfigState,
 } from "@microsoft/agent-host-protocol";
+import type { AhpHost } from "./host.ts";
 import type { ChatAction, Json } from "./wire.ts";
+
+/** What the app lends a backend: the sandbox's storage cleanup lock, and a way to say a machine was woken. */
+export interface AppGate {
+  storage: {
+    machineOf(employeeId: string): string | undefined;
+    holding(machine: string): boolean;
+    untilFree(machine: string, maxMs: number): Promise<boolean>;
+  };
+  /** The employee's machine was started for a conversation. */
+  awake(employeeId: string): void;
+}
 
 /** What the host asks of a backend when a session is created. */
 export interface OpenSessionRequest {
@@ -63,10 +75,18 @@ export interface ToolAnswer {
 }
 
 export interface AgentBackend {
+  /** Called once by the host's constructor, so the backend can emit session-level actions and keep metadata. */
+  attach?(host: AhpHost): void;
   /** The providers (engines) this host offers, for the root channel. */
   agents(): AgentInfo[];
   /** Prepares the agent side of a new session. Throwing fails the session's creation. */
   openSession(req: OpenSessionRequest): Promise<OpenedSession>;
+  /** Called once storage and the daemon exist: what a conversation needs to know about the machine it runs on. */
+  attachApp?(app: AppGate): void;
+  /** Employees whose conversations have an agent running (or starting) now. */
+  liveEmployees?(): string[];
+  /** The session and its chat exist now (and are ready): the backend may touch them. */
+  afterCreate?(session: string, chat: string): void;
   /** An extra chat in a session (only for providers that advertise `multipleChats`). */
   openChat?(session: string, chat: string): Promise<void>;
   closeChat?(session: string, chat: string): Promise<void>;

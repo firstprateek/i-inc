@@ -48,37 +48,98 @@ const BLANK_RUN = /\s{200,}/g;
 const DATA_URI =
   /data:([a-z0-9.+-]{1,60}\/[a-z0-9.+-]{1,60})(?:;[a-z0-9=._+-]{1,60}){0,5},([A-Za-z0-9+/=%_-]{200,})/gi;
 const SECRET_QUERY =
-  /([?&;](?:access_token|refresh_token|id_token|token|key|api_key|apikey|sig|signature|secret|client_secret|password|passwd|code|auth|x-amz-[a-z0-9-]{1,40}|x-goog-[a-z0-9-]{1,40})=)[^&\s"'#<>]{1,2000}/gi;
-const USERINFO = /([a-z][a-z0-9+.-]{0,30}:\/\/)[^/\s@:]{1,200}@/gi;
-const PEM_BEGIN = /-----BEGIN [A-Z ]{0,30}PRIVATE KEY-----/g;
-const PEM_END = /-----END [A-Z ]{0,30}PRIVATE KEY-----/g;
+  /([?&;](?:access_token|refresh_token|id_token|token|key|api_key|apikey|sig|signature|secret|client_secret|password|passwd|pwd|pass|passphrase|code|auth|x-amz-[a-z0-9-]{1,40}|x-goog-[a-z0-9-]{1,40})=)[^&\s"'#<>]{1,2000}/gi;
+// Everything between `://` and the last `@` before the path: a password may hold an `@`.
+const USERINFO = /([a-z][a-z0-9+.-]{0,30}:\/\/)[^/\s?#]{1,400}@/gi;
+// RSA, EC, OPENSSH and plain PRIVATE KEY blocks, and PGP's `PRIVATE KEY BLOCK`.
+const PEM_BEGIN = /-----BEGIN [A-Z ]{0,30}PRIVATE KEY(?: BLOCK)?-----/g;
+const PEM_END = /-----END [A-Z ]{0,30}PRIVATE KEY(?: BLOCK)?-----/g;
+/** An armor header inside a key: `Version: GnuPG v2`, `DEK-Info: AES-128-CBC,0F1E`. */
+const KEY_HEADER = /[ \t]*[A-Za-z][A-Za-z-]{0,29}: [^\n]{0,200}/y;
+/** A run of a key's body: base64, or base64 with a written-out `\\n` in it. */
+const KEY_RUN = /[ \t]*[A-Za-z0-9+/=\\-]*/y;
 
 /**
- * Private key blocks, whole (up to 20,000 characters between the markers); a block with no end in
- * reach loses the 4,000 characters after its first line. Each end marker is looked for once, however
- * many beginnings come before it, so a text of nothing but beginnings costs one pass.
+ * Private key blocks go whole, however long: from the marker through the end marker, or, with no end
+ * marker, through every following line of key material (base64, armor headers, blank lines, or a
+ * run of it inside a JSON string) up to the first thing that is not. A body of 30,000 characters is not
+ * left half showing, and the words after the key stay. One pass: nothing is looked at twice, and the
+ * next end marker is found once and remembered, so any number of begin markers costs one scan.
  */
 function redactPem(t: string): string {
-  if (!t.includes("PRIVATE KEY-----")) return t;
+  if (!t.includes("PRIVATE KEY")) return t;
   let out = "";
   let last = 0;
   let end: RegExpExecArray | null | undefined;
+  const endFrom = (pos: number): RegExpExecArray | null => {
+    if (end === null) return null;
+    if (end === undefined || end.index < pos) {
+      PEM_END.lastIndex = pos;
+      end = PEM_END.exec(t);
+    }
+    return end;
+  };
   PEM_BEGIN.lastIndex = 0;
   for (let m = PEM_BEGIN.exec(t); m; m = PEM_BEGIN.exec(t)) {
     if (m.index < last) continue;
-    if (end === undefined || (end !== null && end.index < m.index)) {
-      PEM_END.lastIndex = m.index;
-      end = PEM_END.exec(t);
+    let pos = m.index + m[0].length;
+    let stop = pos;
+    while (pos < t.length) {
+      KEY_HEADER.lastIndex = pos;
+      let lineEnd = -1;
+      if (KEY_HEADER.test(t)) lineEnd = KEY_HEADER.lastIndex;
+      else {
+        KEY_RUN.lastIndex = pos;
+        KEY_RUN.test(t);
+        const runEnd = KEY_RUN.lastIndex;
+        const e = endFrom(pos);
+        if (e && e.index <= runEnd) {
+          stop = e.index + e[0].length; // the end marker, which is what the run was reaching for
+          break;
+        }
+        const next = t[runEnd];
+        const long = runEnd - pos >= 60;
+        if (next === undefined || next === "\n" || next === "\r" || long || /["'}\]),;<>]/.test(next)) {
+          lineEnd = runEnd;
+        } else break; // a word of prose: not part of the key
+      }
+      stop = lineEnd;
+      pos = lineEnd;
+      if (t[pos] === "\r") pos++;
+      if (t[pos] === "\n")
+        pos++; // the newline is the key's only if another line of it follows
+      else if (pos < t.length) break; // the line goes on with something else
     }
-    const stop =
-      end && end.index - m.index <= 20_000
-        ? end.index + end[0].length
-        : Math.min(t.length, m.index + m[0].length + 4000);
     out += `${t.slice(last, m.index)}[private key]`;
     last = stop;
     PEM_BEGIN.lastIndex = stop;
   }
   return out + t.slice(last);
+}
+
+/**
+ * The patterns that are unmistakably credentials, whatever the text is: private key blocks (PGP's
+ * too), URL userinfo (a password may hold an `@`), secret-looking query parameters (`?pwd=`, `?token=`),
+ * and tokens of the known kinds (GitHub, OpenAI/Anthropic, Google, Slack, AWS key ids and keyed
+ * secrets, JWTs, bearer headers). Source code and prose alike: none of these mangles either. The one
+ * set behind `redactText` (everything an agent says) and `redactTokens` (diffs and files).
+ */
+function redactCredentials(text: string): string {
+  let t = redactPem(text);
+  t = t.replace(USERINFO, "$1[redacted]@").replace(SECRET_QUERY, "$1[redacted]");
+  t = t.replace(/(bearer\s+)[A-Za-z0-9._~+/=-]{16,}/gi, "$1[redacted]");
+  t = t.replace(/\b(?:ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]{20,}\b/g, "[redacted]");
+  t = t.replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, "[redacted]");
+  t = t.replace(/\bAIza[0-9A-Za-z_-]{30,}\b/g, "[redacted]");
+  t = t.replace(/\bxox[baprs]-[0-9A-Za-z-]{10,}\b/g, "[redacted]");
+  t = t.replace(/\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\b/g, "[redacted]");
+  t = t.replace(/\bAKIA[0-9A-Z]{16}\b/g, "[redacted]");
+  // AWS's 40-character secret access key, named: aws_secret_access_key = ..., "SecretAccessKey": "..."
+  t = t.replace(
+    /((?:aws[_-]?)?secret[_-]?(?:access[_-]?)?key["']?\s{0,5}[=:]\s{0,5}["']?)[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/gi,
+    "$1[redacted]",
+  );
+  return t;
 }
 
 /**
@@ -100,8 +161,7 @@ export function redactText(text: string): string {
     (_m, mime: string, payload: string) =>
       `[${mime} data, ${Math.max(1, Math.round(payload.length / 1024))} KB]`,
   );
-  t = redactPem(t);
-  t = t.replace(USERINFO, "$1[redacted]@").replace(SECRET_QUERY, "$1[redacted]");
+  t = redactCredentials(t);
   t = redactSecrets(t);
   return t.replace(LONG_RUN, (m) => `[${m.length} characters in one unbroken run, not kept]`);
 }
@@ -153,4 +213,14 @@ export function sanitizeAction<T>(action: T, caps: Pick<Caps, "maxString" | "max
     out = walk(out, undefined, max, false);
   }
   return out as T;
+}
+
+/**
+ * Only the patterns that are unmistakably credentials, for file contents (diffs) where the full
+ * redactor's hex and base64 rules would mangle source code: GitHub, OpenAI/Anthropic, Google, Slack,
+ * AWS and JWT tokens, bearer headers, private key blocks and passwords in URLs: the same set
+ * `redactText` starts with (`redactCredentials`).
+ */
+export function redactTokens(text: string): string {
+  return redactCredentials(text.length > 1_000_000 ? text.slice(0, 1_000_000) : text);
 }

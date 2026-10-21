@@ -75,9 +75,11 @@ describe("persistence across a restart", () => {
       log: (m) => logs.push(m),
     });
     expect(plain(two.chatState(chat))).toEqual(plain(one.host.chatState(chat)));
-    const replayed = Number(/replayed (\d+) actions/.exec(logs[0] ?? "")?.[1]);
-    const total = (one.db.all("SELECT COUNT(*) AS n FROM ahp_actions")[0] as { n: number }).n;
-    expect(replayed).toBeLessThan(total);
+    const total = two.store.countChannelActionsAfter(chat, 0);
+    const tail = two.store.countChannelActionsAfter(chat, two.store.snapshotSeq(chat));
+    expect(two.store.snapshotSeq(chat)).toBeGreaterThan(0);
+    expect(tail).toBeLessThan(total);
+    expect(logs[0]).toMatch(/rebuilt \d+ channels/);
   });
 
   it("ends a turn that was running when the daemon died, keeping the text so far, and says why", async () => {
@@ -111,6 +113,32 @@ describe("persistence across a restart", () => {
     await two.host.idle();
     expect(two.host.chatState(chat)?.turns[1]?.state).toBe(TurnState.Complete);
     // (the first host is the one that "died": its script is never let go)
+  });
+
+  it("ends a turn whose start was stored but whose chat was never marked as running (the process died between the two)", async () => {
+    const path = tmp();
+    const one = await rig({ path });
+    const { chat } = await one.session();
+    const c = one.client();
+    await c.init([ROOT, chat]);
+    const real = one.host.store.append.bind(one.host.store);
+    (one.host.store as Any).append = (row: Any, snap: Any) => {
+      const r = real(row, snap);
+      if (row.action.type === ActionType.ChatTurnStarted) throw new Error("the process died here");
+      return r;
+    };
+    c.dispatch(chat, turnStarted("go", "t1"));
+    await settle();
+    // the action is in the log, and nothing after it ran
+    expect(
+      one.db.all("SELECT COUNT(*) AS n FROM ahp_actions WHERE action LIKE '%chat/turnStarted%'")[0],
+    ).toMatchObject({ n: 1 });
+    const two = await restart(path);
+    const st = two.host.chatState(chat);
+    expect(st?.activeTurn).toBeUndefined();
+    expect(st?.turns[0]?.state).toBe(TurnState.Error);
+    expect(JSON.stringify(st?.turns[0]?.responseParts.at(-1))).toContain("host_restarted");
+    expect(two.host.channelMeta(chat).active).toBe(false);
   });
 
   it("fails a session that was still being created, and restores the agents list from the backend", async () => {

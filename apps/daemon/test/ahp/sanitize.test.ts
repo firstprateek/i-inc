@@ -1,14 +1,17 @@
 // What the host keeps from an agent: secrets out wherever they fall, and no input that stalls it.
 import { describe, expect, it } from "vitest";
-import { redactText, sanitizeAction } from "../../src/ahp/sanitize.ts";
+import { redactText, redactTokens, sanitizeAction } from "../../src/ahp/sanitize.ts";
+import { redactSecrets } from "../../src/sessions.ts";
 
+// Assembled here so that no secret scanner mistakes the example for a real key.
+const AKIA = `AKIA${"ABCDEFGHIJKLMNOP"}`;
 const secrets = [
   "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
   "Bearer eyJhbGciOiJIUzI1NiJ9abcdefghijklmnop",
   "Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345",
   "password: hunter2hunter2",
   "api_key=sk-abcdefghijklmnopqrstuvwx",
-  "AKIAABCDEFGHIJKLMNOP",
+  AKIA,
   "https://user:s3cretpass@example.com/x",
   '{"token": "abcd1234efgh5678"}',
 ];
@@ -18,7 +21,7 @@ const tails: Record<string, string> = {
   "Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345": "abcdefghijklmnopqrstuvwxyz012345",
   "password: hunter2hunter2": "hunter2hunter2",
   "api_key=sk-abcdefghijklmnopqrstuvwx": "sk-abcdefghijklmnopqrstuvwx",
-  AKIAABCDEFGHIJKLMNOP: "AKIAABCDEFGHIJKLMNOP",
+  [AKIA]: AKIA,
   "https://user:s3cretpass@example.com/x": "s3cretpass",
   '{"token": "abcd1234efgh5678"}': "abcd1234efgh5678",
 };
@@ -57,26 +60,40 @@ describe("redaction leaves no secret at any position", () => {
 });
 
 /**
- * The best of three runs, in ms: a machine busy with other test files can slow one run by a factor
- * of two, but not all three, and a pattern that backtracks costs seconds, not milliseconds.
+ * How long things take depends on how busy the machine is, so the tests ask how the time GROWS: four
+ * times the text must cost less than eight times the time. A pattern that backtracks is quadratic or
+ * worse: sixteen times at least, and seconds at 64 KB. Each size is the best of nine runs, timed in turns; the pair
+ * is measured up to three times, because a busy machine can spoil one measurement and a quadratic
+ * pattern spoils every one. A run under 20 ms counts as fast whatever the ratio. The absolute limits
+ * (50 ms for 64 KB, 200 ms for an action) are checked when I_INC_BENCH is set, on a quiet machine.
  */
-const fastest = <T>(fn: () => T, runs = 3): { ms: number; value: T } => {
-  let best = Number.POSITIVE_INFINITY;
-  let value = undefined as T;
-  for (let i = 0; i < runs; i++) {
-    const t = performance.now();
-    value = fn();
-    best = Math.min(best, performance.now() - t);
+const bench = !!process.env.I_INC_BENCH;
+/**
+ * Time of the full-size input, and whether it grew linearly from a quarter of it. The two sizes are
+ * timed in turns, so a busy machine slows both together and the ratio is what it would be on a quiet one.
+ */
+function scaling<T>(whole: () => T, quarter: () => unknown): { ms: number; linear: boolean; value: T } {
+  quarter(); // warm up
+  let last: { ms: number; linear: boolean; value: T } | undefined;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let small = Number.POSITIVE_INFINITY;
+    let big = Number.POSITIVE_INFINITY;
+    let value = undefined as T;
+    for (let i = 0; i < 9; i++) {
+      let t = performance.now();
+      quarter();
+      small = Math.min(small, performance.now() - t);
+      t = performance.now();
+      value = whole();
+      big = Math.min(big, performance.now() - t);
+    }
+    last = { ms: big, linear: big < 20 || big / Math.max(small, 0.5) < 8, value };
+    if (last.linear) break;
   }
-  return { ms: best, value };
-};
+  return last as { ms: number; linear: boolean; value: T };
+}
 
 describe("hostile input costs milliseconds", () => {
-  const time = (f: () => unknown) => {
-    const t = performance.now();
-    f();
-    return performance.now() - t;
-  };
   it("takes 60 KB of one letter, of hex, of base64 and of dotted words without stalling", () => {
     for (const text of [
       "z".repeat(65_536),
@@ -86,7 +103,12 @@ describe("hostile input costs milliseconds", () => {
       `${"key-".repeat(13_000)}=`,
       `${"https:".repeat(10_000)}`,
     ]) {
-      expect(time(() => redactText(text))).toBeLessThan(400);
+      const r = scaling(
+        () => redactText(text),
+        () => redactText(text.slice(0, text.length / 4)),
+      );
+      expect(r.linear).toBe(true);
+      if (bench) expect(r.ms).toBeLessThan(400);
     }
   });
   it("drops a long unbroken run, with its length, and keeps ordinary lines whole", () => {
@@ -100,7 +122,7 @@ describe("hostile input costs milliseconds", () => {
   });
 });
 
-describe("hostile input costs milliseconds, of every class", () => {
+describe("hostile input costs time linear in its length, of every class", () => {
   const N = 65_536;
   const rep = (x: string) => x.repeat(Math.ceil(N / x.length)).slice(0, N);
   const lcg = (alphabet: string) => {
@@ -159,33 +181,56 @@ describe("hostile input costs milliseconds, of every class", () => {
     runsOfTwoHundred: rep(`${"b".repeat(199)} `),
     keyedRuns: rep(`${"c".repeat(60)}key=`),
     emptyValues: rep("password: ''"),
+    pgpBegins: rep("-----BEGIN PGP PRIVATE KEY BLOCK-----"),
+    keyBodies: `-----BEGIN PRIVATE KEY-----\n${"MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n".repeat(2200)}`,
+    escapedKeys: rep("-----BEGIN PRIVATE KEY-----\\nMIIEvQ\\n"),
+    userinfoAts: rep("https://a@b@c@d@"),
+    shortSchemes: rep("x://"),
+    longAuthorities: rep(`x://${"y".repeat(398)}`),
+    pwdQueries: rep("?pwd=&pass=&"),
   };
   for (const [name, text] of Object.entries(classes)) {
-    it(`redacts 64 KB of ${name} in under 50 ms`, () => {
-      redactText(text.slice(0, 1024)); // warm up the regex engine
-      const { ms, value: out } = fastest(() => redactText(text));
-      expect(ms).toBeLessThan(50);
-      expect(out.length).toBeLessThanOrEqual(text.length * 2);
+    it(`redacts 64 KB of ${name} in time linear in its length`, () => {
+      const r = scaling(
+        () => redactText(text),
+        () => redactText(text.slice(0, N / 4)),
+      );
+      expect(r.linear).toBe(true);
+      expect(r.value.length).toBeLessThanOrEqual(text.length * 2);
+      if (bench) expect(r.ms).toBeLessThan(50);
     });
   }
 
-  it("keeps a whole maximum-size action, sixteen such strings, under 200 ms", () => {
+  it("keeps a whole maximum-size action, sixteen such strings, linear in its size", () => {
     const names = Object.keys(classes);
-    const content = Array.from({ length: 16 }, (_, i) => ({
-      type: "text",
-      text: classes[names[(i * 3) % names.length] as string],
-    }));
-    const { ms, value: out } = fastest(() =>
-      sanitizeAction({ result: { content } }, { maxString: 64 * 1024, maxAction: 1024 * 1024 }),
+    // the same four strings over again, so sixteen of them are four times the work of four
+    const four = [0, 5, 11, 20].map((k) => classes[names[k % names.length] as string]);
+    const action = (n: number) => ({
+      result: { content: Array.from({ length: n }, (_, i) => ({ type: "text", text: four[i % 4] })) },
+    });
+    const caps = { maxString: 64 * 1024, maxAction: 1024 * 1024 };
+    const r = scaling(
+      () => sanitizeAction(action(16), caps),
+      () => sanitizeAction(action(4), caps),
     );
-    expect(ms).toBeLessThan(200);
-    expect(JSON.stringify(out).length).toBeLessThanOrEqual(1024 * 1024 + 1000);
+    expect(r.linear).toBe(true);
+    expect(JSON.stringify(r.value).length).toBeLessThanOrEqual(1024 * 1024 + 1000);
+    if (bench) expect(r.ms).toBeLessThan(200);
     // and 64 KB blocks of blanks, the worst class for the old redactor, sixteen at a time
-    const blanks = Array.from({ length: 16 }, (_, i) => ({
-      type: "text",
-      text: [" ", "\n", "\t", "\r\n"][i % 4]?.repeat(N / 2),
-    }));
-    expect(fastest(() => sanitizeAction({ result: { content: blanks } })).ms).toBeLessThan(200);
+    const blanks = (n: number) => ({
+      result: {
+        content: Array.from({ length: n }, (_, i) => ({
+          type: "text",
+          text: [" ", "\n", "\t", "\r\n"][i % 4]?.repeat(N / 2),
+        })),
+      },
+    });
+    const b = scaling(
+      () => sanitizeAction(blanks(16)),
+      () => sanitizeAction(blanks(4)),
+    );
+    expect(b.linear).toBe(true);
+    if (bench) expect(b.ms).toBeLessThan(200);
   });
 });
 
@@ -221,14 +266,56 @@ describe("what redaction keeps and what it takes", () => {
     expect(out).toContain(
       "https://[redacted]@example.com/x?id=7&token=[redacted]&sig=[redacted]&X-Amz-Signature=[redacted]&code=[redacted]&page=2&access_token=[redacted]",
     );
-    expect(out).toContain("https://u:[redacted]@h.io/");
+    expect(out).toContain("https://[redacted]@h.io/");
     expect(out).not.toMatch(/abc123|deadbeef|0123abcd|zzz|deploy@|:pw@/);
+  });
+
+  it("takes a private key block whole, PGP's too, however long, and stops where the key does", () => {
+    const body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC".repeat(2);
+    const pgp = `-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: GnuPG v2\n\nlQOYBGJhbXcBCADd8jM4\n=a1B2\n-----END PGP PRIVATE KEY BLOCK-----`;
+    expect(redactText(`before\n${pgp}\nafter`)).toBe("before\n[private key]\nafter");
+    // far longer than any cap: gone to the last line of it, and the prose after it stays
+    const huge = `-----BEGIN RSA PRIVATE KEY-----\n${`${body}\n`.repeat(900)}`;
+    expect(huge.length).toBeGreaterThan(50_000);
+    expect(redactText(`${huge}\nThat was my key, thanks.`)).toBe("[private key]\nThat was my key, thanks.");
+    // an encrypted key's headers belong to it
+    expect(
+      redactText(
+        `-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0F1E2D3C\n\n${body}\n-----END RSA PRIVATE KEY-----\ndone`,
+      ),
+    ).toBe("[private key]\ndone");
+    // the same inside a JSON string, where the newlines are written out
+    const escaped = `{"k":"-----BEGIN PRIVATE KEY-----\\n${body}\\n${body}\\n-----END PRIVATE KEY-----\\n","n":1}`;
+    const out = redactText(escaped);
+    expect(out).not.toContain("MIIEvQ");
+    expect(out).toContain('"n":1');
+    // a line of ordinary words ends it
+    expect(redactText(`-----BEGIN PRIVATE KEY-----\n${body}\nAnd here is what I did next.`)).toBe(
+      "[private key]\nAnd here is what I did next.",
+    );
+  });
+
+  it("takes ?pwd= and the like from a URL, and a password that holds an @", () => {
+    const out = redactText(
+      "curl 'https://h.io/x?pwd=hunter2&user=ada&pass=opensesame&passphrase=correct+horse' https://deploy:p@ss%word@example.com/repo.git ftp://u:a@b@c@host/x",
+    );
+    expect(out).not.toMatch(/hunter2|opensesame|correct|p@ss|ss%word|a@b/);
+    expect(out).toContain("user=ada");
+    expect(out).toContain("@example.com/repo.git");
+    expect(out).toContain("@host/x");
+    // the shared redactor (ticket transcripts) does the same
+    const shared = redactSecrets("git clone https://deploy:p@ss%word@example.com/repo.git and ?pwd=hunter2");
+    expect(shared).not.toMatch(/p@ss|ss%word|hunter2/);
   });
 
   const long = {
     jwt: `eyJ${"hGciOiJIUzI1NiJ9".repeat(30)}.eyJ${"c3ViIjoiMTIzIn0".repeat(30)}.${"SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV".repeat(10)}`,
-    pem: `-----BEGIN RSA PRIVATE KEY-----\n${("MIIEpAIBAAKCAQEA3Tz2mr7SZiAMfQyuvBjM9Oi".repeat(2) + "\n").repeat(20)}-----END RSA PRIVATE KEY-----`,
-    pemNoEnd: `-----BEGIN PRIVATE KEY-----\n${("MIIEvQIBADANBgkqhkiG9w0BAQEFAASC".repeat(2) + "\n").repeat(30)}`,
+    pem: `-----BEGIN RSA PRIVATE KEY-----\n${`${"MIIEpAIBAAKCAQEA3Tz2mr7SZiAMfQyuvBjM9Oi".repeat(2)}\n`.repeat(20)}-----END RSA PRIVATE KEY-----`,
+    pemNoEnd: `-----BEGIN PRIVATE KEY-----\n${`${"MIIEvQIBADANBgkqhkiG9w0BAQEFAASC".repeat(2)}\n`.repeat(30)}`,
+    pgp: `-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: GnuPG v2\nComment: work key\n\n${`${"lQOYBGJhbXcBCADd8jM4".repeat(4)}\n`.repeat(25)}=a1B2\n-----END PGP PRIVATE KEY BLOCK-----`,
+    pgpNoEnd: `-----BEGIN PGP PRIVATE KEY BLOCK-----\n\n${`${"lQOYBGJhbXcBCADd8jM4".repeat(4)}\n`.repeat(25)}`,
+    keyOver20k: `-----BEGIN PRIVATE KEY-----\n${`${"MIIEvQIBADANBgkqhkiG9w0BAQEFAASC".repeat(2)}\n`.repeat(500)}`,
+    keyEscaped: `{"key":"-----BEGIN PRIVATE KEY-----\\n${`${"MIIEvQIBADANBgkqhkiG9w0BAQEFAASC".repeat(2)}\\n`.repeat(30)}-----END PRIVATE KEY-----\\n"}`,
     anthropic: `sk-ant-api03-${"AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-".repeat(6)}`,
     github: `github_pat_${"11ABCDEFG0".repeat(20)}`,
     awsSecret: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
@@ -239,6 +326,10 @@ describe("what redaction keeps and what it takes", () => {
     jwt: "hGciOiJIUzI1NiJ9hGciOiJIUzI1NiJ9",
     pem: "MIIEpAIBAAKCAQEA3Tz2mr7SZiAMfQyuvBjM9Oi",
     pemNoEnd: "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC",
+    pgp: "lQOYBGJhbXcBCADd8jM4lQOYBGJhbXcBCADd8jM4",
+    pgpNoEnd: "lQOYBGJhbXcBCADd8jM4lQOYBGJhbXcBCADd8jM4",
+    keyOver20k: "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC",
+    keyEscaped: "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC",
     anthropic: "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AbCdEf",
     github: "11ABCDEFG011ABCDEFG0",
     awsSecret: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
@@ -263,6 +354,36 @@ describe("what redaction keeps and what it takes", () => {
   }
 });
 
+describe("diffs and files get the same credential patterns as everything else", () => {
+  const samples: Record<string, [string, string]> = {
+    pgp: [
+      "-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nlQOYBGJhbXcBCADd8jM4abcd\n-----END PGP PRIVATE KEY BLOCK-----",
+      "lQOYBGJhbXcBCADd8jM4",
+    ],
+    pgpNoEnd: [
+      "-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBGJhbXcBCADd8jM4abcd\n\nlQOYBGJhbXcBCADd8jM4efgh\n",
+      "lQOYBGJhbXcBCADd8jM4",
+    ],
+    pwdQuery: ["curl https://h.io/x?pwd=hunter2queryvalue&a=1", "hunter2queryvalue"],
+    atInPassword: ["git clone https://deploy:p@sswordwithat@example.com/r.git", "sswordwithat"],
+    awsSecret: ["aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "wJalrXUtnFEMI"],
+    awsJson: ['{"SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"}', "wJalrXUtnFEMI"],
+    github: ["TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789", "ghp_abcdefghijklmnop"],
+    bearer: ["Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345", "abcdefghijklmnopqrstuvwx"],
+    key: [`${AKIA} in a config`, "ABCDEFGHIJKLMNOP"],
+  };
+  for (const [name, [text, secret]] of Object.entries(samples)) {
+    it(`takes ${name} from a diff, as it does from the agent's own words`, () => {
+      expect(redactTokens(`+ ${text}\n`)).not.toContain(secret);
+      expect(redactText(`+ ${text}\n`)).not.toContain(secret);
+    });
+  }
+  it("leaves source code alone: hashes, ids and long constants are not credentials", () => {
+    const code = `const sha = "${"0123456789abcdef".repeat(4)}";\nconst blob = "${"QUJD".repeat(200)}";\nconst u = "https://example.com/a?page=2&sort=name";`;
+    expect(redactTokens(code)).toBe(code);
+  });
+});
+
 describe("redaction comes before the cut", () => {
   it("never leaves half a URL password at the end of a 64 KB string", () => {
     const leaks: number[] = [];
@@ -273,7 +394,7 @@ describe("redaction comes before the cut", () => {
       const out = (sanitizeAction({ text }, { maxString: 65_536, maxAction: 1_000_000 }) as { text: string })
         .text;
       for (let n = 4; n <= pw.length; n++)
-        if (out.includes(`:${pw.slice(0, n)}`) || out.includes(pw.slice(0, n) + "@")) leaks.push(off);
+        if (out.includes(`:${pw.slice(0, n)}`) || out.includes(`${pw.slice(0, n)}@`)) leaks.push(off);
     }
     expect(leaks).toEqual([]);
   });

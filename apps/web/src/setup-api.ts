@@ -84,6 +84,8 @@ export interface Sandbox {
   cpus: number;
   memory: string;
   signedIn: { claude: boolean; antigravity: boolean; github: boolean; codex?: boolean };
+  /** The machine's launcher writes no agent notes (made before they existed): run update-machine.sh for the team. */
+  launcher?: "needs-update";
   reason?: string;
   kind?: string;
   retryAt?: number;

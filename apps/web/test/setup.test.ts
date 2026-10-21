@@ -61,6 +61,7 @@ function serve(
   opts: {
     sandboxes?: "ok" | "404" | "fail";
     codexSignedIn?: boolean;
+    staleLauncher?: boolean;
     putFails?: string;
     githubReposFails?: boolean;
   } = {},
@@ -120,9 +121,11 @@ function serve(
     if (url === "/api/sandboxes") {
       if (opts.sandboxes === "404") return json({ error: "not found" }, 404);
       if (opts.sandboxes === "fail") return new Response("<html>nope</html>", { status: 500 });
-      const rows = opts.codexSignedIn
+      let rows = opts.codexSignedIn
         ? sandboxes.map((s, i) => (i === 0 ? { ...s, signedIn: { ...s.signedIn, codex: true } } : s))
         : sandboxes;
+      if (opts.staleLauncher)
+        rows = rows.map((s, i) => (i === 0 ? { ...s, launcher: "needs-update" as const } : s));
       return json({ sandboxes: rows });
     }
     if (url.startsWith("/api/sandboxes/") && url.endsWith("/retry") && method === "POST") {
@@ -386,6 +389,16 @@ describe("sandboxes", () => {
     const [engineering] = [...root.querySelectorAll("section.card")];
     expect(engineering?.textContent).toContain("Codex: signed in");
     expect(engineering?.textContent).not.toContain("sign-in-codex.sh");
+  });
+
+  it("says which sandbox needs its launcher updated, and how", async () => {
+    serve({ staleLauncher: true });
+    const root = await mount("inc-setup-sandboxes");
+    const [engineering, other] = [...root.querySelectorAll("section.card")];
+    expect(engineering?.querySelector(".launcher-help")?.textContent).toContain(
+      "Needs update: run sh tools/host/update-machine.sh engineering",
+    );
+    expect(other?.querySelector(".launcher-help")).toBeNull();
   });
 
   it("shows an error state as an error with reason and Retry now button", async () => {

@@ -85,11 +85,24 @@ export interface StorageDeps {
   footprint: () => Record<string, number>;
   /** The folder with the worktrees inside a machine. */
   work?: string;
+  /** Archived conversations, with when they were archived: their working copies are cleaned like closed tickets'. */
+  archivedConversations?: () => {
+    id: Id;
+    employeeId: Id;
+    project: string | null;
+    archivedAt: number;
+    /** The machine the copy was made in, when recorded: it outlives a team change or an employee leaving. */
+    machine?: string | null;
+  }[];
+  /** Told which archived conversations' copies a real pass found gone (removed now, or not there): their tombstones can go in time. */
+  copiesGone?: (ids: Id[]) => void;
   /** Ask a machine to hand freed blocks back to the host. */
   trim?: boolean;
   memory?: () => NodeJS.MemoryUsage;
   /** How long after truncating a log to wait before checking its start (default 2 s). */
   logSettleMs?: number;
+  /** Replaces that wait with an action (tests). */
+  logSettle?: () => Promise<void>;
 }
 
 export interface FsUsage {
@@ -454,11 +467,22 @@ export class Storage {
         (t) => t.machines.has(machine) && (settings.sandboxCleanupDays > 0 ? t.endedAt <= cutoff : false),
       );
       if (await this.d.machineBusy(machine)) return skip("the machine came into use");
+      // Archived conversations are cleaned like closed tickets: past the same retention, with the same
+      // fail-safe rules, and unpushed work kept for unpushedKeepDays.
+      const convs =
+        settings.sandboxCleanupDays > 0
+          ? (this.d.archivedConversations?.() ?? []).filter(
+              (c) => c.archivedAt <= cutoff && (c.machine ?? this.machineOf(c.employeeId)) === machine,
+            )
+          : [];
       const script = cleanupScript({
         work: this.d.work ?? "/home/employee/work",
         ids: mine.map((t) => t.id),
         aged: mine.filter((t) => t.endedAt <= unpushedCutoff).map((t) => t.id),
         merged: mine.filter((t) => t.merged).map((t) => t.id),
+        convs: convs.map((c) => c.id),
+        convsAged: convs.filter((c) => c.archivedAt <= unpushedCutoff).map((c) => c.id),
+        convsScratch: convs.filter((c) => c.project === null).map((c) => c.id),
         dryRun,
         cacheCapKb: settings.cacheCapGb * 1024 * 1024,
         docker: settings.dockerPrune,
@@ -486,6 +510,13 @@ export class Storage {
           measuredAt: now,
         };
         memo.fs = result.fs;
+      }
+      if (!dryRun && this.d.copiesGone) {
+        const listed = new Set(convs.map((c) => `conv-${c.id}`));
+        const gone = [...report.removed.map((r) => r.ticket), ...report.absent]
+          .filter((label) => listed.has(label))
+          .map((label) => label.slice("conv-".length));
+        if (gone.length) this.d.copiesGone(gone);
       }
       if (!dryRun) {
         const summary: CleanupSummary = {
@@ -628,6 +659,7 @@ export class Storage {
           keep: settings.logKeep,
           dryRun,
           ...(this.d.logSettleMs !== undefined ? { settleMs: this.d.logSettleMs } : {}),
+          ...(this.d.logSettle ? { settle: this.d.logSettle } : {}),
         });
         for (const l of out.logs.filter((x) => x.nulAtStart)) {
           this.log(

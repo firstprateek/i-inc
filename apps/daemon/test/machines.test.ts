@@ -1,5 +1,5 @@
 import { StartupError } from "@i-inc/core";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   AppleMachines,
   BOOT_FAILURES,
@@ -7,6 +7,7 @@ import {
   defaultMachineSettings,
   type Exec,
 } from "../src/machines.ts";
+import { forgetSweepState } from "../src/reaper.ts";
 
 const { wallsMarker: _, ...noWalls } = defaultMachineSettings;
 
@@ -45,6 +46,47 @@ describe("AppleMachines.inspectSandbox", () => {
       signedIn: { claude: false, antigravity: false, codex: false, github: false },
     });
     expect(calls).toEqual([{ bin: defaultMachineSettings.bin, args: ["machine", "ls"] }]);
+  });
+
+  describe("a launcher from before agent notes", () => {
+    beforeEach(() => forgetSweepState());
+    const listing = [
+      "NAME             CREATED              IP             CPUS  MEMORY  DISK  STATE    DEFAULT",
+      "inc-engineering  2026-09-28 20:46:19  192.168.64.22  6     12G     3.6G  running",
+    ].join("\n");
+    const probe =
+      (output: string): Exec =>
+      async (_bin, args) =>
+        args[1] === "ls" ? listing : output;
+    const size = { cpus: 6, memory: "12G" };
+
+    it("is noticed, logged once per machine, and reported as needing an update", async () => {
+      const logs: string[] = [];
+      const m = new AppleMachines(noWalls, probe("claude\nnoagentnotes\n"), undefined, undefined, (l) =>
+        logs.push(l),
+      );
+      expect((await m.inspectSandbox("engineering", size)).launcher).toBe("needs-update");
+      expect((await m.inspectSandbox("engineering", size)).launcher).toBe("needs-update");
+      const said = logs.filter((l) => l.includes("writes no agent notes"));
+      expect(said).toHaveLength(1);
+      expect(said[0]).toContain("tools/host/update-machine.sh engineering");
+    });
+
+    it("says nothing when the launcher writes notes, or when the probe did not look", async () => {
+      const logs: string[] = [];
+      const current = new AppleMachines(noWalls, probe("claude\nagentnotes\n"), undefined, undefined, (l) =>
+        logs.push(l),
+      );
+      expect((await current.inspectSandbox("engineering", size)).launcher).toBeUndefined();
+      const unknown = new AppleMachines(noWalls, probe("claude\n"));
+      expect((await unknown.inspectSandbox("engineering", size)).launcher).toBeUndefined();
+      expect(logs.filter((l) => l.includes("agent notes"))).toEqual([]);
+      // and an update clears it
+      const stale = new AppleMachines(noWalls, probe("noagentnotes\n"));
+      expect((await stale.inspectSandbox("engineering", size)).launcher).toBe("needs-update");
+      const fixed = new AppleMachines(noWalls, probe("agentnotes\n"));
+      expect((await fixed.inspectSandbox("engineering", size)).launcher).toBeUndefined();
+    });
   });
 
   it("probes credential files inside the machine when running and parses sign-ins accurately", async () => {

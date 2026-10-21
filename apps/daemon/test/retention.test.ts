@@ -220,8 +220,14 @@ describe("rotating logs", () => {
     // A writer holding a plain descriptor at its old offset: its next write lands past the new end.
     const fd = openSync(file, "r+");
     writeSync(fd, "y", 2999);
-    setTimeout(() => writeSync(fd, "late line\n", 3000), 20);
-    const r = await rotateLogs(dir, { maxBytes: 1000, keep: 2, settleMs: 80 });
+    // The write comes in the settling window, after the truncation: no timer to win or lose a race.
+    const r = await rotateLogs(dir, {
+      maxBytes: 1000,
+      keep: 2,
+      settle: async () => {
+        writeSync(fd, "late line\n", 3000);
+      },
+    });
     closeSync(fd);
     expect(r).toEqual([{ file: "i-inc-daemon.log", bytes: 3000, nulAtStart: true }]);
     expect(readFileSync(file)[0]).toBe(0);
@@ -408,10 +414,10 @@ describe("host maintenance", () => {
     const fd = openSync(file, "r+");
     writeSync(fd, "y", 21 * 1024 ** 2 - 1);
     // Written after the truncation, at the old offset, by a writer that doesn't append.
-    const writer = setInterval(() => writeSync(fd, "late\n", 21 * 1024 ** 2), 5);
-    (storage as unknown as { d: { logSettleMs: number } }).d.logSettleMs = 150;
+    (storage as unknown as { d: { logSettle: () => Promise<void> } }).d.logSettle = async () => {
+      writeSync(fd, "late\n", 21 * 1024 ** 2);
+    };
     await storage.maintainHost({ manual: true });
-    clearInterval(writer);
     closeSync(fd);
     expect(
       logs.some(

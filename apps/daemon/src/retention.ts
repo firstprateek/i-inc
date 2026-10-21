@@ -215,7 +215,14 @@ async function startsWithNul(file: string): Promise<boolean> {
  */
 export async function rotateLogs(
   dir: string,
-  o: { maxBytes: number; keep: number; dryRun?: boolean; settleMs?: number },
+  o: {
+    maxBytes: number;
+    keep: number;
+    dryRun?: boolean;
+    settleMs?: number;
+    /** Replaces the wait: what happens while a writer that does not append would write (tests). */
+    settle?: () => Promise<void>;
+  },
 ): Promise<RotateResult[]> {
   const rotated: RotateResult[] = [];
   let names: string[];
@@ -252,7 +259,7 @@ export async function rotateLogs(
     await truncate(file, 0);
     await pipeline(createReadStream(copy), createGzip(), createWriteStream(`${file}.1.gz`));
     await rm(copy, { force: true });
-    await new Promise((r) => setTimeout(r, o.settleMs ?? 2000));
+    await (o.settle ? o.settle() : new Promise((r) => setTimeout(r, o.settleMs ?? 2000)));
     if (await startsWithNul(file).catch(() => false)) result.nulAtStart = true;
   }
   return rotated;

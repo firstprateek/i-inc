@@ -123,6 +123,7 @@ export const ResponsePartKind = {
   Markdown: "markdown" as RPK.Markdown,
   ToolCall: "toolCall" as RPK.ToolCall,
   Reasoning: "reasoning" as RPK.Reasoning,
+  SystemNotification: "systemNotification" as RPK.SystemNotification,
   InputRequest: "inputRequest" as RPK.InputRequest,
   Error: "error" as RPK.Error,
 } as const;
@@ -130,6 +131,7 @@ export const ResponsePartKind = {
 export const ToolResultContentType = {
   Text: "text" as TRCT.Text,
   EmbeddedResource: "embeddedResource" as TRCT.EmbeddedResource,
+  Resource: "resource" as TRCT.Resource,
   FileEdit: "fileEdit" as TRCT.FileEdit,
 } as const;
 

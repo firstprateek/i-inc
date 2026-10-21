@@ -2,8 +2,10 @@
 
 Status: approved 2026-10-20. Corrected by the AHP spike ([ahp-spike.md](ahp-spike.md)): AHP is 1.0, not pre-1.0, and
 `serverSeq` is one counter for the whole host. The host core, the action store, the `/ahp` transport and the
-conversations table and REST routes are built (T59a, contract C22 in [coord.md](../coord.md)); the session host
-and the ACP mapper follow (T59b). The Conversations screen is T60.
+conversations table and REST routes are built (T59a, contract C22 in [coord.md](../coord.md)), and so are the
+session host and the ACP mapper (T59b: `apps/daemon/src/ahp/session-host.ts`, `acp-mapper.ts`). Tickets still run
+on their own path, with their transcripts as before; moving their stages onto the host is a follow-up. The
+Conversations screen is T60.
 
 ## Goal
 
@@ -101,6 +103,15 @@ Pieces in the daemon:
    Origin checks, keepalive pings, a frame size limit and a slow-consumer limit.
    Everything that is not a session stays plain REST.
 
+As built (T59b):
+- A conversation's agent runs in its employee's team sandbox, in `/home/employee/work/conv-<id>`: a worktree
+  of the project's repo on branch `conv/<id>`, made like a ticket's but never committed to or pushed, or an
+  empty folder with no project. At most three conversations are live per team: opening a fourth suspends the
+  least recently used idle one, and a message to a sleeping conversation when all three are busy waits in the
+  queue with the reason shown in the chat. Creating a conversation when all three are busy is refused (409).
+  Idle conversations suspend after 15 minutes; a daemon restart suspends them all. A crashed or killed agent
+  ends the turn with an error and starts again on the next message.
+
 The spike (T55, [ahp-spike.md](ahp-spike.md)) answered the open questions:
 - The official `@microsoft/agent-host-protocol` 1.0.0 works under Bun and Node (types, reducers, client,
   WebSocket transport). We pin it exactly and build our own host on its reducers; `@ahpd/sdk` is a
@@ -110,6 +121,52 @@ The spike (T55, [ahp-spike.md](ahp-spike.md)) answered the open questions:
   keep agent-specific code in the mapper.
 - Whether VS Code's Agents window can attach to an i.inc host over the tailnet is plausible (a
   `chat.remoteAgentHosts` setting) but unverified; it is an acceptance test for later, not a design driver.
+
+## Agents and the daemon's end
+
+An agent is a process in the team's sandbox, started through `container machine run -i`. If the
+daemon dies (a crash, `kill -9`, a deploy that does not wait for it) the agent's stdin closes, and
+an agent that does not treat that as the end keeps running; the restarted daemon would then start
+a second one for the same conversation, and the first would live on. Three things prevent it
+(`apps/daemon/src/reaper.ts`):
+
+- **A note per launch.** Every launch has a token (`I_INC_AGENT`). The image's launcher
+  (`images/employee/acp-env.sh`, which every `acp-*` launcher sources) writes
+  `~/.inc-agents/<token>.pid` in the sandbox: `pid|start time|folder`. The launcher `exec`s the agent,
+  so the pid is the agent's. Machines made before this need `tools/host/update-machine.sh <employee>`
+  to get the new `acp-env.sh`; until then there is no note and nothing to find.
+- **A sweep.** Before every launch (conversations and tickets), with the folder it is for, and once at
+  startup over every `inc-*` machine that is up, a script stops each agent whose note is there, whose
+  pid still has the recorded start time, and (on Linux) whose environment still holds the token:
+  SIGTERM to it and its descendants, SIGKILL after three seconds, note removed. A note whose pid is gone or
+  has another start time is stale and is only removed. Never by process name. The agents this daemon
+  started itself (tokens it holds) are never touched.
+- **A clean exit.** On SIGTERM or SIGINT the daemon stops accepting connections, sends `session/cancel`
+  to every running turn, closes every agent's stdin, kills what is still there after 2.5 s, sweeps
+  the sandboxes once more for anything that ignored both, folds the database's log back in and
+  exits, all inside about 8 s (launchd gives 20). A second signal exits at once.
+
+What `container machine run -i` does with the end of stdin, or with its own death, is not documented in
+this repo, the `container` CLI is not installed on the development Mac, and nothing here was run on the
+mini. So none of this relies on it: the sweep stops the process inside the machine whatever the client
+does. It is worth one look on the mini, in a scratch machine, to see whether closing the client's stdin
+reaches the process (`container machine run -i -n <scratch> -- sleep 1000 < /dev/null`, then
+`ps` in the machine) and whether killing the client does.
+
+## Questions from the agent: a known gap
+
+The conversation daemon never raises an AHP input request (`session/inputNeeded` only ever lists
+tool confirmations). Checked against the adapters' public documentation, not run: ACP defines
+`elicitation/create` (a client method, "request structured information from the user") and
+`elicitation/complete`, used only if the client advertises the `elicitation` capability, which this
+daemon does not. Claude's adapter (`@agentclientprotocol/claude-agent-acp`) documents elicitation only
+for its experimental v2 (`CLAUDE_AGENT_ACP_EXPERIMENTAL_V2=1`) and for MCP sign-in links, and says
+nothing about Claude's `AskUserQuestion` tool; nothing was found for the Codex adapter. So today a
+question reaches the owner as ordinary text in the reply, and an `elicitation/create` request, if an
+adapter sent one anyway, is answered "not offered". To close the gap: advertise the capability, map
+`elicitation/create` to an AHP `ChatInputRequest` part (the host and the `inputNeeded` roll-up already
+carry those), answer it from the owner's `chat/inputAnswerChanged`, and check the request and answer
+shapes against a real adapter on the mini first.
 
 ## The screen (laptop first)
 
@@ -121,8 +178,10 @@ The spike (T55, [ahp-spike.md](ahp-spike.md)) answered the open questions:
   edits show a diff; long terminal output is truncated with "show all"; errors carry Retry.
 - **Composer.** Multi-line, Enter sends and Shift+Enter breaks a line; paste or drop images and
   files; the agent's slash commands (from `available_commands_update`); mode and model pickers;
-  a **Stop** button while a turn runs. Typing while it runs either **steers** the current turn or
-  **queues** a message (AHP pending messages).
+  a **Stop** button while a turn runs. Typing while it runs **queues** a message or sends it as a
+  **steering** message (AHP pending messages). A steering message runs as the next turn, ahead of the
+  queue; it does not interrupt the current turn, because ACP has no way to inject into a running one. To
+  interrupt, press **Stop**.
 - **Right: context panel (collapsible).** Project and branch, files changed with diffs, the
   agent's plan, the brain pages used for this turn, and usage.
 - **Phone:** the same stream in one column; the context panel becomes a sheet.

@@ -73,7 +73,10 @@ describe("REST /api/conversations", () => {
       title: "Lunch ideas",
       engineId: "gemini",
     });
-    expect(app.ahp.host.sessionState(made.body.conversation.ahpSession)?.workingDirectories).toBeUndefined();
+    // no project: an empty scratch folder at the same place
+    expect(app.ahp.host.sessionState(made.body.conversation.ahpSession)?.workingDirectories).toEqual([
+      `file://${conversationDir(made.body.conversation.id)}`,
+    ]);
   });
 
   it("lists newest activity first, hides archived by default, and filters by employee", async () => {
@@ -379,6 +382,13 @@ describe("the row and the session stay in step", () => {
     expect((await client.rpc("disposeSession", { channel: c.ahpSession })).result).toBeNull();
     expect((await app.call("GET", `/api/conversations/${c.id}`)).status).toBe(404);
     expect(app.ahp.host.sessions()).toEqual([]);
+    // the row stays as a tombstone, archived, so the sandbox cleanup still finds its working copy
+    expect(
+      app.db.all(
+        "SELECT archived_at IS NOT NULL AS a, disposed_at IS NOT NULL AS d FROM conversations WHERE id = ?",
+        c.id,
+      ),
+    ).toEqual([{ a: 1, d: 1 }]);
   });
 
   it("offers one provider per engine on the root channel, and follows hiring a new engine", async () => {

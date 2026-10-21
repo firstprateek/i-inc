@@ -32,6 +32,12 @@ export interface SandboxStatus {
   cpus: number;
   memory: string;
   signedIn: { claude: boolean; antigravity: boolean; codex: boolean; github: boolean };
+  /**
+   * The launcher in this machine writes no agent notes (it was made before they existed), so an agent
+   * left running by a crashed daemon can't be found there. Fixed by `tools/host/update-machine.sh <team>`.
+   * Absent when it is current or not yet known.
+   */
+  launcher?: "needs-update";
   /** With `state: "error"` (contract C18): why it can't start, in plain words, and what fixes it. */
   reason?: string;
   kind?: SandboxFaultKind;

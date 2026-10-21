@@ -3,7 +3,7 @@
 // no PR without a commit, so a new branch starts with an empty one; the squash merge drops it. The
 // report stage writes the PR's body and takes it out of draft. Both are safe to repeat: a crash, a
 // handoff or a new machine finds the branch and the PR that are already there.
-import { dirname } from "node:path";
+import { dirname, posix } from "node:path";
 import {
   attachmentPath,
   type Employee,
@@ -30,8 +30,45 @@ export interface WorkspaceOptions {
   policy?: (project: string) => ProjectPolicy;
   /** Where the repo is cloned from; tests use a local path. */
   remote?: (repo: string) => string;
+  log?: (msg: string) => void;
   /** The images the owner attached to a ticket, with their bytes. */
   attachments?: (ticketId: string) => AttachmentFile[];
+}
+
+/**
+ * Is this a branch name git would take, by `git check-ref-format --branch`'s rules and a stricter
+ * one on whitespace? Nothing else may reach a script run in a sandbox: no `..`, no leading `-`, no
+ * control characters or spaces, none of `~^:?*[\\`, no `@{`, no component that starts with `.` or ends
+ * `.lock`, no empty component, no trailing `.` or `/`.
+ */
+export function isSafeRefName(name: unknown): name is string {
+  if (typeof name !== "string" || name.length === 0 || name.length > 200) return false;
+  if (
+    name === "@" ||
+    name.startsWith("-") ||
+    name.startsWith("/") ||
+    name.endsWith("/") ||
+    name.endsWith(".")
+  ) {
+    return false;
+  }
+  if (name.includes("..") || name.includes("@{") || name.includes("//")) return false;
+  // Beyond git's rules: plain characters only, so nothing is ever left for a shell to read.
+  if (!/^[A-Za-z0-9._/-]+$/.test(name)) return false;
+  return name.split("/").every((part) => part.length > 0 && !part.startsWith(".") && !part.endsWith(".lock"));
+}
+
+/** Where conversations and tickets work in a sandbox. */
+export const WORK_ROOT = "/home/employee/work/";
+
+/**
+ * A working directory is a normalised path directly under the work root, named `conv-<id>` or
+ * `inc-<id>`. Anything else (`/etc/x`, `../..`, spaces, `$(...)`) is refused before it reaches a shell.
+ */
+export function isSafeWorkDir(cwd: unknown): cwd is string {
+  if (typeof cwd !== "string" || !cwd.startsWith(WORK_ROOT)) return false;
+  if (posix.normalize(cwd) !== cwd) return false;
+  return /^(?:conv|inc)-[A-Za-z0-9_-]{1,64}$/.test(cwd.slice(WORK_ROOT.length));
 }
 
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -61,8 +98,15 @@ export function openScript(o: {
   message: string;
   /** Owner-merges mode pushes the branch for a PR; direct mode keeps it local. Default: push. */
   push?: boolean;
+  /**
+   * What to do with a local branch that has commits GitHub's copy lacks, when the worktree is made
+   * again. "keep" (conversations) checks the local branch out as it is. "origin" (tickets) resets it
+   * to GitHub's, after saving the local one as `refs/inc-backup/<branch>-<time>` and saying so
+   * (`@@backup <ref>`), so nothing is lost. Default: origin.
+   */
+  local?: "keep" | "origin";
 }): string {
-  if (!/^[A-Za-z0-9._/-]+$/.test(o.branch)) throw new Error(`not a branch name: ${o.branch}`);
+  if (!isSafeRefName(o.branch)) throw new Error(`not a branch name: ${o.branch}`);
   const [remote, repoDir, worktree, branch] = [o.remote, o.repoDir, o.worktree, o.branch].map(quote);
   return [
     "set -e",
@@ -84,11 +128,32 @@ export function openScript(o: {
     '    BASE_REF="HEAD"',
     "  fi",
     "fi",
+    // Folders removed by hand or by the storage cleanup leave worktree records behind.
+    "git worktree prune",
+    "COPY=existing",
     `if ! git -C ${worktree} rev-parse --is-inside-work-tree >/dev/null 2>&1; then`,
     `  if git show-ref --quiet --verify refs/remotes/origin/${o.branch}; then`,
-    `    git worktree add --quiet -B ${branch} ${worktree} origin/${o.branch}`,
+    `    if git show-ref --quiet --verify refs/heads/${o.branch} && [ "$(git rev-list --count ${branch} --not origin/${o.branch})" != 0 ]; then`,
+    ...(o.local === "keep"
+      ? [
+          // A conversation's local branch with commits that were never pushed is checked out as it is, never reset.
+          `      git worktree add --quiet ${worktree} ${branch}; COPY=restored`,
+        ]
+      : [
+          // A ticket's is reset to GitHub's, as before, but first saved where it can be found again.
+          `      BACKUP="refs/inc-backup/${o.branch}-$(date +%s)"`,
+          `      git update-ref "$BACKUP" refs/heads/${o.branch}`,
+          '      echo "@@backup $BACKUP"',
+          `      git worktree add --quiet -B ${branch} ${worktree} origin/${o.branch}; COPY=remote`,
+        ]),
+    "    else",
+    `      git worktree add --quiet -B ${branch} ${worktree} origin/${o.branch}; COPY=remote`,
+    "    fi",
+    // The branch is still here from an earlier copy that was cleaned up: its commits are kept.
+    `  elif git show-ref --quiet --verify refs/heads/${o.branch}; then`,
+    `    git worktree add --quiet ${worktree} ${branch}; COPY=restored`,
     "  else",
-    `    git worktree add --quiet -b ${branch} ${worktree} "$BASE_REF"`,
+    `    git worktree add --quiet -b ${branch} ${worktree} "$BASE_REF"; COPY=fresh`,
     "  fi",
     "fi",
     `cd ${worktree}`,
@@ -96,6 +161,7 @@ export function openScript(o: {
     "git config --worktree --unset i-inc.copy || true",
     `git config --worktree user.name ${quote(o.name)}`,
     `git config --worktree user.email ${quote(o.email)}`,
+    'echo "@@copy $COPY"',
     ...(o.push === false
       ? ["echo @@ready"]
       : [
@@ -118,7 +184,7 @@ export function checkoutScript(o: {
   worktree: string;
   branch: string;
 }): string {
-  if (!/^[A-Za-z0-9._/-]+$/.test(o.branch)) throw new Error(`not a branch name: ${o.branch}`);
+  if (!isSafeRefName(o.branch)) throw new Error(`not a branch name: ${o.branch}`);
   const [remote, repoDir, worktree, branch] = [o.remote, o.repoDir, o.worktree, o.branch].map(quote);
   const aside = quote(`${o.worktree}.pre-checkout`);
   return [
@@ -181,6 +247,88 @@ export function attachmentScript(o: { worktree: string; file: AttachmentFile }):
   ].join("\n");
 }
 
+/**
+ * Removes a conversation's working copy that was made for a session that then failed to open (no
+ * sign-in, the agent would not start): nothing of the owner's is in it. Only a copy with no
+ * commits of its own and no changes goes, with its new branch; anything else is left for the storage
+ * cleanup, which keeps unpushed work.
+ */
+export function removeCopyScript(o: { worktree: string; branch: string | null }): string {
+  if (o.branch !== null && !isSafeRefName(o.branch)) throw new Error(`not a branch name: ${o.branch}`);
+  const q = quote(o.worktree);
+  return [
+    "set -u",
+    `q=${q}`,
+    '[ -L "$q" ] && { echo @@kept symlink; exit 0; }',
+    '[ -d "$q" ] || { echo @@gone; exit 0; }',
+    'if [ -e "$q/.git" ]; then',
+    '  ahead=$(git -C "$q" rev-list --count HEAD --not --remotes) || { echo @@kept gitfail; exit 0; }',
+    '  dirty=$(git -C "$q" status --porcelain) || { echo @@kept gitfail; exit 0; }',
+    '  [ "$ahead" = 0 ] && [ -z "$dirty" ] || { echo @@kept work; exit 0; }',
+    '  common=$(git -C "$q" rev-parse --path-format=absolute --git-common-dir) || { echo @@kept gitfail; exit 0; }',
+    '  repo=$(dirname "$common")',
+    '  git -C "$repo" worktree remove --force "$q" || { echo @@kept gitfail; exit 0; }',
+    ...(o.branch !== null ? [`  git -C "$repo" branch -D ${quote(o.branch)} >/dev/null 2>&1 || true`] : []),
+    "else",
+    // The empty folder of a conversation with no project, or one holding only the images.
+    '  extra=$(ls -A "$q" | grep -v "^[.]inc$" | head -n 1)',
+    '  [ -z "$extra" ] || { echo @@kept files; exit 0; }',
+    '  rm -rf -- "$q"',
+    "fi",
+    "echo @@removed",
+  ].join("\n");
+}
+
+/**
+ * A conversation's working copy in its employee's sandbox: a branch worktree of the project's repo,
+ * made like a ticket's but never committed to or pushed (the owner turns the work into a ticket when it
+ * should ship), or, with no project, an empty folder to work in. Safe to repeat: a worktree that is
+ * already there is left as it is.
+ */
+export type CopyState = "existing" | "fresh" | "restored" | "remote";
+
+/** What `prepareConversationCopy` found: the copy was there, or it was made new, or made again from what was kept. */
+export async function prepareConversationCopy(
+  o: Pick<WorkspaceOptions, "project" | "tokens" | "identity" | "run" | "remote">,
+  c: { employee: Employee; project: string | null; branch: string | null; cwd: string },
+): Promise<CopyState> {
+  const state = (r: { output: string }): CopyState => {
+    const m = /@@copy (existing|fresh|restored|remote)/.exec(r.output);
+    return (m?.[1] as CopyState | undefined) ?? "existing";
+  };
+  const fail = (r: { output: string }) => {
+    const tail = r.output.trim().split("\n").slice(-5).join("\n");
+    return new Error(`git in ${c.employee.name}'s machine failed: ${tail}`);
+  };
+  if (!isSafeWorkDir(c.cwd)) throw new Error(`not a safe folder: ${String(c.cwd)}`);
+  if (c.project === null || c.branch === null) {
+    const r = await o.run(
+      c.employee.id,
+      `set -e\nif [ -d ${quote(c.cwd)} ]; then COPY=existing; else COPY=fresh; fi\nmkdir -p ${quote(c.cwd)}\necho "@@copy $COPY"\necho @@ready`,
+    );
+    if (r.code !== 0 || !r.output.includes("@@ready")) throw fail(r);
+    return state(r);
+  }
+  if (!isSafeRefName(c.branch)) throw new Error(`not a branch name: ${c.branch}`);
+  const project = o.project(c.project);
+  if (!project) throw new Error(`no project ${c.project}`);
+  const { repo } = project;
+  const [token, who] = await Promise.all([o.tokens.token(repo), o.identity(c.employee)]);
+  const script = openScript({
+    remote: o.remote?.(repo) ?? `https://github.com/${repo}.git`,
+    repoDir: `${dirname(c.cwd)}/${repo.split("/")[1]}`,
+    worktree: c.cwd,
+    branch: c.branch,
+    ...who,
+    message: "",
+    push: false,
+    local: "keep",
+  });
+  const r = await o.run(c.employee.id, script, { GH_TOKEN: token });
+  if (r.code !== 0 || !r.output.includes("@@ready")) throw fail(r);
+  return state(r);
+}
+
 export class GitHubWorkspace implements Workspace {
   constructor(private readonly o: WorkspaceOptions) {}
 
@@ -212,8 +360,14 @@ export class GitHubWorkspace implements Workspace {
       throw new Error(`git in ${builder.name}'s machine failed: ${tail}`);
     }
     await this.attach(ticket, builder);
+    // A local branch with commits GitHub did not have was reset to GitHub's; the ticket says where the old one is.
+    const backup = /@@backup (\S+)/.exec(r.output)?.[1];
+    const note = backup
+      ? `${branch} in ${builder.name}'s machine had commits GitHub's copy lacked. They are kept as ${backup} (git branch <name> ${backup} brings them back); the working copy now matches GitHub's branch.`
+      : undefined;
+    if (note) this.o.log?.(`${ticket.id}: ${note}`);
     // Direct mode: a local branch; the reviewed work is pushed to main at the gates.
-    if (direct) return { branch };
+    if (direct) return { branch, ...(note ? { note } : {}) };
     const pr =
       (await this.o.prs.find(repo, branch)) ??
       (await this.o.prs.openDraft(repo, {
@@ -228,7 +382,7 @@ export class GitHubWorkspace implements Workspace {
           ...ticket.doneWhen.map((d) => `- ${d}`),
         ].join("\n"),
       }));
-    return { number: pr.number, url: pr.url, nodeId: pr.nodeId, branch };
+    return { number: pr.number, url: pr.url, nodeId: pr.nodeId, branch, ...(note ? { note } : {}) };
   }
 
   /**
