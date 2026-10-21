@@ -106,7 +106,6 @@ export async function createApp(o: AppOptions) {
   const brain = await BrainIndex.open(o.brainIndexPath ?? ":memory:", knowledge, o.log, {
     ...(o.brainProbe ? { probe: o.brainProbe } : {}),
   });
-  knowledge.onCommit = (repo) => brain.follow(repo);
 
   const deps: DaemonDeps = {
     clock: o.clock,
@@ -198,7 +197,10 @@ export async function createApp(o: AppOptions) {
   }
   backend.attachApp?.({ storage, awake: (id) => daemon.noteAwake(id) });
   daemon.ensureKnowledge();
+  // One rebuild for everything that exists now (the first boot makes a repo per employee); from here
+  // on each commit updates only the pages it touched.
   brain.rebuild();
+  knowledge.onCommit = (repo, paths) => brain.follow(repo, paths);
   const handle = createApi(daemon, deps, {
     ...(o.token ? { token: o.token } : {}),
     ...(o.hosts ? { hosts: o.hosts } : {}),

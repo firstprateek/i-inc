@@ -531,3 +531,77 @@ describe("map performance", () => {
     expect(index.mapFor("company")).not.toBe(after);
   }, 60_000);
 });
+
+describe("incremental sync is cheap", () => {
+  it("reads only the files a commit touched, with no tree walk or history walk", async () => {
+    const { index, store, commit, rm } = await setup();
+    commit("handbook", {
+      "facts/a.md": page("A", "alpha", "alpha"),
+      "facts/b.md": page("B", "beta", "beta"),
+    });
+    const calls: string[] = [];
+    for (const m of ["tree", "blobs", "readAtHead", "modified", "changedPaths"] as const) {
+      const orig = store[m].bind(store) as (...a: never[]) => unknown;
+      (store as unknown as Record<string, unknown>)[m] = (...a: never[]) => {
+        calls.push(m);
+        return orig(...a);
+      };
+    }
+    commit("handbook", { "facts/a.md": page("A", "alpha", "alpha two"), "notes.txt": "not a page" });
+    // The commit's own file list (one diff-tree), then one cat-file for the changed pages.
+    expect(calls).toEqual(["changedPaths", "readAtHead"]);
+    expect(index.search(buildQuery("two"), ["company"], 5).map((h) => h.slug)).toEqual(["facts/a"]);
+
+    // A commit that touched no pages does no reading at all.
+    calls.length = 0;
+    commit("handbook", { "notes.txt": "still not a page", "INDEX.md": "# map\n" });
+    expect(calls).toEqual(["changedPaths"]);
+
+    // With the paths already known (the store's own writes), not even the diff-tree.
+    calls.length = 0;
+    index.follow({ kind: "handbook" }, ["facts/b.md"]);
+    expect(calls).toEqual(["readAtHead"]);
+    index.follow({ kind: "handbook" }, ["INDEX.md"]);
+    expect(calls).toEqual(["readAtHead"]);
+
+    // Deleting is seen through the same path.
+    calls.length = 0;
+    rm("handbook", "facts/b.md");
+    expect(calls).toEqual(["changedPaths", "readAtHead"]);
+    expect(index.pages(["company"]).map((p) => p.slug)).toEqual(["facts/a"]);
+  });
+
+  it("applying an edit through the store uses its known paths: one cat-file, no diff-tree", async () => {
+    const { index, store } = await setup();
+    store.onCommit = (repo, paths) => index.follow(repo, paths);
+    const calls: string[] = [];
+    const orig = store.changedPaths.bind(store);
+    store.changedPaths = (r) => {
+      calls.push("changedPaths");
+      return orig(r);
+    };
+    store.apply(
+      {
+        id: "1:0:a0",
+        ticketId: "1",
+        author: "ada",
+        at: 0,
+        edit: { layer: "fact", page: "merging", text: "Squash." },
+      },
+      () => ({ name: "Ada", role: "Engineer" }),
+    );
+    expect(calls).toEqual([]);
+    expect(index.pages(["company"]).map((p) => p.slug)).toEqual(["facts/merging"]);
+  });
+
+  it("the very first commit of a repo (a root commit) is seen too", async () => {
+    const root = mkdtempSync(join(tmpdir(), "i-inc-brain-"));
+    roots.push(root);
+    const store = new KnowledgeStore(root);
+    const index = await BrainIndex.open(":memory:", store);
+    store.onCommit = (repo, paths) => index.follow(repo, paths);
+    store.ensureBrain({ id: "ada", name: "Ada", role: "Engineer" });
+    expect(index.pages().map((p) => `${p.scope}/${p.slug}`)).toEqual(["brain:ada/personality"]);
+    expect(store.changedPaths({ kind: "brain", id: "ada" }).sort()).toEqual(["INDEX.md", "personality.md"]);
+  });
+});

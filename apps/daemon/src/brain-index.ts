@@ -91,6 +91,14 @@ const toPage = (r: PageRow): IndexedPage => ({
 });
 
 const repoRef = (r: Repo): RepoRef => r;
+
+/** A page to write: where it lives and the blob it is at. */
+interface Item {
+  scope: Scope;
+  slug: string;
+  path: string;
+  sha: string;
+}
 /** The scopes a repo's files land in: the handbook has the company's and every team's. */
 const scopeFilter = (r: Repo): { sql: string; params: Param[] } =>
   r.kind === "handbook"
@@ -218,23 +226,56 @@ export class BrainIndex implements RetrievalSource {
     });
   }
 
-  /** Brings one repo's pages up to date with its HEAD: only pages whose blob changed are re-read. */
-  sync(repo: Repo): void {
+  /**
+   * Brings one repo's pages up to date with its HEAD. Given the paths a commit touched, only those are
+   * read (one `git cat-file` for all of them, nothing at all when none is a page); without paths, the
+   * whole tree is compared by blob id and only changed pages are re-read.
+   */
+  sync(repo: Repo, paths?: string[]): void {
+    if (paths && !paths.some((p) => scopeOfPath(repoRef(repo), p))) return;
     this.maps.clear();
-    this.db.transaction(() => this.syncRepo(repo));
+    this.db.transaction(() => (paths ? this.syncPaths(repo, paths) : this.syncRepo(repo)));
   }
 
   /** The hook for `KnowledgeStore.onCommit`: a failure here must never break a commit. */
-  follow(repo: Repo): void {
+  follow(repo: Repo, paths?: string[]): void {
     try {
-      this.sync(repo);
+      this.sync(repo, paths ?? this.store.changedPaths(repo));
     } catch (e) {
       this.log(`brain index: couldn't update after a commit to ${repo.kind}: ${String(e)}`);
     }
   }
 
+  private syncPaths(repo: Repo, paths: string[]): void {
+    const ats = [...new Set(paths)].flatMap((path) => {
+      const at = scopeOfPath(repoRef(repo), path);
+      return at ? [{ ...at, path }] : [];
+    });
+    const heads = this.store.readAtHead(
+      repo,
+      ats.map((a) => a.path),
+    );
+    const changed: Item[] = [];
+    const texts = new Map<string, string>();
+    for (const at of ats) {
+      const [old] = this.db.all<PageRow>(
+        "SELECT id, scope, slug, git_sha FROM pages WHERE scope = ? AND slug = ?",
+        at.scope,
+        at.slug,
+      );
+      const head = heads.get(at.path);
+      if (!head) {
+        if (old) this.remove(old.id, old.scope, old.slug);
+      } else if (old?.git_sha !== head.sha) {
+        changed.push({ ...at, sha: head.sha });
+        texts.set(head.sha, head.text);
+      }
+    }
+    this.upsert(repo, changed, texts);
+  }
+
   private syncRepo(repo: Repo): void {
-    const want = new Map<string, { scope: Scope; slug: string; path: string; sha: string }>();
+    const want = new Map<string, Item>();
     for (const [path, sha] of this.store.tree(repo)) {
       const at = scopeOfPath(repoRef(repo), path);
       if (at) want.set(`${at.scope}\0${at.slug}`, { ...at, path, sha });
@@ -252,13 +293,27 @@ export class BrainIndex implements RetrievalSource {
     const changed = [...want.entries()].filter(([key, w]) => have.get(key)?.git_sha !== w.sha);
     if (!changed.length) return;
     const texts = this.store.blobs(repo, [...new Set(changed.map(([, w]) => w.sha))]);
-    // Pages with no `updated:` of their own take the date they were last committed.
-    const parsed = changed.map(([key, w]) => ({ key, w, page: parsePage(texts.get(w.sha) ?? "", w.slug) }));
-    const undated = parsed.filter((p) => !p.page.meta.updated).map((p) => p.w.path);
-    const when = this.store.modified(repo, undated);
+    this.upsert(
+      repo,
+      changed.map(([, w]) => w),
+      texts,
+    );
+  }
 
-    for (const { key, w, page } of parsed) {
-      const old = have.get(key);
+  /** Writes (or rewrites) pages: row, FTS entry and links. Counters of a rewritten page are kept. */
+  private upsert(repo: Repo, items: Item[], texts: Map<string, string>): void {
+    if (!items.length) return;
+    // Pages with no `updated:` of their own take the date they were last committed.
+    const parsed = items.map((w) => ({ w, page: parsePage(texts.get(w.sha) ?? "", w.slug) }));
+    const undated = parsed.filter((p) => !p.page.meta.updated).map((p) => p.w.path);
+    const when = undated.length ? this.store.modified(repo, undated) : new Map<string, number>();
+
+    for (const { w, page } of parsed) {
+      const [old] = this.db.all<PageRow>(
+        "SELECT id FROM pages WHERE scope = ? AND slug = ?",
+        w.scope,
+        w.slug,
+      );
       if (old) this.remove(old.id, w.scope, w.slug, true);
       const m = page.meta;
       const stamp = m.updated ?? (when.has(w.path) ? isoDate(when.get(w.path) ?? 0) : null);
