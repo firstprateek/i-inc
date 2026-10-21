@@ -76,7 +76,7 @@ for (const name of chosen) {
 }
 console.log(
   failed.length
-    ? `\nFAILED: ${failed.join(", ")}. If the browser is missing, run: pnpm e2e:install`
+    ? `\nFAILED: ${failed.join(", ")}. If Chromium would not start, run: pnpm e2e:install`
     : `\nAll ${chosen.length} end-to-end script${chosen.length === 1 ? "" : "s"} passed.`,
 );
 process.exit(failed.length ? 1 : 0);
