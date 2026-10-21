@@ -231,22 +231,24 @@ export class BrainIndex implements RetrievalSource {
    * read (one `git cat-file` for all of them, nothing at all when none is a page); without paths, the
    * whole tree is compared by blob id and only changed pages are re-read.
    */
-  sync(repo: Repo, paths?: string[]): void {
+  sync(repo: Repo, paths?: string[], stampMs?: number): void {
     if (paths && !paths.some((p) => scopeOfPath(repoRef(repo), p))) return;
     this.maps.clear();
-    this.db.transaction(() => (paths ? this.syncPaths(repo, paths) : this.syncRepo(repo)));
+    this.db.transaction(() => (paths ? this.syncPaths(repo, paths, stampMs) : this.syncRepo(repo)));
   }
 
   /** The hook for `KnowledgeStore.onCommit`: a failure here must never break a commit. */
   follow(repo: Repo, paths?: string[]): void {
     try {
-      this.sync(repo, paths ?? this.store.changedPaths(repo));
+      // Pages with no date of their own take the commit's: our own write just now, or HEAD's time.
+      const known = paths !== undefined;
+      this.sync(repo, paths ?? this.store.changedPaths(repo), known ? this.store.clock() : undefined);
     } catch (e) {
       this.log(`brain index: couldn't update after a commit to ${repo.kind}: ${String(e)}`);
     }
   }
 
-  private syncPaths(repo: Repo, paths: string[]): void {
+  private syncPaths(repo: Repo, paths: string[], stampMs?: number): void {
     const ats = [...new Set(paths)].flatMap((path) => {
       const at = scopeOfPath(repoRef(repo), path);
       return at ? [{ ...at, path }] : [];
@@ -271,7 +273,7 @@ export class BrainIndex implements RetrievalSource {
         texts.set(head.sha, head.text);
       }
     }
-    this.upsert(repo, changed, texts);
+    this.upsert(repo, changed, texts, () => stampMs ?? this.store.headTime(repo));
   }
 
   private syncRepo(repo: Repo): void {
@@ -301,12 +303,18 @@ export class BrainIndex implements RetrievalSource {
   }
 
   /** Writes (or rewrites) pages: row, FTS entry and links. Counters of a rewritten page are kept. */
-  private upsert(repo: Repo, items: Item[], texts: Map<string, string>): void {
+  private upsert(repo: Repo, items: Item[], texts: Map<string, string>, stamp?: () => number): void {
     if (!items.length) return;
     // Pages with no `updated:` of their own take the date they were last committed.
     const parsed = items.map((w) => ({ w, page: parsePage(texts.get(w.sha) ?? "", w.slug) }));
     const undated = parsed.filter((p) => !p.page.meta.updated).map((p) => p.w.path);
-    const when = undated.length ? this.store.modified(repo, undated) : new Map<string, number>();
+    const when = new Map<string, number>();
+    if (undated.length) {
+      if (stamp) {
+        const at = stamp();
+        for (const path of undated) when.set(path, at);
+      } else for (const [path, at] of this.store.modified(repo, undated)) when.set(path, at);
+    }
 
     for (const { w, page } of parsed) {
       const [old] = this.db.all<PageRow>(

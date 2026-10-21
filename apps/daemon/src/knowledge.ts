@@ -317,6 +317,17 @@ export class KnowledgeStore {
     return out;
   }
 
+  /** The store's clock, in ms. */
+  clock(): number {
+    return this.now();
+  }
+
+  /** When HEAD was committed (ms); 0 for a repo with no commits. */
+  headTime(repo: Repo): number {
+    const t = this.gitBuffer(repo, ["log", "-1", "--format=%ct"]).toString().trim();
+    return t ? Number(t) * 1000 : 0;
+  }
+
   /** The files the latest commit touched (added, changed or deleted). */
   changedPaths(repo: Repo): string[] {
     const raw = this.gitBuffer(repo, [

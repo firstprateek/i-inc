@@ -580,6 +580,35 @@ describe("incremental sync is cheap", () => {
     expect(index.pages(["company"]).map((p) => p.slug)).toEqual(["facts/merging"]);
   });
 
+  it("a page with no date of its own takes the commit's, without another git process", async () => {
+    const { index, store, root } = await setup();
+    store.onCommit = (repo, paths) => index.follow(repo, paths);
+    const calls: string[] = [];
+    for (const m of ["modified", "headTime"] as const) {
+      const orig = store[m].bind(store) as (...a: never[]) => unknown;
+      (store as unknown as Record<string, unknown>)[m] = (...a: never[]) => {
+        calls.push(m);
+        return orig(...a);
+      };
+    }
+    // Our own write: the store's clock stamps the pages it just made.
+    store.ensureBrain({ id: "kit", name: "Kit", role: "Engineer" });
+    expect(calls).toEqual([]);
+    expect(index.pages(["brain:kit"])[0]?.updated).toBe(new Date(store.clock()).toISOString().slice(0, 10));
+    // Someone else's commit: HEAD's time, one git call.
+    const dir = join(root, "handbook");
+    writeFileSync(join(dir, "facts-x.md"), "# X\n\nundated page.\n");
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "add", "-A"], { cwd: dir });
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x"], {
+      cwd: dir,
+    });
+    index.follow({ kind: "handbook" });
+    expect(calls).toEqual(["headTime"]);
+    expect(index.pages(["company"]).find((p) => p.slug === "facts-x")?.updated).toMatch(
+      /^\d{4}-\d{2}-\d{2}$/,
+    );
+  });
+
   it("the very first commit of a repo (a root commit) is seen too", async () => {
     const root = mkdtempSync(join(tmpdir(), "i-inc-brain-"));
     roots.push(root);
