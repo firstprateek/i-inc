@@ -192,10 +192,11 @@ export async function shipRig(o: RigOptions) {
     log: (m) => logs.push(m),
   });
   const agent = new FakeAgent();
+  const clock = new FakeClock();
   const app = await createApp({
     dbPath: ":memory:",
     knowledgeDir: mkdtempSync(join(tmpdir(), "inc-knowledge-")),
-    clock: new FakeClock(),
+    clock,
     ...ports,
     machines: new FakeMachines(),
     agent,
@@ -262,6 +263,7 @@ export async function shipRig(o: RigOptions) {
 
   return {
     app,
+    clock,
     call,
     conversation,
     sandbox,
