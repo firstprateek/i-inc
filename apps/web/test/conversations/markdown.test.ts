@@ -278,8 +278,17 @@ describe("hostile input costs a pass over the text, not more", () => {
     }
   });
 
-  // Absolute milliseconds, for a person to run on a quiet machine: I_INC_BENCH=1 pnpm --filter @i-inc/web test
+  // Timings, for a person to run on a quiet machine: I_INC_BENCH=1 pnpm --filter @i-inc/web test
   describe.skipIf(!process.env.I_INC_BENCH)("bench (opt in)", () => {
+    it.each(names)("%s: four times the text costs about four times the time", (name) => {
+      const t1 = best(() => renderMarkdown(cases(40 * 1024)[name] ?? ""));
+      const t4 = best(() => renderMarkdown(cases(160 * 1024)[name] ?? ""));
+      const nested = ["list markers", "ordered markers", "quotes", "rules"].includes(name);
+      expect(t4, `${name}: ${t1.toFixed(1)} ms -> ${t4.toFixed(1)} ms`).toBeLessThan(
+        nested ? 30 * t1 + 80 : 8 * t1 + 20,
+      );
+    });
+
     it.each(names)("%s: 100 KB in under 50 ms, whole and streamed", (name) => {
       const text = cases(100 * 1024)[name] ?? "";
       expect(best(() => renderMarkdown(text))).toBeLessThan(
