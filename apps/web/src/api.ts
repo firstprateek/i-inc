@@ -300,13 +300,23 @@ export const api = {
       "GET",
       `/api/conversations/${encodeURIComponent(id)}/ship${preview ? "?preview=1" : ""}`,
     ).then((r) => r.ship),
-  makeTicket: (id: string, body: { title?: string; description?: string; doneWhen?: string[] }) =>
+  /** Ends a ticket that waits for the owner as rejected, and gives the conversation its working copy back. */
+  takeBack: (id: string) =>
+    call<{ ok: true; released: boolean }>(
+      "POST",
+      `/api/conversations/${encodeURIComponent(id)}/take-back`,
+      {},
+    ),
+  makeTicket: (
+    id: string,
+    body: { title?: string; description?: string; doneWhen?: string[]; confirmBinary?: boolean },
+  ) =>
     call<{ ticket: { id: string; title: string }; created: boolean }>(
       "POST",
       `/api/conversations/${encodeURIComponent(id)}/ticket`,
       body,
     ),
-  openPr: (id: string, body: { title?: string } = {}) =>
+  openPr: (id: string, body: { title?: string; confirmBinary?: boolean } = {}) =>
     call<{ pr: { number: number; url: string; draft: boolean }; created: boolean }>(
       "POST",
       `/api/conversations/${encodeURIComponent(id)}/pr`,

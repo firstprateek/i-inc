@@ -301,7 +301,7 @@ export class IncConvThread extends LitElement {
     this.shadowRoot?.querySelector<HTMLElement>(".ship-btn")?.focus();
   }
 
-  private openShip(kind: "ticket" | "pr") {
+  private openShip(kind: "ticket" | "pr" | "takeback") {
     this.shipMenu = false;
     this.dispatchEvent(new CustomEvent("conv-ship", { detail: { kind }, bubbles: true, composed: true }));
   }
@@ -344,6 +344,7 @@ export class IncConvThread extends LitElement {
               <small>A draft, without i.inc's review</small></button>`
             }
             ${!canTicket && ship?.reason ? html`<p class="why">${ship.reason}</p>` : direct && ship?.reason ? html`<p class="why">${ship.reason}</p>` : nothing}
+            ${ship?.ticket?.canTakeBack ? html`<button class="mi" type="button" role="menuitem" @click=${() => this.openShip("takeback")}>Take the work back<small>End ticket #${ship.ticket.id} and carry on here</small></button>` : nothing}
             ${held || prUrl ? html`<hr />` : nothing}
             ${held ? html`<a class="mi" role="menuitem" href="#/ticket/${held}" @click=${() => (this.shipMenu = false)}>Open ticket #${held}</a>` : nothing}
             ${prUrl ? html`<a class="mi" role="menuitem" href=${prUrl} target="_blank" rel="noopener" @click=${() => (this.shipMenu = false)}>Open PR #${prNo} on GitHub</a>` : nothing}

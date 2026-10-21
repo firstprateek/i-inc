@@ -8,7 +8,7 @@ import { api, type Conversation, type ShipView } from "../api.ts";
 import { cardStyles } from "../conversations/styles.ts";
 import { base } from "./shared.ts";
 
-export type ShipKind = "ticket" | "pr";
+export type ShipKind = "ticket" | "pr" | "takeback";
 
 /** What the dialog tells the screen when it is done (so it can reload) or closed (so focus can go back). */
 export interface ShipDone {
@@ -25,7 +25,9 @@ export class IncConvShip extends LitElement {
     conv: { attribute: false },
     employee: { attribute: false },
     kind: { type: String },
+    ship: { attribute: false },
     view: { state: true },
+    confirmBinary: { state: true },
     loading: { state: true },
     loadError: { state: true },
     title: { state: true },
@@ -37,6 +39,10 @@ export class IncConvShip extends LitElement {
   declare conv: Conversation | undefined;
   declare employee: Employee | undefined;
   declare kind: ShipKind;
+  /** What shipping said when the dialog opened: the ticket to take the work back from. */
+  declare ship: ShipView | undefined;
+  /** The owner has looked at the binary files that can't be scanned. */
+  declare confirmBinary: boolean;
   declare view: ShipView | undefined;
   declare loading: boolean;
   declare loadError: string;
@@ -50,6 +56,7 @@ export class IncConvShip extends LitElement {
   constructor() {
     super();
     this.kind = "ticket";
+    this.confirmBinary = false;
     this.loading = true;
     this.loadError = "";
     this.title = "";
@@ -93,6 +100,8 @@ export class IncConvShip extends LitElement {
       .item .rm { flex: none; width: 44px; height: 44px; border-radius: 50%; border: 0; background: transparent; color: var(--ink-2); display: grid; place-items: center; }
       .item .rm:hover { background: var(--sunken); color: var(--ink); } .item .rm:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 1px; }
       .item .rm svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; }
+      .check { display: flex; align-items: center; gap: 10px; min-height: 44px; font-size: 15px; font-weight: 600; cursor: pointer; }
+      .check input { width: 22px; height: 22px; flex: none; accent-color: var(--ink); }
       .alert { margin: 0; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--alarm); background: var(--banner-bg); color: var(--banner-fg); font-weight: 600; font-size: 14.5px; line-height: 1.45; }
       .notice { margin: 0; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--needs-edge); background: var(--banner-bg); color: var(--banner-fg); font-size: 14.5px; line-height: 1.45; }
       .muted { color: var(--ink-2); }
@@ -112,7 +121,8 @@ export class IncConvShip extends LitElement {
   override connectedCallback(): void {
     super.connectedCallback();
     document.addEventListener("keydown", this.onKey, true);
-    void this.load();
+    if (this.kind === "takeback") this.loading = false;
+    else void this.load();
   }
 
   override disconnectedCallback(): void {
@@ -205,7 +215,7 @@ export class IncConvShip extends LitElement {
   private submit = async () => {
     const conv = this.conv;
     if (!conv || this.busy) return;
-    const why = this.problem();
+    const why = this.kind === "takeback" ? "" : this.problem();
     if (why) {
       this.failure = why;
       return;
@@ -213,14 +223,19 @@ export class IncConvShip extends LitElement {
     this.busy = true;
     this.failure = "";
     try {
-      if (this.kind === "ticket") {
+      const confirm = this.confirmBinary ? { confirmBinary: true } : {};
+      if (this.kind === "takeback") {
+        await api.takeBack(conv.id);
+        this.result = { kind: "takeback" };
+      } else if (this.kind === "ticket") {
         const r = await api.makeTicket(conv.id, {
           title: this.title.trim(),
           doneWhen: this.items.map((i) => i.trim()).filter(Boolean),
+          ...confirm,
         });
         this.result = { kind: "ticket", ticketId: r.ticket.id };
       } else {
-        const r = await api.openPr(conv.id, { title: this.title.trim() });
+        const r = await api.openPr(conv.id, { title: this.title.trim(), ...confirm });
         this.result = { kind: "pr", pr: { number: r.pr.number, url: r.pr.url } };
       }
       this.dispatchEvent(
@@ -247,7 +262,12 @@ export class IncConvShip extends LitElement {
     const added = copy.files.reduce((n, f) => n + f.added, 0);
     const removed = copy.files.reduce((n, f) => n + f.removed, 0);
     const protectedSet = new Set(copy.protectedPaths);
-    const shown = copy.files.slice(0, MAX_SHOWN);
+    // Protected files first, so the ones that wait for the owner are never hidden behind "and N more".
+    const ordered = [
+      ...copy.files.filter((f) => protectedSet.has(f.path)),
+      ...copy.files.filter((f) => !protectedSet.has(f.path)),
+    ];
+    const shown = ordered.slice(0, MAX_SHOWN);
     return html`<section aria-labelledby="h-what"><h3 id="h-what">What gets committed</h3>
       <p>${
         copy.uncommitted
@@ -261,7 +281,19 @@ export class IncConvShip extends LitElement {
           ${protectedSet.has(f.path) ? html`<span class="prot" title="A protected path: it waits for you">protected</span>` : nothing}
           ${f.binary ? html`<span class="muted">binary</span>` : html`<span class="plus">+${f.added}</span><span class="minus">−${f.removed}</span>`}</li>`,
       )}${copy.files.length > shown.length ? html`<li class="muted">and ${copy.files.length - shown.length} more</li>` : nothing}</ul>
-    </section>`;
+    </section>
+    ${
+      copy.binaries?.length
+        ? html`<section aria-labelledby="h-bin"><h3 id="h-bin">Binary, not scanned</h3>
+          <p>i.inc can't read these files to check them for credentials. Look at them yourself:</p>
+          <ul class="files" aria-label="Binary files">${copy.binaries.map((b) => html`<li><span class="p" title=${b.path}><bdi>${b.path}</bdi></span><span class="muted">${Math.max(1, Math.round(b.size / 1024))} KB</span></li>`)}</ul>
+          <label class="check"><input type="checkbox" .checked=${this.confirmBinary} ?disabled=${this.busy}
+            @change=${(e: Event) => {
+              this.confirmBinary = (e.target as HTMLInputElement).checked;
+            }} /> <span>I've looked at ${copy.binaries.length === 1 ? "this file" : "these files"}</span></label>
+        </section>`
+        : nothing
+    }`;
   }
 
   private where(v: ShipView) {
@@ -333,10 +365,12 @@ export class IncConvShip extends LitElement {
   private finished(r: ShipDone) {
     return html`<div class="finished" role="status">
       ${
-        r.kind === "ticket"
-          ? html`<p><b>Done.</b> This work is now ticket #${r.ticketId}. ${this.name()} is paused on this conversation's files while it runs; you can follow it here or on the ticket.</p>
+        r.kind === "takeback"
+          ? html`<p><b>Done.</b> The ticket is ended and the work is yours again. ${this.name()} can change the files, and will be told what happened.</p>`
+          : r.kind === "ticket"
+            ? html`<p><b>Done.</b> This work is now ticket #${r.ticketId}. ${this.name()} is paused on this conversation's files while it runs; you can follow it here or on the ticket.</p>
             <a href="#/ticket/${r.ticketId}" data-main>Open ticket #${r.ticketId}</a>`
-          : html`<p><b>Done.</b> Pull request #${r.pr?.number} is open as a draft. Its checks show in the context panel.</p>
+            : html`<p><b>Done.</b> Pull request #${r.pr?.number} is open as a draft. Its checks show in the context panel.</p>
             <a href=${r.pr?.url ?? "#"} target="_blank" rel="noopener" data-main>Open it on GitHub</a>`
       }
     </div>`;
@@ -346,11 +380,14 @@ export class IncConvShip extends LitElement {
     const conv = this.conv;
     if (!conv) return nothing;
     const ticket = this.kind === "ticket";
-    const heading = ticket ? "Make this a ticket" : "Open a pull request";
+    const takeback = this.kind === "takeback";
+    const heading = takeback ? "Take the work back" : ticket ? "Make this a ticket" : "Open a pull request";
     const v = this.view;
     const blocked = v ? (ticket ? !v.canTicket : !v.canPr) : false;
     const blockers = v?.copy?.blockers ?? [];
+    const needsConfirm = (v?.copy?.binaries?.length ?? 0) > 0 && !this.confirmBinary;
     const stop = blocked || blockers.length > 0 || !!v?.problem;
+    const ticketId = this.ship?.ticket?.id ?? this.conv?.ship?.ticket?.id ?? "";
     return html`<div class="backdrop" @click=${(e: Event) => {
       if (e.target === e.currentTarget && !this.busy) this.close();
     }}>
@@ -362,38 +399,48 @@ export class IncConvShip extends LitElement {
             ? this.finished(this.result)
             : html`
         <p class="lead">${
-          ticket
-            ? `${this.name()}'s work from "${conv.title}" goes through i.inc's pipeline: checks, a review, then ${v?.mode === "direct" ? "main" : "a pull request for you"}.`
-            : `A quick way to get "${conv.title}" onto GitHub for you to look at, without i.inc's review.`
+          takeback
+            ? `Ticket #${ticketId} is waiting for you.`
+            : ticket
+              ? `${this.name()}'s work from "${conv.title}" goes through i.inc's pipeline: checks, a review, then ${v?.mode === "direct" ? "main" : "a pull request for you"}.`
+              : `A quick way to get "${conv.title}" onto GitHub for you to look at, without i.inc's review.`
         }</p>
         <div class="body">
           ${
-            this.loading
-              ? html`<div class="skeleton" aria-label="Looking at the working copy"><i></i><i></i><i></i></div>`
-              : this.loadError
-                ? html`<p class="alert" role="alert">${this.loadError}</p>
+            takeback
+              ? html`<section aria-labelledby="h-tb"><h3 id="h-tb">What happens</h3>
+                  <p>Ticket #${ticketId} ends as rejected, so nothing more happens to it, and nothing is merged by i.inc. ${this.name()} can change this conversation's files again, and is told what the ticket did.</p>
+                  <p class="muted">A pull request already open on GitHub stays open: close it there if you don't want it.</p></section>`
+              : this.loading
+                ? html`<div class="skeleton" aria-label="Looking at the working copy"><i></i><i></i><i></i></div>`
+                : this.loadError
+                  ? html`<p class="alert" role="alert">${this.loadError}</p>
                     <div><button class="cbtn" type="button" @click=${() => void this.load()}>Try again</button></div>`
-                : v
-                  ? html`
+                  : v
+                    ? html`
                     ${v.problem ? html`<p class="alert" role="alert">${v.problem}</p><div><button class="cbtn" type="button" @click=${() => void this.load()}>Look again</button></div>` : nothing}
                     ${blocked && v.reason ? html`<p class="notice" role="status">${v.reason}</p>` : nothing}
                     ${blockers.map((b) => html`<p class="alert" role="alert">Can't ship yet: ${b}.</p>`)}
                     ${v.copy ? this.committed(v) : nothing}
                     ${stop ? nothing : html`${this.where(v)}${this.fields()}`}`
-                  : nothing
+                    : nothing
           }
           ${this.failure ? html`<p class="alert" role="alert">${this.failure}</p>` : nothing}
         </div>
         <footer>
           <button class="cbtn" type="button" ?disabled=${this.busy} @click=${this.close}>Cancel</button>
-          <button class="cbtn primary" type="button" data-main ?disabled=${this.busy || this.loading || stop || !v} @click=${() => void this.submit()}>${
-            this.busy
-              ? ticket
-                ? "Making the ticket…"
-                : "Opening…"
-              : ticket
-                ? "Make the ticket"
-                : "Open the pull request"
+          <button class="cbtn primary" type="button" data-main ?disabled=${this.busy || this.loading || (!takeback && (stop || !v || needsConfirm))} @click=${() => void this.submit()}>${
+            takeback
+              ? this.busy
+                ? "Taking it back…"
+                : "Take it back"
+              : this.busy
+                ? ticket
+                  ? "Making the ticket…"
+                  : "Opening…"
+                : ticket
+                  ? "Make the ticket"
+                  : "Open the pull request"
           }</button>
         </footer>`
         }

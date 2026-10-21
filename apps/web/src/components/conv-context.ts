@@ -119,7 +119,7 @@ export class IncConvContext extends LitElement {
     return files;
   }
 
-  private ask(kind: "ticket" | "pr", e: Event) {
+  private ask(kind: "ticket" | "pr" | "takeback", e: Event) {
     // The screen opens the dialog; the opener is remembered there so focus can go back to it.
     e.currentTarget?.dispatchEvent(
       new CustomEvent("conv-ship", { detail: { kind, from: "context" }, bubbles: true, composed: true }),
@@ -156,7 +156,8 @@ export class IncConvContext extends LitElement {
           ? html`<div class="ship-row"><a href="#/ticket/${t.id}">Ticket #${t.id}${t.title ? `: ${t.title}` : ""}</a>
               <span class="sub"><span class="pill ${t.status === "done" ? "ok" : t.status === "failed" || t.status === "needs-you" ? "bad" : ""}">${this.statusWord(t)}</span>
                 ${t.live && !this.statusWord(t).toLowerCase().includes(t.live.toLowerCase()) ? html` ${t.live}` : nothing}</span>
-              ${t.held ? html`<span class="sub">It has this conversation's files; the conversation is paused until it is done.</span>` : nothing}</div>`
+              ${t.held ? html`<span class="sub">It has this conversation's files; the conversation is paused until it is done.</span>` : nothing}
+              ${t.canTakeBack ? html`<div class="ship-actions"><button class="cbtn" type="button" @click=${(e: Event) => this.ask("takeback", e)}>Take the work back</button></div>` : nothing}</div>`
           : nothing
       }
       ${

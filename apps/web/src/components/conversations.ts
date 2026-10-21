@@ -568,7 +568,7 @@ export class IncConversations extends LitElement {
       }
       ${
         this.dialog && conv
-          ? html`<inc-conv-ship .conv=${conv} .employee=${employee} .kind=${this.dialog.kind}
+          ? html`<inc-conv-ship .conv=${conv} .employee=${employee} .kind=${this.dialog.kind} .ship=${this.ship}
               @conv-ship-close=${this.closeShip} @conv-ship-done=${this.shipped}></inc-conv-ship>`
           : nothing
       }

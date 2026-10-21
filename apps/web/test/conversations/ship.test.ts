@@ -116,8 +116,8 @@ describe("the ship dialog: make this a ticket", () => {
     const rows = [...d.root.querySelectorAll("ul.files li")].map((li) =>
       li.textContent?.replace(/\s+/g, " ").trim(),
     );
-    expect(rows[0]).toBe("src/greeting.ts +12−3");
-    expect(rows[1]).toBe(".github/workflows/ci.yml protected +1−0");
+    expect(rows[0]).toBe(".github/workflows/ci.yml protected +1−0");
+    expect(rows[1]).toBe("src/greeting.ts +12−3");
     expect(rows[2]).toBe("logo.png binary");
     expect(d.text()).toContain("Where it goes");
     expect(d.text()).toContain("A pull request opens on GitHub from conv/ab12cd34");
@@ -625,5 +625,128 @@ describe("the context panel's Ship this work", () => {
   it("is not there with no project", async () => {
     const c = await context(undefined, { ...conv, project: null, branch: null });
     expect(c.section()).toBeNull();
+  });
+});
+
+describe("binary files, many files, and taking the work back", () => {
+  it("lists the protected files first and says how many more, never hiding a protected one", async () => {
+    const files = [
+      ...Array.from({ length: 60 }, (_, i) => ({ path: `src/f${i}.ts`, added: 1, removed: 0 })),
+      { path: ".github/workflows/ci.yml", added: 1, removed: 0 },
+    ];
+    const d = await dialog(
+      "ticket",
+      preview({ copy: { ...preview().copy, files, protectedPaths: [".github/workflows/ci.yml"] } }),
+    );
+    const rows = [...d.root.querySelectorAll("ul.files li")].map((li) =>
+      li.textContent?.replace(/\s+/g, " ").trim(),
+    );
+    expect(rows[0]).toContain(".github/workflows/ci.yml protected");
+    expect(rows).toHaveLength(41);
+    expect(rows.at(-1)).toBe("and 21 more");
+    expect(d.text()).toContain("61 files differ from the project's main");
+  });
+
+  it("names binary files as not scanned, and waits for the owner to say they looked before sending confirmBinary", async () => {
+    const d = await dialog(
+      "ticket",
+      preview({ copy: { ...preview().copy, binaries: [{ path: "logo.bin", size: 20480 }] } }),
+    );
+    expect(d.text()).toContain("Binary, not scanned");
+    expect(d.text()).toMatch(/logo\.bin\s*20 KB/);
+    expect(d.button(/Make the ticket/).disabled).toBe(true);
+    const box = must<HTMLInputElement>(d.root.querySelector('input[type="checkbox"]'));
+    box.checked = true;
+    box.dispatchEvent(new Event("change"));
+    await d.el.updateComplete;
+    expect(d.button(/Make the ticket/).disabled).toBe(false);
+    d.button(/Make the ticket/).click();
+    await until(() => posts.length);
+    expect(posts[0]?.body.confirmBinary).toBe(true);
+  });
+
+  it("takes the work back after a confirm dialog that says what happens", async () => {
+    answers["/api/conversations/ab12cd34/take-back"] = () => reply({ ok: true, released: true });
+    const el = document.createElement("inc-conv-ship") as IncConvShip;
+    el.conv = conv;
+    el.employee = ada;
+    el.kind = "takeback";
+    el.ship = preview({
+      ticket: {
+        id: "4",
+        title: "G",
+        status: "ready",
+        stage: null,
+        live: "",
+        held: true,
+        outcome: null,
+        canTakeBack: true,
+      },
+    });
+    const done: Any[] = [];
+    el.addEventListener("conv-ship-done", (e) => done.push((e as CustomEvent).detail));
+    document.body.append(el);
+    await el.updateComplete;
+    const root = el.shadowRoot as ShadowRoot;
+    expect(root.querySelector("h2")?.textContent).toBe("Take the work back");
+    expect(root.textContent).toContain("Ticket #4 ends as rejected");
+    expect(root.textContent).toContain("A pull request already open on GitHub stays open");
+    must<HTMLButtonElement>(
+      [...root.querySelectorAll("button")].find((b) => /Take it back/.test(b.textContent ?? "")),
+    ).click();
+    await until(() => done.length);
+    expect(posts).toEqual([{ url: "/api/conversations/ab12cd34/take-back", body: {} }]);
+    expect(done).toEqual([{ kind: "takeback" }]);
+  });
+
+  it("offers it in the panel and the menu only for a ticket that waits for the owner", async () => {
+    const waiting = preview({
+      canTicket: false,
+      canPr: false,
+      ticket: {
+        id: "4",
+        title: "G",
+        status: "ready",
+        stage: null,
+        live: "",
+        held: true,
+        outcome: null,
+        canTakeBack: true,
+      },
+    });
+    const c = await context(waiting);
+    const labels = [...(c.section()?.querySelectorAll("button") ?? [])].map((b) => b.textContent?.trim());
+    expect(labels).toContain("Take the work back");
+    [...(c.section()?.querySelectorAll("button") ?? [])]
+      .find((b) => /Take the work back/.test(b.textContent ?? ""))
+      ?.click();
+    expect(c.events).toEqual([{ kind: "takeback", from: "context" }]);
+    document.body.innerHTML = "";
+    const running = await context(
+      preview({
+        ticket: {
+          id: "4",
+          title: "G",
+          status: "running",
+          stage: "review",
+          live: "",
+          held: true,
+          outcome: null,
+        },
+      }),
+    );
+    expect(
+      [...(running.section()?.querySelectorAll("button") ?? [])].map((b) => b.textContent?.trim()),
+    ).not.toContain("Take the work back");
+    document.body.innerHTML = "";
+    const t = await thread(waiting);
+    await t.open();
+    expect(t.root.querySelector(".ship-menu")?.textContent).toContain("Take the work back");
+    must<HTMLElement>(
+      [...t.root.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) =>
+        /Take the work back/.test(i.textContent ?? ""),
+      ),
+    ).click();
+    expect(t.shipEvents).toEqual([{ kind: "takeback" }]);
   });
 });
