@@ -46,10 +46,11 @@ export function buildMap(pages: MapPage[], limit = mapLineLimit): BuiltMap {
     if (whole.length) whole.push("");
     whole.push(`## ${folder}`, ...ps.map(line));
   }
-  if (whole.length <= limit) return { root: whole, sections: {} };
+  if (whole.length <= limit) return { root: whole, sections: Object.create(null) };
 
   // Too long: every folder becomes a section (chunked if it alone is too long), and the root lists them.
-  const sections: Record<string, string[]> = {};
+  // No prototype: a folder called "__proto__" or "constructor" is just a name.
+  const sections: Record<string, string[]> = Object.create(null);
   for (const [folder, ps] of groups) {
     const per = limit - 2;
     for (let i = 0, n = 1; i < ps.length; i += per, n++) {

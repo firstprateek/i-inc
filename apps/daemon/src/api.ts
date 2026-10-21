@@ -2004,7 +2004,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         if (section === null) {
           return json({ scope, lines: built.root, sections: Object.keys(built.sections) });
         }
-        const lines = built.sections[section];
+        const lines = Object.hasOwn(built.sections, section) ? built.sections[section] : undefined;
         if (!lines) return json({ error: "no such section" }, 404);
         return json({ scope, section, lines, sections: Object.keys(built.sections) });
       },

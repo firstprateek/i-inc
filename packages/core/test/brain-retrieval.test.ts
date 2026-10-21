@@ -212,4 +212,15 @@ describe("buildMap", () => {
     expect(m.root.length).toBeLessThanOrEqual(mapLineLimit);
     expect(m.root.at(-1)).toMatch(/more sections/);
   });
+
+  it("treats folders named like Object.prototype members as plain names", () => {
+    const pages = ["__proto__", "constructor", "toString"].flatMap((f) =>
+      Array.from({ length: 80 }, (_, i) => page(`${f}/p${i}`)),
+    );
+    const m = buildMap(pages);
+    expect(Object.keys(m.sections)).toEqual(["__proto__", "constructor", "toString"]);
+    expect(Object.hasOwn(m.sections, "__proto__")).toBe(true);
+    expect(m.sections.constructor?.length).toBe(81);
+    expect(Object.hasOwn(buildMap([page("a/b")]).sections, "constructor")).toBe(false);
+  });
 });

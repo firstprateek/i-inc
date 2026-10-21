@@ -1,4 +1,8 @@
 // The brain's read API (contract C19): search and maps over the index, owner-only.
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { json } from "@i-inc/core/testing";
 import { describe, expect, it } from "vitest";
 import { createApi } from "../src/api.ts";
@@ -103,6 +107,53 @@ describe("GET /api/brain/search and /api/brain/map", () => {
     const c = await app.call("GET", "/api/brain/map?scope=company");
     expect(c.body.lines).toContain("- [[facts/gh-cli]] — gh pr checks --watch waits for CI to finish.");
     expect((await app.call("GET", "/api/brain/map?scope=company&section=nope")).status).toBe(404);
+  });
+
+  it("answers 404 for sections that aren't own properties: constructor, __proto__, toString, hasOwnProperty", async () => {
+    const app = await seeded();
+    for (const section of ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf", "nope"]) {
+      const r = await app.call("GET", `/api/brain/map?scope=company&section=${section}`);
+      expect(r.status, section).toBe(404);
+      expect(r.body).toEqual({ error: "no such section" });
+    }
+  });
+
+  it("serves a real section of a split map", async () => {
+    const knowledgeDir = mkdtempSync(join(tmpdir(), "i-inc-knowledge-"));
+    const app = await testApp(":memory:", knowledgeDir);
+    const dir = join(knowledgeDir, "handbook");
+    mkdirSync(join(dir, "facts"), { recursive: true });
+    for (let i = 0; i < 200; i++) {
+      writeFileSync(
+        join(dir, "facts", `p${i}.md`),
+        `---\ntitle: P${i}\ndescription: page ${i}\ntags: []\nsources: []\n---\nx\n`,
+        { flag: "w" },
+      );
+    }
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "add", "-A"], { cwd: dir });
+    execFileSync(
+      "git",
+      [
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-q",
+        "-m",
+        "many",
+      ],
+      { cwd: dir },
+    );
+    app.deps.brain.sync({ kind: "handbook" });
+    const root = (await app.call("GET", "/api/brain/map?scope=company")).body;
+    expect(root.sections).toEqual(["facts", "facts#2"]);
+    expect(root.lines.length).toBeLessThanOrEqual(150);
+    const sec = (await app.call("GET", "/api/brain/map?scope=company&section=facts%232")).body;
+    expect(sec.section).toBe("facts#2");
+    expect(sec.lines[0]).toBe("## facts#2");
   });
 
   it("keeps /api/knowledge/* working", async () => {
