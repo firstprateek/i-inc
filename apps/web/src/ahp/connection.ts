@@ -209,6 +209,10 @@ export class AhpConnection {
   confirmation(chat: string, toolCallId: string): Confirmation | undefined {
     return this.confirmations.get(`${chat}|${toolCallId}`);
   }
+  /** Who answered a question (by its request id), if this connection saw it happen. */
+  inputAnswer(chat: string, requestId: string): Confirmation | undefined {
+    return this.confirmations.get(`${chat}|input:${requestId}`);
+  }
   /** How many channels this connection holds (tests and memory checks). */
   get channelCount(): number {
     return this.chans.size;
@@ -746,6 +750,25 @@ export class AhpConnection {
       return { ok: true, clientSeq: client.dispatch(channel, action).clientSeq };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  /**
+   * Tells the host whether this page is looking at a conversation (`iinc/presence`, a notification: no
+   * answer, and a host that doesn't know it ignores it). The host keeps push notifications quiet for a
+   * conversation somebody is looking at; see presence.ts.
+   */
+  reportPresence(session: string, looking: boolean): void {
+    const client = this.client;
+    if (!client || this.infoNow.status !== "open") return;
+    try {
+      (client as unknown as { notify(method: string, params: unknown): void }).notify("iinc/presence", {
+        visible: looking,
+        focused: looking,
+        channel: session,
+      });
+    } catch {
+      // the socket is going away; the reconnect reports again
     }
   }
 

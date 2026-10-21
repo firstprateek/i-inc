@@ -46,6 +46,8 @@ export type Route =
       view: "conversations";
       id: string;
       old?: true;
+      /** `#/conversations/<id>?card=<toolCallId or requestId>`: the card a notification opened (T65). */
+      card?: string;
       /** `#/conversations/new/<employee>[/<project>]`: a conversation not made yet; it starts with the first message. */
       draft?: { employee: string; project: string };
       /** `#/conversations?new=1[&employee=<id>][&project=<id>]`: the New conversation form, open and preset. */
@@ -231,6 +233,9 @@ export function homeRoute(): Route {
 export const draftHash = (employee: string, project: string | null): string =>
   `#/conversations/new/${encodeURIComponent(employee)}${project ? `/${encodeURIComponent(project)}` : ""}`;
 
+/** A card's id in an address: a tool call's or a question's, which the agent names. Short and plain, or nothing. */
+export const cardParam = (v: string | null): string => (v && /^[\w.:@/+=#~-]{1,200}$/.test(v) ? v : "");
+
 /** A conversation's id in an address. */
 export const CONVERSATION_ID = /^[0-9a-f]{8}$/i;
 
@@ -247,6 +252,8 @@ export function parse(hash: string): Route {
           draft: { employee: decodeURIComponent(b), project: c ? decodeURIComponent(c) : "" },
         };
       const q = hashQuery(full);
+      const card = a !== undefined && a !== "new" ? cardParam(q.get("card")) : "";
+      if (card) return { view: "conversations", id: a ?? "", card };
       if (a === undefined && q.get("new") === "1")
         return {
           view: "conversations",

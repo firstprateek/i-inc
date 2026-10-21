@@ -7,6 +7,7 @@ import { css, html, LitElement, nothing } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 import type { ConnectionInfo, Rejection } from "../ahp/connection.ts";
 import { ahp } from "../ahp/hub.ts";
+import { startPresence } from "../ahp/presence.ts";
 import { ActionType } from "../ahp/wire.ts";
 import type { Conversation } from "../api.ts";
 import { isNearBottom } from "../chat-scroll.ts";
@@ -22,8 +23,9 @@ import {
   setConfig,
   turnStarted,
 } from "../conversations/actions.ts";
-import { firstPending, modePicker, statusText, visible } from "../conversations/model.ts";
+import { firstPending, isPending, modePicker, statusText, visible } from "../conversations/model.ts";
 import { cardStyles } from "../conversations/styles.ts";
+import { OPEN_CARD_EVENT } from "../register-sw.ts";
 import { draftHash } from "../routes.ts";
 import { avatar, base, projectBadge, selectField } from "./shared.ts";
 import "./conv-composer.ts";
@@ -58,6 +60,8 @@ export class IncConvThread extends LitElement {
     employee: { attribute: false },
     phone: { type: Boolean },
     contextOpen: { type: Boolean },
+    card: { type: String },
+    cardNote: { state: true },
     info: { state: true },
     stick: { state: true },
     notice: { state: true },
@@ -77,6 +81,10 @@ export class IncConvThread extends LitElement {
   declare employee: Employee | undefined;
   declare phone: boolean;
   declare contextOpen: boolean;
+  /** `?card=<id>` of the address: a card a notification opened. It is brought into view, once. */
+  declare card: string;
+  /** Said when that card was answered already ("Already answered on another device"). */
+  declare cardNote: string;
   declare info: ConnectionInfo;
   declare stick: boolean;
   declare notice: string | null;
@@ -102,6 +110,12 @@ export class IncConvThread extends LitElement {
   /** How many past turns the last render showed. */
   private shownCount = 0;
   private modeApplied = false;
+  /** The conversation and card already looked at, so a re-render does not scroll the reader back to it. */
+  private cardDone = "";
+  private cardTries = 0;
+  private cardTimer: ReturnType<typeof setTimeout> | undefined;
+  private highlightTimer: ReturnType<typeof setTimeout> | undefined;
+  private noteTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor() {
     super();
@@ -109,6 +123,8 @@ export class IncConvThread extends LitElement {
     this.draftNote = "";
     this.draftProjects = [];
     this.contextOpen = false;
+    this.card = "";
+    this.cardNote = "";
     this.info = ahp().info;
     this.stick = true;
     this.notice = null;
@@ -162,6 +178,9 @@ export class IncConvThread extends LitElement {
       .needs-bar button { margin-left: auto; flex: none; padding: 0 12px; }
       .notice { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 12px; border: 1px solid var(--alarm); color: var(--alarm-fg); font-size: 14px; font-weight: 600; }
       .notice button { margin-left: auto; }
+      .card-note { flex: none; display: flex; align-items: center; gap: 10px; margin-top: 8px; padding: 8px 12px; border-radius: 12px; border: 1px solid var(--line-strong);
+        background: var(--sunken); color: var(--ink); font-size: 14px; font-weight: 600; }
+      .card-note button { margin-left: auto; }
       @media (max-width: 767px) {
         .title { font-size: 17px; }
         .meta code { display: none; }
@@ -193,12 +212,20 @@ export class IncConvThread extends LitElement {
       c.onRejected(this.onRejected),
       c.onAccepted((seq) => this.inflight.delete(seq)),
     ];
+    // A tap on a notification while the app is already at this address.
+    addEventListener(OPEN_CARD_EVENT, this.onOpenCard);
     if (typeof ResizeObserver === "function") {
       this.resizer = new ResizeObserver(() => {
         if (this.stick) this.scrollToBottom();
       });
     }
   }
+
+  private onOpenCard = () => {
+    this.cardDone = "";
+    this.cardTries = 0;
+    this.openCard();
+  };
 
   override disconnectedCallback(): void {
     for (const off of this.offs) off();
@@ -208,6 +235,10 @@ export class IncConvThread extends LitElement {
     this.unwatch();
     this.resizer?.disconnect();
     clearTimeout(this.announceTimer);
+    clearTimeout(this.cardTimer);
+    clearTimeout(this.highlightTimer);
+    clearTimeout(this.noteTimer);
+    removeEventListener(OPEN_CARD_EVENT, this.onOpenCard);
     super.disconnectedCallback();
   }
 
@@ -244,7 +275,15 @@ export class IncConvThread extends LitElement {
       this.notice = null;
       if (conv) {
         const c = ahp();
-        this.releases = [c.watch(conv.ahpSession), c.watch(conv.ahpChat, { turns: WINDOW })];
+        this.releases = [
+          c.watch(conv.ahpSession),
+          c.watch(conv.ahpChat, { turns: WINDOW }),
+          // While this page is visible and focused on the conversation, no push notification is sent for it.
+          startPresence(c, conv.ahpSession),
+        ];
+        this.cardDone = "";
+        this.cardTries = 0;
+        this.cardNote = "";
       }
     }
   }
@@ -274,6 +313,7 @@ export class IncConvThread extends LitElement {
     if (this.stick) this.scrollToBottom();
     this.lastHeight = sc.scrollHeight;
     if (!this.focusedPending) this.focusPendingOnOpen();
+    this.openCard();
     this.checkCardVisible();
     this.applyRememberedMode();
     if (!this.baselined) this.noteTransitions();
@@ -601,20 +641,90 @@ export class IncConvThread extends LitElement {
   // ───────────────────────────── the pending card ─────────────────────────────
 
   /** Brings the first thing waiting for the owner into view and focuses its first button. */
+  /** The card (a permission or a question) with this id, if it is in the DOM. */
+  private findCard(id: string, activeOnly = true): HTMLElement | undefined {
+    const turns = this.renderRoot.querySelectorAll<HTMLElement>(
+      activeOnly ? "inc-conv-turn[active]" : "inc-conv-turn",
+    );
+    for (const turn of turns) {
+      const found = [
+        ...(turn.shadowRoot?.querySelectorAll<HTMLElement>("inc-conv-tool, inc-conv-question") ?? []),
+      ].find((el) => {
+        const call = (el as unknown as { call?: { toolCallId: string } }).call;
+        const req = (el as unknown as { request?: { id: string } }).request;
+        return call?.toolCallId === id || req?.id === id;
+      });
+      if (found) return found;
+    }
+    return undefined;
+  }
+
   /** The card (a permission or a question) waiting for the owner, if it is in the DOM. */
   private pendingCard(): HTMLElement | undefined {
     const conv = this.conv;
     const chat = conv ? ahp().chat(conv.ahpChat) : undefined;
     const p = firstPending(chat);
-    if (!p) return undefined;
-    const turn = this.renderRoot.querySelector<HTMLElement>("inc-conv-turn[active]");
-    return [
-      ...(turn?.shadowRoot?.querySelectorAll<HTMLElement>("inc-conv-tool, inc-conv-question") ?? []),
-    ].find((el) => {
-      const call = (el as unknown as { call?: { toolCallId: string }; request?: { id: string } }).call;
-      const req = (el as unknown as { request?: { id: string } }).request;
-      return call?.toolCallId === p.id || req?.id === p.id;
-    });
+    return p ? this.findCard(p.id) : undefined;
+  }
+
+  /**
+   * `?card=<id>` (a notification opened this address): bring that card into view, focus its first button and
+   * mark it for a moment. If it was answered already, say so instead. Looks once per conversation and card,
+   * and waits until the conversation is loaded and the connection is up, so it never judges stale state.
+   */
+  private openCard(): void {
+    const conv = this.conv;
+    const card = this.card;
+    if (!conv || !card) return;
+    const key = `${conv.id}|${card}`;
+    if (this.cardDone === key) return;
+    const chat = ahp().chat(conv.ahpChat);
+    if (!chat || this.info.status !== "open") return;
+    if (!isPending(chat, card)) {
+      this.cardDone = key;
+      const who = ahp().confirmation(conv.ahpChat, card) ?? ahp().inputAnswer(conv.ahpChat, card);
+      this.cardNote = who?.byMe ? "You already answered this." : "Already answered on another device";
+      clearTimeout(this.noteTimer);
+      this.noteTimer = setTimeout(() => {
+        this.cardNote = "";
+      }, 10_000);
+      return;
+    }
+    const el = this.findCard(card);
+    if (!el) {
+      // Waiting on the render: look again shortly, a few times.
+      if (this.cardTries++ < 20) {
+        clearTimeout(this.cardTimer);
+        this.cardTimer = setTimeout(() => this.openCard(), 50);
+      }
+      return;
+    }
+    this.cardDone = key;
+    this.cardNote = "";
+    this.stick = false;
+    const sc = this.scroller();
+    if (sc) {
+      const a = el.getBoundingClientRect();
+      const b = sc.getBoundingClientRect();
+      sc.scrollTop += a.top - b.top - Math.max(0, (b.height - a.height) / 2);
+    }
+    el.shadowRoot
+      ?.querySelector<HTMLElement>("button[data-option], .cbtn, input")
+      ?.focus({ preventScroll: true });
+    // A moment's outline, so the eye finds it.
+    el.style.outlineStyle = "solid";
+    el.style.outlineWidth = "3px";
+    el.style.outlineColor = "var(--reviewing-mark)";
+    el.style.outlineOffset = "3px";
+    el.style.borderRadius = "14px";
+    clearTimeout(this.highlightTimer);
+    this.highlightTimer = setTimeout(() => {
+      el.style.outlineStyle = "";
+      el.style.outlineWidth = "";
+      el.style.outlineColor = "";
+      el.style.outlineOffset = "";
+      el.style.borderRadius = "";
+    }, 2500);
   }
 
   /** Whether the pending card is on screen: then the "waiting for you" bar has nothing to add and steps aside. */
@@ -654,6 +764,7 @@ export class IncConvThread extends LitElement {
     const chat = conv ? ahp().chat(conv.ahpChat) : undefined;
     if (!chat) return;
     this.focusedPending = true;
+    if (this.card) return; // a notification's card is brought into view by openCard
     if (firstPending(chat))
       void this.updateComplete.then(() => requestAnimationFrame(() => this.focusPending()));
   }
@@ -764,6 +875,13 @@ export class IncConvThread extends LitElement {
           ? html`<div class="banner" role="status">${this.info.status === "failed" ? this.info.error : this.info.everOpen ? "Reconnecting…" : "Connecting…"}
               ${this.info.attempt > 1 && this.info.error ? html`<span>${this.info.error}</span>` : nothing}
               <button class="cbtn" type="button" @click=${() => ahp().retryNow()}>Retry now</button></div>`
+          : nothing
+      }
+      ${
+        this.cardNote
+          ? html`<div class="card-note" role="status"><span>${this.cardNote}</span><button class="link-btn" type="button" @click=${() => {
+              this.cardNote = "";
+            }}>Dismiss</button></div>`
           : nothing
       }
       <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">${this.announce}</div>

@@ -413,6 +413,21 @@ export function firstPending(chat: ChatState | undefined): { turnId: string; id:
   return undefined;
 }
 
+/** Whether this tool call or question (by its id) is still waiting for an answer in the running turn. */
+export function isPending(chat: ChatState | undefined, id: string): boolean {
+  for (const p of chat?.activeTurn?.responseParts ?? []) {
+    if (
+      p.kind === ResponsePartKind.ToolCall &&
+      p.toolCall.toolCallId === id &&
+      p.toolCall.status === ToolCallStatus.PendingConfirmation
+    )
+      return true;
+    if (p.kind === ResponsePartKind.InputRequest && p.request.id === id && p.response === undefined)
+      return true;
+  }
+  return false;
+}
+
 // ───────────────────────────── the session's config ─────────────────────────────
 
 export interface Choice {

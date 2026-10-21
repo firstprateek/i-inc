@@ -1,4 +1,5 @@
 import "./components/app.ts";
-import { registerServiceWorker } from "./register-sw.ts";
+import { followNotificationTaps, registerServiceWorker } from "./register-sw.ts";
 
 registerServiceWorker();
+followNotificationTaps();

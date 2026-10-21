@@ -7,8 +7,8 @@
 // - /assets/* (hashed, so immutable) and the other static files: cache first, filled on use.
 // - /api/*: never touched. No response from the daemon is cached or answered from the cache.
 //
-// Push (T8, contract C2): `push` shows the daemon's notification and `notificationclick` opens it. They
-// are at the bottom; the fetch handler above is untouched.
+// Push (T8, T65, contract C2): `push` shows the daemon's notification (or closes one, for a "resolve" push)
+// and `notificationclick` opens it. They are at the bottom; the fetch handler above is untouched.
 
 const VERSION = "__BUILD_ID__";
 const PRECACHE = "__PRECACHE__";
@@ -75,7 +75,35 @@ async function cacheFirst(request) {
   return response;
 }
 
-// ---- Push notifications (contract C2: { title, body, url: "#/ticket/<id>" }) ----
+// ---- Push notifications (contract C2: { title, body, url, tag?, resolve? }) ----
+
+/**
+ * Safari (iPhone, iPad, Mac) revokes a push subscription whose pushes show nothing, so a "resolve" push
+ * there must still show a notification. Everything else lets a push close one without showing anything.
+ */
+function needsVisibleNotification() {
+  const ua = self.navigator?.userAgent || "";
+  return /Safari\//.test(ua) && !/Chrome|Chromium|CriOS|FxiOS|Edg|Android/.test(ua);
+}
+
+/** A "resolve" push: the request the notification was about has been answered, so take it down. */
+async function resolveNotification(payload, tag) {
+  const shown = await self.registration.getNotifications({ tag });
+  for (const n of shown) n.close();
+  if (!needsVisibleNotification()) return;
+  // Show a quiet stand-in and take it down again a moment later.
+  await self.registration.showNotification(typeof payload.title === "string" ? payload.title : "i.inc", {
+    body: typeof payload.body === "string" ? payload.body : "",
+    tag,
+    silent: true,
+    renotify: false,
+    icon: "/icons/icon-192.png",
+    badge: "/icons/icon-192.png",
+    data: { url: typeof payload.url === "string" ? payload.url : "" },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  for (const n of await self.registration.getNotifications({ tag })) n.close();
+}
 
 self.addEventListener("push", (event) => {
   let payload = {};
@@ -86,11 +114,17 @@ self.addEventListener("push", (event) => {
   }
   const title = typeof payload.title === "string" && payload.title ? payload.title : "i.inc";
   const url = typeof payload.url === "string" ? payload.url : "";
+  const tag = typeof payload.tag === "string" && payload.tag ? payload.tag : url || "i-inc";
+  if (payload.resolve === true) {
+    event.waitUntil(resolveNotification(payload, tag));
+    return;
+  }
   event.waitUntil(
     self.registration.showNotification(title, {
       body: typeof payload.body === "string" ? payload.body : "",
-      // One notification per ticket (or per explicit tag): a newer one replaces the older and still alerts.
-      tag: typeof payload.tag === "string" && payload.tag ? payload.tag : url || "i-inc",
+      // One notification per ticket (or per explicit tag, such as a conversation): a newer one replaces the
+      // older and still alerts.
+      tag,
       renotify: true,
       icon: "/icons/icon-192.png",
       badge: "/icons/icon-192.png",
@@ -122,6 +156,10 @@ self.addEventListener("notificationclick", (event) => {
         const focused = (await open.focus().catch(() => null)) ?? open;
         // A change of #hash is a same-document navigation, so the open app just moves to the ticket.
         if (typeof focused.navigate === "function") await focused.navigate(target).catch(() => {});
+        // Not every browser lets a worker navigate a window (iOS does not), and an app that is already at
+        // this address has nothing to navigate to: tell the app where to go, and it focuses the card itself.
+        if (typeof focused.postMessage === "function")
+          focused.postMessage({ type: "i-inc:open", url: target });
         return;
       }
       await self.clients.openWindow(target);
