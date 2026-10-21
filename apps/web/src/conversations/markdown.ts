@@ -35,7 +35,81 @@ export interface Item {
 
 // ───────────────────────────── chunks ─────────────────────────────
 
-const FENCE = /^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)[^`]*$/;
+/** A line longer than this is shown as plain text: nothing here is allowed to cost more than a line's length. */
+export const MAX_LINE = 4000;
+
+/** How many characters to look ahead for the end of a link, a code span or an emphasis. */
+const WINDOW = 1500;
+
+/** Spaces at the start of a line, at most `max` of them; -1 when there are more (an indented code line). */
+function indentOf(line: string, max: number): number {
+  let n = 0;
+  while (n < line.length && line.charCodeAt(n) === 32) n++;
+  return n > max ? -1 : n;
+}
+
+/** An opening code fence (three or more backticks or tildes, then an optional language), or null. */
+function fenceOpen(line: string): { mark: string; lang: string } | null {
+  const at = indentOf(line, 3);
+  if (at < 0) return null;
+  const c = line.charAt(at);
+  if (c !== "`" && c !== "~") return null;
+  let end = at;
+  while (line.charAt(end) === c) end++;
+  if (end - at < 3) return null;
+  const rest = line.slice(end);
+  // A backtick fence's info string may not hold a backtick (that would be inline code).
+  if (c === "`" && rest.includes("`")) return null;
+  return { mark: line.slice(at, end), lang: rest.trim().split(/\s/, 1)[0] ?? "" };
+}
+
+/** A closing fence of at least `mark`'s length, with nothing after it. */
+function fenceClose(line: string, mark: string): boolean {
+  const at = indentOf(line, 3);
+  if (at < 0 || line.charAt(at) !== mark.charAt(0)) return false;
+  let end = at;
+  while (line.charAt(end) === mark.charAt(0)) end++;
+  return end - at >= mark.length && line.slice(end).trim() === "";
+}
+
+/** An ATX heading: one to six `#`, a space, the text (a closing run of `#` is dropped). */
+function heading(line: string): { level: number; text: string } | null {
+  const at = indentOf(line, 3);
+  if (at < 0) return null;
+  let end = at;
+  while (line.charAt(end) === "#") end++;
+  const level = end - at;
+  if (level < 1 || level > 6 || !/\s/.test(line.charAt(end))) return null;
+  let text = line.slice(end).trim();
+  let cut = text.length;
+  while (cut > 0 && text.charAt(cut - 1) === "#") cut--;
+  if (cut < text.length && (cut === 0 || /\s/.test(text.charAt(cut - 1)))) text = text.slice(0, cut).trim();
+  return { level, text };
+}
+
+/** A thematic break: three or more of one of `-`, `*`, `_`, with only spaces between. */
+function isHr(line: string): boolean {
+  const at = indentOf(line, 3);
+  if (at < 0) return false;
+  const c = line.charAt(at);
+  if (c !== "-" && c !== "*" && c !== "_") return false;
+  let n = 0;
+  for (let i = at; i < line.length; i++) {
+    const ch = line.charAt(i);
+    if (ch === c) n++;
+    else if (ch !== " " && ch !== "\t") return false;
+  }
+  return n >= 3;
+}
+
+/** The row under a table's header: cells of dashes with optional colons. */
+function isTableSep(line: string): boolean {
+  let t = line.trim();
+  if (!t.includes("-")) return false;
+  if (t.startsWith("|")) t = t.slice(1);
+  if (t.endsWith("|")) t = t.slice(0, -1);
+  return t.split("|").every((c) => /^:?-+:?$/.test(c.trim()));
+}
 
 /**
  * Cuts text into top-level chunks: runs of lines separated by blank lines, except that a fenced code block
@@ -51,8 +125,7 @@ export function chunkStarts(text: string, from = 0): number[] {
     if (end < 0) end = text.length;
     const line = text.slice(pos, end);
     if (fence !== undefined) {
-      const m = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(line);
-      if (m && (m[1] ?? "")[0] === fence[0] && (m[1] ?? "").length >= fence.length) {
+      if (fenceClose(line, fence)) {
         fence = undefined;
         // The chunk ends with its closing fence; whatever follows begins a new one.
         inChunk = false;
@@ -60,11 +133,11 @@ export function chunkStarts(text: string, from = 0): number[] {
     } else if (line.trim() === "") {
       inChunk = false;
     } else {
-      const m = FENCE.exec(line);
-      if (m) {
+      const open = fenceOpen(line);
+      if (open) {
         // A fence always starts a chunk of its own.
         starts.push(pos);
-        fence = m[1] ?? "```";
+        fence = open.mark;
         inChunk = true;
       } else if (!inChunk) {
         starts.push(pos);
@@ -78,17 +151,14 @@ export function chunkStarts(text: string, from = 0): number[] {
 
 // ───────────────────────────── block parser ─────────────────────────────
 
-const HR = /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/;
-const HEADING = /^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
 const BULLET = /^(\s*)([-*+])\s+(.*)$/;
 const ORDERED = /^(\s*)(\d{1,9})[.)]\s+(.*)$/;
 const QUOTE = /^ {0,3}>\s?(.*)$/;
-const TABLE_SEP = /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/;
 
 const startsBlock = (line: string): boolean =>
-  FENCE.test(line) ||
-  HEADING.test(line) ||
-  HR.test(line) ||
+  fenceOpen(line) !== null ||
+  heading(line) !== null ||
+  isHr(line) ||
   QUOTE.test(line) ||
   BULLET.test(line) ||
   ORDERED.test(line);
@@ -104,16 +174,20 @@ export function parseBlocks(text: string, depth = 0): Block[] {
       i++;
       continue;
     }
-    const fence = FENCE.exec(line);
+    if (line.length > MAX_LINE) {
+      out.push({ k: "p", c: [{ k: "text", s: line }] });
+      i++;
+      continue;
+    }
+    const fence = fenceOpen(line);
     if (fence) {
-      const mark = fence[1] ?? "```";
+      const mark = fence.mark;
       const body: string[] = [];
       let closed = false;
       i++;
       while (i < lines.length) {
         const l = lines[i] ?? "";
-        const close = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(l);
-        if (close && (close[1] ?? "")[0] === mark[0] && (close[1] ?? "").length >= mark.length) {
+        if (fenceClose(l, mark)) {
           closed = true;
           i++;
           break;
@@ -121,16 +195,16 @@ export function parseBlocks(text: string, depth = 0): Block[] {
         body.push(l);
         i++;
       }
-      out.push({ k: "code", lang: fence[2] ?? "", code: body.join("\n"), open: !closed });
+      out.push({ k: "code", lang: fence.lang, code: body.join("\n"), open: !closed });
       continue;
     }
-    const h = HEADING.exec(line);
+    const h = heading(line);
     if (h) {
-      out.push({ k: "h", level: (h[1] ?? "#").length, c: inline(h[2] ?? "") });
+      out.push({ k: "h", level: h.level, c: inline(h.text) });
       i++;
       continue;
     }
-    if (HR.test(line)) {
+    if (isHr(line)) {
       out.push({ k: "hr" });
       i++;
       continue;
@@ -145,7 +219,7 @@ export function parseBlocks(text: string, depth = 0): Block[] {
       continue;
     }
     const li = BULLET.exec(line) ?? ORDERED.exec(line);
-    if (li && depth < 6) {
+    if (li && depth < 3) {
       const ordered = ORDERED.test(line) && !BULLET.test(line);
       const baseIndent = (li[1] ?? "").length;
       const items: Item[] = [];
@@ -192,7 +266,13 @@ export function parseBlocks(text: string, depth = 0): Block[] {
           first = t[2] ?? "";
         }
         body[0] = first;
-        items.push({ task, c: parseBlocks(body.join("\n"), depth + 1) });
+        // The usual item is one line of text: no need to parse it as a document.
+        const plain =
+          body.length === 1 && first.length <= MAX_LINE && first.trim() !== "" && !startsBlock(first);
+        items.push({
+          task,
+          c: plain ? [{ k: "p", c: inline(first.trim()) }] : parseBlocks(body.join("\n"), depth + 1),
+        });
         // A blank line between items keeps the same list going when the next line is another item.
         if ((lines[i] ?? "").trim() === "" && (ordered ? ORDERED : BULLET).test(lines[i + 1] ?? "")) i++;
       }
@@ -200,7 +280,7 @@ export function parseBlocks(text: string, depth = 0): Block[] {
       continue;
     }
     // A table: a header row, a separator row, then rows.
-    if (line.includes("|") && TABLE_SEP.test(lines[i + 1] ?? "") && (lines[i + 1] ?? "").includes("-")) {
+    if (line.includes("|") && isTableSep(lines[i + 1] ?? "")) {
       const head = cells(line);
       const sep = cells(lines[i + 1] ?? "");
       if (head.length === sep.length || head.length > 0) {
@@ -227,7 +307,12 @@ export function parseBlocks(text: string, depth = 0): Block[] {
     // A paragraph: lines until a blank line or the start of another block.
     const para: string[] = [line];
     i++;
-    while (i < lines.length && (lines[i] ?? "").trim() !== "" && !startsBlock(lines[i] ?? "")) {
+    while (
+      i < lines.length &&
+      (lines[i] ?? "").trim() !== "" &&
+      (lines[i] ?? "").length <= MAX_LINE &&
+      !startsBlock(lines[i] ?? "")
+    ) {
       para.push(lines[i] ?? "");
       i++;
     }
@@ -245,10 +330,13 @@ function cells(line: string): string[] {
 
 // ───────────────────────────── inline parser ─────────────────────────────
 
-/** Only these can be followed. Anything else (javascript:, data:, file:...) is shown as text. */
+/**
+ * Only http(s) and mailto links can be followed. Anything else (javascript:, data:, file:, an in-page `#`
+ * anchor, which would move the app off the conversation) is shown as its text.
+ */
 export function safeHref(href: string): string | null {
   const h = href.trim();
-  if (/^#[\w-]*$/.test(h)) return h;
+  if (h.length > 2000) return null;
   try {
     const u = new URL(h);
     return u.protocol === "https:" || u.protocol === "http:" || u.protocol === "mailto:" ? u.href : null;
@@ -259,6 +347,11 @@ export function safeHref(href: string): string | null {
 
 const isWord = (c: string | undefined): boolean => c !== undefined && /[\p{L}\p{N}]/u.test(c);
 
+/**
+ * Inline markdown. Every search here is bounded: a closer is looked for within a window, nesting is capped,
+ * and a search that found nothing from one place is not repeated from a later one, so no input (a run of
+ * `[`, of `*a `, of backticks) costs more than a pass or two over the text.
+ */
 export function inline(src: string, depth = 0): Inline[] {
   const out: Inline[] = [];
   let text = "";
@@ -268,6 +361,9 @@ export function inline(src: string, depth = 0): Inline[] {
       text = "";
     }
   };
+  // A search for a closer that found none from `p` will find none from any later position.
+  const noCode = new Map<number, number>();
+  const noEmphasis = new Map<string, number>();
   let i = 0;
   while (i < src.length) {
     const c = src.charAt(i);
@@ -286,7 +382,8 @@ export function inline(src: string, depth = 0): Inline[] {
       let n = 1;
       while (src.charAt(i + n) === "`") n++;
       const mark = "`".repeat(n);
-      const end = src.indexOf(mark, i + n);
+      const failed = noCode.get(n);
+      const end = failed !== undefined && i + n >= failed ? -1 : src.indexOf(mark, i + n);
       if (end > 0) {
         flush();
         let code = src.slice(i + n, end);
@@ -295,6 +392,7 @@ export function inline(src: string, depth = 0): Inline[] {
         i = end + n;
         continue;
       }
+      noCode.set(n, i + n);
       text += mark;
       i += n;
       continue;
@@ -311,7 +409,7 @@ export function inline(src: string, depth = 0): Inline[] {
             src
               .slice(close + 2, end)
               .trim()
-              .split(/\s+/)[0] ?? "";
+              .split(/\s+/, 1)[0] ?? "";
           const href = safeHref(target.replace(/^<|>$/g, ""));
           flush();
           const kids = inline(label || target, depth + 1);
@@ -325,7 +423,7 @@ export function inline(src: string, depth = 0): Inline[] {
         }
       }
     }
-    if (c === "<") {
+    if (c === "<" && (src.startsWith("<http", i) || src.startsWith("<mailto:", i))) {
       const m = /^<((?:https?:\/\/|mailto:)[^\s<>]+)>/.exec(src.slice(i, i + 2000));
       if (m) {
         const href = safeHref(m[1] ?? "");
@@ -362,16 +460,19 @@ export function inline(src: string, depth = 0): Inline[] {
       const k = c === "~" ? (run === 2 ? "del" : undefined) : run === 2 ? "strong" : "em";
       const before = src.charAt(i - 1);
       const after = src.charAt(i + run);
-      // `_` only inside no word (snake_case stays as it is); the opener needs a non-space after it.
+      // `_` only outside a word (snake_case stays as it is); the opener needs a non-space after it.
       const canOpen = k !== undefined && after !== "" && !/\s/.test(after) && !(c === "_" && isWord(before));
       if (canOpen) {
-        const end = findEmphasisEnd(src, i + run, delim, c === "_");
+        const failed = noEmphasis.get(delim);
+        const end =
+          failed !== undefined && i + run >= failed ? -1 : findEmphasisEnd(src, i + run, delim, c === "_");
         if (end > 0) {
           flush();
           out.push({ k: k as "strong" | "em" | "del", c: inline(src.slice(i + run, end), depth + 1) });
           i = end + run;
           continue;
         }
+        noEmphasis.set(delim, i + run);
       }
       text += delim;
       i += run;
@@ -384,25 +485,30 @@ export function inline(src: string, depth = 0): Inline[] {
   return out;
 }
 
+/** The `]` closing the `[` at `open`: within a window, and no more than three brackets deep. */
 function findClose(src: string, open: number): number {
   let depth = 0;
-  for (let j = open; j < src.length; j++) {
+  const stop = Math.min(src.length, open + WINDOW);
+  for (let j = open; j < stop; j++) {
     const ch = src.charAt(j);
     if (ch === "\\") j++;
-    else if (ch === "[") depth++;
-    else if (ch === "]" && --depth === 0) return j;
+    else if (ch === "[") {
+      if (++depth > 3) return -1;
+    } else if (ch === "]" && --depth === 0) return j;
   }
   return -1;
 }
 
-/** The `)` closing the `(` at `open`, allowing balanced parentheses inside. */
+/** The `)` closing the `(` at `open`, on the same line, within a window, no more than three deep. */
 function findParen(src: string, open: number): number {
   let depth = 0;
-  for (let j = open; j < src.length; j++) {
+  const stop = Math.min(src.length, open + WINDOW);
+  for (let j = open; j < stop; j++) {
     const ch = src.charAt(j);
     if (ch === "\\") j++;
-    else if (ch === "(") depth++;
-    else if (ch === ")" && --depth === 0) return j;
+    else if (ch === "(") {
+      if (++depth > 3) return -1;
+    } else if (ch === ")" && --depth === 0) return j;
     else if (ch === "\n") return -1;
   }
   return -1;
@@ -446,9 +552,7 @@ const renderInline = (nodes: Inline[]): unknown[] =>
       case "br":
         return html`<br />`;
       case "link":
-        return n.href.startsWith("#")
-          ? html`<a href=${n.href}>${renderInline(n.c)}</a>`
-          : html`<a href=${n.href} target="_blank" rel="noopener noreferrer">${renderInline(n.c)}</a>`;
+        return html`<a href=${n.href} target="_blank" rel="noopener noreferrer">${renderInline(n.c)}</a>`;
       default:
         return "";
     }

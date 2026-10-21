@@ -257,14 +257,22 @@ function diffTokens(code: string): Token[] {
 /** Tags, attributes, strings and comments of HTML or XML. */
 function markupTokens(code: string): Token[] {
   const out: Token[] = [];
-  const re =
-    /<!--[\s\S]*?-->|<\/?[A-Za-z][^\s/>]*|\s[\w:-]+(?==)|"[^"]*"|'[^']*'|\/?>|[^<"'\s/>]+|\s+|[<"'/>]/g;
-  let m: RegExpExecArray | null = re.exec(code);
+  const re = /<\/?[A-Za-z][^\s/>]*|\s[\w:-]+(?==)|"[^"\n]*"|'[^'\n]*'|\/?>|[^<"'\s/>]+|\s+|[<"'/>]/y;
   let inTag = false;
-  while (m) {
-    const s = m[0];
-    if (s.startsWith("<!--")) out.push({ t: "com", s });
-    else if (/^<\/?[A-Za-z]/.test(s)) {
+  let i = 0;
+  while (i < code.length) {
+    if (code.startsWith("<!--", i)) {
+      // A comment ends at the first `-->`, or runs to the end of the text; either way the scan moves on.
+      const close = code.indexOf("-->", i + 4);
+      const end = close < 0 ? code.length : close + 3;
+      out.push({ t: "com", s: code.slice(i, end) });
+      i = end;
+      continue;
+    }
+    re.lastIndex = i;
+    const m = re.exec(code);
+    const s = m?.[0] ?? code.charAt(i);
+    if (/^<\/?[A-Za-z]/.test(s)) {
       inTag = true;
       out.push({ t: "tag", s });
     } else if (s === ">" || s === "/>") {
@@ -273,7 +281,7 @@ function markupTokens(code: string): Token[] {
     } else if (inTag && /^\s[\w:-]+$/.test(s)) out.push({ t: "attr", s });
     else if (inTag && (s.startsWith('"') || s.startsWith("'"))) out.push({ t: "str", s });
     else out.push({ s });
-    m = re.exec(code);
+    i += s.length;
   }
   return out;
 }

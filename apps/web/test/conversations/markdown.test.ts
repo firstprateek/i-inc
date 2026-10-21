@@ -66,7 +66,9 @@ describe("markdown", () => {
     expect(htmlOf("see https://example.com/x.")).toContain('href="https://example.com/x"');
     expect(safeHref("javascript:alert(1)")).toBeNull();
     expect(safeHref("file:///etc/passwd")).toBeNull();
-    expect(safeHref("#top")).toBe("#top");
+    // an in-page anchor would move the app off the conversation: it is not a link
+    expect(safeHref("#top")).toBeNull();
+    expect(safeHref("#")).toBeNull();
     expect(safeHref("mailto:a@b.co")).toBe("mailto:a@b.co");
   });
 
@@ -141,6 +143,111 @@ describe("markdown", () => {
     render(cache.render("intro\n\n```js\nlet a = 1;\n```\n\ndone"), host);
     expect(host.innerHTML).toContain("tk-kw");
     expect(host.innerHTML).toContain("done");
+  });
+});
+
+describe("hostile input costs a pass over the text, not more", () => {
+  const KB = 100 * 1024;
+  const rep = (unit: string, n = KB) => unit.repeat(Math.ceil(n / unit.length)).slice(0, n);
+  const cases: Record<string, string> = {
+    "a heading with spaces": `# a${" ".repeat(KB)}x`,
+    "a run of #": rep("#"),
+    "headings of #": rep("# a #\n"),
+    spaces: rep(" "),
+    "[": rep("["),
+    "[a](": rep("[a]("),
+    "[a](b": rep("[a](b "),
+    "*a ": rep("*a "),
+    "**a ": rep("**a "),
+    "_a ": rep("_a "),
+    "nested emphasis": rep("**a *b ~~c "),
+    backticks: rep("`"),
+    "unmatched code spans": rep("`a ``b ```c "),
+    "fence-like lines": rep("``` ``` ```\n"),
+    "a fence with spaces": `\`\`\`${" ".repeat(KB)}x`,
+    "table rows": `|${rep("-|")}\n|${rep("-|")}\n|a|`,
+    "table separators": rep("|-|-|-|-|-|-|-|-|-|-\n"),
+    "(": rep("("),
+    "\\": rep("\\"),
+    "<": rep("<"),
+    "<http": rep("<http://a "),
+    http: rep("http://a "),
+    "list markers": rep("- - - - - -\n"),
+    "ordered markers": rep("1. 1. 1. 1.\n"),
+    quotes: rep("> > > > > > >\n"),
+    rules: rep("- - - - -x\n"),
+    tildes: rep("~~a ~b "),
+    unicode: rep("\u202e\u200b*a "),
+  };
+  const timed = (fn: () => void): number => {
+    const t = performance.now();
+    fn();
+    return performance.now() - t;
+  };
+  it.each(Object.entries(cases))("%s: 100 KB in a single pass", (_name, text) => {
+    // the faster of two runs: a cold first run pays for compiling, and a ReDoS is seconds, not milliseconds
+    expect(
+      Math.min(
+        timed(() => renderMarkdown(text)),
+        timed(() => renderMarkdown(text)),
+      ),
+    ).toBeLessThan(50);
+  });
+
+  it.each(Object.entries(cases))("%s: 100 KB streamed in pieces, every render", (_name, text) => {
+    const cache = new MarkdownCache();
+    let worst = 0;
+    for (let at = 4000; at <= text.length + 3999; at += 4000) {
+      worst = Math.max(
+        worst,
+        timed(() => cache.render(text.slice(0, at))),
+      );
+    }
+    expect(worst).toBeLessThan(50);
+  });
+
+  it("highlights hostile code in bounded time and keeps every character", () => {
+    for (const lang of ["html", "ts", "py", "sh", "css", "diff", "json"]) {
+      for (const text of [
+        rep("<!--", 40_000),
+        rep('"a', 40_000),
+        rep("/*", 40_000),
+        rep("`", 40_000),
+        rep("<a b=", 40_000),
+      ]) {
+        let tokens: ReturnType<typeof highlight> = [];
+        expect(
+          timed(() => {
+            tokens = highlight(text, lang);
+          }),
+          `${lang}`,
+        ).toBeLessThan(80);
+        expect(tokensText(tokens)).toBe(text);
+      }
+    }
+  });
+
+  it("still reads the ordinary shapes the scanners replaced", () => {
+    expect(parseBlocks("# Title ##")[0]).toMatchObject({ k: "h", level: 1 });
+    expect(parseBlocks("####### seven")[0]).toMatchObject({ k: "p" });
+    expect(parseBlocks("#nospace")[0]).toMatchObject({ k: "p" });
+    expect(parseBlocks("## a # b")[0]).toMatchObject({ k: "h", level: 2 });
+    expect(parseBlocks("~~~python extra\nx\n~~~")[0]).toMatchObject({
+      k: "code",
+      lang: "python",
+      open: false,
+    });
+    expect(parseBlocks("```a`b\nx")[0]).toMatchObject({ k: "p" });
+    expect(parseBlocks("- - -")[0]).toMatchObject({ k: "hr" });
+    expect(parseBlocks("***")[0]).toMatchObject({ k: "hr" });
+    expect(parseBlocks("| a | b |\n| :-: | --: |\n| 1 | 2 |")[0]).toMatchObject({ k: "table" });
+  });
+
+  it("shows a line over 4,000 characters as plain text", () => {
+    const long = `**not bold** ${"x".repeat(4100)}`;
+    const blocks = parseBlocks(`before\n${long}\nafter`);
+    expect(blocks.map((b) => b.k)).toEqual(["p", "p", "p"]);
+    expect(blocks[1]).toMatchObject({ c: [{ k: "text", s: long }] });
   });
 });
 
