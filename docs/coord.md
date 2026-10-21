@@ -43,7 +43,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
 | antigravity | 2026-10-18 22:35 | T50 merged (#76), deploying code to mini | await owner approval for container restart, retry ticket #15 |
-| claude | 2026-10-20 23:08 | V1 restart after a reboot wiped unpushed work: T55, T56, T61 in progress (3 at a time, pushing every step) | T51, T54, then T52, T53, T57–T60, T62 |
+| claude | 2026-10-21 00:56 | V1 in review: #78 brain index, #81 three areas, #82 deployer, #83/#84 AHP host + session host — fixing review findings, merging one by one | T60 Conversations screen, T57, T58, T62, T53; then T63 audit, T64 UX |
 | codex | 2026-10-18 21:25 | T50: reproduced persistent Apple container hostname race; live ticket #15 preserved at prove | implement lifecycle recovery/helper failover, review, deploy, retry |
 
 ## Tasks
