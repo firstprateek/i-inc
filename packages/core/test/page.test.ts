@@ -145,7 +145,131 @@ describe("serializing", () => {
     expect(back.meta.description).toBe('He said "hi" across lines');
     expect(back.meta.tags).toEqual(["a b", "x,y"]);
     expect(back.meta).toMatchObject({ needsTidy: true, source: "external", updated: "2026-01-02" });
-    expect(back.meta.extra).toEqual({ owner: "kit", n: "3" });
+    expect(back.meta.extra).toEqual({ owner: "kit", n: 3 });
     expect(back.body).toBe("Body\n");
+  });
+});
+
+describe("frontmatter is real YAML", () => {
+  const rich = [
+    "---",
+    'title: "Release: the \\"signing\\" step"',
+    "description: >",
+    "  Folded text that spans",
+    "  two lines.",
+    "Owner: Kit",
+    "notes: |",
+    "  line one",
+    "  line two: with a colon",
+    "",
+    "  after a blank",
+    "nested:",
+    "  team: eng",
+    "  oncall:",
+    "    - ada",
+    "    - kit",
+    "  limits: {cpu: 2, mem: 4G}",
+    "checks:",
+    "  - name: lint",
+    "    cmd: 'pnpm check'",
+    "  - name: test",
+    '    cmd: "pnpm test"',
+    'emoji: "café ☕ 日本語"',
+    "tags: [A, 'b c']",
+    "updated: 2026-10-20",
+    "---",
+    "Body with [[link]].",
+    "",
+  ].join("\n");
+
+  it("reads block scalars, nested maps and lists, and keeps keys in their case", () => {
+    const p = parsePage(rich, "x");
+    expect(p.frontmatterError).toBeUndefined();
+    expect(p.meta.title).toBe('Release: the "signing" step');
+    expect(p.meta.description).toBe("Folded text that spans two lines.");
+    expect(p.meta.tags).toEqual(["a", "b c"]);
+    expect(p.meta.updated).toBe("2026-10-20");
+    expect(p.meta.extra).toEqual({
+      Owner: "Kit",
+      notes: "line one\nline two: with a colon\n\nafter a blank\n",
+      nested: { team: "eng", oncall: ["ada", "kit"], limits: { cpu: 2, mem: "4G" } },
+      checks: [
+        { name: "lint", cmd: "pnpm check" },
+        { name: "test", cmd: "pnpm test" },
+      ],
+      emoji: "café ☕ 日本語",
+    });
+  });
+
+  it("round-trips: meta and body survive a rewrite, unknown keys and their case included", () => {
+    const p = parsePage(rich, "x");
+    const text = serializePage(p);
+    const again = parsePage(text, "x");
+    expect(again.frontmatterError).toBeUndefined();
+    expect(again.meta).toEqual(p.meta);
+    expect(again.body).toBe(p.body);
+    expect(text).toContain("\nOwner: Kit\n");
+    expect(text).not.toContain("\nowner:");
+    // Writing the same page again changes nothing.
+    expect(serializePage(again)).toBe(text);
+  });
+
+  it("round-trips CRLF files, quotes, colons and unicode in the usual fields", () => {
+    const meta = {
+      title: 'Qu\'ote "d": café ☕',
+      description: "Colon: here, # hash, - dash, and 日本語",
+      tags: ["x: y", "日本"],
+      sources: ["ticket-1", "https://example.com/a?b=c#d"],
+      updated: "2026-10-20",
+    };
+    const text = serializePage({ meta, body: "Line\r\nTwo\r\n" });
+    const crlf = text.split("\n").join("\r\n");
+    for (const t of [text, crlf]) {
+      const p = parsePage(t, "x");
+      expect(p.frontmatterError).toBeUndefined();
+      expect(p.meta).toMatchObject(meta);
+    }
+    expect(parsePage(text, "x").body).toBe("Line\r\nTwo\r\n");
+  });
+
+  it("keeps a date-looking updated unquoted and a number-looking title a string", () => {
+    const text = serializePage({
+      meta: { title: "2026", description: "true", tags: [], sources: [], updated: "2026-10-20" },
+      body: "",
+    });
+    expect(text).toContain("updated: 2026-10-20\n");
+    const p = parsePage(text, "x");
+    expect(p.meta.title).toBe("2026");
+    expect(p.meta.description).toBe("true");
+  });
+
+  it("reports invalid YAML instead of throwing, and still reads its plain lines (an unquoted colon)", () => {
+    const p = parsePage(
+      "---\ntitle: Release: the signing step\ndescription: 'Quoted: yes'\ntags: [a, b]\nsources:\n  - ticket-1\n---\nBody. More.\n",
+      "a/b",
+    );
+    expect(p.hasFrontmatter).toBe(true);
+    expect(p.frontmatterError).toBeTruthy();
+    expect(p.meta).toMatchObject({
+      title: "Release: the signing step",
+      description: "Quoted: yes",
+      tags: ["a", "b"],
+      sources: ["ticket-1"],
+    });
+    expect(p.body).toBe("Body. More.\n");
+    // Rewriting repairs it.
+    expect(parsePage(serializePage(p), "a/b").frontmatterError).toBeUndefined();
+    const junk = parsePage("---\n{{{ nonsense\n---\nBody. More.\n", "a/b");
+    expect(junk.frontmatterError).toBeTruthy();
+    expect(junk.meta.title).toBe("B");
+    expect(parsePage("---\n- a\n- b\n---\nx", "x").frontmatterError).toMatch(/mapping/);
+  });
+
+  it("survives YAML alias bombs", () => {
+    const bomb = `---\na: &a [x,x,x,x,x,x,x,x,x,x]\nb: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a,*a]\nc: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b,*b]\nd: [*c,*c,*c,*c,*c,*c,*c,*c,*c,*c]\n---\nx`;
+    const t = performance.now();
+    const p = parsePage(bomb, "x");
+    expect(performance.now() - t).toBeLessThan(500);
+    expect(p.body).toBe("x");
   });
 });

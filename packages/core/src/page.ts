@@ -10,9 +10,13 @@
 //   sources: [ticket-14]
 //   ---
 //   Body. Link related pages as [[slug]].
+//
+// The frontmatter is real YAML (the `yaml` package, core schema), so block scalars, nested maps and
+// quoted values survive. Keys we don't model are kept as parsed, with their case, and written back.
+import YAML from "yaml";
 
-/** A frontmatter value we don't model, kept so a rewrite never drops what an agent wrote. */
-export type FrontValue = string | boolean | number | string[];
+/** A frontmatter value we don't model (any YAML), kept so a rewrite never drops what an agent wrote. */
+export type FrontValue = unknown;
 
 export interface PageMeta {
   title: string;
@@ -27,7 +31,7 @@ export interface PageMeta {
   source?: "external";
   /** A pile of appended fragments that the tidy-up should merge into one page. */
   needsTidy?: boolean;
-  /** Frontmatter keys this module doesn't know, in order. */
+  /** Frontmatter keys this module doesn't know, in order, with their original case. */
   extra?: Record<string, FrontValue>;
 }
 
@@ -37,6 +41,8 @@ export interface ParsedPage {
   body: string;
   /** Whether the file had a frontmatter block at all. */
   hasFrontmatter: boolean;
+  /** Set when the frontmatter block is not valid YAML; its plain `key: value` lines are still read. */
+  frontmatterError?: string;
   /** Which of title/description were derived rather than written. */
   derived: { title: boolean; description: boolean };
   /** Normalized link targets from the body, in order, without duplicates. */
@@ -60,79 +66,61 @@ function splitFrontmatter(text: string): { raw: string[]; body: string } | null 
   return null;
 }
 
-function unquote(s: string): string {
-  const t = s.trim();
-  if (t.length >= 2 && t.startsWith('"') && t.endsWith('"')) {
-    return t
-      .slice(1, -1)
-      .replace(/\\(["\\nt])/g, (_, c: string) => (c === "n" ? "\n" : c === "t" ? "\t" : c));
-  }
-  if (t.length >= 2 && t.startsWith("'") && t.endsWith("'")) return t.slice(1, -1).replace(/''/g, "'");
-  return t;
-}
+const asList = (v: unknown): string[] => {
+  if (v === undefined || v === null) return [];
+  const items = Array.isArray(v) ? v : typeof v === "string" ? v.split(",") : [v];
+  return items
+    .filter((x) => typeof x === "string" || typeof x === "number" || typeof x === "boolean")
+    .map((x) => String(x).trim())
+    .filter(Boolean);
+};
+const asString = (v: unknown): string =>
+  typeof v === "string" ? v : typeof v === "number" || typeof v === "boolean" ? String(v) : "";
+const truthy = (v: unknown): boolean => v === true || /^(true|yes|1)$/i.test(asString(v).trim());
+const isDate = (s: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(s);
 
-/** Splits "a, b, "c, d"" on commas that aren't inside quotes. */
-function splitList(inner: string): string[] {
-  const out: string[] = [];
-  let cur = "";
-  let quote: string | null = null;
-  for (const ch of inner) {
-    if (quote) {
-      cur += ch;
-      if (ch === quote) quote = null;
-    } else if (ch === '"' || ch === "'") {
-      quote = ch;
-      cur += ch;
-    } else if (ch === ",") {
-      out.push(cur);
-      cur = "";
-    } else cur += ch;
-  }
-  out.push(cur);
-  return out.map(unquote).filter(Boolean);
-}
+const known = new Set(["title", "description", "tags", "updated", "sources", "source", "needs-tidy"]);
 
-type Raw = string | string[];
-
-/** The tolerant YAML subset we write: `key: scalar`, `key: [a, b]`, and `key:` + `- item` lines. */
-function readFront(lines: string[]): Map<string, Raw> {
-  const out = new Map<string, Raw>();
+/**
+ * What a hand-written block means when it isn't valid YAML (an unquoted `title: A: B` is the usual
+ * slip): top-level `key: value` lines as strings, `[a, b]` and `- item` lists as lists.
+ */
+function lenientFront(raw: string[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
   let list: string[] | null = null;
-  for (const line of lines) {
-    if (!line.trim() || line.trim().startsWith("#")) continue;
-    const item = line.match(/^\s+-\s*(.*)$/) ?? (list ? line.match(/^-\s*(.*)$/) : null);
-    if (item && list) {
-      list.push(unquote(item[1] ?? ""));
+  const unq = (v: string) => v.trim().replace(/^(["'])(.*)\1$/, "$2");
+  for (const line of raw) {
+    const item = list ? line.match(/^\s*-\s+(.*)$/) : null;
+    if (item) {
+      list?.push(unq(item[1] ?? ""));
       continue;
     }
-    const kv = line.match(/^([A-Za-z_][\w-]*)\s*:\s*(.*)$/);
-    if (!kv) {
-      list = null;
-      continue;
-    }
-    const key = (kv[1] ?? "").toLowerCase();
-    const value = (kv[2] ?? "").trim();
-    if (value === "") {
-      list = [];
-      out.set(key, list);
-    } else if (value.startsWith("[") && value.endsWith("]")) {
-      list = null;
-      out.set(key, splitList(value.slice(1, -1)));
-    } else {
-      list = null;
-      out.set(key, unquote(value));
-    }
+    const kv = line.match(/^([^\s:#-][^:]*):(?:\s+(.*))?$/);
+    if (!kv) continue;
+    const key = (kv[1] ?? "").trim();
+    const val = (kv[2] ?? "").trim();
+    list = null;
+    if (val === "") out[key] = list = [];
+    else if (val.startsWith("[") && val.endsWith("]")) {
+      out[key] = val.slice(1, -1).split(",").map(unq).filter(Boolean);
+    } else out[key] = unq(val);
   }
   return out;
 }
 
-const asList = (v: Raw | undefined): string[] =>
-  v === undefined ? [] : Array.isArray(v) ? v.filter(Boolean) : v ? splitList(v) : [];
-const asString = (v: Raw | undefined): string => (v === undefined ? "" : Array.isArray(v) ? v.join(", ") : v);
-const truthy = (v: Raw | undefined): boolean => /^(true|yes|1)$/i.test(asString(v).trim());
-const isDate = (s: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(s);
-
-const known = new Set(["title", "description", "tags", "updated", "sources", "source", "needs-tidy"]);
+/** The frontmatter as a plain object, or an error. Anything but a mapping is an error. */
+function readFront(raw: string[]): { front: Record<string, unknown> } | { error: string } {
+  try {
+    const doc = YAML.parseDocument(raw.join("\n"), { uniqueKeys: false });
+    if (doc.errors.length) return { error: doc.errors[0]?.message ?? "invalid YAML" };
+    const v = doc.toJS({ maxAliasCount: 10 }) as unknown;
+    if (v === null || v === undefined) return { front: {} };
+    if (typeof v !== "object" || Array.isArray(v)) return { error: "frontmatter must be a mapping" };
+    return { front: v as Record<string, unknown> };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
 
 /** "tools/vitest-mocks" → "Vitest mocks". */
 export function titleFromSlug(slug: string): string {
@@ -213,69 +201,56 @@ export function extractLinks(body: string): string[] {
 export function parsePage(text: string, slug = ""): ParsedPage {
   const split = splitFrontmatter(text);
   const body = split ? split.body : text.replace(/^\uFEFF/, "");
-  const front = split ? readFront(split.raw) : new Map<string, Raw>();
+  const read = split ? readFront(split.raw) : { front: {} };
+  const front = "front" in read ? read.front : lenientFront(split?.raw ?? []);
 
-  const writtenTitle = asString(front.get("title")).trim();
-  const writtenDesc = asString(front.get("description")).trim();
+  const writtenTitle = asString(front.title).trim();
+  const writtenDesc = asString(front.description).trim();
   const title = writtenTitle || firstHeading(body) || titleFromSlug(slug || "untitled");
   const description = writtenDesc
     ? clip(writtenDesc.replace(/\s+/g, " "), descriptionLimit)
     : firstSentence(body);
 
-  const updatedRaw = asString(front.get("updated")).trim();
+  const updatedRaw = asString(front.updated).trim();
   const extra: Record<string, FrontValue> = {};
-  for (const [k, v] of front) if (!known.has(k)) extra[k] = v;
+  for (const [k, v] of Object.entries(front)) if (!known.has(k)) extra[k] = v;
 
   const meta: PageMeta = {
     title,
     description,
-    tags: asList(front.get("tags")).map((t) => t.toLowerCase()),
-    sources: asList(front.get("sources")),
+    tags: asList(front.tags).map((t) => t.toLowerCase()),
+    sources: asList(front.sources),
   };
   if (isDate(updatedRaw)) meta.updated = updatedRaw;
-  if (asString(front.get("source")).trim() === "external") meta.source = "external";
-  if (truthy(front.get("needs-tidy"))) meta.needsTidy = true;
+  if (asString(front.source).trim() === "external") meta.source = "external";
+  if (truthy(front["needs-tidy"])) meta.needsTidy = true;
   if (Object.keys(extra).length) meta.extra = extra;
 
   return {
     meta,
     body,
     hasFrontmatter: split !== null,
+    ...("error" in read ? { frontmatterError: read.error } : {}),
     derived: { title: !writtenTitle, description: !writtenDesc },
     links: extractLinks(body),
   };
 }
 
-const bare = /^[A-Za-z0-9][A-Za-z0-9 ._/()'-]*$/;
-
-function scalar(s: string): string {
-  const one = s.replace(/\s*\n\s*/g, " ");
-  return bare.test(one) &&
-    !/[:#]/.test(one) &&
-    !/^(true|false|null|yes|no|\d+)$/i.test(one) &&
-    one === one.trim()
-    ? one
-    : `"${one.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-}
-
-const list = (a: string[]): string => `[${a.map(scalar).join(", ")}]`;
-
 /** Frontmatter, then the body. Re-parsing the result gives the same meta and body. */
 export function serializePage(p: { meta: PageMeta; body: string }): string {
   const m = p.meta;
-  const lines = [
-    `title: ${scalar(m.title)}`,
-    `description: ${scalar(clip(m.description, descriptionLimit))}`,
-  ];
-  lines.push(`tags: ${list(m.tags)}`);
-  if (m.updated) lines.push(`updated: ${m.updated}`);
-  lines.push(`sources: ${list(m.sources)}`);
-  if (m.source) lines.push(`source: ${m.source}`);
-  if (m.needsTidy) lines.push("needs-tidy: true");
-  for (const [k, v] of Object.entries(m.extra ?? {})) {
-    lines.push(`${k}: ${Array.isArray(v) ? list(v) : typeof v === "string" ? scalar(v) : String(v)}`);
-  }
-  return `---\n${lines.join("\n")}\n---\n${p.body}`;
+  const front: Record<string, unknown> = {
+    title: m.title,
+    description: clip(m.description, descriptionLimit),
+    tags: m.tags,
+  };
+  if (m.updated) front.updated = m.updated;
+  front.sources = m.sources;
+  if (m.source) front.source = m.source;
+  if (m.needsTidy) front["needs-tidy"] = true;
+  for (const [k, v] of Object.entries(m.extra ?? {})) if (!(k in front)) front[k] = v;
+  const yaml = YAML.stringify(front, { lineWidth: 0 });
+  return `---\n${yaml}---\n${p.body}`;
 }
 
 /** Today as YYYY-MM-DD in UTC, for stamping `updated`. */
