@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AhpConnection } from "../../src/ahp/connection.ts";
-import { ahpUrl, resetAhp, setAhp, STOP_AFTER_MS, useAhp } from "../../src/ahp/hub.ts";
+import { ahpUrl, resetAhp, STOP_AFTER_MS, setAhp, useAhp } from "../../src/ahp/hub.ts";
 import { needsYouCount } from "../../src/needs-you.ts";
 import { hosts } from "../ahp/fake-host.ts";
 
