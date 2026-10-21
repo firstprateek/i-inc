@@ -392,6 +392,14 @@ describe("the shell's layout rules", () => {
     expect(appCss).toMatch(/repeat\(4, 1fr\)/);
   });
 
+  it("a route that owns its scrolling has the same top padding as every other route, so headings do not move", () => {
+    const own = bodies(appCss, ":host([own-scroll]) main").join(" ");
+    const plain = bodies(appCss, "main").join(" ");
+    const top = (b: string) => /padding(?:-top)?:\s*(\d+)px/.exec(b)?.[1];
+    expect(own).toMatch(/padding-top:\s*20px/);
+    expect(top(plain)).toBe("20");
+  });
+
   it("main is the one scroller, and a route that owns its scrolling clips it", () => {
     has(
       appCss,

@@ -39,9 +39,11 @@ export const layoutStyles = css`
   .layout-split-sidebar { overflow-y: auto; }
   .layout-split-work { overflow: auto; }
   .layout-stack { display: flex; flex-direction: column; gap: var(--layout-section-gap, 20px); min-width: 0; }
+  /* The page header (title, subtitle, actions) and the area's tab row span the whole frame, whatever the
+     template: they never move or change size from one tab or area to the next. */
   .page-header {
     width: 100%;
-    max-width: var(--page-width, 840px);
+    max-width: var(--wide-width, 1400px);
     margin: 0 auto var(--layout-section-gap, 20px);
     padding: 0 0 var(--layout-header-gap, 12px);
     border-bottom: 1px solid var(--line);
@@ -52,12 +54,14 @@ export const layoutStyles = css`
     gap: 0 16px;
     box-sizing: border-box;
   }
-  .heading-copy { min-width: 0; flex: 1 1 auto; }
+  /* A heading block is never shorter than the 44px action beside it, so a route with an action and one
+     without put the title in the same place. */
+  .heading-copy { min-width: 0; flex: 1 1 auto; min-height: 44px; display: flex; flex-direction: column; justify-content: center; }
   /* The area's tab row (one per area): its own full-width line under the heading and actions. */
   .page-tabs { flex: 1 0 100%; min-width: 0; order: 3; }
   .page-header h1 { margin: 0; font: 700 30px/1.15 var(--display); letter-spacing: -0.5px; overflow-wrap: anywhere; }
   .page-header .subtitle { margin: 6px 0 0; color: var(--ink-2); font-size: 15px; line-height: 1.4; }
-  .page-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 0 0 auto; }
+  .page-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 0 0 auto; align-self: flex-start; min-height: 44px; }
 
   @media (max-width: ${LAYOUT_BREAKPOINTS.split - 1}px) {
     .layout-split { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 0; }
@@ -88,12 +92,13 @@ export class IncLayout extends LitElement {
     css`
       :host { display: block; min-width: 0; }
       :host([kind="split"]) { display: flex; flex: 1 1 0; flex-direction: column; min-height: 0; height: 100%; }
-      .frame { width: 100%; min-width: 0; box-sizing: border-box; }
-      .frame.page { max-width: var(--page-width, 840px); margin-inline: auto; }
+      /* One frame for every template: the header and tab row span it, and the content below follows its
+         template (Page: a centred reading band; Wide and Split: the whole frame). */
+      .frame { width: 100%; max-width: var(--wide-width, 1400px); margin-inline: auto; min-width: 0; box-sizing: border-box; }
+      .frame.page .content { max-width: var(--page-width, 840px); margin-inline: auto; }
       .frame.page.compact { max-width: var(--compact-page-width, 24rem); }
       .frame.page.compact .page-header { max-width: var(--compact-page-width, 24rem); }
-      .frame.wide { max-width: var(--wide-width, 1400px); margin-inline: auto; }
-      .frame.split { max-width: var(--wide-width, 1400px); margin-inline: auto; display: flex; flex-direction: column; height: 100%; min-height: 0; }
+      .frame.split { display: flex; flex-direction: column; height: 100%; min-height: 0; }
       ::slotted([slot="heading"]) {
         display: block;
         margin: 0;
@@ -104,7 +109,6 @@ export class IncLayout extends LitElement {
       ::slotted([slot="subtitle"]) { display: block; margin: 6px 0 0; color: var(--ink-2); font-size: 15px; line-height: 1.4; }
       .content { width: 100%; min-width: 0; box-sizing: border-box; }
       .frame.wide .content { max-width: var(--wide-width, 1400px); margin-inline: auto; }
-      /* A Split heading tracks the full pane grid; the Page-width cap is for Page/Wide headers. */
       .frame.split .page-header { max-width: none; margin-inline: 0; flex: none; }
       .frame.split .content { display: flex; flex: 1 1 0; min-height: 0; overflow: hidden; }
       ::slotted(:not([slot])) { display: block; width: 100%; min-width: 0; max-width: none; box-sizing: border-box; }

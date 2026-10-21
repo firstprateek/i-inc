@@ -411,7 +411,8 @@ export class IncApp extends LitElement {
         white-space: nowrap; color: var(--ink); -webkit-user-select: none; user-select: none; }
       .subnav a[aria-selected="true"] { background: var(--ink); color: var(--on-ink); border-color: var(--ink); }
       .subnav a:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 2px; }
-      .back { display: inline-flex; align-items: center; min-height: 44px; font-weight: 600; font-size: 15px; text-decoration: none; }
+      /* A 44px target that takes the room of a one-line subtitle, so a ticket's header is as tall as any other. */
+      .back { display: inline-block; padding: 12px 0; margin: -12px 0; font-weight: 600; font-size: 15px; line-height: 1.4; text-decoration: none; }
       @media (max-width: 600px), (max-height: 520px) { [slot="subtitle"]:not(.back) { display: none; } }
 
       /* The conversation screen: the first-run checklist (when there is one) above the conversations. */
@@ -555,7 +556,8 @@ export class IncApp extends LitElement {
         scrollbar-gutter: auto;
         display: flex;
         flex-direction: column;
-        padding-top: 16px;
+        /* The same top padding as every other route, so the heading sits at the same height. */
+        padding-top: 20px;
         padding-bottom: 20px;
       }
       :host([own-scroll]) inc-layout { flex: 1 1 0; min-height: 0; }
