@@ -77,9 +77,15 @@ function browser(
 let calls: { method: string; url: string; body: unknown }[] = [];
 
 function serve(
-  handlers: { key?: () => Response; subscribe?: () => Response; unsubscribe?: () => Response } = {},
+  handlers: {
+    key?: () => Response;
+    subscribe?: () => Response;
+    unsubscribe?: () => Response;
+    settings?: (method: string) => Response;
+  } = {},
 ) {
   calls = [];
+  const notify = { conversationsNeedMe: true, longReplyFinished: false };
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     calls.push({
       method: init?.method ?? "GET",
@@ -89,6 +95,12 @@ function serve(
     if (url === "/api/push/key") return handlers.key?.() ?? json({ publicKey: KEY });
     if (url === "/api/push/subscribe") return handlers.subscribe?.() ?? json({ ok: true });
     if (url === "/api/push/unsubscribe") return handlers.unsubscribe?.() ?? json({ ok: true });
+    if (url === "/api/push/settings") {
+      const custom = handlers.settings?.(init?.method ?? "GET");
+      if (custom) return custom;
+      if (init?.method === "PUT") Object.assign(notify, JSON.parse(String(init.body)));
+      return json({ settings: { ...notify } });
+    }
     return json({}, 404);
   });
 }
@@ -236,7 +248,8 @@ describe("the Notifications section", () => {
     await settle(el);
     return el.shadowRoot as ShadowRoot;
   }
-  const toggle = (r: ShadowRoot) => r.querySelector('[role="switch"]') as HTMLButtonElement | null;
+  const toggle = (r: ShadowRoot) =>
+    r.querySelector('[aria-labelledby="switch-label"]') as HTMLButtonElement | null;
 
   it("explains the iPhone install when push is unsupported", async () => {
     const root = await mount("unsupported");
@@ -263,7 +276,10 @@ describe("the Notifications section", () => {
     expect(toggle(root)?.getAttribute("aria-checked")).toBe("true");
     expect(root.textContent).toContain("Notifications on");
     expect(root.textContent).toContain("On");
-    expect(calls.map((c) => c.url)).toEqual(["/api/push/key", "/api/push/subscribe"]);
+    expect(calls.map((c) => c.url).filter((u) => u !== "/api/push/settings")).toEqual([
+      "/api/push/key",
+      "/api/push/subscribe",
+    ]);
 
     toggle(root)?.click();
     await settle(root.host);
@@ -278,6 +294,84 @@ describe("the Notifications section", () => {
     await settle(root.host);
     expect(root.textContent).toContain("Notifications aren't available yet");
     expect(root.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  const kind = (r: ShadowRoot, key: string) =>
+    r.querySelector(`[aria-labelledby="kind-${key}"]`) as HTMLButtonElement;
+
+  it("offers what to be notified about: conversations on, a long reply off, each explained in a sentence", async () => {
+    const root = await mount(browser({ permission: "granted", subscribed: true }));
+    const need = kind(root, "conversationsNeedMe");
+    const long = kind(root, "longReplyFinished");
+    expect(need.getAttribute("aria-checked")).toBe("true");
+    expect(long.getAttribute("aria-checked")).toBe("false");
+    expect(root.textContent).toContain("Conversations need me");
+    expect(root.textContent).toContain("A long reply finished");
+    expect(root.querySelector("#why-conversationsNeedMe")?.textContent).toContain(
+      "waiting for your permission",
+    );
+    expect(root.querySelector("#why-longReplyFinished")?.textContent).toContain("over a minute");
+  });
+
+  it("stores a choice on the daemon, and keeps the old one with the reason when it fails", async () => {
+    const root = await mount(browser({ permission: "granted", subscribed: true }));
+    kind(root, "longReplyFinished").click();
+    await settle(root.host);
+    expect(calls.at(-1)).toMatchObject({
+      method: "PUT",
+      url: "/api/push/settings",
+      body: { longReplyFinished: true },
+    });
+    expect(kind(root, "longReplyFinished").getAttribute("aria-checked")).toBe("true");
+    kind(root, "conversationsNeedMe").click();
+    await settle(root.host);
+    expect(kind(root, "conversationsNeedMe").getAttribute("aria-checked")).toBe("false");
+
+    serve({
+      settings: (m) =>
+        m === "PUT"
+          ? json({ error: "nope" }, 400)
+          : json({ settings: { conversationsNeedMe: true, longReplyFinished: false } }),
+    });
+    const failing = await mount(browser({ permission: "granted", subscribed: true }));
+    kind(failing, "conversationsNeedMe").click();
+    await settle(failing.host);
+    expect(failing.querySelector('[role="alert"]')?.textContent).toContain("nope");
+    expect(kind(failing, "conversationsNeedMe").getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("keeps keyboard focus on a toggle while it saves: it is aria-disabled, not disabled", async () => {
+    let release: (r: Response) => void = () => {};
+    serve({
+      settings: (m) =>
+        m === "PUT"
+          ? (new Promise<Response>((r) => {
+              release = r;
+            }) as unknown as Response)
+          : json({ settings: { conversationsNeedMe: true, longReplyFinished: false } }),
+    });
+    const root = await mount(browser({ permission: "granted", subscribed: true }));
+    const long = kind(root, "longReplyFinished");
+    long.focus();
+    long.click();
+    await settle(root.host);
+    expect(long.hasAttribute("disabled")).toBe(false);
+    expect(long.getAttribute("aria-disabled")).toBe("true");
+    expect(root.activeElement).toBe(long);
+    // a second press while it saves does nothing
+    long.click();
+    release(json({ settings: { conversationsNeedMe: true, longReplyFinished: true } }));
+    await settle(root.host);
+    expect(long.getAttribute("aria-disabled")).toBe("false");
+    expect(long.getAttribute("aria-checked")).toBe("true");
+    expect(calls.filter((c) => c.method === "PUT")).toHaveLength(1);
+  });
+
+  it("shows no such choices when the daemon doesn't have them", async () => {
+    serve({ settings: () => json({ error: "not found" }, 404) });
+    const root = await mount(browser({ permission: "granted", subscribed: true }));
+    expect(root.querySelector('[aria-labelledby="kind-conversationsNeedMe"]')).toBeNull();
+    expect(toggle(root)).not.toBeNull();
   });
 
   it("shows the reason when turning on fails", async () => {
@@ -298,21 +392,27 @@ interface FakeClient {
   url: string;
   focus: ReturnType<typeof vi.fn>;
   navigate?: ReturnType<typeof vi.fn>;
+  postMessage?: ReturnType<typeof vi.fn>;
 }
 
-function loadWorker(windows: FakeClient[] = []) {
+function loadWorker(windows: FakeClient[] = [], userAgent = "Mozilla/5.0 Chrome/130") {
   const source = readFileSync(join(web, "public/sw.js"), "utf8")
     .replace('"__BUILD_ID__"', '"v1"')
     .replace('"__PRECACHE__"', "[]");
   const listeners: Record<string, Listener> = {};
   const showNotification = vi.fn(async () => {});
+  const shown: { tag: string; close: ReturnType<typeof vi.fn> }[] = [];
+  const getNotifications = vi.fn(async (filter?: { tag?: string }) =>
+    shown.filter((n) => !filter?.tag || n.tag === filter.tag),
+  );
   const openWindow = vi.fn(async () => null);
   const self = {
     location: { origin: "https://app.test" },
     addEventListener: (type: string, fn: Listener) => {
       listeners[type] = fn;
     },
-    registration: { showNotification },
+    navigator: { userAgent },
+    registration: { showNotification, getNotifications },
     clients: { matchAll: vi.fn(async () => windows), openWindow, claim: vi.fn() },
   };
   new Function("self", "caches", "fetch", source)(self, {}, vi.fn());
@@ -330,11 +430,11 @@ function loadWorker(windows: FakeClient[] = []) {
     const close = vi.fn();
     return dispatch("notificationclick", { notification: { close, data: { url } } }).then(() => close);
   };
-  return { push, click, dispatch, showNotification, openWindow, self };
+  return { push, click, dispatch, showNotification, getNotifications, shown, openWindow, self };
 }
 
 const client = (url: string, withNavigate = true): FakeClient => {
-  const c: FakeClient = { url, focus: vi.fn() };
+  const c: FakeClient = { url, focus: vi.fn(), postMessage: vi.fn() };
   c.focus.mockResolvedValue(c);
   if (withNavigate) c.navigate = vi.fn(async () => c);
   return c;
@@ -380,6 +480,62 @@ describe("the service worker's push handler", () => {
       "i.inc",
       expect.objectContaining({ body: "plain words" }),
     );
+  });
+});
+
+describe("the service worker and a conversation's notification (T65)", () => {
+  const needsYou = {
+    title: "Ada needs you",
+    body: "Run: pnpm test",
+    url: "#/conversations/ab12cd34?card=tc1",
+    tag: "conv-ab12cd34",
+  };
+
+  it("shows it under the conversation's tag, so a newer request replaces the older and still alerts", async () => {
+    const w = loadWorker();
+    await w.push(needsYou);
+    expect(w.showNotification).toHaveBeenCalledWith(
+      "Ada needs you",
+      expect.objectContaining({
+        body: "Run: pnpm test",
+        tag: "conv-ab12cd34",
+        renotify: true,
+        data: { url: "#/conversations/ab12cd34?card=tc1" },
+      }),
+    );
+    // no action buttons: iOS has none, and answering happens in the app
+    expect(
+      (w.showNotification.mock.calls[0] as unknown as [string, Record<string, unknown>])[1].actions,
+    ).toBeUndefined();
+  });
+
+  it("never closes a notification instead of showing one: every push shows something", async () => {
+    const w = loadWorker();
+    w.shown.push({ tag: "conv-ab12cd34", close: vi.fn() });
+    await w.push({ ...needsYou, body: "Answered", resolve: true });
+    expect(w.showNotification).toHaveBeenCalledTimes(1);
+    expect(w.shown[0]?.close).not.toHaveBeenCalled();
+  });
+
+  it("opens the card: an open window is focused, moved to the address and told it, so iOS (no navigate) gets there too", async () => {
+    const open = client("https://app.test/#/work/needs-you");
+    const w = loadWorker([open]);
+    await w.click(needsYou.url);
+    expect(open.focus).toHaveBeenCalled();
+    expect(open.navigate).toHaveBeenCalledWith("https://app.test/#/conversations/ab12cd34?card=tc1");
+    expect(open.postMessage).toHaveBeenCalledWith({
+      type: "i-inc:open",
+      url: "https://app.test/#/conversations/ab12cd34?card=tc1",
+    });
+    const ios = client("https://app.test/", false);
+    await loadWorker([ios]).click(needsYou.url);
+    expect(ios.postMessage).toHaveBeenCalled();
+  });
+
+  it("opens a window at the card when the app is closed", async () => {
+    const w = loadWorker([]);
+    await w.click(needsYou.url);
+    expect(w.openWindow).toHaveBeenCalledWith("https://app.test/#/conversations/ab12cd34?card=tc1");
   });
 });
 

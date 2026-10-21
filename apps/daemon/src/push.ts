@@ -34,7 +34,30 @@ export interface NotificationPayload {
   title: string;
   body: string;
   url: string;
+  /** One notification per tag: a newer one replaces the older (T65 uses one tag per conversation). */
+  tag?: string;
 }
+
+/**
+ * What the owner wants to hear about beyond tickets (T65). Stored with the company settings, so it
+ * applies to every device that has push on.
+ */
+export interface NotifySettings {
+  /** A conversation's agent is waiting for a permission or an answer and nobody is looking. */
+  conversationsNeedMe: boolean;
+  /** A turn the owner started ran for a while and finished, and nobody is looking. */
+  longReplyFinished: boolean;
+}
+
+export const defaultNotify: NotifySettings = { conversationsNeedMe: true, longReplyFinished: false };
+
+export const notifyKeys = Object.keys(defaultNotify) as (keyof NotifySettings)[];
+
+/** The stored settings over the defaults. */
+export const notifySettings = (stored: Partial<NotifySettings> | undefined): NotifySettings => ({
+  conversationsNeedMe: stored?.conversationsNeedMe ?? defaultNotify.conversationsNeedMe,
+  longReplyFinished: stored?.longReplyFinished ?? defaultNotify.longReplyFinished,
+});
 
 export interface PushService {
   publicKey(): string;
@@ -217,10 +240,10 @@ export class WebPushSender implements PushService {
       if (res.status === 404 || res.status === 410) {
         this.registry.removePushSubscription(sub.endpoint);
       } else if (!res.ok) {
-        console.warn(`[push] delivery failed (${res.status}) for ${sub.endpoint}`);
+        console.warn(`[push] delivery failed (${res.status})`);
       }
     } catch (err) {
-      console.warn(`[push] delivery error for ${sub.endpoint}:`, err);
+      console.warn("[push] delivery error:", err instanceof Error ? err.name : "unknown");
     }
   }
 }

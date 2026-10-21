@@ -24,6 +24,7 @@ const WIDE = "(min-width: 1200px)";
 export class IncConversations extends LitElement {
   static override properties = {
     selectedId: { type: String },
+    card: { type: String },
     draft: { attribute: false },
     form: { attribute: false },
     first: { state: true },
@@ -46,6 +47,8 @@ export class IncConversations extends LitElement {
     ready: { state: true },
   };
   declare selectedId: string;
+  /** `?card=<id>`: the card a notification opened; the thread brings it into view. */
+  declare card: string;
   /** `#/conversations/new/<employee>[/<project>]`: a conversation the first message will create. */
   declare draft: { employee: string; project: string } | undefined;
   /** `#/conversations?new=1&...`: the New conversation form, open and preset. */
@@ -81,6 +84,7 @@ export class IncConversations extends LitElement {
   constructor() {
     super();
     this.selectedId = "";
+    this.card = "";
     this.list = [];
     this.loading = true;
     this.listError = "";
@@ -445,7 +449,7 @@ export class IncConversations extends LitElement {
       ${this.lost ? html`<p class="lost" role="alert">${this.lost}</p>` : nothing}
       ${
         conv
-          ? html`<inc-conv-thread .conv=${conv} .employee=${employee} .phone=${phone} .contextOpen=${open}
+          ? html`<inc-conv-thread .conv=${conv} .employee=${employee} .phone=${phone} .contextOpen=${open} .card=${this.card}
               .first=${this.first?.id === conv.id ? this.first : undefined}
               @conv-first-sent=${() => {
                 this.first = undefined;

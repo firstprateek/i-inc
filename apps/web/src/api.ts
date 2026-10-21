@@ -124,6 +124,12 @@ export interface Conversation {
   modifiedAt: number;
 }
 
+/** What the owner is notified about beyond tickets (C2, T65). One setting for every device. */
+export interface NotifySettings {
+  conversationsNeedMe: boolean;
+  longReplyFinished: boolean;
+}
+
 export interface OfficeResponse {
   employees: DeskEntry[];
   accounts?: AccountCost[];
@@ -277,6 +283,11 @@ export const api = {
     ),
   createConversation: (c: { employeeId: string; project?: string | null; title?: string; mode?: string }) =>
     call<{ conversation: Conversation }>("POST", "/api/conversations", c).then((r) => r.conversation),
+  /** What to be notified about (C2): a conversation that needs the owner, a long reply that finished. */
+  notifySettings: () =>
+    call<{ settings: NotifySettings }>("GET", "/api/push/settings").then((r) => r.settings),
+  setNotifySettings: (patch: Partial<NotifySettings>) =>
+    call<{ settings: NotifySettings }>("PUT", "/api/push/settings", patch).then((r) => r.settings),
   patchConversation: (id: string, c: { title?: string; archived?: boolean }) =>
     call<{ conversation: Conversation }>("PATCH", `/api/conversations/${encodeURIComponent(id)}`, c).then(
       (r) => r.conversation,

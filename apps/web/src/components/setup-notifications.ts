@@ -1,5 +1,6 @@
 // Setup > Notifications: a clear on/off for push on this device, and why it can't be on when it can't.
 import { css, html, LitElement } from "lit";
+import { api, type NotifySettings } from "../api.ts";
 import { disablePush, enablePush, type PushState, pushState } from "../push.ts";
 import { message, type Note, noteLine, setupStyles } from "../setup-shared.ts";
 import { base } from "./shared.ts";
@@ -17,16 +18,26 @@ export class IncSetupNotifications extends LitElement {
     state: { state: true },
     busy: { state: true },
     note: { state: true },
+    kinds: { state: true },
+    kindBusy: { state: true },
+    kindNote: { state: true },
   };
   declare state: PushState | null;
   declare busy: boolean;
   declare note: Note | undefined;
+  /** What to be notified about (T65), or null until the daemon has said (or if it has no such setting). */
+  declare kinds: NotifySettings | null;
+  declare kindBusy: string;
+  declare kindNote: Note | undefined;
 
   constructor() {
     super();
     this.state = null;
     this.busy = false;
     this.note = undefined;
+    this.kinds = null;
+    this.kindBusy = "";
+    this.kindNote = undefined;
   }
 
   static override styles = [
@@ -44,8 +55,11 @@ export class IncSetupNotifications extends LitElement {
         background: var(--ink-2); transition: transform 0.15s; }
       .track[aria-checked="true"] { background: var(--ink); border-color: var(--ink); }
       .track[aria-checked="true"]::after { transform: translateX(28px); background: var(--on-ink); }
-      .track:disabled { opacity: 0.5; cursor: default; }
+      .track[aria-disabled="true"] { opacity: 0.5; cursor: default; }
       .track:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 2px; }
+      .kind { display: flex; flex-direction: column; gap: 4px; padding-top: 10px; }
+      .kind .sub { margin: 0; padding-left: 86px; }
+      @media (max-width: 480px) { .kind .sub { padding-left: 0; } }
       @media (prefers-reduced-motion: reduce) { .track::after { transition: none; } }
     `,
   ];
@@ -55,6 +69,40 @@ export class IncSetupNotifications extends LitElement {
     void pushState().then((s) => {
       this.state = s;
     });
+    void api
+      .notifySettings()
+      .then((k) => {
+        this.kinds = k;
+      })
+      .catch(() => {});
+  }
+
+  private async setKind(key: keyof NotifySettings) {
+    const kinds = this.kinds;
+    if (!kinds || this.kindBusy) return;
+    this.kindBusy = key;
+    this.kindNote = undefined;
+    try {
+      this.kinds = await api.setNotifySettings({ [key]: !kinds[key] });
+    } catch (e) {
+      this.kindNote = { ok: false, text: message(e) };
+    } finally {
+      this.kindBusy = "";
+    }
+  }
+
+  private kindRow(key: keyof NotifySettings, label: string, why: string) {
+    const kinds = this.kinds;
+    if (!kinds) return "";
+    const on = kinds[key];
+    return html`<div class="kind">
+      <div class="switch">
+        <button class="track" type="button" role="switch" aria-checked=${on ? "true" : "false"}
+          aria-labelledby="kind-${key}" aria-describedby="why-${key}" aria-disabled=${this.kindBusy !== "" ? "true" : "false"} @click=${() => this.setKind(key)}></button>
+        <span id="kind-${key}">${label}</span>
+      </div>
+      <p class="sub" id="why-${key}">${why}</p>
+    </div>`;
   }
 
   private async toggle() {
@@ -107,13 +155,32 @@ export class IncSetupNotifications extends LitElement {
           canToggle
             ? html`<div class="switch">
               <button class="track" type="button" role="switch" aria-checked=${state === "on" ? "true" : "false"}
-                aria-labelledby="switch-label" ?disabled=${this.busy} @click=${() => this.toggle()}></button>
+                aria-labelledby="switch-label" aria-disabled=${this.busy ? "true" : "false"} @click=${() => this.toggle()}></button>
               <span id="switch-label">${this.busy ? "Working…" : state === "on" ? "Notifications on" : "Notifications off"}</span>
             </div>`
             : this.explain(state)
         }
         ${noteLine(this.note)}
       </section>
+      ${
+        this.kinds
+          ? html`<section class="card" aria-label="What to be notified about">
+            <div class="head"><h3>What to be notified about</h3></div>
+            <p class="sub">Applies to every device that has notifications on. Tickets always notify; these are about conversations.</p>
+            ${this.kindRow(
+              "conversationsNeedMe",
+              "Conversations need me",
+              "When an employee in a conversation is waiting for your permission or an answer and you aren't looking at that conversation, send a notification that opens its card.",
+            )}
+            ${this.kindRow(
+              "longReplyFinished",
+              "A long reply finished",
+              "When a reply you asked for takes over a minute and finishes while you aren't looking at that conversation, send a notification.",
+            )}
+            ${noteLine(this.kindNote)}
+          </section>`
+          : ""
+      }
     </div>`;
   }
 }

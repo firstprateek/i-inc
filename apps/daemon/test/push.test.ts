@@ -2,11 +2,12 @@ import { createDecipheriv, createECDH, hkdfSync } from "node:crypto";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.ts";
 import {
   createVapidAuthHeader,
   encryptPayload,
+  generateVapidKeys,
   type NotificationPayload,
   vapidKeys,
   WebPushSender,
@@ -222,5 +223,31 @@ describe("WebPushSender", () => {
 
     // 500 is not removed from registry
     expect(registry.pushSubscriptions()).toHaveLength(2);
+  });
+
+  it("does not log a subscription's endpoint when delivery fails", async () => {
+    const db = await openDb(":memory:");
+    migrate(db);
+    const registry = new Registry(db);
+    registry.addPushSubscription({ endpoint: "https://push.example.com/secret-endpoint-token" });
+    registry.addPushSubscription({ endpoint: "https://push2.example.com/other-secret-token" });
+    const logged: string[] = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation((...a: unknown[]) => {
+      logged.push(a.map(String).join(" "));
+    });
+    try {
+      const sender = new WebPushSender(registry, {
+        vapid: generateVapidKeys(),
+        fetchImpl: (async (input: string | URL | Request) => {
+          if (String(input).includes("push2")) throw new Error(`failed for ${String(input)}`);
+          return new Response("no", { status: 500 });
+        }) as unknown as typeof fetch,
+      });
+      await sender.send({ title: "t", body: "b", url: "#/ticket/1" });
+    } finally {
+      warn.mockRestore();
+    }
+    expect(logged.length).toBeGreaterThan(0);
+    expect(logged.join("\n")).not.toMatch(/secret|push\.example/);
   });
 });

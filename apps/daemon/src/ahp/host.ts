@@ -145,6 +145,16 @@ export const attachmentLimits = {
   inlineChars: 4096,
 };
 
+/**
+ * "Is anyone looking at this conversation?" (T65). A client reports it with the `iinc/presence` notification
+ * while its page is visible and focused, and again every PRESENCE_HEARTBEAT_MS; a report older than
+ * PRESENCE_STALE_MS (a phone put in a pocket, a tab that was killed) no longer counts. Push notifications are
+ * not sent for a conversation someone is looking at. The only effect of a report is that suppression.
+ */
+export const PRESENCE_STALE_MS = 45_000;
+/** A repeat report of the same session sooner than this is ignored (the heartbeat is much slower). */
+export const PRESENCE_MIN_GAP_MS = 1000;
+
 export interface HostOptions {
   db: Db;
   backend: AgentBackend;
@@ -182,6 +192,11 @@ export class Conn {
   abuse = 0;
   /** Actions refused on this connection, ever. */
   rejects = 0;
+  /**
+   * The one session this client says it is looking at right now (its page visible and focused), and when
+   * it last said so. Only a client subscribed to the session can claim it; see `AhpHost.presence`.
+   */
+  presence: { session: string; at: number } | undefined;
   private windowStart = 0;
   private windowCount = 0;
   constructor(
@@ -279,6 +294,7 @@ export class AhpHost {
   private readonly chans = new Map<string, Channel>();
   private readonly chatSession = new Map<string, string>();
   private readonly conns = new Set<Conn>();
+  private readonly observers = new Set<(channel: string, action: StateAction) => void>();
   private nextConn = 1;
   private readonly runs = new Map<string, Run>();
   /** Per chat: the previous turn's backend call, so the next prompt waits for it to wind down. */
@@ -530,6 +546,33 @@ export class AhpHost {
   busy(): boolean {
     return this.runs.size > 0;
   }
+  /**
+   * Hears every action after it is persisted and sent (the conversation service owns `hooks.onApplied`;
+   * this is for anything else that reacts, such as push notifications). Returns the way to stop.
+   */
+  observe(fn: (channel: string, action: StateAction) => void): () => void {
+    this.observers.add(fn);
+    return () => this.observers.delete(fn);
+  }
+
+  /** Whether an authenticated client is looking at this session right now (see PRESENCE_STALE_MS). */
+  isWatched(session: string): boolean {
+    const now = this.now();
+    for (const c of this.conns) {
+      const p = c.presence;
+      if (!p || c.closed || !c.authed || !c.ready || p.session !== session) continue;
+      if (now - p.at > PRESENCE_STALE_MS) continue;
+      // Looking at a session it has since let go of is not looking.
+      if (!c.subs.has(session) && !this.sessionChats(session).some((chat) => c.subs.has(chat))) continue;
+      return true;
+    }
+    return false;
+  }
+
+  private sessionChats(session: string): string[] {
+    return (this.sessionState(session)?.chats ?? []).map((c) => c.resource);
+  }
+
   connectionCount(): number {
     return this.conns.size;
   }
@@ -605,6 +648,13 @@ export class AhpHost {
       this.hooks.onApplied?.(channel, action);
     } catch (e) {
       this.log(`ahp: onApplied failed for ${action.type}: ${e instanceof Error ? e.message : e}`);
+    }
+    for (const fn of [...this.observers]) {
+      try {
+        fn(channel, action);
+      } catch (e) {
+        this.log(`ahp: an observer failed for ${action.type}: ${e instanceof Error ? e.message : e}`);
+      }
     }
     if (
       ch.kind === "chat" &&
@@ -1039,11 +1089,43 @@ export class AhpHost {
         return this.resourceRead(p);
       case "completions":
         return this.completions(p);
+      case "iinc/presence":
+        return this.presence(conn, p);
       default:
         // Notifications we don't know are ignored; unknown requests are told so.
         if (!isRequest) return undefined;
         throw new RpcError(JsonRpcErrorCodes.MethodNotFound, `method not found: ${method}`);
     }
+  }
+
+  /**
+   * `iinc/presence` `{ visible: boolean, focused: boolean, channel: <a session or chat this client is
+   * subscribed to> }`: the client's page is visible and focused on that conversation (or is not any more).
+   * Read field by field, anything else ignored; one claim per connection, only for a channel the client
+   * holds; a repeat of the same claim within PRESENCE_MIN_GAP_MS is ignored; it expires on its own. Its one
+   * effect is to keep push notifications for that conversation quiet (conversation-push.ts).
+   */
+  private presence(conn: Conn, p: Json): null {
+    if (p.visible !== true || p.focused !== true) {
+      conn.presence = undefined;
+      return null;
+    }
+    const channel = typeof p.channel === "string" && p.channel.length <= 256 ? p.channel : "";
+    if (!conn.subs.has(channel)) {
+      conn.presence = undefined;
+      return null;
+    }
+    const kind = channelKind(channel);
+    const session =
+      kind === "session" ? channel : kind === "chat" ? this.chatSession.get(channel) : undefined;
+    if (!session) {
+      conn.presence = undefined;
+      return null;
+    }
+    const now = this.now();
+    if (conn.presence?.session === session && now - conn.presence.at < PRESENCE_MIN_GAP_MS) return null;
+    conn.presence = { session, at: now };
+    return null;
   }
 
   private authenticate(conn: Conn, p: Json): null {
