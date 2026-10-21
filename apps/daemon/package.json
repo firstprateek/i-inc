@@ -6,7 +6,8 @@
   "scripts": {
     "start": "bun src/main.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "bench": "bun bench/brain-bench.ts"
   },
   "dependencies": {
     "@i-inc/core": "workspace:*",

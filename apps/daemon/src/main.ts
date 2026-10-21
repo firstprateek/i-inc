@@ -31,6 +31,7 @@ const version = resolveVersion(process.env, import.meta.dir);
 const log = (m: string) => console.log(new Date().toISOString(), m);
 const common = {
   knowledgeDir: join(home, "knowledge"),
+  brainIndexPath: join(home, "brain-index.db"),
   clock: { now: () => Date.now() },
   // Real mode always needs the login token (config.ts), so the daemon can be served on the tailnet.
   ...(process.env.I_INC_TOKEN

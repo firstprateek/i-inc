@@ -15,7 +15,8 @@ export interface Db {
 /** Opens a database file (or ":memory:") with whichever SQLite the runtime has. */
 export async function openDb(path: string): Promise<Db> {
   const db = typeof Bun !== "undefined" ? await openBun(path) : await openNode(path);
-  db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+  // WAL, and a 5 s busy timeout so a second connection waits for a lock instead of failing at once.
+  db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;");
   return db;
 }
 

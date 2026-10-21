@@ -248,8 +248,9 @@ Once you've made the choices above, i.inc:
 3. creates the brain from a template;
 4. if the account is new, shows a sign-in link on your phone.
 
-The employee's first ticket is orientation. It reads the handbook and each project's `CLAUDE.md`,
-then writes project pages in its brain.
+The employee's first ticket is orientation. It reads each project's `CLAUDE.md` and then writes
+project pages in its brain. (The handbook is meant to be read here too, but it only reaches sessions
+once retrieval lands, T57.)
 
 ### Engines and switching: identity is memory
 
@@ -358,6 +359,10 @@ The brain follows the conventions of the owner's own LLM wiki:
 - It is written only at task boundaries, and only with facts that are durable, non-obvious and
   reusable.
 - It is committed after each edit.
+- Each page starts with frontmatter (`title`, `description`, `tags`, `updated`, `sources`), and links
+  other pages as `[[slug]]`. The map is generated from the descriptions, and a disposable SQLite index
+  (rebuilt from git) makes the pages searchable. `apps/daemon/scripts/brain-migrate.ts` moves older
+  pages to this format.
 - It is plain markdown, so any engine can load it through its global memory file
   (`~/.claude/CLAUDE.md`, `~/.gemini/GEMINI.md`, `AGENTS.md`).
 - It lives in git on the host (the Mac mini), outside the machine, so rebuilding the machine never
@@ -388,7 +393,12 @@ the daemon applies them, so a prompt-injected session can't quietly rewrite shar
 edit names a page as a known folder and a plain name (`tools/vitest`, `duet-money`); the daemon
 refuses anything else, so an edit can't reach outside its brain or the handbook. Each applied edit
 is one commit that records who proposed it and from which ticket, and applying it again changes
-nothing. Each machine sees the handbook read-only, plus its own brain.
+nothing.
+
+> **Not built yet:** the handbook and brains are stored, indexed (pages carry frontmatter, and a
+> search index and per-scope maps exist) and viewable, but no session reads them back. Retrieval into
+> briefs, and a read-only copy of the readable scopes inside each machine, is being built (T57). The
+> design is in [design/brain.md](design/brain.md).
 
 Your review feedback is the richest material for learning. A Reviewer learns what you care about
 from your Request changes notes, so over time it catches what you would have caught. You can read,

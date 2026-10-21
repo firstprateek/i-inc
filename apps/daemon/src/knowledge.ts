@@ -4,7 +4,17 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { type Employee, type Id, type ProposedEdit, pagePath, repoFor } from "@i-inc/core";
+import {
+  type Employee,
+  firstSentence,
+  type Id,
+  isoDate,
+  type ProposedEdit,
+  pagePath,
+  parsePage,
+  repoFor,
+  serializePage,
+} from "@i-inc/core";
 import type { Change, Page } from "./view-types.ts";
 
 export type { Change, Page };
@@ -20,7 +30,17 @@ export function pageTitle(path: string): string {
 const idPattern = /^[a-z0-9-]{1,32}$/;
 
 export class KnowledgeStore {
-  constructor(private readonly root: string) {}
+  /**
+   * Called after every commit to a repo, so the brain index can follow (brain-index.ts). `paths` are the
+   * files the commit touched when we know them; without them the listener asks git (`changedPaths`).
+   */
+  onCommit?: (repo: Repo, paths?: string[]) => void;
+
+  /** `now` stamps `updated` on pages (the daemon's clock; the system clock by default). */
+  constructor(
+    private readonly root: string,
+    private readonly now: () => number = Date.now,
+  ) {}
 
   private dir(repo: Repo): string {
     if (repo.kind === "handbook") return join(this.root, "handbook");
@@ -51,6 +71,7 @@ export class KnowledgeStore {
     }
     this.git(repo, "add", "-A");
     this.git(repo, "commit", "-q", "-m", subject);
+    this.onCommit?.(repo, Object.keys(files));
   }
 
   /** The company's shared brain: facts any employee adds, and policies you approve. */
@@ -104,6 +125,7 @@ export class KnowledgeStore {
     this.git(repo, "add", "personality.md");
     try {
       this.git(repo, "commit", "-q", "-m", `Update personality and role instructions for ${name}`);
+      this.onCommit?.(repo, ["personality.md"]);
     } catch {
       // No changes to commit
     }
@@ -129,14 +151,31 @@ export class KnowledgeStore {
     const isNew = !existsSync(file);
     mkdirSync(dirname(file), { recursive: true });
     const title = pageTitle(path);
-    const body = isNew ? `# ${title}\n\n${text}\n` : `${readFileSync(file, "utf8").trimEnd()}\n\n${text}\n`;
-    writeFileSync(file, body);
+    const slug = path.replace(/\.md$/, "");
+    const source = `ticket-${p.ticketId}`;
+    // Every applied edit stamps `updated` and records its ticket, adding frontmatter to an old page
+    // that never had any. The page's own text is only ever appended to.
+    const existing = isNew ? null : parsePage(readFileSync(file, "utf8"), slug);
+    const body = existing ? `${existing.body.trimEnd()}\n\n${text}\n` : `# ${title}\n\n${text}\n`;
+    const meta = existing?.meta ?? {
+      title,
+      description: firstSentence(text),
+      tags: slug.includes("/") ? [slug.slice(0, slug.indexOf("/"))] : [],
+      sources: [],
+    };
+    if (existing && !existing.hasFrontmatter)
+      meta.tags = slug.includes("/") ? [slug.slice(0, slug.indexOf("/"))] : [];
+    meta.updated = isoDate(this.now());
+    if (!meta.sources.includes(source)) meta.sources = [...meta.sources, source];
+    if (!meta.description) meta.description = firstSentence(body);
+    writeFileSync(file, serializePage({ meta, body }));
     if (isNew) this.list(repo, path, title);
 
     this.git(repo, "add", "-A");
     const subject = `${isNew ? "Add" : "Update"} ${path}`;
     const trailers = [`Author: ${p.author}`, `Ticket: ${p.ticketId}`, `Edit-Id: ${p.id}`].join("\n");
     this.git(repo, "commit", "-q", "-m", subject, "-m", trailers);
+    this.onCommit?.(repo, [path, "INDEX.md"]);
     return true;
   }
 
@@ -214,11 +253,141 @@ export class KnowledgeStore {
     if (change.reverted) return;
     if (!change.author) throw new Error("only learned edits can be reverted");
     this.git(repo, "revert", "--no-edit", commit);
+    this.onCommit?.(repo);
   }
 
   /** Every brain on the host. */
   brains(): Id[] {
     const dir = join(this.root, "brains");
     return existsSync(dir) ? readdirSync(dir).filter((d) => idPattern.test(d)) : [];
+  }
+
+  /** Every repo on the host: the handbook, then each brain. */
+  repos(): Repo[] {
+    return [
+      ...(this.exists({ kind: "handbook" }) ? [{ kind: "handbook" } as Repo] : []),
+      ...this.brains().map((id): Repo => ({ kind: "brain", id })),
+    ];
+  }
+
+  private gitBuffer(repo: Repo, args: string[], input?: string): Buffer {
+    return execFileSync("git", ["-c", "core.quotepath=off", ...args], {
+      cwd: this.dir(repo),
+      stdio: ["pipe", "pipe", "pipe"],
+      maxBuffer: 1 << 30,
+      ...(input !== undefined ? { input } : {}),
+    });
+  }
+
+  /** The committed files at HEAD as path → blob id. Empty for a repo without commits. */
+  tree(repo: Repo): Map<string, string> {
+    const out = new Map<string, string>();
+    if (!this.exists(repo)) return out;
+    let raw: string;
+    try {
+      raw = this.gitBuffer(repo, ["ls-tree", "-r", "-z", "HEAD"]).toString("utf8");
+    } catch {
+      return out; // no commits yet
+    }
+    for (const rec of raw.split("\0")) {
+      const m = rec.match(/^\d+ blob ([0-9a-f]{40})\t(.+)$/);
+      if (m) out.set(m[2] ?? "", m[1] ?? "");
+    }
+    return out;
+  }
+
+  /** The text of committed blobs, by blob id, in one git process. */
+  blobs(repo: Repo, ids: string[]): Map<string, string> {
+    const out = new Map<string, string>();
+    if (!ids.length) return out;
+    const buf = this.gitBuffer(repo, ["cat-file", "--batch"], `${ids.join("\n")}\n`);
+    let at = 0;
+    while (at < buf.length) {
+      const eol = buf.indexOf(10, at);
+      if (eol === -1) break;
+      const [id = "", type = "", size = "0"] = buf.toString("utf8", at, eol).split(" ");
+      if (type !== "blob") {
+        at = eol + 1;
+        continue;
+      }
+      const n = Number(size);
+      out.set(id, buf.toString("utf8", eol + 1, eol + 1 + n));
+      at = eol + 1 + n + 1;
+    }
+    return out;
+  }
+
+  /** The store's clock, in ms. */
+  clock(): number {
+    return this.now();
+  }
+
+  /** When HEAD was committed (ms); 0 for a repo with no commits. */
+  headTime(repo: Repo): number {
+    const t = this.gitBuffer(repo, ["log", "-1", "--format=%ct"]).toString().trim();
+    return t ? Number(t) * 1000 : 0;
+  }
+
+  /** The files the latest commit touched (added, changed or deleted). */
+  changedPaths(repo: Repo): string[] {
+    const raw = this.gitBuffer(repo, [
+      "diff-tree",
+      "--root",
+      "--no-commit-id",
+      "--name-only",
+      "-r",
+      "-z",
+      "HEAD",
+    ]).toString("utf8");
+    return raw.split("\0").filter(Boolean);
+  }
+
+  /** The committed text of these files at HEAD, with their blob ids; null for a file that isn't there. */
+  readAtHead(repo: Repo, paths: string[]): Map<string, { sha: string; text: string } | null> {
+    const out = new Map<string, { sha: string; text: string } | null>();
+    if (!paths.length) return out;
+    const buf = this.gitBuffer(
+      repo,
+      ["cat-file", "--batch"],
+      `${paths.map((p) => `HEAD:${p}`).join("\n")}\n`,
+    );
+    let at = 0;
+    for (const path of paths) {
+      const eol = buf.indexOf(10, at);
+      if (eol === -1) break;
+      const [sha = "", type = "", size = "0"] = buf.toString("utf8", at, eol).split(" ");
+      if (type !== "blob") {
+        out.set(path, null);
+        at = eol + 1;
+        continue;
+      }
+      const n = Number(size);
+      out.set(path, { sha, text: buf.toString("utf8", eol + 1, eol + 1 + n) });
+      at = eol + 1 + n + 1;
+    }
+    return out;
+  }
+
+  /** When each given file was last committed (ms). One `git log` per file, or one walk for many. */
+  modified(repo: Repo, paths: string[]): Map<string, number> {
+    const out = new Map<string, number>();
+    if (!paths.length || !this.exists(repo)) return out;
+    if (paths.length <= 3) {
+      for (const path of paths) {
+        const t = this.gitBuffer(repo, ["log", "-1", "--format=%ct", "--", path]).toString().trim();
+        if (t) out.set(path, Number(t) * 1000);
+      }
+      return out;
+    }
+    const want = new Set(paths);
+    let when = 0;
+    const log = this.gitBuffer(repo, ["log", "--format=%x00%ct", "--name-only", "--no-renames"]).toString(
+      "utf8",
+    );
+    for (const row of log.split("\n")) {
+      if (row.startsWith("\0")) when = Number(row.slice(1)) * 1000;
+      else if (want.has(row) && !out.has(row)) out.set(row, when);
+    }
+    return out;
   }
 }

@@ -34,6 +34,7 @@ import {
   type Workspace,
 } from "@i-inc/core";
 import type { ConversationService } from "./ahp/conversations.ts";
+import type { BrainIndex } from "./brain-index.ts";
 import type { ChatLog } from "./chat.ts";
 import type { Db } from "./db.ts";
 import type { TokenSource } from "./github.ts";
@@ -67,6 +68,8 @@ export interface DaemonDeps {
   chat: ChatSession;
   chatLog: ChatLog;
   knowledge: KnowledgeStore;
+  /** The disposable search index over the brains and the handbook. */
+  brain: BrainIndex;
   db: Db;
   push?: PushService;
   live?: LiveEvents;
