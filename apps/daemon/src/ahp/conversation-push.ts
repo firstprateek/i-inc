@@ -65,6 +65,8 @@ interface Pending {
   /** The session's `inputNeeded` id. */
   key: string;
   session: string;
+  /** The chat it lives in (a turn ending in another chat does not end it). */
+  chat: string;
   conversation: Conversation;
   /** The id the link carries: a tool call's id or a question request's id. */
   card: string;
@@ -82,7 +84,10 @@ const str = (v: unknown): string => (typeof v === "string" ? v : "");
 const text = (v: unknown): string =>
   typeof v === "string" ? v : v && typeof v === "object" ? str((v as Json).markdown) : "";
 
-/** One short line, no markup, no secrets, and no working-copy path. */
+/**
+ * One short line of text a model wrote (a question, a conversation's title): no markup, no secrets, no
+ * working-copy path. Only for prose: never for a command or a path, whose characters mean something.
+ */
 export function oneLine(raw: string, max = BODY_MAX): string {
   let t = raw
     // a working copy's path is noise on a phone: show the path inside the project
@@ -95,27 +100,107 @@ export function oneLine(raw: string, max = BODY_MAX): string {
   return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t;
 }
 
+/** Subcommand words that are never a secret: what a command does, not what it is given. */
+const SAFE_WORDS = new Set(
+  (
+    "add audit build bundle cat check checkout ci clean commit compile config create deploy dev diff dlx doctor " +
+    "exec fetch fix format generate get help info init install lint list log ls merge migrate outdated pack " +
+    "pull push rebase release remove reset restart run serve show start status stop switch tag test " +
+    "typecheck uninstall update upgrade version view watch"
+  ).split(" "),
+);
+/** An executable's name: letters, digits and a few joiners. */
+const EXECUTABLE = /^[A-Za-z][A-Za-z0-9._+-]{0,30}$/;
+
 /**
- * What a request wants, for the notification body: "Run: pnpm test", "Edit src/app.ts", or the question
- * asked. It uses only the call's own short title; never its input, its diff or any file contents.
+ * What a command is, for a lock screen: the program and at most two well-known subcommand words, and an
+ * ellipsis when there was more. `pnpm test` is "Run: pnpm test"; `mysql -pSecret` is "Run: mysql …". Its
+ * arguments are never shown, because a password or a token may be one; when unsure, "Run a command".
+ */
+export function commandLabel(command: string): string {
+  const tokens = command
+    .replace(/^[\s`'"]+|[\s`'"]+$/g, "")
+    .split(/\s+/)
+    .filter(Boolean);
+  let i = 0;
+  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i] ?? "")) i++; // VAR=value prefixes
+  const program = (tokens[i] ?? "").replace(/^.*\//, "");
+  if (!EXECUTABLE.test(program)) return "Run a command";
+  const words: string[] = [];
+  let j = i + 1;
+  while (j < tokens.length && words.length < 2 && SAFE_WORDS.has(tokens[j] ?? ""))
+    words.push(tokens[j++] as string);
+  return `Run: ${[program, ...words].join(" ")}${j < tokens.length ? " …" : ""}`;
+}
+
+const VERBS: Record<string, string> = {
+  edit: "Edit",
+  write: "Write",
+  read: "Read",
+  delete: "Delete",
+  create: "Create",
+  move: "Move",
+  rename: "Rename",
+  fetch: "Fetch",
+  search: "Search",
+};
+
+/** A file path the way a phone should show it: inside the project, plain characters only, short. */
+function pathLabel(raw: string): string | undefined {
+  const token = (raw.trim().split(/\s+/)[0] ?? "")
+    .replace(/^\*\*(.+)\*\*$/, "$1")
+    .replace(/^[`'"]+|[`'",.:;]+$/g, "")
+    .replace(/^\/home\/employee\/work\/conv-[0-9a-f]{8}\//, "");
+  if (!/^[\w@.+/~-]{1,200}$/.test(token)) return undefined;
+  const t = redactText(token);
+  return t.length > 80 ? `…${t.slice(-79)}` : t;
+}
+
+/**
+ * What a request wants, for the notification body, and nothing more: "Run: pnpm test", "Edit: src/app.ts",
+ * "Fetch: github.com", "Run a command". It is built from the tool's kind and the first word, path or host
+ * of its own title; a command's arguments, a tool's input, a diff and file contents are never in it. A
+ * question the agent asks is model text: markup out, redacted, and cut short.
  */
 export function describeRequest(request: Json): string {
   if (request.kind === SessionInputRequestKind.ToolConfirmation) {
     const call = (request.toolCall ?? {}) as Json;
-    const title = oneLine(
-      text(call.confirmationTitle) || text(call.invocationMessage) || str(call.displayName),
-      400,
-    );
-    if (!title) return "Wants to use a tool";
-    // the agent's kind of tool: a command is shown as "Run: <command>"
-    const run = /^(?:run|bash|execute)\b\s*:?\s*(.*)$/i.exec(title);
-    if (run) return oneLine(`Run: ${run[1] ?? ""}`);
-    return oneLine(call.toolName === "execute" ? `Run: ${title}` : title);
+    const title = (
+      text(call.confirmationTitle) ||
+      text(call.invocationMessage) ||
+      str(call.displayName)
+    ).trim();
+    const kind = str(call.toolName).toLowerCase();
+    const lead = /^(\w+)\b\s*:?\s*([\s\S]*)$/.exec(title.replace(/^[`*_\s]+/, ""));
+    const word = (lead?.[1] ?? "").toLowerCase();
+    if (kind === "execute" || word === "run" || word === "bash" || word === "execute") {
+      const isVerb = word === "run" || word === "bash" || word === "execute";
+      return commandLabel(isVerb ? (lead?.[2] ?? "") : title);
+    }
+    const verb = VERBS[word] ?? VERBS[kind];
+    if (!verb) return "Wants to use a tool";
+    const rest = VERBS[word] ? (lead?.[2] ?? "") : title;
+    if (verb === "Search") return "Search the project";
+    if (verb === "Fetch") {
+      try {
+        const host = new URL(
+          rest
+            .trim()
+            .split(/\s+/)[0]
+            ?.replace(/^[`'"<]+|[`'">]+$/g, "") ?? "",
+        ).hostname;
+        return /^[\w.-]{1,100}$/.test(host) ? `Fetch: ${host}` : "Fetch a page";
+      } catch {
+        return "Fetch a page";
+      }
+    }
+    const target = pathLabel(rest);
+    return target ? `${verb}: ${target}` : `${verb} a file`;
   }
   const req = (request.request ?? {}) as Json;
   const first = Array.isArray(req.questions) ? ((req.questions[0] ?? {}) as Json) : {};
-  const ask = oneLine(str(req.message) || str(first.message) || str(first.title), 400);
-  return ask ? oneLine(`Asks: ${ask}`) : "Has a question for you";
+  const ask = oneLine(str(req.message) || str(first.message) || str(first.title), 80);
+  return ask ? `Asks: ${ask}` : "Has a question for you";
 }
 
 export class ConversationPush {
@@ -137,13 +222,67 @@ export class ConversationPush {
     this.longTurnMs = o.longTurnMs ?? 60_000;
     this.maxWaitMs = o.maxWaitMs ?? 86_400_000;
     this.schedule = o.schedule ?? defaultSchedule;
-    this.stop = o.host.observe((channel, action) => this.onAction(channel, action));
+    o.db.exec(`
+      CREATE TABLE IF NOT EXISTS conv_push_open (
+        key TEXT PRIMARY KEY,
+        conversation TEXT NOT NULL,
+        at INTEGER NOT NULL
+      );
+    `);
     this.prune();
+    this.adopt();
+    this.stop = o.host.observe((channel, action) => this.onAction(channel, action));
+    this.pruneTimer = setInterval(() => this.prune(), 3_600_000);
+    this.pruneTimer.unref?.();
+  }
+  private pruneTimer: ReturnType<typeof setInterval> | undefined;
+
+  /**
+   * After a restart, what the last run left: requests still waiting are looked at again (one that was pushed
+   * stays pushed and will be closed when answered; one still in its grace is pushed once, now), and a
+   * notification still on the phone for a request that is gone (answered or ended while the daemon was down)
+   * is closed.
+   */
+  private adopt(): void {
+    for (const session of this.o.host.sessions()) {
+      const needed = (this.o.host.sessionState(session) as SessionState | undefined)?.inputNeeded ?? [];
+      for (const request of needed) this.track(session, request as unknown as Json);
+    }
+    const rows = this.o.db.all<{ key: string; conversation: string }>(
+      "SELECT key, conversation FROM conv_push_open",
+    );
+    const orphaned = new Set<string>();
+    for (const r of rows) {
+      if (this.pending.has(r.key)) continue;
+      this.o.db.run("DELETE FROM conv_push_open WHERE key = ?", r.key);
+      orphaned.add(r.conversation);
+    }
+    for (const id of orphaned) {
+      const c = this.o.conversations.get(id);
+      if (c && !this.stillShowing(id)) this.resolve(c);
+    }
   }
 
-  /** Stops listening and drops every wait. */
+  /** Whether a request of this conversation has a notification up. */
+  private stillShowing(conversation: string): boolean {
+    for (const p of this.pending.values()) if (p.sent && p.conversation.id === conversation) return true;
+    return false;
+  }
+
+  /** The owner turned "Conversations need me" off: requests still in their grace are dropped. */
+  settingsChanged(): void {
+    if (notifySettings(this.o.registry.settings().notify).conversationsNeedMe) return;
+    for (const [key, p] of [...this.pending]) {
+      if (p.sent) continue;
+      p.cancel?.();
+      this.pending.delete(key);
+    }
+  }
+
+  /** Stops listening and drops every wait (the daemon is stopping: nothing it does now should reach a phone). */
   close(): void {
     this.stop();
+    clearInterval(this.pruneTimer);
     for (const p of this.pending.values()) p.cancel?.();
     this.pending.clear();
     this.turnStart.clear();
@@ -156,11 +295,10 @@ export class ConversationPush {
 
   /** The dedupe keys of old pushes are not needed for long. */
   private prune(): void {
+    const cutoff = this.o.now() - 7 * 86_400_000;
     try {
-      this.o.db.run(
-        "DELETE FROM push_sent WHERE key LIKE 'convpush:%' AND at < ?",
-        this.o.now() - 7 * 86_400_000,
-      );
+      this.o.db.run("DELETE FROM push_sent WHERE key LIKE 'convpush:%' AND at < ?", cutoff);
+      this.o.db.run("DELETE FROM conv_push_open WHERE at < ?", cutoff);
     } catch {
       // the table is the ticket pushes'; if it isn't there yet there is nothing to prune
     }
@@ -175,7 +313,7 @@ export class ConversationPush {
         this.untrack(channel, action.id);
         return;
       case ActionType.SessionIsArchivedChanged:
-        if (action.isArchived) this.endAll(channel);
+        if (action.isArchived) this.endAll((p) => p.session === channel);
         return;
       case ActionType.ChatTurnStarted:
         this.turnStart.set(channel, this.o.now());
@@ -202,19 +340,23 @@ export class ConversationPush {
     const card = tool ? str(call.toolCallId) : str(q.id);
     const conversation = this.o.conversations.bySession(session);
     if (!card || !conversation || conversation.archivedAt !== null) return;
+    const pushed =
+      this.o.db.all<{ key: string }>("SELECT key FROM conv_push_open WHERE key = ?", key).length > 0;
     const p: Pending = {
       key,
       session,
+      chat: str(request.chat),
       conversation,
       card,
       turnId: tool ? str(request.turnId) || undefined : undefined,
       label: describeRequest(request),
       since: this.o.now(),
       cancel: undefined,
-      sent: false,
+      // pushed by an earlier run of the daemon and not answered since: its notification is up already
+      sent: pushed,
     };
     this.pending.set(key, p);
-    p.cancel = this.schedule(() => this.fire(p), this.graceMs);
+    if (!pushed) p.cancel = this.schedule(() => this.fire(p), this.graceMs);
   }
 
   /** The grace is over (or a look at the conversation is). Push, wait some more, or let it go. */
@@ -242,6 +384,12 @@ export class ConversationPush {
     );
     if ((res?.changes ?? 0) === 0) return; // pushed before (the daemon restarted with it still waiting)
     p.sent = true;
+    this.o.db.run(
+      "INSERT OR REPLACE INTO conv_push_open (key, conversation, at) VALUES (?, ?, ?)",
+      p.key,
+      p.conversation.id,
+      this.o.now(),
+    );
     this.send(p.conversation, {
       title: `${this.who(p.conversation)} needs you`,
       body: p.label,
@@ -259,6 +407,7 @@ export class ConversationPush {
     p.cancel?.();
     p.cancel = undefined;
     if (!p.sent) return;
+    this.o.db.run("DELETE FROM conv_push_open WHERE key = ?", p.key);
     // Another request of the same conversation is still showing: its notification stays.
     for (const other of this.pending.values()) {
       if (other.sent && other.conversation.id === p.conversation.id) return;
@@ -266,8 +415,8 @@ export class ConversationPush {
     this.resolve(p.conversation);
   }
 
-  private endAll(session: string): void {
-    for (const [key, p] of [...this.pending]) if (p.session === session) this.untrack(session, key);
+  private endAll(which: (p: Pending) => boolean): void {
+    for (const [key, p] of [...this.pending]) if (which(p)) this.untrack(p.session, key);
   }
 
   private turnEnded(chat: string, how: "complete" | "other"): void {
@@ -275,7 +424,7 @@ export class ConversationPush {
     this.turnStart.delete(chat);
     const session = this.o.host.sessionOfChat(chat);
     if (!session) return;
-    this.endAll(session);
+    this.endAll((p) => p.chat === chat);
     if (how !== "complete" || startedAt === undefined) return;
     if (this.o.now() - startedAt < this.longTurnMs) return;
     if (!notifySettings(this.o.registry.settings().notify).longReplyFinished) return;

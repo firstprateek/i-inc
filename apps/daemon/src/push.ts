@@ -68,6 +68,16 @@ export interface PushService {
   unsubscribe(endpoint: string): Promise<void>;
 }
 
+/** Whether a subscription is on Apple's push service (iPhone, iPad and Safari), by the host of its endpoint. */
+export function isApplePush(endpoint: string): boolean {
+  try {
+    const host = new URL(endpoint).hostname;
+    return host === "web.push.apple.com" || host.endsWith(".push.apple.com");
+  } catch {
+    return false;
+  }
+}
+
 /** Generates a fresh P-256 VAPID keypair in memory. */
 export function generateVapidKeys(): VapidKeys {
   const { privateKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
@@ -209,7 +219,12 @@ export class WebPushSender implements PushService {
   }
 
   async send(notification: NotificationPayload): Promise<void> {
-    const subs = this.registry.pushSubscriptions();
+    // A "resolve" push closes a notification and shows nothing, which Apple's push service does not
+    // allow (it revokes a subscription whose pushes show nothing): those devices are not sent one, and
+    // the app closes the notification itself when it is opened.
+    const subs = this.registry
+      .pushSubscriptions()
+      .filter((sub) => !(notification.resolve && isApplePush(sub.endpoint)));
     await Promise.allSettled(subs.map((sub) => this.sendToSubscription(sub, notification)));
   }
 
@@ -218,7 +233,9 @@ export class WebPushSender implements PushService {
     let body: string | Uint8Array;
     let headers: Record<string, string> = {
       authorization: authHeader,
-      ttl: "86400",
+      // A closing push is worth nothing a minute later; a notification is kept a day for a phone that is off.
+      ttl: notification.resolve ? "60" : "86400",
+      ...(notification.resolve ? { urgency: "low" } : {}),
     };
 
     if (sub.keys?.p256dh && sub.keys?.auth) {
@@ -242,10 +259,10 @@ export class WebPushSender implements PushService {
       if (res.status === 404 || res.status === 410) {
         this.registry.removePushSubscription(sub.endpoint);
       } else if (!res.ok) {
-        console.warn(`[push] delivery failed (${res.status}) for ${sub.endpoint}`);
+        console.warn(`[push] delivery failed (${res.status})`);
       }
     } catch (err) {
-      console.warn(`[push] delivery error for ${sub.endpoint}:`, err);
+      console.warn("[push] delivery error:", err instanceof Error ? err.name : "unknown");
     }
   }
 }

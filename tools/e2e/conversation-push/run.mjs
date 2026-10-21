@@ -173,7 +173,7 @@ try {
   const close1 = await startTurn(conv, "please edit the constant", "turn-1");
   const first = await until(async () => (await pushes()).find((p) => !p.resolve), 15_000, "the push");
   ok(first.title === "Ada needs you", `title is "${first.title}"`);
-  ok(first.body === "Edit src/app.ts", `body is "${first.body}"`);
+  ok(first.body === "Edit: src/app.ts", `body is "${first.body}"`);
   ok(first.tag === `conv-${conv.id}`, "one tag per conversation");
   ok(first.url === `#/conversations/${conv.id}?card=tc-edit`, `link carries only ids: ${first.url}`);
   ok(!JSON.stringify(first).includes("answer = 4"), "no file contents in the push");

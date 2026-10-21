@@ -2,11 +2,13 @@ import { createDecipheriv, createECDH, hkdfSync } from "node:crypto";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.ts";
 import {
   createVapidAuthHeader,
   encryptPayload,
+  generateVapidKeys,
+  isApplePush,
   type NotificationPayload,
   vapidKeys,
   WebPushSender,
@@ -222,5 +224,62 @@ describe("WebPushSender", () => {
 
     // 500 is not removed from registry
     expect(registry.pushSubscriptions()).toHaveLength(2);
+  });
+
+  it("never sends a resolve push to Apple's push service, and gives one to the others a 60 s lifetime", async () => {
+    const db = await openDb(":memory:");
+    migrate(db);
+    const registry = new Registry(db);
+    registry.addPushSubscription({ endpoint: "https://web.push.apple.com/QAbc" });
+    registry.addPushSubscription({ endpoint: "https://fcm.googleapis.com/fcm/send/xyz" });
+    const calls: { url: string; ttl: string | undefined }[] = [];
+    const sender = new WebPushSender(registry, {
+      vapid: generateVapidKeys(),
+      fetchImpl: (async (input: string | URL | Request, init?: RequestInit) => {
+        calls.push({ url: String(input), ttl: (init?.headers as Record<string, string> | undefined)?.ttl });
+        return new Response("OK", { status: 201 });
+      }) as unknown as typeof fetch,
+    });
+    await sender.send({
+      title: "t",
+      body: "Answered",
+      url: "#/conversations/ab12cd34",
+      tag: "conv-ab12cd34",
+      resolve: true,
+    });
+    expect(calls).toEqual([{ url: "https://fcm.googleapis.com/fcm/send/xyz", ttl: "60" }]);
+    calls.length = 0;
+    await sender.send({ title: "t", body: "b", url: "#/conversations/ab12cd34", tag: "conv-ab12cd34" });
+    expect(calls.map((c) => c.ttl)).toEqual(["86400", "86400"]);
+    expect(isApplePush("https://web.push.apple.com/x")).toBe(true);
+    expect(isApplePush("https://api.push.apple.com/3/device/x")).toBe(true);
+    expect(isApplePush("https://push.apple.com.evil.example/x")).toBe(false);
+    expect(isApplePush("nonsense")).toBe(false);
+  });
+
+  it("does not log a subscription's endpoint when delivery fails", async () => {
+    const db = await openDb(":memory:");
+    migrate(db);
+    const registry = new Registry(db);
+    registry.addPushSubscription({ endpoint: "https://push.example.com/secret-endpoint-token" });
+    registry.addPushSubscription({ endpoint: "https://push2.example.com/other-secret-token" });
+    const logged: string[] = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation((...a: unknown[]) => {
+      logged.push(a.map(String).join(" "));
+    });
+    try {
+      const sender = new WebPushSender(registry, {
+        vapid: generateVapidKeys(),
+        fetchImpl: (async (input: string | URL | Request) => {
+          if (String(input).includes("push2")) throw new Error(`failed for ${String(input)}`);
+          return new Response("no", { status: 500 });
+        }) as unknown as typeof fetch,
+      });
+      await sender.send({ title: "t", body: "b", url: "#/ticket/1" });
+    } finally {
+      warn.mockRestore();
+    }
+    expect(logged.length).toBeGreaterThan(0);
+    expect(logged.join("\n")).not.toMatch(/secret|push\.example/);
   });
 });

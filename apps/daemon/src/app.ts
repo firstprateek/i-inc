@@ -167,6 +167,12 @@ export async function createApp(o: AppOptions) {
     ...(o.log ? { log: o.log } : {}),
     ...o.ahpPush,
   });
+  // Turning "Conversations need me" off drops the requests still in their grace.
+  const settingsWatcher = registry.onChange;
+  registry.onChange = (kind) => {
+    settingsWatcher?.(kind);
+    if (kind === "settings") conversationPush.settingsChanged();
+  };
   const transport = new AhpTransport(host, {
     ...(token ? { token } : {}),
     ...(o.hosts ? { hosts: o.hosts } : {}),

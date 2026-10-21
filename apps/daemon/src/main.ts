@@ -204,6 +204,8 @@ async function shutdown(signal: string): Promise<void> {
     process.exit(1);
   }, 12_000);
   try {
+    // First: stopping the agents ends their turns, and nothing that does must reach a phone.
+    app.ahp.push.close();
     server.stop();
     app.ahp.transport.stop();
     const agent = app.deps.agent as { shutdown?: (graceMs?: number) => Promise<void> };

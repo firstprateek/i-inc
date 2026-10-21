@@ -6,7 +6,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeAgent, FakeChat, FakeHarness, FakeHelper, FakeMachines } from "@i-inc/core/testing";
 import { describe, expect, it } from "vitest";
-import { BODY_MAX, describeRequest, oneLine, tagOf } from "../../src/ahp/conversation-push.ts";
+import {
+  BODY_MAX,
+  ConversationPush,
+  commandLabel,
+  describeRequest,
+  oneLine,
+  tagOf,
+} from "../../src/ahp/conversation-push.ts";
 import { agentsFromRegistry } from "../../src/ahp/conversations.ts";
 import { PRESENCE_STALE_MS } from "../../src/ahp/host.ts";
 import { SessionHost } from "../../src/ahp/session-host.ts";
@@ -72,12 +79,20 @@ const confirm = (turnId: string, toolCallId: string, approved: boolean) =>
         selectedOptionId: "reject-once",
       };
 
-async function rig(o: { backend?: "scripted" | "fake-acp" } = {}) {
-  const timers = new Timers();
+async function rig(
+  o: {
+    backend?: "scripted" | "fake-acp";
+    dbPath?: string;
+    timers?: Timers;
+    chats?: boolean;
+    fresh?: boolean;
+  } = {},
+) {
+  const timers = o.timers ?? new Timers();
   const scripted = new ScriptedBackend();
   const sandbox = new FakeSandbox();
   const app = await createApp({
-    dbPath: ":memory:",
+    dbPath: o.dbPath ?? ":memory:",
     knowledgeDir: mkdtempSync(join(tmpdir(), "i-inc-push-")),
     configDir: join(mkdtempSync(join(tmpdir(), "i-inc-push-cfg-")), "config"),
     clock: { now: () => timers.now },
@@ -107,14 +122,21 @@ async function rig(o: { backend?: "scripted" | "fake-acp" } = {}) {
             })
         : scripted,
   });
-  seedDemo(app.deps.registry);
-  app.daemon.ensureKnowledge();
+  if (app.deps.registry.employees().length === 0) {
+    seedDemo(app.deps.registry);
+    app.daemon.ensureKnowledge();
+  }
   scripted.providers = () => app.deps.registry.engines().map((e) => e.id);
+  scripted.multipleChats = o.chats === true;
   const fake = app.deps.push as FakePushService;
-  const conv = await app.ahp.conversations.create({
-    employeeId: "ada",
-    ...(o.backend === "fake-acp" ? { mode: "default" } : {}),
-  });
+  // a restarted daemon finds the conversation it had
+  const conv =
+    o.fresh === false
+      ? (app.ahp.conversations.list()[0] as NonNullable<ReturnType<typeof app.ahp.conversations.get>>)
+      : await app.ahp.conversations.create({
+          employeeId: "ada",
+          ...(o.backend === "fake-acp" ? { mode: "default" } : {}),
+        });
   const host = app.ahp.host;
   const client = async (id?: string, subscribe = true): Promise<TestClient> => {
     const c = new TestClient(host, id);
@@ -160,7 +182,7 @@ describe("a request that appears", () => {
     expect(r.fake.sent).toEqual([
       {
         title: "Ada needs you",
-        body: "Run: rm -rf build",
+        body: "Run: rm …",
         url: `#/conversations/${r.conv.id}?card=tc1`,
         tag: tagOf(r.conv),
       },
@@ -319,63 +341,212 @@ describe("what a push says", () => {
     await until(() => waiting(r) === 1);
     await r.advance(21_000);
     const body = r.fake.sent[0]?.body ?? "";
-    expect(body.startsWith("Run: curl")).toBe(true);
+    expect(body).toBe("Run: curl …");
     expect(body.length).toBeLessThanOrEqual(BODY_MAX);
     expect(body).not.toContain("sk-abcdefghijklmnopqrstuvwx");
     expect(JSON.stringify(r.fake.sent)).not.toMatch(/TOP-SECRET|SECRET DIFF|cat \.env/);
   });
 });
 
-describe("describeRequest and oneLine", () => {
+describe("describeRequest, commandLabel and oneLine", () => {
   const tool = (call: Record<string, unknown>) => ({
     kind: "toolConfirmation",
     id: "x",
     chat: "c",
     toolCall: call,
   });
-  it("names the action in a few words", () => {
-    expect(describeRequest(tool({ toolName: "execute", confirmationTitle: "pnpm test" }))).toBe(
-      "Run: pnpm test",
+  const label = (call: Record<string, unknown>) => describeRequest(tool(call));
+
+  it("shows a command as its program and at most two well-known subcommands, never its arguments", () => {
+    expect(label({ toolName: "execute", confirmationTitle: "pnpm test" })).toBe("Run: pnpm test");
+    expect(label({ toolName: "execute", confirmationTitle: "Run `pnpm test`" })).toBe("Run: pnpm test");
+    expect(label({ toolName: "execute", confirmationTitle: "git commit -m 'fix it'" })).toBe(
+      "Run: git commit …",
     );
-    expect(describeRequest(tool({ toolName: "execute", confirmationTitle: "Run `pnpm test`" }))).toBe(
-      "Run: pnpm test",
+    expect(label({ toolName: "execute", confirmationTitle: "pnpm test --filter web" })).toBe(
+      "Run: pnpm test …",
     );
-    expect(
-      describeRequest(
-        tool({ toolName: "edit", confirmationTitle: "Edit /home/employee/work/conv-0123abcd/src/app.ts" }),
-      ),
-    ).toBe("Edit src/app.ts");
-    expect(
-      describeRequest(tool({ toolName: "edit", confirmationTitle: { markdown: "Write **src/a.ts**" } })),
-    ).toBe("Write src/a.ts");
-    expect(describeRequest(tool({}))).toBe("Wants to use a tool");
-    expect(
-      describeRequest({
-        kind: "chatInput",
-        id: "i",
-        chat: "c",
-        request: { id: "q1", message: "Which branch should I use?" },
-      }),
-    ).toBe("Asks: Which branch should I use?");
-    expect(
-      describeRequest({
-        kind: "chatInput",
-        id: "i",
-        chat: "c",
-        request: { id: "q1", questions: [{ id: "a", message: "Tabs or spaces?" }] },
-      }),
-    ).toBe("Asks: Tabs or spaces?");
-    expect(describeRequest({ kind: "chatInput", id: "i", chat: "c", request: { id: "q1" } })).toBe(
-      "Has a question for you",
+    // a secret in an argument never reaches the lock screen
+    expect(label({ toolName: "execute", confirmationTitle: "mysql -pTr0ub4dor3xyz -u root" })).toBe(
+      "Run: mysql …",
     );
+    expect(label({ toolName: "execute", confirmationTitle: "mysql Tr0ub4dor3xyz" })).toBe("Run: mysql …");
+    expect(label({ toolName: "execute", confirmationTitle: "mysql hunter2" })).toBe("Run: mysql …");
+    expect(label({ toolName: "execute", confirmationTitle: "API_KEY=abc123 deploy.sh prod" })).toBe(
+      "Run: deploy.sh …",
+    );
+    expect(label({ toolName: "execute", confirmationTitle: "/usr/local/bin/node script.js" })).toBe(
+      "Run: node …",
+    );
+    // and a command is shown as it is, not with its characters stripped
+    expect(label({ toolName: "execute", confirmationTitle: "rm -rf /tmp/*" })).toBe("Run: rm …");
+    expect(commandLabel("")).toBe("Run a command");
+    expect(commandLabel("$(whoami)")).toBe("Run a command");
+    expect(commandLabel("   ")).toBe("Run a command");
+    expect(commandLabel("a".repeat(80))).toBe("Run a command");
   });
 
-  it("is one line of at most 120 characters, without secrets", () => {
+  it("shows a file as its path inside the project, unchanged, and a fetch as its host", () => {
+    expect(label({ toolName: "edit", confirmationTitle: "Edit src/my_file.ts" })).toBe(
+      "Edit: src/my_file.ts",
+    );
+    expect(label({ toolName: "edit", confirmationTitle: "Edit `src/my_file.ts`" })).toBe(
+      "Edit: src/my_file.ts",
+    );
+    expect(
+      label({ toolName: "edit", confirmationTitle: "Edit /home/employee/work/conv-0123abcd/src/app.ts" }),
+    ).toBe("Edit: src/app.ts");
+    expect(label({ toolName: "edit", confirmationTitle: { markdown: "Write **src/a.ts**" } })).toBe(
+      "Write: src/a.ts",
+    );
+    expect(label({ toolName: "edit", confirmationTitle: "src/*.ts and more" })).toBe("Edit a file");
+    expect(label({ toolName: "delete", confirmationTitle: "Delete old/file.txt" })).toBe(
+      "Delete: old/file.txt",
+    );
+    expect(label({ toolName: "fetch", confirmationTitle: "Fetch https://github.com/a/b?token=abc" })).toBe(
+      "Fetch: github.com",
+    );
+    expect(label({ toolName: "fetch", confirmationTitle: "Fetch the docs" })).toBe("Fetch a page");
+    expect(label({ toolName: "search", confirmationTitle: "Search for password" })).toBe(
+      "Search the project",
+    );
+    expect(label({ toolName: "other", confirmationTitle: "Do something odd" })).toBe("Wants to use a tool");
+    expect(label({})).toBe("Wants to use a tool");
+    expect(
+      label({ toolName: "edit", confirmationTitle: `Edit ${"d/".repeat(100)}f.ts` }).length,
+    ).toBeLessThanOrEqual(BODY_MAX);
+  });
+
+  it("shows a question as model text: markup out, redacted, cut short", () => {
+    const ask = (request: Record<string, unknown>) =>
+      describeRequest({ kind: "chatInput", id: "i", chat: "c", request });
+    expect(ask({ id: "q1", message: "Which **branch** should I use?" })).toBe(
+      "Asks: Which branch should I use?",
+    );
+    expect(ask({ id: "q1", questions: [{ id: "a", message: "Tabs or spaces?" }] })).toBe(
+      "Asks: Tabs or spaces?",
+    );
+    expect(ask({ id: "q1" })).toBe("Has a question for you");
+    const long = ask({
+      id: "q1",
+      message: `Use the key ghp_abcdefghijklmnopqrstuvwxyz0123456789? ${"blah ".repeat(60)}`,
+    });
+    expect(long).not.toContain("ghp_abcdefgh");
+    expect(long.length).toBeLessThanOrEqual(90);
+    expect(long.endsWith("…")).toBe(true);
+  });
+
+  it("oneLine is one line of at most 120 characters, without secrets", () => {
     const t = oneLine(`line one\nline two ${"x".repeat(300)}`);
     expect(t).not.toContain("\n");
     expect(t.length).toBe(BODY_MAX);
     expect(t.endsWith("…")).toBe(true);
     expect(oneLine("export TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789")).not.toContain("ghp_abcdefgh");
+  });
+});
+
+describe("a restart (every deploy)", () => {
+  const dbFile = () => join(mkdtempSync(join(tmpdir(), "i-inc-push-db-")), "i.db");
+  type R = Awaited<ReturnType<typeof rig>>;
+  /** A second listener over the same host and database: what a new run of the daemon builds. */
+  const again = (r: R, timers: Timers) =>
+    new ConversationPush({
+      host: r.host,
+      conversations: r.app.ahp.conversations,
+      registry: r.app.deps.registry,
+      db: r.app.db,
+      push: r.fake,
+      now: () => timers.now,
+      schedule: timers.schedule,
+    });
+
+  it("closes the notification of a request the restart ended (the host ends the turns that were running)", async () => {
+    const dbPath = dbFile();
+    const timers = new Timers();
+    const a = await rig({ dbPath, timers });
+    asks(a, ["tc1"]);
+    const c = await a.client();
+    c.dispatch(a.conv.ahpChat, turnStarted("go", "t1"));
+    await until(() => waiting(a) === 1);
+    await a.advance(25_000);
+    expect(a.fake.sent).toHaveLength(1);
+    // the daemon goes away with the notification up
+    a.app.ahp.push.close();
+    const b = await rig({ dbPath, timers, fresh: false });
+    await b.advance(1);
+    expect(waiting(b)).toBe(0);
+    expect(b.fake.sent).toEqual([
+      {
+        title: "Ada needs you",
+        body: "Answered",
+        url: `#/conversations/${b.conv.id}`,
+        tag: tagOf(b.conv),
+        resolve: true,
+      },
+    ]);
+    expect(b.app.db.all("SELECT * FROM conv_push_open")).toEqual([]);
+    // and it is said once
+    await b.advance(3_600_000);
+    expect(b.fake.sent).toHaveLength(1);
+  });
+
+  it("keeps a pushed request's notification up (no second push) and closes it when it is answered", async () => {
+    const timers = new Timers();
+    const a = await rig({ timers });
+    asks(a, ["tc1"]);
+    const c = await a.client();
+    c.dispatch(a.conv.ahpChat, turnStarted("go", "t1"));
+    await until(() => waiting(a) === 1);
+    await a.advance(25_000);
+    expect(a.fake.sent).toHaveLength(1);
+    a.app.ahp.push.close();
+    const next = again(a, timers);
+    expect(next.waiting).toBe(1);
+    await a.advance(60_000);
+    expect(a.fake.sent).toHaveLength(1);
+    c.dispatch(a.conv.ahpChat, confirm("t1", "tc1", true));
+    await until(() => waiting(a) === 0);
+    await a.advance(1);
+    expect(a.fake.sent).toHaveLength(2);
+    expect(a.fake.sent[1]).toMatchObject({ resolve: true, tag: tagOf(a.conv) });
+    next.close();
+  });
+
+  it("pushes once a request that was still in its grace and is still waiting", async () => {
+    const timers = new Timers();
+    const a = await rig({ timers });
+    asks(a, ["tc1"]);
+    const c = await a.client();
+    c.dispatch(a.conv.ahpChat, turnStarted("go", "t1"));
+    await until(() => waiting(a) === 1);
+    await a.advance(5_000);
+    expect(a.fake.sent).toHaveLength(0);
+    a.app.ahp.push.close();
+    const next = again(a, timers);
+    expect(next.waiting).toBe(1);
+    await a.advance(21_000);
+    expect(a.fake.sent).toHaveLength(1);
+    expect(a.fake.sent[0]).toMatchObject({
+      title: "Ada needs you",
+      url: `#/conversations/${a.conv.id}?card=tc1`,
+    });
+    await a.advance(3_600_000);
+    expect(a.fake.sent).toHaveLength(1);
+    next.close();
+  });
+
+  it("says nothing while the daemon stops (the turns it ends are not answers)", async () => {
+    const r = await rig();
+    asks(r, ["tc1"]);
+    const c = await r.client();
+    c.dispatch(r.conv.ahpChat, turnStarted("go", "t1"));
+    await until(() => waiting(r) === 1);
+    await r.advance(25_000);
+    expect(r.fake.sent).toHaveLength(1);
+    r.app.ahp.push.close();
+    r.host.close();
+    await r.advance(1_000);
+    expect(r.fake.sent).toHaveLength(1);
   });
 });
 
@@ -400,6 +571,22 @@ describe("the owner's settings", () => {
     const c = await r.client();
     c.dispatch(r.conv.ahpChat, turnStarted("go", "t1"));
     await until(() => waiting(r) === 1);
+    await r.advance(60_000);
+    expect(r.fake.sent).toHaveLength(0);
+  });
+
+  it("turning 'Conversations need me' off during the grace drops the request, and on again does not revive it", async () => {
+    const r = await rig();
+    asks(r, ["tc1"]);
+    const c = await r.client();
+    c.dispatch(r.conv.ahpChat, turnStarted("go", "t1"));
+    await until(() => waiting(r) === 1);
+    await r.advance(5_000);
+    expect(r.app.ahp.push.waiting).toBe(1);
+    await r.settings({ conversationsNeedMe: false });
+    expect(r.app.ahp.push.waiting).toBe(0);
+    expect(r.timers.pending).toBe(0);
+    await r.settings({ conversationsNeedMe: true });
     await r.advance(60_000);
     expect(r.fake.sent).toHaveLength(0);
   });
@@ -521,7 +708,7 @@ describe("with the fake ACP agent", () => {
     expect(r.fake.sent).toHaveLength(1);
     const n = r.fake.sent[0];
     expect(n?.title).toBe("Ada needs you");
-    expect(n?.body).toBe("Edit src/app.ts");
+    expect(n?.body).toBe("Edit: src/app.ts");
     expect(n?.body).not.toContain("answer = 4");
     expect(n?.url).toBe(`#/conversations/${r.conv.id}?card=tc-edit`);
     const turn = r.host.chatState(r.conv.ahpChat)?.activeTurn?.id ?? "";
@@ -530,5 +717,37 @@ describe("with the fake ACP agent", () => {
     await r.advance(1);
     expect(r.fake.sent[1]).toMatchObject({ resolve: true, tag: n?.tag });
     await until(() => r.host.chatState(r.conv.ahpChat)?.turns.length === 1, 8000);
+  });
+});
+
+describe("a turn ending in one chat", () => {
+  it("does not close the request waiting in another chat of the same session", async () => {
+    const r = await rig({ chats: true });
+    r.host.refreshAgents();
+    const conv = await r.app.ahp.conversations.create({ employeeId: "ada" });
+    const first = conv.ahpChat;
+    const second = "ahp-chat:/second";
+    r.scripted.script = async (run, b) => {
+      if (run.chat === first) {
+        await b.ask(run, "tc1");
+        return { kind: "complete" };
+      }
+      b.text(run, "quick");
+      return { kind: "complete" };
+    };
+    const c = new TestClient(r.host, "c");
+    await c.init(["ahp-root://", conv.ahpSession, first]);
+    await c.call("createChat", { channel: conv.ahpSession, chat: second });
+    await c.subscribe(second);
+    c.dispatch(first, turnStarted("go", "t1"));
+    await until(() => (r.host.sessionState(conv.ahpSession)?.inputNeeded?.length ?? 0) === 1);
+    await r.advance(25_000);
+    expect(r.fake.sent.filter((n) => !n.resolve)).toHaveLength(1);
+    // the other chat finishes a turn: the card in the first chat is still waiting, and its notification stays
+    c.dispatch(second, turnStarted("other", "t2"));
+    await until(() => r.host.chatState(second)?.turns.length === 1);
+    await r.advance(1_000);
+    expect(r.fake.sent.filter((n) => n.resolve)).toHaveLength(0);
+    expect(r.app.ahp.push.waiting).toBe(1);
   });
 });
