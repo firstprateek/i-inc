@@ -36,3 +36,14 @@ describe("the brief", () => {
     expect(freshBrief(refundsTicket(), "review", "Review it.")).not.toContain("Images");
   });
 });
+
+describe("a proposed follow-up's reason", () => {
+  it("is in the brief, before the done-when list, and absent when there is none", () => {
+    const ticket = refundsTicket({ reason: "The banner shows after one timeout." });
+    expect(brief(ticket, "build", emptyState(), "Build it.")).toContain(
+      "Why: The banner shows after one timeout.\nDone when:",
+    );
+    expect(freshBrief(ticket, "review", "Review it.")).toContain("Why: The banner shows after one timeout.");
+    expect(brief(refundsTicket(), "build", emptyState(), "Build it.")).not.toContain("Why:");
+  });
+});

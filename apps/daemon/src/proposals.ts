@@ -3,6 +3,9 @@
 import type { Effort, Id } from "@i-inc/core";
 import type { Db } from "./db.ts";
 
+/** The body of a proposal recovered from a daemon log, where only the title was kept. */
+export const RECOVERED_BODY = "Recovered from the daemon log; details were not kept.";
+
 export type ProposalStatus = "open" | "accepted" | "declined";
 
 export interface StoredProposal {

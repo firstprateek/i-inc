@@ -36,7 +36,7 @@ import {
   UpstreamGitHubError,
 } from "./github.ts";
 import type { Change, Repo } from "./knowledge.ts";
-import type { ProposalStatus } from "./proposals.ts";
+import { type ProposalStatus, RECOVERED_BODY } from "./proposals.ts";
 import type { PushSubscription } from "./push.ts";
 import { defaultTeam } from "./registry.ts";
 import type { NewAttachment, NewTicket } from "./tickets.ts";
@@ -1304,6 +1304,14 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         if (!found) return json({ error: "no such proposal" }, 404);
         if (found.status !== "open")
           return json({ error: `proposal ${found.id} is already ${found.status}` }, 409);
+        if (!d.registry.project(found.project)) {
+          return json(
+            {
+              error: `${found.project} isn't a project any more, so this can't be filed; decline it instead`,
+            },
+            409,
+          );
+        }
         let assignee: Id;
         if (typeof body.assignee === "string") {
           let employee: Employee;
@@ -1337,6 +1345,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
               doneWhen: found.doneWhen,
               ...(assignee ? { assignee } : {}),
               createdBy: found.proposedBy,
+              ...(found.body && found.body !== RECOVERED_BODY ? { reason: found.body } : {}),
               labels: ["follow-up", ACCEPTED_LABEL],
             },
             now,

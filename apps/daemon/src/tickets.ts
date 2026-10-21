@@ -15,6 +15,8 @@ export interface NewTicket {
   hold?: boolean;
   /** The agent that filed it, for a follow-up. */
   createdBy?: Id;
+  /** Why an agent proposed it, for a follow-up. */
+  reason?: string;
 }
 
 /** An image the owner sends with a ticket, already checked by the API. */
@@ -88,6 +90,7 @@ export class Tickets {
       assignee: input.assignee ?? "",
       ...(input.labels ? { labels: input.labels } : {}),
       ...(input.createdBy ? { createdBy: input.createdBy } : {}),
+      ...(input.reason ? { reason: input.reason } : {}),
       ...(attachments.length ? { attachments } : {}),
     };
     // One transaction, so a ticket is never picked up before its images are there.

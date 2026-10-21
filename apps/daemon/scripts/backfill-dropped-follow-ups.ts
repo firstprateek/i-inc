@@ -13,10 +13,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { type Db, openDb } from "../src/db.ts";
-import { normalTitle, Proposals } from "../src/proposals.ts";
+import { normalTitle, Proposals, RECOVERED_BODY } from "../src/proposals.ts";
 import { migrate } from "../src/schema.ts";
 
-export const RECOVERED_BODY = "Recovered from the daemon log; details were not kept.";
+export { RECOVERED_BODY };
 
 export interface DroppedFollowUp {
   title: string;

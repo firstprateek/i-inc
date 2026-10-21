@@ -506,6 +506,7 @@ export class Daemon {
               doneWhen: f.doneWhen,
               assignee: e.employeeId,
               createdBy: e.employeeId,
+              ...(f.reason ? { reason: f.reason } : {}),
               labels: ["follow-up"],
             },
             now,

@@ -2,6 +2,7 @@
 import type { FollowUp, TicketEvent } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
 import { createApi } from "../src/api.ts";
+import { RECOVERED_BODY } from "../src/proposals.ts";
 import { testApp } from "./setup.ts";
 
 const followUp = (title: string, extra: Partial<FollowUp> = {}): FollowUp => ({
@@ -109,6 +110,20 @@ describe("over-budget follow-ups become proposals", () => {
     expect((await open(app)).filter((p: { project: string }) => p.project === "Duet")).toHaveLength(1);
   });
 
+  it("treats surrounding quotes as the same title", async () => {
+    const app = await testApp();
+    limit(app, "Duet", 0);
+    const t = source(app);
+    propose(
+      app,
+      t.id,
+      followUp('"Fix the flaky test"'),
+      followUp("\u201cfix the flaky test\u201d."),
+      followUp("`fix the flaky test`"),
+    );
+    expect(await open(app)).toHaveLength(1);
+  });
+
   it("handles one follow-up event once (a restart does not store it again)", async () => {
     const app = await testApp();
     limit(app, "Duet", 0);
@@ -165,6 +180,49 @@ describe("GET and POST /api/proposals", () => {
     propose(app, t.id, followUp("agent-filed"));
     expect(app.deps.tickets.all().some((r) => r.ticket.title === "agent-filed")).toBe(true);
     expect(await open(app)).toEqual([]);
+  });
+
+  it("accept carries the agent's reason into the ticket, but not a recovered placeholder", async () => {
+    const app = await testApp();
+    const id = await waiting(app);
+    const res = await app.call("POST", `/api/proposals/${id}/accept`, {});
+    expect(app.deps.tickets.get(res.body.ticket.id)?.ticket.reason).toBe(
+      "Because Add retry to the sync matters",
+    );
+    const recovered = app.deps.proposals.add(
+      {
+        project: "Duet",
+        title: "From the log",
+        body: RECOVERED_BODY,
+        proposedBy: "ada",
+        sourceTicket: "",
+        type: "chore",
+        effort: "medium",
+        doneWhen: [],
+      },
+      1,
+    );
+    const r2 = await app.call("POST", `/api/proposals/${recovered?.id}/accept`, {});
+    expect(r2.status).toBe(201);
+    expect(app.deps.tickets.get(r2.body.ticket.id)?.ticket.reason).toBeUndefined();
+  });
+
+  it("files a within-budget follow-up with its reason", async () => {
+    const app = await testApp();
+    propose(app, source(app).id, followUp("Within budget"));
+    const t = app.deps.tickets.all().find((r) => r.ticket.title === "Within budget");
+    expect(t?.ticket.reason).toBe("Because Within budget matters");
+  });
+
+  it("accept for a project that no longer exists is a 409, and the proposal stays open", async () => {
+    const app = await testApp();
+    const id = await waiting(app);
+    await app.call("DELETE", "/api/projects/Duet");
+    const res = await app.call("POST", `/api/proposals/${id}/accept`, {});
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("Duet isn't a project any more");
+    expect(app.deps.proposals.get(id)?.status).toBe("open");
+    expect((await app.call("POST", `/api/proposals/${id}/decline`, {})).status).toBe(200);
   });
 
   it("accept uses the assignee named, and checks it", async () => {
