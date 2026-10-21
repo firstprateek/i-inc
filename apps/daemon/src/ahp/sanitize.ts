@@ -40,26 +40,20 @@ export const defaultCaps: Caps = { maxString: 64 * 1024, maxAction: 1024 * 1024 
 const cut = (s: string, max: number): string =>
   s.length <= max ? s : `${s.slice(0, max)}\n[…${s.length - max} more characters not kept]`;
 
-/** How much text the redactor sees at once: its base64 and hex rules are quadratic on one long run. */
-const WINDOW = 2048;
-
 /**
- * `redactSecrets` over a long text in windows (cut at whitespace where there is some), so one
- * hostile or merely unlucky tool output, such as 60 KB of one lowercase run, costs milliseconds.
+ * An unbroken run of this many token characters or more is not kept. `redactSecrets` takes time
+ * quadratic in the length of such a run (its key-name and base64 rules rescan it from every position),
+ * so a hostile 60 KB line of one letter would stall the daemon. Nothing a secret looks like is that
+ * long without a separator, and a secret inside such a run goes with it. Everything shorter is
+ * redacted whole, in one pass, so no secret can fall between pieces of the text.
  */
-function redactWindows(text: string): string {
-  if (text.length <= WINDOW) return redactSecrets(text);
-  let out = "";
-  for (let at = 0; at < text.length; ) {
-    let end = Math.min(text.length, at + WINDOW);
-    if (end < text.length) {
-      const space = Math.max(text.lastIndexOf(" ", end), text.lastIndexOf("\n", end));
-      if (space > at + WINDOW / 2) end = space + 1;
-    }
-    out += redactSecrets(text.slice(at, end));
-    at = end;
-  }
-  return out;
+const LONG_RUN = /[A-Za-z0-9_+/=.-]{200,}/g;
+
+/** `redactSecrets` over a text of any length, in time linear in it. */
+export function redactText(text: string): string {
+  return redactSecrets(
+    text.replace(LONG_RUN, (m) => `[${m.length} characters in one unbroken run, not kept]`),
+  );
 }
 
 function walk(v: unknown, key: string | undefined, max: number, redact: boolean): unknown {
@@ -68,7 +62,7 @@ function walk(v: unknown, key: string | undefined, max: number, redact: boolean)
     if (key === "data") return v;
     // Cut first, then redact: the redactor never sees more than the cap.
     const kept = cut(v, max);
-    return redact && key !== undefined && TEXT_KEYS.has(key) ? redactWindows(kept) : kept;
+    return redact && key !== undefined && TEXT_KEYS.has(key) ? redactText(kept) : kept;
   }
   if (Array.isArray(v)) return v.map((x) => walk(x, key, max, redact));
   if (v && typeof v === "object") {
