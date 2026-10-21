@@ -22,6 +22,7 @@ import type {
   PendingRelease,
   PendingTicket,
   Person,
+  ProposalView,
   TicketView,
 } from "./view-types.ts";
 
@@ -34,9 +35,11 @@ export type {
   PendingRelease,
   PendingTicket,
   Person,
+  ProposalView,
   TicketView,
 };
 
+import type { StoredProposal } from "./proposals.ts";
 import type { TicketRecord } from "./tickets.ts";
 
 export function ticketView(
@@ -118,6 +121,11 @@ function personOf(registry: Registry, id: Id): Person {
   } catch {
     return { id, name: id, tint: 0, role: "" };
   }
+}
+
+/** A stored proposal as the API and the web show it. */
+export function proposalView(p: StoredProposal, registry: Registry): ProposalView {
+  return { ...p, proposer: personOf(registry, p.proposedBy) };
 }
 
 function nameOf(registry: Registry, id: Id): string {

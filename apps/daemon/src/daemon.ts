@@ -38,6 +38,7 @@ import type { Db } from "./db.ts";
 import type { TokenSource } from "./github.ts";
 import type { KnowledgeStore } from "./knowledge.ts";
 import type { LiveEvents } from "./live.ts";
+import type { Proposals } from "./proposals.ts";
 import type { NotificationPayload, PushService } from "./push.ts";
 import type { Registry } from "./registry.ts";
 import { capText, type SessionStore } from "./sessions.ts";
@@ -50,6 +51,7 @@ export interface DaemonDeps {
   sessions: SessionStore;
   registry: Registry;
   tickets: Tickets;
+  proposals: Proposals;
   machines: MachineProvider;
   agent: Agent;
   harness: Harness;
@@ -64,6 +66,9 @@ export interface DaemonDeps {
   live?: LiveEvents;
   log?: (msg: string) => void;
 }
+
+/** On a ticket the owner accepted from a proposal, so the daily follow-up budget doesn't count it. */
+export const ACCEPTED_LABEL = "accepted-proposal";
 
 export class Daemon {
   private readonly running = new Map<Id, Promise<void>>();
@@ -460,15 +465,37 @@ export class Daemon {
           key,
         );
         if (done?.n) return;
+        // The budget counts what agents filed on their own today; a ticket the owner accepted from
+        // a proposal was their call, so it doesn't use any of it.
         const filedToday = this.d.tickets
           .all()
           .filter(
-            (r) => r.ticket.project === from.project && r.ticket.createdBy && r.createdAt >= dayStart,
+            (r) =>
+              r.ticket.project === from.project &&
+              r.ticket.createdBy &&
+              !r.ticket.labels?.includes(ACCEPTED_LABEL) &&
+              r.createdAt >= dayStart,
           ).length;
         if (filedToday >= this.d.registry.projectPolicy(from.project).followUpsPerDay) {
-          this.d.log?.(
-            `follow-up "${f.title}" from ${e.employeeId} not filed: ${from.project}'s budget for today is used`,
+          // Over budget: the owner decides, so it waits as a proposal instead of being dropped.
+          const made = this.d.proposals.add(
+            {
+              project: from.project,
+              title: f.title,
+              body: f.reason ?? "",
+              proposedBy: e.employeeId,
+              sourceTicket: ticketId,
+              type: f.type,
+              effort: f.effort,
+              doneWhen: f.doneWhen,
+            },
+            now,
           );
+          if (made) {
+            this.d.log?.(
+              `follow-up "${f.title}" from ${e.employeeId} kept as proposal ${made.id}: ${from.project}'s budget for today is used`,
+            );
+          }
         } else {
           const t = this.d.tickets.create(
             {

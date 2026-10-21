@@ -21,6 +21,28 @@ export interface Person {
   role?: string;
 }
 
+/** A follow-up that went over the daily budget and waits for the owner (C20). */
+export interface ProposalView {
+  id: number;
+  project: string;
+  title: string;
+  /** Why it's worth doing. */
+  body: string;
+  doneWhen: string[];
+  type: "fix" | "feat" | "chore";
+  effort: "low" | "medium" | "high";
+  proposedBy: Id;
+  /** The proposer, to draw their avatar and name. */
+  proposer: Person;
+  /** The ticket they had just finished. */
+  sourceTicket: Id;
+  createdAt: number;
+  status: "open" | "accepted" | "declined";
+  decidedAt: number | null;
+  /** The ticket filed on accept. */
+  ticketId: Id | null;
+}
+
 export interface TicketView {
   id: Id;
   title: string;
