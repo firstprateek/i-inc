@@ -80,7 +80,36 @@ describe("lock", () => {
     writeFileSync(path, "999999\n");
     const b = new FileLock(path, 222, (pid) => pid !== 999999);
     expect(b.acquire()).toBe(true);
-    expect(readFileSync(path, "utf8").trim()).toBe("222");
+    expect(JSON.parse(readFileSync(path, "utf8")).pid).toBe(222);
+  });
+
+  it("takes over a lock whose pid was reused by another process (power loss, reboot)", () => {
+    const path = join(dir, "deployer.lock");
+    writeFileSync(path, `${JSON.stringify({ pid: 4242, start: "Mon Oct 19 10:00:00 2026" })}\n`);
+    // The pid is alive, but it is a different process now.
+    const startOf = (pid: number) => (pid === 4242 ? "Tue Oct 20 08:15:00 2026" : "Tue Oct 20 08:16:00 2026");
+    const b = new FileLock(path, 222, () => true, startOf);
+    expect(b.acquire()).toBe(true);
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ pid: 222, start: "Tue Oct 20 08:16:00 2026" });
+  });
+
+  it("keeps out a live instance with the same start time, and a second instance of the same pid is not confused", () => {
+    const path = join(dir, "deployer.lock");
+    const startOf = () => "Tue Oct 20 08:15:00 2026";
+    const a = new FileLock(path, 111, () => true, startOf);
+    expect(a.acquire()).toBe(true);
+    expect(new FileLock(path, 222, () => true, startOf).acquire()).toBe(false);
+    // Re-acquiring as the same process is fine.
+    expect(new FileLock(path, 111, () => true, startOf).acquire()).toBe(true);
+  });
+
+  it("works with the real ps: this process holds it, a child does not get it", () => {
+    const path = join(dir, "real.lock");
+    const mine = new FileLock(path);
+    expect(mine.acquire()).toBe(true);
+    expect(new FileLock(path, process.pid + 1).acquire()).toBe(false);
+    mine.release();
+    expect(existsSync(path)).toBe(false);
   });
 
   it("takes over an unreadable lock, and release never removes someone else's", () => {

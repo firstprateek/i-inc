@@ -89,7 +89,8 @@ if (!deployer.acquire()) {
   log(
     "another deployer holds the lock: exiting (pause the service first: launchctl bootout gui/$(id -u)/inc.i.deployer)",
   );
-  process.exit(flag("--once") || flag("--seed") || flag("--rollback") ? 1 : 0);
+  // Non-zero, so launchd keeps trying (every 30 s) instead of leaving the deployer off for good.
+  process.exit(1);
 }
 for (const sig of ["SIGTERM", "SIGINT"] as const) {
   process.on(sig, () => {

@@ -35,12 +35,12 @@ describe.skipIf(!hasBun)("deployer command line", () => {
     expect(existsSync(join(dir, "inc"))).toBe(false);
   });
 
-  it("exits at once when another deployer holds the lock, and fails a one-off command", () => {
+  it("exits non-zero at once when another deployer holds the lock, for the service and for one-off commands", () => {
     const releases = join(dir, "releases");
     spawnSync("mkdir", ["-p", releases]);
     writeFileSync(join(releases, "deployer.lock"), `${process.pid}\n`);
     const loop = run([]);
-    expect(loop.status).toBe(0);
+    expect(loop.status).toBe(1); // non-zero, so launchd keeps trying
     expect(loop.stdout).toContain("another deployer holds the lock");
     expect(run(["--once"]).status).toBe(1);
     expect(run(["--rollback"]).status).toBe(1);
