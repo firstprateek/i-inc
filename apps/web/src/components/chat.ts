@@ -5,6 +5,7 @@ import { css, html, LitElement } from "lit";
 import { imageRules, refresh, refreshNow } from "../api.ts";
 import { hasNewFromOthers, isNearBottom, newFromOthers } from "../chat-scroll.ts";
 import { draftMemo } from "../drafts.ts";
+import { messageSent } from "../first-run.ts";
 import { showLogin } from "../login.ts";
 import { forget, ImagePicker, imagePickerStyles, type Picked } from "./image-picker.ts";
 import { LAYOUT_BREAKPOINTS, layoutStyles } from "./layout.ts";
@@ -508,6 +509,7 @@ export class IncChat extends LitElement {
 
       entry.status = "sent";
       entry.error = undefined;
+      messageSent();
       draftMemo.clearIfSent(empId, entry.text);
       // The daemon has the images now, and the thread shows its own copies.
       entry.picked?.forEach(forget);

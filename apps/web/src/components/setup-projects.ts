@@ -4,7 +4,7 @@ import { css, html } from "lit";
 import { api, refreshNow } from "../api.ts";
 import {
   type BootstrapProjectBody,
-  GITHUB_INSTALL_URL,
+  GITHUB_MANAGE_URL,
   type GitHubInspectResult,
   type GitHubRepoSummary,
   type MergeMode,
@@ -629,7 +629,7 @@ export class IncSetupProjects extends Loader<Project[]> {
 
     return html`
       <div class="top-bar">
-        <a class="more-repos" href=${GITHUB_INSTALL_URL} target="_blank" rel="noopener noreferrer" aria-label="Give i.inc access to more repos (opens GitHub)">Give i.inc access to more repos</a>
+        <a class="more-repos" href=${GITHUB_MANAGE_URL} target="_blank" rel="noopener noreferrer" aria-label="Give i.inc access to more repos (opens GitHub)">Give i.inc access to more repos</a>
         ${
           !this.showAdd
             ? html`<button type="button" class="btn" @click=${() => this.toggleAdd()}>+ Add a project</button>`
