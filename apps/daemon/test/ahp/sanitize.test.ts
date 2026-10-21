@@ -1,14 +1,17 @@
 // What the host keeps from an agent: secrets out wherever they fall, and no input that stalls it.
 import { describe, expect, it } from "vitest";
 import { redactText, sanitizeAction } from "../../src/ahp/sanitize.ts";
+import { redactSecrets } from "../../src/sessions.ts";
 
+// Assembled here so that no secret scanner mistakes the example for a real key.
+const AKIA = `AKIA${"ABCDEFGHIJKLMNOP"}`;
 const secrets = [
   "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
   "Bearer eyJhbGciOiJIUzI1NiJ9abcdefghijklmnop",
   "Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345",
   "password: hunter2hunter2",
   "api_key=sk-abcdefghijklmnopqrstuvwx",
-  "AKIAABCDEFGHIJKLMNOP",
+  AKIA,
   "https://user:s3cretpass@example.com/x",
   '{"token": "abcd1234efgh5678"}',
 ];
@@ -18,7 +21,7 @@ const tails: Record<string, string> = {
   "Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345": "abcdefghijklmnopqrstuvwxyz012345",
   "password: hunter2hunter2": "hunter2hunter2",
   "api_key=sk-abcdefghijklmnopqrstuvwx": "sk-abcdefghijklmnopqrstuvwx",
-  AKIAABCDEFGHIJKLMNOP: "AKIAABCDEFGHIJKLMNOP",
+  [AKIA]: AKIA,
   "https://user:s3cretpass@example.com/x": "s3cretpass",
   '{"token": "abcd1234efgh5678"}': "abcd1234efgh5678",
 };
@@ -170,6 +173,13 @@ describe("hostile input costs time linear in its length, of every class", () => 
     runsOfTwoHundred: rep(`${"b".repeat(199)} `),
     keyedRuns: rep(`${"c".repeat(60)}key=`),
     emptyValues: rep("password: ''"),
+    pgpBegins: rep("-----BEGIN PGP PRIVATE KEY BLOCK-----"),
+    keyBodies: `-----BEGIN PRIVATE KEY-----\n${"MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n".repeat(2200)}`,
+    escapedKeys: rep("-----BEGIN PRIVATE KEY-----\\nMIIEvQ\\n"),
+    userinfoAts: rep("https://a@b@c@d@"),
+    shortSchemes: rep("x://"),
+    longAuthorities: rep(`x://${"y".repeat(398)}`),
+    pwdQueries: rep("?pwd=&pass=&"),
   };
   for (const [name, text] of Object.entries(classes)) {
     it(`redacts 64 KB of ${name} in time linear in its length`, () => {
@@ -248,14 +258,56 @@ describe("what redaction keeps and what it takes", () => {
     expect(out).toContain(
       "https://[redacted]@example.com/x?id=7&token=[redacted]&sig=[redacted]&X-Amz-Signature=[redacted]&code=[redacted]&page=2&access_token=[redacted]",
     );
-    expect(out).toContain("https://u:[redacted]@h.io/");
+    expect(out).toContain("https://[redacted]@h.io/");
     expect(out).not.toMatch(/abc123|deadbeef|0123abcd|zzz|deploy@|:pw@/);
+  });
+
+  it("takes a private key block whole, PGP's too, however long, and stops where the key does", () => {
+    const body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC".repeat(2);
+    const pgp = `-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: GnuPG v2\n\nlQOYBGJhbXcBCADd8jM4\n=a1B2\n-----END PGP PRIVATE KEY BLOCK-----`;
+    expect(redactText(`before\n${pgp}\nafter`)).toBe("before\n[private key]\nafter");
+    // far longer than any cap: gone to the last line of it, and the prose after it stays
+    const huge = `-----BEGIN RSA PRIVATE KEY-----\n${`${body}\n`.repeat(900)}`;
+    expect(huge.length).toBeGreaterThan(50_000);
+    expect(redactText(`${huge}\nThat was my key, thanks.`)).toBe("[private key]\nThat was my key, thanks.");
+    // an encrypted key's headers belong to it
+    expect(
+      redactText(
+        `-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0F1E2D3C\n\n${body}\n-----END RSA PRIVATE KEY-----\ndone`,
+      ),
+    ).toBe("[private key]\ndone");
+    // the same inside a JSON string, where the newlines are written out
+    const escaped = `{"k":"-----BEGIN PRIVATE KEY-----\\n${body}\\n${body}\\n-----END PRIVATE KEY-----\\n","n":1}`;
+    const out = redactText(escaped);
+    expect(out).not.toContain("MIIEvQ");
+    expect(out).toContain('"n":1');
+    // a line of ordinary words ends it
+    expect(redactText(`-----BEGIN PRIVATE KEY-----\n${body}\nAnd here is what I did next.`)).toBe(
+      "[private key]\nAnd here is what I did next.",
+    );
+  });
+
+  it("takes ?pwd= and the like from a URL, and a password that holds an @", () => {
+    const out = redactText(
+      "curl 'https://h.io/x?pwd=hunter2&user=ada&pass=opensesame&passphrase=correct+horse' https://deploy:p@ss%word@example.com/repo.git ftp://u:a@b@c@host/x",
+    );
+    expect(out).not.toMatch(/hunter2|opensesame|correct|p@ss|ss%word|a@b/);
+    expect(out).toContain("user=ada");
+    expect(out).toContain("@example.com/repo.git");
+    expect(out).toContain("@host/x");
+    // the shared redactor (ticket transcripts) does the same
+    const shared = redactSecrets("git clone https://deploy:p@ss%word@example.com/repo.git and ?pwd=hunter2");
+    expect(shared).not.toMatch(/p@ss|ss%word|hunter2/);
   });
 
   const long = {
     jwt: `eyJ${"hGciOiJIUzI1NiJ9".repeat(30)}.eyJ${"c3ViIjoiMTIzIn0".repeat(30)}.${"SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV".repeat(10)}`,
     pem: `-----BEGIN RSA PRIVATE KEY-----\n${`${"MIIEpAIBAAKCAQEA3Tz2mr7SZiAMfQyuvBjM9Oi".repeat(2)}\n`.repeat(20)}-----END RSA PRIVATE KEY-----`,
     pemNoEnd: `-----BEGIN PRIVATE KEY-----\n${`${"MIIEvQIBADANBgkqhkiG9w0BAQEFAASC".repeat(2)}\n`.repeat(30)}`,
+    pgp: `-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: GnuPG v2\nComment: work key\n\n${`${"lQOYBGJhbXcBCADd8jM4".repeat(4)}\n`.repeat(25)}=a1B2\n-----END PGP PRIVATE KEY BLOCK-----`,
+    pgpNoEnd: `-----BEGIN PGP PRIVATE KEY BLOCK-----\n\n${`${"lQOYBGJhbXcBCADd8jM4".repeat(4)}\n`.repeat(25)}`,
+    keyOver20k: `-----BEGIN PRIVATE KEY-----\n${`${"MIIEvQIBADANBgkqhkiG9w0BAQEFAASC".repeat(2)}\n`.repeat(500)}`,
+    keyEscaped: `{"key":"-----BEGIN PRIVATE KEY-----\\n${`${"MIIEvQIBADANBgkqhkiG9w0BAQEFAASC".repeat(2)}\\n`.repeat(30)}-----END PRIVATE KEY-----\\n"}`,
     anthropic: `sk-ant-api03-${"AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-".repeat(6)}`,
     github: `github_pat_${"11ABCDEFG0".repeat(20)}`,
     awsSecret: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
@@ -266,6 +318,10 @@ describe("what redaction keeps and what it takes", () => {
     jwt: "hGciOiJIUzI1NiJ9hGciOiJIUzI1NiJ9",
     pem: "MIIEpAIBAAKCAQEA3Tz2mr7SZiAMfQyuvBjM9Oi",
     pemNoEnd: "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC",
+    pgp: "lQOYBGJhbXcBCADd8jM4lQOYBGJhbXcBCADd8jM4",
+    pgpNoEnd: "lQOYBGJhbXcBCADd8jM4lQOYBGJhbXcBCADd8jM4",
+    keyOver20k: "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC",
+    keyEscaped: "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC",
     anthropic: "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AbCdEf",
     github: "11ABCDEFG011ABCDEFG0",
     awsSecret: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",

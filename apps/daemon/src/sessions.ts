@@ -17,7 +17,7 @@ export function capText(s: string, maxBytes = 4096): string {
 
 /** Names whose value is a secret: contain password, token or secret, or end in a key (api_key, KEY, private-key-2). */
 const secretName =
-  /password|token|secret|(?:[-_]key|apikey|privatekey|accesskey|authkey|\bkey)(?:[-_][a-zA-Z0-9_-]{1,60})?$/i;
+  /password|passwd|passphrase|\bpwd\b|token|secret|(?:[-_]key|apikey|privatekey|accesskey|authkey|\bkey)(?:[-_][a-zA-Z0-9_-]{1,60})?$/i;
 
 export function redactSecrets(text: string): string {
   if (!text) return text;
@@ -53,7 +53,7 @@ export function redactSecrets(text: string): string {
 
   // 9. URL credentials (scheme://user:pass@host)
   out = out.replace(
-    /([a-zA-Z][a-zA-Z0-9+.-]{0,30}:\/\/)([^:\s/@]{1,200}):([^@\s/]{1,200})@/gi,
+    /([a-zA-Z][a-zA-Z0-9+.-]{0,30}:\/\/)([^:\s/@]{1,200}):([^\s/?#]{1,400})@/gi,
     "$1$2:[redacted]@",
   );
 
