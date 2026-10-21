@@ -522,8 +522,21 @@ export class BrainIndex implements RetrievalSource {
       slug,
     );
     return r
-      ? { scope, slug, title: r.title, description: r.description, updated: r.updated, body: r.body }
+      ? {
+          scope,
+          slug,
+          title: r.title,
+          description: r.description,
+          updated: r.updated,
+          body: r.body,
+          external: r.external === 1,
+        }
       : null;
+  }
+
+  /** How many pages a scope has. */
+  count(scope: Scope): number {
+    return this.db.all<{ n: number }>("SELECT COUNT(*) AS n FROM pages WHERE scope = ?", scope)[0]?.n ?? 0;
   }
 
   /**

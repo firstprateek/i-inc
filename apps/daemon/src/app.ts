@@ -17,6 +17,7 @@ import { AhpHost, type TransportLimits } from "./ahp/host.ts";
 import { AhpTransport } from "./ahp/transport.ts";
 import { type ApiOptions, createApi } from "./api.ts";
 import { same } from "./auth.ts";
+import { BrainFeed } from "./brain-feed.ts";
 import { BrainIndex } from "./brain-index.ts";
 import { ChatLog } from "./chat.ts";
 import { Daemon, type DaemonDeps } from "./daemon.ts";
@@ -38,7 +39,7 @@ import { Tickets } from "./tickets.ts";
  * A port, or a way to make it from the registry (real mode's recipes and usage live there) and the
  * backlog (the workspace reads a ticket's images from it).
  */
-export type FromRegistry<T> = T | ((registry: Registry, tickets: Tickets) => T);
+export type FromRegistry<T> = T | ((registry: Registry, tickets: Tickets, brain: BrainFeed) => T);
 
 export interface AppOptions extends ApiOptions {
   dbPath: string;
@@ -48,6 +49,8 @@ export interface AppOptions extends ApiOptions {
   brainIndexPath?: string;
   /** The FTS5 capability check, replaceable in tests (the default makes a throwaway FTS5 table). */
   brainProbe?: (db: Db) => void;
+  /** Where brain copies live in a sandbox. Default /home/employee/brain; a test points it at a folder. */
+  brainHome?: string;
   clock: Clock;
   sessions?: SessionStore;
   machines: FromRegistry<MachineProvider>;
@@ -100,8 +103,13 @@ export async function createApp(o: AppOptions) {
   const proposals = new Proposals(db);
   proposals.onChange = () => live.notifyOffice();
 
+  // The brain's feed (copy into sandboxes, retrieval into prompts) is made before the ports, because
+  // real mode's ports hand it the way into a sandbox.
+  let brainFeed: BrainFeed | undefined;
   const make = <T>(port: FromRegistry<T>): T =>
-    typeof port === "function" ? (port as (r: Registry, t: Tickets) => T)(registry, tickets) : port;
+    typeof port === "function"
+      ? (port as (r: Registry, t: Tickets, b: BrainFeed) => T)(registry, tickets, brainFeed as BrainFeed)
+      : port;
 
   const store = new SqliteEventStore(db);
   store.onAppend = (id) => live.notifyTicket(id);
@@ -112,7 +120,18 @@ export async function createApp(o: AppOptions) {
     ...(o.brainProbe ? { probe: o.brainProbe } : {}),
   });
 
+  brainFeed = new BrainFeed({
+    index: brain,
+    store: knowledge,
+    registry,
+    db,
+    now: () => o.clock.now(),
+    ...(o.log ? { log: o.log } : {}),
+    ...(o.brainHome ? { home: o.brainHome } : {}),
+  });
+
   const deps: DaemonDeps = {
+    brainFeed,
     clock: o.clock,
     store,
     sessions: o.sessions ?? new SessionStore(db, o.clock),

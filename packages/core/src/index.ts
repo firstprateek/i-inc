@@ -1,4 +1,5 @@
 export * from "./brain-map.ts";
+export * from "./brain-prompt.ts";
 export * from "./brain-retrieval.ts";
 export * from "./brief.ts";
 export * from "./chat.ts";

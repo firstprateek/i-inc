@@ -34,6 +34,7 @@ import {
   type Workspace,
 } from "@i-inc/core";
 import type { ConversationService } from "./ahp/conversations.ts";
+import type { BrainFeed } from "./brain-feed.ts";
 import type { BrainIndex } from "./brain-index.ts";
 import type { ChatLog } from "./chat.ts";
 import type { Db } from "./db.ts";
@@ -70,6 +71,8 @@ export interface DaemonDeps {
   knowledge: KnowledgeStore;
   /** The disposable search index over the brains and the handbook. */
   brain: BrainIndex;
+  /** The brain's copy in sandboxes and its retrieval into briefs and turns (T57). */
+  brainFeed: BrainFeed;
   db: Db;
   push?: PushService;
   live?: LiveEvents;
@@ -264,10 +267,44 @@ export class Daemon {
         } catch (err) {
           console.error("[sessions] start failed:", err);
         }
+        // The brain (T57): the maps and the pages that match this ticket go at the end of the brief,
+        // after the employee's copy in the sandbox is brought up to date. A failure here never stops
+        // the session: it just goes without.
+        const feed = this.d.brainFeed;
+        if (feed?.enabled) {
+          try {
+            const st = await this.state(req.ticket.id);
+            const blind = req.stage === "review" || req.stage === "prove";
+            const ctx = await feed.forTicket({
+              employeeId: req.employee.id,
+              sessionId,
+              query: {
+                title: req.ticket.title,
+                project: req.ticket.project,
+                reason: req.ticket.reason,
+                doneWhen: req.ticket.doneWhen,
+                failures: st.lastChecks && !st.lastChecks.green ? st.lastChecks.failures : [],
+                findings: blind ? [] : st.review.findings.map((f) => `${f.where}: ${f.text}`),
+                plan: blind ? undefined : st.outputs.plan,
+              },
+            });
+            if (ctx.text) req.brief = `${req.brief}\n\n${ctx.text}`;
+          } catch (err) {
+            this.d.log?.(`brain: no pages for ${req.ticket.id}/${req.stage}: ${err}`);
+          }
+        }
         let textCount = 0;
         const origOnTranscriptItem = req.onTranscriptItem;
         req.onTranscriptItem = (item) => {
           if (item.kind === "text") textCount++;
+          // Reads of brain pages in the employee's copy (the agent's own tool calls) feed the page counters.
+          if (item.locations?.length && sessionId !== null && feed) {
+            try {
+              feed.noteRead(req.employee.id, item.locations, { kind: "session", id: sessionId });
+            } catch (err) {
+              this.d.log?.(`brain: couldn't note a read: ${err}`);
+            }
+          }
           if (sessionId !== null) {
             try {
               sessions.recordItem(sessionId, item);

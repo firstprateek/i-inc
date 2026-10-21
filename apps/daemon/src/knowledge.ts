@@ -349,6 +349,18 @@ export class KnowledgeStore {
     return out;
   }
 
+  /** The size in bytes of committed blobs, by blob id, in one git process. */
+  blobSizes(repo: Repo, ids: string[]): Map<string, number> {
+    const out = new Map<string, number>();
+    if (!ids.length) return out;
+    const text = this.gitBuffer(repo, ["cat-file", "--batch-check"], `${ids.join("\n")}\n`).toString("utf8");
+    for (const line of text.split("\n")) {
+      const [id = "", type = "", size = ""] = line.split(" ");
+      if (type === "blob") out.set(id, Number(size));
+    }
+    return out;
+  }
+
   /** The store's clock, in ms. */
   clock(): number {
     return this.now();

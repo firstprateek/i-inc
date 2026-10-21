@@ -95,6 +95,25 @@ export function migrate(db: Db): void {
       done_when TEXT NOT NULL DEFAULT '[]'
     );
     CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status, project);
+    -- Which brain pages went into a ticket session (kind 'session', ref = the session id) or a
+    -- conversation turn (kind 'turn', ref = the conversation, unit = the turn). T57, contract C19.
+    CREATE TABLE IF NOT EXISTS brain_used (
+      kind TEXT NOT NULL,
+      ref TEXT NOT NULL,
+      unit TEXT NOT NULL DEFAULT '',
+      at INTEGER NOT NULL,
+      body TEXT NOT NULL,
+      PRIMARY KEY (kind, ref, unit)
+    );
+    -- What each sandbox's brain copy was last given, so the next copy sends only what changed.
+    CREATE TABLE IF NOT EXISTS brain_synced (
+      machine TEXT NOT NULL,
+      employee_id TEXT NOT NULL,
+      snapshot_id TEXT NOT NULL,
+      files TEXT NOT NULL,
+      at INTEGER NOT NULL,
+      PRIMARY KEY (machine, employee_id)
+    );
     CREATE TABLE IF NOT EXISTS storage_state (
       key TEXT PRIMARY KEY,
       body TEXT NOT NULL
