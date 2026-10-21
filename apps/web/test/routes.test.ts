@@ -1,7 +1,8 @@
-// The hash router: every view the tab bar and the header link to must open that view, on a phone too,
-// where an unknown hash falls back to the inbox. (Office once fell through to that fallback.)
+// The hash router (T61): three areas, each with tabs. Every canonical hash opens its view on a phone and a
+// desktop, every hash from before the areas still works (rewritten in place), and each route uses its template.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { IncApp, layoutForRoute, parse, routeName } from "../src/components/app.ts";
+import { AREAS, areaOf, COMPANY_TABS, legacyTarget, tabOf, WORK_TABS } from "../src/routes.ts";
 import { IncLogin } from "../src/login.ts";
 
 const phone = (matches: boolean) =>
@@ -18,44 +19,157 @@ afterEach(() => {
 });
 
 describe("parse", () => {
-  it.each(["office", "board", "desk", "inbox", "handbook", "more", "hiring", "chat"])(
-    "#/%s opens that view on a phone and on a desktop",
-    (view) => {
-      for (const onPhone of [true, false]) {
-        phone(onPhone);
-        expect(parse(`#/${view}`).view).toBe(view);
-      }
-    },
-  );
+  it.each([
+    ["#/conversations", { view: "conversations", id: "" }],
+    ["#/conversations/ada", { view: "conversations", id: "ada" }],
+    ["#/work", { view: "work", tab: "board" }],
+    ["#/work/board", { view: "work", tab: "board" }],
+    ["#/work/needs-you", { view: "work", tab: "needs-you" }],
+    ["#/work/releases", { view: "work", tab: "releases" }],
+    ["#/work/nonsense", { view: "work", tab: "board" }],
+    ["#/ticket/12", { view: "ticket", id: "12" }],
+    ["#/ticket/12/assign", { view: "ticket", id: "12" }],
+    ["#/company", { view: "team" }],
+    ["#/company/team", { view: "team" }],
+    ["#/company/team/hiring", { view: "hiring" }],
+    ["#/company/team/hiring/ada", { view: "hiring", id: "ada" }],
+    ["#/company/brain", { view: "brain", id: "" }],
+    ["#/company/brain/ada", { view: "brain", id: "ada" }],
+    ["#/company/projects", { view: "projects" }],
+    ["#/company/usage", { view: "usage" }],
+    ["#/company/settings", { view: "settings", section: "teams" }],
+    ["#/company/settings/engines", { view: "settings", section: "engines" }],
+    ["#/company/settings/sandboxes", { view: "settings", section: "sandboxes" }],
+    ["#/company/settings/notifications", { view: "settings", section: "notifications" }],
+    ["#/company/settings/nonsense", { view: "settings", section: "teams" }],
+  ] as const)("%s opens %j on a phone and on a desktop", (hash, route) => {
+    for (const onPhone of [true, false]) {
+      phone(onPhone);
+      expect(parse(hash)).toEqual(route);
+    }
+  });
 
-  it("starts at the inbox on a phone and the office on a desktop", () => {
+  it("opens Conversations on a desktop and Work → Needs you on a phone when there is no hash", () => {
     phone(true);
-    expect(parse("").view).toBe("inbox");
+    expect(parse("")).toEqual({ view: "work", tab: "needs-you" });
+    expect(parse("#/")).toEqual({ view: "work", tab: "needs-you" });
     phone(false);
-    expect(parse("").view).toBe("office");
+    expect(parse("")).toEqual({ view: "conversations", id: "" });
+    expect(parse("#/nothing-here")).toEqual({ view: "conversations", id: "" });
+    expect(parse("#/ticket")).toEqual({ view: "conversations", id: "" });
+  });
+});
+
+describe("old hashes keep working", () => {
+  // Every hash from before the three areas, and the canonical hash it lands on.
+  const legacy: [string, string][] = [
+    ["#/inbox", "#/work/needs-you"],
+    ["#/office", "#/company/team"],
+    ["#/board", "#/work/board"],
+    ["#/chat", "#/conversations"],
+    ["#/chat/ada", "#/conversations/ada"],
+    ["#/desk", "#/company/usage"],
+    ["#/handbook", "#/company/brain"],
+    ["#/brain/ada", "#/company/brain/ada"],
+    ["#/hiring", "#/company/team/hiring"],
+    ["#/hiring/ada", "#/company/team/hiring/ada"],
+    ["#/setup", "#/company/settings/teams"],
+    ["#/setup/teams", "#/company/settings/teams"],
+    ["#/setup/projects", "#/company/projects"],
+    ["#/setup/engines", "#/company/settings/engines"],
+    ["#/setup/sandboxes", "#/company/settings/sandboxes"],
+    ["#/setup/notifications", "#/company/settings/notifications"],
+    ["#/more", "#/company/team"],
+  ];
+
+  it.each(legacy)("%s is %s", (old, canonical) => {
+    expect(legacyTarget(old)).toBe(canonical);
+    phone(false);
+    expect(parse(old)).toEqual(parse(canonical));
+  });
+
+  it("leaves new hashes and push-notification links alone", () => {
+    for (const h of ["#/work/board", "#/company/team", "#/conversations/ada", "#/ticket/7", "#/ticket/7/assign", ""])
+      expect(legacyTarget(h)).toBeNull();
+  });
+
+  it.each(legacy)("the app rewrites %s to %s in place, without a new history entry", async (old, canonical) => {
+    phone(false);
+    vi.stubGlobal("fetch", () => new Promise(() => {}));
+    history.replaceState(null, "", "/");
+    location.hash = old;
+    const before = history.length;
+    const app = new IncApp();
+    document.body.append(app);
+    await app.updateComplete;
+    expect(location.hash).toBe(canonical);
+    expect(history.length).toBe(before);
+    expect(app.route).toEqual(parse(canonical));
+    app.remove();
+  });
+
+  it("rewrites an old hash that is followed while the app is open, too", async () => {
+    phone(false);
+    vi.stubGlobal("fetch", () => new Promise(() => {}));
+    location.hash = "#/work/board";
+    const app = new IncApp();
+    document.body.append(app);
+    await app.updateComplete;
+    location.hash = "#/chat/ada";
+    await new Promise((r) => setTimeout(r, 10));
+    await app.updateComplete;
+    expect(location.hash).toBe("#/conversations/ada");
+    expect(app.route).toEqual({ view: "conversations", id: "ada" });
+    app.remove();
+  });
+});
+
+describe("areas and tabs", () => {
+  it("puts every route in one of three areas, and tickets under Work", () => {
+    expect(areaOf(parse("#/conversations/ada"))).toBe("conversations");
+    expect(areaOf(parse("#/work/releases"))).toBe("work");
+    expect(areaOf(parse("#/ticket/3"))).toBe("work");
+    for (const h of ["#/company", "#/company/team/hiring", "#/company/brain/ada", "#/company/projects", "#/company/usage", "#/company/settings/engines"])
+      expect(areaOf(parse(h))).toBe("company");
+  });
+
+  it("names the tab each route sits under; a ticket sits on none", () => {
+    expect(tabOf(parse("#/work/needs-you"))).toBe("needs-you");
+    expect(tabOf(parse("#/ticket/3"))).toBeNull();
+    expect(tabOf(parse("#/company/team/hiring/ada"))).toBe("team");
+    expect(tabOf(parse("#/company/brain/ada"))).toBe("brain");
+    expect(tabOf(parse("#/company/settings/sandboxes"))).toBe("settings");
+    expect(tabOf(parse("#/company/projects"))).toBe("projects");
+  });
+
+  it("has the tabs the plan names, in order", () => {
+    expect(AREAS.map((a) => a.label)).toEqual(["Conversations", "Work", "Company"]);
+    expect(WORK_TABS.map(([, l]) => l)).toEqual(["Board", "Needs you", "Releases"]);
+    expect(COMPANY_TABS.map(([, l]) => l)).toEqual(["Team", "Brain", "Projects", "Usage", "Settings"]);
   });
 });
 
 describe("the route layout language", () => {
   it.each([
-    ["inbox", "page"],
+    ["work/needs-you", "page"],
+    ["work/releases", "page"],
     ["ticket/12", "page"],
-    ["desk", "page"],
-    ["hiring", "page"],
-    ["hiring/ada", "page"],
-    ["more", "page"],
-    ["board", "wide"],
-    ["office", "wide"],
-    ["chat/ada", "split"],
-    ["chat", "split"],
-    ["handbook", "split"],
-    ["brain/ada", "split"],
-    ["setup/projects", "split"],
-    ["setup/teams", "split"],
-    ["setup/engines", "split"],
-    ["setup/sandboxes", "split"],
-    ["setup/notifications", "split"],
-    ["setup", "split"],
+    ["company/team/hiring", "page"],
+    ["company/team/hiring/ada", "page"],
+    ["company/projects", "page"],
+    ["company/usage", "page"],
+    ["work/board", "wide"],
+    ["work", "wide"],
+    ["company/team", "wide"],
+    ["company", "wide"],
+    ["conversations/ada", "split"],
+    ["conversations", "split"],
+    ["company/brain", "split"],
+    ["company/brain/ada", "split"],
+    ["company/settings", "split"],
+    ["company/settings/engines", "split"],
+    ["company/settings/sandboxes", "split"],
+    ["company/settings/notifications", "split"],
   ] as const)("renders #/%s through the %s frame", async (path, kind) => {
     phone(false);
     vi.stubGlobal("fetch", () => new Promise(() => {}));
@@ -86,10 +200,11 @@ describe("the route layout language", () => {
   });
 
   it("keeps the layout mapping centralized for route state", () => {
+    expect(layoutForRoute(parse("#/work/board"))).toBe("wide");
+    expect(layoutForRoute(parse("#/company/settings/engines"))).toBe("split");
+    expect(layoutForRoute(parse("#/work/needs-you"))).toBe("page");
     expect(layoutForRoute(parse("#/board"))).toBe("wide");
-    expect(layoutForRoute(parse("#/setup/projects"))).toBe("split");
-    expect(layoutForRoute(parse("#/inbox"))).toBe("page");
-    expect(routeName(parse("#/chat/ada")).long).toBe("Chats");
+    expect(routeName(parse("#/chat/ada")).long).toBe("Conversations");
   });
 
   it("keeps the selected frame around offline, loading, and error content", async () => {
@@ -99,7 +214,7 @@ describe("the route layout language", () => {
       async () => new Response(JSON.stringify({ error: "unavailable" }), { status: 400 }),
     );
     const app = new IncApp();
-    app.route = parse("#/board");
+    app.route = parse("#/work/board");
     app.offline = true;
     document.body.append(app);
     await app.updateComplete;
@@ -130,7 +245,7 @@ describe("the route layout language", () => {
     phone(false);
     vi.stubGlobal("fetch", () => new Promise(() => {}));
     const app = new IncApp();
-    app.route = parse("#/board");
+    app.route = parse("#/work/board");
     document.body.append(app);
     await app.updateComplete;
     const frame = app.shadowRoot?.querySelector("inc-layout") as HTMLElement & {
@@ -148,20 +263,25 @@ describe("the route layout language", () => {
 });
 
 describe("the tab bar", () => {
-  it("every tab button opens the view it names", async () => {
+  it("every tab button opens the area it names", async () => {
     phone(true);
     vi.stubGlobal("fetch", () => new Promise(() => {})); // the views just wait for data
     const app = new IncApp();
     document.body.append(app);
     await app.updateComplete;
     const tabs = [...(app.shadowRoot?.querySelectorAll(".tabs button") ?? [])];
-    expect(tabs.map((a) => a.textContent?.trim())).toEqual(["Inbox", "Office", "Board", "Chats", "More"]);
-    const office = tabs[1] as HTMLButtonElement;
-    expect(office.getAttribute("role")).toBe("tab");
-    office.click();
+    expect(tabs.map((a) => a.querySelector(".tab-label")?.textContent?.trim())).toEqual([
+      "Conversations",
+      "Work",
+      "Needs you",
+      "Company",
+    ]);
+    const company = tabs[3] as HTMLButtonElement;
+    expect(company.getAttribute("role")).toBe("tab");
+    company.click();
     await new Promise((r) => setTimeout(r, 0));
     await app.updateComplete;
-    expect(location.hash).toBe("#/office");
+    expect(location.hash).toBe("#/company/team");
     expect(app.shadowRoot?.querySelector("inc-layout")?.innerHTML).toContain("<inc-office");
     app.remove();
   });

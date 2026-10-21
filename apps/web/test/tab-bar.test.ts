@@ -22,7 +22,7 @@ describe("mobile app tab bar (T25)", () => {
     document.body.innerHTML = "";
   });
 
-  it("renders buttons with role='tab' and type='button', not link elements", async () => {
+  it("renders the four areas as buttons with role='tab' and type='button', not link elements", async () => {
     const app = new IncApp();
     document.body.append(app);
     await app.updateComplete;
@@ -30,13 +30,13 @@ describe("mobile app tab bar (T25)", () => {
     const nav = app.shadowRoot?.querySelector(".tabs");
     expect(nav).not.toBeNull();
     expect(nav?.getAttribute("role")).toBe("tablist");
-    expect(nav?.getAttribute("aria-label")).toBe("Views");
+    expect(nav?.getAttribute("aria-label")).toBe("Areas");
 
     const links = nav?.querySelectorAll("a");
     expect(links?.length).toBe(0);
 
     const buttons = [...(nav?.querySelectorAll("button") ?? [])];
-    expect(buttons.length).toBe(5);
+    expect(buttons.length).toBe(4);
 
     for (const btn of buttons) {
       expect(btn.tagName.toLowerCase()).toBe("button");
@@ -44,25 +44,28 @@ describe("mobile app tab bar (T25)", () => {
       expect(btn.getAttribute("role")).toBe("tab");
     }
 
-    expect(buttons.map((b) => b.textContent?.trim())).toEqual(["Inbox", "Office", "Board", "Chats", "More"]);
+    expect(buttons.map((b) => b.querySelector(".tab-label")?.textContent?.trim())).toEqual([
+      "Conversations",
+      "Work",
+      "Needs you",
+      "Company",
+    ]);
   });
 
   it("sets aria-current='page' and aria-selected='true' on the active tab, and 'false' on inactive tabs", async () => {
-    // Phone default is inbox
+    // The phone's home is Work → Needs you.
     const app = new IncApp();
     document.body.append(app);
     await app.updateComplete;
 
     const buttons = [...(app.shadowRoot?.querySelectorAll<HTMLButtonElement>(".tabs button") ?? [])];
-    const [inbox, office, board, chat, more] = buttons;
-    if (!inbox || !office || !board || !chat || !more) throw new Error("Missing tabs");
+    const [conversations, work, needs, company] = buttons;
+    if (!conversations || !work || !needs || !company) throw new Error("Missing tabs");
 
-    // Inbox is active
-    expect(inbox.getAttribute("aria-current")).toBe("page");
-    expect(inbox.getAttribute("aria-selected")).toBe("true");
+    expect(needs.getAttribute("aria-current")).toBe("page");
+    expect(needs.getAttribute("aria-selected")).toBe("true");
 
-    // Inactive tabs
-    for (const inactive of [office, board, chat, more]) {
+    for (const inactive of [conversations, work, company]) {
       expect(inactive.getAttribute("aria-current")).toBe("false");
       expect(inactive.getAttribute("aria-selected")).toBe("false");
     }
@@ -74,69 +77,60 @@ describe("mobile app tab bar (T25)", () => {
     await app.updateComplete;
 
     const buttons = [...(app.shadowRoot?.querySelectorAll<HTMLButtonElement>(".tabs button") ?? [])];
-    const [inbox, office, board, chat, more] = buttons;
-    if (!inbox || !office || !board || !chat || !more) throw new Error("Missing tabs");
+    const [conversations, work, needs, company] = buttons;
+    if (!conversations || !work || !needs || !company) throw new Error("Missing tabs");
+    const selected = () => buttons.filter((b) => b.getAttribute("aria-selected") === "true");
 
-    // Click Office
-    office.click();
+    work.click();
     await app.updateComplete;
-    expect(location.hash).toBe("#/office");
-    expect(office.getAttribute("aria-current")).toBe("page");
-    expect(office.getAttribute("aria-selected")).toBe("true");
-    expect(inbox.getAttribute("aria-current")).toBe("false");
-    expect(inbox.getAttribute("aria-selected")).toBe("false");
+    expect(location.hash).toBe("#/work/board");
+    expect(selected()).toEqual([work]);
+    expect(work.getAttribute("aria-current")).toBe("page");
 
-    // Click Board
-    board.click();
+    company.click();
     await app.updateComplete;
-    expect(location.hash).toBe("#/board");
-    expect(board.getAttribute("aria-current")).toBe("page");
-    expect(board.getAttribute("aria-selected")).toBe("true");
-    expect(office.getAttribute("aria-current")).toBe("false");
-    expect(office.getAttribute("aria-selected")).toBe("false");
+    expect(location.hash).toBe("#/company/team");
+    expect(selected()).toEqual([company]);
 
-    // Click Chats
-    chat.click();
+    conversations.click();
     await app.updateComplete;
-    expect(location.hash).toBe("#/chat");
-    expect(chat.getAttribute("aria-current")).toBe("page");
-    expect(chat.getAttribute("aria-selected")).toBe("true");
+    expect(location.hash).toBe("#/conversations");
+    expect(selected()).toEqual([conversations]);
 
-    // Click More
-    more.click();
+    needs.click();
     await app.updateComplete;
-    expect(location.hash).toBe("#/more");
-    expect(more.getAttribute("aria-current")).toBe("page");
-    expect(more.getAttribute("aria-selected")).toBe("true");
-
-    // Click back to Inbox
-    inbox.click();
-    await app.updateComplete;
-    expect(location.hash).toBe("#/inbox");
-    expect(inbox.getAttribute("aria-current")).toBe("page");
-    expect(inbox.getAttribute("aria-selected")).toBe("true");
+    expect(location.hash).toBe("#/work/needs-you");
+    expect(selected()).toEqual([needs]);
   });
 
-  it("activates tabs on nested routes (ticket -> Board, brain -> More)", async () => {
+  it("lights Work for the board, releases and tickets, and Needs you only for its own tab", async () => {
     location.hash = "#/ticket/42";
     const app = new IncApp();
     document.body.append(app);
     await app.updateComplete;
 
     const buttons = [...(app.shadowRoot?.querySelectorAll<HTMLButtonElement>(".tabs button") ?? [])];
-    const board = buttons[2];
-    const more = buttons[4];
-    if (!board || !more) throw new Error("Missing tabs");
+    const [, work, needs, company] = buttons;
+    if (!work || !needs || !company) throw new Error("Missing tabs");
+    const go = async (hash: string) => {
+      location.hash = hash;
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+      await app.updateComplete;
+    };
 
-    expect(board.getAttribute("aria-current")).toBe("page");
-    expect(board.getAttribute("aria-selected")).toBe("true");
+    expect(work.getAttribute("aria-selected")).toBe("true");
+    expect(needs.getAttribute("aria-selected")).toBe("false");
 
-    location.hash = "#/setup/teams";
-    window.dispatchEvent(new HashChangeEvent("hashchange"));
-    await app.updateComplete;
+    await go("#/work/releases");
+    expect(work.getAttribute("aria-selected")).toBe("true");
+    await go("#/work/needs-you");
+    expect(needs.getAttribute("aria-selected")).toBe("true");
+    expect(work.getAttribute("aria-selected")).toBe("false");
 
-    expect(more.getAttribute("aria-current")).toBe("page");
-    expect(more.getAttribute("aria-selected")).toBe("true");
+    for (const h of ["#/company/settings/teams", "#/company/brain/ada", "#/company/team/hiring", "#/company/usage"]) {
+      await go(h);
+      expect(company.getAttribute("aria-selected")).toBe("true");
+    }
   });
 
   it("contains touch callout, tap highlight, user-select, 44px min target, and no underline in CSS", () => {
@@ -183,7 +177,7 @@ describe("mobile app tab bar (T25)", () => {
     await app.updateComplete;
 
     const buttons = [...(app.shadowRoot?.querySelectorAll<HTMLButtonElement>(".tabs button") ?? [])];
-    expect(buttons.length).toBe(5);
+    expect(buttons.length).toBe(4);
 
     for (const btn of buttons) {
       const pill = btn.querySelector(".tab-pill");
@@ -198,43 +192,41 @@ describe("mobile app tab bar (T25)", () => {
     }
   });
 
-  it("updates mobile header view context title on navigation", async () => {
+  it("puts the account menu, not the areas, in the phone header", async () => {
     const app = new IncApp();
     document.body.append(app);
     await app.updateComplete;
+    const header = app.shadowRoot?.querySelector("header");
+    expect(header?.querySelector(".account-trigger")).not.toBeNull();
+    expect(header?.querySelector(".mark")?.textContent).toBe("i.inc");
+    // The areas nav and the badge are in the DOM for the laptop; CSS hides them on a phone.
+    const css = IncApp.styles.map((s) => (typeof s === "string" ? s : s.cssText)).join("\n");
+    expect(css).toMatch(/header nav\.areas, header \.needs-link\s*\{\s*display:\s*none/);
+  });
 
-    const titleEl = app.shadowRoot?.querySelector(".mobile-view-title");
-    expect(titleEl).not.toBeNull();
-    // Initially on phone, default route is inbox
-    expect(titleEl?.textContent).toContain("Inbox");
-
-    const buttons = [...(app.shadowRoot?.querySelectorAll<HTMLButtonElement>(".tabs button") ?? [])];
-    const [, office, board] = buttons;
-    if (!office || !board) throw new Error("Missing tabs");
-
-    office.click();
+  it("shows how many things need you on the Needs you tab, and says it in its name", async () => {
+    vi.stubGlobal(
+      "fetch",
+      async (url: string) =>
+        new Response(
+          JSON.stringify(
+            url.includes("/api/board")
+              ? {
+                  tickets: [
+                    { id: "1", title: "a", status: "needs-you", column: "in-progress", stages: [] },
+                    { id: "2", title: "b", status: "needs-you", column: "in-progress", stages: [] },
+                  ],
+                }
+              : { awaiting: [] },
+          ),
+        ),
+    );
+    const app = new IncApp();
+    document.body.append(app);
+    await new Promise((r) => setTimeout(r, 20));
     await app.updateComplete;
-    expect(titleEl?.textContent).toContain("Office");
-
-    board.click();
-    await app.updateComplete;
-    expect(titleEl?.textContent).toContain("Board");
-
-    // Test ticket and chat contextual titles
-    location.hash = "#/ticket/123";
-    window.dispatchEvent(new HashChangeEvent("hashchange"));
-    await app.updateComplete;
-    expect(titleEl?.querySelector(".long")?.textContent).toBe("Ticket #123");
-    expect(titleEl?.querySelector(".short")?.textContent).toBe("#123");
-
-    location.hash = "#/chat/ada";
-    window.dispatchEvent(new HashChangeEvent("hashchange"));
-    await app.updateComplete;
-    expect(titleEl?.querySelector(".long")?.textContent).toBe("Chats");
-
-    location.hash = "#/setup/teams";
-    window.dispatchEvent(new HashChangeEvent("hashchange"));
-    await app.updateComplete;
-    expect(titleEl?.querySelector(".long")?.textContent).toBe("Teams");
+    const needs = app.shadowRoot?.querySelectorAll<HTMLButtonElement>(".tabs button")[2];
+    expect(needs?.querySelector(".tab-badge")?.textContent).toBe("2");
+    expect(needs?.getAttribute("aria-label")).toBe("Needs you, 2 waiting");
   });
 });

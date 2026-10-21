@@ -178,9 +178,8 @@ describe("T27: Mobile bug hunt & touch regression tests (390x844)", () => {
     document.body.innerHTML = "";
   });
 
-  it("router parses phone default to #/inbox on 390x844 viewport", () => {
-    const route = parse("");
-    expect(route.view).toBe("inbox");
+  it("router parses the phone default to Work → Needs you on a 390x844 viewport", () => {
+    expect(parse("")).toEqual({ view: "work", tab: "needs-you" });
   });
 
   it("tap-every-tab suite: tapping each mobile tab navigates correctly and never breaks routing", async () => {
@@ -191,74 +190,65 @@ describe("T27: Mobile bug hunt & touch regression tests (390x844)", () => {
     const nav = app.shadowRoot?.querySelector(".tabs");
     expect(nav).not.toBeNull();
     const tabs = [...(nav?.querySelectorAll<HTMLButtonElement>("button") ?? [])];
-    expect(tabs.length).toBe(5);
+    expect(tabs.length).toBe(4);
 
-    const [inboxBtn, officeBtn, boardBtn, chatBtn, moreBtn] = tabs;
-    if (!inboxBtn || !officeBtn || !boardBtn || !chatBtn || !moreBtn) throw new Error("Missing tabs");
+    const [conversationsBtn, workBtn, needsBtn, companyBtn] = tabs;
+    if (!conversationsBtn || !workBtn || !needsBtn || !companyBtn) throw new Error("Missing tabs");
 
-    // 1. Initial phone view is Inbox
-    expect(inboxBtn.getAttribute("aria-current")).toBe("page");
-    expect(inboxBtn.getAttribute("aria-selected")).toBe("true");
+    // 1. The phone opens on Needs you
+    expect(needsBtn.getAttribute("aria-current")).toBe("page");
+    expect(needsBtn.getAttribute("aria-selected")).toBe("true");
     expect(app.shadowRoot?.querySelector("inc-inbox")).not.toBeNull();
 
-    // 2. Tap Office tab: MUST route to #/office and mount <inc-office>, never fall back to inbox!
-    officeBtn.click();
+    // 2. Tap Work: routes to #/work/board and mounts <inc-board>
+    workBtn.click();
     await app.updateComplete;
-    expect(location.hash).toBe("#/office");
-    expect(officeBtn.getAttribute("aria-current")).toBe("page");
-    expect(officeBtn.getAttribute("aria-selected")).toBe("true");
-    expect(inboxBtn.getAttribute("aria-selected")).toBe("false");
-    expect(app.shadowRoot?.querySelector("inc-office")).not.toBeNull();
-
-    // 3. Tap Board tab: routes to #/board and mounts <inc-board>
-    boardBtn.click();
-    await app.updateComplete;
-    expect(location.hash).toBe("#/board");
-    expect(boardBtn.getAttribute("aria-current")).toBe("page");
-    expect(boardBtn.getAttribute("aria-selected")).toBe("true");
-    expect(officeBtn.getAttribute("aria-selected")).toBe("false");
+    expect(location.hash).toBe("#/work/board");
+    expect(workBtn.getAttribute("aria-current")).toBe("page");
+    expect(workBtn.getAttribute("aria-selected")).toBe("true");
+    expect(needsBtn.getAttribute("aria-selected")).toBe("false");
     expect(app.shadowRoot?.querySelector("inc-board")).not.toBeNull();
 
-    // 4. Tap Chats tab: routes to #/chat and mounts <inc-chat>
-    chatBtn.click();
+    // 3. Tap Conversations: routes to #/conversations and mounts <inc-chat>
+    conversationsBtn.click();
     await app.updateComplete;
-    expect(location.hash).toBe("#/chat");
-    expect(chatBtn.getAttribute("aria-current")).toBe("page");
-    expect(chatBtn.getAttribute("aria-selected")).toBe("true");
-    expect(boardBtn.getAttribute("aria-selected")).toBe("false");
+    expect(location.hash).toBe("#/conversations");
+    expect(conversationsBtn.getAttribute("aria-current")).toBe("page");
+    expect(conversationsBtn.getAttribute("aria-selected")).toBe("true");
+    expect(workBtn.getAttribute("aria-selected")).toBe("false");
     expect(app.shadowRoot?.querySelector("inc-chat")).not.toBeNull();
 
-    // 5. Tap More tab: routes to #/more and mounts More links
-    moreBtn.click();
+    // 4. Tap Company: routes to #/company/team and mounts the team floor
+    companyBtn.click();
     await app.updateComplete;
-    expect(location.hash).toBe("#/more");
-    expect(moreBtn.getAttribute("aria-current")).toBe("page");
-    expect(moreBtn.getAttribute("aria-selected")).toBe("true");
-    expect(chatBtn.getAttribute("aria-selected")).toBe("false");
-    const moreList = app.shadowRoot?.querySelector("ul.more");
-    expect(moreList).not.toBeNull();
+    expect(location.hash).toBe("#/company/team");
+    expect(companyBtn.getAttribute("aria-current")).toBe("page");
+    expect(companyBtn.getAttribute("aria-selected")).toBe("true");
+    expect(conversationsBtn.getAttribute("aria-selected")).toBe("false");
+    expect(app.shadowRoot?.querySelector("inc-office")).not.toBeNull();
 
-    // 6. Tap Inbox tab: returns to #/inbox
-    inboxBtn.click();
+    // 5. Tap Needs you: returns to #/work/needs-you
+    needsBtn.click();
     await app.updateComplete;
-    expect(location.hash).toBe("#/inbox");
-    expect(inboxBtn.getAttribute("aria-current")).toBe("page");
-    expect(inboxBtn.getAttribute("aria-selected")).toBe("true");
-    expect(moreBtn.getAttribute("aria-selected")).toBe("false");
+    expect(location.hash).toBe("#/work/needs-you");
+    expect(needsBtn.getAttribute("aria-current")).toBe("page");
+    expect(needsBtn.getAttribute("aria-selected")).toBe("true");
+    expect(companyBtn.getAttribute("aria-selected")).toBe("false");
     expect(app.shadowRoot?.querySelector("inc-inbox")).not.toBeNull();
   });
 
-  it("More view sub-screens retain active More tab and navigate without error", async () => {
+  it("Company's sub-screens keep the Company tab active and mount without error", async () => {
     const app = new IncApp();
     document.body.append(app);
     await app.updateComplete;
 
     const subRoutes = [
-      { hash: "#/desk", component: "inc-desk" },
-      { hash: "#/handbook", component: "inc-knowledge" },
-      { hash: "#/hiring", component: "inc-hiring" },
-      { hash: "#/setup/teams", component: "inc-setup" },
-      { hash: "#/setup/notifications", component: "inc-setup" },
+      { hash: "#/company/usage", component: "inc-desk" },
+      { hash: "#/company/brain", component: "inc-knowledge" },
+      { hash: "#/company/team/hiring", component: "inc-hiring" },
+      { hash: "#/company/projects", component: "inc-setup-projects" },
+      { hash: "#/company/settings/teams", component: "inc-setup" },
+      { hash: "#/company/settings/notifications", component: "inc-setup" },
     ];
 
     for (const { hash, component } of subRoutes) {
@@ -266,30 +256,30 @@ describe("T27: Mobile bug hunt & touch regression tests (390x844)", () => {
       window.dispatchEvent(new HashChangeEvent("hashchange"));
       await app.updateComplete;
 
-      const moreTab = app.shadowRoot?.querySelector(".tabs button:last-child");
-      expect(moreTab?.getAttribute("aria-current")).toBe("page");
-      expect(moreTab?.getAttribute("aria-selected")).toBe("true");
+      const companyTab = app.shadowRoot?.querySelector(".tabs button:last-child");
+      expect(companyTab?.getAttribute("aria-current")).toBe("page");
+      expect(companyTab?.getAttribute("aria-selected")).toBe("true");
       expect(app.shadowRoot?.querySelector(component)).not.toBeNull();
     }
   });
 
-  it("theme toggle button on mobile header toggles theme state", async () => {
+  it("the theme switch in the account menu toggles the theme on a phone", async () => {
     const app = new IncApp();
     document.body.append(app);
     await app.updateComplete;
 
-    const themeBtn = app.shadowRoot?.querySelector<HTMLButtonElement>(
-      "button.icon[aria-label='Switch theme']",
-    );
-    expect(themeBtn).not.toBeNull();
-    expect(themeBtn?.getAttribute("type")).toBe("button");
-
-    const initialTheme = app.theme ?? "light";
-    themeBtn?.click();
+    const trigger = app.shadowRoot?.querySelector<HTMLButtonElement>("button.account-trigger");
+    expect(trigger).not.toBeNull();
+    expect(trigger?.getAttribute("type")).toBe("button");
+    trigger?.click();
     await app.updateComplete;
 
-    const newTheme = app.theme;
-    expect(newTheme).not.toBe(initialTheme);
+    const themeItem = app.shadowRoot?.querySelector<HTMLButtonElement>('.account-menu [role="menuitem"]');
+    const initialTheme = app.theme ?? "light";
+    themeItem?.click();
+    await app.updateComplete;
+
+    expect(app.theme).not.toBe(initialTheme);
   });
 
   it("offline mode mounts <inc-offline> with accessible try-now button", async () => {

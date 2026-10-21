@@ -117,6 +117,7 @@ export class IncLayout extends LitElement {
       @media (max-width: ${LAYOUT_BREAKPOINTS.phone}px) {
         .frame.split .page-header,
         .frame.split .content { padding-inline: var(--layout-mobile-gutter, 16px); }
+        .frame.split .page-header { padding-top: 12px; }
       }
       @media (max-width: ${LAYOUT_BREAKPOINTS.phone}px) and (max-height: 520px) {
         .frame.split .page-header { margin-bottom: 8px; padding-bottom: 6px; }

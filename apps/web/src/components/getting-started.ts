@@ -218,6 +218,7 @@ export class IncGettingStarted extends LitElement {
       :host([hidden]) { display: none; }
       .gs { padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; box-sizing: border-box; }
       .head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+      .head-copy { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; min-width: 0; }
       .head h2 { font-size: 20px; }
       .head .grow { flex-grow: 1; }
       .steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
@@ -226,7 +227,7 @@ export class IncGettingStarted extends LitElement {
       .title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 16px; }
       .badge { width: 24px; height: 24px; border-radius: 50%; flex: none; display: inline-flex; align-items: center; justify-content: center;
         font-size: 13px; font-weight: 800; border: 1px solid var(--line-strong); color: var(--ink); }
-      .step.done .badge { background: var(--working-bg); color: var(--working-fg); border-color: var(--working-edge); }
+      .step.complete .badge { background: var(--working-bg); color: var(--working-fg); border-color: var(--working-edge); }
       .badge svg { width: 14px; height: 14px; display: block; }
       .step p { margin: 0; font-size: 14px; line-height: 1.4; color: var(--ink-2); }
       .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; padding-top: 4px; }
@@ -235,7 +236,10 @@ export class IncGettingStarted extends LitElement {
       @media (max-width: 900px) {
         :host { max-height: 44dvh; overflow-y: auto; overscroll-behavior: contain; }
         .gs { padding: 14px 16px; }
+        /* A phone has room for one step: the next one. */
+        .head { flex-wrap: nowrap; }
         .steps { grid-template-columns: minmax(0, 1fr); }
+        .step:not(.next) { display: none; }
         .actions .btn { flex: 1 1 auto; }
       }
     `,
@@ -248,14 +252,14 @@ export class IncGettingStarted extends LitElement {
     const next = steps.find((s) => !s.done);
     return html`<section class="card gs" aria-labelledby="gs-title">
       <div class="head">
-        <h2 id="gs-title">Getting started</h2>
-        <span class="muted" role="status">${done} of ${steps.length} done</span>
+        <div class="head-copy"><h2 id="gs-title">Getting started</h2>
+          <span class="muted" role="status">${done} of ${steps.length} done</span></div>
         <span class="grow"></span>
         <button class="btn ghost dismiss" type="button" @click=${this.dismiss}>Dismiss</button>
       </div>
       <ol class="steps">
         ${steps.map(
-          (s, i) => html`<li class="step ${s.done ? "done" : ""} ${s === next ? "next" : ""}">
+          (s, i) => html`<li class="step ${s.done ? "complete" : ""} ${s === next ? "next" : ""}">
             <div class="title"><span class="badge" aria-hidden="true">${
               s.done
                 ? html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>`

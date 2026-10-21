@@ -139,10 +139,25 @@ export class IncApp extends LitElement {
   }
 
   override updated(changed: Map<string, unknown>): void {
-    if (changed.has("route")) document.title = routeTitle(this.route);
+    if (changed.has("route")) {
+      document.title = routeTitle(this.route);
+      this.revealActiveTab();
+    }
     if (changed.has("accountOpen") && this.accountOpen) {
       this.renderRoot?.querySelector<HTMLElement>('.account-menu [role="menuitem"]')?.focus();
     }
+  }
+
+  /** A tab row that scrolls sideways (a phone) keeps the open tab in view, without scrolling the page. */
+  private revealActiveTab(): void {
+    void this.updateComplete.then(() => {
+      const strip = this.renderRoot?.querySelector<HTMLElement>(".subnav");
+      const tab = strip?.querySelector<HTMLElement>('[aria-selected="true"]');
+      if (!strip || !tab) return;
+      if (tab.offsetLeft + tab.offsetWidth > strip.scrollLeft + strip.clientWidth) {
+        strip.scrollLeft = tab.offsetLeft + tab.offsetWidth - strip.clientWidth + 8;
+      }
+    });
   }
 
   override disconnectedCallback(): void {
