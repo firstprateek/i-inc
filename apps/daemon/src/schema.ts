@@ -95,5 +95,9 @@ export function migrate(db: Db): void {
       done_when TEXT NOT NULL DEFAULT '[]'
     );
     CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status, project);
+    CREATE TABLE IF NOT EXISTS storage_state (
+      key TEXT PRIMARY KEY,
+      body TEXT NOT NULL
+    );
   `);
 }

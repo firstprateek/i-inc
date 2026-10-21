@@ -139,6 +139,11 @@ export class AcpAgent implements Agent {
 
   constructor(private readonly o: AcpOptions) {}
 
+  /** Entries in the transient-retry counter: it should be empty once nothing is retrying. */
+  footprint(): { transient: number } {
+    return { transient: this.transient.size };
+  }
+
   async run(r: SessionRequest): Promise<SessionOutcome> {
     const now = this.o.now ?? Date.now;
     const proc = this.o.launch({
@@ -162,6 +167,7 @@ export class AcpAgent implements Agent {
     let currentTextId = "";
     let textAt = now();
     let liveConfigOptions: Json[] = [];
+    let retrying = false;
 
     const emit = (item: SessionTranscriptItem) => {
       r.onTranscriptItem?.(item);
@@ -372,7 +378,10 @@ export class AcpAgent implements Agent {
         if (/usually transient|retry in a minute/i.test(text)) {
           const count = (this.transient.get(key) ?? 0) + 1;
           this.transient.set(key, count);
-          if (count <= maxTransient) return { kind: "out-of-tokens", resetsAt: now() + 120_000 };
+          if (count <= maxTransient) {
+            retrying = true;
+            return { kind: "out-of-tokens", resetsAt: now() + 120_000 };
+          }
         }
         this.transient.delete(key);
         return stuck(text);
@@ -393,6 +402,9 @@ export class AcpAgent implements Agent {
         );
       return stuck(msg, isStartup);
     } finally {
+      // The count only matters between one retry and the next; a ticket that stops (it was
+      // interrupted, ran out of tokens, or never comes back) must not leave an entry behind.
+      if (!retrying) this.transient.delete(`${r.employee.id}/${r.ticket.id}`);
       flushText();
       rpc.close();
     }
