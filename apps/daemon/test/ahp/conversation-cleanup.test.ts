@@ -270,7 +270,9 @@ describe("conversations and the daemon's housekeeping", () => {
     await until(() => t.sandbox.agents[0]?.exitCode !== undefined);
     held = true; // a cleanup takes the machine
     a.dispatch(c.chat, turnStarted("plain hello", "t1"));
-    await until(() => t.host.chatState(c.chat)?.activity?.includes("being cleaned up"));
+    await until(() =>
+      t.host.chatState(c.chat)?.activity?.includes("Waiting for the sandbox cleanup to finish"),
+    );
     expect(t.sandbox.agents).toHaveLength(1); // nothing started yet
     expect(t.host.chatState(c.chat)?.activeTurn?.responseParts[0]).toMatchObject({
       kind: "systemNotification",
@@ -281,13 +283,15 @@ describe("conversations and the daemon's housekeeping", () => {
     expect(t.host.chatState(c.chat)?.activity).toBeUndefined();
   });
 
-  it("gives up with a reason if the cleanup runs on", async () => {
+  it("gives a turn that waits too long a reason, and does not hold a new conversation's request at all", async () => {
     const t = await sessionRig();
     t.sessions.attachApp({
       storage: { machineOf: () => "m", holding: () => true, untilFree: async () => false },
       awake: () => {},
     });
-    await expect(t.create()).rejects.toThrow(/still being cleaned up/);
+    const t0 = Date.now();
+    await expect(t.create()).rejects.toThrow(/being cleaned up/);
+    expect(Date.now() - t0).toBeLessThan(500);
     expect(t.sandbox.launches).toEqual([]);
   });
 

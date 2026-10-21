@@ -125,7 +125,7 @@ describe("a conversation's working copy", () => {
     );
     expect(s).toContain("git config --worktree user.name 'Ada (i.inc)'");
     expect(s).not.toContain("git push");
-    expect(s).not.toContain("rev-list"); // the "start work" commit a ticket makes for its PR
+    expect(s).not.toContain("..HEAD"); // the "start work" commit a ticket makes for its PR
     expect(s).not.toContain("push");
     expect(s.trimEnd().endsWith("echo @@ready")).toBe(true);
   });
@@ -139,7 +139,9 @@ describe("a conversation's working copy", () => {
       }),
       { employee: ada, project: null, branch: null, cwd: "/home/employee/work/conv-x1" },
     );
-    expect(calls[0]).toBe("set -e\nmkdir -p '/home/employee/work/conv-x1'\necho @@ready");
+    expect(calls[0]).toBe(
+      "set -e\nif [ -d '/home/employee/work/conv-x1' ]; then COPY=existing; else COPY=fresh; fi\nmkdir -p '/home/employee/work/conv-x1'\necho \"@@copy $COPY\"\necho @@ready",
+    );
     await expect(
       prepareConversationCopy(
         kit(async () => ({ code: 0, output: "@@ready" })),

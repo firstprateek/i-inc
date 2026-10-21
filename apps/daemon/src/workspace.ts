@@ -120,11 +120,22 @@ export function openScript(o: {
     '    BASE_REF="HEAD"',
     "  fi",
     "fi",
+    // Folders removed by hand or by the storage cleanup leave worktree records behind.
+    "git worktree prune",
+    "COPY=existing",
     `if ! git -C ${worktree} rev-parse --is-inside-work-tree >/dev/null 2>&1; then`,
     `  if git show-ref --quiet --verify refs/remotes/origin/${o.branch}; then`,
-    `    git worktree add --quiet -B ${branch} ${worktree} origin/${o.branch}`,
+    // A local branch with commits that were never pushed is checked out as it is, never reset.
+    `    if git show-ref --quiet --verify refs/heads/${o.branch} && [ "$(git rev-list --count ${branch} --not origin/${o.branch})" != 0 ]; then`,
+    `      git worktree add --quiet ${worktree} ${branch}; COPY=restored`,
+    "    else",
+    `      git worktree add --quiet -B ${branch} ${worktree} origin/${o.branch}; COPY=remote`,
+    "    fi",
+    // The branch is still here from an earlier copy that was cleaned up: its commits are kept.
+    `  elif git show-ref --quiet --verify refs/heads/${o.branch}; then`,
+    `    git worktree add --quiet ${worktree} ${branch}; COPY=restored`,
     "  else",
-    `    git worktree add --quiet -b ${branch} ${worktree} "$BASE_REF"`,
+    `    git worktree add --quiet -b ${branch} ${worktree} "$BASE_REF"; COPY=fresh`,
     "  fi",
     "fi",
     `cd ${worktree}`,
@@ -132,6 +143,7 @@ export function openScript(o: {
     "git config --worktree --unset i-inc.copy || true",
     `git config --worktree user.name ${quote(o.name)}`,
     `git config --worktree user.email ${quote(o.email)}`,
+    'echo "@@copy $COPY"',
     ...(o.push === false
       ? ["echo @@ready"]
       : [
@@ -218,24 +230,66 @@ export function attachmentScript(o: { worktree: string; file: AttachmentFile }):
 }
 
 /**
+ * Removes a conversation's working copy that was made for a session that then failed to open (no
+ * sign-in, the agent would not start): nothing of the owner's is in it. Only a copy with no
+ * commits of its own and no changes goes, with its new branch; anything else is left for the storage
+ * cleanup, which keeps unpushed work.
+ */
+export function removeCopyScript(o: { worktree: string; branch: string | null }): string {
+  if (o.branch !== null && !isSafeRefName(o.branch)) throw new Error(`not a branch name: ${o.branch}`);
+  const q = quote(o.worktree);
+  return [
+    "set -u",
+    `q=${q}`,
+    '[ -L "$q" ] && { echo @@kept symlink; exit 0; }',
+    '[ -d "$q" ] || { echo @@gone; exit 0; }',
+    'if [ -e "$q/.git" ]; then',
+    '  ahead=$(git -C "$q" rev-list --count HEAD --not --remotes) || { echo @@kept gitfail; exit 0; }',
+    '  dirty=$(git -C "$q" status --porcelain) || { echo @@kept gitfail; exit 0; }',
+    '  [ "$ahead" = 0 ] && [ -z "$dirty" ] || { echo @@kept work; exit 0; }',
+    '  common=$(git -C "$q" rev-parse --path-format=absolute --git-common-dir) || { echo @@kept gitfail; exit 0; }',
+    '  repo=$(dirname "$common")',
+    '  git -C "$repo" worktree remove --force "$q" || { echo @@kept gitfail; exit 0; }',
+    ...(o.branch !== null ? [`  git -C "$repo" branch -D ${quote(o.branch)} >/dev/null 2>&1 || true`] : []),
+    "else",
+    // The empty folder of a conversation with no project, or one holding only the images.
+    '  extra=$(ls -A "$q" | grep -v "^[.]inc$" | head -n 1)',
+    '  [ -z "$extra" ] || { echo @@kept files; exit 0; }',
+    '  rm -rf -- "$q"',
+    "fi",
+    "echo @@removed",
+  ].join("\n");
+}
+
+/**
  * A conversation's working copy in its employee's sandbox: a branch worktree of the project's repo,
  * made like a ticket's but never committed to or pushed (the owner turns the work into a ticket when it
  * should ship), or, with no project, an empty folder to work in. Safe to repeat: a worktree that is
  * already there is left as it is.
  */
+export type CopyState = "existing" | "fresh" | "restored" | "remote";
+
+/** What `prepareConversationCopy` found: the copy was there, or it was made new, or made again from what was kept. */
 export async function prepareConversationCopy(
   o: Pick<WorkspaceOptions, "project" | "tokens" | "identity" | "run" | "remote">,
   c: { employee: Employee; project: string | null; branch: string | null; cwd: string },
-): Promise<void> {
+): Promise<CopyState> {
+  const state = (r: { output: string }): CopyState => {
+    const m = /@@copy (existing|fresh|restored|remote)/.exec(r.output);
+    return (m?.[1] as CopyState | undefined) ?? "existing";
+  };
   const fail = (r: { output: string }) => {
     const tail = r.output.trim().split("\n").slice(-5).join("\n");
     return new Error(`git in ${c.employee.name}'s machine failed: ${tail}`);
   };
   if (!isSafeWorkDir(c.cwd)) throw new Error(`not a safe folder: ${String(c.cwd)}`);
   if (c.project === null || c.branch === null) {
-    const r = await o.run(c.employee.id, `set -e\nmkdir -p ${quote(c.cwd)}\necho @@ready`);
+    const r = await o.run(
+      c.employee.id,
+      `set -e\nif [ -d ${quote(c.cwd)} ]; then COPY=existing; else COPY=fresh; fi\nmkdir -p ${quote(c.cwd)}\necho "@@copy $COPY"\necho @@ready`,
+    );
     if (r.code !== 0 || !r.output.includes("@@ready")) throw fail(r);
-    return;
+    return state(r);
   }
   if (!isSafeRefName(c.branch)) throw new Error(`not a branch name: ${c.branch}`);
   const project = o.project(c.project);
@@ -253,6 +307,7 @@ export async function prepareConversationCopy(
   });
   const r = await o.run(c.employee.id, script, { GH_TOKEN: token });
   if (r.code !== 0 || !r.output.includes("@@ready")) throw fail(r);
+  return state(r);
 }
 
 export class GitHubWorkspace implements Workspace {

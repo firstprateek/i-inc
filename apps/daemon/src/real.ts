@@ -25,7 +25,7 @@ import {
 import { OllamaChat, OllamaHelper, type OllamaOptions } from "./ollama.ts";
 import { type Reap, reaper, reapMachines } from "./reaper.ts";
 import type { Registry } from "./registry.ts";
-import { GitHubWorkspace, prepareConversationCopy } from "./workspace.ts";
+import { GitHubWorkspace, prepareConversationCopy, removeCopyScript } from "./workspace.ts";
 
 export interface RealOptions {
   credentials: Credentials;
@@ -198,7 +198,7 @@ export function realPorts(o: RealOptions): Pick<
           if (c.project !== null && !github) {
             throw new Error("the GitHub App isn't set up yet, so a conversation can't work on a project");
           }
-          await prepareConversationCopy(
+          return prepareConversationCopy(
             {
               project: (name) => registry.project(name),
               tokens: github?.tokens ?? { token: async () => "" },
@@ -207,6 +207,9 @@ export function realPorts(o: RealOptions): Pick<
             },
             { employee: registry.employee(c.employeeId), project: c.project, branch: c.branch, cwd: c.cwd },
           );
+        },
+        removeCopy: async (c) => {
+          await run(registry)(c.employeeId, removeCopyScript({ worktree: c.cwd, branch: c.branch }));
         },
         credentials: async (engine, c) => {
           await signIn(registry, c.employeeId);

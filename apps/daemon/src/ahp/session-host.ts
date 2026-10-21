@@ -25,7 +25,7 @@ import {
 } from "../acp.ts";
 import type { Reap } from "../reaper.ts";
 import type { AccountRateLimit } from "../registry.ts";
-import { isSafeRefName, isSafeWorkDir } from "../workspace.ts";
+import { type CopyState, isSafeRefName, isSafeWorkDir } from "../workspace.ts";
 import { AcpConnection, EXITED, type RpcReply, TIMED_OUT } from "./acp-connection.ts";
 import { configFromAcp, promptBlocks, TurnMapper } from "./acp-mapper.ts";
 import type {
@@ -62,7 +62,12 @@ export interface SessionHostOptions {
   engine: (id: Id) => Engine | undefined;
   teamOf: (employeeId: Id) => string;
   /** Makes (or finds) the conversation's working copy in the sandbox. Throwing fails the session. */
-  workingCopy: (c: ConversationInfo) => Promise<void>;
+  workingCopy: (c: ConversationInfo) => Promise<CopyState | undefined | void>;
+  /**
+   * Takes away a working copy that was just made for a session that then failed to open, if nothing
+   * of the owner's is in it. Failing to is fine: the storage cleanup finds what is left.
+   */
+  removeCopy?: (c: ConversationInfo) => Promise<void>;
   /** The environment an agent starts with: its account's credential, ports, the GitHub sign-in. */
   credentials: (
     engine: Engine,
@@ -128,11 +133,24 @@ interface Live {
   starting: Promise<void> | undefined;
   /** The session is being created: its agent is still initialising and must not be evicted. */
   opening: boolean;
+  /** Created while the sandbox was being cleaned: no copy and no agent yet; the first message makes them. */
+  deferred: boolean;
 }
 
 interface Waiter {
   team: string;
   wake: () => void;
+}
+
+/** What the owner is told when a conversation's working copy had been cleaned up and is made again. */
+function copyNote(info: ConversationInfo, copy: CopyState): string {
+  const gone = "The earlier working copy of this conversation was cleaned up while it was archived.";
+  if (info.project === null) return `${gone} The folder starts empty again.`;
+  if (copy === "restored")
+    return `${gone} Its branch ${info.branch} was checked out again with the commits it had; changes that were not committed were not kept.`;
+  if (copy === "remote")
+    return `${gone} It was rebuilt from ${info.branch} on GitHub; changes that were not committed were not kept.`;
+  return `${gone} Its branch is gone too, so this is a new copy from the project's main branch.`;
 }
 
 const fileUriPath = (uri: string): string | undefined =>
@@ -189,7 +207,9 @@ export class SessionHost implements AgentBackend {
     const storage = this.app?.storage;
     const machine = storage?.machineOf(live.info.employeeId);
     if (!storage || !machine || !storage.holding(machine)) return;
-    say?.(`The ${live.info.team} sandbox is being cleaned up and starts again in a moment.`);
+    say?.(
+      `Waiting for the sandbox cleanup to finish (the ${live.info.team} sandbox starts again in a moment).`,
+    );
     const free = await storage.untilFree(machine, 5 * 60_000);
     say?.(undefined);
     if (!free) throw new Error(`the ${live.info.team} sandbox is still being cleaned up, try again shortly`);
@@ -205,22 +225,44 @@ export class SessionHost implements AgentBackend {
     live.needsBrief = false;
     live.opening = true;
     this.lives.set(req.session, live);
+    let copy: CopyState | undefined | void;
     try {
-      await this.untilCleanupDone(live);
+      // A sandbox being cleaned must not hold the owner's request for minutes. If the agent's
+      // settings are known from an earlier session the conversation is made now, without an agent,
+      // and its first message waits for the cleanup and says so; if not, the owner is told at once.
+      const storage = this.app?.storage;
+      const machine = storage?.machineOf(info.employeeId);
+      if (storage && machine && storage.holding(machine)) {
+        const known = this.configCache.get(info.engine.id);
+        if (!known) {
+          throw new NoSlotError(
+            `The ${info.team} sandbox is being cleaned up and starts again in a few minutes. Try again then.`,
+          );
+        }
+        live.deferred = true;
+        return { config: known, meta: { "iinc.cwd": info.cwd } };
+      }
       await this.acquire(live, { wait: false });
-      await this.o.workingCopy(info);
+      copy = await this.o.workingCopy(info);
       const first = await this.launchSession(live, { fresh: true, mode: req.config?.mode });
-      return {
-        config: configFromAcp(first.modes as Json | undefined, first.configOptions as Json[] | undefined),
-        meta: { "iinc.cwd": info.cwd },
-      };
+      const config = configFromAcp(
+        first.modes as Json | undefined,
+        first.configOptions as Json[] | undefined,
+      );
+      this.configCache.set(info.engine.id, config);
+      return { config, meta: { "iinc.cwd": info.cwd } };
     } catch (e) {
       this.discard(live);
+      // A copy made for a conversation that never came to be: don't leave it behind.
+      if (copy === "fresh" || copy === "restored") {
+        await this.o.removeCopy?.(info).catch((err) => this.log(`couldn't remove ${info.cwd}: ${err}`));
+      }
       throw e;
     } finally {
       live.opening = false;
     }
   }
+  private readonly configCache = new Map<string, OpenedSession["config"]>();
 
   /** The channels exist now: remember the agent's session id (it survives a restart) and let updates through. */
   afterCreate(session: string, chat: string): void {
@@ -349,6 +391,7 @@ export class SessionHost implements AgentBackend {
       created: false,
       starting: undefined,
       opening: false,
+      deferred: false,
     };
   }
 
@@ -595,10 +638,17 @@ export class SessionHost implements AgentBackend {
       if (waited) this.announce(run, undefined);
       try {
         if (run.signal.aborted) throw new Error("cancelled before the agent started");
-        await this.o.workingCopy(live.info);
+        const copy = await this.o.workingCopy(live.info);
         // Cancelled while the working copy was made: no agent, no slot.
         if (run.signal.aborted) throw new Error("cancelled before the agent started");
-        await this.launchSession(live, { fresh: false });
+        // A conversation that comes back after its copy was cleaned up says what became of the copy.
+        const earlier = this.h.chatState(live.chat)?.turns.length ?? 0;
+        if (copy && copy !== "existing" && earlier > 0) this.note(run, copyNote(live.info, copy));
+        // No agent session yet and no history (made while the sandbox was cleaned): a first start,
+        // with the mode the owner asked for.
+        const first = !live.acpSessionId && earlier === 0;
+        const mode = this.h.sessionState(live.session)?.config?.values.mode;
+        await this.launchSession(live, first ? { fresh: true, mode } : { fresh: false });
         if (run.signal.aborted) throw new Error("cancelled while the agent started");
       } catch (e) {
         this.kill(live);
@@ -615,6 +665,15 @@ export class SessionHost implements AgentBackend {
     live.conn = undefined;
     this.release(live);
     conn?.kill();
+  }
+
+  /** A line in the chat, from the host. */
+  private note(run: TurnRun, text: string): void {
+    run.emit({
+      type: ActionType.ChatResponsePart,
+      turnId: run.turnId,
+      part: { kind: ResponsePartKind.SystemNotification, content: text },
+    });
   }
 
   /** The reason a turn is waiting, in the chat where the owner is looking. */
