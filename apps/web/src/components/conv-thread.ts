@@ -16,6 +16,7 @@ import {
   cancelTurn,
   checkOutgoing,
   confirmTool,
+  newId,
   pendingMessage,
   removePending,
   setConfig,
@@ -23,7 +24,8 @@ import {
 } from "../conversations/actions.ts";
 import { firstPending, modePicker, statusText, visible } from "../conversations/model.ts";
 import { cardStyles } from "../conversations/styles.ts";
-import { avatar, base, projectBadge } from "./shared.ts";
+import { draftHash } from "../routes.ts";
+import { avatar, base, projectBadge, selectField } from "./shared.ts";
 import "./conv-composer.ts";
 import "./conv-turn.ts";
 import type { SendDetail } from "./conv-composer.ts";
@@ -36,11 +38,21 @@ const PAGE = 20;
 /** The per-employee default mode, remembered when the owner changes it. */
 export const modeKey = (employeeId: string) => `i-inc-conv-mode:${employeeId}`;
 
+/** A message sent and not yet confirmed, with the id it was sent under. */
+interface Sent {
+  text: string;
+  files: File[];
+  at: number;
+  turnId?: string;
+  pendingId?: string;
+}
+
 export class IncConvThread extends LitElement {
   static override properties = {
     conv: { attribute: false },
     draft: { attribute: false },
     draftNote: { type: String },
+    draftProjects: { attribute: false },
     first: { attribute: false },
     onCreate: { attribute: false },
     employee: { attribute: false },
@@ -57,6 +69,8 @@ export class IncConvThread extends LitElement {
   declare draft: { employee: string; project: string } | undefined;
   /** What is wrong with the draft's address (an unknown employee or project), in a sentence. */
   declare draftNote: string;
+  /** The projects this employee can be asked about, for the draft's project picker. */
+  declare draftProjects: string[];
   /** The message that made this conversation, sent once its chat is loaded. */
   declare first: SendDetail | undefined;
   declare onCreate: ((d: SendDetail) => Promise<string | null>) | undefined;
@@ -82,6 +96,7 @@ export class IncConvThread extends LitElement {
   private resizer: ResizeObserver | undefined;
   private baselined = false;
   private firstSent = false;
+  private draftKey = "";
   private cardVisible = false;
   private openedId = "";
   /** How many past turns the last render showed. */
@@ -92,6 +107,7 @@ export class IncConvThread extends LitElement {
     super();
     this.phone = false;
     this.draftNote = "";
+    this.draftProjects = [];
     this.contextOpen = false;
     this.info = ahp().info;
     this.stick = true;
@@ -103,6 +119,7 @@ export class IncConvThread extends LitElement {
   static override styles = [
     base,
     cardStyles,
+    selectField,
     css`
       :host { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; position: relative; }
       .head { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 4px 10px; border-bottom: 1px solid var(--line); min-width: 0; }
@@ -126,6 +143,7 @@ export class IncConvThread extends LitElement {
       .inner { max-width: 820px; margin: 0 auto; padding-bottom: 12px; min-width: 0; }
       .older { display: flex; justify-content: center; padding: 12px 0 4px; }
       .empty { max-width: 46ch; margin: 12vh auto 0; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 0 16px; }
+      .empty .pick { display: flex; flex-direction: column; gap: 4px; align-items: stretch; font-size: 13px; font-weight: 700; color: var(--ink-2); min-width: 220px; }
       .empty h2 { font-size: 22px; } .empty p { margin: 0; color: var(--ink-2); line-height: 1.5; }
       .skeleton { display: flex; flex-direction: column; gap: 12px; padding: 24px 0; }
       .skeleton i { display: block; height: 16px; border-radius: 8px; background: var(--sunken); animation: pulse 1.4s ease-in-out infinite; }
@@ -141,12 +159,14 @@ export class IncConvThread extends LitElement {
       .needs-bar { display: flex; align-items: center; gap: 10px; padding: 2px 4px 2px 12px; min-height: 44px; border-radius: 14px; font-size: 13.5px; background: var(--needs-bg); color: var(--needs-fg);
         border: 1px solid var(--needs-edge); font-weight: 700; font-size: 14px; }
       .needs-bar > span { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .needs-bar button { margin-left: auto; flex: none; min-height: 36px; padding: 0 12px; }
+      .needs-bar button { margin-left: auto; flex: none; padding: 0 12px; }
       .notice { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 12px; border: 1px solid var(--alarm); color: var(--alarm-fg); font-size: 14px; font-weight: 600; }
       .notice button { margin-left: auto; }
       @media (max-width: 767px) {
         .title { font-size: 17px; }
         .meta code { display: none; }
+        .meta { flex-wrap: wrap; row-gap: 2px; }
+        .meta .proj-badge { flex: none; max-width: 100%; }
         .scroller { padding: 0 2px; }
         .dock { padding-left: 2px; padding-right: 2px; }
       }
@@ -200,6 +220,15 @@ export class IncConvThread extends LitElement {
   override willUpdate(changed: Map<string, unknown>): void {
     const conv = this.conv;
     const key = conv ? `${conv.id}|${conv.ahpSession}|${conv.ahpChat}` : "";
+    if (changed.has("draft")) {
+      // A different draft (the route changed): what was said about the last one is stale.
+      const d = this.draft;
+      const dk = d ? `${d.employee}|${d.project}` : "";
+      if (dk !== this.draftKey) {
+        this.draftKey = dk;
+        this.notice = null;
+      }
+    }
     if (changed.has("conv") && key !== this.wired) {
       this.unwatch();
       this.wired = key;
@@ -376,13 +405,13 @@ export class IncConvThread extends LitElement {
   }
 
   /** Messages sent and not yet accepted, by `clientSeq`: the host's refusal does not echo their content. */
-  private inflight = new Map<number, { text: string; files: File[]; at: number }>();
+  private inflight = new Map<number, Sent>();
   private probes = new Set<ReturnType<typeof setTimeout>>();
   /** The connection dropped with sends unanswered: once it is back, each is found in the chat or given back. */
   private lost = false;
 
-  private remember(clientSeq: number, text: string, files: File[]) {
-    this.inflight.set(clientSeq, { text, files, at: Date.now() });
+  private remember(clientSeq: number, m: Sent) {
+    this.inflight.set(clientSeq, m);
     if (this.inflight.size > 30) {
       const oldest = this.inflight.keys().next().value;
       if (oldest !== undefined) this.inflight.delete(oldest);
@@ -396,17 +425,21 @@ export class IncConvThread extends LitElement {
     this.probes.add(t);
   }
 
-  /** Whether the chat already holds this message (the host took it; only the echo was lost). */
-  private holds(chat: ChatState, m: { text: string; at: number }): boolean {
-    const same = (x?: { message: { text: string } }) => x?.message.text === m.text;
-    const turn = (t: { message: { text: string }; startedAt?: string | undefined }) =>
+  /**
+   * Whether the chat already holds this message (the host took it; only the echo was lost). A turn is found by the
+   * id this client gave it, a pending message by its id; never by its words alone, so a lost "ok" is not taken for
+   * another "ok". A pending message that already became a turn (the host started it from the queue) has a turn id
+   * of the host's, so that one is found by its words, but only among turns that began after it was sent.
+   */
+  private holds(chat: ChatState, m: Sent): boolean {
+    if (m.turnId !== undefined)
+      return chat.turns.some((t) => t.id === m.turnId) || chat.activeTurn?.id === m.turnId;
+    const pendingId = m.pendingId;
+    if (chat.steeringMessage?.id === pendingId || (chat.queuedMessages ?? []).some((q) => q.id === pendingId))
+      return true;
+    const began = (t: { message: { text: string }; startedAt?: string | undefined }) =>
       t.message.text === m.text && Date.parse(t.startedAt ?? "") >= m.at - 2000;
-    return (
-      chat.turns.some(turn) ||
-      (chat.activeTurn ? turn(chat.activeTurn) : false) ||
-      same(chat.steeringMessage) ||
-      (chat.queuedMessages ?? []).some(same)
-    );
+    return chat.turns.some(began) || (chat.activeTurn ? began(chat.activeTurn) : false);
   }
 
   /**
@@ -430,10 +463,15 @@ export class IncConvThread extends LitElement {
     // The chat is not loaded yet (a fresh start): settle when it arrives.
     if (!chat) return;
     this.lost = false;
-    const unsent = [...this.inflight.values()].filter((m) => !this.holds(chat, m));
+    const unsent = [...this.inflight.values()].filter((m) => !this.holds(chat, m)); // in the order they were sent
     this.inflight.clear();
-    for (const m of unsent)
-      this.restoreMessage(m, "Not sent: the connection was lost. Your message is back in the box.");
+    if (unsent.length)
+      this.restoreMessages(
+        unsent,
+        unsent.length === 1
+          ? "Not sent: the connection was lost. Your message is back in the box."
+          : `Not sent: the connection was lost. Your ${unsent.length} messages are back in the box, in the order you sent them.`,
+      );
   }
 
   private onRejected = (r: Rejection) => {
@@ -464,11 +502,19 @@ export class IncConvThread extends LitElement {
   };
 
   private restoreMessage(sent: { text: string; files: File[] }, why: string) {
+    this.restoreMessages([sent], why);
+  }
+
+  /** Gives messages back to the box in order, separated by blank lines, ahead of anything typed since. */
+  private restoreMessages(sent: { text: string; files: File[] }[], why: string) {
     (
       this.renderRoot.querySelector("inc-conv-composer") as
         | (HTMLElement & { restore(text: string, files?: File[]): void })
         | null
-    )?.restore(sent.text, sent.files);
+    )?.restore(
+      sent.map((m) => m.text).join("\n\n"),
+      sent.flatMap((m) => m.files),
+    );
     this.fail(why);
   }
 
@@ -486,12 +532,19 @@ export class IncConvThread extends LitElement {
       return "Couldn't read one of the files.";
     }
     const running = !!ahp().chat(conv.ahpChat)?.activeTurn;
-    const action =
-      d.intent === "turn" && !running
-        ? turnStarted(d.text, attachments)
-        : pendingMessage(d.intent === "steer" ? "steering" : "queued", d.text, attachments);
+    const id = newId();
+    const asTurn = d.intent === "turn" && !running;
+    const action = asTurn
+      ? turnStarted(d.text, attachments, id)
+      : pendingMessage(d.intent === "steer" ? "steering" : "queued", d.text, attachments, id);
     const sent = ahp().dispatch(conv.ahpChat, action);
-    if (sent.ok) this.remember(sent.clientSeq, d.text, d.files);
+    if (sent.ok)
+      this.remember(sent.clientSeq, {
+        text: d.text,
+        files: d.files,
+        at: Date.now(),
+        ...(asTurn ? { turnId: id } : { pendingId: id }),
+      });
     return sent.ok ? null : sent.error;
   };
 
@@ -639,7 +692,18 @@ export class IncConvThread extends LitElement {
         <div class="empty"><h2>Start a conversation with ${name}</h2>
           <p>${d.project ? `Ask ${name} about ${d.project}, or tell them what to change.` : `Ask ${name} anything, or tell them what to do.`} The conversation is created when you send your first message; leave this page and nothing is kept.</p>
           <p>Attach a screenshot or a text file by pasting or dropping it.</p>
-          ${this.draftNote ? html`<p class="notice" role="status">${this.draftNote}</p>` : nothing}</div>
+          ${this.draftNote ? html`<p class="notice" role="status">${this.draftNote}</p>` : nothing}
+          ${
+            this.draftProjects.length
+              ? html`<label class="pick">Project <select aria-label="Project for this conversation" @change=${(
+                  e: Event,
+                ) => {
+                  location.hash = draftHash(d.employee, (e.target as HTMLSelectElement).value || null);
+                }}><option value="" ?selected=${!d.project}>No project</option>${this.draftProjects.map(
+                  (p) => html`<option value=${p} ?selected=${p === d.project}>${p}</option>`,
+                )}</select></label>`
+              : nothing
+          }</div>
       </div></div></div>
       <div class="dock">
         <inc-conv-composer .conversationId=${`draft:${d.employee}:${d.project}`} .name=${name} .blocked=${/employee/.test(this.draftNote) ? "Pick an employee from the list first." : ""} .onSend=${this.onCreate}></inc-conv-composer>

@@ -316,6 +316,12 @@ export class IncConversations extends LitElement {
     }
   };
 
+  /** The projects the draft's employee works on (all of them when the employee has no list). */
+  private draftProjectChoices(): string[] {
+    const e = this.employees.find((x) => x.id === this.draft?.employee);
+    return e?.projects?.length ? e.projects : this.projects;
+  }
+
   /** The draft as the screen can honour it: an unknown project becomes "no project", and the owner is told. */
   private draftView(): { draft: { employee: string; project: string }; note: string } | undefined {
     const d = this.draft;
@@ -325,7 +331,9 @@ export class IncConversations extends LitElement {
     const knownProject = !d.project || this.projects.includes(d.project);
     const note = [
       employee ? "" : "That employee isn't available.",
-      knownProject ? "" : "That project isn't available, so this conversation has no project.",
+      knownProject
+        ? ""
+        : "That project isn't available — starting without a project. Pick one below if you want one.",
     ]
       .filter(Boolean)
       .join(" ");
@@ -445,7 +453,7 @@ export class IncConversations extends LitElement {
               }}
               @conv-toggle-context=${this.toggleContext}></inc-conv-thread>`
           : this.draft
-            ? html`<inc-conv-thread .draft=${this.draftView()?.draft} .draftNote=${this.draftView()?.note ?? ""}
+            ? html`<inc-conv-thread .draft=${this.draftView()?.draft} .draftNote=${this.draftView()?.note ?? ""} .draftProjects=${this.draftProjectChoices()}
                 .employee=${this.employees.find((e) => e.id === this.draft?.employee)}
                 .phone=${phone} .onCreate=${this.createFromDraft}></inc-conv-thread>`
             : this.selectedId && this.loading

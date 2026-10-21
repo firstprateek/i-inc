@@ -174,10 +174,11 @@ describe("the thread", () => {
     ta.value = text;
     ta.dispatchEvent(new Event("input"));
     await composer.updateComplete;
-    const before = h.host.received.filter((m) => m.method === "dispatchAction").length;
+    const all = () => [...h.host.received, ...h.host.swallowed].filter((m) => m.method === "dispatchAction");
+    const before = all().length;
     await composer.submit(intent);
-    await until(() => h.host.received.filter((m) => m.method === "dispatchAction").length > before);
-    return h.host.received.filter((m) => m.method === "dispatchAction").at(-1)?.params.clientSeq as number;
+    await until(() => all().length > before);
+    return all().at(-1)?.params.clientSeq as number;
   }
 
   it("renders a markdown confirmation title safely and shows a call the turn ended as Cancelled", async () => {
@@ -255,18 +256,20 @@ describe("the thread", () => {
     expect(h.h.made[1]?.received.filter((m) => m.method === "dispatchAction")).toHaveLength(0);
   });
 
-  it("does not give it back when the host did take it and only the echo was lost", async () => {
+  it("does not give it back when the host did take it and only the echo was lost (found by its turn id)", async () => {
     const h = await setup();
     h.host.blackhole = true;
     await typeAndSend(h, "it got there", "turn").catch(() => {});
     await until(() => (h.root().querySelector("inc-conv-composer") as Any).text === "");
-    // the host did start the turn (its state has it) but the client never saw the echo
+    h.host.blackhole = false;
+    const turnId = h.host.swallowed.filter((m) => m.method === "dispatchAction").at(-1)?.params.action.turnId;
+    // the host did start the turn (under the id the client gave it) but the client never saw the echo
     h.host.states.set(
       CHAT,
       chatState({
         turns: [
           {
-            id: "tx",
+            id: turnId,
             startedAt: new Date().toISOString(),
             duration: 5,
             message: { text: "it got there", origin: USER_ORIGIN },
@@ -281,7 +284,103 @@ describe("the thread", () => {
     await until(() => h.h.made.length === 2 && h.c.info.status === "open", 3000);
     await tick(80);
     expect(h.root().querySelector(".notice")).toBeNull();
+  });
+
+  it('is not fooled by another message with the same words: a lost "ok" is given back', async () => {
+    const h = await setup();
+    // an "ok" turn from long ago, and an "ok" already queued, are not this one
+    const old = {
+      id: "old",
+      startedAt: new Date(Date.now() - 3_600_000).toISOString(),
+      duration: 5,
+      message: { text: "ok", origin: USER_ORIGIN },
+      responseParts: [],
+      usage: undefined,
+      state: "complete",
+    };
+    h.host.states.set(
+      CHAT,
+      chatState({
+        turns: [old],
+        queuedMessages: [{ id: "someone-elses", message: { text: "ok", origin: USER_ORIGIN } }],
+        steeringMessage: { id: "also", message: { text: "ok", origin: USER_ORIGIN } },
+      }),
+    );
+    await h.h.made[0]?.transport.close();
+    await until(() => h.h.made.length === 2 && h.c.info.status === "open", 3000);
+    if (h.h.made[1]) h.h.made[1].blackhole = true;
+    await typeAndSend({ ...h, host: h.h.made[1] as Any }, "ok", "queue").catch(() => {});
+    await until(() => (h.root().querySelector("inc-conv-composer") as Any).text === "");
+    await h.h.made[1]?.drop();
+    await until(() => h.h.made.length === 3 && h.c.info.status === "open", 3000);
+    await until(() => h.root().querySelector(".notice"));
     const composer = h.root().querySelector("inc-conv-composer") as Any;
+    expect(must<HTMLTextAreaElement>(composer.shadowRoot?.querySelector("textarea")).value).toBe("ok");
+  });
+
+  it("finds a message that became a turn from the queue during the drop, by its words, only if it began after it was sent", async () => {
+    const h = await setup();
+    h.host.blackhole = true;
+    await typeAndSend(h, "later one", "queue").catch(() => {});
+    await until(() => (h.root().querySelector("inc-conv-composer") as Any).text === "");
+    h.host.blackhole = false;
+    h.host.states.set(
+      CHAT,
+      chatState({
+        turns: [
+          {
+            id: "host-made",
+            startedAt: new Date(Date.now() + 500).toISOString(),
+            duration: 5,
+            message: { text: "later one", origin: USER_ORIGIN },
+            responseParts: [],
+            usage: undefined,
+            state: "complete",
+          },
+        ],
+      }),
+    );
+    await h.host.drop();
+    await until(() => h.h.made.length === 2 && h.c.info.status === "open", 3000);
+    await tick(80);
+    expect(h.root().querySelector(".notice")).toBeNull();
+  });
+
+  it("gives several lost messages back in the order they were sent, joined by blank lines, as one notice", async () => {
+    const h = await setup();
+    h.host.blackhole = true;
+    await typeAndSend(h, "first", "queue").catch(() => {});
+    await typeAndSend(h, "second", "queue").catch(() => {});
+    await typeAndSend(h, "third", "queue").catch(() => {});
+    await h.host.drop();
+    await until(() => h.h.made.length === 2 && h.c.info.status === "open", 3000);
+    await until(() => h.root().querySelector(".notice"));
+    const composer = h.root().querySelector("inc-conv-composer") as Any;
+    await composer.updateComplete;
+    expect(must<HTMLTextAreaElement>(composer.shadowRoot?.querySelector("textarea")).value).toBe(
+      "first\n\nsecond\n\nthird",
+    );
+    expect(h.root().querySelector(".notice")?.textContent).toContain(
+      "3 messages are back in the box, in the order you sent them",
+    );
+  });
+
+  it("forgets what it settled: a later drop does not give the same message back again", async () => {
+    const h = await setup();
+    h.host.blackhole = true;
+    await typeAndSend(h, "only once", "turn").catch(() => {});
+    await h.host.drop();
+    await until(() => h.h.made.length === 2 && h.c.info.status === "open", 3000);
+    await until(() => h.root().querySelector(".notice"));
+    // the person clears the box and the notice; the connection drops again with nothing new sent
+    const composer = h.root().querySelector("inc-conv-composer") as Any;
+    composer.text = "";
+    await composer.updateComplete;
+    must<HTMLButtonElement>(h.root().querySelector(".notice button")).click();
+    await h.h.made[1]?.drop();
+    await until(() => h.h.made.length === 3 && h.c.info.status === "open", 3000);
+    await tick(80);
+    expect(h.root().querySelector(".notice")).toBeNull();
     expect(must<HTMLTextAreaElement>(composer.shadowRoot?.querySelector("textarea")).value).toBe("");
   });
 
@@ -409,6 +508,31 @@ describe("the thread", () => {
     el.conv = { ...conv, id: "ffffffff", ahpSession: SESSION, ahpChat: CHAT };
     await el.updateComplete;
     expect(el.stick).toBe(true); // another conversation opens at its end
+  });
+
+  it("a draft with an unknown project says so, lets the person pick one, and forgets the last draft's notice", async () => {
+    const h = hosts();
+    setAhp(new AhpConnection({ connect: h.connect, clientId: "me", pingMs: 0 }));
+    const el = document.createElement("inc-conv-thread") as IncConvThread;
+    el.employee = ada;
+    el.draft = { employee: "ada", project: "" };
+    el.draftNote =
+      "That project isn't available — starting without a project. Pick one below if you want one.";
+    el.draftProjects = ["Duet", "Other"];
+    document.body.append(el);
+    await el.updateComplete;
+    const root = el.shadowRoot as ShadowRoot;
+    expect(root.querySelector(".empty .notice")?.textContent).toContain("starting without a project");
+    const select = must<HTMLSelectElement>(root.querySelector(".empty select"));
+    expect([...select.options].map((o) => o.value)).toEqual(["", "Duet", "Other"]);
+    select.value = "Duet";
+    select.dispatchEvent(new Event("change"));
+    expect(location.hash).toBe("#/conversations/new/ada/Duet");
+    // a notice from the previous draft does not follow the person to the next one
+    (el as Any).notice = "The host didn't accept that: something";
+    el.draft = { employee: "kit", project: "" };
+    await el.updateComplete;
+    expect(root.querySelector(".notice[role='alert']")).toBeNull();
   });
 
   it("renders only a window of a long chat, and pages the rest in", async () => {

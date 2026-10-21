@@ -122,6 +122,42 @@ describe("Enter in the composer", () => {
     expect(ta.value).toBe("other\n\nnewer");
   });
 
+  it("takes the message out of the box at once: what is typed while it is being sent is kept, not wiped", async () => {
+    let finish: (v: string | null) => void = () => {};
+    const slow = async () =>
+      new Promise<string | null>((r) => {
+        finish = r;
+      });
+    const { el, ta, type } = await mount({ onSend: slow });
+    await type("first message");
+    const sending = el.submit("turn");
+    await el.updateComplete;
+    expect(ta.value).toBe(""); // gone from the box before the send has finished
+    await type("next thought"); // typed while it is still being read and sent
+    finish(null);
+    await sending;
+    await el.updateComplete;
+    expect(ta.value).toBe("next thought");
+    expect(localStorage.getItem("inc.chat.draft.conv:c1")).toBe("next thought");
+  });
+
+  it("brings the message back, ahead of what was typed since, when the send fails", async () => {
+    let finish: (v: string | null) => void = () => {};
+    const slow = async () =>
+      new Promise<string | null>((r) => {
+        finish = r;
+      });
+    const { el, ta, type } = await mount({ onSend: slow });
+    await type("lost message");
+    const sending = el.submit("turn");
+    await type("typed meanwhile");
+    finish("Not connected to the host yet.");
+    await sending;
+    await el.updateComplete;
+    expect(ta.value).toBe("lost message\n\ntyped meanwhile");
+    expect(el.shadowRoot?.textContent).toContain("Not connected");
+  });
+
   it("remembers a draft per conversation", async () => {
     const a = await mount();
     await a.type("half a thought");

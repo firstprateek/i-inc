@@ -163,6 +163,7 @@ export class IncConvList extends LitElement {
   override willUpdate(changed: Map<string, unknown>): void {
     const preset = this.preset;
     if (changed.has("preset") && preset) this.form = true;
+    if (changed.has("preset") && !preset) this.presetNote = "";
     if (changed.has("employees") && this.employees[0] && !this.pickEmployee)
       this.pickEmployee = this.employees[0].id;
     if (preset && !this.ready && changed.has("preset")) {

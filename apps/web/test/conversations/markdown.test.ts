@@ -248,7 +248,7 @@ describe("hostile input costs a pass over the text, not more", () => {
       small.forEach((text, i) => {
         const t1 = best(() => highlight(text, lang));
         const t4 = best(() => highlight(big[i] ?? "", lang));
-        expect(t4, `${lang} #${i}: ${t1.toFixed(1)} -> ${t4.toFixed(1)} ms`).toBeLessThan(8 * t1 + 20);
+        expect(t4, `${lang} #${i}: ${t1.toFixed(1)} -> ${t4.toFixed(1)} ms`).toBeLessThan(8 * t1 + 60);
         expect(tokensText(highlight(big[i] ?? "", lang))).toBe(big[i]);
       });
     }

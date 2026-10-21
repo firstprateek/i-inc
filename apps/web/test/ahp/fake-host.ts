@@ -41,6 +41,8 @@ export class FakeHost {
   closed = false;
   /** Frames from the client are read and dropped: no answer, no echo (a socket that went nowhere). */
   blackhole = false;
+  /** What a black-holed host read and dropped. */
+  readonly swallowed: Any[] = [];
   /** Runs before the reply to initialize, reconnect or subscribe: actions the host sends ahead of its answer. */
   beforeReply: ((method: string, p: Any) => void) | undefined;
   /** Runs right after the reply: the first live action after a snapshot, which can overtake the client's handling of it. */
@@ -60,7 +62,10 @@ export class FakeHost {
         return;
       }
       const m = JSON.parse(frame.text) as Any;
-      if (this.blackhole) continue;
+      if (this.blackhole) {
+        this.swallowed.push(m);
+        continue;
+      }
       this.received.push(m);
       this.handle(m);
     }

@@ -161,6 +161,10 @@ export class IncConvComposer extends LitElement {
         .more { display: inline-flex; }
       }
       @media (max-width: 360px) { .pickers select { max-width: 112px; } }
+      /* Narrow, with Steer and Stop showing: the mode moves into the Steer menu rather than squeezing the buttons. */
+      @media (max-width: 340px) { .row.fold .pickers { display: none; } }
+      .menu { display: flex; flex-direction: column; }
+      .menu-head { padding: 6px 16px 2px; font: 800 11.5px var(--body); text-transform: uppercase; letter-spacing: 0.4px; color: var(--ink-2); border-top: 1px solid var(--line); margin-top: 4px; }
       .more svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
       .split { position: relative; display: inline-flex; flex: none; }
       .split .steer { border-radius: 999px 0 0 999px; }
@@ -325,18 +329,21 @@ export class IncConvComposer extends LitElement {
     if (checkOutgoing(text, files)) return; // the box already says why
     this.sending = true;
     this.error = null;
-    const problem = await this.onSend({ text, files, intent });
-    this.sending = false;
-    if (problem) {
-      this.error = problem;
-      return;
-    }
+    // Take the message out of the box now, before any await: what is typed while the files are read belongs to
+    // the next message, and is not wiped by this one's success. If it fails, the message comes back.
     this.text = "";
     this.slash = [];
     draftMemo.set(`conv:${this.conversationId}`, "");
     this.picker.clear();
     this.attached = [];
     this.fileProblem = null;
+    const problem = await this.onSend({ text, files, intent });
+    this.sending = false;
+    if (problem) {
+      this.error = problem;
+      this.restore(text, files);
+      return;
+    }
     this.focusInput();
   }
 
@@ -450,7 +457,7 @@ export class IncConvComposer extends LitElement {
             this.composing = false;
             this.composedAt = Date.now();
           }}></textarea>
-        <div class="row">
+        <div class="row ${running && hasInput ? "fold" : ""}">
           <input id="conv-files-input" type="file" multiple hidden accept="image/png,image/jpeg,image/webp,image/gif,text/*,.md,.json,.yaml,.yml,.toml,.ts,.tsx,.js,.jsx,.py,.go,.rs,.java,.sh,.sql,.css,.html,.xml,.csv,.log,.diff,.patch"
             @change=${(e: Event) => {
               const input = e.target as HTMLInputElement;
@@ -478,7 +485,20 @@ export class IncConvComposer extends LitElement {
                           ? html`<div class="menu" role="menu"><button type="button" role="menuitem" @click=${() => {
                               this.menu = false;
                               void this.submit("queue");
-                            }}>Queue (after this turn)</button></div>`
+                            }}>Queue (after this turn)</button>
+                            ${
+                              mode
+                                ? html`<div class="menu-head" role="presentation">${mode.title}</div>${mode.choices.map(
+                                    (
+                                      c,
+                                    ) => html`<button type="button" role="menuitemradio" aria-checked=${c.value === mode.value ? "true" : "false"}
+                                      @click=${() => {
+                                        this.menu = false;
+                                        this.emit("conv-config", { key: mode.key, value: c.value });
+                                      }}>${c.value === mode.value ? "✓ " : ""}${c.label}</button>`,
+                                  )}`
+                                : nothing
+                            }</div>`
                           : nothing
                       }</span>`
                     : nothing
