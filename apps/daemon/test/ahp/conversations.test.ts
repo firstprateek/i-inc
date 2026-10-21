@@ -156,6 +156,48 @@ describe("REST /api/conversations", () => {
     expect(app.ahp.host.sessions()).toHaveLength(2);
   });
 
+  it("answers 400 to a field of the wrong type instead of leaving it out", async () => {
+    const { app } = await conv();
+    const post = (b: unknown) => app.call("POST", "/api/conversations", b);
+    for (const [field, value] of [
+      ["project", 5],
+      ["project", true],
+      ["project", {}],
+      ["title", 5],
+      ["title", null],
+      ["mode", 1],
+      ["mode", null],
+      ["engineId", 7],
+      ["employeeId", 1],
+    ] as const) {
+      const r = await post({ employeeId: "ada", [field]: value });
+      expect(r.status, `${field}: ${JSON.stringify(value)}`).toBe(400);
+    }
+    expect((await post({ employeeId: "ada", project: null })).status).toBe(201); // null project is a project-less conversation
+    expect(app.ahp.host.sessions()).toHaveLength(1); // none of the refused ones made a session
+  });
+
+  it("changes nothing when any field of a PATCH is bad", async () => {
+    const { app } = await conv();
+    const c = (await app.call("POST", "/api/conversations", { employeeId: "ada", title: "Before" })).body
+      .conversation;
+    const seq = app.ahp.host.serverSeq;
+    for (const bad of [
+      { title: "After", archived: "yes" },
+      { title: "After", archived: 1 },
+      { archived: true, title: "" },
+      { archived: true, title: 5 },
+      { title: "x".repeat(201), archived: true },
+    ]) {
+      const r = await app.call("PATCH", `/api/conversations/${c.id}`, bad);
+      expect(r.status, JSON.stringify(bad).slice(0, 50)).toBe(400);
+    }
+    const now = (await app.call("GET", `/api/conversations/${c.id}`)).body.conversation;
+    expect(now).toMatchObject({ title: "Before", archivedAt: null });
+    expect(app.ahp.host.sessionState(c.ahpSession)?.title).toBe("Before");
+    expect(app.ahp.host.serverSeq).toBe(seq);
+  });
+
   it("answers 502 when the agent side cannot open", async () => {
     const backend = new ScriptedBackend();
     const app = await appWith(backend);

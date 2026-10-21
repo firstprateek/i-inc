@@ -84,8 +84,7 @@ export class AhpTransport {
     if (req.method !== "GET" || req.headers.get("upgrade")?.toLowerCase() !== "websocket") {
       return no(426, "websocket upgrade required");
     }
-    if (this.host.connectionCount() >= this.host.limits.maxConnections)
-      return no(503, "too many connections");
+    if (this.host.full(authed)) return no(503, "too many connections");
     return { data: { authed } };
   }
 

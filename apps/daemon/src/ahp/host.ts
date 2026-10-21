@@ -71,6 +71,10 @@ export interface Socket {
 export interface TransportLimits {
   /** A frame bigger than this closes the connection (1009). Images travel in turnStarted, as base64. */
   maxMessageBytes: number;
+  /** An ordinary frame is at most this big; only a message with attachments may be bigger (up to maxMessageBytes). */
+  maxFrameBytes: number;
+  /** Sockets that upgraded without credentials (deferred auth), at most, apart from the authenticated ones. */
+  maxUnauthenticated: number;
   /** More queued output than this and the client is dropped (1013); it reconnects and replays. */
   maxBufferedBytes: number;
   maxSubscriptions: number;
@@ -82,10 +86,15 @@ export interface TransportLimits {
   maxReplayActions: number;
   /** Turns per page for fetchTurns. */
   turnsPage: number;
+  /** The log is pruned this often (ms), and after this many actions, as well as at startup. */
+  pruneEveryMs: number;
+  pruneEveryActions: number;
 }
 
 export const defaultTransportLimits: TransportLimits = {
   maxMessageBytes: 24 * 1024 * 1024,
+  maxFrameBytes: 1024 * 1024,
+  maxUnauthenticated: 8,
   maxBufferedBytes: 8 * 1024 * 1024,
   maxSubscriptions: 64,
   maxConnections: 32,
@@ -93,6 +102,8 @@ export const defaultTransportLimits: TransportLimits = {
   idleCloseMs: 90_000,
   maxReplayActions: 5000,
   turnsPage: 20,
+  pruneEveryMs: 3_600_000,
+  pruneEveryActions: 5000,
 };
 
 /** What a prompt may carry. Images are checked by their bytes. */
@@ -100,7 +111,11 @@ export const attachmentLimits = {
   count: 6,
   imageBytes: 10 * 1024 * 1024,
   fileBytes: 1024 * 1024,
-  textChars: 200_000,
+  textChars: 256_000,
+  /** A draft is kept in every snapshot of the chat, so it is small. */
+  draftChars: 64_000,
+  /** Ids, labels and other short strings a client sends. */
+  shortChars: 256,
   /** Bigger than this and an embedded attachment moves out of the log into a content blob. */
   inlineChars: 4096,
 };
@@ -216,6 +231,9 @@ export class AhpHost {
   private readonly creating = new Set<string>();
   private readonly lastSummary = new Map<string, string>();
   private closed = false;
+  private pruneTimer: ReturnType<typeof setInterval> | undefined;
+  private actionsSincePrune = 0;
+  private pruneSoon = false;
 
   constructor(private readonly o: HostOptions) {
     const { snapshotEvery, retainMs, maxActionRows, maxBlobBytes, ...transport } = o.limits ?? {};
@@ -230,6 +248,19 @@ export class AhpHost {
     this.now = o.now ?? Date.now;
     this.log = o.log ?? (() => {});
     this.rebuild();
+    // Pruning at startup alone would let a daemon that runs for months keep every row it ever wrote.
+    this.pruneTimer = setInterval(() => this.pruneQuietly(), this.limits.pruneEveryMs);
+    this.pruneTimer.unref?.();
+  }
+
+  private pruneQuietly(): void {
+    this.actionsSincePrune = 0;
+    this.pruneSoon = false;
+    try {
+      this.prune();
+    } catch (e) {
+      this.log(`ahp: pruning failed: ${e instanceof Error ? e.message : e}`);
+    }
   }
 
   // ───────────────────────────── state: rebuild, apply, broadcast ─────────────────────────────
@@ -386,6 +417,11 @@ export class AhpHost {
     this.seq = seq;
     ch.c = next;
     ch.lastSeq = seq;
+    // A lot of writing since the last prune: do it soon, but not inside this action.
+    if (++this.actionsSincePrune >= this.limits.pruneEveryActions && !this.pruneSoon) {
+      this.pruneSoon = true;
+      setTimeout(() => this.pruneQuietly(), 0).unref?.();
+    }
     ch.sinceSnapshot = snapshotDue ? 0 : ch.sinceSnapshot + 1;
     const env: ActionEnvelope = { channel, action, serverSeq: seq, origin };
     this.broadcast(channel, env);
@@ -548,13 +584,20 @@ export class AhpHost {
 
   /** A new socket. Undefined (and the socket closed) when the host is full. */
   connect(socket: Socket, authed = true): Conn | undefined {
-    if (this.closed || this.conns.size >= this.limits.maxConnections) {
+    if (this.closed || this.full(authed)) {
       socket.close(1013, "too many connections");
       return undefined;
     }
     const conn = new Conn(this.nextConn++, socket, authed, this.now());
     this.conns.add(conn);
     return conn;
+  }
+
+  /** Are there as many connections of this kind as there may be? Unauthenticated sockets have a small pool of their own. */
+  full(authed: boolean): boolean {
+    let n = 0;
+    for (const c of this.conns) if (c.authed === authed) n++;
+    return n >= (authed ? this.limits.maxConnections : this.limits.maxUnauthenticated);
   }
 
   /** Forgets a connection: its subscriptions and windows go with it, so nothing keeps it alive. */
@@ -598,6 +641,8 @@ export class AhpHost {
   /** Stops everything: runs aborted, connections closed. The database stays open (the app owns it). */
   close(): void {
     this.closed = true;
+    if (this.pruneTimer) clearInterval(this.pruneTimer);
+    this.pruneTimer = undefined;
     for (const r of this.runs.values()) {
       r.over = true;
       r.controller.abort();
@@ -614,6 +659,21 @@ export class AhpHost {
     if (text.length > this.limits.maxMessageBytes) return this.drop(conn, 1009, "message too big");
     if (!conn.allow(this.now(), this.limits.maxMessagesPerSecond)) {
       return this.drop(conn, 1008, "too many messages");
+    }
+    // Only a message that carries attachments is allowed to be big; anything else over the frame
+    // cap is refused before it is parsed, whatever it says it is.
+    if (
+      text.length > this.limits.maxFrameBytes &&
+      !(text.includes('"dispatchAction"') && text.includes('"embeddedResource"'))
+    ) {
+      const id = /"id"\s*:\s*(\d{1,15}|"[^"\\]{0,64}")/.exec(text.slice(0, 1024))?.[1];
+      return this.send(conn, {
+        id: id === undefined ? null : (JSON.parse(id) as number | string),
+        error: {
+          code: JsonRpcErrorCodes.InvalidRequest,
+          message: `message too large: at most ${this.limits.maxFrameBytes} bytes`,
+        },
+      });
     }
     let msg: unknown;
     try {
@@ -673,7 +733,10 @@ export class AhpHost {
   private dispatchMethod(conn: Conn, method: string, p: Json, isRequest: boolean): unknown {
     if (method === "ping") return null;
     if (method === "authenticate") return this.authenticate(conn, p);
-    if (!conn.authed) throw new RpcError(AhpErrorCodes.AuthRequired, "authenticate first", { resources: [] });
+    // The spec has a client initialize first and authenticate after; until it has, it gets no state.
+    if (!conn.authed && method !== "initialize") {
+      throw new RpcError(AhpErrorCodes.AuthRequired, "authenticate first", { resources: [] });
+    }
     if (method !== "initialize" && method !== "reconnect" && !conn.ready) {
       throw new RpcError(JsonRpcErrorCodes.InvalidRequest, "initialize first");
     }
@@ -725,6 +788,11 @@ export class AhpHost {
     if (conn.authed) return null;
     const token = typeof p.token === "string" ? p.token : "";
     if (this.o.verifyToken?.(token)) {
+      // Into the authenticated pool, which may itself be full.
+      if (this.full(true)) {
+        queueMicrotask(() => this.drop(conn, 1013, "too many connections"));
+        throw new RpcError(AhpErrorCodes.Conflict, "too many connections");
+      }
       conn.authed = true;
       return null;
     }
@@ -751,7 +819,9 @@ export class AhpHost {
     }
     conn.clientId = str(p.clientId, "clientId", 256);
     conn.ready = true;
-    const initial = Array.isArray(p.initialSubscriptions) ? p.initialSubscriptions : [];
+    // Before authenticating there is no state to subscribe to: the subscriptions come after.
+    const initial =
+      conn.authed && Array.isArray(p.initialSubscriptions) ? [...new Set(p.initialSubscriptions)] : [];
     if (initial.length > this.limits.maxSubscriptions) {
       throw invalid(`at most ${this.limits.maxSubscriptions} subscriptions per connection`);
     }
@@ -834,9 +904,13 @@ export class AhpHost {
     const last = p.lastSeenServerSeq;
     if (typeof last !== "number" || !Number.isFinite(last) || last < 0)
       throw invalid("lastSeenServerSeq must be a number");
-    const subs = Array.isArray(p.subscriptions)
-      ? p.subscriptions.filter((u): u is string => typeof u === "string")
-      : [];
+    const subs = [
+      ...new Set(
+        Array.isArray(p.subscriptions)
+          ? p.subscriptions.filter((u): u is string => typeof u === "string")
+          : [],
+      ),
+    ];
     if (subs.length > this.limits.maxSubscriptions) {
       throw invalid(`at most ${this.limits.maxSubscriptions} subscriptions per connection`);
     }
@@ -1150,7 +1224,8 @@ export class AhpHost {
       method: "action",
       params: {
         channel,
-        action,
+        // Only what it was, not what it carried: a rejected action may be huge.
+        action: { type: isObj(action) ? String(action.type).slice(0, 64) : "unknown" },
         serverSeq: this.seq,
         origin: { clientId: conn.clientId, clientSeq },
         rejectionReason: reason,
@@ -1182,6 +1257,11 @@ export class AhpHost {
     }
   }
 
+  /**
+   * What clients may do, action by action. Each case reads only the fields it knows, checks and caps
+   * them, and applies a new object built from those: nothing a client adds rides along into the log,
+   * the snapshots or the other clients.
+   */
   private dispatchChecked(
     _conn: Conn,
     ch: Channel,
@@ -1190,17 +1270,24 @@ export class AhpHost {
     no: (why: string) => undefined,
   ): undefined {
     const channel = ch.uri;
+    const raw = a as unknown as Json;
+    const short = (v: unknown, name: string) => str(v, name, attachmentLimits.shortChars);
     if (ch.c.kind === "chat") {
       const st = ch.c.state;
       switch (a.type) {
         case ActionType.ChatTurnStarted: {
           if (st.activeTurn) return no("a turn is already running: queue the message instead");
-          if (st.turns.some((t) => t.id === a.turnId)) return no("that turn id was used already");
-          if (typeof a.turnId !== "string" || a.turnId.length === 0 || a.turnId.length > 128)
-            return no("turnId must be a short string");
-          if (Number.isNaN(Date.parse(a.startedAt))) return no("startedAt must be a timestamp");
+          const turnId = typeof a.turnId === "string" ? a.turnId : "";
+          if (turnId.length === 0 || turnId.length > 128) return no("turnId must be a short string");
+          if (st.turns.some((t) => t.id === turnId)) return no("that turn id was used already");
+          if (
+            typeof a.startedAt !== "string" ||
+            a.startedAt.length > 64 ||
+            Number.isNaN(Date.parse(a.startedAt))
+          )
+            return no("startedAt must be a timestamp");
           const message = this.checkMessage(a.message);
-          this.startClientTurn(channel, { turnId: a.turnId, startedAt: a.startedAt, message }, origin);
+          this.startClientTurn(channel, { turnId, startedAt: a.startedAt, message }, origin);
           return;
         }
         case ActionType.ChatTurnCancelled: {
@@ -1209,8 +1296,9 @@ export class AhpHost {
           return;
         }
         case ActionType.ChatToolCallConfirmed: {
+          const toolCallId = short(raw.toolCallId, "toolCallId");
           const tc = st.activeTurn?.responseParts.find(
-            (p) => p.kind === ResponsePartKind.ToolCall && p.toolCall.toolCallId === a.toolCallId,
+            (p) => p.kind === ResponsePartKind.ToolCall && p.toolCall.toolCallId === toolCallId,
           );
           const call = tc?.kind === ResponsePartKind.ToolCall ? tc.toolCall : undefined;
           // The first answer wins: afterwards the call is no longer pending, so the others land here.
@@ -1219,66 +1307,156 @@ export class AhpHost {
             a.turnId !== st.activeTurn.id ||
             call?.status !== ToolCallStatus.PendingConfirmation
           ) {
-            return no(`tool call ${a.toolCallId} is not waiting for an answer (someone answered it already)`);
+            return no(`tool call ${toolCallId} is not waiting for an answer (someone answered it already)`);
           }
+          const approved = raw.approved;
+          if (typeof approved !== "boolean") return no("approved must be true or false");
+          const selectedOptionId =
+            raw.selectedOptionId === undefined ? undefined : short(raw.selectedOptionId, "selectedOptionId");
           let option = undefined as ToolAnswer["selectedOption"];
-          if (a.selectedOptionId !== undefined) {
-            option = call.options?.find((o) => o.id === a.selectedOptionId);
+          if (selectedOptionId !== undefined) {
+            option = call.options?.find((o) => o.id === selectedOptionId);
             if (!option) return no("that is not one of the options");
-            if ((option.kind === ConfirmationOptionKind.Approve) !== a.approved)
+            if ((option.kind === ConfirmationOptionKind.Approve) !== approved)
               return no("the option and the answer disagree");
           }
-          if (a.approved && a.confirmed !== ToolCallConfirmationReason.UserAction)
-            return no("confirmed must be user-action");
-          if (
-            !a.approved &&
-            a.reason !== ToolCallCancellationReason.Denied &&
-            a.reason !== ToolCallCancellationReason.Skipped
-          ) {
-            return no("a denial needs a reason");
+          const base = { type: ActionType.ChatToolCallConfirmed, turnId: st.activeTurn.id, toolCallId };
+          // Only the user's answer carries over: no edited input (ACP cannot take one), no other fields.
+          let clean: Json;
+          if (approved) {
+            if (raw.confirmed !== ToolCallConfirmationReason.UserAction)
+              return no("confirmed must be user-action");
+            clean = { ...base, approved: true, confirmed: ToolCallConfirmationReason.UserAction };
+          } else {
+            if (
+              raw.reason !== ToolCallCancellationReason.Denied &&
+              raw.reason !== ToolCallCancellationReason.Skipped
+            ) {
+              return no("a denial needs a reason");
+            }
+            clean = {
+              ...base,
+              approved: false,
+              reason: raw.reason,
+              ...(typeof raw.reasonMessage === "string"
+                ? { reasonMessage: raw.reasonMessage.slice(0, 2000) }
+                : {}),
+              ...(raw.userSuggestion !== undefined
+                ? { userSuggestion: this.checkMessage(raw.userSuggestion) }
+                : {}),
+            };
           }
-          // Nothing but the user's answer may carry over: no edited input (ACP cannot take one).
-          const clean = a.approved ? { ...a, editedToolInput: undefined } : a;
-          this.apply(channel, clean as StateAction, origin);
+          if (selectedOptionId !== undefined) clean.selectedOptionId = selectedOptionId;
+          this.apply(channel, clean as unknown as StateAction, origin);
           const run = this.runs.get(channel);
           if (run) {
-            this.o.backend.answerToolCall(run.run, a.toolCallId, {
-              approved: a.approved,
-              ...(a.selectedOptionId !== undefined ? { selectedOptionId: a.selectedOptionId } : {}),
+            this.o.backend.answerToolCall(run.run, toolCallId, {
+              approved,
+              ...(selectedOptionId !== undefined ? { selectedOptionId } : {}),
               ...(option ? { selectedOption: option } : {}),
             });
           }
           return;
         }
         case ActionType.ChatPendingMessageSet: {
-          if (a.kind !== PendingMessageKind.Steering && a.kind !== PendingMessageKind.Queued)
+          if (raw.kind !== PendingMessageKind.Steering && raw.kind !== PendingMessageKind.Queued)
             return no("unknown pending message kind");
-          if (typeof a.id !== "string" || a.id.length === 0 || a.id.length > 128)
-            return no("id must be a short string");
-          const message = this.checkMessage(a.message);
-          this.apply(channel, { ...a, message }, origin);
+          const id = typeof raw.id === "string" ? raw.id : "";
+          if (id.length === 0 || id.length > 128) return no("id must be a short string");
+          const message = this.checkMessage(raw.message);
+          this.apply(
+            channel,
+            { type: ActionType.ChatPendingMessageSet, kind: raw.kind, id, message },
+            origin,
+          );
           this.drain(channel);
           return;
         }
-        case ActionType.ChatPendingMessageRemoved:
-        case ActionType.ChatQueuedMessagesReordered:
-        case ActionType.ChatIsReadChanged:
-        case ActionType.ChatIsArchivedChanged:
-          this.apply(channel, a, origin);
-          return;
-        case ActionType.ChatDraftChanged: {
-          if (a.draft) a.draft = this.checkMessage(a.draft);
-          this.apply(channel, a, origin);
+        case ActionType.ChatPendingMessageRemoved: {
+          if (raw.kind !== PendingMessageKind.Steering && raw.kind !== PendingMessageKind.Queued)
+            return no("unknown pending message kind");
+          this.apply(
+            channel,
+            { type: ActionType.ChatPendingMessageRemoved, kind: raw.kind, id: short(raw.id, "id") },
+            origin,
+          );
           return;
         }
-        case ActionType.ChatInputAnswerChanged:
-          this.apply(channel, a, origin);
+        case ActionType.ChatQueuedMessagesReordered: {
+          const order = raw.order;
+          if (!Array.isArray(order) || order.length > 200) return no("order must be a list of message ids");
+          this.apply(
+            channel,
+            { type: ActionType.ChatQueuedMessagesReordered, order: order.map((x) => short(x, "order")) },
+            origin,
+          );
           return;
+        }
+        case ActionType.ChatIsReadChanged: {
+          if (typeof raw.isRead !== "boolean") return no("isRead must be true or false");
+          this.apply(channel, { type: ActionType.ChatIsReadChanged, isRead: raw.isRead }, origin);
+          return;
+        }
+        case ActionType.ChatIsArchivedChanged: {
+          if (typeof raw.isArchived !== "boolean") return no("isArchived must be true or false");
+          this.apply(channel, { type: ActionType.ChatIsArchivedChanged, isArchived: raw.isArchived }, origin);
+          return;
+        }
+        case ActionType.ChatDraftChanged: {
+          const draft =
+            raw.draft === undefined ? undefined : this.checkMessage(raw.draft, attachmentLimits.draftChars);
+          this.apply(channel, { type: ActionType.ChatDraftChanged, ...(draft ? { draft } : {}) }, origin);
+          return;
+        }
+        case ActionType.ChatInputAnswerChanged: {
+          const requestId = short(raw.requestId, "requestId");
+          const questionId = short(raw.questionId, "questionId");
+          const request = this.openInput(st, requestId);
+          if (!request) return no(`input request ${requestId} is not open (it was answered, or never asked)`);
+          if (!request.questions?.some((q) => q.id === questionId))
+            return no("no such question in that request");
+          const answer = raw.answer === undefined ? undefined : this.checkAnswer(raw.answer);
+          this.apply(
+            channel,
+            {
+              type: ActionType.ChatInputAnswerChanged,
+              requestId,
+              questionId,
+              ...(answer ? { answer } : {}),
+            } as never,
+            origin,
+          );
+          return;
+        }
         case ActionType.ChatInputCompleted: {
-          this.apply(channel, a, origin);
+          const requestId = short(raw.requestId, "requestId");
+          // First wins, like a tool confirmation: once completed the request is no longer open.
+          const request = this.openInput(st, requestId);
+          if (!request)
+            return no(`input request ${requestId} is not open (someone answered it already, or never asked)`);
+          if (raw.response !== "accept" && raw.response !== "decline" && raw.response !== "cancel")
+            return no("response must be accept, decline or cancel");
+          const answers: Json = {};
+          if (isObj(raw.answers)) {
+            const entries = Object.entries(raw.answers);
+            if (entries.length > 64) return no("too many answers");
+            for (const [q, v] of entries) {
+              if (!request.questions?.some((x) => x.id === q)) return no("no such question in that request");
+              answers[q] = this.checkAnswer(v);
+            }
+          }
+          this.apply(
+            channel,
+            {
+              type: ActionType.ChatInputCompleted,
+              requestId,
+              response: raw.response,
+              ...(Object.keys(answers).length ? { answers } : {}),
+            } as never,
+            origin,
+          );
           const run = this.runs.get(channel);
-          if (run)
-            this.o.backend.answerInput?.(run.run, a.requestId, a.response, a.answers as Json | undefined);
+          if (run) this.o.backend.answerInput?.(run.run, requestId, raw.response, answers);
           return;
         }
         default:
@@ -1288,28 +1466,52 @@ export class AhpHost {
     if (ch.c.kind === "session") {
       switch (a.type) {
         case ActionType.SessionTitleChanged: {
-          if (typeof a.title !== "string" || a.title.trim().length === 0)
+          if (typeof raw.title !== "string" || raw.title.trim().length === 0)
             return no("a title cannot be empty");
-          this.apply(channel, { ...a, title: a.title.trim().slice(0, 200) }, origin);
+          this.apply(
+            channel,
+            { type: ActionType.SessionTitleChanged, title: raw.title.trim().slice(0, 200) },
+            origin,
+          );
           return;
         }
-        case ActionType.SessionIsReadChanged:
-        case ActionType.SessionIsArchivedChanged:
-          this.apply(channel, a, origin);
+        case ActionType.SessionIsReadChanged: {
+          if (typeof raw.isRead !== "boolean") return no("isRead must be true or false");
+          this.apply(channel, { type: ActionType.SessionIsReadChanged, isRead: raw.isRead }, origin);
           return;
+        }
+        case ActionType.SessionIsArchivedChanged: {
+          if (typeof raw.isArchived !== "boolean") return no("isArchived must be true or false");
+          this.apply(
+            channel,
+            { type: ActionType.SessionIsArchivedChanged, isArchived: raw.isArchived },
+            origin,
+          );
+          return;
+        }
         case ActionType.SessionConfigChanged: {
           const config = ch.c.state.config;
-          const values = isObj(a.config) ? a.config : undefined;
-          if (!config || !values) return no("this session has no config to change");
-          for (const [k, v] of Object.entries(values)) {
+          const asked = isObj(raw.config) ? raw.config : undefined;
+          if (!config || !asked) return no("this session has no config to change");
+          if (raw.replace) return no("config values are changed one at a time");
+          const keys = Object.keys(asked);
+          if (keys.length === 0 || keys.length > 64) return no("change between 1 and 64 values");
+          const values: Json = {};
+          for (const k of keys) {
+            const v = asked[k];
             const prop = config.schema.properties[k];
-            if (!prop) return no(`unknown config ${k}`);
+            if (!prop) return no(`unknown config ${k.slice(0, 64)}`);
             if (!prop.sessionMutable) return no(`${k} cannot be changed once the session has started`);
+            if (
+              !(v === null || ["string", "number", "boolean"].includes(typeof v)) ||
+              (typeof v === "string" && v.length > 256)
+            )
+              return no(`${k} must be a short string, a number or a boolean`);
             if (prop.enum && !prop.enum.includes(v as never)) return no(`${String(v)} is not a valid ${k}`);
+            values[k] = v;
           }
-          if (a.replace) return no("config values are changed one at a time");
-          const before = Object.fromEntries(Object.keys(values).map((k) => [k, config.values[k]]));
-          this.apply(channel, a, origin);
+          const before = Object.fromEntries(keys.map((k) => [k, config.values[k]]));
+          this.apply(channel, { type: ActionType.SessionConfigChanged, config: values }, origin);
           void this.o.backend.setConfig(channel, values).catch((e: unknown) => {
             this.log(
               `ahp: the agent refused ${JSON.stringify(values)} on ${channel}: ${e instanceof Error ? e.message : e}`,
@@ -1326,66 +1528,134 @@ export class AhpHost {
     return no(`${a.type} is not supported by this host`);
   }
 
+  /** The input request with this id if it is still waiting for an answer in the running turn. */
+  private openInput(st: ChatState, requestId: string) {
+    for (const p of st.activeTurn?.responseParts ?? []) {
+      if (
+        p.kind === ResponsePartKind.InputRequest &&
+        p.response === undefined &&
+        p.request.id === requestId
+      ) {
+        return p.request;
+      }
+    }
+    return undefined;
+  }
+
+  /** An answer to a question, as a small value of one of the known shapes. */
+  private checkAnswer(v: unknown): never {
+    if (!isObj(v) || typeof v.state !== "string") throw invalid("a bad answer");
+    if (JSON.stringify(v).length > 16_000) throw invalid("an answer is at most 16 KB");
+    if (v.state === "skipped") {
+      const free = Array.isArray(v.freeformValues)
+        ? v.freeformValues.filter((x) => typeof x === "string").slice(0, 16)
+        : undefined;
+      return { state: "skipped", ...(free ? { freeformValues: free } : {}) } as never;
+    }
+    if (
+      (v.state !== "draft" && v.state !== "submitted") ||
+      !isObj(v.value) ||
+      typeof v.value.kind !== "string"
+    )
+      throw invalid("a bad answer");
+    const val = v.value;
+    const ok =
+      (val.kind === "text" && typeof val.value === "string") ||
+      (val.kind === "number" && typeof val.value === "number") ||
+      (val.kind === "boolean" && typeof val.value === "boolean") ||
+      (val.kind === "selected" && typeof val.value === "string") ||
+      (val.kind === "selected-many" &&
+        Array.isArray(val.value) &&
+        val.value.every((x) => typeof x === "string"));
+    if (!ok) throw invalid("a bad answer");
+    const free = Array.isArray(val.freeformValues)
+      ? val.freeformValues.filter((x) => typeof x === "string").slice(0, 16)
+      : undefined;
+    return {
+      state: v.state,
+      value: { kind: val.kind, value: val.value, ...(free ? { freeformValues: free } : {}) },
+    } as never;
+  }
+
   // ───────────────────────────── messages ─────────────────────────────
 
   /**
    * Checks what a client sent as a message and returns it in the form the log keeps: the text as
    * is, big embedded attachments moved into content blobs and replaced by references.
    */
-  private checkMessage(m: unknown): Message {
+  private checkMessage(m: unknown, maxText: number = attachmentLimits.textChars): Message {
     if (!isObj(m) || typeof m.text !== "string") throw invalid("a message needs text");
-    if (m.text.length > attachmentLimits.textChars)
-      throw invalid(`a message is at most ${attachmentLimits.textChars} characters`);
+    if (m.text.length > maxText) throw invalid(`a message is at most ${maxText} characters`);
     if ((m.origin as Json | undefined)?.kind !== "user")
       throw invalid("a client's message must have the user origin");
     const attachments = m.attachments;
     if (attachments !== undefined && !Array.isArray(attachments)) throw invalid("attachments must be a list");
     if ((attachments?.length ?? 0) > attachmentLimits.count)
       throw invalid(`at most ${attachmentLimits.count} attachments`);
+    const short = (v: unknown, name: string, max = attachmentLimits.shortChars) => str(v, name, max);
     const out: MessageAttachment[] = [];
     for (const raw of (attachments ?? []) as unknown[]) {
-      if (!isObj(raw) || typeof raw.type !== "string" || typeof raw.label !== "string")
-        throw invalid("a bad attachment");
-      if (raw.type === "annotations" || raw.type === "chat")
-        throw invalid(`${raw.type} attachments are not supported`);
-      if (raw.type !== "embeddedResource") {
-        out.push(raw as unknown as MessageAttachment);
+      if (!isObj(raw) || typeof raw.type !== "string") throw invalid("a bad attachment");
+      const label = short(raw.label, "label");
+      if (raw.type === "simple") {
+        out.push({
+          type: "simple",
+          label,
+          ...(typeof raw.modelRepresentation === "string"
+            ? { modelRepresentation: raw.modelRepresentation.slice(0, 2000) }
+            : {}),
+        } as unknown as MessageAttachment);
         continue;
       }
+      if (raw.type === "resource") {
+        out.push({
+          type: "resource",
+          label,
+          uri: short(raw.uri, "uri", 2048),
+          ...(typeof raw.contentType === "string" ? { contentType: raw.contentType.slice(0, 128) } : {}),
+          ...(typeof raw.sizeHint === "number" ? { sizeHint: raw.sizeHint } : {}),
+        } as unknown as MessageAttachment);
+        continue;
+      }
+      if (raw.type !== "embeddedResource") throw invalid(`${raw.type} attachments are not supported`);
       if (typeof raw.data !== "string" || typeof raw.contentType !== "string")
         throw invalid("a bad embedded attachment");
       const bytes = Buffer.from(raw.data, "base64");
-      const image = raw.contentType.startsWith("image/");
-      if (image) {
-        if (bytes.byteLength > attachmentLimits.imageBytes) throw invalid(`${raw.label} is over 10 MB`);
+      let contentType = raw.contentType.slice(0, 128);
+      if (contentType.startsWith("image/")) {
+        if (bytes.byteLength > attachmentLimits.imageBytes) throw invalid(`${label} is over 10 MB`);
         const kind = sniffImage(bytes);
-        if (!kind) throw invalid(`${raw.label} isn't a PNG, JPEG, WebP or GIF`);
-        raw.contentType = kind;
+        if (!kind) throw invalid(`${label} isn't a PNG, JPEG, WebP or GIF`);
+        contentType = kind;
       } else if (bytes.byteLength > attachmentLimits.fileBytes) {
-        throw invalid(`${raw.label} is over 1 MB`);
+        throw invalid(`${label} is over 1 MB`);
       }
       if (raw.data.length <= attachmentLimits.inlineChars) {
-        out.push(raw as unknown as MessageAttachment);
+        out.push({
+          type: "embeddedResource",
+          label,
+          data: raw.data,
+          contentType,
+        } as unknown as MessageAttachment);
         continue;
       }
-      const ref = this.putContent(bytes, String(raw.contentType));
-      const { data: _data, selection, ...rest } = raw;
+      const ref = this.putContent(bytes, contentType);
       out.push({
-        ...rest,
         type: "resource",
+        label,
         uri: ref.uri,
         contentType: ref.contentType,
         sizeHint: ref.sizeHint,
-        ...(selection ? { selection } : {}),
-        _meta: { ...(isObj(raw._meta) ? raw._meta : {}), "iinc.embedded": true },
+        _meta: { "iinc.embedded": true },
       } as unknown as MessageAttachment);
     }
     return {
       text: m.text,
       origin: USER_ORIGIN,
       ...(out.length ? { attachments: out } : {}),
-      ...(m.model ? { model: m.model } : {}),
-      ...(isObj(m._meta) ? { _meta: m._meta } : {}),
+      ...(isObj(m.model) && typeof m.model.id === "string" && m.model.id.length <= 128
+        ? { model: { id: m.model.id } }
+        : {}),
     } as unknown as Message;
   }
 

@@ -77,10 +77,31 @@ describe("authenticate (the protocol's own login)", () => {
     const g = t.tr.guard(upgrade());
     expect(g).toEqual({ data: { authed: false } });
     const c = new TestClient(t.host, "late", false);
-    expect(
-      (await c.rpc("initialize", { channel: ROOT, protocolVersions: ["1.0.0"], clientId: "late" })).error,
-    ).toMatchObject({ code: -32007 });
+    // The spec has a client initialize first: it may, but it gets no state, even if it asks for some.
+    const early = await c.rpc("initialize", {
+      channel: ROOT,
+      protocolVersions: ["1.0.0"],
+      clientId: "late",
+      initialSubscriptions: [ROOT],
+    });
+    expect(early.result).toMatchObject({ protocolVersion: "1.0.0", snapshots: [] });
+    expect(c.conn.subs.size).toBe(0);
     expect((await c.rpc("listSessions", { channel: ROOT })).error).toMatchObject({ code: -32007 });
+    expect((await c.rpc("subscribe", { channel: ROOT })).error).toMatchObject({ code: -32007 });
+    expect(
+      (
+        await c.rpc("reconnect", {
+          channel: ROOT,
+          clientId: "l",
+          lastSeenServerSeq: 0,
+          subscriptions: [ROOT],
+        })
+      ).error,
+    ).toMatchObject({ code: -32007 });
+    expect(
+      (await c.rpc("resourceRead", { channel: ROOT, uri: "ahp-content:/00000000000000000000000000000000" }))
+        .error,
+    ).toMatchObject({ code: -32007 });
     expect((await c.rpc("ping", { channel: ROOT })).result).toBeNull(); // ping works before anything
     expect(
       (await c.rpc("authenticate", { channel: ROOT, resource: "https://iinc", token: "nope" })).error,
@@ -95,6 +116,30 @@ describe("authenticate (the protocol's own login)", () => {
     expect(
       (await c.rpc("authenticate", { channel: ROOT, resource: "x", token: "anything" })).result,
     ).toBeNull();
+  });
+
+  it("keeps unauthenticated sockets in a small pool of their own, so they can't crowd out the owner", async () => {
+    const t = await transport(
+      { token: TOKEN, deferredAuth: true },
+      { maxConnections: 3, maxUnauthenticated: 2 },
+    );
+    const strangers = [new TestClient(t.host, "a", false), new TestClient(t.host, "b", false)];
+    expect(strangers).toHaveLength(2);
+    // a third stranger is turned away, at the upgrade and at the host
+    expect(refused(t.tr.guard(upgrade()))).toBe(503);
+    const s = new FakeSocket();
+    expect(t.host.connect(s, false)).toBeUndefined();
+    expect(s.closed?.code).toBe(1013);
+    // and the owner, with credentials, still gets in, up to the authenticated cap
+    expect(t.tr.guard(upgrade({ authorization: `Bearer ${TOKEN}` }))).toEqual({ data: { authed: true } });
+    for (let i = 0; i < 3; i++) new TestClient(t.host, `o${i}`);
+    expect(refused(t.tr.guard(upgrade({ authorization: `Bearer ${TOKEN}` })))).toBe(503);
+    // a stranger who authenticates into a full pool is let go, not squeezed in
+    const late = strangers[0] as TestClient;
+    const r = await late.rpc("authenticate", { channel: ROOT, resource: "x", token: TOKEN });
+    expect(r.error).toBeTruthy();
+    await Promise.resolve();
+    expect(late.socket.closed?.code).toBe(1013);
   });
 
   it("drops a client that keeps guessing, and one that never authenticates", async () => {

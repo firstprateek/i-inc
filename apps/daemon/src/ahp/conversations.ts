@@ -321,14 +321,19 @@ export class ConversationService {
   update(id: string, patch: { title?: unknown; archived?: unknown }): ConversationView {
     const c = this.get(id);
     if (!c) throw new ConversationError("no such conversation", 404);
+    // Everything is checked before anything is applied: a bad field changes nothing.
+    let title: string | undefined;
     if (patch.title !== undefined) {
-      const title = typeof patch.title === "string" ? patch.title.trim() : "";
+      title = typeof patch.title === "string" ? patch.title.trim() : "";
       if (!title || title.length > 200) throw new ConversationError("a title is 1 to 200 characters", 400);
-      if (title !== c.title) this.host.apply(c.ahpSession, { type: ActionType.SessionTitleChanged, title });
+    }
+    if (patch.archived !== undefined && typeof patch.archived !== "boolean") {
+      throw new ConversationError("archived must be true or false", 400);
+    }
+    if (title !== undefined && title !== c.title) {
+      this.host.apply(c.ahpSession, { type: ActionType.SessionTitleChanged, title });
     }
     if (patch.archived !== undefined) {
-      if (typeof patch.archived !== "boolean")
-        throw new ConversationError("archived must be true or false", 400);
       if (patch.archived !== (c.archivedAt !== null)) {
         this.host.apply(c.ahpSession, {
           type: ActionType.SessionIsArchivedChanged,

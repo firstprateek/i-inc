@@ -259,6 +259,7 @@ export class ScriptedBackend implements AgentBackend {
   configs: Json[] = [];
   answers: { toolCallId: string; answer: ToolAnswer }[] = [];
   cancelled: TurnRun[] = [];
+  inputs: { requestId: string; response: string }[] = [];
   runs: TurnRun[] = [];
   private confirmations = new Map<string, (a: ToolAnswer) => void>();
 
@@ -295,6 +296,9 @@ export class ScriptedBackend implements AgentBackend {
   answerToolCall(_run: TurnRun, toolCallId: string, answer: ToolAnswer): void {
     this.answers.push({ toolCallId, answer });
     this.confirmations.get(toolCallId)?.(answer);
+  }
+  answerInput(_run: TurnRun, requestId: string, response: string): void {
+    this.inputs.push({ requestId, response });
   }
   async setConfig(_session: string, values: Json): Promise<void> {
     this.configs.push(values);
@@ -337,7 +341,7 @@ export class ScriptedBackend implements AgentBackend {
     });
   }
   /** A tool call that waits for the owner: pending-confirmation with the four ACP-style options. */
-  ask(run: TurnRun, id: string): Promise<ToolAnswer> {
+  ask(run: TurnRun, id: string, toolInput?: string): Promise<ToolAnswer> {
     run.emit({
       type: ActionType.ChatToolCallStart,
       turnId: run.turnId,
@@ -350,6 +354,7 @@ export class ScriptedBackend implements AgentBackend {
       turnId: run.turnId,
       toolCallId: id,
       invocationMessage: "Run rm -rf build",
+      ...(toolInput ? { toolInput } : {}),
       confirmationTitle: "Run rm -rf build",
       options: [
         { id: "allow-once", label: "Allow once", kind: ConfirmationOptionKind.Approve, group: 0 },

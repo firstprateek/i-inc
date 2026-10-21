@@ -558,7 +558,7 @@ describe("validation of what clients send", () => {
     };
     bad({ text: "x", origin: { kind: "agent" } }, /user origin/);
     bad({ origin: { kind: "user" } }, /needs text/);
-    bad({ text: "x".repeat(200_001), origin: { kind: "user" } }, /at most 200000/);
+    bad({ text: "x".repeat(256_001), origin: { kind: "user" } }, /at most 256000/);
     bad(
       { text: "x", origin: { kind: "user" }, attachments: Array(7).fill({ type: "simple", label: "l" }) },
       /at most 6/,

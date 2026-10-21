@@ -1140,6 +1140,17 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           return json({ error: "send a JSON object" }, 400);
         }
         if (typeof b.employeeId !== "string") return json({ error: "employeeId is required" }, 400);
+        // A field of the wrong type is an error, not a field that was left out.
+        for (const [name, v, nullable] of [
+          ["project", b.project, true],
+          ["title", b.title, false],
+          ["mode", b.mode, false],
+          ["engineId", b.engineId, false],
+        ] as const) {
+          if (v !== undefined && !(typeof v === "string" || (nullable && v === null))) {
+            return json({ error: `${name} must be ${nullable ? "a string or null" : "a string"}` }, 400);
+          }
+        }
         try {
           const conversation = await d.conversations.create({
             employeeId: b.employeeId,
