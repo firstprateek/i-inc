@@ -455,7 +455,11 @@ describe("project addresses and queries (T62)", () => {
   it("leaves the query of the pages that read one", () => {
     expect(redirectFor("#/conversations?new=1&project=Duet")).toBeNull();
     expect(redirectFor("#/company/projects/add?repo=acme%2Fduet")).toBeNull();
-    expect(parse("#/conversations?new=1&project=Duet")).toEqual({ view: "conversations", id: "" });
+    expect(parse("#/conversations?new=1&project=Duet")).toEqual({
+      view: "conversations",
+      id: "",
+      form: { employee: "", project: "Duet" },
+    });
     expect(hashQuery("#/conversations?new=1&project=Duet").get("project")).toBe("Duet");
     expect(hashQuery("#/conversations").get("project")).toBeNull();
   });
@@ -464,7 +468,11 @@ describe("project addresses and queries (T62)", () => {
     expect(redirectFor("#/Conversations?new=1&project=Duet")).toBe("#/conversations?new=1&project=Duet");
     expect(redirectFor("#/conversations/?new=1")).toBe("#/conversations?new=1");
     expect(redirectFor("#/Company/Projects/Add/?repo=a%2Fb")).toBe("#/company/projects/add?repo=a%2Fb");
-    expect(parse("#/Conversations?new=1")).toEqual({ view: "conversations", id: "" });
+    expect(parse("#/Conversations?new=1")).toEqual({
+      view: "conversations",
+      id: "",
+      form: { employee: "", project: "" },
+    });
   });
 
   it("still drops the query elsewhere", () => {
