@@ -172,10 +172,11 @@ answer it when it asks. The screen is the web app's AHP client (`apps/web/src/ah
 [design/conversations.md](design/conversations.md).
 
 - **Start one:** **New conversation**, pick an employee and a project (or none), **Start**, then type the first message.
-  The agent opens when you start (it takes a few seconds on a cold sandbox); a conversation is refused (409) when the
-  team already has three busy. The mode picker in the composer lists the agent's own modes and defaults to its
-  bypass-permissions mode; change it in one click (the app remembers the last one you chose for that employee and uses
-  it for their next new conversation).
+  Nothing is created until you send it (leave the page and nothing is kept); the first send creates the conversation (a
+  few seconds on a cold sandbox; refused with 409 when the team already has three busy) and then sends the message.
+  `#/conversations?new=1&project=<id>` opens the form preset to a project. The mode picker in the composer lists the
+  agent's own modes and defaults to its bypass-permissions mode; change it in one click (the app remembers the last
+  one you chose for that employee and uses it for their next new conversation).
 - **While it works:** text streams in, "Thinking" is collapsed, each tool call is a one-line card (Read, Edit, Run,
   Search...) that opens to its input, output or diff, and the agent's plan is a checklist (also in the right panel).
   **Stop** interrupts. Typing during a turn offers **Steer** (runs next, ahead of the queue; Enter) or **Queue**
@@ -187,8 +188,13 @@ answer it when it asks. The screen is the web app's AHP client (`apps/web/src/ah
 - **Right panel** (the button in the thread header; remembered): project and branch, the plan, files changed (open one
   for its diff), brain pages used (hidden until the host reports them: `_meta["iinc.brain"]`, T57), usage and the
   account's 5-hour and 7-day meters. On a phone it is a bottom sheet.
-- **Limits** (the host refuses more, so the box says so first): a message is 256,000 characters, at most 6 images
-  and 12 MB of them together. A message the host refuses goes back into the box with the reason.
+- **Files:** paste, drop or pick images and text files (code, notes, logs, up to 256 KB each; they go to the agent as
+  embedded resources). Binaries, PDFs and anything else are refused with a reason.
+- **Limits** (the host refuses more, so the box says so first): a message is 256,000 characters, at most 6 attachments
+  and 12 MB of them together. A message the host refuses goes back into the box with its images and the reason.
+- **What you read is what is there:** control, bidi and zero-width characters in permission cards, paths, commands, diffs
+  and titles show as `⟨U+202E⟩`; only http(s) and mailto links in a reply are clickable; a line over 4,000 characters
+  in a reply is plain text.
 - **Reconnecting:** if the host goes away a "Reconnecting..." banner shows and sending waits; the screen replays what
   it missed from the last `serverSeq` (or takes a fresh snapshot) and carries on.
 - **Old chat** (the footer of the list, `#/conversations/old/<employee>`) is the previous small-model chat. It goes in

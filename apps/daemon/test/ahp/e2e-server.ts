@@ -68,6 +68,42 @@ proto.prompt = async function (this: Any, sessionId: string, blocks: Any[]): Pro
     }
     return { stopReason: "end_turn", _meta: { usage: { inputTokens: 1500, outputTokens: 220 } } };
   }
+  if (said.startsWith("hostile")) {
+    // text that is a hazard to a parser or a reader: a cubic heading, in-page links, a right-to-left override
+    chunk(`# a${" ".repeat(2500)}x\n\n`);
+    chunk("A [plain](#) link and a [fragment](#frag) one, and a [web](https://example.com/x) one.\n\n");
+    chunk(`${"[".repeat(3000)} ${"*a ".repeat(3000)} ${"`".repeat(3000)}\n\n`);
+    chunk("| a | b |\n|---|---|\n| 1 | 2 |\n");
+    return { stopReason: "end_turn" };
+  }
+  if (said.startsWith("bidi")) {
+    const path = "src/\u202egnp.exe";
+    this.update(sessionId, {
+      sessionUpdate: "tool_call",
+      toolCallId: "tc-bidi",
+      title: `Edit ${path}`,
+      kind: "edit",
+      status: "pending",
+      rawInput: { path },
+    });
+    const res = await this.ask("session/request_permission", {
+      sessionId,
+      toolCall: {
+        toolCallId: "tc-bidi",
+        title: `Edit ${path}`,
+        kind: "edit",
+        rawInput: { path },
+        content: [{ type: "diff", path, oldText: "a\n", newText: "b\u202e\n" }],
+      },
+      options: [
+        { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
+        { optionId: "reject-once", name: "Deny", kind: "reject_once" },
+      ],
+    });
+    const outcome = res.result?.outcome as Any | undefined;
+    chunk(outcome && String(outcome.optionId).startsWith("allow") ? "done" : "left alone");
+    return { stopReason: "end_turn" };
+  }
   if (said.startsWith("longtools")) {
     for (let i = 0; i < 30; i++) {
       this.update(sessionId, {
@@ -105,6 +141,10 @@ const app = await createApp({
   chat: new FakeChat(),
   // E2E_NO_COALESCE=1: every streamed piece goes out as its own action (the worst case for the client)
   ...(process.env.E2E_NO_COALESCE ? { ahpLimits: { deltaFlushMs: 0, deltaFlushChars: 1 } } : {}),
+  // E2E_REPLAY_LIMIT=0: a client that missed anything is answered with snapshots, not a replay
+  ...(process.env.E2E_REPLAY_LIMIT
+    ? { ahpLimits: { maxReplayActions: Number(process.env.E2E_REPLAY_LIMIT) } }
+    : {}),
   ahpBackend: (registry) =>
     new SessionHost({
       launch: sandbox.launch,

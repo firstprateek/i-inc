@@ -43,10 +43,15 @@ change.
 | 768-1199px | List · thread; the context panel is a drawer over the right edge, closed until asked for |
 | Under 768px | One column. `#/conversations` is the list on its own; `#/conversations/<id>` is the thread with a back button; the context panel is a bottom sheet (72dvh, with a backdrop, focus on its close button, Escape closes) |
 
+- **Heading:** the route's heading is one short line (`dense`, no subtitle; layout.md's allowance for a route with no
+  tab row). On a phone's thread view it is visually hidden (still read by a screen reader), since Back and the
+  thread's title replace it. While the composer has focus on a phone the tab bar steps aside (no gap above the keyboard).
 - **Scrolling:** the list, the thread and the context panel each have one scroll container. The thread follows a
   streaming reply only while you are within 80px of the bottom; scrolling up shows **Jump to latest**. Scrolling to the
   top pages older turns in (`fetchTurns`) and keeps the reader's place. At most about 30 turns are in the DOM until you
-  ask for more, and finished turns use `content-visibility: auto`.
+  ask for more, and finished turns use `content-visibility: auto`. **Jump to latest** sits in the dock above the
+  composer (never over the text), only when you are more than 80px from the bottom.
+- **Touch targets:** on a coarse pointer the small text buttons (`link-btn`, Copy, a tool card's head) are 44px tall.
 - **Composer:** pinned under the thread, up to 40% of the height as it grows; safe-area bottom inset respected. On a
   phone whose keyboard covers the layout (iOS), the screen lifts by the keyboard's height from `visualViewport`; where
   the viewport resizes with the keyboard (`interactive-widget=resizes-content`) nothing is added.
