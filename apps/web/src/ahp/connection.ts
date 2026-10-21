@@ -12,7 +12,6 @@
 // - Releases everything on `stop()`: the socket, the timers, the listeners and the channel state.
 import type {
   ActionEnvelope,
-  CompletionItem,
   InitializeResult,
   ReconnectResult,
   Snapshot,

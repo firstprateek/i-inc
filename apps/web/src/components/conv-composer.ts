@@ -4,7 +4,7 @@
 // (runs next, ahead of the queue) or Queue; the queued messages are listed and removable.
 import type { ChatState, SessionState } from "@microsoft/agent-host-protocol";
 import { css, html, LitElement, nothing } from "lit";
-import { checkOutgoing, judgeTextFile, textMimeOf } from "../conversations/actions.ts";
+import { checkOutgoing, judgeTextFile } from "../conversations/actions.ts";
 import {
   type Command,
   commandsOf,

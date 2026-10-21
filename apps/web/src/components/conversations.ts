@@ -420,6 +420,7 @@ export class IncConversations extends LitElement {
               .first=${this.first?.id === conv.id ? this.first : undefined}
               @conv-first-sent=${() => {
                 this.first = undefined;
+                void this.updateComplete.then(() => requestAnimationFrame(() => this.focusComposer()));
               }}
               @conv-toggle-context=${this.toggleContext}></inc-conv-thread>`
           : this.draft
