@@ -634,3 +634,238 @@ describe("a ticket from a conversation, seen from the ticket", () => {
     expect(retry.body.error).toMatch(/working in that folder/);
   });
 });
+
+const TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+
+describe("what is already committed is scanned too", () => {
+  for (const mode of ["direct", "owner-merges"] as const) {
+    it(`refuses a token that was committed and then removed, in ${mode} mode, and ships nothing`, async () => {
+      const rig = await make({ mode });
+      const c = await rig.conversation();
+      c.write("config.ts", `export const token = "${TOKEN}";\n`);
+      c.git("add", "-A");
+      c.git("commit", "-q", "-m", "add config");
+      c.write("config.ts", "export const token = process.env.TOKEN;\n");
+      c.git("add", "-A");
+      c.git("commit", "-q", "-m", "remove the token");
+      // The tree is clean and the net change has no credential; the history has one.
+      expect(c.git("status", "--porcelain")).toBe("");
+      const preview = await rig.call("GET", `/api/conversations/${c.conv.id}/ship?preview=1`);
+      expect(preview.body.ship.copy.blockers[0]).toMatch(/in the branch's history/);
+
+      const t = await rig.call("POST", `/api/conversations/${c.conv.id}/ticket`, {});
+      expect(t.status).toBe(409);
+      expect(t.body.code).toBe("secrets");
+      expect(t.body.error).toContain("in the branch's history");
+      expect(JSON.stringify(t.body)).not.toContain(TOKEN);
+      expect(rig.app.deps.tickets.all()).toHaveLength(0);
+      expect(rig.prs.prs).toHaveLength(0);
+      expect(rig.originGit("branch", "--list", `conv/${c.conv.id}`)).toBe("");
+      if (mode === "owner-merges") {
+        const pr = await rig.call("POST", `/api/conversations/${c.conv.id}/pr`, {});
+        expect(pr.status).toBe(409);
+        expect(pr.body.code).toBe("secrets");
+        expect(rig.originGit("branch", "--list", `conv/${c.conv.id}`)).toBe("");
+      }
+      // Not held, and the copy is untouched.
+      expect(
+        (await rig.call("GET", `/api/conversations/${c.conv.id}`)).body.conversation.ship,
+      ).toBeUndefined();
+    });
+  }
+
+  it("scans a copy again when the owner retries a failed ticket, and refuses what the conversation added meanwhile", async () => {
+    const rig = await make({ mode: "direct" });
+    rig.agent.on({ stage: "review" }, { kind: "stuck", reason: "the reviewer lost its place" });
+    const c = await rig.conversation();
+    c.write("a.txt", "a\n");
+    const r = await rig.call("POST", `/api/conversations/${c.conv.id}/ticket`, {});
+    const id = r.body.ticket.id;
+    await rig.settle();
+    expect((await rig.app.daemon.state(id)).status).toBe("failed");
+    await until(
+      async () =>
+        (await rig.call("GET", `/api/conversations/${c.conv.id}`)).body.conversation.ship === undefined,
+    );
+    // The conversation carries on and commits a token.
+    c.write("leak.ts", `export const t = "${TOKEN}";\n`);
+    c.git("add", "-A");
+    c.git("commit", "-q", "-m", "oops");
+    const retry = await rig.call("POST", `/api/tickets/${id}/retry`, {});
+    expect(retry.status).toBe(409);
+    expect(retry.body.error).toMatch(/Nothing was retried/);
+    expect(retry.body.error).not.toContain(TOKEN);
+    expect((await rig.app.daemon.state(id)).status).toBe("failed");
+    // The claim was let go: the conversation still takes messages.
+    expect((await rig.call("GET", `/api/conversations/${c.conv.id}`)).body.conversation.ship).toBeUndefined();
+    // Clean again, the retry goes through.
+    c.git("reset", "-q", "--hard", "HEAD~1");
+    expect((await rig.call("POST", `/api/tickets/${id}/retry`, {})).status).toBe(200);
+    await rig.settle();
+    expect((await rig.app.daemon.state(id)).outcome).toBe("merged");
+  });
+
+  it("asks the owner to confirm binary files it can't scan, and names them", async () => {
+    const rig = await make({ mode: "owner-merges" });
+    const c = await rig.conversation();
+    c.write("a.txt", "a\n");
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(`${c.dir}/logo.bin`, Buffer.alloc(20_000, 0));
+    const preview = await rig.call("GET", `/api/conversations/${c.conv.id}/ship?preview=1`);
+    expect(preview.body.ship.copy.binaries).toEqual([{ path: "logo.bin", size: 20000 }]);
+    const refused = await rig.call("POST", `/api/conversations/${c.conv.id}/ticket`, {});
+    expect(refused.status).toBe(409);
+    expect(refused.body.code).toBe("binary");
+    expect(refused.body.error).toContain("logo.bin");
+    expect(refused.body.error).toMatch(/can't be checked for credentials/);
+    expect(rig.app.deps.tickets.all()).toHaveLength(0);
+    expect((await rig.call("POST", `/api/conversations/${c.conv.id}/pr`, {})).body.code).toBe("binary");
+    expect(
+      (await rig.call("POST", `/api/conversations/${c.conv.id}/ticket`, { confirmBinary: "yes" })).status,
+    ).toBe(400);
+    const ok = await rig.call("POST", `/api/conversations/${c.conv.id}/ticket`, { confirmBinary: true });
+    expect(ok.status).toBe(201);
+  });
+});
+
+describe("a claim that nothing is working on", () => {
+  it("lets go of a stale claim without a restart, so the conversation isn't locked", async () => {
+    const rig = await make({ mode: "direct" });
+    const c = await rig.conversation();
+    c.write("a.txt", "a\n");
+    // A claim with no ticket, as a crash would leave it.
+    rig.app.db.run(
+      "INSERT INTO conversation_tickets (conversation_id, ticket_id, created_at) VALUES (?, NULL, ?)",
+      c.conv.id,
+      rig.clock.now(),
+    );
+    expect(
+      (await rig.call("GET", `/api/conversations/${c.conv.id}`)).body.conversation.ship.ticket.held,
+    ).toBe(true);
+    c.say("plain are you there", "t2");
+    await new Promise((res) => setTimeout(res, 30));
+    expect(rig.app.ahp.host.chatState(c.conv.ahpChat)?.turns).toHaveLength(1);
+    // Under ten minutes it still holds; after, it is gone the next time anything looks.
+    rig.clock.advance(5);
+    expect((await rig.call("GET", `/api/conversations/${c.conv.id}`)).body.conversation.ship).toBeDefined();
+    rig.clock.advance(6);
+    expect((await rig.call("GET", `/api/conversations/${c.conv.id}`)).body.conversation.ship).toBeUndefined();
+    expect((await rig.call("GET", `/api/conversations/${c.conv.id}/ship`)).body.ship.ticket).toBeNull();
+    expect((await rig.call("POST", `/api/conversations/${c.conv.id}/ticket`, {})).status).toBe(201);
+  });
+
+  it("leaves no ticket and no claim when writing the ticket fails half way", async () => {
+    const rig = await make({ mode: "direct" });
+    const c = await rig.conversation();
+    c.write("a.txt", "a\n");
+    const store = rig.app.deps.store;
+    const write = store.write.bind(store);
+    store.write = () => {
+      throw new Error("disk full");
+    };
+    await expect(rig.call("POST", `/api/conversations/${c.conv.id}/ticket`, {})).rejects.toThrow("disk full");
+    store.write = write;
+    // The ticket row went with it (one transaction), the claim too, and nothing is held.
+    expect(rig.app.deps.tickets.all()).toHaveLength(0);
+    expect(rig.app.db.all("SELECT * FROM conversation_tickets")).toEqual([]);
+    expect((await rig.call("GET", `/api/conversations/${c.conv.id}`)).body.conversation.ship).toBeUndefined();
+    // And trying again makes the one ticket.
+    const again = await rig.call("POST", `/api/conversations/${c.conv.id}/ticket`, {});
+    expect(again.status).toBe(201);
+    expect(rig.app.deps.tickets.all()).toHaveLength(1);
+    expect(again.body.ticket.id).toBe("1");
+  });
+});
+
+describe("taking the work back, and what a ticket leaves for the conversation", () => {
+  it("keeps what a ticket did to the branch for the agent's next turn, across a restart of the host's memory", async () => {
+    const rig = await make({ mode: "direct" });
+    const c = await rig.conversation();
+    c.write("a.txt", "a\n");
+    const r = await rig.call("POST", `/api/conversations/${c.conv.id}/ticket`, {});
+    await rig.settle();
+    expect((await rig.app.daemon.state(r.body.ticket.id)).outcome).toBe("merged");
+    await until(
+      async () =>
+        (await rig.call("GET", `/api/conversations/${c.conv.id}`)).body.conversation.ship === undefined,
+    );
+    // In the database, not in a live agent's memory.
+    const rows = rig.app.db.all<{ note: string }>(
+      "SELECT note FROM conversation_notes WHERE conversation_id = ?",
+      c.conv.id,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.note).toContain(`ticket #${r.body.ticket.id} took over this branch`);
+    // Whatever the host remembers is gone: the note still reaches the next prompt, once.
+    (rig.app.ahp.backend as unknown as { lives: Map<string, unknown> }).lives.clear();
+    c.say("plain carry on", "t2");
+    await until(() => rig.app.ahp.host.chatState(c.conv.ahpChat)?.turns.length === 2);
+    expect(JSON.stringify(rig.sandbox.last.prompts.at(-1))).toContain("took over this branch");
+    expect(rig.app.db.all("SELECT * FROM conversation_notes")).toEqual([]);
+  });
+
+  it("lets the owner take the work back from a ticket that waits for them, ending it as rejected", async () => {
+    const rig = await make({ mode: "owner-merges" });
+    const c = await rig.conversation();
+    c.write("a.txt", "a\n");
+    const r = await rig.call("POST", `/api/conversations/${c.conv.id}/ticket`, {});
+    const id = r.body.ticket.id;
+    await rig.settle();
+    expect((await rig.app.daemon.state(id)).status).toBe("ready");
+    const view = await rig.call("GET", `/api/conversations/${c.conv.id}/ship`);
+    expect(view.body.ship.ticket).toMatchObject({ held: true, canTakeBack: true });
+    expect((await rig.call("POST", `/api/conversations/${c.conv.id}/take-back`, { x: 1 })).status).toBe(400);
+    const back = await rig.call("POST", `/api/conversations/${c.conv.id}/take-back`, {});
+    expect(back.status).toBe(200);
+    expect(back.body).toEqual({ ok: true, released: true });
+    const s = await rig.app.daemon.state(id);
+    expect(s.status).toBe("done");
+    expect(s.outcome).toBe("rejected");
+    expect(
+      (await rig.call("GET", `/api/conversations/${c.conv.id}`)).body.conversation.ship.ticket,
+    ).toBeNull();
+    // Twice is harmless, and the conversation takes a message again, told what happened.
+    expect((await rig.call("POST", `/api/conversations/${c.conv.id}/take-back`, {})).body).toEqual({
+      ok: true,
+      released: false,
+    });
+    c.say("plain back again", "t2");
+    await until(() => rig.app.ahp.host.chatState(c.conv.ahpChat)?.turns.length === 2);
+    expect(JSON.stringify(rig.sandbox.last.prompts.at(-1))).toContain("ended: rejected");
+  });
+
+  it("won't take the work back from a ticket that is running", async () => {
+    const rig = await make({ mode: "direct" });
+    rig.agent.on({ stage: "review" }, { kind: "hang" });
+    const c = await rig.conversation();
+    c.write("a.txt", "a\n");
+    const r = await rig.call("POST", `/api/conversations/${c.conv.id}/ticket`, {});
+    await until(() => rig.agent.calls.some((x) => x.stage === "review"));
+    const back = await rig.call("POST", `/api/conversations/${c.conv.id}/take-back`, {});
+    expect(back.status).toBe(409);
+    expect(back.body.code).toBe("running");
+    expect(
+      (await rig.call("GET", `/api/conversations/${c.conv.id}/ship`)).body.ship.ticket.canTakeBack,
+    ).toBeUndefined();
+    expect((await rig.call("POST", "/api/conversations/nope/take-back", {})).status).toBe(404);
+    expect(r.body.ticket.id).toBeTruthy();
+  });
+
+  it("keeps an archived conversation's copy out of the cleanup while a ticket has it", async () => {
+    const rig = await make({ mode: "direct" });
+    rig.agent.on({ stage: "review" }, { kind: "hang" });
+    const c = await rig.conversation();
+    c.write("a.txt", "a\n");
+    await rig.call("POST", `/api/conversations/${c.conv.id}/ticket`, {});
+    await until(() => rig.agent.calls.some((x) => x.stage === "review"));
+    expect((await rig.call("PATCH", `/api/conversations/${c.conv.id}`, { archived: true })).status).toBe(200);
+    const cleanup = (rig.app.storage as unknown as { d: { archivedConversations: () => { id: string }[] } })
+      .d;
+    expect(cleanup.archivedConversations().map((x) => x.id)).not.toContain(c.conv.id);
+    expect(rig.app.deps.shipping?.holds(c.conv.id)).toBe(true);
+    // Another archived conversation, with no ticket, is still the cleanup's.
+    const other = await rig.conversation();
+    await rig.call("PATCH", `/api/conversations/${other.conv.id}`, { archived: true });
+    expect(cleanup.archivedConversations().map((x) => x.id)).toContain(other.conv.id);
+  });
+});
