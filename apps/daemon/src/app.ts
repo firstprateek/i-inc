@@ -10,7 +10,12 @@ import type {
   MachineProvider,
   Workspace,
 } from "@i-inc/core";
+import { type AgentBackend, NoAgentBackend } from "./ahp/backend.ts";
+import { agentsFromRegistry, ConversationService } from "./ahp/conversations.ts";
+import { AhpHost, type TransportLimits } from "./ahp/host.ts";
+import { AhpTransport } from "./ahp/transport.ts";
 import { type ApiOptions, createApi } from "./api.ts";
+import { same } from "./auth.ts";
 import { ChatLog } from "./chat.ts";
 import { Daemon, type DaemonDeps } from "./daemon.ts";
 import { openDb } from "./db.ts";
@@ -58,6 +63,11 @@ export interface AppOptions extends ApiOptions {
   storagePaths?: Partial<StoragePaths>;
   /** Ask machines to hand freed blocks back to the host (`fstrim`). Default: yes. */
   trimMachines?: boolean;
+  /** What runs the agents behind conversations. Default: nothing yet (the session host, T59b). */
+  ahpBackend?: FromRegistry<AgentBackend>;
+  ahpLimits?: Partial<TransportLimits>;
+  /** Let an AHP client upgrade without credentials and push the token with `authenticate` (off by default). */
+  ahpDeferredAuth?: boolean;
 }
 
 export async function createApp(o: AppOptions) {
@@ -104,6 +114,29 @@ export async function createApp(o: AppOptions) {
     live,
     ...(o.log ? { log: o.log } : {}),
   };
+  const token = o.token;
+  const backend = o.ahpBackend ? make(o.ahpBackend) : new NoAgentBackend(() => agentsFromRegistry(registry));
+  const host = new AhpHost({
+    db,
+    backend,
+    now: () => o.clock.now(),
+    ...(o.log ? { log: o.log } : {}),
+    ...(o.ahpLimits ? { limits: o.ahpLimits } : {}),
+    ...(token ? { verifyToken: (t: string) => same(t, token) } : {}),
+  });
+  // The root channel offers one agent per engine: it follows the registry.
+  const officeChanged = registry.onChange;
+  registry.onChange = (kind) => {
+    officeChanged?.(kind);
+    if (kind === "engine") host.refreshAgents();
+  };
+  const conversations = new ConversationService(db, host, registry, o.clock);
+  deps.conversations = conversations;
+  const transport = new AhpTransport(host, {
+    ...(token ? { token } : {}),
+    ...(o.hosts ? { hosts: o.hosts } : {}),
+    ...(o.ahpDeferredAuth ? { deferredAuth: true } : {}),
+  });
   const daemon = new Daemon(deps);
   const ops = deps.machines as unknown as Partial<MachineOps>;
   const storage = new Storage({
@@ -148,5 +181,5 @@ export async function createApp(o: AppOptions) {
     now: () => o.clock.now(),
     ...(o.log ? { log: o.log } : {}),
   });
-  return { db, deps, daemon, handle, live, storage, deploys };
+  return { db, deps, daemon, handle, live, storage, deploys, ahp: { host, transport, conversations } };
 }

@@ -9,6 +9,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, normalize } from "node:path";
 import { FakeAgent, FakeChat, FakeHarness, FakeHelper, FakeMachines } from "@i-inc/core/testing";
+import type { WsData } from "./ahp/transport.ts";
 import { createApp } from "./app.ts";
 import { configDir, readCredentials, webToken } from "./config.ts";
 import { seedDemo, seedDemoLater, seedDemoProposals, seedDemoTickets } from "./demo.ts";
@@ -46,6 +47,8 @@ const common = {
   version,
   // The deployer (apps/deployer) records every attempt here; GET /api/deploys and the push read it.
   deploysPath: join(home, "deploys.jsonl"),
+  // AHP clients that can't send a cookie or header may push the token with `authenticate` instead.
+  ...(process.env.I_INC_AHP_DEFERRED_AUTH === "1" ? { ahpDeferredAuth: true } : {}),
 };
 mkdirSync(home, { recursive: true });
 
@@ -158,12 +161,24 @@ async function serveWeb(req: Request): Promise<Response> {
   return new Response(Bun.file(join(web, "index.html")));
 }
 
-Bun.serve({
+app.ahp.transport.start();
+Bun.serve<WsData>({
   port,
   hostname: host,
   idleTimeout: 60,
-  fetch: (req) =>
-    new URL(req.url).pathname.startsWith("/api/") || !existsSync(web) ? app.handle(req) : serveWeb(req),
+  fetch: (req, server) => {
+    // Conversations speak AHP over a WebSocket on this same port (src/ahp/transport.ts).
+    if (app.ahp.transport.matches(req)) {
+      const g = app.ahp.transport.guard(req);
+      if ("refusal" in g) return g.refusal;
+      if (server.upgrade(req, { data: g.data })) return undefined;
+      return new Response("websocket upgrade failed", { status: 400 });
+    }
+    return new URL(req.url).pathname.startsWith("/api/") || !existsSync(web)
+      ? app.handle(req)
+      : serveWeb(req);
+  },
+  websocket: app.ahp.transport.websocket,
 });
 console.log(
   `i.inc daemon ${version.slice(0, 7)} on http://${host}:${port}${demo ? " (demo mode)" : ""}${existsSync(web) ? "" : " · build apps/web to serve the app"}`,

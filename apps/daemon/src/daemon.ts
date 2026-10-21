@@ -33,6 +33,7 @@ import {
   type Waiting,
   type Workspace,
 } from "@i-inc/core";
+import type { ConversationService } from "./ahp/conversations.ts";
 import type { ChatLog } from "./chat.ts";
 import type { Db } from "./db.ts";
 import type { TokenSource } from "./github.ts";
@@ -68,6 +69,8 @@ export interface DaemonDeps {
   /** Retention and cleanup (T52). Set by createApp. */
   storage?: Storage;
   log?: (msg: string) => void;
+  /** Conversations over AHP (src/ahp); absent in the few places that build deps by hand. */
+  conversations?: ConversationService;
 }
 
 /** What the daemon asks of storage when it decides to stop a machine (storage.ts, T52). */

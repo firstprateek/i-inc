@@ -15,66 +15,75 @@ export function capText(s: string, maxBytes = 4096): string {
   return truncated;
 }
 
+/** Names whose value is a secret: contain password, token or secret, or end in a key (api_key, KEY, private-key-2). */
+const secretName =
+  /password|token|secret|(?:[-_]key|apikey|privatekey|accesskey|authkey|\bkey)(?:[-_][a-zA-Z0-9_-]{1,60})?$/i;
+
 export function redactSecrets(text: string): string {
   if (!text) return text;
   let out = text;
 
   // 1. Authorization: <anything> header values
   out = out.replace(
-    /(authorization:\s*)(?:["'])(?:bearer\s+|basic\s+|token\s+)?[^\r\n"']+["']/gi,
+    /(authorization:\s{0,20})(?:["'])(?:bearer\s+|basic\s+|token\s+)?[^\r\n"']{1,1000}["']/gi,
     "$1[redacted]",
   );
-  out = out.replace(/(authorization:\s*)(?:bearer\s+|basic\s+|token\s+)?[^\s\r\n"']+/gi, "$1[redacted]");
+  out = out.replace(/(authorization:\s{0,20})(?:bearer\s+|basic\s+|token\s+)?[^\s\r\n"']+/gi, "$1[redacted]");
 
   // 2. Bearer <token> headers/values
-  out = out.replace(/(bearer\s+)[^\s\r\n"']+/gi, "$1[redacted]");
+  out = out.replace(/(bearer\s{1,20})[^\s\r\n"']+/gi, "$1[redacted]");
 
   // 3. GitHub tokens (ghp_, gho_, ghs_, github_pat_)
-  out = out.replace(/\b(?:ghp|gho|ghs|github_pat)_[A-Za-z0-9_]+\b/g, "[redacted]");
+  out = out.replace(/(?:ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]+\b/g, "[redacted]");
 
   // 4. OpenAI / Anthropic keys (sk-...)
   out = out.replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[redacted]");
 
   // 5. Google AIza API keys
-  out = out.replace(/\bAIza[0-9A-Za-z_-]{20,}\b/g, "[redacted]");
+  out = out.replace(/AIza[0-9A-Za-z_-]{20,}\b/g, "[redacted]");
 
   // 6. Slack xox[bp]- tokens
-  out = out.replace(/\bxox[baprs]-[0-9A-Za-z-]{8,}\b/g, "[redacted]");
+  out = out.replace(/xox[baprs]-[0-9A-Za-z-]{8,}\b/g, "[redacted]");
 
   // 7. JWT-like tokens (eyJ...\.eyJ...\....)
-  out = out.replace(/\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\b/g, "[redacted]");
+  out = out.replace(/eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\b/g, "[redacted]");
 
   // 8. AWS Access Key IDs (AKIA...)
-  out = out.replace(/\bAKIA[0-9A-Z]{16}\b/g, "[redacted]");
+  out = out.replace(/AKIA[0-9A-Z]{16}(?![0-9A-Za-z])/g, "[redacted]");
 
   // 9. URL credentials (scheme://user:pass@host)
-  out = out.replace(/([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)([^:\s/@]+):([^@\s/]+)@/gi, "$1$2:[redacted]@");
+  out = out.replace(
+    /([a-zA-Z][a-zA-Z0-9+.-]{0,30}:\/\/)([^:\s/@]{1,200}):([^@\s/]{1,200})@/gi,
+    "$1$2:[redacted]@",
+  );
 
   // 10. curl credentials (-u user:pass, -uuser:pass, --user user:pass)
-  out = out.replace(/(-u\s*|--user\s+)([^\s:]+):([^\s"'&;]+)/gi, "$1$2:[redacted]");
+  out = out.replace(/(-u\s{0,20}|--user\s{1,20})([^\s:]{1,200}):([^\s"'&;]{1,200})/gi, "$1$2:[redacted]");
 
   // 11. CLI flags (--password <val>, --token <val>, --secret <val>, --api-key <val>)
   out = out.replace(
-    /(?<=\s|^)(--(?:password|token|secret|api[-_]?key)\s+)(?:(["'])([^\r\n"']+)\2|([^\s&;"']+))/gi,
+    /(?<=\s|^)(--(?:password|token|secret|api[-_]?key)\s{1,20})(?:(["'])([^\r\n"']{1,1000})\2|([^\s&;"']+))/gi,
     "$1[redacted]",
   );
 
   // 12. YAML / config style (password: val, token: val, secret: val, api_key: val)
   out = out.replace(
-    /(?<=\b(?:password|token|secret|api[-_]?key):\s+)(?:(["'])([^\r\n"']+)\1|([^\s\r\n#]+))/gi,
+    /(?<=\b(?:password|token|secret|api[-_]?key):\s{1,20})(?:(["'])([^\r\n"']{1,1000})\1|([^\s\r\n#]+))/gi,
     "[redacted]",
   );
 
   // 13. JSON-style: "password": "...", 'api_key': '...'
+  // (The name is matched whole, then tested for a key word, so no pattern rescans a long run.)
   out = out.replace(
-    /((\\"|'|")?[a-zA-Z0-9_-]*(?:token|key|secret|password)[a-zA-Z0-9_-]*\2\s*:\s*)(\\"|'|")[^"'\r\n]+?\3/gi,
-    "$1$3[redacted]$3",
+    /(?<![a-zA-Z0-9_-])((\\"|'|")?([a-zA-Z0-9_-]{1,200})\2\s{0,20}:\s{0,20})(\\"|'|")[^"'\r\n]{1,1000}?\4/gi,
+    (m, pre: string, _open: string, name: string, q: string) =>
+      /token|key|secret|password/i.test(name) ? `${pre}${q}[redacted]${q}` : m,
   );
 
   // 14. *TOKEN= / *KEY= / *SECRET= / *PASSWORD= query or env values (stops over-redacting keyboard=on)
   out = out.replace(
-    /(?<=[?&]|\b)([a-zA-Z0-9_-]*(?:password|token|secret)[a-zA-Z0-9_-]*=|[a-zA-Z0-9_-]*(?:[-_]key|apikey|privatekey|accesskey|authkey|\bkey)(?:[-_][a-zA-Z0-9_-]+)?=)(?:(["'])([^\r\n"']+)\2|([^\s&;"']+))/gi,
-    "$1[redacted]",
+    /(?<![a-zA-Z0-9_-])([a-zA-Z0-9_-]{1,200}=)(?:(["'])([^\r\n"']{1,1000})\2|([^\s&;"']+))/gi,
+    (m, pre: string) => (secretName.test(pre.slice(0, -1)) ? `${pre}[redacted]` : m),
   );
 
   // 15. Long hex strings (32+ chars, containing both digits and hex letters)
@@ -85,7 +94,7 @@ export function redactSecrets(text: string): string {
 
   // 17. Unpadded base64 strings (32+ chars, containing lowercase, uppercase, and digits)
   out = out.replace(
-    /(?<![A-Za-z0-9_./-])(?=[A-Za-z0-9+/]*[a-z])(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[0-9])[A-Za-z0-9+/]{32,}(?![A-Za-z0-9_./-])/g,
+    /(?<![A-Za-z0-9_./+-])(?=[A-Za-z0-9+/]*[a-z])(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[0-9])[A-Za-z0-9+/]{32,}(?![A-Za-z0-9_./-])/g,
     "[redacted]",
   );
 

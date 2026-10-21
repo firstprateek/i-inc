@@ -9,7 +9,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@i-inc/core": "workspace:*"
+    "@i-inc/core": "workspace:*",
+    "@microsoft/agent-host-protocol": "1.0.0"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2"
