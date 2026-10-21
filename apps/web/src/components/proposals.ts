@@ -166,7 +166,7 @@ export class IncProposals extends LitElement {
       <h2><button type="button" class="head" aria-expanded=${open ? "true" : "false"} aria-controls="proposed-list"
         @click=${() => {
           this.expanded = !open;
-        }}><span class="chev" aria-hidden="true"></span><b>Proposed (${list.length})</b><span>— follow-ups waiting for you</span></button></h2>
+        }}><span class="chev" aria-hidden="true"></span><b>Proposed (${list.length})</b><span> — follow-ups waiting for you</span></button></h2>
       ${this.error ? html`<div class="err" role="alert">${this.error}</div>` : nothing}
       <div id="proposed-list" ?hidden=${!open}>
         <ul>${shown.map((p) => this.row(p))}</ul>
