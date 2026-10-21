@@ -316,24 +316,14 @@ describe("PUT /api/employees/:id", () => {
     expect(paCloud.status).toBe(400);
     expect(paCloud.body.error).toContain("Personal Assistant works on home data");
 
-    // Personal Assistant on a local engine, but in a sandbox the others share: refused (home data)
-    const paShared = await app.call("PUT", "/api/employees/ada", {
+    // Personal Assistant on a local engine in a sandbox the others share: moved to a team of its own (home data)
+    const paLocal = await app.call("PUT", "/api/employees/ada", {
       role: "Personal Assistant",
       engines: { default: "qwen", fallbacks: [] }, // qwen is local: true
     });
-    expect(paShared.status).toBe(400);
-    expect(paShared.body.error).toContain("needs a sandbox of its own");
-
-    // ...and it succeeds once it has a team of its own
-    expect(
-      (await app.call("PUT", "/api/teams/home-ada", { name: "Ada's home", members: ["ada"] })).status,
-    ).toBe(200);
-    const paLocal = await app.call("PUT", "/api/employees/ada", {
-      role: "Personal Assistant",
-      engines: { default: "qwen", fallbacks: [] },
-      teamId: "home-ada",
-    });
     expect(paLocal.status).toBe(200);
+    expect(app.deps.registry.teamOf("ada").id).toBe("home-ada");
+    expect(app.deps.registry.machineMates("ada")).toEqual([]);
     expect(paLocal.body.employee.role).toBe("Personal Assistant");
   });
 });

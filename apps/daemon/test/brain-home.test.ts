@@ -34,19 +34,63 @@ describe("hiring a PA", () => {
     expect(registry.machineMates("ada")).toEqual(["kit"]);
   });
 
-  it("refuses to put a PA in a team with other people, by hiring, by moving, by editing a team, or by a change of role", async () => {
+  it("hires from the web form's request (a team named, with others in it) into a home team of its own, small", async () => {
     const r = await brainRig();
     const hire = await r.call("POST", "/api/employees", hirePa("sam", { teamId: "engineering" }));
-    expect(hire.status).toBe(400);
-    expect(hire.body.error).toMatch(/home data, which needs a sandbox of its own/);
-    expect(r.app.deps.registry.employees().some((e) => e.id === "sam")).toBe(false);
+    expect(hire.status).toBe(201);
+    const { registry } = r.app.deps;
+    expect(registry.teamOf("sam").id).toBe("home-sam");
+    expect(registry.teams().find((t) => t.id === "home-sam")).toMatchObject({
+      members: ["sam"],
+      sandbox: { cpus: 2, memory: "4G" },
+    });
+    expect(registry.machineMates("ada")).toEqual(["kit"]);
+    // The size is the owner's to change, like any team's.
+    expect(
+      (
+        await r.call("PUT", "/api/teams/home-sam", {
+          name: "Sam's home",
+          members: ["sam"],
+          sandbox: { cpus: 4, memory: "8G" },
+        })
+      ).status,
+    ).toBe(200);
+    // A PA hired into an empty team named by the owner stays there.
+    registry.addTeam({ id: "errands", name: "Errands", members: [] });
+    expect((await r.call("POST", "/api/employees", hirePa("tam", { teamId: "errands" }))).status).toBe(201);
+    expect(registry.teamOf("tam").id).toBe("errands");
+  });
 
-    // Moving the PA we have into the engineers' team
-    const move = await r.call("PUT", "/api/employees/pip", { teamId: "engineering" });
-    expect(move.status).toBe(400);
-    expect(r.app.deps.registry.teamOf("pip").id).toBe("home-pip");
+  it("moves a PA that edits name a shared team for, or that sits in one, to a home team instead of failing", async () => {
+    const r = await brainRig();
+    const { registry } = r.app.deps;
+    // The way it was before: a PA in the engineers' team.
+    registry.setTeam({ id: "engineering", name: "Engineering", members: ["ada", "kit", "pip"] });
+    expect(registry.machineMates("pip")).toEqual(["ada", "kit"]);
+    const edit = await r.call("PUT", "/api/employees/pip", { prompt: "Be brief.", teamId: "engineering" });
+    expect(edit.status).toBe(200);
+    expect(registry.teamOf("pip").id).toBe("home-pip");
+    expect(registry.teams().find((t) => t.id === "engineering")?.members).toEqual(["ada", "kit"]);
+    // Naming a shared team again moves it again to the same home team; no second one is made.
+    expect((await r.call("PUT", "/api/employees/pip", { teamId: "engineering" })).status).toBe(200);
+    expect(
+      registry
+        .teams()
+        .filter((t) => t.id.startsWith("home-"))
+        .map((t) => t.id),
+    ).toEqual(["home-pip"]);
+    // A change of role into a PA, while the team has others, moves it too.
+    const role = await r.call("PUT", "/api/employees/kit", {
+      role: "Personal Assistant",
+      engines: { default: "qwen", fallbacks: [] },
+    });
+    expect(role.status).toBe(200);
+    expect(registry.teamOf("kit").id).toBe("home-kit");
+    expect(registry.machineMates("ada")).toEqual([]);
+  });
 
-    // Adding an engineer to the PA's team, by hiring, by moving, or by editing the team
+  it("still refuses to put anyone else in a PA's team, or a PA and others in a team", async () => {
+    const r = await brainRig();
     const into = await r.call("POST", "/api/employees", {
       id: "lee",
       name: "Lee",
@@ -56,6 +100,7 @@ describe("hiring a PA", () => {
       teamId: "home-pip",
     });
     expect(into.status).toBe(400);
+    expect(into.body.error).toMatch(/home data, which needs a sandbox of its own/);
     expect((await r.call("PUT", "/api/employees/ada", { teamId: "home-pip" })).status).toBe(400);
     expect(
       (await r.call("PUT", "/api/teams/home-pip", { name: "Pip's home", members: ["pip", "ada"] })).status,
@@ -64,15 +109,67 @@ describe("hiring a PA", () => {
       (await r.call("PUT", "/api/teams/engineering", { name: "Engineering", members: ["ada", "kit", "pip"] }))
         .status,
     ).toBe(400);
-    // A change of role into a PA, while the team has others
-    const role = await r.call("PUT", "/api/employees/kit", {
-      role: "Personal Assistant",
-      engines: { default: "qwen", fallbacks: [] },
-    });
-    expect(role.status).toBe(400);
-    expect(r.app.deps.registry.employee("kit").role).toBe("Senior Engineer");
-    // Editing a PA's prompt in its own team is fine.
     expect((await r.call("PUT", "/api/employees/pip", { prompt: "Be brief." })).status).toBe(200);
+  });
+
+  it("won't delete a team that holds a PA, which would put it in the shared machine", async () => {
+    const r = await brainRig();
+    const res = await r.call("DELETE", "/api/teams/home-pip");
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/Pip.*home data/);
+    expect(r.app.deps.registry.teamOf("pip").id).toBe("home-pip");
+    // Other teams delete as before.
+    expect((await r.call("DELETE", "/api/teams/engineering")).status).toBe(200);
+  });
+
+  it("doesn't hire an engineer into a PA's home team just because it is the only one", async () => {
+    const r = await brainRig();
+    const { registry } = r.app.deps;
+    registry.removeTeam("engineering");
+    expect(registry.teams().map((t) => t.id)).toEqual(["home-pip"]);
+    const res = await r.call("POST", "/api/employees", {
+      id: "lee",
+      name: "Lee",
+      role: "Senior Engineer",
+      duties: ["build"],
+      engines: { default: "opus", fallbacks: [] },
+    });
+    expect(res.status).toBe(201);
+    expect(registry.teamOf("lee").id).not.toBe("home-pip");
+    expect(registry.machineMates("pip")).toEqual([]);
+    // With engineering back, it is the one open team.
+    registry.addTeam({ id: "engineering", name: "Engineering", members: ["ada"] });
+    registry.addTeam({ id: "design", name: "Design", members: [] });
+    const two = await r.call("POST", "/api/employees", {
+      id: "mo",
+      name: "Mo",
+      role: "Senior Engineer",
+      duties: ["build"],
+      engines: { default: "opus", fallbacks: [] },
+    });
+    expect(two.status).toBe(400); // two open teams: choose
+  });
+
+  it("leaves no empty home team behind when the hire fails", async () => {
+    const r = await brainRig();
+    const { registry } = r.app.deps;
+    const before = registry.teams().map((t) => t.id);
+    const real = registry.saveEmployeeInTeam.bind(registry);
+    registry.saveEmployeeInTeam = () => {
+      throw new Error("disk full");
+    };
+    await expect(
+      r.app.handle(
+        new Request("http://i.inc/api/employees", {
+          method: "POST",
+          body: JSON.stringify(hirePa("sam")),
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    ).rejects.toThrow("disk full");
+    registry.saveEmployeeInTeam = real;
+    expect(registry.teams().map((t) => t.id)).toEqual(before);
+    expect(registry.employees().some((e) => e.id === "sam")).toBe(false);
   });
 });
 

@@ -16,6 +16,12 @@ export function pickTint(existing: Employee[]): number {
 /** Roles whose work is home data: they may only have local engines (spec §7). */
 export const homeRoles = ["Personal Assistant"];
 
+/**
+ * The size of a home team's sandbox (a PA works alone, on a small local model's errands): smaller than the
+ * default 6 CPUs and 12G. Adjustable like any team's, with `PUT /api/teams/:id`.
+ */
+export const homeSandbox = { cpus: 2, memory: "4G" } as const;
+
 /** Whether this employee works on home data (a PA). */
 export const isHomeEmployee = (e: Pick<Employee, "role">): boolean => homeRoles.includes(e.role);
 
