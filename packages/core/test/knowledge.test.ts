@@ -1,6 +1,18 @@
 // Brains and the handbook (spec §5, "The brain"): where proposed edits land, and which wait.
 import { describe, expect, it } from "vitest";
-import { type KnowledgeEdit, knowledgeLog, pagePath, runTicket, type TicketEvent } from "../src/index.ts";
+import {
+  type KnowledgeEdit,
+  knowledgeLog,
+  mayRead,
+  pagePath,
+  parseScope,
+  pathOfSlug,
+  readableScopes,
+  runTicket,
+  scopeKind,
+  scopeOfPath,
+  type TicketEvent,
+} from "../src/index.ts";
 import { ports } from "./fixtures.ts";
 
 const brain = (page: string): KnowledgeEdit => ({ layer: "brain", page, text: "x" });
@@ -72,5 +84,86 @@ describe("orientation", () => {
       ["kit", "brain", "projects/duet"],
     ]);
     expect(p.agent.callsFor("kit", "orient")[0]?.brief).toContain("CLAUDE.md");
+  });
+});
+
+describe("handbook sections", () => {
+  it("files handbook facts under facts, projects and a team's section", () => {
+    const fact = (page: string): KnowledgeEdit => ({ layer: "fact", page, text: "x" });
+    expect(pagePath(fact("projects/Duet"))).toBe("projects/duet.md");
+    expect(pagePath(fact("teams/engineering/Release Notes"))).toBe("teams/engineering/release-notes.md");
+    expect(pagePath(fact("facts/gh-cli"))).toBe("facts/gh-cli.md");
+    for (const page of [
+      "teams/engineering",
+      "teams/../x/y",
+      "teams/a/b/c",
+      "teams//x",
+      "projects/a/b",
+      "policies/merging",
+      "projects/../x",
+      "teams/Bad_Id/x",
+    ]) {
+      expect(pagePath(fact(page))).toBeNull();
+    }
+    // Policies stay in policies/, and a team can't be reached through them.
+    expect(pagePath({ layer: "policy", page: "teams/eng/x", text: "x" })).toBeNull();
+    expect(pagePath({ layer: "policy", page: "policies/merging", text: "x" })).toBe("policies/merging.md");
+  });
+});
+
+describe("scopes", () => {
+  const teams = [
+    { id: "engineering", members: ["ada", "kit"] },
+    { id: "home", members: ["pia"] },
+  ];
+
+  it("lets an employee read their own brain, their teams' sections and the company, nearest first", () => {
+    expect(readableScopes({ id: "ada" }, teams)).toEqual(["brain:ada", "team:engineering", "company"]);
+    expect(readableScopes({ id: "nobody" }, teams)).toEqual(["brain:nobody", "company"]);
+    expect(readableScopes({ id: "ada" }, [])).toEqual(["brain:ada", "company"]);
+  });
+
+  it("never lets anyone read another employee's brain, so a PA's home data stays with the PA", () => {
+    for (const other of ["ada", "kit", "nobody"]) {
+      expect(mayRead({ id: other }, "brain:pia", teams)).toBe(false);
+      expect(readableScopes({ id: other }, teams)).not.toContain("brain:pia");
+    }
+    expect(mayRead({ id: "pia" }, "brain:pia", teams)).toBe(true);
+    expect(mayRead({ id: "ada" }, "team:home", teams)).toBe(false);
+    expect(mayRead({ id: "pia" }, "company", teams)).toBe(true);
+  });
+
+  it("parses scope names and refuses malformed ones", () => {
+    expect(parseScope("company")).toEqual({ kind: "company" });
+    expect(parseScope("team:engineering")).toEqual({ kind: "team", id: "engineering" });
+    expect(parseScope("brain:ada")).toEqual({ kind: "brain", id: "ada" });
+    for (const bad of ["", "team:", "team:../x", "brain:A b", "other:x", "company:x"]) {
+      expect(parseScope(bad)).toBeNull();
+    }
+    expect(scopeKind("team:engineering")).toBe("team");
+  });
+
+  it("maps files to scopes and slugs, and back", () => {
+    const hb = { kind: "handbook" } as const;
+    const br = { kind: "brain", id: "ada" } as const;
+    expect(scopeOfPath(hb, "facts/gh-cli.md")).toEqual({ scope: "company", slug: "facts/gh-cli" });
+    expect(scopeOfPath(hb, "projects/duet.md")).toEqual({ scope: "company", slug: "projects/duet" });
+    expect(scopeOfPath(hb, "teams/engineering/release.md")).toEqual({
+      scope: "team:engineering",
+      slug: "release",
+    });
+    expect(scopeOfPath(br, "tools/vitest.md")).toEqual({ scope: "brain:ada", slug: "tools/vitest" });
+    expect(scopeOfPath(br, "personality.md")).toEqual({ scope: "brain:ada", slug: "personality" });
+    for (const [repo, path] of [
+      [hb, "INDEX.md"],
+      [br, "INDEX.md"],
+      [hb, "teams/x.md"],
+      [hb, "facts/.hidden.md"],
+      [hb, "notes.txt"],
+    ] as const) {
+      expect(scopeOfPath(repo, path)).toBeNull();
+    }
+    expect(pathOfSlug("team:engineering", "release")).toBe("teams/engineering/release.md");
+    expect(pathOfSlug("company", "facts/gh-cli")).toBe("facts/gh-cli.md");
   });
 });

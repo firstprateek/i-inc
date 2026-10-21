@@ -188,8 +188,8 @@ export function clip(s: string, limit: number): string {
 
 /** Normalizes a link target: "[[Tools/Vitest Mocks.md|mocks]]" → "tools/vitest-mocks". */
 export function normalizeSlug(raw: string): string {
-  return raw
-    .split(/[|#]/)[0]!
+  const target = raw.split(/[|#]/)[0] ?? "";
+  return target
     .trim()
     .toLowerCase()
     .replace(/\.md$/, "")
