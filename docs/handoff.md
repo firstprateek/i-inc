@@ -39,8 +39,13 @@ CI check (`check`, read from the public GitHub API) concluded `success` is built
 idle (no ticket stage or chat turn; at most 30 minutes, then it retries next cycle), switched in
 (`~/i-inc-releases/current` is repointed and `inc.i.daemon` is kickstarted) and health-checked
 (`GET /api/health` must report the new sha within 90 s). Any failure puts the previous release back,
-records it, sends a push ("Deploy of abc1234 failed: … — rolled back") and never retries that commit;
-newer commits are tried. The last 5 releases are kept. Nothing needs root.
+records it and sends a push ("Deploy of abc1234 failed: … — rolled back"). A failed build, smoke test or
+health check is retried once from clean, and written off (never tried again) only if it fails again; a
+temporary failure (full disk, network, timeout) is retried with back-off (2, 4, 8 … up to 60 min) and
+never written off. Newer commits are tried at once. Only a commit that continues the running release is
+deployed: after a force-push to an older or unrelated commit it logs a warning, records
+`skipped-ancestry` and pushes; allow it with `--once --sha <full sha>`. The last 5 releases are kept,
+and never the running one or the one before it. Nothing needs root.
 
 - **See deploys:** My desk → Releases → Deploys (the last 8), `GET /api/deploys` (the last 20),
   `tail -n 5 ~/.i-inc/deploys.jsonl` (`{at, sha, from, outcome, reason, durationMs}`, outcome is one of
@@ -51,14 +56,17 @@ newer commits are tried. The last 5 releases are kept. Nothing needs root.
   `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/inc.i.deployer.plist`.
 - **Deploy now (force):** the loop already deploys within 2 minutes of green CI. To skip waiting for
   the daemon to go idle, pause the deployer, then
-  `cd ~/i-inc && bun apps/deployer/src/main.ts --once --force-after 0`
+  `cd ~/i-inc && bun apps/deployer/src/main.ts --once --force-after 0` (a daemon that does not answer
+  `/api/health` counts as busy too)
   (`--force-after <minutes>` switches anyway once the daemon has stayed busy that long; a ticket cut
   short resumes by itself after the restart).
 - **Roll back by hand:** pause the deployer, then
   `cd ~/i-inc && bun apps/deployer/src/main.ts --rollback [sha]`. It points `current` at the previous
-  release (or `sha`, which must still be in `~/i-inc-releases`), kickstarts the daemon, records it, and
-  marks the release you left as bad so it is not deployed again. Then resume the deployer. Without the
-  marking, the deployer would redeploy main's tip on its next cycle.
+  release that was actually deployed (never a build that was only waiting to be switched to; or `sha`,
+  which must be an earlier deployed release still in `~/i-inc-releases`), kickstarts the daemon, records
+  it, and marks the release you left as bad so it is not deployed again (the one you roll back to is
+  never marked). It refuses while the daemon is busy or not answering unless you add `--force`. Then
+  resume the deployer. Without the marking, the deployer would redeploy main's tip on its next cycle.
 - **A commit you want retried** after it was marked bad: delete its key from `bad` in
   `~/i-inc-releases/state.json` (with the deployer paused). `bun apps/deployer/src/main.ts --status`
   prints that state.

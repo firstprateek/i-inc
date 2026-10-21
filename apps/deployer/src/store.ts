@@ -10,6 +10,10 @@ export const emptyState = (): State => ({
   ciFailed: [],
   attempts: {},
   ready: {},
+  retry: {},
+  ancestrySkipped: [],
+  allowRewrite: [],
+  recorded: [],
   history: [],
   inFlight: null,
 });

@@ -139,6 +139,26 @@ describe("release folders", () => {
     expect(git(join(root, local), "rev-parse", "HEAD")).toBe(local);
   });
 
+  it("remote: tells whether a commit continues the running release, in the release's own clone", async () => {
+    const r = makeReleases();
+    await r.build(first);
+    const remote = new GitRemote(checkout, run, "main", (sha) => r.dir(sha));
+    expect(await remote.descends(first, second)).toBe(true);
+    expect(await remote.descends(first, first)).toBe(true);
+    // main rewound or force-pushed: the running release is not in the new tip's history.
+    await r.build(second);
+    expect(await remote.descends(second, first)).toBe(false);
+    // A commit that exists only on origin (pushed after the clone) is fetched to be compared.
+    writeFileSync(join(origin, "a.txt"), "three");
+    git(origin, "commit", "-q", "-am", "three");
+    const third = git(origin, "rev-parse", "HEAD");
+    expect(await remote.descends(first, third)).toBe(true);
+    // Unknown commits cannot be compared.
+    expect(await remote.descends(first, "f".repeat(40))).toBeNull();
+    // The owner's checkout was never fetched into.
+    expect(() => git(checkout, "cat-file", "-e", `${third}^{commit}`)).toThrow();
+  });
+
   it("remote: reads the tip of main and the origin url", async () => {
     const remote = new GitRemote(checkout, run);
     expect(await remote.head()).toBe(second);

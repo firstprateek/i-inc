@@ -9,7 +9,7 @@ interface Deploy {
   at: number;
   sha: string;
   from: string | null;
-  outcome: "deployed" | "rolled-back" | "failed-build" | "failed-smoke" | "skipped-ci";
+  outcome: "deployed" | "rolled-back" | "failed-build" | "failed-smoke" | "skipped-ci" | "skipped-ancestry";
   reason: string;
   durationMs: number;
 }
@@ -20,6 +20,7 @@ const names: Record<Deploy["outcome"], string> = {
   "failed-build": "Build failed",
   "failed-smoke": "Smoke test failed",
   "skipped-ci": "Skipped: CI failed",
+  "skipped-ancestry": "Skipped: history rewritten",
 };
 
 const when = (at: number) => new Date(at).toISOString().slice(0, 16).replace("T", " ");

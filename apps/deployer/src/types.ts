@@ -2,7 +2,13 @@
 // drain, switch, health check, rollback) runs in tests against fakes. The real adapters are in
 // ci.ts, releases.ts, smoke.ts, daemon.ts and store.ts.
 
-export type Outcome = "deployed" | "rolled-back" | "failed-build" | "failed-smoke" | "skipped-ci";
+export type Outcome =
+  | "deployed"
+  | "rolled-back"
+  | "failed-build"
+  | "failed-smoke"
+  | "skipped-ci"
+  | "skipped-ancestry";
 
 /** One line of ~/.i-inc/deploys.jsonl (contract C21 in docs/coord.md). */
 export interface DeployRecord {
@@ -39,6 +45,11 @@ export interface Clock {
 export interface Remote {
   /** The SHA at the tip of origin's main. */
   head(): Promise<string>;
+  /**
+   * Whether `descendant` has `ancestor` in its history (`git merge-base --is-ancestor`), or null when
+   * that cannot be told (the objects could not be fetched).
+   */
+  descends(ancestor: string, descendant: string): Promise<boolean | null>;
 }
 
 export interface Ci {
@@ -98,6 +109,14 @@ export interface State {
   attempts: Record<string, number>;
   /** Commits built and smoke-tested, waiting for the daemon to drain. */
   ready: Record<string, { drainSince: number | null }>;
+  /** Failures per commit that are not final yet: when to try again, and how many times it failed. */
+  retry: Record<string, { failures: number; transients: number; nextAt: number }>;
+  /** Commits whose history does not include the running release, already reported once. */
+  ancestrySkipped: string[];
+  /** Commits the owner allowed despite that (`--sha`). */
+  allowRewrite: string[];
+  /** Keys of records already written (sha:outcome:attempt start), so a restart never writes one twice. */
+  recorded: string[];
   /** Releases that were actually switched to, oldest first; the last is the one running (or was). */
   history: string[];
   inFlight: InFlight | null;

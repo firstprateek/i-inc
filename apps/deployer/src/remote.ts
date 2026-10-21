@@ -7,6 +7,8 @@ export class GitRemote implements Remote {
     private readonly checkout: string,
     private readonly shell: Shell,
     private readonly branch = "main",
+    /** Where the running release lives: its own clone is where history is compared. */
+    private readonly releaseDir: (sha: string) => string = () => checkout,
   ) {}
 
   async head(): Promise<string> {
@@ -29,5 +31,33 @@ export class GitRemote implements Remote {
     });
     if (r.code !== 0) throw new Error(`git remote get-url origin failed: ${r.output.trim()}`);
     return r.output.trim();
+  }
+
+  /**
+   * Whether `descendant` includes `ancestor`, asked in the ancestor's own release folder (the owner's
+   * checkout is never fetched into). Null if the history could not be fetched or compared.
+   */
+  async descends(ancestor: string, descendant: string): Promise<boolean | null> {
+    const cwd = this.releaseDir(ancestor);
+    const has = async () =>
+      (await this.shell("git", ["cat-file", "-e", `${descendant}^{commit}`], { cwd, timeoutMs: 15_000 }))
+        .code === 0;
+    if (!(await has())) {
+      await this.shell("git", ["fetch", "--quiet", "origin", `refs/heads/${this.branch}`], {
+        cwd,
+        timeoutMs: 120_000,
+      });
+      if (!(await has())) {
+        await this.shell("git", ["fetch", "--quiet", "origin", descendant], { cwd, timeoutMs: 120_000 });
+        if (!(await has())) return null;
+      }
+    }
+    const r = await this.shell("git", ["merge-base", "--is-ancestor", ancestor, descendant], {
+      cwd,
+      timeoutMs: 30_000,
+    });
+    if (r.code === 0) return true;
+    if (r.code === 1) return false;
+    return null;
   }
 }

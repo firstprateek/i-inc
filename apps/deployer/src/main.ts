@@ -5,6 +5,7 @@
 //   (no flags)          loop forever: a cycle every 2 minutes
 //   --once              one cycle, then exit
 //   --force-after <min> switch even if the daemon is still busy after this many minutes
+//   --sha <full sha>    with --once: deploy main's tip even though it does not descend from the running release
 //   --seed              make the checkout's HEAD the first release and point `current` at it
 //   --rollback [sha]    roll back by hand to the previous deployed release (or sha, if it was deployed before);
 //                       refuses while the daemon is busy unless --force; marks the release it leaves as bad
@@ -52,7 +53,8 @@ const settings: Settings = {
     forceMin !== undefined && Number.isFinite(Number(forceMin)) ? Number(forceMin) * 60_000 : undefined,
 };
 
-const remote = new GitRemote(checkout, run);
+const releasesDir = (sha: string) => join(root, sha);
+const remote = new GitRemote(checkout, run, "main", releasesDir);
 const releases = new FsReleases({ root, checkout, originUrl: () => remote.originUrl(), shell: run });
 const store = new FileStore(join(root, "state.json"), join(incHome, "deploys.jsonl"));
 const deployer = new Deployer({
@@ -129,6 +131,16 @@ if (flag("--rollback")) {
 
 await deployer.recover().catch((err) => log(`recovery failed: ${String(err)}`));
 if (flag("--once")) {
+  const allowed = value("--sha");
+  if (allowed) {
+    if (!/^[0-9a-f]{40}$/.test(allowed)) {
+      log("--sha needs the full 40-character commit sha");
+      deployer.release();
+      process.exit(2);
+    }
+    deployer.allowRewrite(allowed);
+    log(`${allowed.slice(0, 7)} is allowed even if it does not continue the running release`);
+  }
   const r = await deployer.cycle();
   log(`cycle: ${r.action}`);
   deployer.release();

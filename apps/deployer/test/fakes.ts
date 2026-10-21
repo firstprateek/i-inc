@@ -91,7 +91,13 @@ export class World {
     this.built.set(sha(1), 1);
   }
 
-  remote: Remote = { head: async () => this.head };
+  /** descends(current, head): true unless a test says the history was rewritten (false) or unknown (null). */
+  descendsAnswer: Record<string, boolean | null> = {};
+  remote: Remote = {
+    head: async () => this.head,
+    descends: async (_ancestor, descendant) =>
+      descendant in this.descendsAnswer ? (this.descendsAnswer[descendant] ?? null) : true,
+  };
 
   ciPort: Ci = {
     check: async (s) => {

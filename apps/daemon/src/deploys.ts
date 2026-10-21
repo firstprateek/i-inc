@@ -6,7 +6,13 @@ import { existsSync, readFileSync } from "node:fs";
 import type { Db } from "./db.ts";
 import type { PushService } from "./push.ts";
 
-export type DeployOutcome = "deployed" | "rolled-back" | "failed-build" | "failed-smoke" | "skipped-ci";
+export type DeployOutcome =
+  | "deployed"
+  | "rolled-back"
+  | "failed-build"
+  | "failed-smoke"
+  | "skipped-ci"
+  | "skipped-ancestry";
 
 /** One line of ~/.i-inc/deploys.jsonl. */
 export interface DeployEntry {
@@ -18,7 +24,17 @@ export interface DeployEntry {
   durationMs: number;
 }
 
-const outcomes: readonly string[] = ["deployed", "rolled-back", "failed-build", "failed-smoke", "skipped-ci"];
+const outcomes: readonly string[] = [
+  "deployed",
+  "rolled-back",
+  "failed-build",
+  "failed-smoke",
+  "skipped-ci",
+  "skipped-ancestry",
+];
+
+/** No absolute home paths in anything shown to the owner. */
+const scrub = (s: string) => s.replace(/(?:\/Users|\/home)\/[^/\s"')]+/g, "~");
 
 function parse(line: string): DeployEntry | undefined {
   try {
@@ -36,7 +52,7 @@ function parse(line: string): DeployEntry | undefined {
       sha: e.sha,
       from: typeof e.from === "string" ? e.from : null,
       outcome: e.outcome as DeployOutcome,
-      reason: typeof e.reason === "string" ? e.reason.slice(0, 500) : "",
+      reason: typeof e.reason === "string" ? scrub(e.reason).slice(0, 500) : "",
       durationMs: typeof e.durationMs === "number" ? e.durationMs : 0,
     };
   } catch {
@@ -63,7 +79,7 @@ export function readDeploys(path: string | undefined, limit = 20): DeployEntry[]
   return out;
 }
 
-const failed: readonly DeployOutcome[] = ["rolled-back", "failed-build", "failed-smoke"];
+const failed: readonly DeployOutcome[] = ["rolled-back", "failed-build", "failed-smoke", "skipped-ancestry"];
 const short = (sha: string | null) => (sha ? sha.slice(0, 7) : "none");
 
 /** Pushes once for each failed deploy it has not announced yet. Survives restarts (push_sent). */
@@ -94,13 +110,27 @@ export class DeployNotifier {
         this.o.now(),
       );
       if ((res?.changes ?? 0) === 0) continue;
-      const tail = e.outcome === "rolled-back" ? "rolled back" : `${short(e.from)} keeps running`;
-      try {
-        await this.o.push.send({
+      let payload: { title: string; body: string };
+      const byHand = /^rolled back by hand to ([0-9a-f]{7})/.exec(e.reason);
+      if (e.outcome === "rolled-back" && byHand) {
+        payload = {
+          title: "Rolled back by hand",
+          body: `Rolled back by hand to ${byHand[1]} (left ${short(e.sha)})`,
+        };
+      } else if (e.outcome === "skipped-ancestry") {
+        payload = {
+          title: `Deploy of ${short(e.sha)} skipped`,
+          body: `Deploy of ${short(e.sha)} skipped: ${e.reason} — ${short(e.from)} keeps running`,
+        };
+      } else {
+        const tail = e.outcome === "rolled-back" ? "rolled back" : `${short(e.from)} keeps running`;
+        payload = {
           title: `Deploy of ${short(e.sha)} failed`,
           body: `Deploy of ${short(e.sha)} failed: ${e.reason || e.outcome} — ${tail}`,
-          url: "#/desk",
-        });
+        };
+      }
+      try {
+        await this.o.push.send({ ...payload, url: "#/desk" });
         sent++;
       } catch (err) {
         this.o.log?.(`failed to send the push for ${key}: ${String(err)}`);

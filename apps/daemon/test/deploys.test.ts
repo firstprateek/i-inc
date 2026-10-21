@@ -281,6 +281,46 @@ describe("push for a failed deploy", () => {
     expect(push.sent[1]?.body).toBe("Deploy of aaaaaaa failed: pnpm install failed — bbbbbbb keeps running");
   });
 
+  it("words a rollback by hand as one, not as a failed deploy", async () => {
+    const path = join(dir, "deploys.jsonl");
+    const { app, push } = await guarded({ deploysPath: path });
+    writeFileSync(path, jsonl(entry({ outcome: "rolled-back", reason: "rolled back by hand to bbbbbbb" })));
+    await make(path, push, app).check();
+    expect(push.sent[0]?.title).toBe("Rolled back by hand");
+    expect(push.sent[0]?.body).toBe("Rolled back by hand to bbbbbbb (left aaaaaaa)");
+  });
+
+  it("pushes when main was rewritten and the commit was not deployed", async () => {
+    const path = join(dir, "deploys.jsonl");
+    const { app, push } = await guarded({ deploysPath: path });
+    writeFileSync(
+      path,
+      jsonl(
+        entry({
+          outcome: "skipped-ancestry",
+          reason: "main moved to a commit that does not include the running release bbbbbbb (force-push?)",
+        }),
+      ),
+    );
+    expect(await make(path, push, app).check()).toBe(1);
+    expect(push.sent[0]?.title).toBe("Deploy of aaaaaaa skipped");
+    expect(push.sent[0]?.body).toContain("force-push");
+  });
+
+  it("strips absolute home paths from what the API and the push show", async () => {
+    const path = join(dir, "deploys.jsonl");
+    const { app, push, send, authed } = await guarded({ deploysPath: path });
+    writeFileSync(
+      path,
+      jsonl(entry({ outcome: "failed-build", reason: "ENOENT /Users/padi/i-inc-releases/x/package.json" })),
+    );
+    const shown = JSON.stringify((await send("GET", "/api/deploys", authed)).body);
+    expect(shown).not.toContain("/Users/padi");
+    expect(shown).toContain("~/i-inc-releases/x/package.json");
+    await make(path, push, app).check();
+    expect(push.sent[0]?.body).not.toContain("/Users/padi");
+  });
+
   it("does not push for a success or a skipped-ci", async () => {
     const path = join(dir, "deploys.jsonl");
     const { app, push } = await guarded({ deploysPath: path });

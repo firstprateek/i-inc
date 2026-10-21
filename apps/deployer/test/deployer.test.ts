@@ -32,6 +32,51 @@ describe("watching main", () => {
   });
 });
 
+describe("history must continue", () => {
+  it("skips a force-push to a commit that does not descend from the running release, reporting it once", async () => {
+    const w = new World();
+    w.head = B;
+    w.ci[B] = { state: "success" };
+    w.descendsAnswer[B] = false;
+    const d = w.deployer();
+    expect((await d.cycle()).action).toBe("skipped-ancestry");
+    expect((await d.cycle()).action).toBe("skipped-ancestry");
+    expect(w.builds).toEqual([]);
+    expect(w.ciCalls).toBe(0);
+    expect(w.store.records).toHaveLength(1);
+    expect(w.store.records[0]).toMatchObject({ sha: B, from: A, outcome: "skipped-ancestry" });
+    expect(w.store.records[0]?.reason).toContain("--sha");
+    expect(w.logs.join("\n")).toContain("WARNING");
+    // A later commit that does continue it is deployed.
+    w.head = C;
+    w.ci[C] = { state: "success" };
+    expect((await d.cycle()).action).toBe("deployed");
+  });
+
+  it("does not deploy when ancestry cannot be checked, and tries again", async () => {
+    const w = new World();
+    w.head = B;
+    w.ci[B] = { state: "success" };
+    w.descendsAnswer[B] = null;
+    const d = w.deployer();
+    expect((await d.cycle()).action).toBe("remote-error");
+    expect(w.builds).toEqual([]);
+    delete w.descendsAnswer[B];
+    expect((await d.cycle()).action).toBe("deployed");
+  });
+
+  it("deploys such a commit when the owner allowed it with --sha", async () => {
+    const w = new World();
+    w.head = B;
+    w.ci[B] = { state: "success" };
+    w.descendsAnswer[B] = false;
+    const d = w.deployer();
+    await d.cycle();
+    d.allowRewrite(B);
+    expect((await d.cycle()).action).toBe("deployed");
+  });
+});
+
 describe("CI gate", () => {
   it("waits while CI is pending, then deploys once it is green", async () => {
     const w = new World();
@@ -90,7 +135,7 @@ describe("a green commit", () => {
     expect(w.store.s.bad).toEqual({});
   });
 
-  it("a build failure leaves the running release alone, marks the sha bad and tries newer ones", async () => {
+  it("a build failure is retried once from clean, then marks the sha bad; newer commits are tried", async () => {
     const w = new World();
     w.head = B;
     w.ci[B] = { state: "success" };
@@ -99,13 +144,21 @@ describe("a green commit", () => {
     expect((await d.cycle()).action).toBe("failed-build");
     expect(w.cur).toBe(A);
     expect(w.calls).not.toContain("restart (01)");
+    // The first failure is not final: nothing is recorded or marked, and the retry waits.
+    expect(w.store.records).toEqual([]);
+    expect(w.store.s.bad[B]).toBeUndefined();
+    expect((await d.cycle()).action).toBe("retry-wait");
+    w.clock.t += 3 * 60_000;
+    expect((await d.cycle()).action).toBe("failed-build");
+    expect(w.builds).toEqual([B, B]);
+    expect(w.store.records).toHaveLength(1);
     expect(w.store.records[0]).toMatchObject({ sha: B, from: A, outcome: "failed-build" });
     expect(w.store.records[0]?.reason).toContain("lockfile");
-    // Never retried:
+    expect(w.store.s.bad[B]).toBeDefined();
+    // Never retried again:
     w.builds.length = 0;
     expect((await d.cycle()).action).toBe("known-bad");
     expect(w.builds).toEqual([]);
-    expect(w.store.records).toHaveLength(1);
     // A newer commit is tried:
     w.head = C;
     w.ci[C] = { state: "success" };
@@ -113,14 +166,76 @@ describe("a green commit", () => {
     expect(w.cur).toBe(C);
   });
 
-  it("a failed smoke test never switches or restarts anything", async () => {
+  it("a flaky build that works on the clean retry deploys, and was never marked bad", async () => {
+    const w = new World();
+    w.head = B;
+    w.ci[B] = { state: "success" };
+    w.buildFails[B] = "vite build failed (exit 1)";
+    const d = w.deployer();
+    await d.cycle();
+    delete w.buildFails[B];
+    w.clock.t += 3 * 60_000;
+    expect((await d.cycle()).action).toBe("deployed");
+    expect(w.store.s.bad).toEqual({});
+    expect(w.store.s.retry).toEqual({});
+  });
+
+  for (const reason of [
+    "git clone failed (exit 128): fatal: unable to access 'https://github.com/firstprateek/i-inc.git/': Could not resolve host",
+    "pnpm install failed (exit 1): ENOSPC: no space left on device, write",
+    "pnpm install timed out after 15 min",
+    "pnpm install failed (exit 1): ECONNRESET",
+  ]) {
+    it(`a temporary failure never marks the sha bad, however often it repeats: ${reason.slice(0, 40)}`, async () => {
+      const w = new World();
+      w.head = B;
+      w.ci[B] = { state: "success" };
+      w.buildFails[B] = reason;
+      const d = w.deployer();
+      for (let i = 0; i < 6; i++) {
+        expect((await d.cycle()).action).toBe("failed-build");
+        expect(w.store.s.bad[B]).toBeUndefined();
+        w.clock.t += 61 * 60_000; // past any back-off
+      }
+      // Said once, not every time.
+      expect(w.store.records).toHaveLength(1);
+      expect(w.store.records[0]?.reason).toContain("temporary");
+      // The network or the disk recovers: it deploys.
+      delete w.buildFails[B];
+      expect((await d.cycle()).action).toBe("deployed");
+    });
+  }
+
+  it("backs off between temporary failures: 2, 4, 8 minutes, at most an hour", async () => {
+    const w = new World();
+    w.head = B;
+    w.ci[B] = { state: "success" };
+    w.buildFails[B] = "ENOSPC: no space left on device";
+    const d = w.deployer();
+    const waits: number[] = [];
+    for (let i = 0; i < 8; i++) {
+      await d.cycle();
+      waits.push(w.store.s.retry[B]?.nextAt ? w.store.s.retry[B].nextAt - w.clock.now() : 0);
+      w.clock.t = w.store.s.retry[B]?.nextAt ?? w.clock.t;
+    }
+    expect(waits.slice(0, 4)).toEqual([2, 4, 8, 16].map((m) => m * 60_000));
+    expect(Math.max(...waits)).toBe(60 * 60_000);
+  });
+
+  it("a failed smoke test never switches or restarts anything, and is written off when it fails again", async () => {
     const w = new World();
     w.head = B;
     w.ci[B] = { state: "success" };
     w.smokeFails[B] = "/api/health did not answer in 60 s";
-    expect((await w.deployer().cycle()).action).toBe("failed-smoke");
+    const d = w.deployer();
+    expect((await d.cycle()).action).toBe("failed-smoke");
     expect(w.calls).toEqual(["build 02", "smoke 02", "remove 02"]);
     expect(w.cur).toBe(A);
+    expect(w.store.s.bad[B]).toBeUndefined();
+    w.clock.t += 3 * 60_000;
+    expect((await d.cycle()).action).toBe("failed-smoke");
+    expect(w.calls).not.toContain("point 02");
+    expect(w.store.records).toHaveLength(1);
     expect(w.store.records[0]).toMatchObject({ outcome: "failed-smoke", from: A });
     expect(w.store.s.bad[B]).toBeDefined();
   });
@@ -229,12 +344,32 @@ describe("health check and rollback", () => {
       expect(w.store.records).toHaveLength(1);
       expect(w.store.records[0]).toMatchObject({ sha: B, from: A, outcome: "rolled-back" });
       expect(w.store.records[0]?.reason).toContain("did not report version 0000002");
-      expect(w.store.s.bad[B]).toBeDefined();
       expect(w.store.s.inFlight).toBeNull();
+      // The first failed health check is retried from clean; the second writes the commit off.
+      expect(w.store.s.bad[B]).toBeUndefined();
+      expect((await w.deployer().cycle()).action).toBe("retry-wait");
+      w.clock.t += 3 * 60_000;
+      expect((await w.deployer().cycle()).action).toBe("rolled-back");
+      expect(w.store.records).toHaveLength(2);
+      expect(w.store.s.bad[B]).toBeDefined();
+      expect((await w.deployer().cycle()).action).toBe("known-bad");
     });
   }
 
-  it("rolls back when the kickstart itself fails, and never retries that sha", async () => {
+  it("a slow first start that comes up on the retry is deployed, not written off", async () => {
+    const w = new World();
+    w.head = B;
+    w.ci[B] = { state: "success" };
+    w.daemonMode[B] = "down";
+    const d = w.deployer();
+    expect((await d.cycle()).action).toBe("rolled-back");
+    delete w.daemonMode[B];
+    w.clock.t += 3 * 60_000;
+    expect((await d.cycle()).action).toBe("deployed");
+    expect(w.store.s.bad).toEqual({});
+  });
+
+  it("rolls back when the kickstart itself fails, which is not the commit's fault: retried, never written off", async () => {
     const w = new World();
     w.head = B;
     w.ci[B] = { state: "success" };
@@ -242,9 +377,11 @@ describe("health check and rollback", () => {
     const d = w.deployer();
     expect((await d.cycle()).action).toBe("rolled-back");
     expect(w.store.records[0]?.reason).toContain("kickstart");
-    w.builds.length = 0;
-    expect((await d.cycle()).action).toBe("known-bad");
-    expect(w.builds).toEqual([]);
+    for (let i = 0; i < 4; i++) {
+      w.clock.t += 61 * 60_000;
+      expect((await d.cycle()).action).toBe("rolled-back");
+      expect(w.store.s.bad[B]).toBeUndefined();
+    }
   });
 
   it("says so when the previous release is unhealthy too", async () => {
@@ -324,7 +461,7 @@ describe("restarting the deployer mid-deploy", () => {
     expect(r?.action).toBe("rolled-back");
     expect(w.cur).toBe(A);
     expect(w.serving).toBe(A);
-    expect(w.store.s.bad[B]).toBeDefined();
+    expect(w.store.s.retry[B]?.failures).toBe(1);
   });
 
   it("a crash after the link moved but before the kickstart: restarts onto the candidate and keeps it", async () => {
@@ -459,6 +596,72 @@ describe("rolling back by hand", () => {
     const d = await deployed(w, 2, 3);
     await d.rollbackByHand(A);
     expect(w.cur).toBe(A);
+  });
+});
+
+describe("records and state stay tidy", () => {
+  it("leaves no attempts, ready, retry or in-flight entries after a deploy, a failure or a rollback", async () => {
+    const w = new World();
+    const d = w.deployer();
+    w.head = B;
+    w.ci[B] = { state: "success" };
+    await d.cycle();
+    expect(w.store.s.attempts).toEqual({});
+    expect(w.store.s.ready).toEqual({});
+    expect(w.store.s.retry).toEqual({});
+    w.head = C;
+    w.ci[C] = { state: "success" };
+    w.buildFails[C] = "boom";
+    await d.cycle();
+    w.clock.t += 3 * 60_000;
+    await d.cycle();
+    expect(w.store.s.bad[C]).toBeDefined();
+    expect(w.store.s.attempts).toEqual({});
+    expect(w.store.s.ready).toEqual({});
+    expect(w.store.s.retry).toEqual({});
+    const x = sha(4);
+    w.head = x;
+    w.ci[x] = { state: "success" };
+    w.daemonMode[x] = "down";
+    await d.cycle();
+    w.clock.t += 3 * 60_000;
+    await d.cycle();
+    expect(w.store.s.bad[x]).toBeDefined();
+    expect(Object.keys(w.store.s.attempts)).toEqual([]);
+    expect(Object.keys(w.store.s.ready)).toEqual([]);
+    expect(w.store.s.inFlight).toBeNull();
+  });
+
+  it("a restart after the record was written but before the state was cleared does not write it twice", async () => {
+    const w = new World();
+    w.head = B;
+    w.built.set(B, 5);
+    w.cur = B;
+    w.serving = B;
+    const startedAt = w.clock.now() - 20_000;
+    w.store.s.inFlight = { sha: B, from: A, phase: "switch", startedAt };
+    w.store.records.push({ at: 1, sha: B, from: A, outcome: "deployed", reason: "", durationMs: 1 });
+    w.store.s.recorded = [`${B}:deployed:${startedAt}`];
+    await w.deployer().recover();
+    expect(w.store.records).toHaveLength(1);
+    expect(w.store.s.inFlight).toBeNull();
+  });
+
+  it("shows no absolute home paths in a failure reason", async () => {
+    const w = new World();
+    w.head = B;
+    w.ci[B] = { state: "success" };
+    w.buildFails[B] =
+      "pnpm install failed (exit 1): ENOENT /Users/padi/i-inc-releases/abc/package.json and /home/owner/x";
+    const d = w.deployer();
+    await d.cycle();
+    w.clock.t += 3 * 60_000;
+    await d.cycle();
+    const reason = w.store.records[0]?.reason ?? "";
+    expect(reason).toContain("ENOENT");
+    expect(reason).not.toContain("/Users/padi");
+    expect(reason).not.toContain("/home/owner");
+    expect(w.logs.join("\n")).not.toContain("/Users/padi");
   });
 });
 
