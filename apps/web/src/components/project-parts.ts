@@ -49,7 +49,8 @@ export const projectStyles = css`
   .choice-text span { font-size: 14px; color: var(--ink-2); line-height: 1.35; }
   .seg { display: flex; border: 1px solid var(--line-strong); border-radius: 999px; overflow: hidden; }
   .seg label { flex: 1; position: relative; color: var(--ink); font-size: 15px; font-weight: 600; }
-  .seg input { position: absolute; opacity: 0; inset: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+  .seg input { position: absolute; opacity: 0; inset: 0; width: 100%; height: 100%; margin: 0; pointer-events: none; }
+  .seg label { cursor: pointer; }
   .seg span { display: flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 14px; }
   .seg input:checked + span { background: var(--ink); color: var(--on-ink); }
   .seg input:focus-visible + span { outline: 3px solid var(--reviewing-mark); outline-offset: -3px; }

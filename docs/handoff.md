@@ -118,11 +118,49 @@ If the machine enters persistent `stale-hostname` backoff (visible in Setup > Sa
    ```
 5. In i.inc web under Setup > Sandboxes, click **Retry now** (or call `POST /api/sandboxes/:team/retry`) to immediately wake the team sandbox and resume tickets at their current stage.
 
+### Adding or creating a project (T62)
+
+All of it is in the web app under **Company → Projects** (`#/company/projects`), from the laptop or the phone.
+The list shows each project's mode, checks, last ticket and open PRs, and every repo the bot can see that isn't
+a project yet, each with **Add**.
+
+- **The bot only sees repos you give it.** The page's **Give i.inc access to more repos** link opens this
+  installation's settings on GitHub (**Repository access**: add the repo, save), then press **Refresh repos**
+  (the list is cached for 30 seconds; Refresh asks again, at most every 3 seconds). Verify from the mini with
+  `node tools/github-app/check.mjs`.
+- **Add a project you already have:** **Add a repo** (or **Add** beside a repo). i.inc reads the repo and suggests the checks
+  (`GET /api/github/repos/:owner/:name/inspect`); you confirm or edit the recipe and choose **Owner merges**
+  (finished work waits as a pull request and only you merge it; the suggested choice) or **Direct** (pushed to the main
+  branch after i.inc's own review). It registers the project (`POST /api/projects/:id/bootstrap` with no template).
+- **Start a new project:** **New project**: a name, a starter (TypeScript + Node, Web app, Python, Minimal) and Private or
+  Public. What happens next depends on the installation (`GET /api/github/status` says which):
+  - *An organization and the App has **Administration: write**:* the bot creates the empty repo
+    (`POST /api/github/repos`), then fills it with the starter and adds the project. This permission is **off by default**
+    (docs/github-app.md says never to grant it: it lets the bot change repo settings). Grant it only if you want that.
+  - *A personal account, or an organization without that permission (the usual case):* GitHub doesn't let the bot create
+    the repo. The page gives you a link to GitHub's new-repository page with the name and visibility filled in. Create it
+    **empty** (README, `.gitignore` and licence off), and make sure the bot can see it (add it to the installation
+    unless that is on **All repositories**). The page looks for it every 15 seconds while it is open (or press **Refresh now**), then
+    fills it and adds the project.
+  - The steps are shown on the page and survive a reload: the draft is kept in this browser and each step is worked out
+    from GitHub, so closing the tab halfway just picks up again. A repo that already has files is never written over
+    unless it is one this page started and you press **Carry on filling it**.
+- **Work on a project:** its page (`#/company/projects/<id>`) has the repo link, mode, checks (editable), recent tickets,
+  releases, **Start a conversation** (`#/conversations?new=1&project=<id>`; see C14) and **New ticket** (the new-ticket form
+  with this project chosen).
+- **Errors** are sentences with something to do (GitHub rate limits, timeouts, a refused name, a key that GitHub rejects)
+  and never "Can't reach i.inc", which is only for the daemon itself. The installation token never leaves the daemon or
+  reaches a log.
+- **Try it without GitHub:** `pnpm --filter @i-inc/web build`, then `node tools/e2e/projects/run.mjs` (a local daemon in a
+  scratch HOME with a stand-in GitHub; Playwright; screenshots at 1440x900 and 390x844, light and dark).
+
 ### Adding repos to the GitHub App
 Before the bot can work on tickets for a repository (e.g. `firstprateek/i-inc`), the repository must be explicitly added to the **i.inc bot** GitHub App installation in GitHub settings:
 1. Navigate to GitHub `Settings` → `Applications` → `Installed GitHub Apps` → `i.inc bot` → `Configure`.
 2. Under **Repository access**, select and add the repository.
 3. Verify with `node tools/github-app/check.mjs`.
+
+(The web app's **Give i.inc access to more repos** link goes to that page.)
 
 ## Storage and cleanup
 

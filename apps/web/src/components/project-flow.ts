@@ -178,7 +178,7 @@ export class IncProjectFlow extends LitElement {
       .step-head .n { width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--line-strong); display: inline-flex;
         align-items: center; justify-content: center; font-size: 14px; font-weight: 700; flex: none; }
       li.done .n { background: var(--ink); color: var(--on-ink); border-color: var(--ink); }
-      .step-head b { font-size: 16px; }
+      .step-head b { font-size: 16px; flex: 1 1 160px; min-width: 0; }
       .step-head .state { margin-left: auto; font-size: 13px; font-weight: 700; color: var(--ink-2); }
       ol.how { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 8px; font-size: 15px; line-height: 1.45; }
       .summary { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; margin: 0; font-size: 15px; }
@@ -850,7 +850,7 @@ export class IncProjectFlow extends LitElement {
             : partial || foreign || this.stepProblem
               ? { cls: "now", label: "Needs you" }
               : { cls: "now", label: "Next" };
-      return { cls: "", label: "Next" };
+      return { cls: "", label: "Later" };
     };
     const li = (n: 1 | 2 | 3, title: unknown, body: unknown) => {
       const s = state(n);
@@ -878,10 +878,11 @@ export class IncProjectFlow extends LitElement {
                   <li>Open GitHub's new-repository page. The name and visibility are filled in${account ? html`; choose <b>${account}</b> as the owner` : ""}.
                     <div style="margin-top:8px"><a class="btn" href=${newRepoLink(d.name, d.visibility)} target="_blank" rel="noopener noreferrer">Open GitHub to create ${d.name}<span class="sr"> (opens GitHub)</span></a></div></li>
                   <li><b>Create it empty:</b> leave “Add a README”, “.gitignore” and “licence” switched off, so i.inc can fill it.</li>
-                  <li>Make sure the i.inc bot can see it: ${
+                  <li>${
                     this.status?.installation?.repositorySelection === "all"
-                      ? "the bot can see all repos on this account, so there is nothing more to do."
-                      : html`add it on <a href=${this.status?.links.manage ?? "https://github.com/settings/installations"} target="_blank" rel="noopener noreferrer">the bot's GitHub settings</a>.`
+                      ? "The i.inc bot can see all repos on this account, so there is nothing more to do."
+                      : html`Make sure the i.inc bot can see it: add it on the bot's GitHub settings.
+                          <div><a class="link" href=${this.status?.links.manage ?? "https://github.com/settings/installations"} target="_blank" rel="noopener noreferrer">Open the bot's GitHub settings<span aria-hidden="true">&nbsp;↗</span><span class="sr"> (opens GitHub)</span></a></div>`
                   }</li>
                   <li>Come back here. i.inc looks for it every ${Math.round(this.pollMs / 1000)} seconds while this page is open.</li>
                 </ol>

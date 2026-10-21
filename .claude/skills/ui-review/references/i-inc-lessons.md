@@ -102,3 +102,7 @@ paths, branch names, structured briefs).
     one, so a tap meant for one image could remove another. → Put small controls beside what they act
     on, not over it. To check a state the page doesn't open in (images picked, a menu open), give
     the checker a `--before` script that sets it up.
+23. **A hidden radio laid over its label (checker).** A segmented control put an invisible radio over its text so
+    the whole segment is tappable; the checker (rightly) saw an element painting over text. → Give the
+    overlaid input `pointer-events: none` (the label still takes the tap and the keyboard still works), so
+    the text is what is on top.

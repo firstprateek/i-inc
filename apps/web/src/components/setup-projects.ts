@@ -91,7 +91,7 @@ export class IncSetupProjects extends Loader<ListData> {
       dl.facts dt { color: var(--ink-2); font-weight: 600; }
       dl.facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
       dl.facts code { background: var(--sunken); padding: 1px 6px; border-radius: 6px; margin-right: 4px; display: inline-block; }
-      dl.facts a { color: var(--ink); }
+      dl.facts a { color: var(--ink); display: inline-flex; align-items: center; min-height: 44px; }
       .teach h3 { margin-bottom: 2px; }
       .teach ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; line-height: 1.4; }
       .repo-row { display: flex; align-items: center; gap: 10px 14px; padding: 10px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
