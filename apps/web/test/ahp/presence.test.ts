@@ -30,9 +30,21 @@ function fakeConn(open = true) {
   const sent: boolean[] = [];
   let info = { status: open ? "open" : "reconnecting" } as AhpConnection["info"];
   const listeners = new Set<(i: AhpConnection["info"]) => void>();
+  const changes = new Set<(uris: Set<string>) => void>();
+  let held = false;
   return {
     sent,
+    /** The subscribe lands: the session's state is there, and the connection says it changed. */
+    subscribed() {
+      held = true;
+      for (const fn of [...changes]) fn(new Set([SESSION]));
+    },
     conn: {
+      session: () => (held ? ({} as never) : undefined),
+      onChange: (fn: (uris: Set<string>) => void) => {
+        changes.add(fn);
+        return () => changes.delete(fn);
+      },
       get info() {
         return info;
       },
@@ -76,6 +88,23 @@ describe("startPresence", () => {
     expect(page.listeners()).toBe(0);
     vi.advanceTimersByTime(HEARTBEAT_MS * 4);
     expect(c.sent.at(-1)).toBe(false);
+  });
+
+  it("reports again the moment its subscribe lands (the first report is ignored by the host), once", () => {
+    const c = fakeConn();
+    startPresence(c.conn, SESSION, fakePage(true).env);
+    expect(c.sent).toEqual([true]);
+    c.subscribed();
+    expect(c.sent).toEqual([true, true]);
+    // later changes (every streamed frame) do not report again
+    c.subscribed();
+    expect(c.sent).toEqual([true, true]);
+    // a reconnect holds nothing until its subscribe lands again
+    c.set("reconnecting");
+    c.set("open");
+    expect(c.sent).toHaveLength(3);
+    c.subscribed();
+    expect(c.sent).toHaveLength(4);
   });
 
   it("reports again when the connection is back, since the new connection knows nothing", () => {

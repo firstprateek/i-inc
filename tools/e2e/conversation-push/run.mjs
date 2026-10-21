@@ -11,7 +11,7 @@
 //   1. a permission request while no client is watching gives exactly one recorded push, with the employee's
 //      name, a short label, the conversation's tag and a link that carries only ids;
 //   2. opening that link lands on the focused card (first button focused, outlined);
-//   3. answering it records a "resolve" push with the same tag;
+//   3. answering it sends nothing more (the app closes stale notifications itself);
 //   4. while the app is open on the conversation (page visible and focused), a new request is not pushed;
 //   5. the old link, opened after the card was answered, says "Already answered on another device".
 // Exit code 1 when anything fails.
@@ -171,14 +171,14 @@ try {
 
   // 1. A request while nobody is watching: one push.
   const close1 = await startTurn(conv, "please edit the constant", "turn-1");
-  const first = await until(async () => (await pushes()).find((p) => !p.resolve), 15_000, "the push");
+  const first = await until(async () => (await pushes())[0], 15_000, "the push");
   ok(first.title === "Ada needs you", `title is "${first.title}"`);
   ok(first.body === "Edit: src/app.ts", `body is "${first.body}"`);
   ok(first.tag === `conv-${conv.id}`, "one tag per conversation");
   ok(first.url === `#/conversations/${conv.id}?card=tc-edit`, `link carries only ids: ${first.url}`);
   ok(!JSON.stringify(first).includes("answer = 4"), "no file contents in the push");
   await sleep(GRACE * 2);
-  ok((await pushes()).filter((p) => !p.resolve).length === 1, "exactly one push for the request");
+  ok((await pushes()).length === 1, "exactly one push for the request");
 
   // 2. Opening the link lands on the focused card (a cold start, as from a tap with the app closed).
   browser = await chromium.launch(process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {});
@@ -201,14 +201,15 @@ try {
   ok(st.note === "", "no 'already answered' note while it is waiting");
   await page.screenshot({ path: join(outDir, "card-390.png") });
 
-  // 3. Answering closes the notification (a resolve push with the same tag).
+  // 3. Answering sends nothing: a push that shows nothing would spend Chrome's silent-push allowance.
   await page.evaluate(allowOnce, CARD);
-  const resolved = await until(
-    async () => (await pushes()).find((p) => p.resolve),
+  await until(
+    async () => (await api("GET", `/api/conversations/${conv.id}`)).conversation.needsYou === false,
     10_000,
-    "the resolve push",
+    "the first card to be answered",
   );
-  ok(resolved.tag === first.tag, "the resolve push has the same tag");
+  await sleep(GRACE * 2);
+  ok((await pushes()).length === 1, "answering sent no further push");
   close1();
 
   // 4. The app is open on the conversation (visible, focused): a new request is not pushed.
@@ -223,17 +224,14 @@ try {
     async () =>
       (await (await fetch(`${base}/__e2e/watching?session=${encodeURIComponent(conv.ahpSession)}`)).json())
         .watching,
-    10_000,
+    15_000,
     "the app to report that it is looking",
   );
-  const before = (await pushes()).filter((p) => !p.resolve).length;
+  const before = (await pushes()).length;
   const close2 = await startTurn(conv, "please edit the constant again", "turn-2");
   await until(async () => (await page.evaluate(cardState, CARD)).tool, 15_000, "the second card");
   await sleep(GRACE * 3);
-  ok(
-    (await pushes()).filter((p) => !p.resolve).length === before,
-    "no push while the app is open on the conversation",
-  );
+  ok((await pushes()).length === before, "no push while the app is open on the conversation");
   await page.screenshot({ path: join(outDir, "watching-390.png") });
 
   // 5. The old link, after the card was answered (and a fresh page, so nothing remembers who answered).

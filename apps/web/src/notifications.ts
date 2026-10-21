@@ -1,9 +1,8 @@
-// Taking down notifications that are not true any more (T65). The daemon closes a conversation's notification
-// with a "resolve" push when its request is answered, but it cannot to Apple's push service (a push that shows
-// nothing revokes the subscription), a phone that was off misses it, and a daemon that restarted may not know.
-// So the app does it itself when it is opened or comes back into view: a notification of a conversation whose
-// request is no longer waiting is closed (by its tag, `conv-<id>`), and so are all of the conversation the owner
-// is looking at.
+// Taking down notifications that are not true any more (T65). The daemon sends nothing when a request is
+// answered, because a push that only closes a notification shows nothing, which spends Chrome's allowance for
+// silent pushes and makes Apple revoke the subscription. So the app does it itself when it is opened or comes
+// back into view: a notification of a conversation whose request is no longer waiting is closed (by its tag,
+// `conv-<id>`), and so are all of the conversation the owner is looking at.
 import { api, type Conversation } from "./api.ts";
 
 const TAG = /^conv-([0-9a-f]{8})$/;

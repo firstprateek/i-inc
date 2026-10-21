@@ -509,15 +509,12 @@ describe("the service worker and a conversation's notification (T65)", () => {
     ).toBeUndefined();
   });
 
-  it("closes the notification with that tag on a resolve push, and shows nothing", async () => {
+  it("never closes a notification instead of showing one: every push shows something", async () => {
     const w = loadWorker();
-    const mine = { tag: "conv-ab12cd34", close: vi.fn() };
-    const other = { tag: "conv-ffffffff", close: vi.fn() };
-    w.shown.push(mine, other);
+    w.shown.push({ tag: "conv-ab12cd34", close: vi.fn() });
     await w.push({ ...needsYou, body: "Answered", resolve: true });
-    expect(mine.close).toHaveBeenCalled();
-    expect(other.close).not.toHaveBeenCalled();
-    expect(w.showNotification).not.toHaveBeenCalled();
+    expect(w.showNotification).toHaveBeenCalledTimes(1);
+    expect(w.shown[0]?.close).not.toHaveBeenCalled();
   });
 
   it("opens the card: an open window is focused, moved to the address and told it, so iOS (no navigate) gets there too", async () => {

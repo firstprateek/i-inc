@@ -7,8 +7,9 @@
 // - /assets/* (hashed, so immutable) and the other static files: cache first, filled on use.
 // - /api/*: never touched. No response from the daemon is cached or answered from the cache.
 //
-// Push (T8, T65, contract C2): `push` shows the daemon's notification (or closes one, for a "resolve" push)
-// and `notificationclick` opens it. They are at the bottom; the fetch handler above is untouched.
+// Push (T8, T65, contract C2): `push` shows the daemon's notification and `notificationclick` opens it. Every
+// push shows something (a push that shows nothing spends Chrome's silent-push allowance, and Apple revokes
+// the subscription for it); the app closes stale notifications itself (src/notifications.ts). They are at the bottom; the fetch handler above is untouched.
 
 const VERSION = "__BUILD_ID__";
 const PRECACHE = "__PRECACHE__";
@@ -75,16 +76,7 @@ async function cacheFirst(request) {
   return response;
 }
 
-// ---- Push notifications (contract C2: { title, body, url, tag?, resolve? }) ----
-
-/**
- * A "resolve" push: the request the notification was about has been answered, so take it down, and show
- * nothing in its place. (The daemon never sends one to Apple's push service, which revokes a subscription
- * whose pushes show nothing; the app closes the notification itself when it is opened. See notifications.ts.)
- */
-async function resolveNotification(tag) {
-  for (const n of await self.registration.getNotifications({ tag })) n.close();
-}
+// ---- Push notifications (contract C2: { title, body, url, tag? }) ----
 
 self.addEventListener("push", (event) => {
   let payload = {};
@@ -96,10 +88,6 @@ self.addEventListener("push", (event) => {
   const title = typeof payload.title === "string" && payload.title ? payload.title : "i.inc";
   const url = typeof payload.url === "string" ? payload.url : "";
   const tag = typeof payload.tag === "string" && payload.tag ? payload.tag : url || "i-inc";
-  if (payload.resolve === true) {
-    event.waitUntil(resolveNotification(tag));
-    return;
-  }
   event.waitUntil(
     self.registration.showNotification(title, {
       body: typeof payload.body === "string" ? payload.body : "",

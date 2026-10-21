@@ -50,7 +50,7 @@ export const browserPage: PageEnv = {
 
 /** Reports for one conversation's session until the returned function is called. */
 export function startPresence(
-  conn: Pick<AhpConnection, "reportPresence" | "onInfo" | "info">,
+  conn: Pick<AhpConnection, "reportPresence" | "onInfo" | "onChange" | "session" | "info">,
   session: string,
   page: PageEnv = browserPage,
 ): () => void {
@@ -72,16 +72,27 @@ export function startPresence(
   }, HEARTBEAT_MS);
   // A reconnect is a fresh connection to the host: it knows nothing yet.
   let wasOpen = conn.info.status === "open";
+  // The host counts a report only from a client that holds the session, and the subscribe lands a moment after
+  // the thread opens: the first report would be ignored and the next is 15 s away. So report again when the
+  // session's state arrives (the subscribe has resolved), and again after every reconnect.
+  let held = !!conn.session(session);
   const stopInfo = conn.onInfo((i) => {
     const open = i.status === "open";
     if (open && !wasOpen) report();
+    if (!open) held = false;
     wasOpen = open;
+  });
+  const stopChange = conn.onChange((uris) => {
+    if (held || !uris.has(session) || !conn.session(session)) return;
+    held = true;
+    report();
   });
   report();
   return () => {
     clearInterval(beat);
     stopPage();
     stopInfo();
+    stopChange();
     if (last) conn.reportPresence(session, false);
   };
 }

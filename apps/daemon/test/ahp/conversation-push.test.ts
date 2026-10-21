@@ -269,19 +269,16 @@ describe("what a push says", () => {
       `#/conversations/${r.conv.id}?card=tc2`,
     ]);
     expect(new Set(r.fake.sent.map((n) => n.tag))).toEqual(new Set([`conv-${r.conv.id}`]));
-    // one answered, the other still waiting: its notification stays
+    // answering sends nothing (the app closes the notification itself)
     c.dispatch(r.conv.ahpChat, confirm("t1", "tc1", true));
     await until(() => waiting(r) === 1);
-    await r.advance(1000);
-    expect(r.fake.sent.filter((n) => n.resolve)).toHaveLength(0);
-    // the last answer closes it
     c.dispatch(r.conv.ahpChat, confirm("t1", "tc2", false));
     await until(() => waiting(r) === 0);
     await r.advance(1000);
-    expect(r.fake.sent.filter((n) => n.resolve)).toHaveLength(1);
+    expect(r.fake.sent).toHaveLength(2);
   });
 
-  it("is closed with a resolve push, the same tag, when the request is answered on any device", async () => {
+  it("sends nothing when the request is answered on any device, or the turn is stopped (a push that shows nothing spends Chrome's silent-push allowance)", async () => {
     const r = await rig();
     asks(r, ["tc1"]);
     const phone = await r.client("phone");
@@ -292,23 +289,19 @@ describe("what a push says", () => {
     const laptop = await r.client("laptop");
     laptop.dispatch(r.conv.ahpChat, confirm("t1", "tc1", true));
     await until(() => waiting(r) === 0);
-    await r.advance(1);
-    expect(r.fake.sent).toHaveLength(2);
-    expect(r.fake.sent[1]).toMatchObject({ resolve: true, tag: `conv-${r.conv.id}` });
-    expect(r.fake.sent[1]?.body).toBe("Answered");
-  });
-
-  it("is closed when the turn ends without an answer (stopped)", async () => {
-    const r = await rig();
-    asks(r, ["tc1"]);
-    const c = await r.client();
-    c.dispatch(r.conv.ahpChat, turnStarted("go", "t1"));
+    await r.advance(60_000);
+    expect(r.fake.sent).toHaveLength(1);
+    // a stopped turn too
+    asks(r, ["tc2"]);
+    phone.dispatch(r.conv.ahpChat, turnStarted("again", "t2"));
     await until(() => waiting(r) === 1);
     await r.advance(25_000);
-    c.dispatch(r.conv.ahpChat, { type: ActionType.ChatTurnCancelled, turnId: "t1" });
+    expect(r.fake.sent).toHaveLength(2);
+    phone.dispatch(r.conv.ahpChat, { type: ActionType.ChatTurnCancelled, turnId: "t2" });
     await until(() => !r.host.chatState(r.conv.ahpChat)?.activeTurn);
-    await r.advance(1);
-    expect(r.fake.sent.map((n) => !!n.resolve)).toEqual([false, true]);
+    await r.advance(60_000);
+    expect(r.fake.sent).toHaveLength(2);
+    expect(r.fake.sent.every((n) => "resolve" in n === false)).toBe(true);
   });
 
   it("says a command as 'Run: <command>', a question as 'Asks: <question>', and never what is inside the call", async () => {
@@ -460,7 +453,7 @@ describe("a restart (every deploy)", () => {
       schedule: timers.schedule,
     });
 
-  it("closes the notification of a request the restart ended (the host ends the turns that were running)", async () => {
+  it("sends nothing at startup for a request the restart ended (the app closes the notification when opened)", async () => {
     const dbPath = dbFile();
     const timers = new Timers();
     const a = await rig({ dbPath, timers });
@@ -470,27 +463,14 @@ describe("a restart (every deploy)", () => {
     await until(() => waiting(a) === 1);
     await a.advance(25_000);
     expect(a.fake.sent).toHaveLength(1);
-    // the daemon goes away with the notification up
     a.app.ahp.push.close();
     const b = await rig({ dbPath, timers, fresh: false });
-    await b.advance(1);
-    expect(waiting(b)).toBe(0);
-    expect(b.fake.sent).toEqual([
-      {
-        title: "Ada needs you",
-        body: "Answered",
-        url: `#/conversations/${b.conv.id}`,
-        tag: tagOf(b.conv),
-        resolve: true,
-      },
-    ]);
-    expect(b.app.db.all("SELECT * FROM conv_push_open")).toEqual([]);
-    // and it is said once
     await b.advance(3_600_000);
-    expect(b.fake.sent).toHaveLength(1);
+    expect(waiting(b)).toBe(0);
+    expect(b.fake.sent).toEqual([]);
   });
 
-  it("keeps a pushed request's notification up (no second push) and closes it when it is answered", async () => {
+  it("does not push a still-waiting request twice after a restart", async () => {
     const timers = new Timers();
     const a = await rig({ timers });
     asks(a, ["tc1"]);
@@ -504,11 +484,6 @@ describe("a restart (every deploy)", () => {
     expect(next.waiting).toBe(1);
     await a.advance(60_000);
     expect(a.fake.sent).toHaveLength(1);
-    c.dispatch(a.conv.ahpChat, confirm("t1", "tc1", true));
-    await until(() => waiting(a) === 0);
-    await a.advance(1);
-    expect(a.fake.sent).toHaveLength(2);
-    expect(a.fake.sent[1]).toMatchObject({ resolve: true, tag: tagOf(a.conv) });
     next.close();
   });
 
@@ -699,7 +674,7 @@ describe("the visibility signal", () => {
 });
 
 describe("with the fake ACP agent", () => {
-  it("a permission request in an 'always ask' conversation is pushed, then closed when allowed", async () => {
+  it("a permission request in an 'always ask' conversation is pushed once, and nothing is sent when it is allowed", async () => {
     const r = await rig({ backend: "fake-acp" });
     const c = await r.client();
     c.dispatch(r.conv.ahpChat, turnStarted("please edit the constant", "t1"));
@@ -715,13 +690,14 @@ describe("with the fake ACP agent", () => {
     c.dispatch(r.conv.ahpChat, confirm(turn, "tc-edit", true));
     await until(() => waiting(r) === 0, 8000);
     await r.advance(1);
-    expect(r.fake.sent[1]).toMatchObject({ resolve: true, tag: n?.tag });
+    await r.advance(60_000);
+    expect(r.fake.sent).toHaveLength(1);
     await until(() => r.host.chatState(r.conv.ahpChat)?.turns.length === 1, 8000);
   });
 });
 
 describe("a turn ending in one chat", () => {
-  it("does not close the request waiting in another chat of the same session", async () => {
+  it("does not end the request waiting in another chat of the same session", async () => {
     const r = await rig({ chats: true });
     r.host.refreshAgents();
     const conv = await r.app.ahp.conversations.create({ employeeId: "ada" });
@@ -742,12 +718,11 @@ describe("a turn ending in one chat", () => {
     c.dispatch(first, turnStarted("go", "t1"));
     await until(() => (r.host.sessionState(conv.ahpSession)?.inputNeeded?.length ?? 0) === 1);
     await r.advance(25_000);
-    expect(r.fake.sent.filter((n) => !n.resolve)).toHaveLength(1);
+    expect(r.fake.sent).toHaveLength(1);
     // the other chat finishes a turn: the card in the first chat is still waiting, and its notification stays
     c.dispatch(second, turnStarted("other", "t2"));
     await until(() => r.host.chatState(second)?.turns.length === 1);
     await r.advance(1_000);
-    expect(r.fake.sent.filter((n) => n.resolve)).toHaveLength(0);
     expect(r.app.ahp.push.waiting).toBe(1);
   });
 });

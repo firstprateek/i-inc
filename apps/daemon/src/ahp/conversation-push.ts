@@ -12,8 +12,9 @@
 //   - one push per request, ever (the key is kept in `push_sent`, like the ticket pushes);
 //   - the push says "<Employee> needs you", a short redacted label of what it wants to do, and a link that
 //     carries only ids. One tag per conversation, so a newer request replaces the older notification;
-//   - when the request is answered (on any device), or the turn ends, a "resolve" push with the same tag
-//     tells the service worker to close the notification.
+//   - nothing is sent when it is answered: a push that only closes a notification shows nothing, which spends
+//     Chrome's allowance for silent pushes (and Apple revokes a subscription for it). The app closes stale
+//     notifications by their tag itself when it is opened or regains focus (web/src/notifications.ts).
 // Optional and off by default: a turn the owner started that ran a minute or more and finished while nobody
 // was looking.
 // The owner's choices are the `notify` settings (`GET/PUT /api/push/settings`), read when it matters.
@@ -74,8 +75,6 @@ interface Pending {
   label: string;
   since: number;
   cancel: (() => void) | undefined;
-  /** Whether the push for it went out (so that answering it closes the notification). */
-  sent: boolean;
 }
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
@@ -207,7 +206,7 @@ export class ConversationPush {
   private readonly pending = new Map<string, Pending>();
   /** When each chat's running turn began (ms). */
   private readonly turnStart = new Map<string, number>();
-  /** Per conversation, the sends so far: a resolve never overtakes the push it closes. */
+  /** Per conversation, the sends so far, in order. */
   private readonly chain = new Map<string, Promise<void>>();
   private readonly stop: () => void;
   private readonly graceMs: number;
@@ -222,13 +221,6 @@ export class ConversationPush {
     this.longTurnMs = o.longTurnMs ?? 60_000;
     this.maxWaitMs = o.maxWaitMs ?? 86_400_000;
     this.schedule = o.schedule ?? defaultSchedule;
-    o.db.exec(`
-      CREATE TABLE IF NOT EXISTS conv_push_open (
-        key TEXT PRIMARY KEY,
-        conversation TEXT NOT NULL,
-        at INTEGER NOT NULL
-      );
-    `);
     this.prune();
     this.adopt();
     this.stop = o.host.observe((channel, action) => this.onAction(channel, action));
@@ -238,42 +230,21 @@ export class ConversationPush {
   private pruneTimer: ReturnType<typeof setInterval> | undefined;
 
   /**
-   * After a restart, what the last run left: requests still waiting are looked at again (one that was pushed
-   * stays pushed and will be closed when answered; one still in its grace is pushed once, now), and a
-   * notification still on the phone for a request that is gone (answered or ended while the daemon was down)
-   * is closed.
+   * After a restart: a request found still waiting is looked at again, with a fresh grace. If it was pushed
+   * already (`push_sent`) it is not pushed twice. (The host ends the turns that were running when it starts, so
+   * a request is normally gone by now.)
    */
   private adopt(): void {
     for (const session of this.o.host.sessions()) {
       const needed = (this.o.host.sessionState(session) as SessionState | undefined)?.inputNeeded ?? [];
       for (const request of needed) this.track(session, request as unknown as Json);
     }
-    const rows = this.o.db.all<{ key: string; conversation: string }>(
-      "SELECT key, conversation FROM conv_push_open",
-    );
-    const orphaned = new Set<string>();
-    for (const r of rows) {
-      if (this.pending.has(r.key)) continue;
-      this.o.db.run("DELETE FROM conv_push_open WHERE key = ?", r.key);
-      orphaned.add(r.conversation);
-    }
-    for (const id of orphaned) {
-      const c = this.o.conversations.get(id);
-      if (c && !this.stillShowing(id)) this.resolve(c);
-    }
-  }
-
-  /** Whether a request of this conversation has a notification up. */
-  private stillShowing(conversation: string): boolean {
-    for (const p of this.pending.values()) if (p.sent && p.conversation.id === conversation) return true;
-    return false;
   }
 
   /** The owner turned "Conversations need me" off: requests still in their grace are dropped. */
   settingsChanged(): void {
     if (notifySettings(this.o.registry.settings().notify).conversationsNeedMe) return;
     for (const [key, p] of [...this.pending]) {
-      if (p.sent) continue;
       p.cancel?.();
       this.pending.delete(key);
     }
@@ -298,7 +269,6 @@ export class ConversationPush {
     const cutoff = this.o.now() - 7 * 86_400_000;
     try {
       this.o.db.run("DELETE FROM push_sent WHERE key LIKE 'convpush:%' AND at < ?", cutoff);
-      this.o.db.run("DELETE FROM conv_push_open WHERE at < ?", cutoff);
     } catch {
       // the table is the ticket pushes'; if it isn't there yet there is nothing to prune
     }
@@ -340,8 +310,6 @@ export class ConversationPush {
     const card = tool ? str(call.toolCallId) : str(q.id);
     const conversation = this.o.conversations.bySession(session);
     if (!card || !conversation || conversation.archivedAt !== null) return;
-    const pushed =
-      this.o.db.all<{ key: string }>("SELECT key FROM conv_push_open WHERE key = ?", key).length > 0;
     const p: Pending = {
       key,
       session,
@@ -352,11 +320,9 @@ export class ConversationPush {
       label: describeRequest(request),
       since: this.o.now(),
       cancel: undefined,
-      // pushed by an earlier run of the daemon and not answered since: its notification is up already
-      sent: pushed,
     };
     this.pending.set(key, p);
-    if (!pushed) p.cancel = this.schedule(() => this.fire(p), this.graceMs);
+    p.cancel = this.schedule(() => this.fire(p), this.graceMs);
   }
 
   /** The grace is over (or a look at the conversation is). Push, wait some more, or let it go. */
@@ -383,13 +349,6 @@ export class ConversationPush {
       this.o.now(),
     );
     if ((res?.changes ?? 0) === 0) return; // pushed before (the daemon restarted with it still waiting)
-    p.sent = true;
-    this.o.db.run(
-      "INSERT OR REPLACE INTO conv_push_open (key, conversation, at) VALUES (?, ?, ?)",
-      p.key,
-      p.conversation.id,
-      this.o.now(),
-    );
     this.send(p.conversation, {
       title: `${this.who(p.conversation)} needs you`,
       body: p.label,
@@ -406,13 +365,6 @@ export class ConversationPush {
     this.pending.delete(key);
     p.cancel?.();
     p.cancel = undefined;
-    if (!p.sent) return;
-    this.o.db.run("DELETE FROM conv_push_open WHERE key = ?", p.key);
-    // Another request of the same conversation is still showing: its notification stays.
-    for (const other of this.pending.values()) {
-      if (other.sent && other.conversation.id === p.conversation.id) return;
-    }
-    this.resolve(p.conversation);
   }
 
   private endAll(which: (p: Pending) => boolean): void {
@@ -449,16 +401,6 @@ export class ConversationPush {
     } catch {
       return c.employeeId;
     }
-  }
-
-  private resolve(c: Conversation): void {
-    this.send(c, {
-      title: `${this.who(c)} needs you`,
-      body: "Answered",
-      url: `#/conversations/${c.id}`,
-      tag: tagOf(c),
-      resolve: true,
-    });
   }
 
   private send(c: Conversation, payload: NotificationPayload): void {

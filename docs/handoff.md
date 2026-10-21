@@ -223,22 +223,22 @@ at that conversation, your phone gets a notification that opens the card. The de
   buzzes the phone; nothing is sent while any signed-in page is open on that conversation, visible and focused (the
   page says so every 15 s while it is touched, stops after 2 minutes without a touch, and the host forgets it after 45 s); one push per request, ever; a newer request of the
   same conversation replaces the older notification (tag `conv-<id>`). When the request is answered, the turn ends
-  or the conversation is archived, a "resolve" push closes the notification. It is not sent to iPhones (Apple revokes a
-  subscription whose pushes show nothing); there the app closes stale notifications itself when it is opened. After a
-  restart, notifications left up for requests the restart ended are closed.
+  or the conversation is archived, nothing is sent: a push that only closes a notification shows nothing, which spends
+  Chrome's silent-push allowance and makes Apple revoke the subscription. The app closes stale notifications itself
+  (by tag) when it is opened, regains focus or changes conversation, so a notification left up after an answer or a
+  restart goes the next time you look.
 - **Code:** `apps/daemon/src/ahp/conversation-push.ts` (the rules, `describeRequest` for the line),
   `AhpHost.observe`/`isWatched` and `iinc/presence` in `host.ts`, `GET/PUT /api/push/settings` in `api.ts`;
-  `apps/web/public/sw.js` (push, resolve, tap), `apps/web/src/ahp/presence.ts`, `?card=` in `routes.ts` and `conv-thread.ts`.
-- **Tests:** `apps/daemon/test/ahp/conversation-push.test.ts` (grace, watched, one per request, tag, resolve, settings,
+  `apps/web/public/sw.js` (push, tap), `apps/web/src/ahp/presence.ts`, `?card=` in `routes.ts` and `conv-thread.ts`.
+- **Tests:** `apps/daemon/test/ahp/conversation-push.test.ts` (grace, watched, one per request, tag, nothing on answer, settings,
   redaction, the presence signal; also over the fake ACP agent), `apps/web/test/conversations/card-link.test.ts`,
   `apps/web/test/ahp/presence.test.ts`, the worker tests in `apps/web/test/push.test.ts`, and the browser run
   `node tools/e2e/conversation-push/run.mjs` (build `apps/web` first; it starts `apps/daemon/test/ahp/e2e-server.ts` in
   a scratch HOME with a fake push sender, `GET /__e2e/pushes` lists what it sent, and needs Playwright).
 - **Not verified on a real phone:** the iOS Home Screen app and Android Chrome. Everything above is tested against
   fakes and in desktop Chromium. Check on a device: a tap from the lock screen lands on the card on iOS (the worker cannot
-  navigate a window there, so it messages the app), that the app closes a stale notification when opened on iOS, that Chrome on
-  Android shows no "updated in the background" message when a resolve push closes the only notification, and that the
-  visibility signal quiets the phone while the app is open.
+  navigate a window there, so it messages the app), that the app closes a stale notification when opened on iOS and Android, and that
+  the visibility signal quiets the phone while the app is open.
 
 ## Storage and cleanup
 

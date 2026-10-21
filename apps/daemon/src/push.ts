@@ -36,8 +36,6 @@ export interface NotificationPayload {
   url: string;
   /** One notification per tag: a newer one replaces the older (T65 uses one tag per conversation). */
   tag?: string;
-  /** Not a notification: close the one with this tag (the request it was about has been answered). */
-  resolve?: boolean;
 }
 
 /**
@@ -66,16 +64,6 @@ export interface PushService {
   send(notification: NotificationPayload): Promise<void>;
   subscribe(sub: PushSubscription): Promise<void>;
   unsubscribe(endpoint: string): Promise<void>;
-}
-
-/** Whether a subscription is on Apple's push service (iPhone, iPad and Safari), by the host of its endpoint. */
-export function isApplePush(endpoint: string): boolean {
-  try {
-    const host = new URL(endpoint).hostname;
-    return host === "web.push.apple.com" || host.endsWith(".push.apple.com");
-  } catch {
-    return false;
-  }
 }
 
 /** Generates a fresh P-256 VAPID keypair in memory. */
@@ -219,12 +207,7 @@ export class WebPushSender implements PushService {
   }
 
   async send(notification: NotificationPayload): Promise<void> {
-    // A "resolve" push closes a notification and shows nothing, which Apple's push service does not
-    // allow (it revokes a subscription whose pushes show nothing): those devices are not sent one, and
-    // the app closes the notification itself when it is opened.
-    const subs = this.registry
-      .pushSubscriptions()
-      .filter((sub) => !(notification.resolve && isApplePush(sub.endpoint)));
+    const subs = this.registry.pushSubscriptions();
     await Promise.allSettled(subs.map((sub) => this.sendToSubscription(sub, notification)));
   }
 
@@ -233,9 +216,7 @@ export class WebPushSender implements PushService {
     let body: string | Uint8Array;
     let headers: Record<string, string> = {
       authorization: authHeader,
-      // A closing push is worth nothing a minute later; a notification is kept a day for a phone that is off.
-      ttl: notification.resolve ? "60" : "86400",
-      ...(notification.resolve ? { urgency: "low" } : {}),
+      ttl: "86400",
     };
 
     if (sub.keys?.p256dh && sub.keys?.auth) {
