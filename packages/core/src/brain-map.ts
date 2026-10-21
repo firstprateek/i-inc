@@ -29,12 +29,15 @@ const line = (p: MapPage) => `- [[${p.slug}]] — ${(p.description || p.title ||
 /** Folders in a stable order: general first, then alphabetical. */
 function grouped(pages: MapPage[]): [string, MapPage[]][] {
   const by = new Map<string, MapPage[]>();
-  for (const p of [...pages].sort((a, b) => a.slug.localeCompare(b.slug))) {
+  // Code-unit order, not localeCompare: it is stable across machines and about 20x faster.
+  for (const p of [...pages].sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0))) {
     const f = folderOf(p.slug);
-    by.set(f, [...(by.get(f) ?? []), p]);
+    const list = by.get(f);
+    if (list) list.push(p);
+    else by.set(f, [p]);
   }
   return [...by.entries()].sort(([a], [b]) =>
-    a === "general" ? -1 : b === "general" ? 1 : a.localeCompare(b),
+    a === "general" ? -1 : b === "general" ? 1 : a < b ? -1 : a > b ? 1 : 0,
   );
 }
 

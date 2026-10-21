@@ -98,6 +98,9 @@ const scopeFilter = (r: Repo): { sql: string; params: Param[] } =>
     : { sql: "scope = ?", params: [`brain:${r.id}`] };
 
 export class BrainIndex implements RetrievalSource {
+  /** Built maps by scope. Pages only change through `sync` and `rebuild`, which clear it. */
+  private readonly maps = new Map<Scope, BuiltMap>();
+
   private constructor(
     private readonly db: Db,
     private readonly store: KnowledgeStore,
@@ -193,6 +196,7 @@ export class BrainIndex implements RetrievalSource {
    * repo is gone don't.
    */
   rebuild(): void {
+    this.maps.clear();
     const stats = new Map(
       this.db
         .all<PageRow>("SELECT * FROM pages WHERE use_count > 0 OR last_used_at IS NOT NULL")
@@ -216,6 +220,7 @@ export class BrainIndex implements RetrievalSource {
 
   /** Brings one repo's pages up to date with its HEAD: only pages whose blob changed are re-read. */
   sync(repo: Repo): void {
+    this.maps.clear();
     this.db.transaction(() => this.syncRepo(repo));
   }
 
@@ -417,10 +422,14 @@ export class BrainIndex implements RetrievalSource {
 
   /** A scope's map: one line per page by folder; split into named sections when it passes 150 lines. */
   mapFor(scope: Scope): BuiltMap {
+    const cached = this.maps.get(scope);
+    if (cached) return cached;
     const pages: MapPage[] = this.db
       .all<PageRow>("SELECT slug, title, description FROM pages WHERE scope = ? ORDER BY slug", scope)
       .map((r) => ({ slug: r.slug, title: r.title, description: r.description }));
-    return buildMap(pages);
+    const built = buildMap(pages);
+    this.maps.set(scope, built);
+    return built;
   }
 
   /** Counts a page as read (T57 feeds this from retrieval and ACP tool calls). */

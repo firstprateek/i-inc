@@ -443,3 +443,42 @@ describe("short dev words", () => {
     expect(retrieve(index, { query: "to be or not", scopes: ["company"] })[0]?.slug).toBe("facts/the");
   });
 });
+
+describe("map performance", () => {
+  it("builds a 10,000-page map fast, serves it from a cache, and drops the cache on every commit", async () => {
+    const { index, commit } = await setup();
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 10_000; i++) {
+      files[`${["facts", "policies", "projects"][i % 3]}/page-${i}.md`] = page(
+        `Page ${i}`,
+        `About topic ${i}`,
+        "x",
+      );
+    }
+    commit("handbook", files);
+    index.rebuild();
+
+    let t = performance.now();
+    const cold = index.mapFor("company");
+    const coldMs = performance.now() - t;
+    t = performance.now();
+    const warm = index.mapFor("company");
+    const warmMs = performance.now() - t;
+    console.log(
+      `brain index: mapFor(10,000 pages) cold ${coldMs.toFixed(1)} ms, warm ${warmMs.toFixed(2)} ms`,
+    );
+    expect(warm).toBe(cold);
+    expect(warmMs).toBeLessThan(5);
+    expect(coldMs).toBeLessThan(150);
+    expect(cold.root.length).toBeLessThanOrEqual(150);
+    expect(Object.keys(cold.sections).length).toBeGreaterThan(3);
+
+    // A commit makes the next map include the new page; a rebuild does too.
+    commit("handbook", { "facts/brand-new.md": page("Brand new", "freshly added", "x") });
+    const after = index.mapFor("company");
+    expect(after).not.toBe(cold);
+    expect(Object.values(after.sections).flat()).toContain("- [[facts/brand-new]] — freshly added");
+    index.rebuild();
+    expect(index.mapFor("company")).not.toBe(after);
+  }, 60_000);
+});
