@@ -186,7 +186,7 @@ describe("release folders", () => {
       ci: { check: async () => ({ state: "success" as const }) },
       releases: r,
       smoke: { run: async () => ({ ok: true as const }) },
-      daemon: { restart: async () => {}, health },
+      daemon: { restart: async () => {}, health, launchdState: async () => "running" as const },
       store,
       lock: new MemLock(),
       settings: { ...defaultSettings },

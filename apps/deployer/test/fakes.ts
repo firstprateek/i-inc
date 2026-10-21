@@ -84,6 +84,7 @@ export class World {
   serving: string | null = sha(1);
   busyUntil = 0;
   unreachable = false;
+  launchdOverride: "running" | "not-running" | "unknown" | undefined;
 
   settings: Settings = { ...defaultSettings };
 
@@ -147,6 +148,7 @@ export class World {
       this.serving = mode === "down" ? null : mode === "wrong-version" ? sha(0xdead) : this.cur;
       this.busyUntil = 0;
     },
+    launchdState: async () => this.launchdOverride ?? (this.serving ? "running" : "not-running"),
     health: async (): Promise<Health | null> => {
       if (this.unreachable || !this.serving) return null;
       return { ok: true, version: this.serving, busy: this.clock.now() < this.busyUntil, startedAt: 1 };

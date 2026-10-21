@@ -102,7 +102,8 @@ export class DeployNotifier {
     let sent = 0;
     // Oldest first, so the notifications arrive in order.
     for (const e of readDeploys(this.o.path, 20).reverse()) {
-      if (!failed.includes(e.outcome) || this.o.now() - e.at > maxAge) continue;
+      const recovery = e.outcome === "deployed" && e.reason.startsWith("recovery:");
+      if (!(failed.includes(e.outcome) || recovery) || this.o.now() - e.at > maxAge) continue;
       const key = `deploy:${e.at}:${e.sha}`;
       const res = this.o.db.run(
         "INSERT INTO push_sent (key, at) VALUES (?, ?) ON CONFLICT (key) DO NOTHING",
@@ -112,7 +113,9 @@ export class DeployNotifier {
       if ((res?.changes ?? 0) === 0) continue;
       let payload: { title: string; body: string };
       const byHand = /^rolled back by hand to ([0-9a-f]{7})/.exec(e.reason);
-      if (e.outcome === "rolled-back" && byHand) {
+      if (e.outcome === "deployed" && e.reason.startsWith("recovery:")) {
+        payload = { title: `Deployed ${short(e.sha)} to recover the daemon`, body: e.reason };
+      } else if (e.outcome === "rolled-back" && byHand) {
         payload = {
           title: "Rolled back by hand",
           body: `Rolled back by hand to ${byHand[1]} (left ${short(e.sha)})`,

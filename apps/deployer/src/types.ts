@@ -89,6 +89,8 @@ export interface DaemonControl {
   restart(): Promise<void>;
   /** The running daemon's /api/health, or null if it doesn't answer. */
   health(): Promise<Health | null>;
+  /** What launchd says about `inc.i.daemon` (`launchctl print`): running, not running (down, waiting to respawn), or unknown. */
+  launchdState(): Promise<"running" | "not-running" | "unknown">;
 }
 
 export interface InFlight {
@@ -142,6 +144,8 @@ export interface Settings {
   drainPollMs: number;
   /** Switch anyway after waiting this long (the --force-after option); unset: never. */
   forceAfterMs: number | undefined;
+  /** A daemon that has not answered for this long no longer blocks a deploy: that is the recovery path. */
+  downProceedMs: number;
   healthTimeoutMs: number;
   healthPollMs: number;
   keep: number;
@@ -153,6 +157,7 @@ export const defaultSettings: Settings = {
   drainMaxMs: 30 * 60_000,
   drainPollMs: 10_000,
   forceAfterMs: undefined,
+  downProceedMs: 10 * 60_000,
   healthTimeoutMs: 90_000,
   healthPollMs: 2_000,
   keep: 5,

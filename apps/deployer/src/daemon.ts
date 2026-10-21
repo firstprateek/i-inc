@@ -24,6 +24,13 @@ export class LaunchdDaemon implements DaemonControl {
   async health(): Promise<Health | null> {
     return probeHealth(this.o.url, this.o.fetch);
   }
+
+  async launchdState(): Promise<"running" | "not-running" | "unknown"> {
+    const r = await this.o.shell("launchctl", ["print", `gui/${this.o.uid}/${this.o.label}`], {
+      timeoutMs: 15_000,
+    });
+    return parseLaunchdState(r.code, r.output);
+  }
 }
 
 /** GET <base>/api/health, or null if it doesn't answer with the expected shape. */
@@ -42,4 +49,16 @@ export async function probeHealth(base: string, f: typeof fetch = fetch): Promis
   } catch {
     return null;
   }
+}
+
+/**
+ * `launchctl print gui/<uid>/<label>` prints `state = running` for a live service and something else
+ * (`not running`, `waiting`, `spawn scheduled`) for one that is down or waiting to respawn after a crash.
+ * A service that is not loaded at all is unknown: restarting it would fail too.
+ */
+export function parseLaunchdState(code: number, output: string): "running" | "not-running" | "unknown" {
+  if (code !== 0) return "unknown";
+  const state = /^\s*state = (.+)$/m.exec(output)?.[1]?.trim();
+  if (!state) return "unknown";
+  return state === "running" ? "running" : "not-running";
 }

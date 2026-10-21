@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LaunchdDaemon, probeHealth } from "../src/daemon.ts";
+import { LaunchdDaemon, parseLaunchdState, probeHealth } from "../src/daemon.ts";
 import type { Shell } from "../src/shell.ts";
 
 describe("daemon control", () => {
@@ -39,5 +39,28 @@ describe("daemon control", () => {
     expect(await probeHealth("http://x", down)).toBeNull();
     const old = (async () => new Response("{}", { status: 404 })) as unknown as typeof fetch;
     expect(await probeHealth("http://x", old)).toBeNull();
+  });
+});
+
+describe("what launchd says about the daemon", () => {
+  it("reads `launchctl print`", () => {
+    expect(parseLaunchdState(0, "gui/501/inc.i.daemon = {\n\tstate = running\n\tpid = 12\n}")).toBe(
+      "running",
+    );
+    expect(parseLaunchdState(0, "gui/501/inc.i.daemon = {\n\tstate = not running\n}")).toBe("not-running");
+    expect(parseLaunchdState(0, "{\n\tstate = spawn scheduled\n\tlast exit code = 1\n}")).toBe("not-running");
+    expect(parseLaunchdState(113, "Could not find service")).toBe("unknown");
+    expect(parseLaunchdState(0, "nothing useful")).toBe("unknown");
+  });
+
+  it("asks for this user's service", async () => {
+    const seen: string[][] = [];
+    const shell: Shell = async (cmd, args) => {
+      seen.push([cmd, ...args]);
+      return { code: 0, output: "\tstate = running", timedOut: false };
+    };
+    const d = new LaunchdDaemon({ shell, uid: 501, label: "inc.i.daemon", url: "http://x" });
+    expect(await d.launchdState()).toBe("running");
+    expect(seen).toEqual([["launchctl", "print", "gui/501/inc.i.daemon"]]);
   });
 });

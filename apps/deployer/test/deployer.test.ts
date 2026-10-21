@@ -290,15 +290,58 @@ describe("drain", () => {
     expect(w.clock.now() - start).toBeLessThan(11 * 60_000);
   });
 
-  it("does not treat a daemon that does not answer as idle: it waits, and defers after 30 minutes", async () => {
+  it("a daemon that is down and not running under launchd does not block the deploy that may repair it", async () => {
     const w = new World();
     w.head = B;
     w.ci[B] = { state: "success" };
-    w.unreachable = true;
+    w.serving = null; // down: nothing answers, and launchd says it is not running
     const start = w.clock.now();
+    expect((await w.deployer().cycle()).action).toBe("deployed");
+    expect(w.clock.now() - start).toBeLessThan(2 * 60_000);
+    expect(w.cur).toBe(B);
+    expect(w.serving).toBe(B);
+    expect(w.store.records[0]?.outcome).toBe("deployed");
+    expect(w.store.records[0]?.reason).toContain("recovery: the daemon was down");
+    expect(w.store.records[0]?.reason).toContain("not running");
+  });
+
+  it("a daemon that launchd thinks is running but that does not answer blocks for ten minutes, then the deploy goes ahead", async () => {
+    const w = new World();
+    w.head = B;
+    w.ci[B] = { state: "success" };
+    w.unreachable = true; // launchd: running; /api/health: nothing
+    w.daemon.restart = async () => {
+      w.calls.push("restart");
+      w.unreachable = false;
+      w.serving = w.cur;
+    };
+    const start = w.clock.now();
+    expect((await w.deployer().cycle()).action).toBe("deployed");
+    expect(w.clock.now() - start).toBeGreaterThanOrEqual(10 * 60_000);
+    expect(w.clock.now() - start).toBeLessThan(11 * 60_000);
+    expect(w.store.records[0]?.reason).toContain("no answer for 10 min");
+  });
+
+  it("when launchd cannot say, a silent daemon waits the ten minutes", async () => {
+    const w = new World();
+    w.head = B;
+    w.ci[B] = { state: "success" };
+    w.serving = null;
+    w.launchdOverride = "unknown";
+    w.daemon.restart = async () => {
+      w.serving = w.cur;
+    };
+    const start = w.clock.now();
+    expect((await w.deployer().cycle()).action).toBe("deployed");
+    expect(w.clock.now() - start).toBeGreaterThanOrEqual(10 * 60_000);
+  });
+
+  it("a busy daemon is still waited for, even for a long time", async () => {
+    const w = new World();
+    w.head = B;
+    w.ci[B] = { state: "success" };
+    w.busyUntil = Number.POSITIVE_INFINITY;
     expect((await w.deployer().cycle()).action).toBe("deferred");
-    expect(w.clock.now() - start).toBeGreaterThanOrEqual(30 * 60_000);
-    expect(w.calls).not.toContain("point 02");
     expect(w.cur).toBe(A);
   });
 

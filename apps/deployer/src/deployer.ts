@@ -63,6 +63,10 @@ export const isTransient = (reason: string) => transientPattern.test(reason);
 
 export class Deployer {
   private lastStatus = "";
+  /** Since when the running daemon has not answered /api/health (this process only). */
+  private downSince: number | null = null;
+  /** Set when a deploy went ahead because the daemon was down: said in the record and the push. */
+  private recoveryNote = "";
 
   constructor(private readonly d: DeployerDeps) {}
 
@@ -269,6 +273,7 @@ export class Deployer {
   private async deploy(sha: string, from: string): Promise<CycleResult> {
     const { releases, smoke, clock, settings } = this.d;
     const startedAt = clock.now();
+    this.recoveryNote = "";
     const fresh = this.d.store.state();
     const ready = !!fresh.ready[sha] && (await releases.has(sha));
     const attempts = (fresh.attempts[sha] ?? 0) + 1;
@@ -332,7 +337,7 @@ export class Deployer {
     } catch (err) {
       return this.rollback(sha, from, `switching failed: ${oneLine(String(err))}`, startedAt);
     }
-    if (await this.waitForVersion(sha)) return this.finishDeployed(sha, from, startedAt, "");
+    if (await this.waitForVersion(sha)) return this.finishDeployed(sha, from, startedAt, this.recoveryNote);
     return this.rollback(
       sha,
       from,
@@ -348,11 +353,29 @@ export class Deployer {
     let announced = false;
     for (;;) {
       const health = await daemon.health().catch(() => null);
-      // Only a daemon that answers and says it is idle is idle: an answer we cannot read is unknown,
-      // and unknown waits like busy does (a daemon that is down is restarted by launchd anyway).
-      if (health && !health.busy) {
-        this.event(`${short(sha)}: the daemon is idle`);
-        return true;
+      // Only a daemon that answers and says it is idle is idle: an answer we cannot read is unknown, and
+      // unknown waits like busy does. But a daemon that is down has nothing to drain, and waiting for it
+      // would block the very deploy that may repair it: launchd saying it is not running, or ten minutes
+      // without an answer, lets the deploy go ahead.
+      if (health) {
+        this.downSince = null;
+        if (!health.busy) {
+          this.event(`${short(sha)}: the daemon is idle`);
+          return true;
+        }
+      } else {
+        const now = clock.now();
+        this.downSince ??= now;
+        const down = now - this.downSince;
+        const launchd =
+          down >= settings.drainPollMs
+            ? await daemon.launchdState().catch(() => "unknown" as const)
+            : "unknown";
+        if (launchd === "not-running" || down >= settings.downProceedMs) {
+          this.recoveryNote = `recovery: the daemon was down (${launchd === "not-running" ? "launchd reports it not running" : `no answer for ${Math.round(down / 60_000)} min`}), so this was deployed without waiting for it to drain`;
+          this.event(`${short(sha)}: ${this.recoveryNote}`);
+          return true;
+        }
       }
       const state = this.d.store.state();
       const since = state.ready[sha]?.drainSince ?? began;

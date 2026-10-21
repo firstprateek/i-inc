@@ -57,16 +57,20 @@ and never the running one or the one before it. Nothing needs root.
 - **Deploy now (force):** the loop already deploys within 2 minutes of green CI. To skip waiting for
   the daemon to go idle, pause the deployer, then
   `cd ~/i-inc && bun apps/deployer/src/main.ts --once --force-after 0` (a daemon that does not answer
-  `/api/health` counts as busy too)
+  `/api/health` counts as busy too, for up to 10 minutes; if launchd reports `inc.i.daemon` not running, or
+  it stays silent for 10 minutes, the deploy goes ahead as the recovery path and says so in its record
+  and push)
   (`--force-after <minutes>` switches anyway once the daemon has stayed busy that long; a ticket cut
   short resumes by itself after the restart).
 - **Roll back by hand:** pause the deployer, then
   `cd ~/i-inc && bun apps/deployer/src/main.ts --rollback [sha]`. It points `current` at the previous
   release that was actually deployed (never a build that was only waiting to be switched to; or `sha`,
   which must be an earlier deployed release still in `~/i-inc-releases`), kickstarts the daemon, records
-  it, and marks the release you left as bad so it is not deployed again (the one you roll back to is
-  never marked). It refuses while the daemon is busy or not answering unless you add `--force`. Then
-  resume the deployer. Without the marking, the deployer would redeploy main's tip on its next cycle.
+  it, and pauses auto-deploy at main's tip at that moment (nothing is marked bad), so the commit you
+  rolled back from is not redeployed. `bun apps/deployer/src/main.ts --status` shows "paused after hand
+  rollback at <sha7> — resumes on the next commit"; the next commit on main lifts the pause by itself,
+  or `--resume` does. It refuses while the daemon is busy or not answering unless you add `--force`.
+  Then resume the deployer service.
 - **A commit you want retried** after it was marked bad: delete its key from `bad` in
   `~/i-inc-releases/state.json` (with the deployer paused). `bun apps/deployer/src/main.ts --status`
   prints that state.

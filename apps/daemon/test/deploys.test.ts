@@ -321,6 +321,24 @@ describe("push for a failed deploy", () => {
     expect(push.sent[0]?.body).not.toContain("/Users/padi");
   });
 
+  it("tells the owner when a deploy went ahead to recover a daemon that was down", async () => {
+    const path = join(dir, "deploys.jsonl");
+    const { app, push } = await guarded({ deploysPath: path });
+    writeFileSync(
+      path,
+      jsonl(
+        entry({
+          outcome: "deployed",
+          reason:
+            "recovery: the daemon was down (launchd reports it not running), so this was deployed without waiting for it to drain",
+        }),
+      ),
+    );
+    expect(await make(path, push, app).check()).toBe(1);
+    expect(push.sent[0]?.title).toBe("Deployed aaaaaaa to recover the daemon");
+    expect(push.sent[0]?.body).toContain("launchd reports it not running");
+  });
+
   it("does not push for a success or a skipped-ci", async () => {
     const path = join(dir, "deploys.jsonl");
     const { app, push } = await guarded({ deploysPath: path });
