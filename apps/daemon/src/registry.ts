@@ -28,6 +28,8 @@ export interface Project extends Partial<ProjectPolicy> {
   checks: string[];
   /** Default branch for PR base and checkout (e.g. "main" or "master"). */
   defaultBranch?: string;
+  /** GitHub's numeric id of the repo, so a rename or transfer doesn't make it look like another repo. */
+  repoId?: number;
 }
 
 /**

@@ -6,6 +6,7 @@ import {
   isValidBranch,
   isValidRepo,
   listInstallationRepos,
+  NotEmptyError,
   type TokenSource,
   UpstreamGitHubError,
 } from "../src/github.ts";
@@ -20,6 +21,8 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
 
   it("lists installation repositories and flags already registered ones", async () => {
     const fakeFetch = (async (url: string | URL | Request) => {
+      // A repo that looks empty is asked of GitHub's commit list; this one has none.
+      if (String(url).includes("/commits")) return new Response("{}", { status: 409 });
       expect(String(url)).toContain("/installation/repositories");
       return new Response(
         JSON.stringify({
@@ -61,6 +64,7 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
 
     expect(repos).toHaveLength(2);
     expect(repos[0]).toEqual({
+      id: 1,
       fullName: "firstprateek/duet",
       name: "duet",
       owner: "firstprateek",
@@ -191,6 +195,10 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
   it("bootstraps starter files via GitHub Contents API", async () => {
     const committedPaths: string[] = [];
     const fakeFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      // A repo with no commit answers 409 to the commit list, which is how i.inc knows it is empty.
+      if (init?.method === "GET" && String(url).includes("/commits")) {
+        return new Response(JSON.stringify({ message: "Git Repository is empty." }), { status: 409 });
+      }
       expect(init?.method).toBe("PUT");
       const match = String(url).match(/\/contents\/(.+)$/);
       if (match?.[1]) committedPaths.push(match[1]);
@@ -321,7 +329,7 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
         mode: "direct",
       });
       expect(inaccessibleBootstrap.status).toBe(403);
-      expect(inaccessibleBootstrap.body.error).toContain("not accessible");
+      expect(inaccessibleBootstrap.body.error).toContain("can't see other-org/inaccessible-repo");
 
       // 4. Valid bootstrap request registers project and assigns employees
       const employees = app.deps.registry.employees();
@@ -491,10 +499,12 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
         }),
       );
       expect(res401.status).toBe(424);
-      const body401 = (await res401.json()) as { error: string };
-      expect(body401.error).toBe("upstream GitHub service failure");
+      const body401 = (await res401.json()) as { error: string; code: string };
+      expect(body401.code).toBe("auth");
+      expect(body401.error).toContain("GitHub didn't accept i.inc's sign-in");
+      expect(body401.error).not.toContain("Bad credentials");
 
-      // 2. Upstream 429 mapped to 424
+      // 2. Upstream 429 mapped to a clear rate-limit answer
       globalThis.fetch = (async () => {
         return new Response(JSON.stringify({ message: "API rate limit exceeded" }), {
           status: 429,
@@ -508,9 +518,11 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
           headers: { host: "i.inc", authorization: `Bearer ${token}` },
         }),
       );
-      expect(res429.status).toBe(424);
-      const body429 = (await res429.json()) as { error: string };
-      expect(body429.error).toBe("upstream GitHub rate limit exceeded");
+      // A rate limit answers 429 (never a gateway status, which the web app reads as "daemon down").
+      expect(res429.status).toBe(429);
+      const body429 = (await res429.json()) as { error: string; code: string };
+      expect(body429.code).toBe("rate-limited");
+      expect(body429.error).toContain("slow down");
 
       // 3. Upstream timeout/abort mapped to 424
       globalThis.fetch = (async (_url: string | URL | Request, _init?: RequestInit) => {
@@ -527,7 +539,7 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
       );
       expect(resTimeout.status).toBe(424);
       const bodyTimeout = (await resTimeout.json()) as { error: string };
-      expect(bodyTimeout.error).toBe("upstream GitHub service timed out");
+      expect(bodyTimeout.error).toContain("didn't answer in time");
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -603,16 +615,23 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
         }),
       );
       expect(resStringForce.status).toBe(409);
-      const bodyStringForce = (await resStringForce.json()) as { error: string; resumable: boolean };
-      expect(bodyStringForce.error).toContain("repository is not empty");
-      expect(bodyStringForce.resumable).toBe(true);
+      const bodyStringForce = (await resStringForce.json()) as { error: string; resumable?: boolean };
+      expect(bodyStringForce.error).toContain("already has files");
+      // Nothing was written, so there is nothing to carry on: the web app must not offer to force it.
+      expect(bodyStringForce.resumable).toBeUndefined();
 
-      // Passing force: true (boolean) permits bootstrapping and returns 201
-      // Mock Contents PUT
+      // Passing force: true (boolean) is not enough on a repo with commits that aren't i.inc's: still refused.
+      const puts: string[] = [];
       const origFetch = globalThis.fetch;
       globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
         if (init?.method === "PUT") {
+          puts.push(String(url));
           return new Response(JSON.stringify({ content: { sha: "abc" } }), { status: 201 });
+        }
+        if (String(url).includes("/commits")) {
+          return new Response(JSON.stringify([{ sha: "1", commit: { message: "Initial commit" } }]), {
+            status: 200,
+          });
         }
         return origFetch(url, init);
       }) as unknown as typeof fetch;
@@ -632,7 +651,9 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
           }),
         }),
       );
-      expect(resBoolForce.status).toBe(201);
+      expect(resBoolForce.status).toBe(409);
+      expect(((await resBoolForce.json()) as { code: string }).code).toBe("not-empty");
+      expect(puts).toEqual([]);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -714,6 +735,9 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
             headers: { "content-type": "application/json" },
           });
         }
+        if (u.includes("/commits")) {
+          return new Response(JSON.stringify({ message: "Git Repository is empty." }), { status: 409 });
+        }
         if (init?.method === "PUT") {
           return new Response(JSON.stringify({ content: { sha: "abc123" } }), { status: 201 });
         }
@@ -757,48 +781,100 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
     }
   });
 
-  it("handles existing file sha when resuming partial bootstrap with force: true", async () => {
-    let putAttempts = 0;
-    let getShaAttempts = 0;
-
-    const fakeFetch = (async (url: string | URL | Request, init?: RequestInit) => {
-      const u = String(url);
-      if (init?.method === "PUT") {
-        putAttempts++;
-        const body = JSON.parse(String(init.body)) as { sha?: string };
-        // For README.md, first PUT attempt returns 422 because file already exists and sha was omitted
-        if (u.includes("README.md") && !body.sha) {
-          return new Response(JSON.stringify({ message: 'Invalid request.\n\n"sha" wasn\'t supplied.' }), {
-            status: 422,
-            headers: { "content-type": "application/json" },
-          });
+  it("carries on a bootstrap only from commits the bot wrote to the starter's own paths", async () => {
+    const puts: { path: string; sha?: string }[] = [];
+    type C = { sha: string; message: string; author: string; files: string[] };
+    const mine: C = {
+      sha: "a".repeat(40),
+      message: "Initialize README.md (i.inc scaffold)",
+      author: "i-inc-bot[bot]",
+      files: ["README.md"],
+    };
+    const make = (commits: C[], putStatus = 201) =>
+      (async (url: string | URL | Request, init?: RequestInit) => {
+        const u = String(url);
+        if (init?.method === "PUT") {
+          const body = JSON.parse(String(init.body)) as { sha?: string };
+          puts.push({ path: u.split("/contents/")[1] ?? "", ...(body.sha ? { sha: body.sha } : {}) });
+          return new Response(JSON.stringify({ content: {}, message: "exists" }), { status: putStatus });
         }
-        // Second PUT with sha (and other new files) succeeds
-        return new Response(JSON.stringify({ content: { sha: "updated-sha-456" } }), { status: 200 });
-      }
-      if (u.includes("/contents/README.md") && init?.method === "GET") {
-        getShaAttempts++;
-        return new Response(JSON.stringify({ sha: "existing-sha-123" }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      }
-      return new Response("Not found", { status: 404 });
-    }) as unknown as typeof fetch;
+        const one = /\/commits\/([0-9a-f]+)$/.exec(u);
+        if (one) {
+          const c = commits.find((x) => x.sha === one[1]);
+          return c
+            ? new Response(JSON.stringify({ sha: c.sha, files: c.files.map((filename) => ({ filename })) }), {
+                status: 200,
+              })
+            : new Response("{}", { status: 404 });
+        }
+        if (u.includes("/commits")) {
+          return new Response(
+            JSON.stringify(
+              commits.map((c) => ({
+                sha: c.sha,
+                commit: { message: c.message },
+                author: { login: c.author },
+              })),
+            ),
+            { status: 200 },
+          );
+        }
+        if (u.includes("/contents/README.md"))
+          return new Response(JSON.stringify({ sha: "x" }), { status: 200 });
+        return new Response("Not found", { status: 404 });
+      }) as unknown as typeof fetch;
+    const o = { api: "https://mock.github" };
+    const force = { repo: "o/r", template: "minimal" as const, force: true, botLogin: "i-inc-bot[bot]" };
 
-    const res = await bootstrapRepo(
-      fakeTokenSource,
-      {
-        repo: "firstprateek/resume-repo",
-        template: "minimal",
-        defaultBranch: "main",
-      },
-      { fetch: fakeFetch, api: "https://mock.github" },
-    );
+    // No force: a repo with a commit is refused.
+    await expect(
+      bootstrapRepo(fakeTokenSource, { repo: "o/r", template: "minimal" }, { ...o, fetch: make([mine]) }),
+    ).rejects.toBeInstanceOf(NotEmptyError);
+    // Force, but a commit that isn't a starter commit: refused.
+    await expect(
+      bootstrapRepo(fakeTokenSource, force, {
+        ...o,
+        fetch: make([mine, { ...mine, sha: "b".repeat(40), message: "Add my notes", files: ["notes.md"] }]),
+      }),
+    ).rejects.toBeInstanceOf(NotEmptyError);
+    // Someone else's commit with the starter's message: refused (the author must be the bot).
+    await expect(
+      bootstrapRepo(fakeTokenSource, force, { ...o, fetch: make([{ ...mine, author: "mallory" }]) }),
+    ).rejects.toBeInstanceOf(NotEmptyError);
+    // The bot's login unknown (a stand-in token): refused.
+    await expect(
+      bootstrapRepo(
+        fakeTokenSource,
+        { repo: "o/r", template: "minimal", force: true },
+        { ...o, fetch: make([mine]) },
+      ),
+    ).rejects.toBeInstanceOf(NotEmptyError);
+    // The right author and message, but the commit touches a file outside the starter's paths: refused.
+    await expect(
+      bootstrapRepo(fakeTokenSource, force, {
+        ...o,
+        fetch: make([{ ...mine, files: ["README.md", "secrets.env"] }]),
+      }),
+    ).rejects.toBeInstanceOf(NotEmptyError);
+    await expect(
+      bootstrapRepo(fakeTokenSource, force, {
+        ...o,
+        fetch: make([{ ...mine, message: "Initialize evil.sh (i.inc scaffold)", files: ["evil.sh"] }]),
+      }),
+    ).rejects.toBeInstanceOf(NotEmptyError);
+    expect(puts).toEqual([]);
 
-    expect(res.bootstrapped).toBe(true);
-    expect(getShaAttempts).toBeGreaterThanOrEqual(1);
-    expect(putAttempts).toBeGreaterThanOrEqual(2);
+    // All starter commits by the bot: README.md is there and is left alone; .gitignore is added, with no sha.
+    const res = await bootstrapRepo(fakeTokenSource, force, { ...o, fetch: make([mine]) });
+    expect(res.commits).toBe(1);
+    expect(puts).toEqual([{ path: ".gitignore" }]);
+
+    // A file that shows up between the check and the write is never replaced.
+    puts.length = 0;
+    await expect(
+      bootstrapRepo(fakeTokenSource, { repo: "o/r", template: "minimal" }, { ...o, fetch: make([], 422) }),
+    ).rejects.toBeInstanceOf(NotEmptyError);
+    expect(puts.every((p) => p.sha === undefined)).toBe(true);
   });
 
   it("propagates upstream errors when reading package.json in inspectRepo", async () => {

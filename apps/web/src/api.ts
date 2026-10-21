@@ -123,8 +123,9 @@ export async function send(path: string, init?: RequestInit): Promise<Response> 
     report(false);
     throw new Error("Can't reach i.inc");
   }
-  const isUpstream = path.startsWith("/api/github/") || path.includes("/bootstrap");
-  report(!isGatewayDown(res.status) || isUpstream);
+  // The daemon never answers 502-504 for a GitHub problem (it sends 424 or 429), so one of those is a proxy
+  // with nothing behind it, on any route.
+  report(!isGatewayDown(res.status));
   return res;
 }
 

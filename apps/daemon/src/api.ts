@@ -25,6 +25,7 @@ import {
   retry,
   type SandboxStatus,
   type Ticket,
+  type TicketState,
 } from "@i-inc/core";
 import { ConversationError } from "./ahp/conversations.ts";
 import { authorized, hostAllowed, originAllowed, same } from "./auth.ts";
@@ -33,16 +34,28 @@ import { readDeploys } from "./deploys.ts";
 import {
   bootstrapRepo,
   inspectRepo,
+  isTemplate,
   isValidBranch,
   isValidRepo,
-  listInstallationRepos,
+  markRegistered,
+  NotEmptyError,
+  TEMPLATES,
   UpstreamGitHubError,
 } from "./github.ts";
+import {
+  CannotCreate,
+  CreateInProgress,
+  describeGitHubError,
+  GitHubProjects,
+  isValidRepoName,
+  logLine,
+  newRepoUrl,
+} from "./github-projects.ts";
 import { sniffImage } from "./images.ts";
 import type { Change, Repo } from "./knowledge.ts";
 import { type ProposalStatus, RECOVERED_BODY } from "./proposals.ts";
 import type { PushSubscription } from "./push.ts";
-import { defaultTeam } from "./registry.ts";
+import { defaultTeam, type Project } from "./registry.ts";
 import type { NewAttachment, NewTicket } from "./tickets.ts";
 import {
   allRateLimits,
@@ -74,30 +87,26 @@ export interface ApiOptions {
 
 type Handler = (req: Request, params: Record<string, string>) => Promise<Response>;
 
-function mapUpstreamError(e: unknown): { status: number; error: string } {
-  if (e instanceof UpstreamGitHubError) {
-    if (e.status === 504 || (e as { code?: string }).code === "ETIMEDOUT") {
-      return { status: 424, error: "upstream GitHub service timed out" };
-    }
-    if (e.status === 429) {
-      return { status: 424, error: "upstream GitHub rate limit exceeded" };
-    }
-    return { status: 424, error: "upstream GitHub service failure" };
-  }
-  return { status: 424, error: "failed to communicate with GitHub" };
-}
+/** Project names the web app's addresses use for its own pages (`#/company/projects/add`). */
+const RESERVED_PROJECT_IDS = new Set(["add", "new"]);
 
-function githubLogMsg(e: unknown): string {
-  if (e instanceof UpstreamGitHubError) {
-    return `${e.method} ${e.endpoint} -> HTTP ${e.status}`;
+/** Why a project name can't be used, or null when it can. */
+function projectIdProblem(id: string): string | null {
+  if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$/.test(id)) {
+    return "a project is named by up to 40 letters, digits, spaces, dots and dashes";
   }
-  return e instanceof Error ? e.message : String(e);
+  if (RESERVED_PROJECT_IDS.has(id.trim().toLowerCase())) {
+    return `"${id}" is kept for the app's own pages: pick another project name`;
+  }
+  return null;
 }
 
 /** What a model id may be: 1 to 100 of these characters, so no control characters or line breaks. */
 const validModel = /^[A-Za-z0-9._:/@+ -]{1,100}$/;
 
 const inFlightBootstraps = new Set<string>();
+/** Repos being bootstrapped right now, by lower-cased owner/name: one project per repo, however it is named. */
+const inFlightRepos = new Set<string>();
 
 /** Writes that can run for minutes: the daemon counts them as busy (the chat turn tracks itself). */
 const longRunning = new Set([
@@ -109,6 +118,28 @@ const longRunning = new Set([
 export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) {
   const lastSandboxRetry = new Map<string, number>();
   const startedAt = d.clock.now();
+  const gh = new GitHubProjects(d.tokens, {
+    now: () => d.clock.now(),
+    ...(d.githubApi ? { api: d.githubApi } : {}),
+    ...(d.githubFetch ? { fetch: d.githubFetch } : {}),
+    ...(d.log ? { log: d.log } : {}),
+  });
+  /** A GitHub failure as the API answers it: a sentence for the owner and a code, never GitHub's own words. */
+  const upstream = (e: unknown, what: string, extra: Record<string, unknown> = {}): Response => {
+    console.error(`[github] ${what}: ${logLine(e)}`);
+    const p = describeGitHubError(e);
+    const res = json(
+      {
+        ...extra,
+        error: p.error,
+        code: p.code,
+        ...(p.retryAfter !== undefined ? { retryAfter: p.retryAfter } : {}),
+      },
+      p.status,
+    );
+    if (p.retryAfter !== undefined) res.headers.set("retry-after", String(p.retryAfter));
+    return res;
+  };
   /** The projects a chat draft for this employee can be filed under: the ones it works on (C12). */
   const projectChoices = (e: Employee): string[] => e.projects ?? d.registry.projects().map((pr) => pr.id);
   const ports = {
@@ -138,6 +169,89 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       );
     }
     return out;
+  };
+
+  /** GitHub's numeric id of a repo the bot can see (from the cached list), or undefined when it can't be told. */
+  const repoIdOf = async (repo: string): Promise<number | undefined> => {
+    if (!gh.configured) return undefined;
+    try {
+      const list = await gh.repos();
+      return list.repos.find((r) => r.fullName.toLowerCase() === repo.toLowerCase())?.id;
+    } catch {
+      return undefined;
+    }
+  };
+
+  /** Records, as projects are read, the GitHub id of those that don't have one (told by name, from the cached list). */
+  const backfillRepoIds = async () => {
+    const missing = d.registry.projects().filter((p) => p.repoId === undefined);
+    if (!missing.length || !gh.configured) return;
+    let repos: { fullName: string; id?: number }[];
+    try {
+      repos = (await gh.repos()).repos;
+    } catch {
+      return;
+    }
+    for (const p of missing) {
+      const id = repos.find((r) => r.fullName.toLowerCase() === p.repo.toLowerCase())?.id;
+      if (id !== undefined) d.registry.addProject({ ...p, repoId: id });
+    }
+  };
+
+  /** The project that already uses this repo: by GitHub's id when both are known (a rename keeps it), and by name. */
+  const projectUsing = (repo: string, repoId: number | undefined, except?: string) =>
+    d.registry
+      .projects()
+      .find(
+        (p) =>
+          p.id !== except &&
+          (p.repo.toLowerCase() === repo.toLowerCase() || (repoId !== undefined && p.repoId === repoId)),
+      );
+
+  /** One line for a ticket in a project's list: how it ended, or where it is. */
+  const ticketLine = (st: TicketState): string => st.outcome ?? st.status;
+
+  /**
+   * A project's status line (C14): how its work reaches main, the checks, its last ticket and how many
+   * pull requests are open. All from our own records, so it costs no GitHub call.
+   */
+  const projectStatus = async (p: Project) => {
+    const mine = d.tickets.all().filter((r) => r.ticket.project === p.id);
+    let openTickets = 0;
+    const openPrs: { ticketId: string; number?: number; url: string }[] = [];
+    for (const r of mine) {
+      const st = await daemon.state(r.ticket.id);
+      if (st.outcome) continue;
+      openTickets++;
+      const url = st.pr?.url;
+      if (st.pr && typeof url === "string" && url.startsWith("https://github.com/")) {
+        openPrs.push({
+          ticketId: r.ticket.id,
+          ...(st.pr.number !== undefined ? { number: st.pr.number } : {}),
+          url,
+        });
+      }
+    }
+    const last = mine[mine.length - 1];
+    const lastTicket = last
+      ? {
+          id: last.ticket.id,
+          title: last.ticket.title,
+          at: last.createdAt,
+          status: ticketLine(await daemon.state(last.ticket.id)),
+        }
+      : null;
+    return {
+      id: p.id,
+      repo: p.repo,
+      repoUrl: isValidRepo(p.repo) ? `https://github.com/${p.repo}` : null,
+      mode: d.registry.projectPolicy(p.id).mode,
+      checks: p.checks,
+      ...(p.defaultBranch ? { defaultBranch: p.defaultBranch } : {}),
+      lastTicket,
+      openTickets,
+      openPrs,
+    };
   };
 
   const pendingReleases = async (): Promise<PendingRelease[]> => {
@@ -606,12 +720,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           defaultBranch?: unknown;
         };
         const checks = Array.isArray(body.checks) ? body.checks : [];
-        if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$/.test(id)) {
-          return json(
-            { error: "a project is named by up to 40 letters, digits, spaces, dots and dashes" },
-            400,
-          );
-        }
+        const idProblem = projectIdProblem(id);
+        if (idProblem && !d.registry.project(id)) return json({ error: idProblem }, 400);
         const normId = id.toLowerCase();
         if (d.registry.projects().some((p) => p.id.toLowerCase() === normId && p.id !== id)) {
           return json({ error: `project ID "${id}" conflicts with an existing project` }, 409);
@@ -621,6 +731,22 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         }
         if (!checks.length || !checks.every((c) => typeof c === "string" && c.trim())) {
           return json({ error: "checks must be the recipe's commands, in order" }, 400);
+        }
+        await backfillRepoIds();
+        const priorProject = d.registry.project(id);
+        const sameRepo = priorProject?.repo.toLowerCase() === body.repo.toLowerCase();
+        const repoId =
+          sameRepo && priorProject?.repoId !== undefined ? priorProject.repoId : await repoIdOf(body.repo);
+        const usedBy = projectUsing(body.repo, repoId, id);
+        if (usedBy) {
+          return json(
+            {
+              error: `${body.repo} is already the project "${usedBy.id}". A repo can be one project only.`,
+              code: "in-use",
+              project: usedBy.id,
+            },
+            409,
+          );
         }
         if (body.mode !== undefined && body.mode !== "direct" && body.mode !== "owner-merges") {
           return json({ error: 'mode is "direct" or "owner-merges"' }, 400);
@@ -659,6 +785,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           ...(perDay !== undefined ? { followUpsPerDay: perDay as number } : {}),
           ...(body.autoRelease !== undefined ? { autoRelease: body.autoRelease } : {}),
           ...(defaultBranch ? { defaultBranch } : {}),
+          ...(repoId !== undefined ? { repoId } : {}),
         });
         return json({ project: d.registry.project(id), policy: d.registry.projectPolicy(id) });
       },
@@ -676,17 +803,95 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
 
     [
       "GET",
-      "/api/github/repos",
+      "/api/github/status",
       async () => {
-        if (!d.tokens) return json({ repos: [] });
         try {
-          const registered = d.registry.projects().map((p) => p.repo);
-          const repos = await listInstallationRepos(d.tokens, registered);
-          return json({ repos });
+          return json(await gh.status());
         } catch (e) {
-          console.error(`[github] failed to list repos: ${githubLogMsg(e)}`);
-          const { status, error } = mapUpstreamError(e);
-          return json({ error, repos: [] }, status);
+          return upstream(e, "status failed");
+        }
+      },
+    ],
+
+    [
+      "GET",
+      "/api/github/repos",
+      async (req) => {
+        if (!gh.configured) return json({ repos: [], configured: false });
+        try {
+          const refresh = new URL(req.url).searchParams.get("refresh") === "1";
+          const list = await gh.repos(refresh);
+          await backfillRepoIds();
+          const projects = d.registry.projects();
+          const ids = projects.flatMap((p) => (p.repoId === undefined ? [] : [p.repoId]));
+          return json({
+            configured: true,
+            repos: markRegistered(
+              list.repos,
+              projects.map((p) => p.repo),
+              ids,
+            ),
+            fetchedAt: list.fetchedAt,
+            ...(list.warning ? { warning: list.warning } : {}),
+            ...(list.throttled ? { throttled: true } : {}),
+          });
+        } catch (e) {
+          return upstream(e, "failed to list repos", { repos: [] });
+        }
+      },
+    ],
+
+    // Creates an empty repo through the bot. GitHub allows that only in an organization the App is
+    // installed on and with Administration: write; anywhere else this answers 409 with the link for
+    // the owner to create the repo themselves (docs/handoff.md, "Adding or creating a project").
+    [
+      "POST",
+      "/api/github/repos",
+      async (req) => {
+        if (!gh.configured) return json({ error: "GitHub integration is not configured" }, 400);
+        const body = await readObject(req);
+        if (!body) return json({ error: "send a JSON object" }, 400);
+        if (!isValidRepoName(body.name)) {
+          return json(
+            { error: "a repository name is up to 100 letters, digits, dots, dashes and underscores" },
+            400,
+          );
+        }
+        const visibility = body.visibility ?? "private";
+        if (visibility !== "private" && visibility !== "public") {
+          return json({ error: 'visibility is "private" or "public"' }, 400);
+        }
+        if (
+          body.description !== undefined &&
+          (typeof body.description !== "string" || body.description.length > 350)
+        ) {
+          return json({ error: "description is up to 350 characters" }, 400);
+        }
+        try {
+          const repo = await gh.create({
+            name: body.name,
+            visibility,
+            ...(typeof body.description === "string" && body.description.trim()
+              ? { description: body.description.trim() }
+              : {}),
+          });
+          return json({ repo }, 201);
+        } catch (e) {
+          if (e instanceof CannotCreate) {
+            return json(
+              {
+                error: e.create.detail,
+                code: "cannot-create",
+                reason: e.create.reason,
+                manualUrl: newRepoUrl(body.name, visibility),
+              },
+              409,
+            );
+          }
+          if (e instanceof CreateInProgress) {
+            return json({ error: e.message, code: "in-progress" }, 409);
+          }
+          return upstream(e, "failed to create a repo");
         }
       },
     ],
@@ -695,28 +900,70 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       "GET",
       "/api/github/repos/:owner/:name/inspect",
       async (_req, { owner = "", name = "" }) => {
-        if (!d.tokens) return json({ error: "GitHub integration is not configured" }, 400);
+        if (!gh.configured) return json({ error: "GitHub integration is not configured" }, 400);
         const repo = `${owner}/${name}`;
         if (!isValidRepo(repo)) {
           return json({ error: "invalid repository owner or name" }, 400);
         }
         try {
-          const registered = d.registry.projects().map((p) => p.repo);
-          const repos = await listInstallationRepos(d.tokens, registered);
-          const accessible = repos.some((r) => r.fullName.toLowerCase() === repo.toLowerCase());
-          if (!accessible) {
+          if (!(await gh.canSee(repo))) {
             return json(
-              { error: `repository "${repo}" is not accessible in this GitHub App installation` },
+              {
+                error: `The i.inc bot can't see ${repo}. Give i.inc access to it on GitHub, then refresh.`,
+                code: "not-accessible",
+              },
               403,
             );
           }
-          const result = await inspectRepo(d.tokens, owner, name);
-          return json(result);
+          return json(await inspectRepo(gh.source, owner, name, gh.fetchDeps));
         } catch (e) {
-          console.error(`[github] failed to inspect repo: ${githubLogMsg(e)}`);
-          const { status, error } = mapUpstreamError(e);
-          return json({ error }, status);
+          return upstream(e, "failed to inspect a repo");
         }
+      },
+    ],
+
+    // Every project with a status line: mode, checks, the last ticket and how many pull requests are open.
+    // The counts come from our own tickets (no GitHub call), so the list is cheap to reload.
+    [
+      "GET",
+      "/api/project-overview",
+      async () => {
+        await backfillRepoIds();
+        const out = [];
+        for (const p of d.registry.projects()) out.push(await projectStatus(p));
+        return json({ projects: out });
+      },
+    ],
+
+    [
+      "GET",
+      "/api/projects/:id",
+      async (_req, { id = "" }) => {
+        await backfillRepoIds();
+        const p = d.registry.project(id);
+        if (!p) return json({ error: "no such project" }, 404);
+        const status = await projectStatus(p);
+        const recent = [...d.tickets.all()]
+          .filter((r) => r.ticket.project === p.id)
+          .reverse()
+          .slice(0, 8);
+        const tickets = [];
+        for (const r of recent) {
+          const st = await daemon.state(r.ticket.id);
+          tickets.push({
+            id: r.ticket.id,
+            title: r.ticket.title,
+            type: r.ticket.type,
+            at: r.createdAt,
+            status: ticketLine(st),
+          });
+        }
+        const releases = d.registry
+          .releases()
+          .filter((r) => r.project === p.id)
+          .sort((a, b) => b.at - a.at)
+          .slice(0, 5);
+        return json({ project: p, policy: d.registry.projectPolicy(p.id), ...status, tickets, releases });
       },
     ],
 
@@ -724,12 +971,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       "POST",
       "/api/projects/:id/bootstrap",
       async (req, { id = "" }) => {
-        if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$/.test(id)) {
-          return json(
-            { error: "a project is named by up to 40 letters, digits, spaces, dots and dashes" },
-            400,
-          );
-        }
+        const idProblem = projectIdProblem(id);
+        if (idProblem) return json({ error: idProblem }, 400);
 
         const normalizedId = id.trim().toLowerCase();
         if (
@@ -740,6 +983,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         }
 
         inFlightBootstraps.add(normalizedId);
+        let repoKey: string | null = null;
+        let idKey: string | null = null;
         try {
           const body = (await req.json().catch(() => ({}))) as {
             repo?: unknown;
@@ -758,6 +1003,45 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
             return json({ error: "repo must be valid owner/name on GitHub" }, 400);
           }
           const repo = body.repo;
+          // One project per repo, whatever the project is called and however the repo's case is written.
+          const using = projectUsing(repo, undefined);
+          if (using || inFlightRepos.has(repo.toLowerCase())) {
+            return json(
+              {
+                error: using
+                  ? `${repo} is already the project "${using.id}". A repo can be one project only.`
+                  : `${repo} is being added right now. Wait for that to finish.`,
+                code: "in-use",
+                ...(using ? { project: using.id } : {}),
+              },
+              409,
+            );
+          }
+          repoKey = repo.toLowerCase();
+          inFlightRepos.add(repoKey);
+
+          // The same repo under a new name (renamed or transferred on GitHub) is told by GitHub's id.
+          await backfillRepoIds();
+          const repoId = await repoIdOf(repo);
+          if (repoId !== undefined) {
+            const idLock = `#${repoId}`;
+            const sameById = projectUsing(repo, repoId);
+            if (sameById || inFlightRepos.has(idLock)) {
+              // Not ours: leave idKey unset, so this request's finally can't release the other one's lock.
+              return json(
+                {
+                  error: sameById
+                    ? `${repo} is already the project "${sameById.id}" (as ${sameById.repo}). A repo can be one project only.`
+                    : `${repo} is being added right now. Wait for that to finish.`,
+                  code: "in-use",
+                  ...(sameById ? { project: sameById.id } : {}),
+                },
+                409,
+              );
+            }
+            inFlightRepos.add(idLock);
+            idKey = idLock;
+          }
 
           if (body.mode !== undefined && body.mode !== "direct" && body.mode !== "owner-merges") {
             return json({ error: 'mode must be "direct" or "owner-merges"' }, 400);
@@ -804,30 +1088,23 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
             }
           }
 
-          if (body.template !== undefined) {
-            const validTemplates = ["ts-node", "web", "python", "minimal"];
-            if (typeof body.template !== "string" || !validTemplates.includes(body.template)) {
-              return json({ error: `template must be one of: ${validTemplates.join(", ")}` }, 400);
-            }
+          if (body.template !== undefined && !isTemplate(body.template)) {
+            return json({ error: `template must be one of: ${TEMPLATES.join(", ")}` }, 400);
           }
 
-          if (d.tokens) {
+          if (gh.configured) {
             try {
-              const registered = d.registry.projects().map((p) => p.repo);
-              const repos = await listInstallationRepos(d.tokens, registered);
-              const accessible = repos.some((r) => r.fullName.toLowerCase() === repo.toLowerCase());
-              if (!accessible) {
+              if (!(await gh.canSee(repo))) {
                 return json(
-                  { error: `repository "${repo}" is not accessible in this GitHub App installation` },
+                  {
+                    error: `The i.inc bot can't see ${repo}. Give i.inc access to it on GitHub, then try again.`,
+                    code: "not-accessible",
+                  },
                   403,
                 );
               }
             } catch (e) {
-              console.error(
-                `[github] failed to verify repo accessibility before bootstrap: ${githubLogMsg(e)}`,
-              );
-              const { status, error } = mapUpstreamError(e);
-              return json({ error }, status);
+              return upstream(e, "failed to check access before bootstrap");
             }
           }
 
@@ -835,48 +1112,63 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           let commits = 0;
           const force = body.force === true;
 
-          if (body.template && typeof body.template === "string") {
-            const validTemplates = ["ts-node", "web", "python", "minimal"];
-            if (!validTemplates.includes(body.template)) {
-              return json({ error: `template must be one of: ${validTemplates.join(", ")}` }, 400);
-            }
-            if (!d.tokens) {
+          if (isTemplate(body.template)) {
+            if (!gh.configured) {
               return json({ error: "GitHub integration is required to bootstrap starter files" }, 400);
             }
 
             const [owner = "", name = ""] = repo.split("/");
             try {
-              const inspect = await inspectRepo(d.tokens, owner, name);
+              const inspect = await inspectRepo(gh.source, owner, name, gh.fetchDeps);
               if (!inspect.empty && !force) {
                 return json(
                   {
                     error:
-                      "repository is not empty (already contains commits from a previous or partial bootstrap); pass force: true to resume",
+                      "This repository already has files, so i.inc won't write a starter into it. Add it as an existing repo instead, or pick another name.",
+                    code: "not-empty",
                     empty: false,
-                    resumable: true,
                   },
                   409,
                 );
               }
             } catch (e) {
-              console.error(`[github] failed to inspect repo before bootstrap: ${githubLogMsg(e)}`);
-              const { status, error } = mapUpstreamError(e);
-              return json({ error }, status);
+              return upstream(e, "failed to inspect before bootstrap");
             }
 
+            // Only a carry-on needs to know who the bot is: it may continue from commits the bot wrote.
+            const botLogin = force ? await gh.botLogin() : undefined;
             try {
-              const res = await bootstrapRepo(d.tokens, {
-                repo,
-                template: body.template as "ts-node" | "web" | "python" | "minimal",
-                ...(typeof body.description === "string" ? { description: body.description } : {}),
-                ...(typeof body.defaultBranch === "string" ? { defaultBranch: body.defaultBranch } : {}),
-              });
+              const res = await bootstrapRepo(
+                gh.source,
+                {
+                  repo,
+                  template: body.template,
+                  ...(typeof body.description === "string" ? { description: body.description } : {}),
+                  ...(typeof body.defaultBranch === "string" ? { defaultBranch: body.defaultBranch } : {}),
+                  ...(force ? { force: true } : {}),
+                  ...(botLogin ? { botLogin } : {}),
+                },
+                gh.fetchDeps,
+              );
               bootstrapped = res.bootstrapped;
               commits = res.commits;
+              gh.invalidate();
             } catch (e) {
-              console.error(`[github] failed to bootstrap repo: ${githubLogMsg(e)}`);
-              const { status } = mapUpstreamError(e);
-              return json({ error: "failed to bootstrap starter files in repository" }, status);
+              gh.invalidate();
+              if (e instanceof NotEmptyError) {
+                return json(
+                  {
+                    error: e.message,
+                    code: "not-empty",
+                    empty: false,
+                    ...((e.written ?? 0) > 0 ? { resumable: true } : {}),
+                  },
+                  409,
+                );
+              }
+              // Some files may be in already, if this run wrote any: running it again (confirmed) carries on.
+              const wrote = e instanceof UpstreamGitHubError && (e.written ?? 0) > 0;
+              return upstream(e, "failed to bootstrap", wrote ? { resumable: true } : {});
             }
           }
 
@@ -910,6 +1202,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
             protectedPaths,
             autoRelease: body.autoRelease === true,
             ...(defaultBranch ? { defaultBranch } : {}),
+            ...(repoId !== undefined ? { repoId } : {}),
           });
 
           if (Array.isArray(body.employees)) {
@@ -930,6 +1223,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           return json({ project: d.registry.project(id), bootstrapped, commits }, 201);
         } finally {
           inFlightBootstraps.delete(normalizedId);
+          if (repoKey) inFlightRepos.delete(repoKey);
+          if (idKey) inFlightRepos.delete(idKey);
         }
       },
     ],

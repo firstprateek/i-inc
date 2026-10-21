@@ -2,6 +2,7 @@
 // Kept apart from api.ts so the views that share that file don't collide with these.
 import type { AccountCost } from "@i-inc/core";
 import { call } from "./api.ts";
+import { ghCall } from "./github-projects.ts";
 import type { Engine } from "./providers.ts";
 
 export type { Harness } from "./providers.ts";
@@ -117,11 +118,11 @@ export const setupApi = {
   projects: () => call<{ projects: Project[] }>("GET", "/api/projects").then((r) => r.projects),
   saveProject: (id: string, body: ProjectBody) => call("PUT", `/api/projects/${enc(id)}`, body),
   deleteProject: (id: string) => call<{ ok: boolean }>("DELETE", `/api/projects/${enc(id)}`),
-  githubRepos: () => call<{ repos: GitHubRepoSummary[] }>("GET", "/api/github/repos").then((r) => r.repos),
+  githubRepos: () => ghCall<{ repos: GitHubRepoSummary[] }>("GET", "/api/github/repos").then((r) => r.repos),
   inspectRepo: (owner: string, name: string) =>
-    call<GitHubInspectResult>("GET", `/api/github/repos/${enc(owner)}/${enc(name)}/inspect`),
+    ghCall<GitHubInspectResult>("GET", `/api/github/repos/${enc(owner)}/${enc(name)}/inspect`),
   bootstrapProject: (id: string, body: BootstrapProjectBody) =>
-    call<{ project: Project; bootstrapped: boolean; commits: number }>(
+    ghCall<{ project: Project; bootstrapped: boolean; commits: number }>(
       "POST",
       `/api/projects/${enc(id)}/bootstrap`,
       body,

@@ -1,648 +1,320 @@
-// Setup > Projects: how each project's work reaches main, and the checks it must pass.
-import type { Employee } from "@i-inc/core";
+// Company → Projects (T62): every project with a status line, the repos the bot can see but that aren't
+// projects yet (each with "Add"), and the way to give the bot more repos. Adding and creating are
+// project-flow.ts; one project's page is project-page.ts.
 import { css, html } from "lit";
-import { api, refreshNow } from "../api.ts";
 import {
-  type BootstrapProjectBody,
-  GITHUB_MANAGE_URL,
-  type GitHubInspectResult,
+  ADD_PROJECT_HREF,
+  addRepoHref,
+  ago,
+  draftStore,
   type GitHubRepoSummary,
-  type MergeMode,
-  type Project,
-  policyDefaults,
-  setupApi,
-} from "../setup-api.ts";
-import { listEditor, message, type Note, noteLine, setupStyles } from "../setup-shared.ts";
+  type GitHubStatus,
+  NEW_PROJECT_HREF,
+  type NewProjectDraft,
+  type ProjectStatus,
+  problemText,
+  projectHref,
+  projectsApi,
+} from "../github-projects.ts";
+import { GITHUB_INSTALL_URL, GITHUB_MANAGE_URL } from "../setup-api.ts";
 import { Loader } from "./loader.ts";
+import { problemBox, projectStyles } from "./project-parts.ts";
 import { base } from "./shared.ts";
 
-interface Draft {
-  repo: string;
-  mode: MergeMode;
-  protectedPaths: string[];
-  followUpsPerDay: string;
-  checks: string[];
-  autoRelease: boolean;
-  defaultBranch?: string | undefined;
+interface ListData {
+  projects: ProjectStatus[];
+  status: GitHubStatus | null;
+  statusError: unknown;
+  repos: GitHubRepoSummary[] | null;
+  reposError: unknown;
+  warning: string | null;
+  draft: NewProjectDraft | null;
 }
 
-const fromProject = (p: Project): Draft => ({
-  repo: p.repo,
-  mode: p.mode ?? policyDefaults.mode,
-  protectedPaths: [...(p.protectedPaths ?? policyDefaults.protectedPaths)],
-  followUpsPerDay: String(p.followUpsPerDay ?? policyDefaults.followUpsPerDay),
-  checks: [...p.checks],
-  autoRelease: p.autoRelease ?? policyDefaults.autoRelease,
-  ...(p.defaultBranch ? { defaultBranch: p.defaultBranch } : {}),
-});
+/** More repos than this get a filter box. */
+const FILTER_FROM = 8;
 
-export class IncSetupProjects extends Loader<Project[]> {
+export class IncSetupProjects extends Loader<ListData> {
   static override properties = {
     ...Loader.properties,
-    drafts: { state: true },
-    notes: { state: true },
-    busy: { state: true },
-    open: { state: true },
-    showAdd: { state: true },
-    addTab: { state: true },
-    githubRepos: { state: true },
-    loadingRepos: { state: true },
-    reposError: { state: true },
-    repoFilter: { state: true },
-    inspecting: { state: true },
-    inspectError: { state: true },
-    detectedInfo: { state: true },
-    newProjectId: { state: true },
-    newProjectRepo: { state: true },
-    newProjectMode: { state: true },
-    newProjectTemplate: { state: true },
-    newProjectDesc: { state: true },
-    newProjectChecks: { state: true },
-    newProjectEmployees: { state: true },
-    newProjectDefaultBranch: { state: true },
-    addNote: { state: true },
-    allEmployees: { state: true },
+    filter: { state: true },
+    refreshing: { state: true },
+    refreshNote: { state: true },
   };
-  declare drafts: Record<string, Draft>;
-  declare notes: Record<string, Note>;
-  declare busy: string | null;
-  /** The one project whose editor is open; undefined until the first load decides. */
-  declare open: string | null | undefined;
-  declare showAdd: boolean;
-  declare addTab: "import" | "bootstrap";
-  declare githubRepos: GitHubRepoSummary[] | null;
-  declare loadingRepos: boolean;
-  declare reposError: string | null;
-  declare repoFilter: string;
-  declare inspecting: boolean;
-  declare inspectError: string | null;
-  declare detectedInfo: string | null;
-  declare newProjectId: string;
-  declare newProjectRepo: string;
-  declare newProjectMode: MergeMode;
-  declare newProjectTemplate: "ts-node" | "web" | "python" | "minimal";
-  declare newProjectDesc: string;
-  declare newProjectChecks: string[];
-  declare newProjectEmployees: string[];
-  declare newProjectDefaultBranch: string;
-  declare addNote: Note | undefined;
-  declare allEmployees: Employee[];
+  declare filter: string;
+  declare refreshing: boolean;
+  declare refreshNote: { ok: boolean; text: string } | null;
 
   constructor() {
     super();
-    this.drafts = {};
-    this.notes = {};
-    this.busy = null;
-    this.open = undefined;
-    this.showAdd = false;
-    this.addTab = "import";
-    this.githubRepos = null;
-    this.loadingRepos = false;
-    this.reposError = null;
-    this.repoFilter = "";
-    this.inspecting = false;
-    this.inspectError = null;
-    this.detectedInfo = null;
-    this.newProjectId = "";
-    this.newProjectRepo = "";
-    this.newProjectMode = "direct";
-    this.newProjectTemplate = "ts-node";
-    this.newProjectDesc = "";
-    this.newProjectChecks = ["pnpm install", "pnpm test"];
-    this.newProjectEmployees = [];
-    this.newProjectDefaultBranch = "main";
-    this.addNote = undefined;
-    this.allEmployees = [];
+    this.filter = "";
+    this.refreshing = false;
+    this.refreshNote = null;
   }
 
-  protected fetch = async () => {
-    const [projects, employees] = await Promise.all([setupApi.projects(), api.employees().catch(() => [])]);
-    this.allEmployees = employees;
-    // On a wide screen the first project starts open; on a phone every row starts closed.
-    if (this.open === undefined) {
-      this.open = matchMedia("(min-width: 901px)").matches ? (projects[0]?.id ?? null) : null;
-    }
-    return projects;
+  protected fetch = async (): Promise<ListData> => {
+    const [projects, status, repos] = await Promise.all([
+      projectsApi.overview(),
+      projectsApi.status().then(
+        (s) => ({ s }),
+        (e: unknown) => ({ e }),
+      ),
+      projectsApi.repos().then(
+        (r) => ({ r }),
+        (e: unknown) => ({ e }),
+      ),
+    ]);
+    return {
+      projects,
+      status: "s" in status ? status.s : null,
+      statusError: "e" in status ? status.e : null,
+      repos: "r" in repos ? repos.r.repos : null,
+      reposError: "e" in repos ? repos.e : null,
+      warning: "r" in repos && repos.r.warning ? repos.r.warning.error : null,
+      draft: draftStore.read(),
+    };
   };
 
   static override styles = [
     base,
-    setupStyles,
+    projectStyles,
     css`
-      .top-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
-      .more-repos { display: inline-flex; align-items: center; min-height: 44px; font-weight: 600; font-size: 15px; }
-      .card.row { display: flex; flex-direction: column; align-items: stretch; padding: 0; gap: 0; }
-      .toggle { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 10px; width: 100%; min-height: 64px;
-        padding: 10px 20px; cursor: pointer; }
-      .toggle:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: -3px; border-radius: var(--radius); }
-      .toggle .text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
-      .toggle b { font-family: var(--display); font-size: 20px; overflow-wrap: anywhere; }
-      .toggle .sub { font-family: var(--mono); font-size: 13px; }
-      .toggle .caret { width: 10px; height: 10px; border-right: 2px solid var(--ink-2); border-bottom: 2px solid var(--ink-2);
-        transform: rotate(45deg); flex-shrink: 0; margin: 0 4px 4px 0; }
-      .toggle[aria-expanded="true"] .caret { transform: rotate(-135deg); margin: 4px 4px 0 0; }
-      .editor { display: flex; flex-direction: column; gap: 14px; padding: 4px 20px 18px; border-top: 1px solid var(--line); padding-top: 16px; }
-      .add-card { border: 2px solid var(--reviewing-mark); padding: 18px 20px; border-radius: var(--radius); background: var(--surface); display: flex; flex-direction: column; gap: 14px; margin-bottom: 16px; }
-      .add-header { display: flex; justify-content: space-between; align-items: center; }
-      .add-header h2 { margin: 0; font-size: 18px; }
-      .repo-list { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--line); border-radius: 8px; padding: 6px; background: var(--ground); }
-      .repo-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border-radius: 6px; background: var(--surface); }
-      .repo-item.selected { border: 2px solid var(--reviewing-mark); }
-      .repo-name { font-weight: 700; font-size: 13px; font-family: var(--mono); overflow-wrap: anywhere; }
-      .repo-meta { display: flex; gap: 6px; align-items: center; font-size: 11px; flex-wrap: wrap; }
-      .add-card input[type="search"] { min-height: 44px; font-size: 16px; }
-      .template-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
-      .template-btn { border: 1px solid var(--line); border-radius: 8px; padding: 8px; background: var(--surface); cursor: pointer; text-align: left; display: flex; flex-direction: column; gap: 2px; }
-      .template-btn[aria-pressed="true"] { border-color: var(--reviewing-mark); background: var(--reviewing-bg); color: var(--reviewing-fg); }
-      .template-btn[aria-pressed="true"] .template-desc { color: inherit; opacity: 0.85; }
-      .template-title { font-weight: 700; font-size: 13px; }
-      .template-desc { font-size: 11px; color: var(--ink-2); }
-      .employee-grid { display: flex; flex-wrap: wrap; gap: 8px; }
-      .employee-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; padding: 4px 10px; border-radius: 6px; background: var(--sunken); cursor: pointer; }
-      .btn.danger { color: var(--alarm-fg); border-color: var(--alarm-fg); }
+      .conn { gap: 8px; }
+      .conn .line { font-size: 15px; line-height: 1.45; }
+      .project { gap: 10px; }
+      .project h3 { margin: 0; }
+      .project h3 a { text-decoration: none; display: inline-flex; align-items: center; min-height: 44px; }
+      .project h3 a:hover { text-decoration: underline; }
+      .p-head { display: flex; align-items: center; gap: 4px 14px; flex-wrap: wrap; min-width: 0; }
+      .p-head .repo { font-family: var(--mono); font-size: 13px; color: var(--ink-2); overflow-wrap: anywhere; display: inline-flex; align-items: center; min-height: 44px; }
+      dl.facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; margin: 0; font-size: 14px; align-items: baseline; }
+      dl.facts dt { color: var(--ink-2); font-weight: 600; }
+      dl.facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+      dl.facts code { background: var(--sunken); padding: 1px 6px; border-radius: 6px; margin-right: 4px; display: inline-block; }
+      dl.facts a { color: var(--ink); display: inline-flex; align-items: center; min-height: 44px; }
+      .teach h3 { margin-bottom: 2px; }
+      .teach ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; line-height: 1.4; }
+      .repo-row { display: flex; align-items: center; gap: 10px 14px; padding: 10px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+      .repo-row:first-of-type { border-top: 0; }
+      .repo-info { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+      .repo-info .name { font-family: var(--mono); font-size: 14px; font-weight: 700; overflow-wrap: anywhere; }
+      .repo-info .meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 13px; color: var(--ink-2); }
+      .repo-info .desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+      .warn-repo { color: var(--needs-fg); font-weight: 600; }
       @media (max-width: 560px) {
-        .toggle { padding: 10px 16px; }
-        .editor { padding: 16px 16px 16px; }
-        .add-card { padding: 14px; }
+        dl.facts { grid-template-columns: minmax(0, 1fr); gap: 0; }
+        dl.facts dd { margin-bottom: 8px; }
       }
     `,
   ];
 
-  private draft(p: Project): Draft {
-    return this.drafts[p.id] ?? fromProject(p);
-  }
-
-  private dirty(p: Project): boolean {
-    const d = this.drafts[p.id];
-    return !!d && JSON.stringify(d) !== JSON.stringify(fromProject(p));
-  }
-
-  private edit(p: Project, patch: Partial<Draft>) {
-    this.drafts = { ...this.drafts, [p.id]: { ...this.draft(p), ...patch } };
-    const { [p.id]: _gone, ...rest } = this.notes;
-    this.notes = rest;
-  }
-
-  private async toggleAdd() {
-    this.showAdd = !this.showAdd;
-    if (this.showAdd && this.githubRepos === null) {
-      this.loadingRepos = true;
-      this.reposError = null;
-      try {
-        this.githubRepos = await setupApi.githubRepos();
-      } catch (e) {
-        this.reposError = message(e);
-        this.githubRepos = [];
-      } finally {
-        this.loadingRepos = false;
-      }
-    }
-  }
-
-  private async selectGithubRepo(r: GitHubRepoSummary) {
-    this.newProjectRepo = r.fullName;
-    this.newProjectId = r.name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "");
-    if (r.defaultBranch) this.newProjectDefaultBranch = r.defaultBranch;
-    this.inspecting = true;
-    this.inspectError = null;
+  private async refreshRepos() {
+    this.refreshing = true;
+    this.refreshNote = null;
     try {
-      const inspect: GitHubInspectResult = await setupApi.inspectRepo(r.owner, r.name);
-      this.newProjectChecks = inspect.checks;
-      if (inspect.defaultBranch) this.newProjectDefaultBranch = inspect.defaultBranch;
-      this.detectedInfo = `Detected: ${inspect.detected}${inspect.empty ? " (empty repo)" : ""}`;
-    } catch (e) {
-      this.inspectError = message(e);
-      this.newProjectChecks = ["pnpm install", "pnpm test"];
-    } finally {
-      this.inspecting = false;
-    }
-  }
-
-  private async submitAddProject() {
-    const id = this.newProjectId.trim();
-    const repo = this.newProjectRepo.trim();
-    if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$/.test(id)) {
-      this.addNote = {
-        ok: false,
-        text: "A project is named by up to 40 letters, digits, spaces, dots and dashes.",
-      };
-      return;
-    }
-    if (!/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
-      this.addNote = { ok: false, text: "The repo must be owner/name on GitHub." };
-      return;
-    }
-
-    this.busy = "add";
-    try {
-      if (this.addTab === "import") {
-        await setupApi.bootstrapProject(id, {
-          repo,
-          checks: this.newProjectChecks.filter((c) => c.trim()),
-          mode: this.newProjectMode,
-          protectedPaths: [".github/"],
-          autoRelease: false,
-          ...(this.newProjectDefaultBranch ? { defaultBranch: this.newProjectDefaultBranch } : {}),
-          ...(this.newProjectEmployees.length ? { employees: this.newProjectEmployees } : {}),
-        });
-      } else {
-        if (
-          !confirm(
-            `Initialize starter files for template "${this.newProjectTemplate}" into repository "${repo}"?`,
-          )
-        ) {
-          this.busy = null;
-          return;
-        }
-        let force = false;
-        if (this.detectedInfo && !this.detectedInfo.includes("empty repo")) {
-          if (!confirm(`Repository "${repo}" is not empty. Overwrite and commit starter template anyway?`)) {
-            this.busy = null;
-            return;
-          }
-          force = true;
-        }
-
-        const body: BootstrapProjectBody = {
-          repo,
-          mode: this.newProjectMode,
-          template: this.newProjectTemplate,
-          ...(force ? { force: true } : {}),
-          ...(this.newProjectDesc.trim() ? { description: this.newProjectDesc.trim() } : {}),
-          ...(this.newProjectDefaultBranch ? { defaultBranch: this.newProjectDefaultBranch } : {}),
-          ...(this.newProjectEmployees.length ? { employees: this.newProjectEmployees } : {}),
-          checks: this.newProjectChecks,
-          protectedPaths: [".github/"],
+      const list = await projectsApi.repos(true);
+      const data = this.data;
+      if (data) {
+        this.data = {
+          ...data,
+          repos: list.repos,
+          reposError: null,
+          warning: list.warning?.error ?? null,
         };
-
-        try {
-          await setupApi.bootstrapProject(id, body);
-        } catch (e) {
-          const msg = message(e);
-          if (msg.includes("not empty") && !force) {
-            if (confirm(`Repository "${repo}" is not empty. Overwrite and commit starter template anyway?`)) {
-              await setupApi.bootstrapProject(id, { ...body, force: true });
-            } else {
-              this.addNote = { ok: false, text: msg };
-              return;
-            }
-          } else {
-            throw e;
-          }
-        }
       }
-
-      this.showAdd = false;
-      this.open = id;
-      this.addNote = undefined;
-      await this.reload();
-      refreshNow();
+      const n = list.repos.filter((r) => !r.alreadyRegistered).length;
+      this.refreshNote = list.throttled
+        ? {
+            ok: true,
+            text: "That list is only a moment old: i.inc asks GitHub at most every few seconds. Try again shortly.",
+          }
+        : { ok: true, text: `Updated: ${n} ${n === 1 ? "repo" : "repos"} to add.` };
     } catch (e) {
-      this.addNote = { ok: false, text: message(e) };
+      this.refreshNote = { ok: false, text: problemText(e) };
     } finally {
-      this.busy = null;
+      this.refreshing = false;
     }
   }
 
-  private async deleteProject(id: string) {
-    if (!confirm(`Are you sure you want to delete project ${id}?`)) return;
-    this.busy = id;
-    try {
-      await setupApi.deleteProject(id);
-      if (this.open === id) this.open = null;
-      await this.reload();
-      refreshNow();
-    } catch (e) {
-      this.notes = { ...this.notes, [id]: { ok: false, text: message(e) } };
-    } finally {
-      this.busy = null;
+  private connection(d: ListData) {
+    const manage = d.status?.links.manage ?? GITHUB_MANAGE_URL;
+    const install = d.status?.links.install ?? GITHUB_INSTALL_URL;
+    const inst = d.status?.installation;
+    const seen = d.repos?.length;
+    let line: unknown;
+    if (d.status && !d.status.configured) {
+      line = html`<span>The GitHub App isn't set up, so i.inc can't see any repos yet. Install the bot, and follow <code>docs/github-app.md</code> on the Mac mini.</span>`;
+    } else if (d.reposError) {
+      line = "";
+    } else if (inst?.account) {
+      line = html`<span>The i.inc bot is installed on <b>${inst.account}</b>${
+        inst.accountType === "Organization"
+          ? " (an organization)"
+          : inst.accountType === "User"
+            ? " (a personal account)"
+            : ""
+      } and can see ${seen === undefined ? "some" : seen} ${seen === 1 ? "repo" : "repos"}.</span>`;
+    } else if (seen !== undefined) {
+      line = html`<span>The i.inc bot can see ${seen} ${seen === 1 ? "repo" : "repos"}.</span>`;
     }
-  }
-
-  private async save(p: Project) {
-    const d = this.draft(p);
-    const checks = d.checks.map((c) => c.trim()).filter(Boolean);
-    const perDay = Number(d.followUpsPerDay);
-    const fail = (text: string) => {
-      this.notes = { ...this.notes, [p.id]: { ok: false, text } };
-    };
-    if (!/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(d.repo.trim()))
-      return fail("The repo is owner/name on GitHub.");
-    if (!checks.length) return fail("The recipe needs at least one command.");
-    if (!Number.isInteger(perDay) || perDay < 0) return fail("Follow-ups per day is a whole number.");
-    this.busy = p.id;
-    try {
-      await setupApi.saveProject(p.id, {
-        repo: d.repo.trim(),
-        checks,
-        mode: d.mode,
-        protectedPaths: d.protectedPaths.map((x) => x.trim()).filter(Boolean),
-        followUpsPerDay: perDay,
-        autoRelease: d.autoRelease,
-        ...(d.defaultBranch ? { defaultBranch: d.defaultBranch } : {}),
-      });
-      const { [p.id]: _gone, ...rest } = this.drafts;
-      this.drafts = rest;
-      this.notes = { ...this.notes, [p.id]: { ok: true, text: "Saved" } };
-      await this.reload();
-      refreshNow();
-    } catch (e) {
-      fail(message(e));
-    } finally {
-      this.busy = null;
-    }
-  }
-
-  private card(p: Project) {
-    const d = this.draft(p);
-    const modeBtn = (m: MergeMode, label: string) =>
-      html`<button type="button" aria-pressed=${d.mode === m ? "true" : "false"} @click=${() => this.edit(p, { mode: m })}>${label}</button>`;
-    const open = this.open === p.id;
-    const modeName = d.mode === "direct" ? "Direct" : "Owner merges";
-    return html`<section class="card row" aria-label=${p.id}>
-      <button class="toggle" type="button" aria-expanded=${open ? "true" : "false"} aria-controls="editor-${p.id}"
-        @click=${() => {
-          this.open = open ? null : p.id;
-        }}>
-        <span class="text"><b>${p.id}</b><span class="sub">${d.repo}</span></span>
-        ${this.dirty(p) ? html`<span class="tag">Unsaved</span>` : ""}
-        <span class="chip ${d.mode === "direct" ? "" : "reviewing"}">${modeName}</span>
-        <span class="caret" aria-hidden="true"></span>
-      </button>
-      ${open ? this.editor(p, d, modeBtn) : ""}
+    return html`<section class="card conn" aria-label="GitHub access">
+      ${line ? html`<p class="line">${line}</p>` : ""}
+      ${d.reposError ? problemBox(d.reposError, html`<div class="row"><button class="btn ghost" type="button" @click=${() => this.reload()}>Try again</button></div>`) : ""}
+      ${d.warning ? html`<p class="callout needs" role="status">${d.warning} The list below is from a little while ago.</p>` : ""}
+      ${d.statusError && !d.reposError ? problemBox(d.statusError) : ""}
+      <div class="row">
+        <a class="link" href=${manage} target="_blank" rel="noopener noreferrer">Give i.inc access to more repos<span class="muted" aria-hidden="true">&nbsp;↗</span><span class="sr"> (opens GitHub)</span></a>
+        ${
+          d.status && !d.status.configured
+            ? html`<a class="link" href=${install} target="_blank" rel="noopener noreferrer">Install the bot on GitHub<span aria-hidden="true">&nbsp;↗</span></a>`
+            : ""
+        }
+        <span class="spacer"></span>
+        <button class="btn ghost" type="button" ?disabled=${this.refreshing} @click=${() => this.refreshRepos()}>
+          ${this.refreshing ? "Checking GitHub…" : "Refresh repos"}</button>
+      </div>
+      ${this.refreshNote ? html`<p class=${this.refreshNote.ok ? "hint" : "error-line"} role=${this.refreshNote.ok ? "status" : "alert"}>${this.refreshNote.text}</p>` : ""}
     </section>`;
   }
 
-  private editor(p: Project, d: Draft, modeBtn: (m: MergeMode, label: string) => unknown) {
-    return html`<div class="editor" id="editor-${p.id}">
-      <label>Repo
-        <input type="text" class="mono" .value=${d.repo} autocomplete="off" autocapitalize="off" spellcheck="false"
-          @input=${(e: InputEvent) => this.edit(p, { repo: (e.target as HTMLInputElement).value })} />
-      </label>
-      <div class="field">
-        <span>How work reaches main</span>
-        <div class="seg" role="group" aria-label="Mode">
-          ${modeBtn("direct", "Direct")}${modeBtn("owner-merges", "Owner merges")}
-        </div>
-        <p class="note">${
-          d.mode === "direct"
-            ? "After a fresh-context review, finished work is pushed straight to main."
-            : "Finished work becomes a pull request that you review and merge."
-        }</p>
+  private project(p: ProjectStatus, lost: boolean) {
+    const shown = p.checks.slice(0, 3);
+    const more = p.checks.length - shown.length;
+    return html`<article class="card project" aria-label=${p.id}>
+      <div class="p-head">
+        <h3><a href=${projectHref(p.id)}>${p.id}</a></h3>
+        ${
+          p.repoUrl
+            ? html`<a class="repo" href=${p.repoUrl} target="_blank" rel="noopener noreferrer" aria-label="${p.repo} on GitHub (opens GitHub)">${p.repo}</a>`
+            : html`<span class="repo">${p.repo}</span>`
+        }
       </div>
-      ${listEditor({
-        label: "Protected paths",
-        noun: "path",
-        items: d.protectedPaths,
-        mono: true,
-        placeholder: ".github/",
-        onChange: (protectedPaths) => this.edit(p, { protectedPaths }),
-      })}
-      <p class="note" style="margin-top:-8px">Changes under these paths wait for your OK before they reach main.</p>
-      <label>Follow-ups per day
-        <input type="number" inputmode="numeric" min="0" step="1" .value=${d.followUpsPerDay}
-          @input=${(e: InputEvent) => this.edit(p, { followUpsPerDay: (e.target as HTMLInputElement).value })} />
-      </label>
-      ${listEditor({
-        label: "Check recipe, in order",
-        noun: "command",
-        items: d.checks,
-        ordered: true,
-        mono: true,
-        placeholder: "pnpm test",
-        onChange: (checks) => this.edit(p, { checks }),
-      })}
-      <label class="check"><input type="checkbox" .checked=${d.autoRelease}
-        @change=${(e: Event) => this.edit(p, { autoRelease: (e.target as HTMLInputElement).checked })} /> Cut releases automatically</label>
+      <dl class="facts">
+        <dt>Mode</dt>
+        <dd><span class="chip">${p.mode === "direct" ? "Direct" : "Owner merges"}</span></dd>
+        <dt>Checks</dt>
+        <dd>${
+          shown.length
+            ? html`${shown.map((c) => html`<code>${c}</code>`)}${more > 0 ? html`<span class="muted">+${more} more</span>` : ""}`
+            : html`<span class="muted">None yet</span>`
+        }</dd>
+        <dt>Last ticket</dt>
+        <dd>${
+          p.lastTicket
+            ? html`<a href="#/ticket/${encodeURIComponent(p.lastTicket.id)}">#${p.lastTicket.id} ${p.lastTicket.title}</a>
+                <span class="muted">· ${p.lastTicket.status} · ${ago(p.lastTicket.at)}</span>`
+            : html`<span class="muted">No tickets yet</span>`
+        }</dd>
+        ${
+          p.openPrs.length
+            ? html`<dt>Open PRs</dt>
+              <dd>${p.openPrs.slice(0, 4).map((pr, i) => html`${i ? ", " : ""}<a href=${pr.url} target="_blank" rel="noopener noreferrer">${pr.number ? `#${pr.number}` : `ticket #${pr.ticketId}`}</a>`)}${p.openPrs.length > 4 ? html` <span class="muted">+${p.openPrs.length - 4} more</span>` : ""}</dd>`
+            : ""
+        }
+      </dl>
+      ${lost ? html`<p class="warn-repo small" role="status">The bot can't see this repo any more. Give i.inc access to it, then refresh.</p>` : ""}
       <div class="actions">
-        <button class="btn" type="button" ?disabled=${!this.dirty(p) || this.busy === p.id} @click=${() => this.save(p)}>
-          ${this.busy === p.id ? "Saving…" : "Save"}</button>
-        <button class="btn ghost danger" type="button" ?disabled=${this.busy === p.id} @click=${() => this.deleteProject(p.id)}>
-          Delete project</button>
-        ${noteLine(this.notes[p.id])}
+        <a class="btn ghost" href=${projectHref(p.id)} aria-label="Open ${p.id}">Open</a>
       </div>
-    </div>`;
+    </article>`;
   }
 
-  private renderAddCard() {
-    const repos = (this.githubRepos ?? []).filter((r) =>
-      this.repoFilter ? r.fullName.toLowerCase().includes(this.repoFilter.toLowerCase()) : true,
-    );
-
-    return html`<div class="add-card" role="region" aria-label="Add project">
-      <div class="add-header">
-        <h2>Add a project</h2>
-        <button type="button" class="btn ghost" @click=${() => {
-          this.showAdd = false;
-        }}>Close</button>
-      </div>
-      <div class="seg" role="group" aria-label="Add Mode">
-        <button type="button" aria-pressed=${this.addTab === "import" ? "true" : "false"}
-          @click=${() => {
-            if (this.addTab !== "import") {
-              this.addTab = "import";
-              this.detectedInfo = null;
-              this.addNote = undefined;
-            }
-          }}>Import from GitHub</button>
-        <button type="button" aria-pressed=${this.addTab === "bootstrap" ? "true" : "false"}
-          @click=${() => {
-            if (this.addTab !== "bootstrap") {
-              this.addTab = "bootstrap";
-              this.detectedInfo = null;
-              this.addNote = undefined;
-            }
-          }}>Start new project</button>
-      </div>
-
-      ${
-        this.addTab === "import"
-          ? html`
-            <label>Search GitHub repositories
-              <input type="search" placeholder="Filter by repository name…" .value=${this.repoFilter}
-                @input=${(e: InputEvent) => {
-                  this.repoFilter = (e.target as HTMLInputElement).value;
-                }} />
-            </label>
-            ${
-              this.reposError
-                ? html`<p class="note warn" role="alert" style="margin-top:6px">Unable to load GitHub repositories: ${this.reposError}</p>`
-                : ""
-            }
-            ${
-              this.loadingRepos
-                ? html`<p class="muted">Scanning GitHub App repositories…</p>`
-                : this.reposError
-                  ? ""
-                  : repos.length === 0
-                    ? html`<p class="muted">${this.githubRepos?.length ? "No matching repositories." : "No repositories accessible via GitHub App."}</p>`
-                    : html`<div class="repo-list" role="list">
-                      ${repos.map((r) => {
-                        const selected = this.newProjectRepo === r.fullName;
-                        return html`<div class="repo-item ${selected ? "selected" : ""}" role="listitem">
-                          <div style="display:flex;flex-direction:column;gap:2px;min-width:0;">
-                            <span class="repo-name">${r.fullName}</span>
-                            <div class="repo-meta">
-                              ${r.language ? html`<span class="tag">${r.language}</span>` : ""}
-                              <span class="tag">${r.private ? "Private" : "Public"}</span>
-                              ${r.empty ? html`<span class="tag">Empty</span>` : ""}
-                              ${r.description ? html`<span class="muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px;">${r.description}</span>` : ""}
-                            </div>
-                          </div>
-                          ${
-                            r.alreadyRegistered
-                              ? html`<span class="chip done">Added</span>`
-                              : html`<button type="button" class="btn ghost" @click=${() => this.selectGithubRepo(r)}>Select</button>`
-                          }
-                        </div>`;
-                      })}
-                    </div>`
-            }
-          `
-          : html`
-            <div class="field">
-              <span>Choose starter template</span>
-              <div class="template-grid" role="radiogroup">
-                ${(
-                  [
-                    ["ts-node", "TypeScript + Node", "TypeScript 5 + Vitest test suite"],
-                    ["web", "Web App", "Vite + TypeScript web starter"],
-                    ["python", "Python", "pyproject.toml + pytest suite"],
-                    ["minimal", "Minimal", "README and gitignore only"],
-                  ] as const
-                ).map(
-                  ([id, title, desc]) => html`<button type="button" class="template-btn" role="radio"
-                    aria-pressed=${this.newProjectTemplate === id ? "true" : "false"}
-                    @click=${() => {
-                      this.newProjectTemplate = id;
-                      if (id === "python") this.newProjectChecks = ["pytest"];
-                      else if (id === "minimal") this.newProjectChecks = ["echo ok"];
-                      else if (id === "web")
-                        this.newProjectChecks = ["pnpm install", "pnpm check", "pnpm test", "pnpm build"];
-                      else this.newProjectChecks = ["pnpm install", "pnpm test"];
-                    }}>
-                    <span class="template-title">${title}</span>
-                    <span class="template-desc">${desc}</span>
-                  </button>`,
-                )}
-              </div>
-            </div>
-            <label>Description (optional)
-              <input type="text" placeholder="Short description of this project…" .value=${this.newProjectDesc}
-                @input=${(e: InputEvent) => {
-                  this.newProjectDesc = (e.target as HTMLInputElement).value;
-                }} />
-            </label>
-          `
-      }
-
-      <div class="pair">
-        <label>Project ID
-          <input type="text" placeholder="e.g. duet, i-inc" class="mono" .value=${this.newProjectId}
-            @input=${(e: InputEvent) => {
-              this.newProjectId = (e.target as HTMLInputElement).value;
-            }} />
-        </label>
-        <label>GitHub repository
-          <input type="text" placeholder="owner/repo" class="mono" .value=${this.newProjectRepo}
-            @input=${(e: InputEvent) => {
-              this.newProjectRepo = (e.target as HTMLInputElement).value;
-            }} />
-        </label>
-      </div>
-
-      ${
-        this.inspecting
-          ? html`<p class="muted">Inspecting repository structure and recipe…</p>`
-          : this.detectedInfo
-            ? html`<div class="note ok">${this.detectedInfo}</div>`
-            : this.inspectError
-              ? html`<div class="note bad">${this.inspectError}</div>`
-              : ""
-      }
-
-      <div class="field">
-        <span>How work reaches main</span>
-        <div class="seg" role="group" aria-label="Mode">
-          <button type="button" aria-pressed=${this.newProjectMode === "direct" ? "true" : "false"}
-            @click=${() => {
-              this.newProjectMode = "direct";
-            }}>Direct</button>
-          <button type="button" aria-pressed=${this.newProjectMode === "owner-merges" ? "true" : "false"}
-            @click=${() => {
-              this.newProjectMode = "owner-merges";
-            }}>Owner merges</button>
-        </div>
-      </div>
-
-      ${listEditor({
-        label: "Check recipe, in order",
-        noun: "command",
-        items: this.newProjectChecks,
-        ordered: true,
-        mono: true,
-        placeholder: "pnpm test",
-        onChange: (checks) => {
-          this.newProjectChecks = checks;
-        },
-      })}
-
-      ${
-        this.allEmployees?.length
-          ? html`<div class="field">
-            <span>Assign employees to this project</span>
-            <div class="employee-grid">
-              ${this.allEmployees.map((emp) => {
-                const assigned = this.newProjectEmployees.includes(emp.id);
-                return html`<label class="employee-chip">
-                  <input type="checkbox" .checked=${assigned}
-                    @change=${(e: Event) => {
-                      const checked = (e.target as HTMLInputElement).checked;
-                      this.newProjectEmployees = checked
-                        ? [...this.newProjectEmployees, emp.id]
-                        : this.newProjectEmployees.filter((id) => id !== emp.id);
-                    }} />
-                  <span>${emp.name} (${emp.role})</span>
-                </label>`;
-              })}
-            </div>
-          </div>`
-          : ""
-      }
-
+  private teach() {
+    return html`<section class="card teach" aria-label="What a project is">
+      <h3>No projects yet</h3>
+      <p>A project is a GitHub repository that i.inc employees work on. Each one has:</p>
+      <ul>
+        <li><b>Checks</b>: the commands every change must pass before it counts as done.</li>
+        <li><b>A mode</b>: <i>Direct</i> pushes finished work to the main branch after review; <i>Owner merges</i> leaves it as a pull request for you to merge.</li>
+      </ul>
+      <p>Add a repo that already exists, or start a new one from a template.</p>
       <div class="actions">
-        <button class="btn" type="button" ?disabled=${this.busy === "add" || !this.newProjectId.trim() || !this.newProjectRepo.trim()}
-          @click=${() => this.submitAddProject()}>
-          ${this.busy === "add" ? (this.addTab === "bootstrap" ? "Scaffolding…" : "Adding…") : this.addTab === "bootstrap" ? "Start project & scaffold" : "Add project"}
-        </button>
-        ${noteLine(this.addNote)}
+        <a class="btn" href=${NEW_PROJECT_HREF}>New project</a>
+        <a class="btn ghost" href=${ADD_PROJECT_HREF}>Add a repo</a>
       </div>
-    </div>`;
+    </section>`;
+  }
+
+  private repos(d: ListData) {
+    if (d.repos === null) return "";
+    const open = d.repos.filter((r) => !r.alreadyRegistered);
+    const q = this.filter.trim().toLowerCase();
+    const shown = q ? open.filter((r) => r.fullName.toLowerCase().includes(q)) : open;
+    return html`<section class="block" aria-label="Repos to add">
+      <h2>Repos you can add</h2>
+      ${
+        open.length === 0
+          ? html`<p class="muted">${
+              d.repos.length === 0
+                ? "The i.inc bot can't see any repos yet. Give it access on GitHub, then press Refresh repos."
+                : "Every repo the bot can see is a project already. To work on another, give i.inc access to it on GitHub, then press Refresh repos."
+            }</p>`
+          : html`<div class="card">
+              ${
+                open.length > FILTER_FROM
+                  ? html`<label>Find a repo
+                      <input type="search" .value=${this.filter} placeholder="Part of a name" autocomplete="off"
+                        @input=${(e: InputEvent) => {
+                          this.filter = (e.target as HTMLInputElement).value;
+                        }} /></label>`
+                  : ""
+              }
+              ${
+                shown.length === 0
+                  ? html`<p class="muted">No repo matches “${this.filter}”.</p>`
+                  : shown.map(
+                      (r) => html`<div class="repo-row">
+                        <div class="repo-info">
+                          <span class="name">${r.fullName}</span>
+                          <span class="meta">
+                            <span class="tag">${r.private ? "Private" : "Public"}</span>
+                            ${r.language ? html`<span class="tag">${r.language}</span>` : ""}
+                            ${r.empty ? html`<span class="tag">Empty</span>` : ""}
+                          </span>
+                          ${r.description ? html`<span class="desc small muted">${r.description}</span>` : ""}
+                        </div>
+                        <a class="btn ghost" href=${addRepoHref(r.fullName)} aria-label="Add ${r.fullName} as a project">Add</a>
+                      </div>`,
+                    )
+              }
+            </div>`
+      }
+    </section>`;
   }
 
   override render() {
-    if (this.error) return html`<p role="alert">The daemon isn't answering: ${this.error}</p>`;
-    if (!this.data) return html`<p class="muted">Loading projects…</p>`;
-
-    return html`
-      <div class="top-bar">
-        <a class="more-repos" href=${GITHUB_MANAGE_URL} target="_blank" rel="noopener noreferrer" aria-label="Give i.inc access to more repos (opens GitHub)">Give i.inc access to more repos</a>
-        ${
-          !this.showAdd
-            ? html`<button type="button" class="btn" @click=${() => this.toggleAdd()}>+ Add a project</button>`
-            : ""
-        }
-      </div>
-      ${this.showAdd ? this.renderAddCard() : ""}
+    if (this.error) {
+      return html`<div class="stack"><p class="callout problem" role="alert">Couldn't load the projects: ${this.error}</p>
+        <div><button class="btn ghost" type="button" @click=${() => this.reload()}>Try again</button></div></div>`;
+    }
+    const d = this.data;
+    if (!d) return html`<p class="muted" role="status">Loading projects…</p>`;
+    const visible = d.repos ? new Set(d.repos.map((r) => r.fullName.toLowerCase())) : null;
+    return html`<div class="stack">
       ${
-        this.data.length === 0
-          ? html`<p class="muted">No projects yet. Choose “Add a project” above to import a GitHub repository and start assigning work.</p>`
-          : html`<div class="stack layout-stack layout-page-band">${this.data.map((p) => this.card(p))}</div>`
+        d.draft
+          ? html`<div class="callout needs" role="status">
+              <span><b>${d.draft.name}</b> is half way through being started.</span>
+              <div class="row"><a class="btn" href=${NEW_PROJECT_HREF}>Carry on</a></div>
+            </div>`
+          : ""
       }
-    `;
+      ${this.connection(d)}
+      <section class="block" aria-label="Your projects">
+        <h2>Your projects</h2>
+        ${
+          d.projects.length === 0
+            ? this.teach()
+            : d.projects.map((p) =>
+                this.project(
+                  p,
+                  !!visible && d.status?.configured !== false && !visible.has(p.repo.toLowerCase()),
+                ),
+              )
+        }
+      </section>
+      ${this.repos(d)}
+    </div>`;
   }
 }
 

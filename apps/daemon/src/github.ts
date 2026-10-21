@@ -13,7 +13,26 @@ export interface TokenSource {
    * "read" for a reviewer or verifier, who checks the branch out but never pushes. `repo` "*" asks
    * for every repo the App is installed on: a team sandbox's shared sign-in.
    */
-  token(repo: string, access?: "write" | "read"): Promise<string>;
+  token(repo: string, access?: "write" | "read", f?: typeof fetch): Promise<string>;
+  /**
+   * What the App's installation is: whose account it sits on, and what it may do there. Only the GitHub
+   * App can say (it signs as itself); a stand-in token can't, and the projects flow then assumes the
+   * least (no repo creation).
+   */
+  installation?(f?: typeof fetch): Promise<InstallationInfo>;
+}
+
+/** The installation of the GitHub App, as the projects flow needs it. No token is ever in here. */
+export interface InstallationInfo {
+  id: string;
+  /** The account (user or organization) the App is installed on, if GitHub said. */
+  account: string | null;
+  accountType: "Organization" | "User" | "unknown";
+  repositorySelection: "all" | "selected" | "unknown";
+  /** The permissions the owner granted, such as `{ administration: "write", contents: "write" }`. */
+  permissions: Record<string, string>;
+  /** The App's public name in URLs. */
+  slug: string;
 }
 
 /** A session can run for most of an hour, so it gets a token with at least this long left. */
@@ -82,6 +101,12 @@ export class UpstreamGitHubError extends Error {
   public readonly method: string;
   public readonly endpoint: string;
   public readonly detail: string;
+  /** GitHub (or our own limiter) said "slow down": the primary limit, the secondary limit or a 429. */
+  public rateLimited = false;
+  /** How long to wait before trying again, when GitHub said. */
+  public retryAfterSec?: number;
+  /** For a bootstrap that failed part way: how many files it had written by then. */
+  public written?: number;
 
   constructor(status: number, method: string, endpoint: string, detail = "") {
     super(`GitHub ${method} ${endpoint} failed with HTTP ${status}`);
@@ -90,12 +115,28 @@ export class UpstreamGitHubError extends Error {
     this.method = method;
     this.endpoint = endpoint;
     this.detail = detail;
+    this.rateLimited = status === 429;
     Object.defineProperty(this, "detail", {
       value: detail,
       enumerable: false,
       writable: true,
       configurable: true,
     });
+  }
+}
+
+/** Notes on an error whether GitHub is rate limiting us, and for how long (headers only: no secrets). */
+function readRateLimit(err: UpstreamGitHubError, headers: Headers | undefined) {
+  const get = (name: string) => headers?.get?.(name) ?? null;
+  const retryAfter = Number(get("retry-after"));
+  const reset = Number(get("x-ratelimit-reset"));
+  const exhausted = get("x-ratelimit-remaining") === "0";
+  if (err.status === 429 || (err.status === 403 && (exhausted || /rate limit|abuse/i.test(err.detail)))) {
+    err.rateLimited = true;
+    if (Number.isFinite(retryAfter) && retryAfter > 0) err.retryAfterSec = Math.ceil(retryAfter);
+    else if (exhausted && Number.isFinite(reset) && reset > 0) {
+      err.retryAfterSec = Math.max(1, Math.ceil(reset - Date.now() / 1000));
+    }
   }
 }
 
@@ -141,12 +182,14 @@ async function call(
     }
 
     if (!res.ok) {
-      throw new UpstreamGitHubError(
+      const err = new UpstreamGitHubError(
         res.status,
         method,
         sanitized,
         typeof body.message === "string" ? body.message : "",
       );
+      readRateLimit(err, res.headers);
+      throw err;
     }
     return body;
   } catch (err) {
@@ -232,13 +275,44 @@ export class GitHubApp implements TokenSource {
     return { tokens: this.cache.size };
   }
 
-  async token(repo: string, access: "write" | "read" = "write"): Promise<string> {
+  /**
+   * Whose account the App is installed on and what it may do there. It signs as the App itself (the
+   * JWT), because an installation token can't read its own account. Nothing secret comes back.
+   */
+  async installation(f?: typeof fetch): Promise<InstallationInfo> {
+    const jwt = appJwt(this.config.appId, this.readKey(this.config.privateKeyPath), this.now());
+    const body = await call(
+      f ?? this.f,
+      `${this.config.api ?? API}/app/installations/${this.config.installationId}`,
+      { method: "GET", headers: { authorization: `Bearer ${jwt}` } },
+    );
+    const account = (body.account ?? {}) as Record<string, unknown>;
+    const perms = (body.permissions ?? {}) as Record<string, unknown>;
+    return {
+      id: this.config.installationId,
+      account: typeof account.login === "string" && account.login ? account.login : null,
+      accountType:
+        account.type === "Organization" ? "Organization" : account.type === "User" ? "User" : "unknown",
+      repositorySelection:
+        body.repository_selection === "all"
+          ? "all"
+          : body.repository_selection === "selected"
+            ? "selected"
+            : "unknown",
+      permissions: Object.fromEntries(
+        Object.entries(perms).filter((e): e is [string, string] => typeof e[1] === "string"),
+      ),
+      slug: this.config.slug ?? "i-inc-bot",
+    };
+  }
+
+  async token(repo: string, access: "write" | "read" = "write", f?: typeof fetch): Promise<string> {
     const key = `${repo} ${access}`;
     const cached = this.cache.get(key);
     if (cached && cached.expiresAt - this.now() > minLeftMs) return cached.token;
     const jwt = appJwt(this.config.appId, this.readKey(this.config.privateKeyPath), this.now());
     const body = await call(
-      this.f,
+      f ?? this.f,
       `${this.config.api ?? API}/app/installations/${this.config.installationId}/access_tokens`,
       {
         method: "POST",
@@ -461,6 +535,8 @@ export interface GitHubRepoSummary {
   empty: boolean;
   pushedAt: string | null;
   alreadyRegistered: boolean;
+  /** GitHub's numeric id: it survives a rename or a transfer, so "the same repo" is told by it when known. */
+  id?: number;
 }
 
 export interface GitHubInspectResult {
@@ -473,11 +549,23 @@ export interface GitHubInspectResult {
   detected: string;
 }
 
+/** The starter templates `bootstrapRepo` can write. */
+export const TEMPLATES = ["ts-node", "web", "python", "minimal"] as const;
+export type Template = (typeof TEMPLATES)[number];
+export const isTemplate = (t: unknown): t is Template => TEMPLATES.some((x) => x === t);
+
 export interface BootstrapOptions {
   repo: string;
-  template?: "ts-node" | "web" | "python" | "minimal";
+  template?: Template;
   description?: string;
   defaultBranch?: string;
+  /**
+   * Carry on a bootstrap that stopped part way. Only allowed in a repo whose every commit is a scaffold
+   * commit; it then adds the files that are missing and never changes one that is there.
+   */
+  force?: boolean;
+  /** The bot's login (`<slug>[bot]`): the author a starter commit must have for `force` to carry on from it. */
+  botLogin?: string;
 }
 
 export interface BootstrapResult {
@@ -485,16 +573,17 @@ export interface BootstrapResult {
   commits: number;
 }
 
-/** Lists all repositories accessible to the GitHub App installation. */
-export async function listInstallationRepos(
+/** One repo as GitHub lists it for the installation, before we mark which are projects. */
+export type InstallationRepo = Omit<GitHubRepoSummary, "alreadyRegistered">;
+
+/** Fetches every repository the installation can see (bounded paging), as GitHub lists them. */
+export async function fetchInstallationRepos(
   tokens: TokenSource,
-  registeredRepos: string[] = [],
   deps: GitHubDeps & { api?: string } = {},
-): Promise<GitHubRepoSummary[]> {
+): Promise<InstallationRepo[]> {
   const f = deps.fetch ?? fetch;
   const api = deps.api ?? API;
-  const token = await tokens.token("*", "read");
-  const registeredSet = new Set(registeredRepos.map((r) => r.toLowerCase()));
+  const token = await tokens.token("*", "read", deps.fetch);
 
   const rawRepos: Record<string, unknown>[] = [];
   let page = 1;
@@ -514,31 +603,163 @@ export async function listInstallationRepos(
     }
     page++;
   }
-  return rawRepos.map((r) => {
+  const out: InstallationRepo[] = rawRepos.map((r) => {
     const fullName = String(r.full_name ?? "");
-    const name = String(r.name ?? "");
-    const owner = String((r.owner as Record<string, unknown>)?.login ?? fullName.split("/")[0] ?? "");
-    const isPrivate = Boolean(r.private);
-    const defaultBranch = String(r.default_branch ?? "main");
-    const description = typeof r.description === "string" ? r.description : null;
-    const language = typeof r.language === "string" ? r.language : null;
     const size = typeof r.size === "number" ? r.size : 0;
     const pushedAt = typeof r.pushed_at === "string" ? r.pushed_at : null;
-    const empty = size === 0 || !pushedAt;
-    const alreadyRegistered = registeredSet.has(fullName.toLowerCase());
     return {
+      ...(typeof r.id === "number" ? { id: r.id } : {}),
       fullName,
-      name,
-      owner,
-      private: isPrivate,
-      defaultBranch,
-      description,
-      language,
-      empty,
+      name: String(r.name ?? ""),
+      owner: String((r.owner as Record<string, unknown>)?.login ?? fullName.split("/")[0] ?? ""),
+      private: Boolean(r.private),
+      defaultBranch: String(r.default_branch ?? "main"),
+      description: typeof r.description === "string" ? r.description : null,
+      language: typeof r.language === "string" ? r.language : null,
+      empty: size === 0 || !pushedAt,
       pushedAt,
-      alreadyRegistered,
     };
   });
+  // The size and push time lag (a README-only repo can read 0), so a repo they call empty is asked of GitHub's
+  // commit list. The answer is cached with the list. At most 20 are asked a time; the rest stay a hint.
+  const hinted = out.filter((r) => r.empty && isValidRepo(r.fullName)).slice(0, EMPTY_CHECKS_PER_LIST);
+  await Promise.all(
+    hinted.map(async (r) => {
+      try {
+        if (await hasCommits(f, api, r.fullName, { authorization: `Bearer ${token}` })) r.empty = false;
+      } catch {
+        // Can't tell: it stays a hint, and the daemon checks again before anything is written.
+      }
+    }),
+  );
+  return out;
+}
+
+const EMPTY_CHECKS_PER_LIST = 20;
+
+/** Marks which of the repos are projects already. */
+export function markRegistered(
+  repos: InstallationRepo[],
+  registeredRepos: string[],
+  registeredIds: Iterable<number> = [],
+): GitHubRepoSummary[] {
+  const registered = new Set(registeredRepos.map((r) => r.toLowerCase()));
+  const ids = new Set(registeredIds);
+  return repos.map((r) => ({
+    ...r,
+    alreadyRegistered: registered.has(r.fullName.toLowerCase()) || (r.id !== undefined && ids.has(r.id)),
+  }));
+}
+
+/** Lists all repositories accessible to the GitHub App installation. */
+export async function listInstallationRepos(
+  tokens: TokenSource,
+  registeredRepos: string[] = [],
+  deps: GitHubDeps & { api?: string } = {},
+): Promise<GitHubRepoSummary[]> {
+  return markRegistered(await fetchInstallationRepos(tokens, deps), registeredRepos);
+}
+
+/**
+ * Creates an empty repository in an organization the App is installed on. GitHub lets an App do this
+ * only in an organization, and only with the Administration permission (write); never in a personal
+ * account. The repo has no files, so `bootstrapRepo` can fill it.
+ */
+export async function createOrgRepo(
+  tokens: TokenSource,
+  o: { owner: string; name: string; private: boolean; description?: string },
+  deps: GitHubDeps & { api?: string } = {},
+): Promise<{ fullName: string; defaultBranch: string; private: boolean }> {
+  const repo = checkRepo(`${o.owner}/${o.name}`);
+  const token = await tokens.token("*", "write", deps.fetch);
+  const body = await call(
+    deps.fetch ?? fetch,
+    `${deps.api ?? API}/orgs/${encodeURIComponent(o.owner)}/repos`,
+    {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        name: o.name,
+        private: o.private,
+        ...(o.description ? { description: o.description.slice(0, 350) } : {}),
+        auto_init: false,
+      }),
+    },
+  );
+  return {
+    fullName: typeof body.full_name === "string" ? body.full_name : repo,
+    defaultBranch: typeof body.default_branch === "string" ? body.default_branch : "main",
+    private: body.private === true,
+  };
+}
+
+/** A repo already has files that i.inc won't write over. */
+export class NotEmptyError extends Error {
+  /** How many files this run had written before it noticed. */
+  written?: number;
+  constructor(message: string) {
+    super(message);
+    this.name = "NotEmptyError";
+  }
+}
+
+/**
+ * Whether the repo has any commit, asked of GitHub's commit list (a repo with none answers 409). The
+ * repo listing's `size` is in KB and lags, so it can say 0 for a repo that has a README.
+ */
+async function hasCommits(
+  f: typeof fetch,
+  api: string,
+  repo: string,
+  headers: HeadersInit,
+): Promise<boolean> {
+  try {
+    const list = (await call(f, `${api}/repos/${repo}/commits?per_page=1`, {
+      method: "GET",
+      headers,
+    })) as unknown;
+    return Array.isArray(list) && list.length > 0;
+  } catch (err) {
+    if (err instanceof UpstreamGitHubError && err.status === 409) return false;
+    throw err;
+  }
+}
+
+const scaffoldMessage = /^Initialize (.+) \(i\.inc scaffold\)$/;
+
+/**
+ * Whether every commit in the repo is one this bootstrap made: written by the bot (its login), with the starter's
+ * own message, and touching exactly one file, which is one of the starter's paths. A message alone proves nothing,
+ * since anyone can write it.
+ */
+async function onlyScaffoldCommits(
+  f: typeof fetch,
+  api: string,
+  repo: string,
+  headers: HeadersInit,
+  starterPaths: Set<string>,
+  botLogin: string | undefined,
+): Promise<boolean> {
+  if (!botLogin) return false;
+  const list = (await call(f, `${api}/repos/${repo}/commits?per_page=100`, {
+    method: "GET",
+    headers,
+  })) as unknown;
+  // A starter is a handful of files: more commits than paths means something else is in there.
+  if (!Array.isArray(list) || list.length === 0 || list.length > starterPaths.size) return false;
+  for (const c of list as { sha?: unknown; author?: { login?: unknown }; commit?: { message?: unknown } }[]) {
+    const message = typeof c?.commit?.message === "string" ? c.commit.message : "";
+    const path = scaffoldMessage.exec(message)?.[1];
+    const login = typeof c?.author?.login === "string" ? c.author.login : "";
+    if (!path || !starterPaths.has(path) || login.toLowerCase() !== botLogin.toLowerCase()) return false;
+    if (typeof c.sha !== "string" || !/^[0-9a-f]{7,64}$/i.test(c.sha)) return false;
+    const detail = (await call(f, `${api}/repos/${repo}/commits/${c.sha}`, { method: "GET", headers })) as {
+      files?: { filename?: unknown }[];
+    };
+    const touched = Array.isArray(detail.files) ? detail.files.map((x) => x.filename) : [];
+    if (touched.length !== 1 || touched[0] !== path) return false;
+  }
+  return true;
 }
 
 /** Inspects a repository to detect language, build tools, check recipes, and default branch. */
@@ -552,7 +773,7 @@ export async function inspectRepo(
   const api = deps.api ?? API;
   const repo = `${owner}/${name}`;
   checkRepo(repo);
-  const token = await tokens.token(repo, "read");
+  const token = await tokens.token(repo, "read", deps.fetch);
   const authHeader = { authorization: `Bearer ${token}` };
 
   const repoMeta = await call(f, `${api}/repos/${repo}`, {
@@ -562,7 +783,8 @@ export async function inspectRepo(
   const defaultBranch = String(repoMeta.default_branch ?? "main");
   const size = typeof repoMeta.size === "number" ? repoMeta.size : 0;
   const pushedAt = typeof repoMeta.pushed_at === "string" ? repoMeta.pushed_at : null;
-  const empty = size === 0 || !pushedAt;
+  // The size and push time are hints (GitHub's lag): only a repo with no commit is empty.
+  const empty = size > 0 && pushedAt ? false : !(await hasCommits(f, api, repo, authHeader));
 
   const id = name
     .toLowerCase()
@@ -734,7 +956,7 @@ export async function bootstrapRepo(
   const f = deps.fetch ?? fetch;
   const api = deps.api ?? API;
   const repo = checkRepo(opts.repo);
-  const token = await tokens.token(repo, "write");
+  const token = await tokens.token(repo, "write", deps.fetch);
   const authHeader = { authorization: `Bearer ${token}` };
 
   const template = opts.template ?? "ts-node";
@@ -855,20 +1077,56 @@ export async function bootstrapRepo(
     files[".gitignore"] = ".DS_Store\n";
   }
 
+  // Right before the first write: a repo with a commit is never written over. A bootstrap that stopped part
+  // way can be carried on, but only when every commit in the repo is its own.
+  const resuming = await hasCommits(f, api, repo, authHeader);
+  if (resuming) {
+    if (!opts.force) {
+      throw new NotEmptyError("This repository already has files, so i.inc won't write a starter into it.");
+    }
+    if (!(await onlyScaffoldCommits(f, api, repo, authHeader, new Set(Object.keys(files)), opts.botLogin))) {
+      throw new NotEmptyError(
+        "This repository has files that i.inc didn't write, so i.inc won't write a starter into it.",
+      );
+    }
+  }
+
+  const ref = defaultBranch ? `?ref=${encodeURIComponent(defaultBranch)}` : "";
   let commits = 0;
-  for (const [path, content] of Object.entries(files)) {
-    const encoded = Buffer.from(content, "utf8").toString("base64");
-    const putFile = async (sha?: string) => {
-      const putRes = await call(f, `${api}/repos/${repo}/contents/${path}`, {
-        method: "PUT",
-        headers: authHeader,
-        body: JSON.stringify({
-          message: `Initialize ${path} (i.inc scaffold)`,
-          content: encoded,
-          ...(defaultBranch ? { branch: defaultBranch } : {}),
-          ...(sha ? { sha } : {}),
-        }),
-      });
+  try {
+    for (const [path, content] of Object.entries(files)) {
+      if (resuming) {
+        // Carrying on: a file that is there is left as it is.
+        const there = await call(f, `${api}/repos/${repo}/contents/${path}${ref}`, {
+          method: "GET",
+          headers: authHeader,
+        }).then(
+          () => true,
+          (err: unknown) => {
+            if (err instanceof UpstreamGitHubError && err.status === 404) return false;
+            throw err;
+          },
+        );
+        if (there) continue;
+      }
+      let putRes: Record<string, unknown>;
+      try {
+        putRes = await call(f, `${api}/repos/${repo}/contents/${path}`, {
+          method: "PUT",
+          headers: authHeader,
+          body: JSON.stringify({
+            message: `Initialize ${path} (i.inc scaffold)`,
+            content: Buffer.from(content, "utf8").toString("base64"),
+            ...(defaultBranch ? { branch: defaultBranch } : {}),
+          }),
+        });
+      } catch (err) {
+        // The file appeared since the check, so someone else is writing here: stop, never overwrite.
+        if (err instanceof UpstreamGitHubError && (err.status === 422 || err.status === 409)) {
+          throw new NotEmptyError(`${path} already exists in this repository, so i.inc stopped.`);
+        }
+        throw err;
+      }
       if (!putRes || typeof putRes !== "object" || (!putRes.commit && !putRes.content)) {
         throw new UpstreamGitHubError(
           502,
@@ -877,37 +1135,11 @@ export async function bootstrapRepo(
           "empty or invalid commit response",
         );
       }
-      return putRes;
-    };
-
-    try {
-      await putFile();
-    } catch (err) {
-      if (err instanceof UpstreamGitHubError && (err.status === 422 || err.status === 409)) {
-        // File already exists (e.g. from previous partial bootstrap); fetch existing SHA and retry PUT with SHA
-        let existingSha: string | undefined;
-        try {
-          const existing = await call(
-            f,
-            `${api}/repos/${repo}/contents/${path}${defaultBranch ? `?ref=${encodeURIComponent(defaultBranch)}` : ""}`,
-            { method: "GET", headers: authHeader },
-          );
-          if (typeof existing.sha === "string") {
-            existingSha = existing.sha;
-          }
-        } catch {
-          // If fetching existing SHA fails, rethrow the original PUT error
-        }
-        if (existingSha) {
-          await putFile(existingSha);
-        } else {
-          throw err;
-        }
-      } else {
-        throw err;
-      }
+      commits++;
     }
-    commits++;
+  } catch (err) {
+    if (err instanceof UpstreamGitHubError || err instanceof NotEmptyError) err.written = commits;
+    throw err;
   }
 
   return { bootstrapped: true, commits };

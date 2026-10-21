@@ -9,6 +9,7 @@ import {
   areaOf,
   COMPANY_TABS,
   companyTabHref,
+  hashQuery,
   homeHash,
   layoutForRoute,
   parse,
@@ -35,6 +36,8 @@ import "./knowledge.ts";
 import "./offline.ts";
 import "./setup.ts";
 import "./setup-projects.ts";
+import "./project-flow.ts";
+import "./project-page.ts";
 
 // The areas and their tabs live in ../routes.ts; the shell re-exports what the rest of the app and the
 // tests read from here.
@@ -636,9 +639,13 @@ export class IncApp extends LitElement {
       ${
         r.view === "team"
           ? html`<a slot="actions" class="btn" href="#/company/team/hiring">Hire someone</a>`
-          : r.view === "hiring"
-            ? html`<a slot="actions" class="btn ghost" href="#/company/team">Back to the team</a>`
-            : ""
+          : r.view === "projects" && !r.id && !r.flow
+            ? html`<a slot="actions" class="btn ghost" href="#/company/projects/add">Add a repo</a><a slot="actions" class="btn" href="#/company/projects/new">New project</a>`
+            : r.view === "projects"
+              ? html`<a slot="actions" class="btn ghost" href="#/company/projects">All projects</a>`
+              : r.view === "hiring"
+                ? html`<a slot="actions" class="btn ghost" href="#/company/team">Back to the team</a>`
+                : ""
       }`;
   }
 
@@ -728,7 +735,11 @@ export class IncApp extends LitElement {
           ? html`<inc-knowledge .repo=${r.id} role="tabpanel" aria-labelledby="tab-brain"></inc-knowledge>`
           : html`<inc-knowledge repo="handbook" role="tabpanel" aria-labelledby="tab-brain"></inc-knowledge>`;
       case "projects":
-        return html`<inc-setup-projects role="tabpanel" aria-labelledby="tab-projects"></inc-setup-projects>`;
+        return r.id
+          ? html`<inc-project-page .projectId=${r.id} role="tabpanel" aria-labelledby="tab-projects"></inc-project-page>`
+          : r.flow
+            ? html`<inc-project-flow .flow=${r.flow} .repo=${hashQuery(location.hash).get("repo") ?? ""} role="tabpanel" aria-labelledby="tab-projects"></inc-project-flow>`
+            : html`<inc-setup-projects role="tabpanel" aria-labelledby="tab-projects"></inc-setup-projects>`;
       case "usage":
         return html`<div class="stack" role="tabpanel" aria-labelledby="tab-usage">
           <inc-desk show="usage"></inc-desk><inc-office show="meters"></inc-office></div>`;
