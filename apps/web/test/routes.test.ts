@@ -31,7 +31,11 @@ afterEach(() => {
 describe("parse", () => {
   it.each([
     ["#/conversations", { view: "conversations", id: "" }],
-    ["#/conversations/ada", { view: "conversations", id: "ada" }],
+    ["#/conversations/ab12cd34", { view: "conversations", id: "ab12cd34" }],
+    ["#/conversations/old", { view: "conversations", id: "", old: true }],
+    ["#/conversations/old/ada", { view: "conversations", id: "ada", old: true }],
+    // an employee in the old address means the old chat with that employee
+    ["#/conversations/ada", { view: "conversations", id: "ada", old: true }],
     ["#/work", { view: "work", tab: "board" }],
     ["#/work/board", { view: "work", tab: "board" }],
     ["#/work/needs-you", { view: "work", tab: "needs-you" }],
@@ -76,8 +80,8 @@ describe("old hashes keep working", () => {
     ["#/inbox", "#/work/needs-you"],
     ["#/office", "#/company/team"],
     ["#/board", "#/work/board"],
-    ["#/chat", "#/conversations"],
-    ["#/chat/ada", "#/conversations/ada"],
+    ["#/chat", "#/conversations/old"],
+    ["#/chat/ada", "#/conversations/old/ada"],
     ["#/desk", "#/company/usage"],
     ["#/handbook", "#/company/brain"],
     ["#/brain/ada", "#/company/brain/ada"],
@@ -102,7 +106,7 @@ describe("old hashes keep working", () => {
     for (const h of [
       "#/work/board",
       "#/company/team",
-      "#/conversations/ada",
+      "#/conversations/ab12cd34",
       "#/ticket/7",
       "#/ticket/7/assign",
       "",
@@ -138,8 +142,8 @@ describe("old hashes keep working", () => {
     location.hash = "#/chat/ada";
     await new Promise((r) => setTimeout(r, 10));
     await app.updateComplete;
-    expect(location.hash).toBe("#/conversations/ada");
-    expect(app.route).toEqual({ view: "conversations", id: "ada" });
+    expect(location.hash).toBe("#/conversations/old/ada");
+    expect(app.route).toEqual({ view: "conversations", id: "ada", old: true });
     app.remove();
   });
 });
@@ -150,8 +154,8 @@ describe("redirectFor: tidying, mistyped and unknown hashes", () => {
     ["#/INBOX", "#/work/needs-you"],
     ["#/inbox?x=1", "#/work/needs-you"],
     ["#/inbox/", "#/work/needs-you"],
-    ["#/Chat/Ada", "#/conversations/Ada"],
-    ["#/chat/ada?draft=1", "#/conversations/ada"],
+    ["#/Chat/Ada", "#/conversations/old/Ada"],
+    ["#/chat/ada?draft=1", "#/conversations/old/ada"],
     ["#/Setup/Projects", "#/company/projects"],
     ["#/Setup/Engines", "#/company/settings/engines"],
     ["#/Work/Board", "#/work/board"],
@@ -164,7 +168,9 @@ describe("redirectFor: tidying, mistyped and unknown hashes", () => {
     ["#/company/whatever", "#/company/team"],
     ["#/Ticket/12/Assign", "#/ticket/12/assign"],
     ["#/ticket/12?from=push", "#/ticket/12"],
-    ["#/Conversations/ada/", "#/conversations/ada"],
+    ["#/Conversations/ada/", "#/conversations/old/ada"],
+    ["#/Conversations/AB12CD34", "#/conversations/ab12cd34"],
+    ["#/conversations/OLD", "#/conversations/old"],
   ])("%s becomes %s", (hash, to) => {
     expect(redirectFor(hash)).toBe(to);
     phone(false);
@@ -190,7 +196,8 @@ describe("redirectFor: tidying, mistyped and unknown hashes", () => {
       "#/company",
       "#/company/team/hiring",
       "#/ticket/12/assign",
-      "#/conversations/ada",
+      "#/conversations/ab12cd34",
+      "#/conversations/old/ada",
     ])
       expect(redirectFor(h), h).toBeNull();
   });

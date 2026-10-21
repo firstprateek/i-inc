@@ -1,8 +1,15 @@
 // Work → Needs you (spec §10): what needs you and what's ready, each answerable in one tap.
 import { css, html } from "lit";
-import { api, type PolicyProposal, type ProposalView, refreshNow, type TicketView } from "../api.ts";
+import {
+  api,
+  type Conversation,
+  type PolicyProposal,
+  type ProposalView,
+  refreshNow,
+  type TicketView,
+} from "../api.ts";
 import { waitingLine, waitsForAssignee } from "../assign.ts";
-import { needsYouCount } from "../needs-you.ts";
+import { needsYouCount, waitingConversations } from "../needs-you.ts";
 import { layoutStyles } from "./layout.ts";
 import { Loader } from "./loader.ts";
 import "./proposals.ts";
@@ -13,12 +20,21 @@ export class IncInbox extends Loader<{
   tickets: TicketView[];
   policies: PolicyProposal[];
   proposals: ProposalView[];
+  conversations: Conversation[];
+  names: Record<string, string>;
 }> {
-  protected fetch = async () => ({
-    tickets: await api.board(),
-    policies: (await api.handbook()).awaiting ?? [],
-    proposals: await api.proposals(),
-  });
+  protected fetch = async () => {
+    const conversations = await waitingConversations();
+    return {
+      tickets: await api.board(),
+      policies: (await api.handbook()).awaiting ?? [],
+      proposals: await api.proposals(),
+      conversations,
+      names: conversations.length
+        ? Object.fromEntries((await api.employees().catch(() => [])).map((e) => [e.id, e.name]))
+        : {},
+    };
+  };
 
   private async act(fn: () => Promise<unknown>) {
     try {
@@ -69,10 +85,11 @@ export class IncInbox extends Loader<{
     // A ticket nobody can start until the owner picks someone is the owner's to fix.
     const unassigned = this.data.tickets.filter(waitsForAssignee);
     const proposals = this.data.proposals;
-    const n = needsYouCount(this.data.tickets, policies, proposals);
+    const conversations = this.data.conversations;
+    const n = needsYouCount(this.data.tickets, policies, proposals, conversations);
     return html`
       <p class="summary">${n ? `${n} ${n === 1 ? "thing needs" : "things need"} you` : "Nothing needs you"}</p>
-      <div class="list">${needs.map((t) => this.ask(t))}${unassigned.map((t) => this.unassigned(t))}${policies.map((p) => this.policy(p))}</div>
+      <div class="list">${conversations.map((c) => this.conversation(c))}${needs.map((t) => this.ask(t))}${unassigned.map((t) => this.unassigned(t))}${policies.map((p) => this.policy(p))}</div>
       ${proposals.length ? html`<inc-proposals class="proposed" .proposals=${proposals}></inc-proposals>` : ""}
       ${ready.length ? html`<h2>Ready for you</h2><div class="list">${ready.map((t) => this.ready(t))}</div>` : ""}
       ${!n && !ready.length ? this.allClear() : ""}
@@ -86,7 +103,7 @@ export class IncInbox extends Loader<{
       <p>Nothing needs your answer. Tickets that do will show up here.</p>
       <div class="links">
         <a class="btn" href="#/work/board">Go to the board</a>
-        <a class="btn ghost" href="#/conversations/ada">Start a conversation</a>
+        <a class="btn ghost" href="#/conversations">Start a conversation</a>
       </div></div>`;
   }
 
@@ -134,6 +151,16 @@ export class IncInbox extends Loader<{
               ? protectedOk(t, a.paths, (fn) => void this.act(fn))
               : html`<div class="q">${a.reason}</div>`;
     return html`<div class="card item waiting">${this.header(t, a.kind.replace("-", " "))}${body}</div>`;
+  }
+
+  /** A conversation whose agent waits for a permission or an answer; it opens at that card. */
+  private conversation(c: Conversation) {
+    const who = this.data?.names[c.employeeId] ?? c.employeeId;
+    return html`<div class="card item waiting">
+      <div class="who"><span><b>${who}</b> · conversation${c.project ? html` · ${projectBadge(c.project)}` : ""}</span></div>
+      <div class="q">${c.title}</div>
+      <p class="waits"><i aria-hidden="true"></i><span>${who} is waiting for your permission or an answer.</span></p>
+      <div class="actions"><a class="btn" href="#/conversations/${c.id}" aria-label="Open the conversation: ${c.title}">Open the card</a></div></div>`;
   }
 
   private policy(p: PolicyProposal) {

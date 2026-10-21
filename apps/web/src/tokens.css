@@ -85,6 +85,21 @@
   --screen-edge: #3a423e;
   --screen-text: #e7eae3;
 
+  /* Code and diffs in conversations: syntax colours and added/removed lines, each at least 4.5:1 on --code-bg. */
+  --code-bg: #f1f3ee;
+  --tk-kw: #7a2e8e;
+  --tk-str: #1b6a3a;
+  --tk-com: #596360;
+  --tk-num: #94460a;
+  --tk-fn: #1d4476;
+  --tk-ty: #0f6262;
+  --tk-attr: #7a4f00;
+  --tk-tag: #8a2b17;
+  --diff-add-bg: #dff3e3;
+  --diff-add-fg: #14502c;
+  --diff-del-bg: #fbe1dc;
+  --diff-del-fg: #7d2414;
+
   --display: "Bricolage Grotesque", system-ui, sans-serif;
   --body: Figtree, system-ui, sans-serif;
   --mono: "JetBrains Mono", ui-monospace, monospace;
@@ -143,6 +158,20 @@
     --screen: #0c0f0d;
     --screen-edge: #323a35;
     --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.2);
+
+    --code-bg: #181c1a;
+    --tk-kw: #d2a8ff;
+    --tk-str: #9ce6b8;
+    --tk-com: #9aa39d;
+    --tk-num: #f0b36a;
+    --tk-fn: #a6cafb;
+    --tk-ty: #7fd6d0;
+    --tk-attr: #e0c07a;
+    --tk-tag: #f28b76;
+    --diff-add-bg: #153422;
+    --diff-add-fg: #b9efce;
+    --diff-del-bg: #3d1a14;
+    --diff-del-fg: #f6b4a6;
 
     --proj-0-bg: #132c2b;
     --proj-0-fg: #97ded9;
@@ -220,6 +249,20 @@
   --screen: #0c0f0d;
   --screen-edge: #323a35;
   --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.2);
+
+  --code-bg: #181c1a;
+  --tk-kw: #d2a8ff;
+  --tk-str: #9ce6b8;
+  --tk-com: #9aa39d;
+  --tk-num: #f0b36a;
+  --tk-fn: #a6cafb;
+  --tk-ty: #7fd6d0;
+  --tk-attr: #e0c07a;
+  --tk-tag: #f28b76;
+  --diff-add-bg: #153422;
+  --diff-add-fg: #b9efce;
+  --diff-del-bg: #3d1a14;
+  --diff-del-fg: #f6b4a6;
 
   --proj-0-bg: #132c2b;
   --proj-0-fg: #97ded9;

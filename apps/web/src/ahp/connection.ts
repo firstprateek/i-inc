@@ -502,6 +502,8 @@ export class AhpConnection {
       toolCallId?: string;
       approved?: boolean;
       selectedOptionId?: string;
+      requestId?: string;
+      response?: string;
     };
     if (env.rejectionReason !== undefined) {
       if (env.origin?.clientId === this.clientId) {
@@ -534,18 +536,28 @@ export class AhpConnection {
       done?.();
     }
     if (action.type === ActionType.ChatToolCallConfirmed && action.toolCallId) {
-      this.confirmations.set(action.toolCallId, {
+      this.rememberAnswer(action.toolCallId, {
         byMe: env.origin?.clientId === this.clientId,
         approved: action.approved === true,
         ...(action.selectedOptionId ? { optionId: action.selectedOptionId } : {}),
       });
-      if (this.confirmations.size > MAX_CONFIRMATIONS) {
-        const oldest = this.confirmations.keys().next().value;
-        if (oldest !== undefined) this.confirmations.delete(oldest);
-      }
+    }
+    if (action.type === ActionType.ChatInputCompleted && action.requestId) {
+      this.rememberAnswer(`input:${action.requestId}`, {
+        byMe: env.origin?.clientId === this.clientId,
+        approved: action.response === "accept",
+      });
     }
     this.changed.add(env.channel);
     this.scheduleFlush();
+  }
+
+  private rememberAnswer(key: string, c: Confirmation): void {
+    this.confirmations.set(key, c);
+    if (this.confirmations.size > MAX_CONFIRMATIONS) {
+      const oldest = this.confirmations.keys().next().value;
+      if (oldest !== undefined) this.confirmations.delete(oldest);
+    }
   }
 
   private markAll(): void {

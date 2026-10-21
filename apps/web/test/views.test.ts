@@ -195,7 +195,7 @@ describe("the inbox", () => {
     const links = [...(card?.querySelectorAll("a.btn") ?? [])] as HTMLAnchorElement[];
     expect(links.map((a) => [a.textContent?.trim(), a.getAttribute("href")])).toEqual([
       ["Go to the board", "#/work/board"],
-      ["Start a conversation", "#/conversations/ada"],
+      ["Start a conversation", "#/conversations"],
     ]);
   });
 
