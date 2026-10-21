@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import "../../src/components/conv-list.ts";
 import type { IncConvList } from "../../src/components/conv-list.ts";
+import { must } from "../ahp/fake-host.ts";
 
 // biome-ignore lint/suspicious/noExplicitAny: scripted rows.
 type Any = any;
