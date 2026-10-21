@@ -2,10 +2,10 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import type { ProposedEdit } from "@i-inc/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { main, migrateKnowledge } from "../scripts/brain-migrate.ts";
+import { main, migrateKnowledge, parseArgs } from "../scripts/brain-migrate.ts";
 import { BrainIndex } from "../src/brain-index.ts";
 import { KnowledgeStore } from "../src/knowledge.ts";
 
@@ -23,8 +23,10 @@ const git = (dir: string, ...a: string[]) =>
 
 /** Today's knowledge directory: appended pages, one with a pile of fragments, and one with frontmatter. */
 function legacy() {
-  const root = mkdtempSync(join(tmpdir(), "i-inc-migrate-"));
-  roots.push(root);
+  const home = mkdtempSync(join(tmpdir(), "i-inc-migrate-"));
+  roots.push(home);
+  const root = join(home, "knowledge");
+  mkdirSync(root);
   const store = new KnowledgeStore(root);
   const who = () => ({ name: "Ada", role: "Engineer" });
   const edit = (
@@ -55,7 +57,7 @@ function legacy() {
   );
   git(hb, "add", "-A");
   git(hb, "commit", "-q", "-m", "hand-written pages");
-  return { root, store };
+  return { root, store, home };
 }
 
 const text = (root: string, p: string) => readFileSync(join(root, p), "utf8");
@@ -158,24 +160,131 @@ describe("brain migration", () => {
     expect(report.commits.map((c) => c.replace(/: [0-9a-f]+$/, ""))).toEqual(["brain:ada"]);
   });
 
-  it("the command defaults to a dry run and prints a summary", () => {
+  it("is idempotent for pages with nothing to derive: empty and heading-only pages, two --apply runs", () => {
     const { root } = legacy();
+    const hb = join(root, "handbook");
+    writeFileSync(join(hb, "facts", "empty.md"), "");
+    writeFileSync(join(hb, "facts", "heading.md"), "# Only a heading\n");
+    git(hb, "add", "-A");
+    git(hb, "commit", "-q", "-m", "empties");
+    const first = migrateKnowledge(root, { apply: true });
+    expect(first.pages.find((p) => p.path === "facts/empty.md")?.action).toBe("migrate");
+    const n = commits(hb);
+    const second = migrateKnowledge(root, { apply: true });
+    expect(second.pages.every((p) => p.action === "unchanged")).toBe(true);
+    expect(second.commits).toEqual([]);
+    expect(commits(hb)).toBe(n);
+    expect(() => migrateKnowledge(root, { apply: true })).not.toThrow();
+    expect(text(root, "handbook/facts/empty.md")).toMatch(/^---\n[\s\S]*\n---\n$/);
+    // A page that already has frontmatter is left alone, even one with an empty description.
+    const keep = '---\ntitle: Keep\ndescription: ""\n---\n';
+    writeFileSync(join(hb, "facts", "keep.md"), keep);
+    git(hb, "add", "-A");
+    git(hb, "commit", "-q", "-m", "keep");
+    expect(
+      migrateKnowledge(root, { apply: true }).pages.find((p) => p.path === "facts/keep.md")?.action,
+    ).toBe("unchanged");
+    expect(text(root, "handbook/facts/keep.md")).toBe(keep);
+  });
+
+  it("does not fail when there is nothing to commit", () => {
+    const { root } = legacy();
+    migrateKnowledge(root, { apply: true });
+    expect(() => migrateKnowledge(root, { apply: true })).not.toThrow();
+  });
+});
+
+describe("the command line is strict", () => {
+  const run = (argv: string[]) => {
     const out: string[] = [];
+    const err: string[] = [];
     vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => void out.push(a.join(" ")));
-    expect(main(["--knowledge", root])).toBe(0);
-    expect(out[0]).toMatch(/^Dry run on /);
-    expect(out.some((l) => l.includes("facts/gh-cli.md") && l.includes("needs-tidy"))).toBe(true);
-    expect(out.at(-1)).toMatch(/Dry run: nothing was written/);
+    vi.spyOn(console, "error").mockImplementation((...a: unknown[]) => void err.push(a.join(" ")));
+    const code = main(argv);
+    vi.restoreAllMocks();
+    return { code, out, err };
+  };
+
+  it("refuses to run without an explicit --home, even with --apply --yes and an I_INC_HOME in the environment", () => {
+    const { home, root } = legacy();
+    const hb = join(root, "handbook");
+    const head = git(hb, "rev-parse", "HEAD");
+    process.env.I_INC_HOME = home;
+    try {
+      for (const argv of [[], ["--apply"], ["--apply", "--yes"], ["--yes"]]) {
+        const r = run(argv);
+        expect(r.code, argv.join(" ")).toBe(2);
+        expect(r.err.join("\n")).toMatch(/--home <dir> is required|--yes only goes with --apply/);
+        expect(r.out).toEqual([]);
+      }
+    } finally {
+      delete process.env.I_INC_HOME;
+    }
+    expect(git(hb, "rev-parse", "HEAD")).toBe(head);
+  });
+
+  it("errors on a --home with no value, a value that is another flag, and unknown flags", () => {
+    const { home, root } = legacy();
+    const head = git(join(root, "handbook"), "rev-parse", "HEAD");
+    for (const argv of [
+      ["--home"],
+      ["--apply", "--yes", "--home"],
+      ["--home", "--apply", "--yes"],
+      ["--home", ""],
+      [`--home=${home}`],
+      ["--home", home, "--home", home],
+      ["--home", home, "--force"],
+      ["--home", home, "--knowledge", root],
+      ["--home", home, "extra"],
+      ["--home", home, "--yes"],
+    ]) {
+      const r = run(argv);
+      expect(r.code, argv.join(" ")).toBe(2);
+      expect(r.out).toEqual([]);
+    }
+    expect(git(join(root, "handbook"), "rev-parse", "HEAD")).toBe(head);
+    expect(parseArgs(["--home", home])).toEqual({ home, apply: false, yes: false });
+    expect(parseArgs(["--home", home, "--apply", "--yes"])).toEqual({ home, apply: true, yes: true });
+  });
+
+  it("prints the resolved path and the repos before doing anything, and defaults to a dry run", () => {
+    const { home, root } = legacy();
+    const r = run(["--home", home]);
+    expect(r.code).toBe(0);
+    expect(r.out[0]).toBe(`Dry run on ${join(home, "knowledge")}`);
+    expect(r.out[1]).toBe(`  repo handbook  ${join(root, "handbook")}`);
+    expect(r.out[2]).toBe(`  repo brain:ada  ${join(root, "brains", "ada")}`);
+    expect(r.out.some((l) => l.includes("facts/gh-cli.md") && l.includes("needs-tidy"))).toBe(true);
+    expect(r.out.at(-1)).toMatch(/Dry run: nothing was written/);
+    expect(text(root, "handbook/facts/gh-cli.md")).not.toMatch(/^---/);
+  });
+
+  it("resolves a relative --home to an absolute path", () => {
+    const { home } = legacy();
+    const rel = relative(process.cwd(), home);
+    const r = run(["--home", rel]);
+    expect(r.out[0]).toBe(`Dry run on ${join(home, "knowledge")}`);
+  });
+
+  it("writes only with both --apply and --yes: --apply alone prints the repos, then refuses", () => {
+    const { home, root } = legacy();
+    const head = git(join(root, "handbook"), "rev-parse", "HEAD");
+    const refused = run(["--home", home, "--apply"]);
+    expect(refused.code).toBe(2);
+    expect(refused.out.some((l) => l.includes("repo handbook"))).toBe(true);
+    expect(refused.err.join("\n")).toMatch(/add --yes/);
+    expect(git(join(root, "handbook"), "rev-parse", "HEAD")).toBe(head);
     expect(text(root, "handbook/facts/gh-cli.md")).not.toMatch(/^---/);
 
-    out.length = 0;
-    expect(main(["--knowledge", root, "--apply"])).toBe(0);
-    expect(out[0]).toMatch(/^Applying to /);
-    expect(out.some((l) => l.startsWith("committed handbook"))).toBe(true);
+    const done = run(["--home", home, "--apply", "--yes"]);
+    expect(done.code).toBe(0);
+    expect(done.out[0]).toMatch(/^Applying to /);
+    expect(done.out.some((l) => l.startsWith("committed handbook"))).toBe(true);
     expect(text(root, "handbook/facts/gh-cli.md")).toMatch(/^---/);
+  });
 
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    expect(main(["--bogus"])).toBe(2);
-    expect(main(["--knowledge", join(root, "nope")])).toBe(1);
+  it("says so when the home has no knowledge directory", () => {
+    const { home } = legacy();
+    expect(run(["--home", join(home, "nope")]).code).toBe(1);
   });
 });

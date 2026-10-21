@@ -4,14 +4,15 @@
 // fragments, for the tidy-up to merge later. It never deletes or rewrites a page's text: the body
 // after the frontmatter is byte-for-byte what was there.
 //
-//   bun apps/daemon/scripts/brain-migrate.ts                  # dry run: print what would change
-//   bun apps/daemon/scripts/brain-migrate.ts --apply          # write it, one commit per repo
-//   bun apps/daemon/scripts/brain-migrate.ts --home ~/.i-inc  # (default: $I_INC_HOME or ~/.i-inc)
-//   bun apps/daemon/scripts/brain-migrate.ts --knowledge <dir>  # the knowledge directory itself
+// There is no default location, on purpose: a script that writes git commits must be told exactly
+// where. `--home <dir>` is required (the daemon's home; the repos are in <dir>/knowledge), and
+// writing needs both `--apply` and `--yes`.
+//
+//   bun apps/daemon/scripts/brain-migrate.ts --home <dir>                  # dry run: print what would change
+//   bun apps/daemon/scripts/brain-migrate.ts --home <dir> --apply --yes    # write it, one commit per repo
 import { execFileSync } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { isoDate, type PageMeta, parsePage, scopeOfPath, serializePage } from "@i-inc/core";
 import { KnowledgeStore, type Repo } from "../src/knowledge.ts";
 
@@ -88,19 +89,27 @@ export function migrateKnowledge(knowledgeDir: string, o: { apply?: boolean } = 
       if (!at) continue;
       const old = texts.get(sha) ?? "";
       const page = parsePage(old, at.slug);
+      // A page that already has frontmatter is migrated: leave it alone, whatever it says.
+      if (page.hasFrontmatter) {
+        report.pages.push({
+          repo: repoName(repo),
+          path,
+          action: "unchanged",
+          adds: [],
+          needsTidy: page.meta.needsTidy === true,
+        });
+        continue;
+      }
       const { sources, edits } = ticketSources(dir, path);
       const adds: string[] = [];
       const meta: PageMeta = { ...page.meta };
 
       if (page.derived.title) adds.push("title");
       if (page.derived.description) adds.push("description");
-      const writtenFront = page.hasFrontmatter;
-      if (!writtenFront || !page.meta.updated) {
-        const ms = dates.get(path);
-        if (ms !== undefined) {
-          meta.updated = isoDate(ms);
-          adds.push("updated");
-        }
+      const ms = dates.get(path);
+      if (ms !== undefined) {
+        meta.updated = isoDate(ms);
+        adds.push("updated");
       }
       if (!meta.sources.length && sources.length) {
         meta.sources = sources;
@@ -116,7 +125,7 @@ export function migrateKnowledge(knowledgeDir: string, o: { apply?: boolean } = 
         meta.needsTidy = true;
         adds.push("needs-tidy");
       }
-      if (!writtenFront) adds.unshift("frontmatter");
+      adds.unshift("frontmatter");
 
       const migrate = adds.length > 0;
       report.pages.push({
@@ -138,6 +147,8 @@ export function migrateKnowledge(knowledgeDir: string, o: { apply?: boolean } = 
     if (o.apply && writes.length) {
       for (const [path, text] of writes) writeFileSync(join(dir, path), text);
       git(dir, "add", "-A");
+      // Nothing staged is not an error (a page rewritten to the very same text).
+      if (!git(dir, "status", "--porcelain").trim()) continue;
       git(
         dir,
         "commit",
@@ -184,27 +195,55 @@ export function summarize(r: MigrationReport): string[] {
   return out;
 }
 
-export function main(argv: string[], env: Record<string, string | undefined> = process.env): number {
-  const flag = (name: string) => {
-    const i = argv.indexOf(name);
-    return i >= 0 ? argv[i + 1] : undefined;
-  };
-  const unknown = argv.filter((a) => a.startsWith("-") && !["--apply", "--home", "--knowledge"].includes(a));
-  if (unknown.length) {
-    console.error(
-      `unknown option ${unknown[0]}. Usage: brain-migrate [--apply] [--home <dir> | --knowledge <dir>]`,
-    );
+const usage = "Usage: brain-migrate --home <dir> [--apply --yes]";
+
+/** What a command line asks for, or why it can't be run. Strict: no defaults, no guessing. */
+export function parseArgs(
+  argv: string[],
+): { home: string; apply: boolean; yes: boolean } | { error: string } {
+  let home: string | undefined;
+  let apply = false;
+  let yes = false;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i] ?? "";
+    if (a === "--apply") apply = true;
+    else if (a === "--yes") yes = true;
+    else if (a === "--home") {
+      const v = argv[++i];
+      if (v === undefined || v === "" || v.startsWith("-")) return { error: "--home needs a directory" };
+      if (home !== undefined) return { error: "--home was given twice" };
+      home = v;
+    } else if (a.startsWith("--home=")) {
+      return { error: "write --home <dir>, not --home=<dir>" };
+    } else return { error: a.startsWith("-") ? `unknown option ${a}` : `unexpected argument ${a}` };
+  }
+  if (home === undefined) return { error: "--home <dir> is required (there is no default location)" };
+  if (yes && !apply) return { error: "--yes only goes with --apply" };
+  return { home, apply, yes };
+}
+
+export function main(argv: string[]): number {
+  const args = parseArgs(argv);
+  if ("error" in args) {
+    console.error(`${args.error}. ${usage}`);
     return 2;
   }
-  const knowledge =
-    flag("--knowledge") ?? join(flag("--home") ?? env.I_INC_HOME ?? join(homedir(), ".i-inc"), "knowledge");
+  const knowledge = join(resolve(args.home), "knowledge");
   if (!existsSync(knowledge)) {
     console.error(`no knowledge directory at ${knowledge}`);
     return 1;
   }
-  console.log(`${argv.includes("--apply") ? "Applying to" : "Dry run on"} ${knowledge}`);
-  for (const line of summarize(migrateKnowledge(knowledge, { apply: argv.includes("--apply") })))
+  // Say exactly what this would touch before doing anything.
+  console.log(`${args.apply && args.yes ? "Applying to" : "Dry run on"} ${knowledge}`);
+  const repos = new KnowledgeStore(knowledge).repos();
+  for (const r of repos) console.log(`  repo ${repoName(r)}  ${dirOf(knowledge, r)}`);
+  if (args.apply && !args.yes) {
+    console.error(`--apply writes git commits into the repos above; add --yes to confirm. ${usage}`);
+    return 2;
+  }
+  for (const line of summarize(migrateKnowledge(knowledge, { apply: args.apply && args.yes }))) {
     console.log(line);
+  }
   return 0;
 }
 
