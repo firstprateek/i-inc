@@ -1,0 +1,23 @@
+{
+  "name": "ahp-host-spike",
+  "private": true,
+  "type": "module",
+  "description": "T55 spike: a minimal AHP host over a scripted fake ACP agent. Not part of the pnpm workspace.",
+  "scripts": {
+    "demo": "bun src/demo.ts",
+    "test": "bun test",
+    "host": "bun src/main.ts",
+    "probe:ahpd": "bun src/probe-ahpd.ts",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@microsoft/agent-host-protocol": "1.0.0"
+  },
+  "optionalDependencies": {
+    "@ahpd/sdk": "0.13.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "typescript": "^5.7.0"
+  }
+}
