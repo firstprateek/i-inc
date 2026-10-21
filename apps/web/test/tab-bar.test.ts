@@ -127,7 +127,12 @@ describe("mobile app tab bar (T25)", () => {
     expect(needs.getAttribute("aria-selected")).toBe("true");
     expect(work.getAttribute("aria-selected")).toBe("false");
 
-    for (const h of ["#/company/settings/teams", "#/company/brain/ada", "#/company/team/hiring", "#/company/usage"]) {
+    for (const h of [
+      "#/company/settings/teams",
+      "#/company/brain/ada",
+      "#/company/team/hiring",
+      "#/company/usage",
+    ]) {
       await go(h);
       expect(company.getAttribute("aria-selected")).toBe("true");
     }

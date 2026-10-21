@@ -2,8 +2,8 @@
 // desktop, every hash from before the areas still works (rewritten in place), and each route uses its template.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { IncApp, layoutForRoute, parse, routeName } from "../src/components/app.ts";
-import { AREAS, areaOf, COMPANY_TABS, legacyTarget, tabOf, WORK_TABS } from "../src/routes.ts";
 import { IncLogin } from "../src/login.ts";
+import { AREAS, areaOf, COMPANY_TABS, legacyTarget, tabOf, WORK_TABS } from "../src/routes.ts";
 
 const phone = (matches: boolean) =>
   vi.stubGlobal("matchMedia", (query: string) => ({
@@ -89,24 +89,34 @@ describe("old hashes keep working", () => {
   });
 
   it("leaves new hashes and push-notification links alone", () => {
-    for (const h of ["#/work/board", "#/company/team", "#/conversations/ada", "#/ticket/7", "#/ticket/7/assign", ""])
+    for (const h of [
+      "#/work/board",
+      "#/company/team",
+      "#/conversations/ada",
+      "#/ticket/7",
+      "#/ticket/7/assign",
+      "",
+    ])
       expect(legacyTarget(h)).toBeNull();
   });
 
-  it.each(legacy)("the app rewrites %s to %s in place, without a new history entry", async (old, canonical) => {
-    phone(false);
-    vi.stubGlobal("fetch", () => new Promise(() => {}));
-    history.replaceState(null, "", "/");
-    location.hash = old;
-    const before = history.length;
-    const app = new IncApp();
-    document.body.append(app);
-    await app.updateComplete;
-    expect(location.hash).toBe(canonical);
-    expect(history.length).toBe(before);
-    expect(app.route).toEqual(parse(canonical));
-    app.remove();
-  });
+  it.each(legacy)(
+    "the app rewrites %s to %s in place, without a new history entry",
+    async (old, canonical) => {
+      phone(false);
+      vi.stubGlobal("fetch", () => new Promise(() => {}));
+      history.replaceState(null, "", "/");
+      location.hash = old;
+      const before = history.length;
+      const app = new IncApp();
+      document.body.append(app);
+      await app.updateComplete;
+      expect(location.hash).toBe(canonical);
+      expect(history.length).toBe(before);
+      expect(app.route).toEqual(parse(canonical));
+      app.remove();
+    },
+  );
 
   it("rewrites an old hash that is followed while the app is open, too", async () => {
     phone(false);
@@ -129,7 +139,14 @@ describe("areas and tabs", () => {
     expect(areaOf(parse("#/conversations/ada"))).toBe("conversations");
     expect(areaOf(parse("#/work/releases"))).toBe("work");
     expect(areaOf(parse("#/ticket/3"))).toBe("work");
-    for (const h of ["#/company", "#/company/team/hiring", "#/company/brain/ada", "#/company/projects", "#/company/usage", "#/company/settings/engines"])
+    for (const h of [
+      "#/company",
+      "#/company/team/hiring",
+      "#/company/brain/ada",
+      "#/company/projects",
+      "#/company/usage",
+      "#/company/settings/engines",
+    ])
       expect(areaOf(parse(h))).toBe("company");
   });
 

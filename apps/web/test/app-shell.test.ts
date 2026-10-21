@@ -248,7 +248,9 @@ describe("the shell", () => {
     trigger.click();
     await app.updateComplete;
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
-    const items = [...root.querySelectorAll('.account-menu [role="menuitem"]')].map((i) => i.textContent?.trim());
+    const items = [...root.querySelectorAll('.account-menu [role="menuitem"]')].map((i) =>
+      i.textContent?.trim(),
+    );
     expect(items).toEqual(["Switch to dark theme", "Sign out"]);
     await go("#/work/board");
     expect(root.querySelector(".account-menu")).toBeNull();
@@ -265,7 +267,9 @@ describe("the shell", () => {
     expect(root.querySelector(".account-menu")).toBeNull();
     (root.querySelector(".account-trigger") as HTMLButtonElement).click();
     await app.updateComplete;
-    expect(root.querySelector('.account-menu [role="menuitem"]')?.textContent?.trim()).toBe("Switch to light theme");
+    expect(root.querySelector('.account-menu [role="menuitem"]')?.textContent?.trim()).toBe(
+      "Switch to light theme",
+    );
     delete document.documentElement.dataset.theme;
   });
 
