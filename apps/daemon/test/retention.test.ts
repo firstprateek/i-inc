@@ -1,14 +1,17 @@
 // Host retention (T52): transcript compaction, VACUUM, log rotation and stale backups. Everything
 // runs on temp folders and temp databases; the real ~/.i-inc and ~/Library/Logs are never touched.
 import {
+  closeSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   statSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -164,15 +167,15 @@ describe("rotating logs", () => {
   it("gzips a log over the limit, truncates it in place and keeps the newest copies", async () => {
     const dir = tmp();
     write(dir, "i-inc-daemon.log", 3000, "1");
-    const first = await rotateLogs(dir, { maxBytes: 1000, keep: 2 });
+    const first = await rotateLogs(dir, { maxBytes: 1000, keep: 2, settleMs: 0 });
     expect(first).toEqual([{ file: "i-inc-daemon.log", bytes: 3000 }]);
     expect(statSync(join(dir, "i-inc-daemon.log")).size).toBe(0);
     expect(gunzipSync(readFileSync(join(dir, "i-inc-daemon.log.1.gz"))).toString()).toBe("1".repeat(3000));
 
     write(dir, "i-inc-daemon.log", 2000, "2");
-    await rotateLogs(dir, { maxBytes: 1000, keep: 2 });
+    await rotateLogs(dir, { maxBytes: 1000, keep: 2, settleMs: 0 });
     write(dir, "i-inc-daemon.log", 2000, "3");
-    await rotateLogs(dir, { maxBytes: 1000, keep: 2 });
+    await rotateLogs(dir, { maxBytes: 1000, keep: 2, settleMs: 0 });
 
     expect(gunzipSync(readFileSync(join(dir, "i-inc-daemon.log.1.gz"))).toString()[0]).toBe("3");
     expect(gunzipSync(readFileSync(join(dir, "i-inc-daemon.log.2.gz"))).toString()[0]).toBe("2");
@@ -187,12 +190,41 @@ describe("rotating logs", () => {
     write(dir, "i-inc-daemon.log.4.gz", 10);
     write(dir, "i-inc-daemon.log", 10);
     write(dir, "i-inc-daemon.log.1.gz", 10);
-    const r = await rotateLogs(dir, { maxBytes: 1000, keep: 2 });
+    const r = await rotateLogs(dir, { maxBytes: 1000, keep: 2, settleMs: 0 });
     expect(r).toEqual([]);
     expect(statSync(join(dir, "other.log")).size).toBe(5000);
     expect(statSync(join(dir, "i-inc-container.log")).size).toBe(500);
     expect(existsSync(join(dir, "i-inc-daemon.log.4.gz"))).toBe(false);
     expect(existsSync(join(dir, "i-inc-daemon.log.1.gz"))).toBe(true);
+  });
+
+  it("copies then truncates, leaves no temp file, and loses nothing a writer that appends logs afterwards", async () => {
+    const dir = tmp();
+    const file = join(dir, "i-inc-daemon.log");
+    writeFileSync(file, "old line\n".repeat(300));
+    // launchd opens the log for appending, and keeps the descriptor.
+    const fd = openSync(file, "a");
+    const r = await rotateLogs(dir, { maxBytes: 1000, keep: 2, settleMs: 30 });
+    writeSync(fd, "new line\n");
+    closeSync(fd);
+    expect(r[0]?.nulAtStart).toBeUndefined();
+    expect(readFileSync(file, "utf8")).toBe("new line\n");
+    expect(gunzipSync(readFileSync(`${file}.1.gz`)).toString()).toBe("old line\n".repeat(300));
+    expect(existsSync(`${file}.rotating`)).toBe(false);
+  });
+
+  it("warns when the log starts with NUL bytes because its writer doesn't append", async () => {
+    const dir = tmp();
+    const file = join(dir, "i-inc-daemon.log");
+    writeFileSync(file, "x".repeat(3000));
+    // A writer holding a plain descriptor at its old offset: its next write lands past the new end.
+    const fd = openSync(file, "r+");
+    writeSync(fd, "y", 2999);
+    setTimeout(() => writeSync(fd, "late line\n", 3000), 20);
+    const r = await rotateLogs(dir, { maxBytes: 1000, keep: 2, settleMs: 80 });
+    closeSync(fd);
+    expect(r).toEqual([{ file: "i-inc-daemon.log", bytes: 3000, nulAtStart: true }]);
+    expect(readFileSync(file)[0]).toBe(0);
   });
 
   it("reports and changes nothing in a dry run, and survives a missing folder", async () => {
@@ -213,16 +245,16 @@ describe("stale backups", () => {
   };
 
   it("matches only the daemon's own backup names", () => {
-    expect(backupName.test("i-inc.db.bak-20260901")).toBe(true);
-    expect(backupName.test("i-inc.db.bak-before-vacuum")).toBe(true);
-    expect(backupName.test("demo.db.bak-1")).toBe(true);
+    expect(backupName.test("i-inc.db.autobak-20260901")).toBe(true);
+    expect(backupName.test("i-inc.db.autobak-before-vacuum")).toBe(true);
+    expect(backupName.test("demo.db.autobak-1")).toBe(true);
     for (const n of [
       "i-inc.db",
       "i-inc.db-wal",
       "notes.bak-1",
       "i-inc.db.bak",
-      "i-inc.db.bak-",
-      "../i-inc.db.bak-1",
+      "i-inc.db.autobak-",
+      "../i-inc.db.autobak-1",
     ]) {
       expect(backupName.test(n)).toBe(false);
     }
@@ -230,44 +262,58 @@ describe("stale backups", () => {
 
   it("deletes old ones, keeps recent ones and always the newest, and leaves everything else", async () => {
     const dir = tmp();
-    make(dir, "i-inc.db.bak-20250101", 300);
-    make(dir, "i-inc.db.bak-20250601", 100);
-    make(dir, "i-inc.db.bak-20260901", 50);
-    make(dir, "i-inc.db.bak-20261015", 6);
+    make(dir, "i-inc.db.autobak-20250101", 300);
+    make(dir, "i-inc.db.autobak-20250601", 100);
+    make(dir, "i-inc.db.autobak-20260901", 50);
+    make(dir, "i-inc.db.autobak-20261015", 6);
     make(dir, "i-inc.db", 400);
     make(dir, "notes.bak-1", 400);
-    mkdirSync(join(dir, "i-inc.db.bak-dir"));
-    symlinkSync(dir, join(dir, "i-inc.db.bak-link"));
+    mkdirSync(join(dir, "i-inc.db.autobak-dir"));
+    symlinkSync(dir, join(dir, "i-inc.db.autobak-link"));
 
     const r = await pruneBackups(dir, { maxAgeDays: 30, now });
 
     expect(r.deleted.map((d) => d.name).sort()).toEqual([
-      "i-inc.db.bak-20250101",
-      "i-inc.db.bak-20250601",
-      "i-inc.db.bak-20260901",
+      "i-inc.db.autobak-20250101",
+      "i-inc.db.autobak-20250601",
+      "i-inc.db.autobak-20260901",
     ]);
-    expect(existsSync(join(dir, "i-inc.db.bak-20261015"))).toBe(true);
-    for (const keep of ["i-inc.db", "notes.bak-1", "i-inc.db.bak-dir", "i-inc.db.bak-link"]) {
+    expect(existsSync(join(dir, "i-inc.db.autobak-20261015"))).toBe(true);
+    for (const keep of ["i-inc.db", "notes.bak-1", "i-inc.db.autobak-dir", "i-inc.db.autobak-link"]) {
       expect(existsSync(join(dir, keep))).toBe(true);
+    }
+  });
+
+  it("never deletes a backup somebody made by hand, however old", async () => {
+    const dir = tmp();
+    make(dir, "i-inc.db.bak-20240101", 700);
+    make(dir, "i-inc.db.bak-before-upgrade", 900);
+    make(dir, "demo.db.bak-1", 900);
+    make(dir, "i-inc.db.autobak-20240101", 700);
+    make(dir, "i-inc.db.autobak-20261015", 2);
+    const r = await pruneBackups(dir, { maxAgeDays: 30, now });
+    expect(r.deleted.map((d) => d.name)).toEqual(["i-inc.db.autobak-20240101"]);
+    for (const hand of ["i-inc.db.bak-20240101", "i-inc.db.bak-before-upgrade", "demo.db.bak-1"]) {
+      expect(existsSync(join(dir, hand))).toBe(true);
     }
   });
 
   it("keeps the newest backup even when all of them are old", async () => {
     const dir = tmp();
-    make(dir, "i-inc.db.bak-a", 200);
-    make(dir, "i-inc.db.bak-b", 100);
+    make(dir, "i-inc.db.autobak-a", 200);
+    make(dir, "i-inc.db.autobak-b", 100);
     await pruneBackups(dir, { maxAgeDays: 30, now });
-    expect(existsSync(join(dir, "i-inc.db.bak-b"))).toBe(true);
-    expect(existsSync(join(dir, "i-inc.db.bak-a"))).toBe(false);
+    expect(existsSync(join(dir, "i-inc.db.autobak-b"))).toBe(true);
+    expect(existsSync(join(dir, "i-inc.db.autobak-a"))).toBe(false);
   });
 
   it("deletes nothing in a dry run or with the limit off", async () => {
     const dir = tmp();
-    make(dir, "i-inc.db.bak-a", 200);
-    make(dir, "i-inc.db.bak-b", 100);
+    make(dir, "i-inc.db.autobak-a", 200);
+    make(dir, "i-inc.db.autobak-b", 100);
     expect((await pruneBackups(dir, { maxAgeDays: 30, now, dryRun: true })).deleted).toHaveLength(1);
     expect((await pruneBackups(dir, { maxAgeDays: 0, now })).deleted).toHaveLength(0);
-    expect(existsSync(join(dir, "i-inc.db.bak-a"))).toBe(true);
+    expect(existsSync(join(dir, "i-inc.db.autobak-a"))).toBe(true);
   });
 });
 
@@ -303,6 +349,7 @@ describe("host maintenance", () => {
       hostBusy: () => false,
       ticketActive: () => false,
       footprint: () => ({}),
+      logSettleMs: 0,
     });
     return { app, storage, home, logDir, logs };
   }
@@ -354,25 +401,44 @@ describe("host maintenance", () => {
     expect(logs.filter((l) => l.startsWith("[storage] host:"))).toHaveLength(3);
   });
 
+  it("logs a warning when a rotated log starts with NUL bytes", async () => {
+    const { storage, logDir, logs } = await storageFor();
+    const file = join(logDir, "i-inc-daemon.log");
+    writeFileSync(file, "x".repeat(21 * 1024 ** 2));
+    const fd = openSync(file, "r+");
+    writeSync(fd, "y", 21 * 1024 ** 2 - 1);
+    // Written after the truncation, at the old offset, by a writer that doesn't append.
+    const writer = setInterval(() => writeSync(fd, "late\n", 21 * 1024 ** 2), 5);
+    (storage as unknown as { d: { logSettleMs: number } }).d.logSettleMs = 150;
+    await storage.maintainHost({ manual: true });
+    clearInterval(writer);
+    closeSync(fd);
+    expect(
+      logs.some(
+        (l) => l.includes("warning: i-inc-daemon.log begins with NUL bytes") && l.includes("O_APPEND"),
+      ),
+    ).toBe(true);
+  });
+
   it("rotates logs, deletes stale backups and reports it all, and a dry run touches nothing", async () => {
     const { app, storage, home, logDir } = await storageFor();
     writeFileSync(join(logDir, "i-inc-daemon.log"), "x".repeat(21 * 1024 ** 2));
-    writeFileSync(join(home, "i-inc.db.bak-old"), "x");
-    writeFileSync(join(home, "i-inc.db.bak-new"), "x");
+    writeFileSync(join(home, "i-inc.db.autobak-old"), "x");
+    writeFileSync(join(home, "i-inc.db.autobak-new"), "x");
     const old = new Date(app.clock.now() - 40 * DAY);
-    utimesSync(join(home, "i-inc.db.bak-old"), old, old);
+    utimesSync(join(home, "i-inc.db.autobak-old"), old, old);
 
     const dry = await storage.maintainHost({ dryRun: true });
     expect(dry.logs).toHaveLength(1);
-    expect(dry.backups.map((b) => b.name)).toEqual(["i-inc.db.bak-old"]);
+    expect(dry.backups.map((b) => b.name)).toEqual(["i-inc.db.autobak-old"]);
     expect(statSync(join(logDir, "i-inc-daemon.log")).size).toBe(21 * 1024 ** 2);
-    expect(existsSync(join(home, "i-inc.db.bak-old"))).toBe(true);
+    expect(existsSync(join(home, "i-inc.db.autobak-old"))).toBe(true);
 
     const real = await storage.maintainHost({ manual: true });
     expect(real.logs).toHaveLength(1);
     expect(statSync(join(logDir, "i-inc-daemon.log")).size).toBe(0);
-    expect(existsSync(join(home, "i-inc.db.bak-old"))).toBe(false);
-    expect(existsSync(join(home, "i-inc.db.bak-new"))).toBe(true);
+    expect(existsSync(join(home, "i-inc.db.autobak-old"))).toBe(false);
+    expect(existsSync(join(home, "i-inc.db.autobak-new"))).toBe(true);
 
     const report = await storage.report();
     expect(report.host.lastMaintenance?.logs).toHaveLength(1);

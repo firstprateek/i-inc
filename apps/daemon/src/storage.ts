@@ -25,6 +25,7 @@ import {
   gcRepo,
   logName,
   pruneBackups,
+  type RotateResult,
   rotateLogs,
   vacuumIfNeeded,
 } from "./retention.ts";
@@ -87,6 +88,8 @@ export interface StorageDeps {
   /** Ask a machine to hand freed blocks back to the host. */
   trim?: boolean;
   memory?: () => NodeJS.MemoryUsage;
+  /** How long after truncating a log to wait before checking its start (default 2 s). */
+  logSettleMs?: number;
 }
 
 export interface FsUsage {
@@ -151,7 +154,7 @@ export interface HostMaintenance {
   skipped?: string;
   transcripts: { tickets: number; sessions: number; itemsRemoved: number };
   vacuum: { ran: boolean; reason?: string; freeBytes: number; freePct: number };
-  logs: { file: string; bytes: number }[];
+  logs: RotateResult[];
   backups: { name: string; bytes: number }[];
   gc: string[];
   errors: string[];
@@ -621,7 +624,13 @@ export class Storage {
           maxBytes: settings.logMaxMb * 1024 ** 2,
           keep: settings.logKeep,
           dryRun,
+          ...(this.d.logSettleMs !== undefined ? { settleMs: this.d.logSettleMs } : {}),
         });
+        for (const l of out.logs.filter((x) => x.nulAtStart)) {
+          this.log(
+            `warning: ${l.file} begins with NUL bytes after rotating, so its writer doesn't append; switch the daemon to its own log writer (O_APPEND) rather than rotating by truncation`,
+          );
+        }
       });
       await step("backups", async () => {
         if (settings.backupMaxAgeDays <= 0) return;

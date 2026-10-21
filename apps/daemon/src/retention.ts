@@ -4,7 +4,7 @@
 // and the brains are only measured.
 import { execFile } from "node:child_process";
 import { createReadStream, createWriteStream } from "node:fs";
-import { lstat, readdir, rename, rm, truncate } from "node:fs/promises";
+import { copyFile, lstat, open, readdir, rename, rm, truncate } from "node:fs/promises";
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
@@ -183,17 +183,39 @@ export const logName = /^i-inc-[a-z0-9-]+\.log$/;
 export interface RotateResult {
   file: string;
   bytes: number;
+  /**
+   * The log began with NUL bytes shortly after it was truncated: whatever writes it doesn't append,
+   * so its next write landed at the old offset and left a hole. Switch that writer to O_APPEND (the
+   * daemon can write its own log file) instead of rotating by truncation.
+   */
+  nulAtStart?: boolean;
+}
+
+/** Whether a file's first bytes are NUL, as when a writer that doesn't append wrote past a truncation. */
+async function startsWithNul(file: string): Promise<boolean> {
+  const fh = await open(file, "r");
+  try {
+    const buf = Buffer.alloc(64);
+    const { bytesRead } = await fh.read(buf, 0, 64, 0);
+    return bytesRead > 0 && buf[0] === 0;
+  } finally {
+    await fh.close();
+  }
 }
 
 /**
- * Rotates the i.inc logs in `dir` that are over `maxBytes`: the log is gzipped to <log>.1.gz (the
- * older ones shift up and the one past `keep` goes) and then truncated in place. launchd keeps the
- * file open for appending, so the daemon goes on writing to the same file; renaming it would not
- * work, because it would go on writing to the renamed one.
+ * Rotates the i.inc logs in `dir` that are over `maxBytes`. launchd keeps the log open, so the file
+ * can't be renamed (the writer would go on writing to the renamed one): it is copied, then truncated
+ * in place, and the copy is gzipped to <log>.1.gz (older copies shift up and the one past `keep` goes).
+ * The copy is a plain file copy and the truncation follows it at once, to keep the gap short. A line
+ * written between the end of the copy and the truncation is lost, and that gap is the only loss.
+ *
+ * It then waits `settleMs` and looks at the start of the log: if it begins with NUL bytes, the writer
+ * doesn't append (launchd is expected to), and the result says so.
  */
 export async function rotateLogs(
   dir: string,
-  o: { maxBytes: number; keep: number; dryRun?: boolean },
+  o: { maxBytes: number; keep: number; dryRun?: boolean; settleMs?: number },
 ): Promise<RotateResult[]> {
   const rotated: RotateResult[] = [];
   let names: string[];
@@ -218,28 +240,31 @@ export async function rotateLogs(
       }
     }
     if (!st.isFile() || st.size <= o.maxBytes) continue;
-    rotated.push({ file: name, bytes: st.size });
+    const result: RotateResult = { file: name, bytes: st.size };
+    rotated.push(result);
     if (o.dryRun) continue;
     await rm(`${file}.${o.keep}.gz`, { force: true });
     for (let n = o.keep - 1; n >= 1; n--) {
       await rename(`${file}.${n}.gz`, `${file}.${n + 1}.gz`).catch(() => {});
     }
-    // Only the bytes that were there when we looked; lines written meanwhile are in the next copy.
-    const size = st.size;
-    await pipeline(
-      createReadStream(file, { start: 0, end: size - 1 }),
-      createGzip(),
-      createWriteStream(`${file}.1.gz`),
-    );
+    const copy = `${file}.rotating`;
+    await copyFile(file, copy);
     await truncate(file, 0);
+    await pipeline(createReadStream(copy), createGzip(), createWriteStream(`${file}.1.gz`));
+    await rm(copy, { force: true });
+    await new Promise((r) => setTimeout(r, o.settleMs ?? 2000));
+    if (await startsWithNul(file).catch(() => false)) result.nulAtStart = true;
   }
   return rotated;
 }
 
 // --- backups -------------------------------------------------------------------------------------
 
-/** The names the daemon's own database backups have: i-inc.db.bak-<date or label>. */
-export const backupName = /^(?:i-inc|demo)\.db\.bak-[A-Za-z0-9._-]+$/;
+/**
+ * The names of backups the daemon makes itself: i-inc.db.autobak-<date or label>. A backup somebody
+ * made by hand (i-inc.db.bak-…) never matches, so it is never deleted here.
+ */
+export const backupName = /^(?:i-inc|demo)\.db\.autobak-[A-Za-z0-9._-]+$/;
 
 export interface BackupResult {
   deleted: { name: string; bytes: number }[];
@@ -247,7 +272,7 @@ export interface BackupResult {
 }
 
 /**
- * Deletes database backups in `dir` that match the daemon's naming and are older than `maxAgeDays`.
+ * Deletes database backups in `dir` that the daemon made (its own `autobak` naming) and are older than `maxAgeDays`.
  * The newest backup is never deleted, however old, and neither is anything that doesn't match the
  * name or isn't a plain file.
  */

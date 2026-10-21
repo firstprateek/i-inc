@@ -87,15 +87,15 @@ contract C23 in [coord.md](coord.md)).
 
 | What | Where | Kept |
 | --- | --- | --- |
-| A ticket's worktree (with `node_modules`, build output), a reviewer's or verifier's copy of the branch, and the ticket's images in them | `/home/employee/work/inc-<ticket>` in each team machine that worked on it | 3 days after the ticket closes or fails (`sandboxCleanupDays`; 0 turns it off). A copy with unpushed commits or uncommitted changes stays 30 days (`unpushedKeepDays`), unless the ticket merged. The branch stays on GitHub |
+| A ticket's worktree (with `node_modules`, build output), a reviewer's or verifier's copy of the branch, and the ticket's images in them | `/home/employee/work/inc-<ticket>` in each team machine that worked on it | 3 days after the ticket closes or fails (`sandboxCleanupDays`; 0 turns it off). A copy stays whenever git can't vouch for it: any git failure, no git, unpushed commits or uncommitted changes. Copies with unpushed or uncommitted work go only after `unpushedKeepDays` (default 30, and it must be more than `sandboxCleanupDays`; the API refuses a pair that breaks this). The owner approving a ticket only lets uncommitted noise go, and only after a fresh `git fetch` shows HEAD is already on a remote branch; it never releases unpushed commits. The branch stays on GitHub |
 | Package caches | `~/.cache` rebuildable folders, `~/.npm/_cacache`, the pnpm store | Under 2 GB each (`cacheCapGb`); over it, they are emptied, or `pnpm store prune` runs |
 | Docker leftovers in a machine | stopped containers (3 days), dangling images, build cache (7 days) | Pruned each cleanup (`dockerPrune`) |
 | Session transcripts | `ticket_session_items` | Every ticket's while open; 30 days after close, each session keeps its last 50 items and one line saying what went (`transcriptCompactDays`, `transcriptKeepItems`). Always capped at 500 items of 4 KB per session and 50 sessions per ticket |
 | Events, chat, push and knowledge bookkeeping | SQLite | Forever: the event log is the source of truth, and the dedupe keys must stay or old events would notify again. They are small, and reported |
 | Images you upload | `ticket_attachments` | Forever. At most 6 per request, 10 MB each, 24 per ticket; reported, never deleted |
 | The database file | `~/.i-inc/i-inc.db` | `VACUUM` when 20% of it is free pages (and 16 MB), only while no ticket is running (`vacuumFreePct`); the write-ahead log is truncated |
-| Logs | `~/Library/Logs/i-inc-*.log` | Rotated at 20 MB (copy to `.1.gz`, truncate in place), 5 kept (`logMaxMb`, `logKeep`) |
-| Database backups | `~/.i-inc/i-inc.db.bak-*` (the daemon makes none itself) | Deleted after 30 days, except the newest (`backupMaxAgeDays`); nothing else in that folder is touched |
+| Logs | `~/Library/Logs/i-inc-*.log` | Rotated at 20 MB: copied, truncated in place at once (launchd keeps the file open) and gzipped to `.1.gz`, 5 kept (`logMaxMb`, `logKeep`). A line written in the gap between copy and truncation is lost. If the log starts with NUL bytes afterwards, its writer doesn't append: the daemon logs a warning, and the fix is to have the daemon write its own log file with O_APPEND |
+| Database backups | `~/.i-inc/i-inc.db.autobak-*` (the daemon makes none yet) | Deleted after 30 days, except the newest (`backupMaxAgeDays`). A backup made by hand (`i-inc.db.bak-*`) is never touched, nor anything else in that folder |
 | Brains and handbook | `~/.i-inc/knowledge` | Kept; `git gc --auto` weekly |
 | Releases, `deploys.jsonl` | `~/i-inc-releases`, `~/.i-inc/deploys.jsonl` (T54) | The deployer's: measured here, not changed |
 | Container data | `~/Library/Application Support/com.apple.container` (68 GB on 2026-10-20) | Measured with `du`, never changed. Images and machine disk files live here; the disk file of a machine is sparse and only shrinks if the machine hands blocks back (`fstrim`, tried after each cleanup, best effort: confirm on the mini that the number drops) |
@@ -103,6 +103,10 @@ contract C23 in [coord.md](coord.md)).
 **How the cleanup runs.** The daemon cleans a team's machine when it is already up and nothing is
 using it: no session, and no running ticket whose builder or helper works there. It does it just
 before it would stop the machine, so a cleanup never wakes one, at most once an hour per machine.
+It locks the machine first: a session, ticket or conversation turn that wants to start there waits
+(up to 5 minutes, and the ticket says its sandbox is being cleaned up), and the use is checked once
+more right before the delete step. Conversations (T59) must call `storage.untilFree(machine, ms)`
+before they start in a machine. VACUUM waits for the same busy notion as `GET /api/health`.
 One script goes in on stdin (`machine run -i … bash -s`) and touches only `inc-<id>` and
 `inc-<id>.pre-checkout` folders of tickets the daemon says are over, never a symlink or a folder
 whose real path differs, and the caches above. The host side (transcripts, VACUUM, logs, backups)
@@ -129,7 +133,7 @@ A machine that isn't running is skipped, with the reason in the answer.
 
 **Not done.** Container images and build cache on the host (`container image ls` and its prune) are
 a manual step; the commands weren't confirmed on the mini. Conversations' working copies
-(`conv-<id>`, T59) need adding to `cleanupScript` when they exist. The tick reads every ticket's
+(`conv-<id>`, T59) need adding to `cleanupScript` when they exist. Whether `git fetch` works inside a copy (it needs the sandbox's GitHub sign-in as a git credential) is unconfirmed on the mini; if it doesn't, a merged ticket's dirty copy waits for `unpushedKeepDays`. The tick reads every ticket's
 events each 30 seconds, so its cost grows with the number of tickets (for T63).
 
 ## Next steps, in order

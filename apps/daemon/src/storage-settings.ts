@@ -18,7 +18,7 @@ export interface StorageSettings {
   transcriptCompactDays: number;
   /** Transcript items kept per session when a closed ticket's transcripts are compacted. */
   transcriptKeepItems: number;
-  /** Days before the daemon's own database backups (i-inc.db.bak-*) are deleted. 0 turns it off. */
+  /** Days before the daemon's own database backups (i-inc.db.autobak-*) are deleted. 0 turns it off. */
   backupMaxAgeDays: number;
   /** A log file over this many MB is rotated. */
   logMaxMb: number;
