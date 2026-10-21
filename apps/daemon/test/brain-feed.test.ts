@@ -318,7 +318,7 @@ describe("path safety", () => {
       const hostile = (args: string[]) => {
         spawnSync("tar", ["-cf", join(work, "h.tar"), ...args], { cwd: join(work, "src") });
         const b64 = readFileSync(join(work, "h.tar")).toString("base64");
-        return script.replace(/(<<'__INC_TAR__'\n)[\s\S]*?(\n__INC_TAR__)/, `$1${b64}$2`);
+        return script.replace(/(<<'__INC_TAR__'[^\n]*\n)[\s\S]*?(\n__INC_TAR__)/, `$1${b64}$2`);
       };
       for (const evil of [hostile(["evil"])]) {
         const out = spawnSync("bash", ["-s"], { input: evil, encoding: "utf8" });

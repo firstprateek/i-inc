@@ -308,6 +308,34 @@ export class KnowledgeStore {
   }
 
   /**
+   * HEAD's commit id read straight from the repo's files (no git process), or null when that isn't
+   * plain: no commits yet, a detached HEAD in an odd shape, a ref only git can resolve. The index
+   * compares it with the HEAD it has read on every look, so an outside commit is seen at once.
+   */
+  headSha(repo: Repo): string | null {
+    const dir = join(this.dir(repo), ".git");
+    const read = (f: string) => {
+      try {
+        return readFileSync(join(dir, f), "utf8").trim();
+      } catch {
+        return null;
+      }
+    };
+    const head = read("HEAD");
+    if (head === null) return null;
+    if (/^[0-9a-f]{40}$/.test(head)) return head;
+    const ref = /^ref: (refs\/[A-Za-z0-9._/-]+)$/.exec(head)?.[1];
+    if (!ref || ref.includes("..")) return null;
+    const loose = read(ref);
+    if (loose && /^[0-9a-f]{40}$/.test(loose)) return loose;
+    for (const line of (read("packed-refs") ?? "").split("\n")) {
+      const m = /^([0-9a-f]{40}) (.+)$/.exec(line);
+      if (m && m[2] === ref) return m[1] ?? null;
+    }
+    return null;
+  }
+
+  /**
    * HEAD and its first parent (null for a first commit), or null for a repo without commits. The
    * index stores the HEAD it has read, and trusts an incremental update only when this commit's
    * parent is that one.

@@ -536,7 +536,9 @@ shorter loop:
   throwaway session with open internet and no home data runs it, on any engine, and returns the
   results. Briefs are logged, and you can ask to approve each one before it runs.
 - **The PA's brain stays home too.** It holds personal facts, so it lives only on the host (with
-  local backups) and is never pushed to GitHub.
+  local backups) and is never pushed to GitHub. A copy of it goes into the PA's own sandbox only, and a PA
+  always has a sandbox to itself (hiring makes it a team of one), because everyone in a sandbox shares one
+  Unix user.
 
 ### Outbound permissions
 

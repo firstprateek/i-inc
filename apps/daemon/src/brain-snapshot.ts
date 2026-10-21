@@ -104,7 +104,7 @@ export function applyScript(o: ApplyOptions): string {
     `MODE=${o.base === undefined ? "full" : "delta"}`,
     "tmp=$(mktemp -d) && trap 'rm -rf \"$tmp\"' EXIT",
     applyBody,
-    `base64 -d > "$tmp/in.tar" <<'__INC_TAR__'`,
+    `base64 -d > "$tmp/in.tar" <<'__INC_TAR__' && B64=1`,
     wrap(tar(files, Math.floor(o.at / 1000)).toString("base64")),
     "__INC_TAR__",
     `cat > "$tmp/manifest" <<'__INC_MANIFEST__'`,

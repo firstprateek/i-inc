@@ -308,10 +308,32 @@ that applies it in the sandbox), `brain-tar.ts`, `brain-cli.cjs` (the `brain` co
   page is sent once, and the maps again only when they changed or the agent lost its memory. Untrusted pages
   (`source: external`) are marked. The employee's `personality` page is never retrieved (the brief carries it).
   Demo mode has no sandboxes and adds nothing.
-- **Shared sandbox, residual risk.** Inside a team sandbox all employees are the same Unix user ("lenient inside their
-  machine", spec §5), so an agent could read a colleague's folder under `/home/employee/brain/` with its own tools,
-  just as it could read anything else there. The daemon never puts one employee's brain in another's folder or prompt.
-  Making it impossible needs a user per employee in the image (an owner decision, not done).
+- **Home data and shared sandboxes.** Inside a team sandbox all employees are the same Unix user, with the internet
+  open, so a PA's brain (home data, spec §7) must never be copied into a sandbox anyone else works in. **Chosen:** hiring a
+  PA (role "Personal Assistant") without a `teamId` creates a team `home-<id>` ("<Name>'s home") with only the PA in it,
+  so it has `inc-home-<id>` to itself; naming a team that has other members is refused (400, `needs a sandbox of its
+  own`), as is moving a PA, a change of role into a PA, putting anyone into a PA's team, or `PUT /api/teams/:id` with a
+  PA and someone else. A PA that was hired before this and still shares a sandbox gets **no copy** (its prompts still get
+  its own pages) and the daemon removes any copy of it there, once per start: move it into a team of its own
+  (`PUT /api/teams/home-<id>` with `{"name": "…", "members": ["<id>"]}`, then `PUT /api/employees/<id>` with
+  `{"teamId": "home-<id>"}`). A PA's own brain is part of a session only for errands and orientation and for
+  conversations with no project, never for code work. A copy is removed from the machine an employee moved away from
+  (also when they leave). Ordinary employees of one team still share a Unix user, so an agent could read a colleague's
+  folder under `/home/employee/brain/` with its own tools; the daemon never puts one employee's brain in another's
+  folder or prompt, and making it impossible needs a user per employee in the image (an owner decision, not done).
+- **What the sandbox image must have.** Nothing is installed by the daemon, so these must be in the image (the current
+  one has them, checked by reading the Dockerfile, not on a live machine): `bash`, `git` 2.28 or later, GNU `tar`,
+  coreutils (`base64 -d`, `comm`, `sort`, `cp`, `mv`, `rm`, `cut`, `wc`, `tr`, `mkdir`, `dirname`, `chmod`, `mktemp`,
+  `cat`), `find`, `sed`, `awk`, `grep`, and for `brain search` Node 22.13+ whose `node:sqlite` has FTS5, as `node` on
+  PATH. The apply script checks them first and, if one is missing, copies nothing and the log says so
+  (`couldn't copy <employee>'s brain into <machine>: the sandbox has no comm, which copying the brain needs`); the
+  session goes on, and its prompt says the copy isn't available. A Node without SQLite FTS5 only loses `brain search`
+  (log: `no usable Node with SQLite FTS5`).
+- **How big a brief gets.** The maps are cut to about 150 lines in all (closest scope first, the rest summarised with a
+  pointer to `brain search`), and the pages to about 3,000 tokens. Measured with `I_INC_BENCH=1` (test
+  `brain-bench.test.ts`): a brief on a brain of 1,000 pages is about 6.2 KB (about 1,550 tokens with the pages that
+  matched) and at 10,000 pages about 6.3 KB, 149 map lines; a conversation sends each scope's map again only when that
+  map changed.
 - **Seeing it.** `GET /api/tickets/:id/sessions` has `brain` per session (the ticket page lists them under each
   stage); the conversation's `_meta["iinc.brain"]` feeds the context panel. A page put in a prompt or opened by the
   agent (a tool call whose file location is in its copy) counts toward `use_count` and `last_used_at`.

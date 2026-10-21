@@ -112,9 +112,6 @@ export class BrainIndex implements RetrievalSource {
   /** Built maps by scope. Pages only change through `sync` and `rebuild`, which clear it. */
   private readonly maps = new Map<string, BuiltMap>();
 
-  /** When `refresh` last looked, so a busy caller can ask often and cost little. */
-  private refreshedAt = 0;
-
   private constructor(
     private readonly db: Db,
     private readonly store: KnowledgeStore,
@@ -293,8 +290,11 @@ export class BrainIndex implements RetrievalSource {
    * blob id and only changed pages are re-read.
    */
   sync(repo: Repo, paths?: string[], stampMs?: number): void {
-    const head = this.store.head(repo);
     const indexed = this.indexedHead(repo);
+    // The cheap look first: HEAD read from the repo's files. Nothing new, nothing to do.
+    const quick = this.store.headSha(repo);
+    if (quick !== null && quick === indexed) return;
+    const head = this.store.head(repo);
     if (head && indexed === head.sha) return; // already there
     const next = head !== null && indexed !== null && head.parent === indexed;
     this.maps.clear();
@@ -324,13 +324,11 @@ export class BrainIndex implements RetrievalSource {
   /**
    * Looks at every repo's HEAD and brings the index up to date where it differs; drops the pages of
    * repos that are gone. This is what makes a restart unnecessary after anything changes a repo
-   * behind the daemon's back. Cheap when nothing changed (one `git rev-list` per repo), and with
-   * `minIntervalMs` a caller that asks often (every brief) pays at most once in that time. Returns
-   * the repos that were behind.
+   * behind the daemon's back. It costs a couple of small file reads a repo when nothing changed, so
+   * it can run at every brief and every API read, with no clock to get wrong. Returns the repos that
+   * were behind.
    */
-  refresh(minIntervalMs = 0, now = Date.now()): number {
-    if (minIntervalMs > 0 && now - this.refreshedAt < minIntervalMs) return 0;
-    this.refreshedAt = now;
+  refresh(): number {
     let behind = 0;
     const repos = this.store.repos();
     for (const repo of repos) {

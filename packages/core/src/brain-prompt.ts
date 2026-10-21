@@ -154,6 +154,8 @@ export interface BrainPrompt {
   employeeId: string;
   /** Where copies live in the sandbox; default `brainHome`. */
   home?: string;
+  /** `brain search` works in the machine (default yes; false when its Node can't do SQLite FTS5). */
+  search?: boolean;
 }
 
 const escapeAttr = (s: string): string =>
@@ -225,7 +227,11 @@ export function renderBrainPrompt(p: BrainPrompt, o: { maps?: boolean | Scope[] 
     p.snapshot
       ? `Your brain: i.inc's shared memory, markdown pages in three scopes. A read-only copy is in ${root}/ (${
           p.maps.map((m) => `${m.dir}/`).join(", ") || "no pages yet"
-        }), each folder with an INDEX.md map. Search it with \`${root}/.bin/brain search "<words>"\`, or just read the files. Read it, don't edit it: edits are not collected yet.`
+        }), each folder with an INDEX.md map. ${
+          p.search === false
+            ? "`brain search` doesn't work in this machine, so read the INDEX.md maps and the files."
+            : `Search it with \`${root}/.bin/brain search "<words>"\`, or just read the files.`
+        } Read it, don't edit it: edits are not collected yet.`
       : "Your brain: i.inc's shared memory, markdown pages. The copy in your machine is not available this time, so only the pages below are.",
   );
   out.push(

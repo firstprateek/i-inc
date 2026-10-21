@@ -1,4 +1,4 @@
-#!/usr/bin/env -S node --no-warnings
+#!/usr/bin/env node
 // `brain`: search and read the copy of the brain that i.inc keeps in this folder (docs/design/brain.md).
 // It is shipped with every snapshot as <copy>/.bin/brain and needs only the Node the sandbox image has
 // (node:sqlite, FTS5): the pages are read from the files, indexed in memory for the call, and ranked by
@@ -11,6 +11,10 @@
 //   brain list [folder]         the pages
 //   brain status                what you changed in the copy (git status)
 "use strict";
+
+// node:sqlite still prints an ExperimentalWarning in some Node versions; this command's output is read by an
+// agent, so the warning (stderr) is not wanted. (The shebang is a plain `env node`: no `env -S` needed.)
+process.removeAllListeners("warning");
 
 const fs = require("node:fs");
 const path = require("node:path");

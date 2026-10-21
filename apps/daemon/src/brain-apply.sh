@@ -1,5 +1,13 @@
 apply() {
   export LC_ALL=C
+  # What copying needs from the machine; anything missing is a clear "no copy", never a broken session.
+  for t in git tar base64 comm sort find cp mv rm sed awk grep cut wc tr mkdir dirname chmod; do
+    command -v "$t" >/dev/null 2>&1 || { echo "@@fail the sandbox has no $t, which copying the brain needs"; return 1; }
+  done
+  [ "${B64:-}" = 1 ] || { echo "@@fail base64 -d failed in the sandbox"; return 1; }
+  tar --no-same-owner --no-same-permissions -tf "$tmp/in.tar" >/dev/null 2>&1 || { echo "@@fail the sandbox's tar lacks --no-same-owner/--no-same-permissions (GNU tar is needed)"; return 1; }
+  git init -q -b main "$tmp/probe" >/dev/null 2>&1 || { echo "@@fail the sandbox's git is older than 2.28 (git init -b is needed)"; return 1; }
+  rm -rf "$tmp/probe"
   have=""; [ -f "$R/.snapshot.id" ] && have=$(cat "$R/.snapshot.id")
   if [ "$MODE" = delta ] && [ "$have" != "$BASE" ]; then echo "@@need-full"; return 0; fi
   # Only plain files with plain names come out of the archive.
@@ -8,8 +16,10 @@ apply() {
   mkdir -p "$R" && cd "$R" || { echo "@@fail can't enter $R"; return 1; }
   if [ ! -d .git ]; then
     git init -q -b main . || { echo "@@fail git init"; return 1; }
-    printf '.bin/\n.snapshot*\n' > .git/info/exclude
+    printf '.bin/\n.snapshot*\n.inc-stage/\n' > .git/info/exclude
   fi
+  grep -qxF '.inc-stage/' .git/info/exclude 2>/dev/null || echo '.inc-stage/' >> .git/info/exclude
+  rm -rf .inc-stage
   BR=refs/inc/baseline
   # A copy holds no symlinks: nothing it writes can lead out of it. A link that stood where a page or
   # folder of the baseline is goes, and what it hid is put back from the baseline.
@@ -32,19 +42,31 @@ apply() {
   comm -23 "$tmp/sent.pages" "$tmp/dirty" > "$tmp/apply"
 
   : > "$tmp/applied"; : > "$tmp/removed"
-  # Everything that is not locally edited goes in with one copy; the edited files are taken out of the
-  # staging folder first. (If that one copy can't be made, say a file stands where a folder should, each
-  # file is tried by itself and the ones that can't be written are kept as they are.)
-  while IFS= read -r p; do rm -f -- "$tmp/new/$p"; done < "$tmp/kept"
-  if cp -R "$tmp/new/." . 2>/dev/null; then
-    cp "$tmp/apply" "$tmp/applied"
+  # The new files are first made ready next to their places (same file system), then each is moved in
+  # with one rename, after a second look at the local edits: the agent is working in the copy while this
+  # runs, and an edit made since the first look must not be overwritten. (A file is renamed over its place
+  # only if it is still unedited; if a file stands where a folder should, that file is kept as it is.)
+  stage=.inc-stage
+  mkdir -p "$stage" && cp -R "$tmp/new/." "$stage/" || { echo "@@fail copying into the staging folder"; rm -rf "$stage"; return 1; }
+  { if [ -n "$old" ]; then git diff --name-only -z "$BR" 2>/dev/null | tr '\0' '\n'; fi
+    git ls-files -o --exclude-standard -z | tr '\0' '\n'; } | sort -u > "$tmp/dirty2"
+  comm -12 "$tmp/apply" "$tmp/dirty2" > "$tmp/late"
+  comm -23 "$tmp/apply" "$tmp/dirty2" > "$tmp/apply2"
+  cat "$tmp/late" >> "$tmp/kept"
+  if [ -f "$stage/.bin/brain" ]; then
+    mkdir -p .bin && mv -f "$stage/.bin/brain" .bin/brain && chmod 755 .bin/brain
+  fi
+  # A big batch (a first copy, where nothing is edited yet) goes in with one copy; a small one file by file.
+  while IFS= read -r p; do rm -f "$stage/$p"; done < "$tmp/late"
+  if [ "$(wc -l < "$tmp/apply2" | tr -d ' ')" -gt 100 ] && cp -R "$stage/." . 2>/dev/null; then
+    cp "$tmp/apply2" "$tmp/applied"
   else
     while IFS= read -r p; do
-      if mkdir -p "$(dirname "$p")" 2>/dev/null && cp -f "$tmp/new/$p" "$p" 2>/dev/null; then echo "$p" >> "$tmp/applied"
+      if mkdir -p "$(dirname "$p")" 2>/dev/null && mv -f "$stage/$p" "$p" 2>/dev/null; then echo "$p" >> "$tmp/applied"
       else echo "$p" >> "$tmp/kept"; fi
-    done < "$tmp/apply"
+    done < "$tmp/apply2"
   fi
-  [ -f .bin/brain ] && chmod 755 .bin/brain
+  rm -rf "$stage"
 
   if [ -n "$old" ]; then
     git ls-tree -r -z --name-only "$BR" | tr '\0' '\n' | sort > "$tmp/tracked"
@@ -67,6 +89,7 @@ apply() {
     git update-ref "$BR" "$ci"
     if [ -z "$head" ] || [ "$head" = "$old" ]; then git update-ref HEAD "$ci"; git reset -q; fi
   fi
+  node -e 'const {DatabaseSync}=require("node:sqlite");const d=new DatabaseSync(":memory:");d.exec("create virtual table t using fts5(x)")' >/dev/null 2>&1 || echo "@@warn no-search"
   cp "$tmp/meta.json" .snapshot.json
   printf '%s' "$NEW" > .snapshot.id
   sort -u "$tmp/kept" | sed 's/^/@@kept /'

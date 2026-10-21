@@ -1,7 +1,7 @@
 // The `brain` command that ships with every copy: same query reduction as the daemon, BM25 over the
 // files as they are (edits included), the scope boost, and no way out of the copy.
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { buildQuery } from "@i-inc/core";
@@ -62,13 +62,17 @@ describe("the command in a copy", () => {
     await r.feed.sync("ada");
     const dir = r.copy("ada");
     const run = (...args: string[]) =>
-      spawnSync(process.execPath, ["--no-warnings", join(dir, ".bin/brain"), ...args], { encoding: "utf8" });
+      spawnSync(process.execPath, [join(dir, ".bin/brain"), ...args], { encoding: "utf8" });
     return { r, dir, run };
   }
 
   it("searches the copy, own brain first, and shows the files as edited", async () => {
     const { dir, run } = await copyWithPages();
-    const out = run("search", "refund", "rounding").stdout;
+    const first = run("search", "refund", "rounding");
+    // No warning on stderr (Node's own node:sqlite notice is silenced), and it starts with a plain `env node`.
+    expect(first.stderr).toBe("");
+    expect(readFileSync(join(dir, ".bin/brain"), "utf8").split("\n")[0]).toBe("#!/usr/bin/env node");
+    const out = first.stdout;
     expect(out.indexOf("personal/tools/rounding-notes")).toBeGreaterThanOrEqual(0);
     expect(out.indexOf("personal/tools/rounding-notes")).toBeLessThan(out.indexOf("company/facts/rounding"));
     expect(out).not.toContain("gardening");

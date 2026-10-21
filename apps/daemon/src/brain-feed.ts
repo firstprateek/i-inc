@@ -69,8 +69,6 @@ export interface BrainFeedOptions {
   maxBytes?: number;
   /** Give up on a script in a sandbox after this long. Default 3 minutes. */
   runTimeoutMs?: number;
-  /** The index is looked at again for outside changes at most this often. Default 2 s. */
-  refreshEveryMs?: number;
   /** A copy known to be in a sandbox is checked at most this often. Default 5 minutes. */
   verifyEveryMs?: number;
 }
@@ -620,6 +618,7 @@ export class BrainFeed {
     exclude: string[],
     allowHome = true,
   ): RetrievedPage[] {
+    this.index.refresh();
     const scopes = this.readable(employeeId, allowHome);
     // The personality page is the role instructions, which the brief already carries; it stays in the
     // map and the copy, but is never what a task "matches".
@@ -648,6 +647,7 @@ export class BrainFeed {
         maps: this.maps(i.employeeId, scopes, allowHome),
         pages,
         snapshot: report.ok,
+        search: report.search !== false,
         employeeId: i.employeeId,
         ...(this.o.home ? { home: this.o.home } : {}),
       },
@@ -706,6 +706,7 @@ export class BrainFeed {
           maps,
           pages,
           snapshot: report.ok,
+          search: report.search !== false,
           employeeId: i.employeeId,
           ...(this.o.home ? { home: this.o.home } : {}),
         },

@@ -59,11 +59,9 @@ describe("a thousand pages", () => {
     expect(ctx.text.split("\n").filter((l) => l.startsWith("- [[")).length).toBeLessThan(200);
 
     const found = await time("the command's search over the copy", () =>
-      spawnSync(
-        process.execPath,
-        ["--no-warnings", join(r.copy("ada"), ".bin/brain"), "search", "token500"],
-        { encoding: "utf8" },
-      ),
+      spawnSync(process.execPath, [join(r.copy("ada"), ".bin/brain"), "search", "token500"], {
+        encoding: "utf8",
+      }),
     );
     expect(found.stdout).toContain("page-500");
   });
