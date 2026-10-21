@@ -99,6 +99,9 @@ export const policyDefaults = {
 /** A sandbox with no size of its own is this big. */
 export const defaultSandbox = { cpus: 6, memory: "12G" };
 
+/** Where the bot's installation (and the repositories it can see) is managed on GitHub. */
+export const GITHUB_INSTALL_URL = "https://github.com/settings/installations";
+
 const enc = encodeURIComponent;
 
 export const setupApi = {

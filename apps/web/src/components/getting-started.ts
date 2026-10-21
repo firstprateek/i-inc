@@ -2,15 +2,16 @@
 // start a conversation. It shows until all four are done or the owner dismisses it.
 import { css, html, LitElement, nothing } from "lit";
 import { api, call, refresh } from "../api.ts";
-import { setupApi } from "../setup-api.ts";
+import { GITHUB_INSTALL_URL, setupApi } from "../setup-api.ts";
+
+export { GITHUB_INSTALL_URL };
+
 import { base } from "./shared.ts";
 
 /** Set to "1" when the owner dismisses the checklist. */
 export const DISMISS_KEY = "i-inc-getting-started-dismissed";
 /** Set to "1" once the owner has said something in a conversation, so it is not looked for again. */
 export const STARTED_KEY = "i-inc-first-conversation";
-/** Where the bot's installation (and the repositories it can see) is managed on GitHub. */
-export const GITHUB_INSTALL_URL = "https://github.com/settings/installations";
 
 export type StepId = "github" | "project" | "team" | "conversation";
 
@@ -231,8 +232,7 @@ export class IncGettingStarted extends LitElement {
       .badge svg { width: 14px; height: 14px; display: block; }
       .step p { margin: 0; font-size: 14px; line-height: 1.4; color: var(--ink-2); }
       .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; padding-top: 4px; }
-      .actions a.btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; box-sizing: border-box; min-width: 44px; }
-      .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+      .actions a.btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; box-sizing: border-box; min-width: 44px; max-width: 100%; white-space: normal; text-align: center; padding-block: 6px; }
       @media (max-width: 900px) {
         :host { max-height: 44dvh; overflow-y: auto; overscroll-behavior: contain; }
         .gs { padding: 14px 16px; }
@@ -260,18 +260,19 @@ export class IncGettingStarted extends LitElement {
       <ol class="steps">
         ${steps.map(
           (s, i) => html`<li class="step ${s.done ? "complete" : ""} ${s === next ? "next" : ""}">
-            <div class="title"><span class="badge" aria-hidden="true">${
+            <div class="title">${
               s.done
-                ? html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>`
-                : i + 1
-            }</span>${s.title}${s.done ? html`<span class="sr"> (done)</span>` : ""}</div>
+                ? html`<span class="badge" role="img" aria-label="Done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>`
+                : html`<span class="badge" aria-hidden="true">${i + 1}</span>`
+            }${s.title}</div>
             <p>${s.text}</p>
             ${
               s.actions.length
                 ? html`<div class="actions">${s.actions.map(
                     (a, j) => html`<a class="btn ${s === next && j === 0 ? "" : "ghost"}" href=${a.href}
                       target=${a.external ? "_blank" : nothing} rel=${a.external ? "noopener noreferrer" : nothing}
-                      @click=${s.id === "conversation" ? this.startHere : null}>${a.label}${a.external ? html`<span class="sr"> (opens GitHub)</span>` : ""}</a>`,
+                      aria-label=${a.external ? `${a.label} (opens GitHub)` : nothing}
+                      @click=${s.id === "conversation" ? this.startHere : null}>${a.label}</a>`,
                   )}</div>`
                 : ""
             }

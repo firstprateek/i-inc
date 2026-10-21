@@ -573,3 +573,48 @@ describe("Work → Releases", () => {
     });
   });
 });
+
+describe("empty states say what to do next", () => {
+  const empty = () =>
+    vi.stubGlobal(
+      "fetch",
+      async () =>
+        new Response(
+          JSON.stringify({
+            employees: [],
+            accounts: [],
+            tickets: [],
+            projects: [],
+            releases: [],
+            pendingReleases: [],
+            waits: [],
+            spend: { lines: [], total: 0, perMergedPR: null },
+            bottleneck: null,
+            merged: 0,
+            changes: [],
+          }),
+          {
+            headers: { "content-type": "application/json" },
+          },
+        ),
+    );
+
+  it("the team floor links to hiring", async () => {
+    empty();
+    const root = await mount("inc-office");
+    expect(root.querySelector(".empty-note a")?.getAttribute("href")).toBe("#/company/team/hiring");
+  });
+
+  it("the account meters link to Settings", async () => {
+    empty();
+    const root = await mount("inc-office", { show: "meters" });
+    expect(root.querySelector(".empty-card a")?.getAttribute("href")).toBe("#/company/settings/engines");
+  });
+
+  it("releases link to Company → Projects when there are no projects", async () => {
+    empty();
+    const root = await mount("inc-desk", { show: "releases" });
+    expect(root.querySelector(".releases a")?.getAttribute("href")).toBe("#/company/projects");
+    expect(root.textContent).toContain("Nothing released yet.");
+  });
+});

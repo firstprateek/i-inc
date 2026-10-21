@@ -1,17 +1,43 @@
 # Web layout language
 
-The web app uses three route templates from `apps/web/src/components/layout.ts`. They are a shared
+The web app has three areas, each with its own tabs, and three route templates from `apps/web/src/components/layout.ts`. They are a shared
 layout vocabulary, not per-screen width guesses. The route-to-template map is `layoutForRoute()` in
 `components/app.ts`; authenticated route headings, including loading and offline states, stay in the
 same frame. The unauthenticated login screen uses the Page frame too.
+
+## Areas and tabs (T61)
+
+The app has three areas. The route model lives in `apps/web/src/routes.ts`; the shell is `components/app.ts`.
+
+| Area | Hash | Tabs (each a hash) |
+| --- | --- | --- |
+| **Conversations** | `#/conversations[/<employee>]` | none; hosts the chat and, until done or dismissed, the Getting started checklist |
+| **Work** | `#/work` (Board) | Board `#/work/board` · Needs you `#/work/needs-you` · Releases `#/work/releases`; a ticket is `#/ticket/<id>` and lights Work |
+| **Company** | `#/company` (Team) | Team `#/company/team` (and `/hiring[/<id>]`) · Brain `#/company/brain[/<id>]` · Projects `#/company/projects` · Usage `#/company/usage` · Settings `#/company/settings[/teams\|engines\|sandboxes\|notifications]` |
+
+- **Top bar (laptop):** Conversations · Work · Company, a **Needs you (n)** badge that opens Work → Needs you,
+  and the account menu (theme, sign out). The laptop opens on Conversations.
+- **Phone tabs (bottom bar):** Conversations · Work · Needs you · Company. The phone opens on Work → Needs you.
+  The header keeps only the mark and the account menu.
+- **Tab row:** one per area, in the page header (the `tabs` slot of `IncLayout`, so Page, Wide and Split share
+  it). It is `role="tablist"` with one tab stop: Left/Right/Home/End move between tabs, Space or Enter opens one.
+  Tabs are at least 44px tall; on a narrow screen the strip scrolls sideways rather than wrapping. The
+  Needs you count is the same number everywhere (`needs-you.ts`).
+- **Old hashes** (`#/inbox`, `#/office`, `#/board`, `#/chat`, `#/desk`, `#/handbook`, `#/brain/<id>`,
+  `#/hiring`, `#/setup/*`, `#/more`) are rewritten in place (`history.replaceState`) by `legacyTarget()`. Push
+  links (`#/ticket/<id>`, `#/ticket/<id>/assign`) are unchanged.
+- **Templates by route:** Conversations, Brain and Settings are Split; the board and Team are Wide;
+  Needs you, Releases, tickets, hiring, Projects and Usage are Page (`layoutForRoute()`).
+- **Words:** conversation, ticket, employee, team, project, brain. The browser title is
+  `<tab> · <area> · i.inc` (for example `Board · Work · i.inc`).
 
 ## Templates
 
 | Template | Width and use | Scrolling |
 | --- | --- | --- |
-| **Page** | A centred band up to `--page-width` (840px). Use for inbox, ticket details, My desk, hiring, More, and setup forms. | The application shell's `<main>` scrolls. Forms and ticket detail stack within the Page width, even on a wide viewport. |
-| **Wide** | A centred header band at Page width and content up to `--wide-width` (1400px). Use for the board and office, whose columns, floor, and reports need room. | The shell's `<main>` scrolls vertically; the wide content may scroll horizontally only where its own data view intentionally does so. |
-| **Split** | A full-width header above a 300px (280–320px) navigation/sidebar and flexible working pane. Use for chat, handbook/brain, and Setup sections. The header follows the outer frame's left and right tracks so it aligns with the sidebar and work pane. | Sidebar and working pane own their scroll positions. The app shell main stays fixed on Split routes so its scroll position cannot compete with either pane. |
+| **Page** | A centred band up to `--page-width` (840px). Use for Needs you, Releases, ticket details, Usage, Projects and hiring. | The application shell's `<main>` scrolls. Forms and ticket detail stack within the Page width, even on a wide viewport. |
+| **Wide** | A centred header band at Page width and content up to `--wide-width` (1400px). Use for the board and the Team floor, whose columns and floor need room. | The shell's `<main>` scrolls vertically; the wide content may scroll horizontally only where its own data view intentionally does so. |
+| **Split** | A full-width header above a 300px (280–320px) navigation/sidebar and flexible working pane. Use for Conversations, Brain and Settings sections. The header follows the outer frame's left and right tracks so it aligns with the sidebar and work pane. | Sidebar and working pane own their scroll positions. The app shell main stays fixed on Split routes so its scroll position cannot compete with either pane. |
 
 Login opts into a compact Page frame at `--compact-page-width` (24rem) so its title and form share
 one centred reading band. Its standalone host owns a bounded scroller and applies the shared

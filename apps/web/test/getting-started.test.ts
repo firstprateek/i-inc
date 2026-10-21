@@ -53,10 +53,10 @@ async function mountList(): Promise<{ el: IncGettingStarted; root: ShadowRoot }>
   return { el, root: el.shadowRoot as ShadowRoot };
 }
 
-/** A step's title without its number badge or the screen-reader "(done)". */
+/** A step's title without its number or check badge. */
 const titleOf = (li: Element) => {
   const t = li.querySelector(".title")?.cloneNode(true) as HTMLElement;
-  for (const x of t.querySelectorAll(".badge, .sr")) x.remove();
+  for (const x of t.querySelectorAll(".badge")) x.remove();
   return t.textContent?.trim();
 };
 
@@ -66,7 +66,7 @@ const steps = (root: ShadowRoot) =>
     done: li.classList.contains("complete"),
     next: li.classList.contains("next"),
     actions: [...li.querySelectorAll("a.btn")].map((a) =>
-      a.textContent?.replace(/\s*\(opens GitHub\)/, "").trim(),
+      a.textContent?.trim(),
     ),
   }));
 

@@ -237,12 +237,12 @@ export class IncKnowledge extends Loader<KnowledgeData> {
                                       html`<li><a class="member-brain-link" href="#/company/brain/${m.id}">${m.name}</a></li>`,
                                   )}
                                 </ul>`
-                                : html`<p class="muted">No members</p>`
+                                : html`<p class="muted">No members yet. Add someone in Company → Settings → Teams.</p>`
                             }
                           </section>`;
                         })}
                       </div>`
-                      : html`<p class="muted">No teams configured</p>`
+                      : html`<p class="muted">No teams yet. Create one in <a href="#/company/settings/teams">Settings → Teams</a>.</p>`
                   }
                 </section>`
               : ""

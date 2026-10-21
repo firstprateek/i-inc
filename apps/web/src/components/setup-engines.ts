@@ -213,7 +213,7 @@ export class IncSetupEngines extends Loader<EnginesData> {
                   <span class="sub">Signs in with ${name(x.accountId)}</span>
                 </li>`,
               )}</ul>`
-            : html`<p class="muted">No engines yet.</p>`
+            : html`<p class="muted">No engines yet. Add one below so your employees have something to run on.</p>`
         }
       </section>
 
