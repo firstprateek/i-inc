@@ -276,7 +276,7 @@ export class IncConvThread extends LitElement {
   private closeShipMenu = (e?: Event) => {
     if (!this.shipMenu) return;
     // A click inside the menu or on its button is handled by them.
-    if (e && e.composedPath().some((n) => n instanceof Element && n.classList?.contains("ship-wrap"))) return;
+    if (e?.composedPath().some((n) => n instanceof Element && n.classList?.contains("ship-wrap"))) return;
     this.shipMenu = false;
   };
 

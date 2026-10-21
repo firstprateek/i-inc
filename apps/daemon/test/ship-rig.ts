@@ -43,7 +43,7 @@ export class FakePrs {
   };
   /** Set to make every call fail the way GitHub does when it is down. */
   failWith: Error | null = null;
-  constructor(private readonly origin: string) {}
+  constructor(private readonly origin: string | ((repo: string) => string)) {}
 
   private guard() {
     if (this.failWith) throw this.failWith;
@@ -67,9 +67,18 @@ export class FakePrs {
     this.calls.push(`get ${number}`);
     const pr = this.prs.find((p) => p.number === number);
     if (!pr) throw new Error("no such PR");
-    const sha = execFileSync("git", ["--git-dir", this.origin, "rev-parse", `refs/heads/${pr.head}`], {
-      encoding: "utf8",
-    }).trim();
+    const sha = execFileSync(
+      "git",
+      [
+        "--git-dir",
+        typeof this.origin === "function" ? this.origin(repo) : this.origin,
+        "rev-parse",
+        `refs/heads/${pr.head}`,
+      ],
+      {
+        encoding: "utf8",
+      },
+    ).trim();
     return {
       number,
       url: this.url(repo, number),

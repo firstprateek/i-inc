@@ -224,9 +224,9 @@ export function readInspect(copy: ShipCopy, output: string): CopyReport {
       ? [{ path, added: 0, removed: 0, binary: true as const }]
       : [{ path, added: Number(a) || 0, removed: Number(r) || 0 }];
   });
-  const begin = output.indexOf("\n@@diff-begin\n");
+  const marker = /(^|\n)@@diff-begin\n/.exec(output);
   const end = output.lastIndexOf("\n@@diff-end");
-  const diff = begin >= 0 ? output.slice(begin + "\n@@diff-begin\n".length, end >= 0 ? end : undefined) : "";
+  const diff = marker ? output.slice(marker.index + marker[0].length, end >= 0 ? end : undefined) : "";
   const tooBig = diff.length > SCAN_LIMIT;
   const byName = files
     .filter((f) => secretFile.some((re) => re.test(f.path)))

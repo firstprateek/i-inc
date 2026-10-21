@@ -425,9 +425,9 @@ export class IncConversations extends LitElement {
     }
   }
 
-  private openShip = (e: CustomEvent<{ kind: ShipKind }>) => {
-    const from = (e.composedPath()[0] ?? null) as HTMLElement | null;
-    this.opener = from;
+  private openShip = (e: CustomEvent<{ kind: ShipKind; from?: string }>) => {
+    // From the panel, focus goes back to the button that was pressed; from the header, to the Ship button.
+    this.opener = e.detail.from === "context" ? ((e.composedPath()[0] ?? null) as HTMLElement | null) : null;
     this.dialog = { kind: e.detail.kind };
   };
 
