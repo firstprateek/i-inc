@@ -349,6 +349,21 @@ export interface DraftPr {
   nodeId: string;
 }
 
+export interface PrInfo extends DraftPr {
+  state: "open" | "closed" | "merged";
+  draft: boolean;
+  /** The PR's latest commit. */
+  headSha: string;
+}
+
+export interface PrChecks {
+  state: "none" | "pending" | "success" | "failure";
+  total: number;
+  passed: number;
+  failed: number;
+  pending: number;
+}
+
 /** The pull requests an employee's work goes through, opened and updated as the bot. */
 export class PullRequests {
   private readonly f: typeof fetch;
@@ -389,6 +404,52 @@ export class PullRequests {
     })) as unknown as Record<string, unknown>[];
     const [pr] = Array.isArray(list) ? list : [];
     return pr ? { number: Number(pr.number), url: String(pr.html_url), nodeId: String(pr.node_id) } : null;
+  }
+
+  /** One PR as the conversations panel shows it: whether it is open, merged or a draft, and its latest commit. */
+  async get(repo: string, number: number): Promise<PrInfo> {
+    const pr = await call(this.f, `${this.api}/repos/${checkRepo(repo)}/pulls/${number}`, {
+      method: "GET",
+      headers: await this.auth(repo),
+    });
+    const head = (pr.head ?? {}) as Record<string, unknown>;
+    return {
+      number: Number(pr.number ?? number),
+      url: String(pr.html_url ?? ""),
+      nodeId: String(pr.node_id ?? ""),
+      state: pr.merged === true || pr.merged_at ? "merged" : pr.state === "closed" ? "closed" : "open",
+      draft: pr.draft === true,
+      headSha: typeof head.sha === "string" ? head.sha : "",
+    };
+  }
+
+  /** The checks on a commit, as a count and one word: none, pending, success or failure. */
+  async checks(repo: string, sha: string): Promise<PrChecks> {
+    if (!/^[0-9a-f]{7,40}$/.test(sha)) throw new Error(`not a commit: ${sha}`);
+    const runs: Record<string, unknown>[] = [];
+    for (let page = 1; page <= 5; page++) {
+      const body = await call(
+        this.f,
+        `${this.api}/repos/${checkRepo(repo)}/commits/${sha}/check-runs?per_page=100&page=${page}`,
+        { method: "GET", headers: await this.auth(repo) },
+      );
+      const batch = (Array.isArray(body.check_runs) ? body.check_runs : []) as Record<string, unknown>[];
+      runs.push(...batch);
+      if (batch.length < 100) break;
+    }
+    const finished = (r: Record<string, unknown>) =>
+      r.status === "completed" || (typeof r.conclusion === "string" && r.conclusion.length > 0);
+    const passed = (r: Record<string, unknown>) =>
+      ["success", "neutral", "skipped"].includes(String(r.conclusion));
+    const failed = runs.filter((r) => finished(r) && !passed(r)).length;
+    const pending = runs.filter((r) => !finished(r)).length;
+    return {
+      state: !runs.length ? "none" : failed ? "failure" : pending ? "pending" : "success",
+      total: runs.length,
+      passed: runs.filter((r) => finished(r) && passed(r)).length,
+      failed,
+      pending,
+    };
   }
 
   async isDraft(repo: string, number: number): Promise<boolean> {

@@ -59,6 +59,7 @@ import type { Change, Repo } from "./knowledge.ts";
 import { type ProposalStatus, RECOVERED_BODY } from "./proposals.ts";
 import { type NotifySettings, notifyKeys, notifySettings, type PushSubscription } from "./push.ts";
 import { defaultTeam, type Project } from "./registry.ts";
+import { ShipError } from "./ship.ts";
 import type { NewAttachment, NewTicket } from "./tickets.ts";
 import {
   allRateLimits,
@@ -113,6 +114,8 @@ const inFlightRepos = new Set<string>();
 
 /** Writes that can run for minutes: the daemon counts them as busy (the chat turn tracks itself). */
 const longRunning = new Set([
+  "POST /api/conversations/:id/ticket",
+  "POST /api/conversations/:id/pr",
   "POST /api/projects/:id/bootstrap",
   "POST /api/sandboxes/:team/retry",
   "POST /api/teams/:id/antigravity-callback",
@@ -1507,6 +1510,84 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       },
     ],
 
+    // Shipping a conversation's work (T62b, C22): what it would commit and where it goes, a ticket made
+    // from it, or a pull request. All three are refused, with a sentence, for a conversation without a project.
+    [
+      "GET",
+      "/api/conversations/:id/ship",
+      async (req, p) => {
+        const shipping = d.shipping;
+        if (!shipping)
+          return json({ error: "GitHub isn't set up yet, so a conversation's work can't be shipped." }, 409);
+        const q = new URL(req.url).searchParams;
+        const preview = q.get("preview");
+        if (preview !== null && preview !== "1") return json({ error: "preview must be 1" }, 400);
+        try {
+          return json({ ship: await shipping.view(p.id ?? "", { preview: preview === "1" }) });
+        } catch (e) {
+          return shipFailure(e);
+        }
+      },
+    ],
+
+    [
+      "POST",
+      "/api/conversations/:id/ticket",
+      async (req, p) => {
+        const shipping = d.shipping;
+        if (!shipping)
+          return json({ error: "GitHub isn't set up yet, so a conversation's work can't be shipped." }, 409);
+        const body = await readObject(req);
+        if (!body) return json({ error: "send a JSON object" }, 400);
+        const bad = shipBodyProblem(body, ["title", "description", "doneWhen"]);
+        if (bad) return json({ error: bad }, 400);
+        if (body.doneWhen !== undefined) {
+          const w = body.doneWhen;
+          if (
+            !Array.isArray(w) ||
+            w.length < 1 ||
+            w.length > 10 ||
+            w.some((x) => typeof x !== "string" || !x.trim() || x.length > 300)
+          ) {
+            return json({ error: "doneWhen is a list of 1 to 10 items, each up to 300 characters" }, 400);
+          }
+        }
+        try {
+          const r = await shipping.makeTicket(p.id ?? "", {
+            ...(typeof body.title === "string" ? { title: body.title } : {}),
+            ...(typeof body.description === "string" ? { description: body.description } : {}),
+            ...(Array.isArray(body.doneWhen) ? { doneWhen: body.doneWhen as string[] } : {}),
+          });
+          return json({ ticket: r.ticket, created: r.created }, r.created ? 201 : 200);
+        } catch (e) {
+          return shipFailure(e);
+        }
+      },
+    ],
+
+    [
+      "POST",
+      "/api/conversations/:id/pr",
+      async (req, p) => {
+        const shipping = d.shipping;
+        if (!shipping)
+          return json({ error: "GitHub isn't set up yet, so a conversation's work can't be shipped." }, 409);
+        const body = await readObject(req);
+        if (!body) return json({ error: "send a JSON object" }, 400);
+        const bad = shipBodyProblem(body, ["title", "body"]);
+        if (bad) return json({ error: bad }, 400);
+        try {
+          const r = await shipping.openPr(p.id ?? "", {
+            ...(typeof body.title === "string" ? { title: body.title } : {}),
+            ...(typeof body.body === "string" ? { body: body.body } : {}),
+          });
+          return json({ pr: r.pr, created: r.created }, r.created ? 201 : 200);
+        } catch (e) {
+          return shipFailure(e);
+        }
+      },
+    ],
+
     ["GET", "/api/employees", async () => json({ employees: d.registry.employees() })],
 
     [
@@ -1889,17 +1970,18 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         if (!r) return json({ error: "no such ticket" }, 404);
         const events = await d.store.read(r.ticket.id);
         const wait = daemon.waiting.find((w) => w.ticketId === r.ticket.id);
-        return json({
-          ticket: ticketView(
-            r,
-            await daemon.state(r.ticket.id),
-            events,
-            d.registry,
-            wait?.reason ?? null,
-            daemon.waitingUntil[r.ticket.id] ?? null,
-          ),
+        const view = ticketView(
+          r,
+          await daemon.state(r.ticket.id),
           events,
-        });
+          d.registry,
+          wait?.reason ?? null,
+          daemon.waitingUntil[r.ticket.id] ?? null,
+        );
+        if (view.fromConversation) {
+          view.fromConversation.title = d.conversations?.get(view.fromConversation.id)?.title ?? null;
+        }
+        return json({ ticket: view, events });
       },
     ],
 
@@ -1961,7 +2043,16 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       },
     ],
 
-    ["POST", "/api/tickets/:id/retry", async (_req, p) => act(p.id, null, () => retry(ports, p.id ?? ""))],
+    [
+      "POST",
+      "/api/tickets/:id/retry",
+      async (_req, p) =>
+        act(p.id, null, async () => {
+          // A failed ticket made from a conversation takes the conversation's working copy back first.
+          if ((await daemon.state(p.id ?? "")).status === "failed") d.shipping?.reclaim(p.id ?? "");
+          await retry(ports, p.id ?? "");
+        }),
+    ],
 
     [
       "POST",
@@ -2593,6 +2684,31 @@ function validate(t: Partial<NewTicket>): string | null {
   if (!["low", "medium", "high"].includes(t.effort ?? "")) return "effort must be low, medium or high";
   if (!Array.isArray(t.doneWhen)) return "doneWhen must be a list";
   return null;
+}
+
+/** A body with a field this route doesn't take is a mistake, not something to ignore. */
+function shipBodyProblem(body: Record<string, unknown>, allowed: string[]): string | null {
+  const extra = Object.keys(body).find((k) => !allowed.includes(k));
+  if (extra) return `${extra} isn't something this takes (it takes ${allowed.join(", ")})`;
+  for (const k of allowed) {
+    const v = body[k];
+    if (k !== "doneWhen" && v !== undefined && typeof v !== "string") return `${k} must be text`;
+    if (
+      (k === "title" || k === "body" || k === "description") &&
+      typeof v === "string" &&
+      v.length > (k === "title" ? 200 : 6000)
+    ) {
+      return `${k} is too long`;
+    }
+    if (k === "title" && typeof v === "string" && !v.trim()) return "a title can't be empty";
+  }
+  return null;
+}
+
+/** A shipping refusal as the owner sees it: a sentence, a code, and the status that fits. */
+function shipFailure(e: unknown): Response {
+  if (e instanceof ShipError) return json({ error: e.message, code: e.code, ...e.extra }, e.status);
+  throw e;
 }
 
 function json(body: unknown, status = 200): Response {

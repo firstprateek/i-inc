@@ -112,6 +112,13 @@ export const workDir = (ticketId: Id, s: MachineSettings = defaultMachineSetting
   return `/home/${s.user}/work/inc-${ticketId}`;
 };
 
+/** Where a conversation's working copy is in its machine (`conv-<id>`): a ticket made from it works there too. */
+export const convDir = (conversationId: Id, s: MachineSettings = defaultMachineSettings) => {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(conversationId))
+    throw new Error(`not a conversation id: ${conversationId}`);
+  return `/home/${s.user}/work/conv-${conversationId}`;
+};
+
 export interface ExecOptions {
   env?: Record<string, string>;
   input?: string;

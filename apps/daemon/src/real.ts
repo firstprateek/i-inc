@@ -15,6 +15,7 @@ import { commitIdentity, PullRequests, type TokenSource, waitForCi } from "./git
 import { MachineHarness, machineScript, type RunScript } from "./harness.ts";
 import {
   AppleMachines,
+  convDir,
   defaultMachineSettings,
   type Exec,
   type MachineSettings,
@@ -25,6 +26,8 @@ import {
 import { OllamaChat, OllamaHelper, type OllamaOptions } from "./ollama.ts";
 import { type Reap, reaper, reapMachines } from "./reaper.ts";
 import type { Registry } from "./registry.ts";
+import { conversationShip, type ShipPort } from "./ship-git.ts";
+import type { Tickets } from "./tickets.ts";
 import { GitHubWorkspace, prepareConversationCopy, removeCopyScript } from "./workspace.ts";
 
 export interface RealOptions {
@@ -39,6 +42,9 @@ export interface RealOptions {
   launch?: Launch;
   runScript?: RunScript;
   ollama?: OllamaOptions;
+  /** Stand-ins for GitHub, for tests and the end-to-end run: the bot's commit address, and CI on a pushed commit. */
+  identity?: (employee: Employee) => Promise<{ name: string; email: string }>;
+  ci?: (repo: string, sha: string, branch: string) => Promise<{ ok: true } | { ok: false; reason: string }>;
 }
 
 /** What the employee image has (images/employee/Dockerfile), for briefs. */
@@ -58,7 +64,7 @@ const loginEveryMs = 25 * 60_000;
 
 export function realPorts(o: RealOptions): Pick<
   AppOptions,
-  "machines" | "agent" | "harness" | "workspace" | "tokens" | "helper" | "chat" | "ahpBackend"
+  "machines" | "agent" | "harness" | "workspace" | "tokens" | "helper" | "chat" | "ahpBackend" | "ship"
 > & {
   /** Renews the GitHub sign-in of every sandbox in use. main.ts calls it on a timer. */
   keepLoginsFresh: () => Promise<void>;
@@ -69,18 +75,25 @@ export function realPorts(o: RealOptions): Pick<
   sweepAgents: (o?: { all?: boolean; timeoutMs?: number }) => Promise<number>;
 } {
   const base = o.machine ?? defaultMachineSettings;
+  // A ticket made from a conversation works in that conversation's copy (conv-<id>); any other in its own (inc-<id>).
+  const dirOf = (tickets: Tickets) => (ticketId: Id) => {
+    const conversation = tickets.get(ticketId)?.ticket.conversation;
+    return conversation ? convDir(conversation, base) : workDir(ticketId, base);
+  };
   const now = o.now ?? Date.now;
   const account = credentialsFor(o.credentials);
   const { github } = o;
   let bot: Promise<{ email: string }> | undefined;
-  const identity = async (employee: Employee) => {
-    // Looked up once; a failed lookup is tried again at the next pick-up.
-    bot ??= commitIdentity("", github?.slug ?? "").catch((err) => {
-      bot = undefined;
-      throw err;
+  const identity =
+    o.identity ??
+    (async (employee: Employee) => {
+      // Looked up once; a failed lookup is tried again at the next pick-up.
+      bot ??= commitIdentity("", github?.slug ?? "").catch((err) => {
+        bot = undefined;
+        throw err;
+      });
+      return { name: `${employee.name} (i.inc)`, email: (await bot).email };
     });
-    return { name: `${employee.name} (i.inc)`, email: (await bot).email };
-  };
 
   // Machine settings for teams: an employee works in its team's sandbox, sized as the team says.
   let settings: MachineSettings | undefined;
@@ -133,7 +146,7 @@ export function realPorts(o: RealOptions): Pick<
       machines = new AppleMachines(teams(registry), o.exec, undefined, now, o.log);
       return machines;
     },
-    agent: (registry) =>
+    agent: (registry, tickets) =>
       new AcpAgent({
         launch: o.launch ?? machineLaunch(teams(registry)),
         reap: reap(registry),
@@ -143,17 +156,17 @@ export function realPorts(o: RealOptions): Pick<
           await signIn(registry, employeeId);
           return { ...account(engine), I_INC_PORTS: portsFor(ticket.id) };
         },
-        cwdFor: (ticketId) => workDir(ticketId, base),
+        cwdFor: dirOf(tickets),
         onUsage: (u) => registry.recordUsage(u),
         onRateLimit: (accountId, limit) => registry.setAccountRateLimit(accountId, limit),
         ...(o.log ? { log: o.log } : {}),
       }),
-    harness: (registry) =>
+    harness: (registry, tickets) =>
       new MachineHarness(
         {
           recipe: (project) => registry.project(project)?.checks,
           defaultBranch: (project) => registry.project(project)?.defaultBranch,
-          worktree: (ticketId) => workDir(ticketId, base),
+          worktree: dirOf(tickets),
           machine,
           policy: (project) => registry.projectPolicy(project),
           ...(github
@@ -166,7 +179,8 @@ export function realPorts(o: RealOptions): Pick<
                   const proj = registry.project(ticket.project);
                   const repo = proj?.repo;
                   const branch = proj?.defaultBranch ?? "main";
-                  return repo ? waitForCi(github.tokens, repo, sha, { branch }) : { ok: true };
+                  if (!repo) return { ok: true };
+                  return o.ci ? o.ci(repo, sha, branch) : waitForCi(github.tokens, repo, sha, { branch });
                 },
               }
             : {}),
@@ -176,6 +190,13 @@ export function realPorts(o: RealOptions): Pick<
     ...(github
       ? {
           tokens: github.tokens,
+          // Shipping a conversation's work: the git side, and the pull requests it opens and watches.
+          ship: (registry: Registry): ShipPort =>
+            conversationShip({
+              tokens: github.tokens,
+              run: run(registry),
+              prs: github.prs ?? new PullRequests(github.tokens),
+            }),
           workspace: (registry, tickets) =>
             new GitHubWorkspace({
               attachments: (ticketId) => tickets.attachments(ticketId),
@@ -184,7 +205,7 @@ export function realPorts(o: RealOptions): Pick<
               tokens: github.tokens,
               prs: github.prs ?? new PullRequests(github.tokens),
               identity,
-              worktree: (ticketId) => workDir(ticketId, base),
+              worktree: dirOf(tickets),
               run: run(registry),
               ...(o.log ? { log: o.log } : {}),
             }),

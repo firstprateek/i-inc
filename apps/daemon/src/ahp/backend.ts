@@ -94,6 +94,13 @@ export interface AgentBackend {
   closeSession(session: string): Promise<void>;
   /** Runs one turn. The host has already recorded `chat/turnStarted`. */
   runTurn(run: TurnRun): Promise<TurnOutcome>;
+  /**
+   * The conversation's working copy now belongs to a ticket (T62b): stops its agent so nothing else
+   * writes there. Returns false, and does nothing, while a turn is running.
+   */
+  hold?(session: string): boolean;
+  /** The ticket is over: the next prompt starts with `note`, which says what happened to the branch. */
+  resumed?(session: string, note: string): void;
   /** Called when a turn is cancelled, after its signal is aborted. */
   cancelTurn?(run: TurnRun): void;
   /** The first client answer to a pending confirmation (later ones never reach the backend). */

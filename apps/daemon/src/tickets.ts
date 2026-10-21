@@ -17,6 +17,9 @@ export interface NewTicket {
   createdBy?: Id;
   /** Why an agent proposed it, for a follow-up. */
   reason?: string;
+  /** The conversation it was made from, and that conversation's branch (ship.ts). */
+  conversation?: Id;
+  branch?: string;
 }
 
 /** An image the owner sends with a ticket, already checked by the API. */
@@ -91,6 +94,8 @@ export class Tickets {
       ...(input.labels ? { labels: input.labels } : {}),
       ...(input.createdBy ? { createdBy: input.createdBy } : {}),
       ...(input.reason ? { reason: input.reason } : {}),
+      ...(input.conversation ? { conversation: input.conversation } : {}),
+      ...(input.branch ? { branch: input.branch } : {}),
       ...(attachments.length ? { attachments } : {}),
     };
     // One transaction, so a ticket is never picked up before its images are there.

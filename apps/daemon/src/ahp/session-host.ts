@@ -135,6 +135,8 @@ interface Live {
   opening: boolean;
   /** Created while the sandbox was being cleaned: no copy and no agent yet; the first message makes them. */
   deferred: boolean;
+  /** What a ticket did to the branch while this conversation was away: the next prompt starts with it. */
+  resumeNote: string | undefined;
 }
 
 interface Waiter {
@@ -329,6 +331,10 @@ export class SessionHost implements AgentBackend {
     if (live.needsBrief && (this.h.chatState(live.chat)?.turns.length ?? 0) > 0) {
       blocks = [{ type: "text", text: this.continuationBrief(live, run.message) }, ...blocks.slice(1)];
     }
+    if (live.resumeNote) {
+      blocks = [{ type: "text", text: live.resumeNote }, ...blocks];
+      live.resumeNote = undefined;
+    }
     try {
       const done = await conn.request("session/prompt", { sessionId, prompt: blocks });
       if (!done.error) live.needsBrief = false;
@@ -342,6 +348,19 @@ export class SessionHost implements AgentBackend {
       const team = live.info.team;
       setTimeout(() => this.wake(team), 0).unref?.();
     }
+  }
+
+  hold(session: string): boolean {
+    const live = this.lives.get(session) ?? this.adopt(session);
+    if (!live) return true; // nothing of this conversation is running
+    if (live.run || live.starting || live.opening || this.h.hasActiveTurn(live.chat)) return false;
+    this.suspend(live, "its work became a ticket");
+    return true;
+  }
+
+  resumed(session: string, note: string): void {
+    const live = this.lives.get(session) ?? this.adopt(session);
+    if (live) live.resumeNote = note;
   }
 
   cancelTurn(run: TurnRun): void {
@@ -392,6 +411,7 @@ export class SessionHost implements AgentBackend {
       starting: undefined,
       opening: false,
       deferred: false,
+      resumeNote: undefined,
     };
   }
 

@@ -96,6 +96,7 @@ export function ticketView(
     createdBy,
     finishedAt,
     pushed,
+    ...(r.ticket.conversation ? { fromConversation: { id: r.ticket.conversation, title: null } } : {}),
     ...(r.ticket.attachments?.length
       ? {
           attachments: r.ticket.attachments.map((a) => ({

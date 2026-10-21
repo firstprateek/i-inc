@@ -70,6 +70,8 @@ export interface TicketView {
   pushed?: boolean;
   /** The owner's images, each with the URL that serves it. */
   attachments?: (TicketAttachment & { url: string })[];
+  /** Made from a conversation ("Make this a ticket"); `title` is null when that conversation is gone. */
+  fromConversation?: { id: string; title: string | null };
 }
 
 export type EmployeeState =

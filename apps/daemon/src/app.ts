@@ -30,6 +30,8 @@ import { type PushService, WebPushSender } from "./push.ts";
 import { Registry } from "./registry.ts";
 import { migrate } from "./schema.ts";
 import { SessionStore } from "./sessions.ts";
+import { Shipping } from "./ship.ts";
+import type { ShipPort } from "./ship-git.ts";
 import { type MachineOps, Storage, type StoragePaths } from "./storage.ts";
 import { SqliteEventStore } from "./store.ts";
 import { Tickets } from "./tickets.ts";
@@ -74,6 +76,8 @@ export interface AppOptions extends ApiOptions {
   trimMachines?: boolean;
   /** What runs the agents behind conversations. Default: nothing yet (the session host, T59b). */
   ahpBackend?: FromRegistry<AgentBackend>;
+  /** The git side of shipping a conversation's work (T62b); absent without GitHub. */
+  ship?: FromRegistry<ShipPort>;
   ahpLimits?: Partial<TransportLimits>;
   /** Timings of the conversation pushes (T65), for tests: the grace, the re-look, a long reply, the scheduler. */
   ahpPush?: Partial<
@@ -179,6 +183,25 @@ export async function createApp(o: AppOptions) {
     ...(o.ahpDeferredAuth ? { deferredAuth: true } : {}),
   });
   const daemon = new Daemon(deps);
+  // Shipping a conversation's work (T62b): a ticket made from it, or a PR. Needs GitHub.
+  if (o.ship) {
+    deps.shipping = new Shipping({
+      db,
+      clock: o.clock,
+      registry,
+      tickets,
+      store,
+      conversations,
+      host,
+      backend,
+      port: make(o.ship),
+      live,
+      ensureUp: (employeeId) => deps.machines.ensureUp(employeeId),
+      awake: (employeeId) => daemon.noteAwake(employeeId),
+      tick: () => daemon.tick(),
+      ...(o.log ? { log: o.log } : {}),
+    });
+  }
   const ops = deps.machines as unknown as Partial<MachineOps>;
   const storage = new Storage({
     db,

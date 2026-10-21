@@ -201,6 +201,13 @@ export interface Ticket {
   reason?: string;
   /** Images the owner attached when filing it; the bytes live in the daemon. */
   attachments?: TicketAttachment[];
+  /**
+   * The conversation this ticket was made from ("Make this a ticket"). Its work is already built: the
+   * ticket enters the pipeline at the checks, on the conversation's own branch and working copy.
+   */
+  conversation?: Id;
+  /** The branch the ticket works on when it isn't `inc/<id>-<slug>`: a conversation's `conv/<id>`. */
+  branch?: string;
 }
 
 /** An image on a ticket. `name` is already safe as a file name. */

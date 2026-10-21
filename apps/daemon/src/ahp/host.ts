@@ -176,6 +176,12 @@ export interface HostHooks {
   onApplied?: (channel: string, action: StateAction) => void;
   /** Called after a session is disposed. */
   onSessionDisposed?: (session: string) => void;
+  /**
+   * Why this chat can't take a turn now, said for the owner, or undefined when it can: its working copy
+   * belongs to a ticket (T62b). A message sent meanwhile is refused with that sentence, and a queued one
+   * waits until `resumeChat`.
+   */
+  canStartTurn?: (chat: string) => string | undefined;
 }
 
 export class Conn {
@@ -1655,6 +1661,8 @@ export class AhpHost {
       switch (a.type) {
         case ActionType.ChatTurnStarted: {
           if (st.activeTurn) return no("a turn is already running: queue the message instead");
+          const held = this.hooks.canStartTurn?.(channel);
+          if (held) return no(held);
           const turnId = typeof a.turnId === "string" ? a.turnId : "";
           if (turnId.length === 0 || turnId.length > 128) return no("turnId must be a short string");
           if (st.turns.some((t) => t.id === turnId)) return no("that turn id was used already");
@@ -1742,6 +1750,8 @@ export class AhpHost {
           const id = typeof raw.id === "string" ? raw.id : "";
           if (id.length === 0 || id.length > 128) return no("id must be a short string");
           const message = this.checkMessage(raw.message);
+          const held = this.hooks.canStartTurn?.(channel);
+          if (held) return no(held);
           this.apply(
             channel,
             { type: ActionType.ChatPendingMessageSet, kind: raw.kind, id, message },
@@ -2224,6 +2234,7 @@ export class AhpHost {
   private drain(chat: string): void {
     const st = this.chatState(chat);
     if (!st || st.activeTurn || this.runs.has(chat) || this.closed) return;
+    if (this.hooks.canStartTurn?.(chat)) return;
     const next = st.steeringMessage ?? st.queuedMessages?.[0];
     if (!next) return;
     this.startClientTurn(
@@ -2236,6 +2247,11 @@ export class AhpHost {
       },
       undefined,
     );
+  }
+
+  /** A chat that could not take a turn can again: starts the message that waited, if there is one. */
+  resumeChat(chat: string): void {
+    this.drain(chat);
   }
 
   /** Test and shutdown helper: resolves when no turn is running. */
