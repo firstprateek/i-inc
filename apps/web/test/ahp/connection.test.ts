@@ -605,11 +605,17 @@ describe("AhpConnection", () => {
     await until(() => conn.info.status === "open");
     expect(await conn.probe(500)).toBe(true);
     (h.made[0] as NonNullable<(typeof h.made)[number]>).blackhole = true;
-    const t0 = Date.now();
-    expect(await conn.probe(200)).toBe(false);
-    expect(Date.now() - t0).toBeLessThan(1000);
-    expect(conn.info.status).not.toBe("open");
-    // and it reconnects on its own
+    // On a fake clock: the probe gives up when its own 200 ms are up, not when the 20 s heartbeat is.
+    vi.useFakeTimers();
+    try {
+      const probed = conn.probe(200);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(await probed).toBe(false);
+      // and it reconnects on its own (its handshake runs on the same fake clock)
+      await vi.advanceTimersByTimeAsync(100);
+    } finally {
+      vi.useRealTimers();
+    }
     await until(() => conn.info.status === "open" && h.made.length === 2, 3000);
   });
 

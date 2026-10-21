@@ -285,13 +285,20 @@ describe("conversations and the daemon's housekeeping", () => {
 
   it("gives a turn that waits too long a reason, and does not hold a new conversation's request at all", async () => {
     const t = await sessionRig();
+    let waited = 0;
     t.sessions.attachApp({
-      storage: { machineOf: () => "m", holding: () => true, untilFree: async () => false },
+      storage: {
+        machineOf: () => "m",
+        holding: () => true,
+        untilFree: async () => {
+          waited++;
+          return false;
+        },
+      },
       awake: () => {},
     });
-    const t0 = Date.now();
     await expect(t.create()).rejects.toThrow(/being cleaned up/);
-    expect(Date.now() - t0).toBeLessThan(500);
+    expect(waited).toBe(0); // not held for the cleanup, however long it would have taken
     expect(t.sandbox.launches).toEqual([]);
   });
 

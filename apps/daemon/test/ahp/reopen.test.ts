@@ -309,9 +309,9 @@ describe("a conversation made while the sandbox is being cleaned up", () => {
     await t.create("c0");
     const launches = t.sandbox.launches.length;
     held = true;
-    const t0 = Date.now();
+    // No clock: `freed` is released only further down, so a create that waited for the cleanup would
+    // never return and the test would time out.
     const c = await t.create("c1", { mode: "plan" });
-    expect(Date.now() - t0).toBeLessThan(500);
     expect(t.sandbox.launches).toHaveLength(launches); // no agent, no waiting
     expect(t.host.sessionState(c.session)?.config?.values.mode).toBe("plan");
     expect(t.host.sessionState(c.session)?.config?.schema).toBeTruthy();
@@ -335,16 +335,19 @@ describe("a conversation made while the sandbox is being cleaned up", () => {
 
   it("tells the owner at once if it has never seen the agent's settings", async () => {
     const t = await sessionRig();
+    let waited = 0;
     t.sessions.attachApp({
       storage: {
         machineOf: () => "inc-engineering",
         holding: () => true,
-        untilFree: () => new Promise(() => {}),
+        untilFree: () => {
+          waited++;
+          return new Promise(() => {}); // never freed: a create that waited would never return
+        },
       },
       awake: () => {},
     });
-    const t0 = Date.now();
     await expect(t.create("c1")).rejects.toThrow(/sandbox is being cleaned up/);
-    expect(Date.now() - t0).toBeLessThan(500);
+    expect(waited).toBe(0);
   });
 });
