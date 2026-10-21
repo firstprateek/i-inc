@@ -10,6 +10,7 @@ import {
   type AccountCost,
   type AgentHarness,
   answer,
+  buildQuery,
   decide,
   defaultSwitchRules,
   type Employee,
@@ -22,8 +23,10 @@ import {
   knowledgeLog,
   type ProjectRelease,
   type ProposedEdit,
+  parseScope,
   retry,
   type SandboxStatus,
+  type Scope,
   type Ticket,
   type TicketState,
 } from "@i-inc/core";
@@ -1965,6 +1968,48 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       },
     ],
 
+    // C19: the brain's search index, read-only (docs/design/brain.md). Owner-only like every route.
+    [
+      "GET",
+      "/api/brain/search",
+      async (req) => {
+        const url = new URL(req.url);
+        const q = (url.searchParams.get("q") ?? "").trim();
+        if (!q) return json({ error: "q is required" }, 400);
+        const scopes = scopesParam(url.searchParams.get("scope"));
+        if (scopes instanceof Response) return scopes;
+        const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit")) || 20));
+        const results = d.brain.search(buildQuery(q), scopes, limit).map((h) => ({
+          scope: h.scope,
+          slug: h.slug,
+          title: h.title,
+          description: h.description,
+          snippet: h.snippet,
+          updated: h.updated,
+        }));
+        return json({ results });
+      },
+    ],
+    [
+      "GET",
+      "/api/brain/map",
+      async (req) => {
+        const url = new URL(req.url);
+        const scope = url.searchParams.get("scope");
+        if (!scope || scope === "all") return json({ error: "scope is required" }, 400);
+        const scopes = scopesParam(scope);
+        if (scopes instanceof Response) return scopes;
+        const built = d.brain.mapFor(scopes[0] as Scope);
+        const section = url.searchParams.get("section");
+        if (section === null) {
+          return json({ scope, lines: built.root, sections: Object.keys(built.sections) });
+        }
+        const lines = built.sections[section];
+        if (!lines) return json({ error: "no such section" }, 404);
+        return json({ scope, section, lines, sections: Object.keys(built.sections) });
+      },
+    ],
+
     // Brains and the handbook (spec §5, "The brain"): read, diff, revert; approve policy changes.
     [
       "GET",
@@ -2067,6 +2112,20 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
 
   function named<T extends Change>(changes: T[]) {
     return changes.map((c) => ({ ...c, authorName: c.author ? nameOf(c.author) : null }));
+  }
+
+  /** A `scope` query value as the scopes to search: all of them, or one that exists. */
+  function scopesParam(raw: string | null): Scope[] | Response {
+    if (raw === null || raw === "" || raw === "all") return d.brain.scopes();
+    const parsed = parseScope(raw);
+    if (!parsed) return json({ error: "scope must be all, company, team:<id> or brain:<id>" }, 400);
+    if (parsed.kind === "brain" && !d.registry.employees().some((e) => e.id === parsed.id)) {
+      return json({ error: "no such brain" }, 404);
+    }
+    if (parsed.kind === "team" && !d.registry.teams().some((t) => t.id === parsed.id)) {
+      return json({ error: "no such team" }, 404);
+    }
+    return [raw as Scope];
   }
 
   function repoOf(key: string): Repo | null {

@@ -282,6 +282,13 @@ export class BrainIndex implements RetrievalSource {
 
   // ---- Reading -------------------------------------------------------------------------------------
 
+  /** Every scope that has pages. */
+  scopes(): Scope[] {
+    return this.db
+      .all<{ scope: string }>("SELECT DISTINCT scope FROM pages ORDER BY scope")
+      .map((r) => r.scope as Scope);
+  }
+
   pages(scopes?: Scope[]): IndexedPage[] {
     if (scopes && !scopes.length) return [];
     const where = scopes ? `WHERE scope IN (${scopes.map(() => "?").join(",")})` : "";
@@ -377,7 +384,7 @@ export class BrainIndex implements RetrievalSource {
     return null;
   }
 
-  /** A scope's map: one line per page, in sections; `section` picks one of a split map's sections. */
+  /** A scope's map: one line per page by folder; split into named sections when it passes 150 lines. */
   mapFor(scope: Scope): BuiltMap {
     const pages: MapPage[] = this.db
       .all<PageRow>("SELECT slug, title, description FROM pages WHERE scope = ? ORDER BY slug", scope)
