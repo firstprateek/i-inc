@@ -10,6 +10,7 @@
 //                 "blob N" is the same as one enormous paragraph
 //   "markdown"    a reply with headings, lists, a table, a link and highlighted code, streamed in small chunks
 //   "longtools"   thirty read calls, for a long turn
+// E2E_NO_COALESCE=1 turns off the host's joining of streamed text, so each piece is its own action.
 import { existsSync, mkdirSync } from "node:fs";
 import { join, normalize } from "node:path";
 import { FakeAgent, FakeChat, FakeHarness, FakeHelper, FakeMachines } from "@i-inc/core/testing";
@@ -102,6 +103,8 @@ const app = await createApp({
   harness: new FakeHarness(),
   helper: new FakeHelper(),
   chat: new FakeChat(),
+  // E2E_NO_COALESCE=1: every streamed piece goes out as its own action (the worst case for the client)
+  ...(process.env.E2E_NO_COALESCE ? { ahpLimits: { deltaFlushMs: 0, deltaFlushChars: 1 } } : {}),
   ahpBackend: (registry) =>
     new SessionHost({
       launch: sandbox.launch,
@@ -111,6 +114,8 @@ const app = await createApp({
       workingCopy: async () => {},
       credentials: () => ({}),
       effort: () => "medium",
+      onUsage: (u) => registry.recordUsage(u),
+      onRateLimit: (accountId, limit) => registry.setAccountRateLimit(accountId, limit),
       cancelGraceMs: 300,
       startTimeoutMs: 5000,
       log,
