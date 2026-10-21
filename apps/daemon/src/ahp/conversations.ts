@@ -62,6 +62,8 @@ export class ConversationError extends Error {
   constructor(
     message: string,
     readonly status: 400 | 404 | 409 | 502,
+    /** The AHP error code, when the refusal came from the host. */
+    readonly code?: number,
   ) {
     super(message);
   }
@@ -143,7 +145,10 @@ export class ConversationService {
     hooks.onCreateSession = async (p) => {
       const iinc = (p._meta as Json | undefined)?.iinc as Json | undefined;
       if (!iinc || typeof iinc.employeeId !== "string") {
-        throw new ConversationError('createSession needs _meta.iinc = { "employeeId", "project"? }', 400);
+        throw new RpcError(
+          JsonRpcErrorCodes.InvalidParams,
+          'createSession needs _meta.iinc = { "employeeId", "project"? }',
+        );
       }
       try {
         await this.create({
@@ -159,11 +164,12 @@ export class ConversationService {
       } catch (e) {
         if (!(e instanceof ConversationError)) throw e;
         const code =
-          e.status === 409
+          e.code ??
+          (e.status === 409
             ? AhpErrorCodes.Conflict
             : e.status === 502
               ? JsonRpcErrorCodes.InternalError
-              : JsonRpcErrorCodes.InvalidParams;
+              : JsonRpcErrorCodes.InvalidParams);
         throw new RpcError(code, e.message);
       }
     };
@@ -283,8 +289,14 @@ export class ConversationService {
         },
       });
     } catch (e) {
-      const status = (e as { code?: number }).code === -32602 ? 400 : 502;
-      throw new ConversationError(e instanceof Error ? e.message : String(e), status);
+      const code = e instanceof RpcError ? e.code : undefined;
+      const status =
+        code === AhpErrorCodes.SessionAlreadyExists
+          ? 409
+          : code === JsonRpcErrorCodes.InvalidParams || code === AhpErrorCodes.ProviderNotFound
+            ? 400
+            : 502;
+      throw new ConversationError(e instanceof Error ? e.message : String(e), status, code);
     }
     const session = this.host.sessionState(made.session) as SessionState;
     const mode = typeof session.config?.values.mode === "string" ? session.config.values.mode : null;

@@ -262,16 +262,16 @@ export class ScriptedBackend implements AgentBackend {
   runs: TurnRun[] = [];
   private confirmations = new Map<string, (a: ToolAnswer) => void>();
 
+  /** The providers on offer: one fake agent by default, or whatever a test sets (engine ids). */
+  providers: () => string[] = () => ["fake"];
   agents(): AgentInfo[] {
-    return [
-      {
-        provider: "fake",
-        displayName: "Fake agent",
-        description: "Scripted",
-        models: [],
-        capabilities: this.multipleChats ? { multipleChats: {} } : {},
-      },
-    ];
+    return this.providers().map((provider) => ({
+      provider,
+      displayName: provider,
+      description: "Scripted",
+      models: [],
+      capabilities: this.multipleChats ? { multipleChats: {} } : {},
+    }));
   }
   async openSession(req: OpenSessionRequest): Promise<OpenedSession> {
     if (this.failOpen) throw this.failOpen;

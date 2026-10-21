@@ -124,6 +124,12 @@ export async function createApp(o: AppOptions) {
     ...(o.ahpLimits ? { limits: o.ahpLimits } : {}),
     ...(token ? { verifyToken: (t: string) => same(t, token) } : {}),
   });
+  // The root channel offers one agent per engine: it follows the registry.
+  const officeChanged = registry.onChange;
+  registry.onChange = (kind) => {
+    officeChanged?.(kind);
+    if (kind === "engine") host.refreshAgents();
+  };
   const conversations = new ConversationService(db, host, registry, o.clock);
   deps.conversations = conversations;
   const transport = new AhpTransport(host, {
