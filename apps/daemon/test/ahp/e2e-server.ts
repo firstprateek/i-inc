@@ -68,6 +68,31 @@ proto.prompt = async function (this: Any, sessionId: string, blocks: Any[]): Pro
     }
     return { stopReason: "end_turn", _meta: { usage: { inputTokens: 1500, outputTokens: 220 } } };
   }
+  if (said.startsWith("big ")) {
+    // "big <table|para|code|links> <KB>": one huge block with no blank line, streamed in pieces
+    const [, kind = "table", kb = "100"] = said.split(/\s+/);
+    const unit: Record<string, string> = {
+      table: "| a | `b` | **c** | [d](https://x.y) | e |\n",
+      para: "word *emphasis* `code` [link](https://x.y) more words here. ",
+      code: "const answer = compute(41); // a line of code\n",
+      links: "[a](b) *a **b ~~c `d ",
+    };
+    const u = unit[kind] ?? unit.table ?? "";
+    const body = u.repeat(Math.ceil((Number(kb) * 1024) / u.length));
+    const head =
+      kind === "table"
+        ? "| h1 | h2 | h3 | h4 | h5 |\n|---|---|---|---|---|\n"
+        : kind === "code"
+          ? "```ts\n"
+          : "";
+    chunk(head);
+    for (let i = 0; i < body.length; i += 400) {
+      chunk(body.slice(i, i + 400));
+      if ((i / 400) % 4 === 3) await new Promise((r) => setTimeout(r, 4));
+    }
+    if (kind === "code") chunk("\n```\n");
+    return { stopReason: "end_turn" };
+  }
   if (said.startsWith("hostile")) {
     // text that is a hazard to a parser or a reader: a cubic heading, in-page links, a right-to-left override
     chunk(`# a${" ".repeat(2500)}x\n\n`);
