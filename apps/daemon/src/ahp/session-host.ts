@@ -67,6 +67,8 @@ export interface SessionHostOptions {
     engine: Engine,
     c: ConversationInfo,
   ) => Record<string, string> | Promise<Record<string, string>>;
+  /** Is this employee still here? A conversation of one who left is suspended at the next sweep. */
+  employeeKnown?: (employeeId: Id) => boolean;
   /** The reasoning effort Codex is asked for. */
   effort?: (employeeId: Id) => string;
   /** Live conversations per team. Default 3. */
@@ -496,7 +498,9 @@ export class SessionHost implements AgentBackend {
     for (const live of [...this.lives.values()]) {
       if (!this.idle(live)) continue;
       const archived = ((this.h.sessionState(live.session)?.status ?? 0) & SessionStatus.IsArchived) !== 0;
-      if (archived) this.suspend(live, "archived");
+      if (this.o.employeeKnown && !this.o.employeeKnown(live.info.employeeId))
+        this.suspend(live, "its employee left");
+      else if (archived) this.suspend(live, "archived");
       else if (t - live.lastActive >= this.idleMs) this.suspend(live, "idle");
     }
   }

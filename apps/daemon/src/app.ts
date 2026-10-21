@@ -165,14 +165,7 @@ export async function createApp(o: AppOptions) {
     machineBusy: (machine) => daemon.machineBusy(machine),
     hostBusy: () => daemon.busy(),
     ticketActive: (id) => daemon.isRunning(id),
-    archivedConversations: () =>
-      conversations
-        .list({ archived: true })
-        .flatMap((c) =>
-          c.archivedAt === null
-            ? []
-            : [{ id: c.id, employeeId: c.employeeId, project: c.project, archivedAt: c.archivedAt }],
-        ),
+    archivedConversations: () => conversations.forCleanup(),
     footprint: () => ({
       ...daemon.footprint(),
       ...(ops.footprint ? ops.footprint() : {}),
@@ -180,6 +173,8 @@ export async function createApp(o: AppOptions) {
   });
   deps.storage = storage;
   daemon.storage = storage;
+  // A conversation remembers which machine its copy is in, so a team change can't strand it.
+  conversations.machineOf = (employeeId) => storage.machineOf(employeeId);
   // Conversations count as work: the health check, the deployer's drain and VACUUM see their turns,
   // and a machine with a live conversation agent is neither cleaned nor stopped.
   daemon.onBusy(() => host.busy());

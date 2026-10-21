@@ -86,7 +86,14 @@ export interface StorageDeps {
   /** The folder with the worktrees inside a machine. */
   work?: string;
   /** Archived conversations, with when they were archived: their working copies are cleaned like closed tickets'. */
-  archivedConversations?: () => { id: Id; employeeId: Id; project: string | null; archivedAt: number }[];
+  archivedConversations?: () => {
+    id: Id;
+    employeeId: Id;
+    project: string | null;
+    archivedAt: number;
+    /** The machine the copy was made in, when recorded: it outlives a team change or an employee leaving. */
+    machine?: string | null;
+  }[];
   /** Ask a machine to hand freed blocks back to the host. */
   trim?: boolean;
   memory?: () => NodeJS.MemoryUsage;
@@ -461,7 +468,7 @@ export class Storage {
       const convs =
         settings.sandboxCleanupDays > 0
           ? (this.d.archivedConversations?.() ?? []).filter(
-              (c) => c.archivedAt <= cutoff && this.machineOf(c.employeeId) === machine,
+              (c) => c.archivedAt <= cutoff && (c.machine ?? this.machineOf(c.employeeId)) === machine,
             )
           : [];
       const script = cleanupScript({

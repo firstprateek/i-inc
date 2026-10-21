@@ -212,13 +212,7 @@ describe("storage decides which conversations to clean", () => {
       ticketActive: () => false,
       footprint: () => ({}),
       trim: false,
-      archivedConversations: () =>
-        app.deps.conversations?.list({ archived: true }).map((c) => ({
-          id: c.id,
-          employeeId: c.employeeId,
-          project: c.project,
-          archivedAt: c.archivedAt as number,
-        })) ?? [],
+      archivedConversations: () => app.deps.conversations?.forCleanup() ?? [],
     });
     return { app, storage, scripts };
   }
@@ -367,5 +361,187 @@ describe("conversations and the daemon's housekeeping", () => {
     app.daemon.onMachineBusy((m) => m === "inc-engineering");
     expect(await app.daemon.machineBusy("inc-engineering")).toBe(true);
     expect(await app.daemon.machineBusy("inc-design")).toBe(false);
+  });
+});
+
+describe("a conversation's copy is never forgotten", () => {
+  const DAY_MIN = 24 * 60;
+
+  /** A storage that runs the cleanup script for real (bash) over the temp work folder. */
+  async function realStorage(machineFor: (e: string) => string = () => "inc-engineering") {
+    const app = await testApp();
+    app.deps.registry.setTeam({ id: "engineering", name: "Engineering", members: ["ada", "kit"] });
+    const names = new Set<string>(["inc-engineering", "inc-old"]);
+    const ops: MachineOps = {
+      machineFor,
+      listMachines: async () => [...names].map((name) => ({ name, state: "running" as const, diskBytes: 1 })),
+      runIn: async (_m, script) => {
+        const r = spawnSync("bash", ["-s"], {
+          input: script,
+          encoding: "utf8",
+          env: { PATH: process.env.PATH ?? "", HOME: home },
+        });
+        return r.stdout + r.stderr;
+      },
+    };
+    const storage = new Storage({
+      db: app.db,
+      clock: app.clock,
+      registry: app.deps.registry,
+      tickets: app.deps.tickets,
+      events: app.deps.store,
+      paths: { home, dbPath: join(home, "i.db"), knowledgeDir: join(home, "k") },
+      ops,
+      work,
+      machineBusy: async () => false,
+      hostBusy: () => false,
+      ticketActive: () => false,
+      footprint: () => ({}),
+      trim: false,
+      archivedConversations: () => app.deps.conversations?.forCleanup() ?? [],
+    });
+    if (app.deps.conversations) app.deps.conversations.machineOf = (e) => machineFor(e);
+    return { app, storage };
+  }
+  const make = async (app: Awaited<ReturnType<typeof testApp>>, employeeId = "ada") =>
+    (await app.call("POST", "/api/conversations", { employeeId })).body.conversation as Any;
+  async function dispose(app: Awaited<ReturnType<typeof testApp>>, c: Any) {
+    await app.call("PATCH", `/api/conversations/${c.id}`, { archived: true });
+    await app.ahp.host.disposeSession(c.ahpSession);
+  }
+
+  it("keeps the row of a disposed conversation, archived and hidden, and the cleanup removes its copy by the same rules", async () => {
+    const { app, storage } = await realStorage();
+    const clean = await make(app);
+    const unpushed = await make(app);
+    const archivedOnly = await make(app);
+    const live = await make(app);
+    const copies = {
+      clean: convCopy(clean.id),
+      unpushed: convCopy(unpushed.id, { unpushed: true }),
+      archived: convCopy(archivedOnly.id),
+      live: convCopy(live.id),
+    };
+    await dispose(app, clean);
+    await dispose(app, unpushed);
+    await app.call("PATCH", `/api/conversations/${archivedOnly.id}`, { archived: true });
+
+    // gone from the API and from the host, still in the table as a tombstone
+    expect((await app.call("GET", `/api/conversations/${clean.id}`)).status).toBe(404);
+    const listed = (await app.call("GET", "/api/conversations?archived=all")).body.conversations.map(
+      (c: Any) => c.id,
+    );
+    expect(new Set(listed)).toEqual(new Set([archivedOnly.id, live.id]));
+    expect(listed).not.toContain(clean.id);
+    expect(app.ahp.host.sessionState(clean.ahpSession)).toBeUndefined();
+    const row = app.db.all(
+      "SELECT archived_at, disposed_at FROM conversations WHERE id = ?",
+      clean.id,
+    )[0] as Any;
+    expect(row.archived_at).toEqual(expect.any(Number));
+    expect(row.disposed_at).toEqual(expect.any(Number));
+
+    // the retention days pass: the clean copies of archived and of disposed conversations go; unpushed work stays
+    app.clock.advance(4 * DAY_MIN);
+    await storage.cleanMachine("inc-engineering", { manual: true });
+    expect(existsSync(copies.clean)).toBe(false);
+    expect(existsSync(copies.archived)).toBe(false);
+    expect(existsSync(copies.unpushed)).toBe(true); // kept: unpushed commits
+    expect(existsSync(copies.live)).toBe(true); // never archived
+    // ...for unpushedKeepDays, and then it goes too
+    app.clock.advance(27 * DAY_MIN);
+    await storage.cleanMachine("inc-engineering", { manual: true });
+    expect(existsSync(copies.unpushed)).toBe(false);
+    expect(existsSync(copies.live)).toBe(true);
+  });
+
+  it("finds a copy in the machine it was made in, after a team change or an employee leaving", async () => {
+    let where = "inc-old";
+    const { app, storage } = await realStorage((e) => (e === "kit" ? where : "inc-engineering"));
+    const c = await make(app, "kit"); // made while kit's machine was inc-old
+    const copy = convCopy(c.id);
+    where = "inc-engineering"; // kit moved to another team
+    await dispose(app, c);
+    app.clock.advance(4 * DAY_MIN);
+    const scripts: string[] = [];
+    const run = (storage as unknown as { d: { ops: MachineOps } }).d.ops.runIn;
+    (storage as unknown as { d: { ops: MachineOps } }).d.ops.runIn = async (m, sc) => {
+      scripts.push(`${m}:${sc.includes(`cid in ${c.id}`)}`);
+      return run(m, sc);
+    };
+    await storage.cleanMachine("inc-engineering", { manual: true });
+    await storage.cleanMachine("inc-old", { manual: true });
+    expect(scripts).toContain("inc-old:true"); // the machine it was made in
+    expect(scripts).not.toContain("inc-engineering:true");
+    expect(existsSync(copy)).toBe(false);
+  });
+
+  it("cleans the copy of a conversation whose project was removed, and one whose agent crashed", async () => {
+    const { app, storage } = await realStorage();
+    const c = await make(app);
+    const copy = convCopy(c.id);
+    app.deps.registry.removeProject("Duet");
+    await dispose(app, c);
+    app.clock.advance(4 * DAY_MIN);
+    await storage.cleanMachine("inc-engineering", { manual: true });
+    expect(existsSync(copy)).toBe(false);
+  });
+
+  it("after a restart between disposing the session and noting it, the row becomes a tombstone", async () => {
+    const { app, storage } = await realStorage();
+    const c = await make(app);
+    const copy = convCopy(c.id);
+    await app.call("PATCH", `/api/conversations/${c.id}`, { archived: true });
+    app.ahp.host.hooks.onSessionDisposed = undefined as never; // the daemon stopped right here
+    await app.ahp.host.disposeSession(c.ahpSession);
+    expect(
+      (app.db.all("SELECT disposed_at FROM conversations WHERE id = ?", c.id)[0] as Any).disposed_at,
+    ).toBeNull();
+    const { ConversationService } = await import("../../src/ahp/conversations.ts");
+    const again = new ConversationService(app.db, app.ahp.host, app.deps.registry, app.clock);
+    expect(
+      (app.db.all("SELECT disposed_at FROM conversations WHERE id = ?", c.id)[0] as Any).disposed_at,
+    ).toEqual(expect.any(Number));
+    expect(again.list({ archived: "all" })).toEqual([]);
+    expect(again.forCleanup().map((x) => x.id)).toEqual([c.id]);
+    app.clock.advance(4 * DAY_MIN);
+    await storage.cleanMachine("inc-engineering", { manual: true });
+    expect(existsSync(copy)).toBe(false);
+  });
+
+  it("after a restart between making a session and its row, the session gets a tombstone row and is disposed", async () => {
+    const { app } = await realStorage();
+    const made = await app.ahp.host.createSession({
+      provider: "opus",
+      workingDirectories: ["file:///home/employee/work/conv-ab12cd34"],
+      meta: {
+        "iinc.conversation": "ab12cd34",
+        "iinc.employee": "ada",
+        "iinc.project": "Duet",
+        "iinc.branch": "conv/ab12cd34",
+      },
+    });
+    expect(app.deps.conversations?.bySession(made.session)).toBeUndefined();
+    const { ConversationService } = await import("../../src/ahp/conversations.ts");
+    const again = new ConversationService(app.db, app.ahp.host, app.deps.registry, app.clock);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(again.forCleanup()).toMatchObject([{ id: "ab12cd34", employeeId: "ada", project: "Duet" }]);
+    expect(app.ahp.host.sessionState(made.session)).toBeUndefined(); // disposed: no live agent, no leaked session
+  });
+});
+
+describe("a conversation of an employee who left", () => {
+  it("is suspended at the next sweep, however recently it was used", async () => {
+    let here = true;
+    const t = await sessionRig({ host: { employeeKnown: () => here } });
+    const c = await t.create();
+    expect(t.sandbox.live).toHaveLength(1);
+    t.sessions.sweep();
+    expect(t.sandbox.live).toHaveLength(1); // still here
+    here = false;
+    t.sessions.sweep();
+    await until(() => t.sandbox.last.exitCode !== undefined);
+    expect(t.sessions.status()[0]?.live).toBe(false);
+    expect(c.session).toBeTruthy();
   });
 });

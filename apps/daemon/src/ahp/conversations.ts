@@ -70,6 +70,8 @@ export class ConversationError extends Error {
 }
 
 type Row = {
+  machine: string | null;
+  disposed_at: number | null;
   id: string;
   employee_id: string;
   project: string | null;
@@ -135,7 +137,77 @@ export class ConversationService {
       CREATE INDEX IF NOT EXISTS idx_conversations_session ON conversations(ahp_session);
       CREATE INDEX IF NOT EXISTS idx_conversations_employee ON conversations(employee_id, created_at);
     `);
+    // Added later: a tombstone for a conversation whose session was disposed, and the machine its copy is in.
+    const have = db.all<{ name: string }>("PRAGMA table_info(conversations)").map((c) => c.name);
+    if (!have.includes("disposed_at")) db.exec("ALTER TABLE conversations ADD COLUMN disposed_at INTEGER");
+    if (!have.includes("machine")) db.exec("ALTER TABLE conversations ADD COLUMN machine TEXT");
     this.attach();
+    this.reconcile();
+  }
+
+  /** Where an employee's conversations run (a machine name), for the cleanup to find their copies. */
+  machineOf: ((employeeId: Id) => string | undefined) | undefined;
+
+  /**
+   * After a restart: a row whose session is gone (the daemon stopped between disposing the session
+   * and noting it) becomes a tombstone, and a session with no row (it stopped between making the session
+   * and its row) gets a tombstone row and is disposed, so the cleanup still finds the working copy.
+   */
+  private reconcile(): void {
+    const now = this.clock.now();
+    for (const r of this.db.all<Row>("SELECT * FROM conversations WHERE disposed_at IS NULL")) {
+      if (!this.host.sessionState(r.ahp_session)) this.tombstone(r.ahp_session, now);
+    }
+    const known = new Set(this.db.all<{ id: string }>("SELECT id FROM conversations").map((r) => r.id));
+    for (const session of this.host.sessions()) {
+      const s = this.host.sessionState(session);
+      const meta = (s?._meta ?? {}) as Json;
+      const id = meta["iinc.conversation"];
+      if (!s || typeof id !== "string" || known.has(id)) continue;
+      this.db.run(
+        `INSERT INTO conversations (id, employee_id, project, branch, title, mode, engine_id, created_at, archived_at, disposed_at, ahp_session, ahp_chat)
+         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
+        id,
+        String(meta["iinc.employee"] ?? ""),
+        typeof meta["iinc.project"] === "string" ? meta["iinc.project"] : null,
+        typeof meta["iinc.branch"] === "string" ? meta["iinc.branch"] : null,
+        s.title,
+        s.provider,
+        now,
+        now,
+        now,
+        session,
+        s.defaultChat ?? "",
+      );
+      void this.host.disposeSession(session).catch(() => {});
+    }
+  }
+
+  /** Marks a conversation's session as gone. The row stays (archived), so its working copy is cleaned like any archived one's. */
+  private tombstone(session: string, now: number): void {
+    this.db.run(
+      "UPDATE conversations SET disposed_at = ?, archived_at = COALESCE(archived_at, ?) WHERE ahp_session = ?",
+      now,
+      now,
+      session,
+    );
+  }
+
+  /** Archived and disposed conversations, with where their working copies are: what the sandbox cleanup works from. */
+  forCleanup(): {
+    id: Id;
+    employeeId: Id;
+    project: string | null;
+    archivedAt: number;
+    machine: string | null;
+  }[] {
+    return this.db.all<Row>("SELECT * FROM conversations WHERE archived_at IS NOT NULL").map((r) => ({
+      id: r.id,
+      employeeId: r.employee_id,
+      project: r.project,
+      archivedAt: r.archived_at as number,
+      machine: r.machine,
+    }));
   }
 
   /** Wires the host's hooks: AHP clients can create conversations, rename and archive them too. */
@@ -175,9 +247,10 @@ export class ConversationService {
     };
     // A conversation's session is only disposed once it is archived.
     hooks.canDisposeSession = (session) => this.bySession(session)?.archivedAt != null;
-    hooks.onSessionDisposed = (session) => {
-      this.db.run("DELETE FROM conversations WHERE ahp_session = ?", session);
-    };
+    // Disposing forgets the session and its log, not the conversation's working copy in the sandbox:
+    // the row stays, archived and marked disposed (hidden from the API), and the cleanup removes the
+    // copy by the same rules as any archived conversation's.
+    hooks.onSessionDisposed = (session) => this.tombstone(session, this.clock.now());
   }
 
   private onApplied(channel: string, action: StateAction): void {
@@ -217,7 +290,7 @@ export class ConversationService {
   }
 
   get(id: string): ConversationView | undefined {
-    const [r] = this.db.all<Row>("SELECT * FROM conversations WHERE id = ?", id);
+    const [r] = this.db.all<Row>("SELECT * FROM conversations WHERE id = ? AND disposed_at IS NULL", id);
     return r ? this.view(toConversation(r)) : undefined;
   }
 
@@ -228,7 +301,7 @@ export class ConversationService {
 
   /** Newest activity first. `archived`: only archived (true), only live (false, the default) or all ("all"). */
   list(opts: { archived?: boolean | "all"; employeeId?: Id } = {}): ConversationView[] {
-    const where: string[] = [];
+    const where: string[] = ["disposed_at IS NULL"];
     const args: string[] = [];
     if (opts.archived !== "all")
       where.push(opts.archived ? "archived_at IS NOT NULL" : "archived_at IS NULL");
@@ -302,8 +375,8 @@ export class ConversationService {
     const session = this.host.sessionState(made.session) as SessionState;
     const mode = typeof session.config?.values.mode === "string" ? session.config.values.mode : null;
     this.db.run(
-      `INSERT INTO conversations (id, employee_id, project, branch, title, mode, engine_id, created_at, archived_at, ahp_session, ahp_chat)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+      `INSERT INTO conversations (id, employee_id, project, branch, title, mode, engine_id, created_at, archived_at, ahp_session, ahp_chat, machine)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
       id,
       employee.id,
       project,
@@ -314,6 +387,7 @@ export class ConversationService {
       this.clock.now(),
       made.session,
       made.chat,
+      this.machineOf?.(employee.id) ?? null,
     );
     return this.get(id) as ConversationView;
   }

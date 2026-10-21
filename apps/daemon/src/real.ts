@@ -200,6 +200,7 @@ export function realPorts(o: RealOptions): Pick<
           await signIn(registry, c.employeeId);
           return { ...account(engine), I_INC_PORTS: portsFor(`conv-${c.id}`) };
         },
+        employeeKnown: (employeeId) => registry.employees().some((e) => e.id === employeeId),
         effort: (employeeId) => registry.employee(employeeId).effort ?? "medium",
         onUsage: (u) => registry.recordUsage(u),
         onRateLimit: (accountId, limit) => registry.setAccountRateLimit(accountId, limit),
