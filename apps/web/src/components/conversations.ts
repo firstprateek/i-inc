@@ -8,6 +8,8 @@ import { ahp, useAhp } from "../ahp/hub.ts";
 import { type AccountRateLimit, api, type Conversation, refresh } from "../api.ts";
 import { cardStyles } from "../conversations/styles.ts";
 import { notifyNeedsYou } from "../needs-you.ts";
+import { draftHash } from "../routes.ts";
+import type { SendDetail } from "./conv-composer.ts";
 import type { CreateDetail } from "./conv-list.ts";
 import { base } from "./shared.ts";
 import "./conv-context.ts";
@@ -21,14 +23,15 @@ const WIDE = "(min-width: 1200px)";
 export class IncConversations extends LitElement {
   static override properties = {
     selectedId: { type: String },
+    draft: { attribute: false },
+    form: { attribute: false },
+    first: { state: true },
     list: { state: true },
     loading: { state: true },
     listError: { state: true },
     employees: { state: true },
     projects: { state: true },
     showArchived: { state: true },
-    creating: { state: true },
-    createError: { state: true },
     phone: { state: true },
     wide: { state: true },
     ctx: { state: true },
@@ -41,14 +44,18 @@ export class IncConversations extends LitElement {
     sheet: { state: true },
   };
   declare selectedId: string;
+  /** `#/conversations/new/<employee>[/<project>]`: a conversation the first message will create. */
+  declare draft: { employee: string; project: string } | undefined;
+  /** `#/conversations?new=1&...`: the New conversation form, open and preset. */
+  declare form: { employee: string; project: string } | undefined;
+  /** The first message of a conversation just created, until its thread has sent it. */
+  declare first: { id: string; text: string; files: File[]; intent: "turn" } | undefined;
   declare list: Conversation[];
   declare loading: boolean;
   declare listError: string;
   declare employees: Employee[];
   declare projects: string[];
   declare showArchived: boolean;
-  declare creating: boolean;
-  declare createError: string;
   declare phone: boolean;
   declare wide: boolean;
   declare ctx: "open" | "closed" | null;
@@ -77,8 +84,6 @@ export class IncConversations extends LitElement {
     this.employees = [];
     this.projects = [];
     this.showArchived = false;
-    this.creating = false;
-    this.createError = "";
     this.phone = false;
     this.wide = false;
     this.ctx = null;
@@ -288,25 +293,23 @@ export class IncConversations extends LitElement {
 
   // ───────────────────────────── actions ─────────────────────────────
 
-  private async create(d: CreateDetail) {
-    this.creating = true;
-    this.createError = "";
+  /** The draft's first message: it makes the conversation, then the new thread sends the message. */
+  private createFromDraft = async (d: SendDetail): Promise<string | null> => {
+    const draft = this.draft;
+    if (!draft) return "There is no conversation to start.";
     try {
       const c = await api.createConversation({
-        employeeId: d.employeeId,
-        ...(d.project ? { project: d.project } : {}),
+        employeeId: draft.employee,
+        ...(draft.project ? { project: draft.project } : {}),
       });
+      this.first = { id: c.id, text: d.text, files: d.files, intent: "turn" };
       this.list = [c, ...this.list.filter((x) => x.id !== c.id)];
       location.hash = `#/conversations/${c.id}`;
-      const form = this.renderRoot.querySelector("inc-conv-list") as (HTMLElement & { form: boolean }) | null;
-      if (form) form.form = false;
-      void this.updateComplete.then(() => requestAnimationFrame(() => this.focusComposer()));
+      return null;
     } catch (e) {
-      this.createError = e instanceof Error ? e.message : String(e);
-    } finally {
-      this.creating = false;
+      return e instanceof Error ? e.message : String(e);
     }
-  }
+  };
 
   private focusComposer() {
     const thread = this.renderRoot.querySelector("inc-conv-thread");
@@ -393,10 +396,12 @@ export class IncConversations extends LitElement {
     const drawer = open && !this.wide && !phone;
     // While the phone's sheet is open, everything behind it is out of reach (of Tab and of a screen reader).
     const modal = phone && this.sheet && !!conv;
-    const list = html`<inc-conv-list class="pane list-pane" ?inert=${modal} ?hidden=${phone && !!this.selectedId} .items=${this.list} .employees=${this.employees}
+    const list = html`<inc-conv-list class="pane list-pane" ?inert=${modal} ?hidden=${phone && (!!this.selectedId || !!this.draft)} .items=${this.list} .employees=${this.employees}
       .projects=${this.projects} .selected=${this.selectedId} .now=${this.now} .loading=${this.loading} .error=${this.listError}
-      .showArchived=${this.showArchived} .creating=${this.creating} .createError=${this.createError}
-      @conv-create=${(e: CustomEvent<CreateDetail>) => void this.create(e.detail)}
+      .showArchived=${this.showArchived} .preset=${this.form}
+      @conv-create=${(e: CustomEvent<CreateDetail>) => {
+        location.hash = draftHash(e.detail.employeeId, e.detail.project);
+      }}
       @conv-rename=${(e: CustomEvent<{ id: string; title: string }>) => void this.patch(e.detail.id, { title: e.detail.title })}
       @conv-archive=${(e: CustomEvent<{ id: string; archived: boolean }>) => void this.patch(e.detail.id, { archived: e.detail.archived })}
       @conv-toggle-archived=${() => {
@@ -407,15 +412,22 @@ export class IncConversations extends LitElement {
         this.loading = true;
         void this.loadList();
       }}></inc-conv-list>`;
-    const thread = html`<section class="pane thread-pane" ?inert=${modal} ?hidden=${phone && !this.selectedId} aria-label="Conversation">
+    const thread = html`<section class="pane thread-pane" ?inert=${modal} ?hidden=${phone && !this.selectedId && !this.draft} aria-label="Conversation">
       ${this.lost ? html`<p class="lost" role="alert">${this.lost}</p>` : nothing}
       ${
         conv
           ? html`<inc-conv-thread .conv=${conv} .employee=${employee} .phone=${phone} .contextOpen=${open}
+              .first=${this.first?.id === conv.id ? this.first : undefined}
+              @conv-first-sent=${() => {
+                this.first = undefined;
+              }}
               @conv-toggle-context=${this.toggleContext}></inc-conv-thread>`
-          : this.selectedId && this.loading
-            ? html`<div class="none" aria-busy="true"><p>Loading…</p></div>`
-            : html`<div class="none"><h2>${this.list.length ? "Pick a conversation" : "Start a conversation"}</h2>
+          : this.draft
+            ? html`<inc-conv-thread .draft=${this.draft} .employee=${this.employees.find((e) => e.id === this.draft?.employee)}
+                .phone=${phone} .onCreate=${this.createFromDraft}></inc-conv-thread>`
+            : this.selectedId && this.loading
+              ? html`<div class="none" aria-busy="true"><p>Loading…</p></div>`
+              : html`<div class="none"><h2>${this.list.length ? "Pick a conversation" : "Start a conversation"}</h2>
                 <p>${this.list.length ? "Choose one from the list, or start a new one." : "Start a conversation with an employee about a project. Ask a question, or tell them what to change, and watch them work."}</p></div>`
       }
     </section>`;

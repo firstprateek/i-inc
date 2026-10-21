@@ -33,6 +33,25 @@ describe("parse", () => {
     ["#/conversations", { view: "conversations", id: "" }],
     ["#/conversations/ab12cd34", { view: "conversations", id: "ab12cd34" }],
     ["#/conversations/old", { view: "conversations", id: "", old: true }],
+    ["#/conversations/new/ada", { view: "conversations", id: "", draft: { employee: "ada", project: "" } }],
+    [
+      "#/conversations/new/ada/Duet",
+      { view: "conversations", id: "", draft: { employee: "ada", project: "Duet" } },
+    ],
+    [
+      "#/conversations/new/ada/my%20repo",
+      { view: "conversations", id: "", draft: { employee: "ada", project: "my repo" } },
+    ],
+    ["#/conversations?new=1", { view: "conversations", id: "", form: { employee: "", project: "" } }],
+    [
+      "#/conversations?new=1&project=Duet",
+      { view: "conversations", id: "", form: { employee: "", project: "Duet" } },
+    ],
+    [
+      "#/conversations?new=1&project=my%20repo&employee=kit",
+      { view: "conversations", id: "", form: { employee: "kit", project: "my repo" } },
+    ],
+    ["#/conversations?x=1", { view: "conversations", id: "" }],
     ["#/conversations/old/ada", { view: "conversations", id: "ada", old: true }],
     // an employee in the old address means the old chat with that employee
     ["#/conversations/ada", { view: "conversations", id: "ada", old: true }],
@@ -198,6 +217,9 @@ describe("redirectFor: tidying, mistyped and unknown hashes", () => {
       "#/ticket/12/assign",
       "#/conversations/ab12cd34",
       "#/conversations/old/ada",
+      "#/conversations/new/ada/Duet",
+      "#/conversations?new=1",
+      "#/conversations?new=1&project=Duet",
     ])
       expect(redirectFor(h), h).toBeNull();
   });

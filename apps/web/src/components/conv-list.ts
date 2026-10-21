@@ -28,8 +28,7 @@ export class IncConvList extends LitElement {
     loading: { type: Boolean },
     error: { type: String },
     showArchived: { type: Boolean },
-    creating: { type: Boolean },
-    createError: { type: String },
+    preset: { attribute: false },
     form: { state: true },
     menu: { state: true },
     rove: { state: true },
@@ -46,8 +45,8 @@ export class IncConvList extends LitElement {
   declare loading: boolean;
   declare error: string;
   declare showArchived: boolean;
-  declare creating: boolean;
-  declare createError: string;
+  /** Opens the form with this employee and project chosen (from `#/conversations?new=1&project=<id>`). */
+  declare preset: { employee: string; project: string } | undefined;
   declare form: boolean;
   declare menu: string | null;
   /** The row that is the list's one tab stop; arrow keys move between rows. */
@@ -67,8 +66,7 @@ export class IncConvList extends LitElement {
     this.loading = false;
     this.error = "";
     this.showArchived = false;
-    this.creating = false;
-    this.createError = "";
+    this.preset = undefined;
     this.form = false;
     this.menu = null;
     this.rove = "";
@@ -167,7 +165,7 @@ export class IncConvList extends LitElement {
 
   private submitCreate = (ev: Event) => {
     ev.preventDefault();
-    if (!this.pickEmployee || this.creating) return;
+    if (!this.pickEmployee) return;
     this.emit<CreateDetail>("conv-create", {
       employeeId: this.pickEmployee,
       project: this.pickProject || null,
@@ -271,12 +269,11 @@ export class IncConvList extends LitElement {
                 <label>Project<select .value=${this.pickProject} @change=${(e: Event) => {
                   this.pickProject = (e.target as HTMLSelectElement).value;
                 }}><option value="" ?selected=${!this.pickProject}>No project</option>${projects.map((p) => html`<option value=${p} ?selected=${p === this.pickProject}>${p}</option>`)}</select></label>
-                ${this.createError ? html`<p class="problem" role="alert">${this.createError}</p>` : nothing}
-                <div class="btns"><button class="btn" type="submit" ?disabled=${this.creating || !this.pickEmployee}>${this.creating ? "Starting…" : "Start"}</button>
+                <div class="btns"><button class="btn" type="submit" ?disabled=${!this.pickEmployee}>Start</button>
                   <button class="btn ghost" type="button" @click=${() => {
                     this.form = false;
                   }}>Cancel</button></div>
-                <span class="sub">The conversation starts when you send the first message.</span>
+                <span class="sub">Nothing is created until you send the first message.</span>
               </form>`
             : nothing
         }

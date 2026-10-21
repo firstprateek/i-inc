@@ -42,7 +42,15 @@ const isWorkTab = (s: string | undefined): s is WorkTab => WORK_TABS.some(([id])
 
 export type Route =
   /** `id` is a conversation (8 hex), or empty for the list. With `old`, it is the employee of the old chat. */
-  | { view: "conversations"; id: string; old?: true }
+  | {
+      view: "conversations";
+      id: string;
+      old?: true;
+      /** `#/conversations/new/<employee>[/<project>]`: a conversation not made yet; it starts with the first message. */
+      draft?: { employee: string; project: string };
+      /** `#/conversations?new=1[&employee=<id>][&project=<id>]`: the New conversation form, open and preset. */
+      form?: { employee: string; project: string };
+    }
   | { view: "work"; tab: WorkTab }
   | { view: "ticket"; id: string }
   | { view: "team" }
@@ -160,9 +168,13 @@ export function redirectFor(hash: string): string | null {
             ? "#/conversations"
             : lower(a) === "old"
               ? `#/${tail(v, "old", rest[1])}`
-              : CONVERSATION_ID.test(a)
-                ? `#/conversations/${a.toLowerCase()}`
-                : `#/conversations/old/${a}`;
+              : lower(a) === "new"
+                ? rest[1]
+                  ? `#/${tail(v, "new", rest[1], rest[2])}`
+                  : "#/conversations?new=1"
+                : CONVERSATION_ID.test(a)
+                  ? `#/conversations/${a.toLowerCase()}`
+                  : `#/conversations/old/${a}`;
         break;
       }
       case "work":
@@ -215,16 +227,34 @@ export function homeRoute(): Route {
   return onPhone() ? { view: "work", tab: "needs-you" } : { view: "conversations", id: "" };
 }
 
+/** The address of a conversation about to start: the first message creates it. */
+export const draftHash = (employee: string, project: string | null): string =>
+  `#/conversations/new/${encodeURIComponent(employee)}${project ? `/${encodeURIComponent(project)}` : ""}`;
+
 /** A conversation's id in an address. */
 export const CONVERSATION_ID = /^[0-9a-f]{8}$/i;
 
 export function parse(hash: string): Route {
-  const [, view, a, b, c] = (redirectFor(hash) ?? hash).split("?")[0]?.split("/") ?? [];
+  const full = redirectFor(hash) ?? hash;
+  const [, view, a, b, c] = full.split("?")[0]?.split("/") ?? [];
   switch (view) {
-    case "conversations":
-      return a === "old"
-        ? { view: "conversations", id: b ?? "", old: true }
-        : { view: "conversations", id: a ?? "" };
+    case "conversations": {
+      if (a === "old") return { view: "conversations", id: b ?? "", old: true };
+      if (a === "new" && b)
+        return {
+          view: "conversations",
+          id: "",
+          draft: { employee: decodeURIComponent(b), project: c ? decodeURIComponent(c) : "" },
+        };
+      const q = hashQuery(full);
+      if (a === undefined && q.get("new") === "1")
+        return {
+          view: "conversations",
+          id: "",
+          form: { employee: q.get("employee") ?? "", project: q.get("project") ?? "" },
+        };
+      return { view: "conversations", id: a ?? "" };
+    }
     case "work":
       return { view: "work", tab: isWorkTab(a) ? a : "board" };
     case "ticket":
@@ -282,7 +312,11 @@ function titleParts(r: Route): string[] {
     list.find(([t]) => t === id)?.[1] ?? "";
   switch (r.view) {
     case "conversations":
-      return r.old ? ["Old chat", "Conversations"] : ["Conversations"];
+      return r.old
+        ? ["Old chat", "Conversations"]
+        : r.draft
+          ? ["New conversation", "Conversations"]
+          : ["Conversations"];
     case "work":
       return [tab(WORK_TABS, r.tab), "Work"];
     case "ticket":

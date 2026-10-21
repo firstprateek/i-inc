@@ -38,6 +38,9 @@ export const modeKey = (employeeId: string) => `i-inc-conv-mode:${employeeId}`;
 export class IncConvThread extends LitElement {
   static override properties = {
     conv: { attribute: false },
+    draft: { attribute: false },
+    first: { attribute: false },
+    onCreate: { attribute: false },
     employee: { attribute: false },
     phone: { type: Boolean },
     contextOpen: { type: Boolean },
@@ -48,6 +51,11 @@ export class IncConvThread extends LitElement {
     loadingOlder: { state: true },
   };
   declare conv: Conversation | undefined;
+  /** A conversation not made yet: the first message creates it (the screen does, through `onCreate`). */
+  declare draft: { employee: string; project: string } | undefined;
+  /** The message that made this conversation, sent once its chat is loaded. */
+  declare first: SendDetail | undefined;
+  declare onCreate: ((d: SendDetail) => Promise<string | null>) | undefined;
   declare employee: Employee | undefined;
   declare phone: boolean;
   declare contextOpen: boolean;
@@ -69,6 +77,7 @@ export class IncConvThread extends LitElement {
   private announceTimer: ReturnType<typeof setTimeout> | undefined;
   private resizer: ResizeObserver | undefined;
   private baselined = false;
+  private firstSent = false;
   private modeApplied = false;
 
   constructor() {
@@ -184,6 +193,7 @@ export class IncConvThread extends LitElement {
       this.stick = true;
       this.focusedPending = false;
       this.baselined = false;
+      this.firstSent = false;
       this.modeApplied = false;
       this.prevActive = undefined;
       this.prevPending = new Set();
@@ -218,6 +228,19 @@ export class IncConvThread extends LitElement {
     if (!this.focusedPending) this.focusPendingOnOpen();
     this.applyRememberedMode();
     if (!this.baselined) this.noteTransitions();
+    void this.sendFirst();
+  }
+
+  /** The message that created this conversation goes out as soon as its chat is loaded (after the mode is set). */
+  private async sendFirst() {
+    const conv = this.conv;
+    const first = this.first;
+    if (!first || this.firstSent || !conv) return;
+    if (!ahp().chat(conv.ahpChat) || !ahp().session(conv.ahpSession) || this.info.status !== "open") return;
+    this.firstSent = true;
+    const why = await this.send(first);
+    this.dispatchEvent(new CustomEvent("conv-first-sent", { bubbles: true, composed: true }));
+    if (why) this.restoreMessage(first, why);
   }
 
   /** A new, empty conversation starts in the mode the owner last chose for this employee. */
@@ -500,9 +523,35 @@ export class IncConvThread extends LitElement {
     return idx;
   }
 
+  /** A conversation that does not exist yet: who it is with, an invitation, and a composer that creates it. */
+  private renderDraft(d: { employee: string; project: string }) {
+    const name = this.employee?.name ?? d.employee;
+    return html`
+      <div class="head">
+        ${
+          this.phone
+            ? html`<button class="back" type="button" aria-label="Back to conversations" @click=${() => {
+                location.hash = "#/conversations";
+              }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></button>`
+            : nothing
+        }
+        ${this.employee ? avatar({ name: this.employee.name, tint: this.employee.tint ?? 0 }, 36) : nothing}
+        <div class="who"><h2 class="title">New conversation</h2>
+          <div class="meta"><span>${name}</span>${d.project ? projectBadge(d.project) : html`<span>No project</span>`}</div></div>
+      </div>
+      <div class="stage"><div class="scroller" tabindex="-1"><div class="inner">
+        <div class="empty"><h2>Start a conversation with ${name}</h2>
+          <p>${d.project ? `Ask ${name} about ${d.project}, or tell them what to change.` : `Ask ${name} anything, or tell them what to do.`} The conversation is created when you send your first message; leave this page and nothing is kept.</p>
+          <p>Attach a screenshot or a text file by pasting or dropping it.</p></div>
+      </div></div></div>
+      <div class="dock">
+        <inc-conv-composer .conversationId=${`draft:${d.employee}:${d.project}`} .name=${name} .blocked=${""} .onSend=${this.onCreate}></inc-conv-composer>
+      </div>`;
+  }
+
   override render() {
     const conv = this.conv;
-    if (!conv) return nothing;
+    if (!conv) return this.draft ? this.renderDraft(this.draft) : nothing;
     const c = ahp();
     const chat = c.chat(conv.ahpChat);
     const session = c.session(conv.ahpSession);

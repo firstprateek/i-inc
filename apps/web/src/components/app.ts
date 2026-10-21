@@ -736,7 +736,7 @@ export class IncApp extends LitElement {
       case "conversations":
         return r.old
           ? html`<div class="conv-host"><a class="old-note" href="#/conversations">← Back to conversations</a><inc-chat .employeeId=${r.id}></inc-chat></div>`
-          : html`<div class="conv-host"><inc-getting-started></inc-getting-started><inc-conversations .selectedId=${r.id}></inc-conversations></div>`;
+          : html`<div class="conv-host"><inc-getting-started></inc-getting-started><inc-conversations .selectedId=${r.id} .draft=${r.draft} .form=${r.form}></inc-conversations></div>`;
       case "work":
         return r.tab === "board"
           ? html`<inc-board role="tabpanel" aria-labelledby="tab-board"></inc-board>`
