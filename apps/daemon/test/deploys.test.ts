@@ -140,6 +140,58 @@ describe("GET /api/health", () => {
     expect((await send("GET", "/api/health")).body.busy).toBe(false);
   });
 
+  it("is busy while an owner chat turn is being answered (removing daemon.track around it fails this)", async () => {
+    const { app, send, authed } = await guarded();
+    let finish: () => void = () => {};
+    const gate = new Promise<void>((r) => (finish = r));
+    const chat = app.deps.chat as FakeChat;
+    const original = chat.answer.bind(chat);
+    chat.answer = async (request) => {
+      await gate;
+      return original(request);
+    };
+    const reply = send("POST", "/api/chat/kit", authed, { text: "Why US dates?" });
+    let sawBusy = false;
+    for (let i = 0; i < 200 && !sawBusy; i++) {
+      sawBusy = (await send("GET", "/api/health")).body.busy === true;
+      if (!sawBusy) await new Promise((r) => setTimeout(r, 0));
+    }
+    expect(sawBusy).toBe(true);
+    finish();
+    expect((await reply).status).toBe(200);
+    expect((await send("GET", "/api/health")).body.busy).toBe(false);
+  });
+
+  it("is busy while a long-running write such as a project bootstrap runs", async () => {
+    const { app, send, authed } = await guarded();
+    // The handler answers 400 at once for a bad name, so hold the route open with a slow body read.
+    let release: () => void = () => {};
+    const hold = new Promise<void>((r) => (release = r));
+    const req = new Request(`http://${HOST}/api/projects/newproj/bootstrap`, {
+      method: "POST",
+      headers: { host: HOST, "content-type": "application/json", ...authed },
+      body: new ReadableStream({
+        async start(controller) {
+          await hold;
+          controller.enqueue(new TextEncoder().encode("{}"));
+          controller.close();
+        },
+      }),
+      // @ts-expect-error duplex is required for a streamed body
+      duplex: "half",
+    });
+    const pending = app.handle(req);
+    let sawBusy = false;
+    for (let i = 0; i < 200 && !sawBusy; i++) {
+      sawBusy = (await send("GET", "/api/health")).body.busy === true;
+      if (!sawBusy) await new Promise((r) => setTimeout(r, 0));
+    }
+    expect(sawBusy).toBe(true);
+    release();
+    await pending;
+    expect((await send("GET", "/api/health")).body.busy).toBe(false);
+  });
+
   it("counts a turn that throws as finished", async () => {
     const { app } = await guarded();
     await expect(app.daemon.track(Promise.reject(new Error("x")))).rejects.toThrow("x");

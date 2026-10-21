@@ -96,6 +96,23 @@ export class Deployer {
     if (flight.phase === "switch") {
       const current = await this.d.releases.current();
       if (current === sha) {
+        // The link was repointed, but the crash may have come before the kickstart: the old daemon may
+        // still be running. Restart onto the candidate first; only a candidate that then fails its
+        // health check is rolled back.
+        const running = await this.d.daemon.health().catch(() => null);
+        if (!(running?.ok && running.version === sha)) {
+          try {
+            this.event(`${short(sha)}: the daemon is not on it yet, kickstarting`);
+            await this.d.daemon.restart();
+          } catch (err) {
+            return this.rollback(
+              sha,
+              from,
+              `switching failed after a restart of the deployer: ${oneLine(String(err))}`,
+              flight.startedAt,
+            );
+          }
+        }
         const ok = await this.waitForVersion(sha);
         if (ok)
           return this.finishDeployed(sha, from, flight.startedAt, "resumed after a restart of the deployer");
@@ -262,7 +279,9 @@ export class Deployer {
     let announced = false;
     for (;;) {
       const health = await daemon.health();
-      if (!health?.busy) {
+      // Only a daemon that answers and says it is idle is idle: an answer we cannot read is unknown,
+      // and unknown waits like busy does (a daemon that is down is restarted by launchd anyway).
+      if (health && !health.busy) {
         this.event(`${short(sha)}: the daemon is idle`);
         return true;
       }

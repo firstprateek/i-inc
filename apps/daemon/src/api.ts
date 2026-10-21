@@ -96,6 +96,13 @@ const validModel = /^[A-Za-z0-9._:/@+ -]{1,100}$/;
 
 const inFlightBootstraps = new Set<string>();
 
+/** Writes that can run for minutes: the daemon counts them as busy (the chat turn tracks itself). */
+const longRunning = new Set([
+  "POST /api/projects/:id/bootstrap",
+  "POST /api/sandboxes/:team/retry",
+  "POST /api/teams/:id/antigravity-callback",
+]);
+
 export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) {
   const lastSandboxRetry = new Map<string, number>();
   const startedAt = d.clock.now();
@@ -1914,7 +1921,11 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     for (const [method, pattern, handler] of routes) {
       if (req.method !== method) continue;
       const params = match(pattern, url.pathname);
-      if (params) return handler(req, params);
+      // A restart would cut these short, so the deployer waits for them (GET /api/health, busy).
+      if (params)
+        return longRunning.has(`${method} ${pattern}`)
+          ? daemon.track(handler(req, params))
+          : handler(req, params);
     }
     return json({ error: "not found" }, 404);
   };

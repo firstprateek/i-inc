@@ -175,17 +175,31 @@ describe("drain", () => {
     expect(w.clock.now() - start).toBeLessThan(11 * 60_000);
   });
 
-  it("treats a daemon that does not answer as drained", async () => {
+  it("does not treat a daemon that does not answer as idle: it waits, and defers after 30 minutes", async () => {
     const w = new World();
     w.head = B;
     w.ci[B] = { state: "success" };
     w.unreachable = true;
     const start = w.clock.now();
-    // The switch then fails its health check because the fake stays unreachable: rolled back.
-    const r = await w.deployer().cycle();
-    expect(r.action).toBe("rolled-back");
-    expect(w.clock.now() - start).toBeLessThan(5 * 60_000);
-    expect(w.calls).toContain("point 02");
+    expect((await w.deployer().cycle()).action).toBe("deferred");
+    expect(w.clock.now() - start).toBeGreaterThanOrEqual(30 * 60_000);
+    expect(w.calls).not.toContain("point 02");
+    expect(w.cur).toBe(A);
+  });
+
+  it("proceeds as soon as a daemon that was not answering comes back idle", async () => {
+    const w = new World();
+    w.head = B;
+    w.ci[B] = { state: "success" };
+    w.unreachable = true;
+    const answer = w.daemon.health;
+    let polls = 0;
+    w.daemon.health = async () => {
+      if (++polls === 4) w.unreachable = false;
+      return answer();
+    };
+    expect((await w.deployer().cycle()).action).toBe("deployed");
+    expect(polls).toBeGreaterThanOrEqual(4);
   });
 });
 
@@ -304,12 +318,30 @@ describe("restarting the deployer mid-deploy", () => {
     w.built.set(B, 5);
     w.cur = B;
     w.serving = null;
+    w.daemonMode[B] = "down";
     w.store.s.inFlight = { sha: B, from: A, phase: "switch", startedAt: w.clock.now() };
     const r = await w.deployer().recover();
     expect(r?.action).toBe("rolled-back");
     expect(w.cur).toBe(A);
     expect(w.serving).toBe(A);
     expect(w.store.s.bad[B]).toBeDefined();
+  });
+
+  it("a crash after the link moved but before the kickstart: restarts onto the candidate and keeps it", async () => {
+    const w = new World();
+    w.head = B;
+    w.built.set(B, 5);
+    w.cur = B; // point() happened...
+    w.serving = A; // ...the kickstart did not
+    w.store.s.inFlight = { sha: B, from: A, phase: "switch", startedAt: w.clock.now() };
+    const start = w.clock.now();
+    const r = await w.deployer().recover();
+    expect(r?.action).toBe("deployed");
+    expect(w.calls).toEqual(["restart (02)"]);
+    expect(w.serving).toBe(B);
+    expect(w.clock.now() - start).toBeLessThan(10_000); // not a 90 s wait before the restart
+    expect(w.store.s.bad[B]).toBeUndefined();
+    expect(w.store.records[0]).toMatchObject({ sha: B, outcome: "deployed" });
   });
 
   it("finishes a rollback that was cut short", async () => {
