@@ -59,6 +59,10 @@ export interface DaemonDeps {
   harness: Harness;
   workspace?: Workspace;
   tokens?: TokenSource;
+  /** Where GitHub's API is, when it isn't api.github.com: a test's or the end-to-end run's stand-in. */
+  githubApi?: string;
+  /** The fetch the projects flow uses for GitHub, when it isn't the global one (tests). */
+  githubFetch?: typeof fetch;
   helper: HelperModel;
   chat: ChatSession;
   chatLog: ChatLog;

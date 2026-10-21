@@ -52,6 +52,9 @@ export interface AppOptions extends ApiOptions {
   helper: HelperModel;
   chat: ChatSession;
   tokens?: FromRegistry<TokenSource>;
+  /** Point the projects flow at a stand-in GitHub (tests, the end-to-end run). Unset: api.github.com. */
+  githubApi?: string;
+  githubFetch?: typeof fetch;
   live?: LiveEvents;
   log?: (msg: string) => void;
   push?: FromRegistry<PushService>;
@@ -105,6 +108,8 @@ export async function createApp(o: AppOptions) {
     harness: make(o.harness),
     ...(o.workspace ? { workspace: make(o.workspace) } : {}),
     ...(o.tokens ? { tokens: make(o.tokens) } : {}),
+    ...(o.githubApi ? { githubApi: o.githubApi } : {}),
+    ...(o.githubFetch ? { githubFetch: o.githubFetch } : {}),
     helper: o.helper,
     chat: o.chat,
     chatLog: new ChatLog(db),

@@ -321,7 +321,7 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
         mode: "direct",
       });
       expect(inaccessibleBootstrap.status).toBe(403);
-      expect(inaccessibleBootstrap.body.error).toContain("not accessible");
+      expect(inaccessibleBootstrap.body.error).toContain("can't see other-org/inaccessible-repo");
 
       // 4. Valid bootstrap request registers project and assigns employees
       const employees = app.deps.registry.employees();
@@ -491,10 +491,12 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
         }),
       );
       expect(res401.status).toBe(424);
-      const body401 = (await res401.json()) as { error: string };
-      expect(body401.error).toBe("upstream GitHub service failure");
+      const body401 = (await res401.json()) as { error: string; code: string };
+      expect(body401.code).toBe("auth");
+      expect(body401.error).toContain("GitHub didn't accept i.inc's sign-in");
+      expect(body401.error).not.toContain("Bad credentials");
 
-      // 2. Upstream 429 mapped to 424
+      // 2. Upstream 429 mapped to a clear rate-limit answer
       globalThis.fetch = (async () => {
         return new Response(JSON.stringify({ message: "API rate limit exceeded" }), {
           status: 429,
@@ -508,9 +510,11 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
           headers: { host: "i.inc", authorization: `Bearer ${token}` },
         }),
       );
-      expect(res429.status).toBe(424);
-      const body429 = (await res429.json()) as { error: string };
-      expect(body429.error).toBe("upstream GitHub rate limit exceeded");
+      // A rate limit answers 429 (never a gateway status, which the web app reads as "daemon down").
+      expect(res429.status).toBe(429);
+      const body429 = (await res429.json()) as { error: string; code: string };
+      expect(body429.code).toBe("rate-limited");
+      expect(body429.error).toContain("slow down");
 
       // 3. Upstream timeout/abort mapped to 424
       globalThis.fetch = (async (_url: string | URL | Request, _init?: RequestInit) => {
@@ -527,7 +531,7 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
       );
       expect(resTimeout.status).toBe(424);
       const bodyTimeout = (await resTimeout.json()) as { error: string };
-      expect(bodyTimeout.error).toBe("upstream GitHub service timed out");
+      expect(bodyTimeout.error).toContain("didn't answer in time");
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -604,7 +608,7 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
       );
       expect(resStringForce.status).toBe(409);
       const bodyStringForce = (await resStringForce.json()) as { error: string; resumable: boolean };
-      expect(bodyStringForce.error).toContain("repository is not empty");
+      expect(bodyStringForce.error).toContain("already has files");
       expect(bodyStringForce.resumable).toBe(true);
 
       // Passing force: true (boolean) permits bootstrapping and returns 201
