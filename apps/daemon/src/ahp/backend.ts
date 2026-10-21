@@ -22,6 +22,8 @@ export interface AppGate {
   };
   /** The employee's machine was started for a conversation. */
   awake(employeeId: string): void;
+  /** What a ticket did to the conversation's branch while it was away, once: the next prompt starts with it. */
+  takeNote?(conversationId: string): string | undefined;
 }
 
 /** What the host asks of a backend when a session is created. */
@@ -99,8 +101,6 @@ export interface AgentBackend {
    * writes there. Returns false, and does nothing, while a turn is running.
    */
   hold?(session: string): boolean;
-  /** The ticket is over: the next prompt starts with `note`, which says what happened to the branch. */
-  resumed?(session: string, note: string): void;
   /** Called when a turn is cancelled, after its signal is aborted. */
   cancelTurn?(run: TurnRun): void;
   /** The first client answer to a pending confirmation (later ones never reach the backend). */

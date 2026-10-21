@@ -116,6 +116,7 @@ const inFlightRepos = new Set<string>();
 const longRunning = new Set([
   "POST /api/conversations/:id/ticket",
   "POST /api/conversations/:id/pr",
+  "POST /api/conversations/:id/take-back",
   "POST /api/projects/:id/bootstrap",
   "POST /api/sandboxes/:team/retry",
   "POST /api/teams/:id/antigravity-callback",
@@ -1539,7 +1540,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           return json({ error: "GitHub isn't set up yet, so a conversation's work can't be shipped." }, 409);
         const body = await readObject(req);
         if (!body) return json({ error: "send a JSON object" }, 400);
-        const bad = shipBodyProblem(body, ["title", "description", "doneWhen"]);
+        const bad = shipBodyProblem(body, ["title", "description", "doneWhen", "confirmBinary"]);
         if (bad) return json({ error: bad }, 400);
         if (body.doneWhen !== undefined) {
           const w = body.doneWhen;
@@ -1557,6 +1558,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
             ...(typeof body.title === "string" ? { title: body.title } : {}),
             ...(typeof body.description === "string" ? { description: body.description } : {}),
             ...(Array.isArray(body.doneWhen) ? { doneWhen: body.doneWhen as string[] } : {}),
+            ...(body.confirmBinary === true ? { confirmBinary: true } : {}),
           });
           return json({ ticket: r.ticket, created: r.created }, r.created ? 201 : 200);
         } catch (e) {
@@ -1574,14 +1576,36 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           return json({ error: "GitHub isn't set up yet, so a conversation's work can't be shipped." }, 409);
         const body = await readObject(req);
         if (!body) return json({ error: "send a JSON object" }, 400);
-        const bad = shipBodyProblem(body, ["title", "body"]);
+        const bad = shipBodyProblem(body, ["title", "body", "confirmBinary"]);
         if (bad) return json({ error: bad }, 400);
         try {
           const r = await shipping.openPr(p.id ?? "", {
             ...(typeof body.title === "string" ? { title: body.title } : {}),
             ...(typeof body.body === "string" ? { body: body.body } : {}),
+            ...(body.confirmBinary === true ? { confirmBinary: true } : {}),
           });
           return json({ pr: r.pr, created: r.created }, r.created ? 201 : 200);
+        } catch (e) {
+          return shipFailure(e);
+        }
+      },
+    ],
+
+    [
+      "POST",
+      "/api/conversations/:id/take-back",
+      async (req, p) => {
+        const shipping = d.shipping;
+        if (!shipping) {
+          return json({ error: "GitHub isn't set up yet, so a conversation's work can't be shipped." }, 409);
+        }
+        const body = await readObject(req);
+        if (!body) return json({ error: "send a JSON object" }, 400);
+        const bad = shipBodyProblem(body, []);
+        if (bad) return json({ error: bad }, 400);
+        if (!d.conversations?.get(p.id ?? "")) return json({ error: "There is no such conversation." }, 404);
+        try {
+          return json({ ok: true, ...(await shipping.takeBack(p.id ?? "")) });
         } catch (e) {
           return shipFailure(e);
         }
@@ -2049,7 +2073,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       async (_req, p) =>
         act(p.id, null, async () => {
           // A failed ticket made from a conversation takes the conversation's working copy back first.
-          if ((await daemon.state(p.id ?? "")).status === "failed") d.shipping?.reclaim(p.id ?? "");
+          if ((await daemon.state(p.id ?? "")).status === "failed") await d.shipping?.reclaim(p.id ?? "");
           await retry(ports, p.id ?? "");
         }),
     ],
@@ -2692,6 +2716,10 @@ function shipBodyProblem(body: Record<string, unknown>, allowed: string[]): stri
   if (extra) return `${extra} isn't something this takes (it takes ${allowed.join(", ")})`;
   for (const k of allowed) {
     const v = body[k];
+    if (k === "confirmBinary") {
+      if (v !== undefined && typeof v !== "boolean") return "confirmBinary must be true or false";
+      continue;
+    }
     if (k !== "doneWhen" && v !== undefined && typeof v !== "string") return `${k} must be text`;
     if (
       (k === "title" || k === "body" || k === "description") &&

@@ -199,6 +199,7 @@ export async function createApp(o: AppOptions) {
       ensureUp: (employeeId) => deps.machines.ensureUp(employeeId),
       awake: (employeeId) => daemon.noteAwake(employeeId),
       tick: () => daemon.tick(),
+      running: (id) => daemon.isRunning(id),
       ...(o.log ? { log: o.log } : {}),
     });
   }
@@ -222,7 +223,8 @@ export async function createApp(o: AppOptions) {
     machineBusy: (machine) => daemon.machineBusy(machine),
     hostBusy: () => daemon.busy(),
     ticketActive: (id) => daemon.isRunning(id),
-    archivedConversations: () => conversations.forCleanup(),
+    // A copy a ticket is working in is not cleaned away, archived or not.
+    archivedConversations: () => conversations.forCleanup().filter((c) => !deps.shipping?.holds(c.id)),
     copiesGone: (ids) => conversations.copiesGone(ids),
     footprint: () => ({
       ...daemon.footprint(),
@@ -240,7 +242,11 @@ export async function createApp(o: AppOptions) {
     const live = () => backend.liveEmployees?.() ?? [];
     daemon.onMachineBusy((machine) => live().some((e) => storage.machineOf(e) === machine));
   }
-  backend.attachApp?.({ storage, awake: (id) => daemon.noteAwake(id) });
+  backend.attachApp?.({
+    storage,
+    awake: (id) => daemon.noteAwake(id),
+    takeNote: (conversationId) => deps.shipping?.takeNote(conversationId),
+  });
   daemon.ensureKnowledge();
   // One rebuild for everything that exists now (the first boot makes a repo per employee); from here
   // on each commit updates only the pages it touched.

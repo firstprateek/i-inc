@@ -212,6 +212,8 @@ export interface ShipView {
     /** The conversation can't change its working copy: the ticket has it. */
     held: boolean;
     outcome: TicketView["outcome"];
+    /** It waits for the owner, so the work can be taken back from it. */
+    canTakeBack?: boolean;
   } | null;
   pr: {
     number: number;
@@ -230,6 +232,8 @@ export interface ShipView {
     protectedPaths: string[];
     pushed: boolean;
     blockers: string[];
+    /** Binary files that can't be scanned for credentials: the owner confirms them before anything is shipped. */
+    binaries: { path: string; size: number }[];
   };
   /** Only with `?preview=1` and no copy: why the working copy couldn't be read. */
   problem?: string;

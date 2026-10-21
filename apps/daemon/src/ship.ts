@@ -31,7 +31,14 @@ import { type PrChecks, type PrInfo, UpstreamGitHubError } from "./github.ts";
 import { describeGitHubError } from "./github-projects.ts";
 import type { LiveEvents } from "./live.ts";
 import type { Project, Registry } from "./registry.ts";
-import { type CopyReport, type ShipCopy, type ShipPort, ShipRefusal, secretsSentence } from "./ship-git.ts";
+import {
+  blockers,
+  type CopyReport,
+  type ShipCopy,
+  type ShipPort,
+  ShipRefusal,
+  secretsSentence,
+} from "./ship-git.ts";
 import type { SqliteEventStore } from "./store.ts";
 import type { Tickets } from "./tickets.ts";
 import type { ShipBrief, ShipMode, ShipView } from "./view-types.ts";
@@ -66,6 +73,8 @@ export interface ShippingDeps {
   awake?: (employeeId: Id) => void;
   /** Starts the pipeline for what the scheduler hasn't seen yet. */
   tick: () => Promise<void>;
+  /** Is the pipeline driving this ticket right now? */
+  running?: (ticketId: Id) => boolean;
   log?: (msg: string) => void;
 }
 
@@ -76,6 +85,7 @@ interface Handover {
 
 const PENDING_MS = 10 * 60_000;
 const PR_CACHE_MS = 20_000;
+const RECONCILE_MS = 60_000;
 
 const clean = (s: string, max: number) => redactText(s.replace(/\s+/g, " ").trim()).slice(0, max);
 
@@ -113,6 +123,10 @@ export class Shipping {
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS conversation_notes (
+        conversation_id TEXT PRIMARY KEY,
+        note TEXT NOT NULL
+      );
     `);
     d.conversations.shipBrief = (id) => this.brief(id);
     d.host.hooks.canStartTurn = (chat) => this.blocked(chat);
@@ -120,16 +134,48 @@ export class Shipping {
       void this.onTicket(String(id)).catch((e) => d.log?.(`shipping: ${String(e)}`));
     });
     this.reconcile();
+    // A claim whose ticket never came to be, or a ticket that ended while nobody was looking, is found again.
+    const timer = setInterval(() => this.reconcile(), RECONCILE_MS);
+    timer.unref?.();
   }
 
   // ───────────────────────────── what the rest of the daemon asks ─────────────────────────────
 
   private active(conversation: string): Handover | undefined {
-    const [r] = this.d.db.all<{ conversation_id: string; ticket_id: string | null }>(
-      "SELECT conversation_id, ticket_id FROM conversation_tickets WHERE conversation_id = ? AND released_at IS NULL",
+    const [r] = this.d.db.all<{ conversation_id: string; ticket_id: string | null; created_at: number }>(
+      "SELECT conversation_id, ticket_id, created_at FROM conversation_tickets WHERE conversation_id = ? AND released_at IS NULL",
       conversation,
     );
-    return r ? { conversation: r.conversation_id, ticket: r.ticket_id } : undefined;
+    if (!r) return undefined;
+    // A claim with no ticket that nothing is working on any more must not lock the conversation.
+    if (
+      r.ticket_id === null &&
+      !this.inflight.has(conversation) &&
+      this.d.clock.now() - r.created_at >= PENDING_MS
+    ) {
+      this.d.db.run(
+        "DELETE FROM conversation_tickets WHERE conversation_id = ? AND ticket_id IS NULL AND released_at IS NULL",
+        conversation,
+      );
+      return undefined;
+    }
+    return { conversation: r.conversation_id, ticket: r.ticket_id };
+  }
+
+  /** Does a ticket have this conversation's working copy? The storage cleanup leaves such a copy alone. */
+  holds(conversation: string): boolean {
+    return this.active(conversation) !== undefined;
+  }
+
+  /** What the agent should be told on its next turn about what a ticket did while it was away (said once). */
+  takeNote(conversation: string): string | undefined {
+    const [r] = this.d.db.all<{ note: string }>(
+      "SELECT note FROM conversation_notes WHERE conversation_id = ?",
+      conversation,
+    );
+    if (!r) return undefined;
+    this.d.db.run("DELETE FROM conversation_notes WHERE conversation_id = ?", conversation);
+    return r.note;
   }
 
   private prRow(conversation: string) {
@@ -348,14 +394,8 @@ export class Shipping {
       }
     }
     if (report) {
-      const blockers: string[] = [];
-      if (report.secrets.length) {
-        blockers.push(
-          `${report.secrets.map((s) => s.path).join(", ")} look${report.secrets.length === 1 ? "s" : ""} like ${report.secrets.length === 1 ? "it holds" : "they hold"} a credential`,
-        );
-      }
-      if (report.tooBig) blockers.push("the change is too big to check for credentials");
-      if (!report.files.length) blockers.push("nothing has changed yet");
+      const stops = blockers(report);
+      if (!report.files.length) stops.push("nothing has changed yet");
       base.copy = {
         branch: ctx.copy.branch,
         files: report.files,
@@ -363,7 +403,8 @@ export class Shipping {
         ahead: report.ahead,
         protectedPaths: report.protectedPaths,
         pushed: report.remote !== "" && report.remote === report.head,
-        blockers,
+        blockers: stops,
+        binaries: report.binaries,
       };
     }
     base.suggestion = this.suggest(conv, ctx.employee, report);
@@ -394,6 +435,9 @@ export class Shipping {
       live: v.live,
       held: r.released_at === null,
       outcome: v.outcome,
+      ...(r.released_at === null && (v.status === "needs-you" || v.status === "ready")
+        ? { canTakeBack: true }
+        : {}),
     };
   }
 
@@ -432,7 +476,7 @@ export class Shipping {
 
   async makeTicket(
     id: string,
-    input: { title?: string; doneWhen?: string[]; description?: string },
+    input: { title?: string; doneWhen?: string[]; description?: string; confirmBinary?: boolean },
   ): Promise<{ ticket: Ticket; created: boolean }> {
     const running = this.inflight.get(id);
     if (running) {
@@ -461,7 +505,7 @@ export class Shipping {
 
   private async createTicket(
     id: string,
-    input: { title?: string; doneWhen?: string[]; description?: string },
+    input: { title?: string; doneWhen?: string[]; description?: string; confirmBinary?: boolean },
   ): Promise<{ ticket: Ticket; created: boolean }> {
     const ctx = this.context(id);
     this.requireOpen(ctx.conv);
@@ -508,9 +552,7 @@ export class Shipping {
         ? input.doneWhen.map((d) => clean(d, 300)).filter(Boolean)
         : suggestion.doneWhen;
       const type = typeOf(title);
-      if (before.secrets.length || before.tooBig) {
-        this.refusal(new ShipRefusal(secretsSentence(before), "secrets"));
-      }
+      this.checkClean(before, input.confirmBinary);
       if (before.uncommitted.length) {
         await this.d.port
           .commit(
@@ -519,60 +561,68 @@ export class Shipping {
           )
           .catch((e) => this.refusal(e));
       }
+      // The last gate before the copy passes to the pipeline, which pushes it to main (direct) or on as a PR:
+      // now that the commit is made, nothing in its history may hold a credential.
+      if (ctx.mode === "direct") await this.d.port.verify(ctx.copy).catch((e) => this.refusal(e));
       let pr: { number?: number; url?: string; nodeId?: string } = {};
       if (ctx.mode === "owner-merges") {
+        // The push scans exactly what it publishes, history included, and pushes that commit.
         await this.github(this.d.port.push(ctx.copy).catch((e) => this.refusal(e)));
         const opened = await this.github(this.openPrFor(ctx, title, this.prBody(ctx, before, description)));
         pr = { number: opened.number, url: opened.url, nodeId: opened.nodeId };
       }
-      const ticket = this.d.tickets.create(
-        {
-          title,
-          project: ctx.project.id,
-          type,
-          effort: "medium",
-          doneWhen,
-          assignee: ctx.employee.id,
-          reason: description,
-          conversation: ctx.conv.id,
-          branch: ctx.copy.branch,
-          hold: true,
-        },
-        now,
-      );
-      const stages = planFor(ticket, this.d.registry.projectPolicy(ticket.project)).stages;
+      // The ticket, its first events and the claim's ticket id are one write: a crash or a failed insert
+      // leaves no ticket nobody can see and no claim without one.
+      const input2 = {
+        title,
+        project: ctx.project.id,
+        type,
+        effort: "medium" as const,
+        doneWhen,
+        assignee: ctx.employee.id,
+        reason: description,
+        conversation: ctx.conv.id,
+        branch: ctx.copy.branch,
+      };
       const built = `${description}\n(Built in the conversation before it became this ticket.)`.slice(
         0,
         2400,
       );
-      const events: TicketEvent[] = [
-        { type: "ticket-created", at: now, ticketId: ticket.id },
-        {
-          type: "pr-opened",
-          at: now,
-          pr: { branch: ctx.copy.branch, ...pr },
-          employeeId: ctx.employee.id,
-        },
-        ...stages.slice(0, Math.max(0, stages.indexOf("checks"))).map(
-          (stage): TicketEvent => ({
-            type: "stage-finished",
+      let ticket: Ticket | undefined;
+      let events: TicketEvent[] = [];
+      this.d.db.transaction(() => {
+        ticket = this.d.tickets.create(input2, now);
+        const stages = planFor(ticket, this.d.registry.projectPolicy(ticket.project)).stages;
+        events = [
+          { type: "ticket-created", at: now, ticketId: ticket.id },
+          {
+            type: "pr-opened",
             at: now,
-            stage,
-            ...(stage === "plan"
-              ? { output: `Skipped: the plan was the conversation with ${ctx.employee.name}.` }
-              : stage === "build"
-                ? { output: built }
-                : {}),
-          }),
-        ),
-      ];
-      await this.d.store.append(ticket.id, events);
-      this.d.db.run(
-        "UPDATE conversation_tickets SET ticket_id = ? WHERE conversation_id = ? AND ticket_id IS NULL",
-        ticket.id,
-        id,
-      );
-      this.d.tickets.setHold(ticket.id, false);
+            pr: { branch: ctx.copy.branch, ...pr },
+            employeeId: ctx.employee.id,
+          },
+          ...stages.slice(0, Math.max(0, stages.indexOf("checks"))).map(
+            (stage): TicketEvent => ({
+              type: "stage-finished",
+              at: now,
+              stage,
+              ...(stage === "plan"
+                ? { output: `Skipped: the plan was the conversation with ${ctx.employee.name}.` }
+                : stage === "build"
+                  ? { output: built }
+                  : {}),
+            }),
+          ),
+        ];
+        this.d.store.write(ticket.id, events);
+        this.d.db.run(
+          "UPDATE conversation_tickets SET ticket_id = ? WHERE conversation_id = ? AND ticket_id IS NULL",
+          ticket.id,
+          id,
+        );
+      });
+      if (!ticket) throw new Error("the ticket was not made");
+      this.d.store.onAppend?.(ticket.id, events);
       this.d.log?.(`conversation ${id} became ticket ${ticket.id} (${ctx.mode})`);
       void this.d.tick().catch(() => {});
       return { ticket, created: true };
@@ -586,7 +636,7 @@ export class Shipping {
 
   async openPr(
     id: string,
-    input: { title?: string; body?: string },
+    input: { title?: string; body?: string; confirmBinary?: boolean },
   ): Promise<{ pr: { number: number; url: string; draft: boolean }; created: boolean; pushed: boolean }> {
     const running = this.inflight.get(id);
     if (running) {
@@ -659,7 +709,7 @@ export class Shipping {
 
   private async makePr(
     id: string,
-    input: { title?: string; body?: string },
+    input: { title?: string; body?: string; confirmBinary?: boolean },
   ): Promise<{ pr: { number: number; url: string; draft: boolean }; created: boolean; pushed: boolean }> {
     const ctx = this.context(id);
     this.requireOpen(ctx.conv);
@@ -696,8 +746,7 @@ export class Shipping {
           "nothing",
         );
       }
-      if (before.secrets.length || before.tooBig)
-        this.refusal(new ShipRefusal(secretsSentence(before), "secrets"));
+      this.checkClean(before, input.confirmBinary);
       const suggestion = this.suggest(ctx.conv, ctx.employee, before);
       const title = clean(input.title ?? "", 200) || suggestion.title;
       if (before.uncommitted.length) {
@@ -765,8 +814,10 @@ export class Shipping {
     const conv = this.d.conversations.get(conversation);
     if (!conv) return;
     const merged = how === "merged" || how === "done";
-    this.d.backend.resumed?.(
-      conv.ahpSession,
+    // Kept in the database, not in memory: the next turn may come after a restart.
+    this.d.db.run(
+      "INSERT OR REPLACE INTO conversation_notes (conversation_id, note) VALUES (?, ?)",
+      conversation,
       `[i.inc] While you were away, ticket #${ticketId} took over this branch (${conv.branch}) and ended: ${how}. It may have added commits or rebased the branch${merged ? ", and its work may already be on the main branch" : ""}. Check git status and git log, and re-read files before you edit them.`,
     );
     this.d.host.resumeChat(conv.ahpChat);
@@ -774,10 +825,11 @@ export class Shipping {
   }
 
   /**
-   * The owner retries a failed ticket that came from a conversation: the ticket takes the working copy
-   * back, so the conversation's agent must not be using it. Refused while a turn runs.
+   * The owner retries a failed ticket that came from a conversation: the ticket takes the working copy back, so
+   * the conversation's agent must not be using it (refused while a turn runs), and what the conversation did
+   * to the copy since is scanned like anything else that passes from a conversation to a ticket.
    */
-  reclaim(ticketId: Id): void {
+  async reclaim(ticketId: Id): Promise<void> {
     const rec = this.d.tickets.get(ticketId);
     const conversation = rec?.ticket.conversation;
     if (!conversation) return;
@@ -798,27 +850,89 @@ export class Shipping {
       ticketId,
       this.d.clock.now(),
     );
-    if (this.d.backend.hold && !this.d.backend.hold(conv.ahpSession)) {
+    const undo = () =>
       this.d.db.run(
         "DELETE FROM conversation_tickets WHERE conversation_id = ? AND ticket_id = ? AND released_at IS NULL",
         conversation,
         ticketId,
       );
+    try {
+      if (this.d.backend.hold && !this.d.backend.hold(conv.ahpSession)) {
+        throw new ShipError(
+          `${conv.title} is working in that folder right now. Stop its turn first, then try the ticket again.`,
+          409,
+          "busy",
+        );
+      }
+      const ctx = this.context(conversation);
+      await this.wake(ctx.employee);
+      // Anything the conversation committed or left since the ticket failed is checked before the ticket runs on it.
+      const report = await this.d.port.inspect(ctx.copy).catch((e) => this.refusal(e));
+      if (blockers(report).length)
+        this.refusal(new ShipRefusal(secretsSentence(report, "retried"), "secrets"));
+    } catch (e) {
+      undo();
+      throw e;
+    }
+  }
+
+  /**
+   * The owner takes the work back from a ticket that is waiting for them (a question, or its report): the ticket
+   * is ended as rejected, and the conversation has its copy again. A ticket that is running can't be taken back.
+   */
+  async takeBack(conversation: string): Promise<{ released: boolean }> {
+    const h = this.active(conversation);
+    if (!h) return { released: false };
+    if (!h.ticket) {
+      throw new ShipError("The ticket is still being made. Try again in a moment.", 409, "busy");
+    }
+    const state = fold(await this.d.store.read(h.ticket));
+    if (state.status !== "needs-you" && state.status !== "ready") {
       throw new ShipError(
-        `${conv.title} is working in that folder right now. Stop its turn first, then try the ticket again.`,
+        state.status === "done" || state.status === "failed"
+          ? `Ticket #${h.ticket} is already over.`
+          : `Ticket #${h.ticket} is running. You can take the work back when it waits for you, or after it ends.`,
         409,
-        "busy",
+        "running",
+      );
+    }
+    if (this.d.running?.(h.ticket)) {
+      throw new ShipError(`Ticket #${h.ticket} is still working. Try again in a moment.`, 409, "running");
+    }
+    await this.d.store.append(h.ticket, [{ type: "closed", at: this.d.clock.now(), outcome: "rejected" }]);
+    this.d.log?.(`conversation ${conversation} took its work back from ticket ${h.ticket}`);
+    await this.onTicket(h.ticket);
+    return { released: true };
+  }
+
+  /** What stops a copy: a credential, a file that couldn't be read, a link out of the project; and binaries to confirm. */
+  private checkClean(report: CopyReport, confirmBinary?: boolean): void {
+    if (blockers(report).length) this.refusal(new ShipRefusal(secretsSentence(report), "secrets"));
+    if (report.binaries.length && confirmBinary !== true) {
+      const names = report.binaries.map((b) => b.path).join(", ");
+      throw new ShipError(
+        `${names} ${report.binaries.length === 1 ? "is a binary file" : "are binary files"} that can't be checked for credentials. Look at ${report.binaries.length === 1 ? "it" : "them"}, then confirm.`,
+        409,
+        "binary",
+        { binaries: report.binaries },
       );
     }
   }
 
-  /** After a restart: a claim whose ticket never came to be is let go, and tickets that ended while the daemon was down hand back their copies. */
+  /** After a restart, and every minute: a claim whose ticket never came to be is let go, and tickets that ended while nobody was looking hand back their copies. */
   private reconcile(): void {
     const stale = this.d.clock.now() - PENDING_MS;
-    this.d.db.run(
-      "DELETE FROM conversation_tickets WHERE ticket_id IS NULL AND released_at IS NULL AND created_at <= ?",
+    for (const r of this.d.db.all<{ conversation_id: string }>(
+      "SELECT conversation_id FROM conversation_tickets WHERE ticket_id IS NULL AND released_at IS NULL AND created_at <= ?",
       stale,
-    );
+    )) {
+      if (!this.inflight.has(r.conversation_id)) {
+        this.d.db.run(
+          "DELETE FROM conversation_tickets WHERE conversation_id = ? AND ticket_id IS NULL AND released_at IS NULL",
+          r.conversation_id,
+        );
+      }
+    }
     for (const r of this.d.db.all<{ ticket_id: string | null }>(
       "SELECT ticket_id FROM conversation_tickets WHERE released_at IS NULL AND ticket_id IS NOT NULL",
     )) {

@@ -14,6 +14,14 @@ export class SqliteEventStore implements EventStore {
   }
 
   async append(ticketId: Id, events: TicketEvent[]): Promise<void> {
+    this.write(ticketId, events);
+    if (events.length > 0) {
+      this.onAppend?.(ticketId, events);
+    }
+  }
+
+  /** The write alone, for a caller that makes it part of a transaction of its own and tells `onAppend` after. */
+  write(ticketId: Id, events: TicketEvent[]): void {
     this.db.transaction(() => {
       const [row] = this.db.all<{ n: number | null }>(
         "SELECT MAX(seq) AS n FROM events WHERE ticket_id = ?",
@@ -31,9 +39,6 @@ export class SqliteEventStore implements EventStore {
         );
       }
     });
-    if (events.length > 0) {
-      this.onAppend?.(ticketId, events);
-    }
   }
 
   /** Every ticket's events, for My desk. */

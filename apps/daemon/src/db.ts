@@ -38,6 +38,7 @@ async function openBun(path: string): Promise<Db> {
 async function openNode(path: string): Promise<Db> {
   const { DatabaseSync } = await import("node:sqlite");
   const d = new DatabaseSync(path);
+  let depth = 0;
   return {
     exec: (sql) => d.exec(sql),
     run: (sql, ...params) => {
@@ -45,14 +46,23 @@ async function openNode(path: string): Promise<Db> {
       return { changes: Number(res.changes) };
     },
     all: <T extends Row>(sql: string, ...params: Param[]) => d.prepare(sql).all(...params) as T[],
+    // A transaction inside one joins it (Bun's does too, as a savepoint), so a caller can make several
+    // writes, each of which is a transaction on its own, atomic as a whole.
     transaction: (fn) => {
+      if (depth > 0) {
+        fn();
+        return;
+      }
       d.exec("BEGIN");
+      depth++;
       try {
         fn();
         d.exec("COMMIT");
       } catch (e) {
         d.exec("ROLLBACK");
         throw e;
+      } finally {
+        depth--;
       }
     },
     close: () => d.close(),

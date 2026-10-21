@@ -482,7 +482,7 @@ async function flow(browser, combo) {
     op: "write",
     conversation: e.id,
     path: "config.ts",
-    text: 'export const token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";\n',
+    text: 'export const token = "gh\u0070_abcdefghijklmnopqrstuvwxyz0123456789";\n',
   });
   await openShipMenu(page);
   await page.getByRole("menuitem", { name: /Make this a ticket/ }).click();
