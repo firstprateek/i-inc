@@ -408,6 +408,40 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       },
     ],
 
+    // C23: what the daemon keeps and how much room it takes (T52).
+    [
+      "GET",
+      "/api/storage",
+      async () => (d.storage ? json(await d.storage.report()) : json({ error: "storage isn't set up" }, 404)),
+    ],
+
+    [
+      "PUT",
+      "/api/storage/settings",
+      async (req) => {
+        if (!d.storage) return json({ error: "storage isn't set up" }, 404);
+        const body = await readObject(req);
+        if (body === null) return json({ error: "send a JSON object of settings" }, 400);
+        const r = d.storage.update(body);
+        return "error" in r ? json(r, 400) : json(r);
+      },
+    ],
+
+    // Dry run unless the body says `{ "dryRun": false }`.
+    [
+      "POST",
+      "/api/storage/cleanup",
+      async (req) => {
+        if (!d.storage) return json({ error: "storage isn't set up" }, 404);
+        const body = await readObject(req);
+        if (body === null) return json({ error: "send a JSON object" }, 400);
+        if (body.dryRun !== undefined && typeof body.dryRun !== "boolean") {
+          return json({ error: "dryRun must be true or false" }, 400);
+        }
+        return json(await d.storage.cleanupNow({ dryRun: body.dryRun !== false }));
+      },
+    ],
+
     [
       "POST",
       "/api/sandboxes/:team/retry",

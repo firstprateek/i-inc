@@ -110,6 +110,11 @@ export class SessionStore {
     private readonly clock: Clock,
   ) {}
 
+  /** Sessions being recorded now; it returns to 0 when they end. */
+  footprint(): { active: number } {
+    return { active: this.active.size };
+  }
+
   start(ticketId: Id, stage: string, employeeId: Id, engineId: Id): number {
     const startedAt = this.clock.now();
     this.db.run(

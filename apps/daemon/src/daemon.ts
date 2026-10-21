@@ -42,6 +42,7 @@ import type { Proposals } from "./proposals.ts";
 import type { NotificationPayload, PushService } from "./push.ts";
 import type { Registry } from "./registry.ts";
 import { capText, type SessionStore } from "./sessions.ts";
+import type { Storage } from "./storage.ts";
 import type { SqliteEventStore } from "./store.ts";
 import type { TicketRecord, Tickets } from "./tickets.ts";
 
@@ -64,7 +65,18 @@ export interface DaemonDeps {
   db: Db;
   push?: PushService;
   live?: LiveEvents;
+  /** Retention and cleanup (T52). Set by createApp. */
+  storage?: Storage;
   log?: (msg: string) => void;
+}
+
+/** What the daemon asks of storage when it decides to stop a machine (storage.ts, T52). */
+export interface StorageHooks {
+  machineOf(employeeId: Id): string | undefined;
+  /** A cleanup is running in this machine, so it stays up until that ends. */
+  holding(machine: string): boolean;
+  due(machine: string): boolean;
+  startClean(machine: string, done: () => void): void;
 }
 
 /** On a ticket the owner accepted from a proposal, so the daily follow-up budget doesn't count it. */
@@ -83,6 +95,49 @@ export class Daemon {
 
   /** Employees whose machines are up, as far as this daemon knows. */
   private readonly awake = new Set<Id>();
+
+  /** Set by createApp once storage exists: cleaning runs while a machine is up and idle. */
+  storage?: StorageHooks;
+
+  /** How many entries each long-lived structure holds, to show growth (GET /api/storage) and test it. */
+  footprint(): Record<string, number> {
+    return {
+      daemonRunning: this.running.size,
+      daemonSessions: this.sessions.size,
+      daemonAwake: this.awake.size,
+      daemonWaiting: this.waiting.length,
+      daemonWaitingUntil: Object.keys(this.waitingUntil).length,
+      sessionsActive: this.d.sessions.footprint().active,
+      liveListeners:
+        (this.d.live?.listenerCount("ticket") ?? 0) + (this.d.live?.listenerCount("office") ?? 0),
+    };
+  }
+
+  /** Whether this ticket is being driven now. */
+  isRunning(id: Id): boolean {
+    return this.running.has(id);
+  }
+
+  /** Whether any ticket is being driven, so maintenance that stops the database waits. */
+  isWorking(): boolean {
+    return this.running.size > 0;
+  }
+
+  /**
+   * Whether something is using a machine now: a session in it, or a running ticket whose builder
+   * works there. Cleanup never runs in such a machine.
+   */
+  async machineBusy(machine: string): Promise<boolean> {
+    const at = (id: Id) => this.storage?.machineOf(id) === machine;
+    if ([...this.sessions.values()].some((s) => at(s.employeeId))) return true;
+    for (const id of this.running.keys()) {
+      const record = this.d.tickets.get(id);
+      const state = await this.state(id);
+      if (record && at(state.assignee ?? record.ticket.assignee)) return true;
+      if (Object.values(state.helpers).some((h) => h && at(h))) return true;
+    }
+    return false;
+  }
 
   get company(): Company {
     const reg = this.d.registry;
@@ -397,8 +452,26 @@ export class Daemon {
   private async sleepIdle(busy: Set<Id>): Promise<void> {
     if (!this.d.machines.stop) return;
     const inSession = new Set([...this.sessions.values()].map((s) => s.employeeId));
+    // A machine is in use while any employee awake in it is, and is cleaned (when it is due) once
+    // none is: it is up, and about to stop, so cleaning never has to wake it.
+    const storage = this.storage;
+    const inUse = new Set<string>();
+    if (storage) {
+      for (const id of this.awake) {
+        const m = storage.machineOf(id);
+        if (m && (busy.has(id) || inSession.has(id))) inUse.add(m);
+      }
+    }
     for (const id of [...this.awake]) {
       if (busy.has(id) || inSession.has(id)) continue;
+      const machine = storage?.machineOf(id);
+      if (storage && machine && !inUse.has(machine)) {
+        if (storage.holding(machine)) continue;
+        if (storage.due(machine)) {
+          storage.startClean(machine, () => void this.tick().catch(() => {}));
+          continue;
+        }
+      }
       this.awake.delete(id);
       try {
         await this.d.machines.stop(id);

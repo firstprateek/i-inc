@@ -1,5 +1,6 @@
 // Wires the daemon together over one database. main.ts calls this on the host; tests call it with
 // an in-memory database and the core's fakes.
+import { dirname } from "node:path";
 import type {
   Agent,
   ChatSession,
@@ -21,6 +22,7 @@ import { type PushService, WebPushSender } from "./push.ts";
 import { Registry } from "./registry.ts";
 import { migrate } from "./schema.ts";
 import { SessionStore } from "./sessions.ts";
+import { type MachineOps, Storage, type StoragePaths } from "./storage.ts";
 import { SqliteEventStore } from "./store.ts";
 import { Tickets } from "./tickets.ts";
 
@@ -48,6 +50,13 @@ export interface AppOptions extends ApiOptions {
   log?: (msg: string) => void;
   push?: FromRegistry<PushService>;
   configDir?: string;
+  /**
+   * Where retention works (T52): the folder with the database and its backups, the logs, and big
+   * folders to measure. Default: the database's folder (the knowledge folder for ":memory:").
+   */
+  storagePaths?: Partial<StoragePaths>;
+  /** Ask machines to hand freed blocks back to the host (`fstrim`). Default: yes. */
+  trimMachines?: boolean;
 }
 
 export async function createApp(o: AppOptions) {
@@ -95,11 +104,38 @@ export async function createApp(o: AppOptions) {
     ...(o.log ? { log: o.log } : {}),
   };
   const daemon = new Daemon(deps);
+  const ops = deps.machines as unknown as Partial<MachineOps>;
+  const storage = new Storage({
+    db,
+    clock: o.clock,
+    registry,
+    tickets,
+    events: store,
+    paths: {
+      home: o.dbPath === ":memory:" ? o.knowledgeDir : dirname(o.dbPath),
+      dbPath: o.dbPath,
+      knowledgeDir: o.knowledgeDir,
+      ...o.storagePaths,
+    },
+    ...(ops.machineFor && ops.listMachines && ops.runIn ? { ops: ops as MachineOps } : {}),
+    ...(deps.push ? { push: deps.push } : {}),
+    ...(o.log ? { log: o.log } : {}),
+    ...(o.trimMachines !== undefined ? { trim: o.trimMachines } : {}),
+    machineBusy: (machine) => daemon.machineBusy(machine),
+    hostBusy: () => daemon.isWorking(),
+    ticketActive: (id) => daemon.isRunning(id),
+    footprint: () => ({
+      ...daemon.footprint(),
+      ...(ops.footprint ? ops.footprint() : {}),
+    }),
+  });
+  deps.storage = storage;
+  daemon.storage = storage;
   daemon.ensureKnowledge();
   const handle = createApi(daemon, deps, {
     ...(o.token ? { token: o.token } : {}),
     ...(o.hosts ? { hosts: o.hosts } : {}),
     ...(o.heartbeatMs !== undefined ? { heartbeatMs: o.heartbeatMs } : {}),
   });
-  return { db, deps, daemon, handle, live };
+  return { db, deps, daemon, handle, live, storage };
 }
