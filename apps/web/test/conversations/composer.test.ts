@@ -172,7 +172,7 @@ describe("while a turn runs", () => {
     const { el } = await mount({}, chat);
     const items = [...(el.shadowRoot?.querySelectorAll(".queue li") ?? [])];
     expect(items.map((i) => i.textContent?.replace(/\s+/g, " ").trim())).toEqual([
-      "Steering, runs nextgo now",
+      "Steergo now",
       "Queuedlater",
     ]);
     const removed: Any[] = [];

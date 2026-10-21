@@ -54,6 +54,7 @@ export class IncConvComposer extends LitElement {
     slashIndex: { state: true },
     dragging: { state: true },
     attached: { state: true },
+    menu: { state: true },
     fileProblem: { state: true },
   };
   declare session: SessionState | undefined;
@@ -71,6 +72,8 @@ export class IncConvComposer extends LitElement {
   declare dragging: boolean;
   /** Text files added to the message (images are in the picker). */
   declare attached: File[];
+  /** The Steer button's menu (Queue), on a narrow screen. */
+  declare menu: boolean;
   declare fileProblem: string | null;
 
   private readonly picker = new ImagePicker(this, {
@@ -95,6 +98,7 @@ export class IncConvComposer extends LitElement {
     this.dragging = false;
     this.attached = [];
     this.fileProblem = null;
+    this.menu = false;
   }
 
   static override styles = [
@@ -132,7 +136,8 @@ export class IncConvComposer extends LitElement {
       .hint { margin: 0; font-size: 12.5px; color: var(--ink-2); padding: 0 6px; }
       .problem { margin: 0; font-size: 13.5px; color: var(--alarm-fg); font-weight: 600; padding: 0 6px; }
       .queue { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-      .queue li { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--sunken); padding: 2px 4px 2px 10px; min-height: 44px; }
+      .queue li { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--sunken); padding: 0 2px 0 10px; min-height: 40px; flex: none; }
+      .queue .icon { width: 40px; height: 40px; }
       .queue .tag { flex: none; font-size: 11.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.4px; color: var(--reviewing-fg); }
       .queue .t { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
       .pop { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 30; max-width: 520px; background: var(--surface); border: 1px solid var(--line-strong);
@@ -141,13 +146,30 @@ export class IncConvComposer extends LitElement {
       .pop [role="option"][aria-selected="true"], .pop [role="option"]:hover { background: var(--sunken); }
       .pop b { font: 700 14px var(--mono); }
       .pop small { color: var(--ink-2); font-size: 13px; }
+      .more { display: none; width: 36px; padding: 0; align-items: center; justify-content: center; border-radius: 0 999px 999px 0; margin-left: -7px; }
       /* The mode picker sizes to its words ("Bypass permissions" must not be cut), on a line of its own if need be. */
       .pickers select { field-sizing: content; }
       @media (max-width: 767px) {
         .hint.kbd { display: none; }
-        .pickers { order: -1; flex: 1 1 100%; }
-        .pickers select { max-width: 100%; }
+        /* One row: attach, the mode chip, then send (or Steer and Stop). The chip shrinks and ends in an ellipsis. */
+        .row { flex-wrap: nowrap; gap: 6px; }
+        textarea { max-height: 22dvh; }
+        .pickers { flex: 0 1 auto; min-width: 0; flex-wrap: nowrap; }
+        .pickers label { min-width: 0; }
+        .pickers select { max-width: 170px; min-width: 96px; text-overflow: ellipsis; padding-right: 30px; }
+        .qbtn { display: none; }
+        .more { display: inline-flex; }
       }
+      @media (max-width: 360px) { .pickers select { max-width: 112px; } }
+      .more svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+      .split { position: relative; display: inline-flex; flex: none; }
+      .split .steer { border-radius: 999px 0 0 999px; }
+      @media (max-width: 767px) { .split .steer { padding: 0 12px; } }
+      .menu { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 40; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 12px;
+        box-shadow: 0 12px 32px rgba(0,0,0,0.18); padding: 4px; }
+      .menu button { min-height: 44px; padding: 0 16px; border: 0; background: transparent; border-radius: 8px; font: 600 15px var(--body); color: var(--ink); cursor: pointer; white-space: nowrap; }
+      .menu button:hover { background: var(--sunken); }
+      .queue { max-height: 88px; overflow-y: auto; }
     `,
   ];
 
@@ -333,7 +355,8 @@ export class IncConvComposer extends LitElement {
   }
 
   private picked(p: Picker) {
-    return html`<label><span class="sr-only">${p.title}</span><select aria-label=${p.title} title=${p.title}
+    const current = p.choices.find((c) => c.value === p.value)?.label ?? "";
+    return html`<label><span class="sr-only">${p.title}</span><select aria-label="${p.title}: ${current}" title="${p.title}: ${current}"
       @change=${(e: Event) => this.emit("conv-config", { key: p.key, value: (e.target as HTMLSelectElement).value })}>
       ${p.choices.map((c) => html`<option value=${c.value} ?selected=${c.value === p.value} title=${c.description ?? ""}>${c.label}</option>`)}
     </select></label>`;
@@ -349,7 +372,7 @@ export class IncConvComposer extends LitElement {
     return html`<ul class="queue" aria-label="Messages waiting to be sent">${items.map(
       (
         m,
-      ) => html`<li><span class="tag">${m.kind === "steering" ? "Steering, runs next" : "Queued"}</span><span class="t" title=${m.text}>${m.text}</span>
+      ) => html`<li><span class="tag" title=${m.kind === "steering" ? "Steering message: runs next, ahead of the queue" : "Queued message: runs after this turn"}>${m.kind === "steering" ? "Steer" : "Queued"}</span><span class="t" title=${m.text}>${m.text}</span>
         <button class="icon" type="button" aria-label="Remove ${m.kind === "steering" ? "steering" : "queued"} message: ${m.text.slice(0, 40)}"
           @click=${() => this.emit("conv-unqueue", { kind: m.kind, id: m.id })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg></button></li>`,
     )}</ul>`;
@@ -444,8 +467,20 @@ export class IncConvComposer extends LitElement {
             running
               ? html`${
                   hasInput
-                    ? html`<button class="cbtn" type="button" ?disabled=${dis || this.sending} title="Runs next, ahead of the queue" @click=${() => void this.submit("steer")}>Steer</button>
-                  <button class="cbtn" type="button" ?disabled=${dis || this.sending} title="Waits for its turn (Alt+Enter)" @click=${() => void this.submit("queue")}>Queue</button>`
+                    ? html`<span class="split"><button class="cbtn steer" type="button" ?disabled=${dis || this.sending} title="Runs next, ahead of the queue" @click=${() => void this.submit("steer")}>Steer</button>
+                      <button class="cbtn qbtn" type="button" ?disabled=${dis || this.sending} title="Waits for its turn (Alt+Enter)" @click=${() => void this.submit("queue")}>Queue</button>
+                      <button class="cbtn more" type="button" aria-haspopup="menu" aria-expanded=${this.menu ? "true" : "false"} aria-label="More send options" ?disabled=${dis || this.sending}
+                        @click=${() => {
+                          this.menu = !this.menu;
+                        }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg></button>
+                      ${
+                        this.menu
+                          ? html`<div class="menu" role="menu"><button type="button" role="menuitem" @click=${() => {
+                              this.menu = false;
+                              void this.submit("queue");
+                            }}>Queue (after this turn)</button></div>`
+                          : nothing
+                      }</span>`
                     : nothing
                 }
                 <button class="send stop" type="button" aria-label="Stop" title="Stop the agent" @click=${() => this.emit("conv-stop", {})}><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/></svg></button>`
@@ -454,7 +489,7 @@ export class IncConvComposer extends LitElement {
           }
         </div>
       </div>
-      ${running && hasInput ? html`<p class="hint">Steer runs your message next, ahead of the queue. Queue waits its turn. Stop interrupts the agent.</p>` : html`<p class="hint kbd">Enter sends · Shift+Enter for a new line · / for commands</p>`}
+      ${running ? nothing : html`<p class="hint kbd">Enter sends · Shift+Enter for a new line · / for commands</p>`}
     </form>`;
   }
 }

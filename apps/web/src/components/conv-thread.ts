@@ -79,6 +79,7 @@ export class IncConvThread extends LitElement {
   private resizer: ResizeObserver | undefined;
   private baselined = false;
   private firstSent = false;
+  private cardVisible = false;
   private openedId = "";
   /** How many past turns the last render showed. */
   private shownCount = 0;
@@ -133,9 +134,10 @@ export class IncConvThread extends LitElement {
       .jump:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 2px; }
       .jump svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
       .dock { flex: none; max-width: 820px; width: 100%; margin: 0 auto; box-sizing: border-box; padding: 6px 6px max(8px, env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 8px; }
-      .needs-bar { display: flex; align-items: center; gap: 10px; padding: 6px 6px 6px 14px; border-radius: 14px; background: var(--needs-bg); color: var(--needs-fg);
+      .needs-bar { display: flex; align-items: center; gap: 10px; padding: 2px 4px 2px 12px; min-height: 44px; border-radius: 14px; font-size: 13.5px; background: var(--needs-bg); color: var(--needs-fg);
         border: 1px solid var(--needs-edge); font-weight: 700; font-size: 14px; }
-      .needs-bar button { margin-left: auto; }
+      .needs-bar > span { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .needs-bar button { margin-left: auto; flex: none; min-height: 36px; padding: 0 12px; }
       .notice { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 12px; border: 1px solid var(--alarm); color: var(--alarm-fg); font-size: 14px; font-weight: 600; }
       .notice button { margin-left: auto; }
       @media (max-width: 767px) {
@@ -239,6 +241,7 @@ export class IncConvThread extends LitElement {
     if (this.stick) this.scrollToBottom();
     this.lastHeight = sc.scrollHeight;
     if (!this.focusedPending) this.focusPendingOnOpen();
+    this.checkCardVisible();
     this.applyRememberedMode();
     if (!this.baselined) this.noteTransitions();
     void this.sendFirst();
@@ -288,6 +291,7 @@ export class IncConvThread extends LitElement {
     if (!sc) return;
     const near = isNearBottom(sc);
     if (near !== this.stick) this.stick = near;
+    this.checkCardVisible();
     if (sc.scrollTop < 160) void this.loadEarlier();
   };
 
@@ -539,19 +543,40 @@ export class IncConvThread extends LitElement {
   // ───────────────────────────── the pending card ─────────────────────────────
 
   /** Brings the first thing waiting for the owner into view and focuses its first button. */
-  focusPending(): void {
+  /** The card (a permission or a question) waiting for the owner, if it is in the DOM. */
+  private pendingCard(): HTMLElement | undefined {
     const conv = this.conv;
     const chat = conv ? ahp().chat(conv.ahpChat) : undefined;
     const p = firstPending(chat);
-    if (!p) return;
+    if (!p) return undefined;
     const turn = this.renderRoot.querySelector<HTMLElement>("inc-conv-turn[active]");
-    const tool = [
+    return [
       ...(turn?.shadowRoot?.querySelectorAll<HTMLElement>("inc-conv-tool, inc-conv-question") ?? []),
     ].find((el) => {
       const call = (el as unknown as { call?: { toolCallId: string }; request?: { id: string } }).call;
       const req = (el as unknown as { request?: { id: string } }).request;
       return call?.toolCallId === p.id || req?.id === p.id;
     });
+  }
+
+  /** Whether the pending card is on screen: then the "waiting for you" bar has nothing to add and steps aside. */
+  private checkCardVisible() {
+    const card = this.pendingCard();
+    const sc = this.scroller();
+    let visible = false;
+    if (card && sc) {
+      const a = card.getBoundingClientRect();
+      const b = sc.getBoundingClientRect();
+      visible = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 60;
+    }
+    if (visible !== this.cardVisible) {
+      this.cardVisible = visible;
+      this.requestUpdate();
+    }
+  }
+
+  focusPending(): void {
+    const tool = this.pendingCard();
     if (!tool) return;
     this.stick = false;
     const sc = this.scroller();
@@ -707,7 +732,7 @@ export class IncConvThread extends LitElement {
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12l7 7 7-7"/></svg></button></div>`
             : nothing
         }
-        ${pending ? html`<div class="needs-bar"><span>${name} is waiting for you</span><button class="cbtn" type="button" @click=${() => this.focusPending()}>Review</button></div>` : nothing}
+        ${pending && !this.cardVisible ? html`<div class="needs-bar"><span>${name} is waiting for you</span><button class="cbtn" type="button" @click=${() => this.focusPending()}>Review</button></div>` : nothing}
         ${
           this.notice
             ? html`<div class="notice" role="alert"><span>${this.notice}</span><button class="link-btn" type="button" @click=${() => {
