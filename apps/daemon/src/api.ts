@@ -1997,6 +1997,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       "GET",
       "/api/brain/search",
       async (req) => {
+        d.brain.refresh(); // a repo changed behind the daemon's back (the migration) shows at once
         const url = new URL(req.url);
         const q = (url.searchParams.get("q") ?? "").trim();
         if (!q) return json({ error: "q is required" }, 400);
@@ -2018,6 +2019,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       "GET",
       "/api/brain/map",
       async (req) => {
+        d.brain.refresh();
         const url = new URL(req.url);
         const scope = url.searchParams.get("scope");
         if (!scope || scope === "all") return json({ error: "scope is required" }, 400);

@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  clip,
   type Employee,
   firstSentence,
   type Id,
@@ -86,20 +87,34 @@ export class KnowledgeStore {
     );
   }
 
-  /** A new hire's brain, from the template: a map, a personality page and the wiki's folders. */
-  ensureBrain(e: Pick<Employee, "id" | "name" | "role"> & { prompt?: string | undefined }): void {
-    const personality = [
+  /** The personality page: frontmatter (the index and the map read it) and the role instructions. */
+  private personalityText(
+    e: Pick<Employee, "name" | "role"> & { prompt?: string | undefined },
+    prior?: ReturnType<typeof parsePage>,
+  ): string {
+    const body = [
       `# Personality`,
       ``,
       `${e.name} is a ${e.role} at i.inc.`,
       ...(e.prompt ? [``, `## Role Instructions`, ``, e.prompt] : []),
       ``,
     ].join("\n");
+    const meta = {
+      ...(prior?.meta ?? { tags: [], sources: [] }),
+      title: "Personality",
+      description: clip(`Who ${e.name} is (${e.role}) and the instructions ${e.name} works by`, 160),
+      updated: isoDate(this.now()),
+    };
+    return serializePage({ meta, body });
+  }
+
+  /** A new hire's brain, from the template: a map, a personality page and the wiki's folders. */
+  ensureBrain(e: Pick<Employee, "id" | "name" | "role"> & { prompt?: string | undefined }): void {
     this.create(
       { kind: "brain", id: e.id },
       {
         "INDEX.md": `# ${e.name}'s brain\n\n${e.role}. Pages are listed here as they are written.\n\n- [Personality](personality.md)\n`,
-        "personality.md": personality,
+        "personality.md": this.personalityText(e),
       },
       `Brain created for ${e.name}`,
     );
@@ -114,14 +129,8 @@ export class KnowledgeStore {
     }
     const dir = this.dir(repo);
     const file = join(dir, "personality.md");
-    const content = [
-      `# Personality`,
-      ``,
-      `${name} is a ${role} at i.inc.`,
-      ...(prompt ? [``, `## Role Instructions`, ``, prompt] : []),
-      ``,
-    ].join("\n");
-    writeFileSync(file, content);
+    const prior = existsSync(file) ? parsePage(readFileSync(file, "utf8"), "personality") : undefined;
+    writeFileSync(file, this.personalityText({ name, role, prompt }, prior));
     this.git(repo, "add", "personality.md");
     try {
       this.git(repo, "commit", "-q", "-m", `Update personality and role instructions for ${name}`);
@@ -271,7 +280,8 @@ export class KnowledgeStore {
   }
 
   private gitBuffer(repo: Repo, args: string[], input?: string): Buffer {
-    return execFileSync("git", ["-c", "core.quotepath=off", ...args], {
+    // Literal pathspecs: a file called "*.md" or ":(top)x" is that file, not a pattern.
+    return execFileSync("git", ["--literal-pathspecs", "-c", "core.quotepath=off", ...args], {
       cwd: this.dir(repo),
       stdio: ["pipe", "pipe", "pipe"],
       maxBuffer: 1 << 30,
@@ -290,14 +300,36 @@ export class KnowledgeStore {
       return out; // no commits yet
     }
     for (const rec of raw.split("\0")) {
-      const m = rec.match(/^\d+ blob ([0-9a-f]{40})\t(.+)$/);
+      // A symlink is a blob too (mode 120000); its "text" is a path, never a page.
+      const m = rec.match(/^(?!120000 )\d+ blob ([0-9a-f]{40})\t([\s\S]+)$/);
       if (m) out.set(m[2] ?? "", m[1] ?? "");
     }
     return out;
   }
 
+  /**
+   * HEAD and its first parent (null for a first commit), or null for a repo without commits. The
+   * index stores the HEAD it has read, and trusts an incremental update only when this commit's
+   * parent is that one.
+   */
+  head(repo: Repo): { sha: string; parent: string | null } | null {
+    if (!this.exists(repo)) return null;
+    let raw: string;
+    try {
+      raw = this.gitBuffer(repo, ["rev-list", "--parents", "-n", "1", "HEAD"]).toString("utf8").trim();
+    } catch {
+      return null; // no commits yet
+    }
+    const [sha, parent] = raw.split(/\s+/);
+    return sha ? { sha, parent: parent ?? null } : null;
+  }
+
   /** The text of committed blobs, by blob id, in one git process. */
   blobs(repo: Repo, ids: string[]): Map<string, string> {
+    return this.catBlobs(repo, ids);
+  }
+
+  private catBlobs(repo: Repo, ids: string[]): Map<string, string> {
     const out = new Map<string, string>();
     if (!ids.length) return out;
     const buf = this.gitBuffer(repo, ["cat-file", "--batch"], `${ids.join("\n")}\n`);
@@ -342,28 +374,28 @@ export class KnowledgeStore {
     return raw.split("\0").filter(Boolean);
   }
 
-  /** The committed text of these files at HEAD, with their blob ids; null for a file that isn't there. */
+  /**
+   * The committed text of these files at HEAD, with their blob ids; null for a file that isn't there.
+   * Names travel NUL-delimited (`ls-tree -z`, literal pathspecs), so a name with a quote or a newline
+   * in it is read as itself and the answers can't shift out of line.
+   */
   readAtHead(repo: Repo, paths: string[]): Map<string, { sha: string; text: string } | null> {
     const out = new Map<string, { sha: string; text: string } | null>();
     if (!paths.length) return out;
-    const buf = this.gitBuffer(
-      repo,
-      ["cat-file", "--batch"],
-      `${paths.map((p) => `HEAD:${p}`).join("\n")}\n`,
-    );
-    let at = 0;
-    for (const path of paths) {
-      const eol = buf.indexOf(10, at);
-      if (eol === -1) break;
-      const [sha = "", type = "", size = "0"] = buf.toString("utf8", at, eol).split(" ");
-      if (type !== "blob") {
-        out.set(path, null);
-        at = eol + 1;
-        continue;
+    const shaOf = new Map<string, string>();
+    for (let i = 0; i < paths.length; i += 200) {
+      const raw = this.gitBuffer(repo, ["ls-tree", "-z", "HEAD", "--", ...paths.slice(i, i + 200)]).toString(
+        "utf8",
+      );
+      for (const rec of raw.split("\0")) {
+        const m = rec.match(/^(?!120000 )\d+ blob ([0-9a-f]{40})\t([\s\S]+)$/);
+        if (m) shaOf.set(m[2] ?? "", m[1] ?? "");
       }
-      const n = Number(size);
-      out.set(path, { sha, text: buf.toString("utf8", eol + 1, eol + 1 + n) });
-      at = eol + 1 + n + 1;
+    }
+    const texts = this.catBlobs(repo, [...new Set(shaOf.values())]);
+    for (const path of paths) {
+      const sha = shaOf.get(path);
+      out.set(path, sha !== undefined && texts.has(sha) ? { sha, text: texts.get(sha) ?? "" } : null);
     }
     return out;
   }
@@ -381,12 +413,25 @@ export class KnowledgeStore {
     }
     const want = new Set(paths);
     let when = 0;
-    const log = this.gitBuffer(repo, ["log", "--format=%x00%ct", "--name-only", "--no-renames"]).toString(
-      "utf8",
-    );
-    for (const row of log.split("\n")) {
-      if (row.startsWith("\0")) when = Number(row.slice(1)) * 1000;
-      else if (want.has(row) && !out.has(row)) out.set(row, when);
+    // -z: names are NUL-terminated and never quoted, so a name with a quote or newline in it matches.
+    // A commit is "\x01<time>\0", then "\n<first name>\0" and each further name and "\0".
+    const log = this.gitBuffer(repo, [
+      "log",
+      "--format=%x01%ct",
+      "--name-only",
+      "--no-renames",
+      "-z",
+    ]).toString("utf8");
+    let afterHeader = false;
+    for (const rec of log.split("\0")) {
+      if (rec.startsWith("\x01")) {
+        when = Number(rec.slice(1)) * 1000;
+        afterHeader = true;
+        continue;
+      }
+      const name = afterHeader ? rec.replace(/^\n/, "") : rec;
+      afterHeader = false;
+      if (name && want.has(name) && !out.has(name)) out.set(name, when);
     }
     return out;
   }

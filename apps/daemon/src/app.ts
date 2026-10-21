@@ -218,11 +218,13 @@ export async function createApp(o: AppOptions) {
     daemon.onMachineBusy((machine) => live().some((e) => storage.machineOf(e) === machine));
   }
   backend.attachApp?.({ storage, awake: (id) => daemon.noteAwake(id) });
-  daemon.ensureKnowledge();
-  // One rebuild for everything that exists now (the first boot makes a repo per employee); from here
-  // on each commit updates only the pages it touched.
-  brain.rebuild();
+  // The index follows every commit from here on, including the first commits of a new install's
+  // repos; then one look at each repo's HEAD brings in whatever changed while the daemon was down
+  // (nothing, usually: it costs one `git rev-list` a repo, and an install's first boot has nothing
+  // to read). A rebuild from scratch is for a changed schema, which `BrainIndex.open` already did.
   knowledge.onCommit = (repo, paths) => brain.follow(repo, paths);
+  daemon.ensureKnowledge();
+  brain.refresh();
   const handle = createApi(daemon, deps, {
     ...(o.token ? { token: o.token } : {}),
     ...(o.hosts ? { hosts: o.hosts } : {}),
