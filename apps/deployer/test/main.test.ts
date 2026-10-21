@@ -35,6 +35,20 @@ describe.skipIf(!hasBun)("deployer command line", () => {
     expect(existsSync(join(dir, "inc"))).toBe(false);
   });
 
+  it("--status shows a pause after a rollback by hand, and --resume lifts it", () => {
+    const releases = join(dir, "releases");
+    spawnSync("mkdir", ["-p", releases]);
+    const tip = "b".repeat(40);
+    writeFileSync(
+      join(releases, "state.json"),
+      JSON.stringify({ paused: { sha: tip, at: 1, to: "a".repeat(40) } }),
+    );
+    const status = run(["--status"]);
+    expect(status.stdout).toContain("paused after hand rollback at bbbbbbb — resumes on the next commit");
+    expect(run(["--resume"]).status).toBe(0);
+    expect(run(["--status"]).stdout).not.toContain("paused after hand rollback");
+  });
+
   it("exits non-zero at once when another deployer holds the lock, for the service and for one-off commands", () => {
     const releases = join(dir, "releases");
     spawnSync("mkdir", ["-p", releases]);

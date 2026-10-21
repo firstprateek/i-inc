@@ -14,6 +14,7 @@ export const emptyState = (): State => ({
   ancestrySkipped: [],
   allowRewrite: [],
   recorded: [],
+  paused: null,
   history: [],
   inFlight: null,
 });

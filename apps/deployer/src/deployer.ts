@@ -22,6 +22,7 @@ export type CycleAction =
   | "known-bad"
   | "waiting-ci"
   | "retry-wait"
+  | "paused"
   | "rate-limited"
   | "ci-error"
   | "remote-error"
@@ -163,6 +164,18 @@ export class Deployer {
       return { action: "idle", sha: head };
     }
     const state = this.d.store.state();
+    // After a rollback by hand the tip that was rolled back from is not deployed again; the next
+    // commit on main lifts the pause (or `--resume`).
+    if (state.paused) {
+      if (head === state.paused.sha) {
+        this.status(this.pausedSummary(state.paused));
+        return { action: "paused", sha: head };
+      }
+      this.event(`main moved to ${short(head)} (paused at ${short(state.paused.sha)}): deploying resumes`);
+      this.mutate((s) => {
+        s.paused = null;
+      });
+    }
     const bad = state.bad[head];
     if (bad) {
       this.status(`${short(head)} was marked bad (${oneLine(bad.reason)}): waiting for a newer commit`);
@@ -570,6 +583,26 @@ export class Deployer {
     return null;
   }
 
+  pausedSummary(p: { sha: string; to: string }): string {
+    return `paused after hand rollback at ${short(p.sha)} — resumes on the next commit (now on ${short(p.to)})`;
+  }
+
+  /** What `--status` says about a pause, or null. */
+  pauseStatus(): string | null {
+    const p = this.d.store.state().paused;
+    return p ? this.pausedSummary(p) : null;
+  }
+
+  /** `--resume`: deploy main's tip again even though it is the one that was rolled back from. */
+  resume(): boolean {
+    const was = this.d.store.state().paused;
+    this.mutate((s) => {
+      s.paused = null;
+    });
+    if (was) this.event(`resumed: ${short(was.sha)} may be deployed again`);
+    return !!was;
+  }
+
   /** The owner's `--sha`: deploy this commit even though it does not continue the running release. */
   allowRewrite(sha: string): void {
     this.mutate((s) => {
@@ -587,8 +620,8 @@ export class Deployer {
   /**
    * Rolls back by hand (`--rollback [sha]`). The target is the previous release that was actually
    * deployed (from the history, never a candidate that was only built), or `target`, which must also be
-   * one of those. The daemon must be idle unless `force`. The release being left is marked bad so main's
-   * tip is not deployed again; the target (now live) never is.
+   * one of those. The daemon must be idle unless `force`. Auto-deploy then pauses at main's tip, so the
+   * commit just rolled back from is not redeployed; the next commit on main (or `resume`) lifts it.
    */
   async rollbackByHand(target?: string, opts: { force?: boolean } = {}): Promise<CycleResult> {
     const current = await this.d.releases.current();
@@ -614,10 +647,16 @@ export class Deployer {
     await this.d.daemon.restart();
     const healthy = await this.waitForVersion(to);
     const at = this.d.clock.now();
-    this.markBad(current, `rolled back by hand to ${short(to)}`, at);
+    // Main's tip is what was just rolled back from (it is newer than the release left, or the same):
+    // pause until main moves past it. No release is marked bad.
+    const tip = await this.d.remote.head().catch(() => current);
     this.mutate((s) => {
-      s.history = [...s.history.filter((h) => h !== to), to].slice(-20);
+      // Going back means the releases after `to` are no longer "previous" ones.
+      const idx = s.history.lastIndexOf(to);
+      s.history = (idx >= 0 ? s.history.slice(0, idx + 1) : [...s.history, to]).slice(-20);
+      s.paused = { sha: tip, at, to };
     });
+    this.event(this.pausedSummary({ sha: tip, to }));
     this.record(
       {
         at,

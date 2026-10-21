@@ -528,18 +528,55 @@ describe("rolling back by hand", () => {
     return d;
   }
 
-  it("goes back to the previous deployed release and marks the one it leaves as bad, never the target", async () => {
+  it("goes back to the previous deployed release, marks nothing bad, and pauses at main's tip", async () => {
     const w = new World();
     const d = await deployed(w, 2);
     await d.rollbackByHand();
     expect(w.cur).toBe(A);
     expect(w.serving).toBe(A);
-    expect(w.store.s.bad[B]?.reason).toContain("rolled back by hand to 0000001");
-    expect(w.store.s.bad[A]).toBeUndefined();
+    expect(w.store.s.bad).toEqual({});
+    expect(w.store.s.paused).toMatchObject({ sha: B, to: A });
     expect(w.store.records.at(-1)).toMatchObject({ sha: B, from: B, outcome: "rolled-back" });
     expect(w.store.records.at(-1)?.reason).toBe("rolled back by hand to 0000001");
-    // main still points at B, but it is not deployed again.
-    expect((await d.cycle()).action).toBe("known-bad");
+  });
+
+  it("does not redeploy the tip it just rolled back from, even seconds later and cycle after cycle", async () => {
+    const w = new World();
+    const d = await deployed(w, 2);
+    await d.rollbackByHand();
+    w.builds.length = 0;
+    for (let i = 0; i < 5; i++) {
+      w.clock.t += 3_000 + i * 120_000;
+      expect((await d.cycle()).action).toBe("paused");
+    }
+    expect(w.builds).toEqual([]);
+    expect(w.cur).toBe(A);
+    expect(d.pauseStatus()).toBe(
+      "paused after hand rollback at 0000002 — resumes on the next commit (now on 0000001)",
+    );
+  });
+
+  it("resumes by itself when a newer commit lands on main", async () => {
+    const w = new World();
+    const d = await deployed(w, 2);
+    await d.rollbackByHand();
+    expect((await d.cycle()).action).toBe("paused");
+    w.head = C;
+    w.ci[C] = { state: "success" };
+    expect((await d.cycle()).action).toBe("deployed");
+    expect(w.cur).toBe(C);
+    expect(w.store.s.paused).toBeNull();
+    expect(d.pauseStatus()).toBeNull();
+  });
+
+  it("--resume lifts the pause so the same tip can be deployed again", async () => {
+    const w = new World();
+    const d = await deployed(w, 2);
+    await d.rollbackByHand();
+    expect(d.resume()).toBe(true);
+    expect(d.resume()).toBe(false);
+    expect((await d.cycle()).action).toBe("deployed");
+    expect(w.cur).toBe(B);
   });
 
   it("never picks a candidate that was built but not switched to, even if it is the newest on disk", async () => {
@@ -552,16 +589,14 @@ describe("rolling back by hand", () => {
     expect(w.built.has(C)).toBe(true);
   });
 
-  it("walks back one deployed release at a time, skipping bad ones", async () => {
+  it("walks back one deployed release at a time", async () => {
     const w = new World();
     const d = await deployed(w, 2, 3);
     await d.rollbackByHand();
     expect(w.cur).toBe(B);
     await d.rollbackByHand();
     expect(w.cur).toBe(A);
-    expect(w.store.s.bad[C]).toBeDefined();
-    expect(w.store.s.bad[B]).toBeDefined();
-    expect(w.store.s.bad[A]).toBeUndefined();
+    expect(w.store.s.bad).toEqual({});
   });
 
   it("refuses while the daemon is busy or does not answer, unless forced", async () => {

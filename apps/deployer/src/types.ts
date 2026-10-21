@@ -117,6 +117,8 @@ export interface State {
   allowRewrite: string[];
   /** Keys of records already written (sha:outcome:attempt start), so a restart never writes one twice. */
   recorded: string[];
+  /** After a rollback by hand: main's tip at that moment. Nothing is deployed until main moves past it. */
+  paused: { sha: string; at: number; to: string } | null;
   /** Releases that were actually switched to, oldest first; the last is the one running (or was). */
   history: string[];
   inFlight: InFlight | null;

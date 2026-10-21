@@ -6,9 +6,10 @@
 //   --once              one cycle, then exit
 //   --force-after <min> switch even if the daemon is still busy after this many minutes
 //   --sha <full sha>    with --once: deploy main's tip even though it does not descend from the running release
+//   --resume            lift the pause that a rollback by hand puts on auto-deploy
 //   --seed              make the checkout's HEAD the first release and point `current` at it
 //   --rollback [sha]    roll back by hand to the previous deployed release (or sha, if it was deployed before);
-//                       refuses while the daemon is busy unless --force; marks the release it leaves as bad
+//                       refuses while the daemon is busy unless --force; then pauses auto-deploy at main's tip until main moves (--status shows it, --resume lifts it)
 //   --status            print the deployer's state and exit
 //
 // The flags other than the loop take the same lock as the service: pause it first
@@ -76,6 +77,8 @@ const deployer = new Deployer({
 });
 
 if (flag("--status")) {
+  const pause = deployer.pauseStatus();
+  if (pause) console.log(pause);
   console.log(
     JSON.stringify(
       { current: await releases.current(), releases: await releases.list(), state: store.state() },
@@ -112,6 +115,12 @@ if (flag("--seed")) {
   if (!(await releases.current())) await releases.point(sha);
   deployer.noteSeeded((await releases.current()) ?? sha);
   log(`current is ${(await releases.current())?.slice(0, 7)}`);
+  deployer.release();
+  process.exit(0);
+}
+
+if (flag("--resume")) {
+  log(deployer.resume() ? "auto-deploy resumed" : "auto-deploy was not paused");
   deployer.release();
   process.exit(0);
 }
