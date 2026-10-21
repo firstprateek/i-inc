@@ -203,6 +203,39 @@ answer it when it asks. The screen is the web app's AHP client (`apps/web/src/ah
   agent and a fake Exec (`I_INC_HOME=<scratch dir> PORT=7611 bun apps/daemon/test/ahp/e2e-server.ts`, after building
   `apps/web`). Prompts starting `slow`, `hang`, `markdown`, `burst N` and `longtools` pick what it does.
 
+### Push for conversations (T65)
+
+When an agent in a conversation asks for permission (or, once adapters send them, a question) and you are not looking
+at that conversation, your phone gets a notification that opens the card. The design line is in
+[design/conversations.md](design/conversations.md) ("Permission modes"); the contract is C2 and C22 in [coord.md](coord.md).
+
+- **Turn it on:** Company > Settings > Notifications. The device switch is the same as for tickets (on an iPhone,
+  install i.inc to the Home Screen first). Under "What to be notified about": **Conversations need me** (on by default)
+  and **A long reply finished** (off by default; only for a turn that ran a minute or more). They apply to every device.
+- **What you get:** "<Employee> needs you", a short redacted line (`Run: pnpm test`, `Edit src/app.ts`), no file contents.
+  Tapping opens the app at the card: it scrolls into view, the first button has focus and the card is outlined for a
+  moment. If you (or another device) answered it already, the thread says "Already answered on another device".
+  Approving happens in the app, never from the lock screen (iOS has no notification buttons, and the card is where
+  the diff is).
+- **When it does not buzz:** nothing is sent for 20 s after the request appears, so answering at the laptop never
+  buzzes the phone; nothing is sent while any signed-in page is open on that conversation, visible and focused (the
+  page says so every 15 s, and the host forgets it after 45 s); one push per request, ever; a newer request of the
+  same conversation replaces the older notification (tag `conv-<id>`). When the request is answered, the turn ends
+  or the conversation is archived, a "resolve" push closes the notification (Safari shows a quiet stand-in for a
+  second, because it revokes subscriptions whose pushes show nothing).
+- **Code:** `apps/daemon/src/ahp/conversation-push.ts` (the rules, `describeRequest` for the line),
+  `AhpHost.observe`/`isWatched` and `iinc/presence` in `host.ts`, `GET/PUT /api/push/settings` in `api.ts`;
+  `apps/web/public/sw.js` (push, resolve, tap), `apps/web/src/ahp/presence.ts`, `?card=` in `routes.ts` and `conv-thread.ts`.
+- **Tests:** `apps/daemon/test/ahp/conversation-push.test.ts` (grace, watched, one per request, tag, resolve, settings,
+  redaction, the presence signal; also over the fake ACP agent), `apps/web/test/conversations/card-link.test.ts`,
+  `apps/web/test/ahp/presence.test.ts`, the worker tests in `apps/web/test/push.test.ts`, and the browser run
+  `node tools/e2e/conversation-push/run.mjs` (build `apps/web` first; it starts `apps/daemon/test/ahp/e2e-server.ts` in
+  a scratch HOME with a fake push sender, `GET /__e2e/pushes` lists what it sent, and needs Playwright).
+- **Not verified on a real phone:** the iOS Home Screen app and Android Chrome. Everything above is tested against
+  fakes and in desktop Chromium. Check on a device: a tap from the lock screen lands on the card on iOS (the worker cannot
+  navigate a window there, so it messages the app), the resolve stand-in on iOS, and that the visibility signal
+  quiets the phone while the app is open.
+
 ## Storage and cleanup
 
 Everything i.inc writes that can grow has a bound, a setting for it, and a place to see it (T52,
