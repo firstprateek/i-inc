@@ -102,24 +102,22 @@ From this week's evidence:
   second client can import them; versioned routes arrive when that second client does.
 - Per-device login tokens come with the first non-browser surface.
 
-## 8. Order and owners
+## 8. Order
 
-Suggested, for the owner to change:
+Owner's decision (2026-10-20): **Claude builds all of V1** (with its own sub-agents for
+implementation and independent reviews); the other agents take separate tasks the owner gives them.
 
-| Phase | Work | Suggested owner |
-| --- | --- | --- |
-| 0, this week | Follow-up queue, disk clean-up, prune merged branches, correct the brain claims in the docs | Ada, as i.inc tickets |
-| 1a | AHP spike and decision | Claude |
-| 1b | Brain V1 (format, index, retrieval into tickets, diff-harvest writes) | Antigravity |
-| 1c | Session host, event mapper, state store; Conversations screen | Claude |
-| 1d | Three-area structure, first-run checklist, rename to Conversations | Codex |
-| 1e | GitHub projects flow | Codex |
-| 1f | Automatic deploys | Antigravity |
-| 2 | Remote operation views, phone layout, Feedback button, CI smoke test | to be decided |
-| 3 | Agent teams (aligned with A2A), MCP tools and skills (discovered via Google's [Agentic Resource Discovery](https://www.heise.de/en/news/Agentic-Resource-Discovery-Search-engine-for-AI-agents-11338833.html), ARD), more AHP surfaces | later |
-
-1b and 1c are independent and can run in parallel. 1d can start right away. 1f needs the owner's
-OK on the LaunchAgent install command.
+| Phase | Work |
+| --- | --- |
+| 0 | Follow-up queue, disk clean-up, prune merged branches, correct the brain claims in the docs |
+| 1a | AHP spike and decision |
+| 1b | Brain V1 (format, index, maps, migration; then retrieval into tickets; then diff-harvest writes) |
+| 1c | Session host, event mapper, state store; then the Conversations screen |
+| 1d | Three-area structure, first-run checklist, rename to Conversations |
+| 1e | GitHub projects flow |
+| 1f | Automatic deploys (the LaunchAgent install waits for the owner's OK on the exact command) |
+| 2 | Remote operation views, phone layout, Feedback button, CI smoke test |
+| 3 | Agent teams (aligned with A2A), MCP tools and skills (discovered via Google's [Agentic Resource Discovery](https://www.heise.de/en/news/Agentic-Resource-Discovery-Search-engine-for-AI-agents-11338833.html), ARD), more AHP surfaces |
 
 ## Glossary of the protocols
 

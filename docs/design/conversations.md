@@ -43,7 +43,8 @@ stream later.
   modes or config options), named as the agent names them, for example:
   - Claude: Always ask · Accept edits · Plan only · Bypass permissions
   - Codex: Read-only · Auto · Full access
-- Default per employee, changeable per conversation; the app remembers your last choice.
+- **Default: the agent's bypass-permissions mode** (owner's decision, 2026-10-20), changeable per
+  conversation in one click; the app remembers a per-employee default if you change it.
 - **Permission requests show inline** as a card: what the tool will do (the command, or the file
   diff) and the agent's options (Allow once, Always allow, Deny). The first answer from any device
   wins. If you are away, a push notification opens the card on your phone.
