@@ -799,3 +799,63 @@ describe("the starter's commits can't be spoofed, and a rename doesn't make a se
     expect(app.deps.registry.project("a")?.repoId).not.toBe(id);
   });
 });
+
+describe("the lock on a repo's GitHub id", () => {
+  it("lets exactly one of three bootstraps of one repo id (under different names) through, while it is in flight", async () => {
+    const stub = createGitHubStub({
+      repos: ["old", "new", "newer"].map((name) => ({ owner: "acme", name, id: 77, files: {} })),
+    });
+    // The first write waits, so the first bootstrap stays in flight while the others come and go.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let writing = false;
+    const githubFetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        writing = true;
+        await gate;
+      }
+      return stub.fetch(url, init);
+    }) as typeof fetch;
+    const app = await testApp();
+    const handle = createApi(
+      app.daemon,
+      { ...app.deps, tokens: stubApp(stub, API), githubApi: API, githubFetch },
+      { token: TOKEN, hosts: ["i.inc"] },
+    );
+    const post = async (id: string, repo: string) => {
+      const res = await handle(
+        new Request(`http://i.inc/api/projects/${id}/bootstrap`, {
+          method: "POST",
+          headers: { host: "i.inc", authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+          body: JSON.stringify({ repo, template: "minimal" }),
+        }),
+      );
+      return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+    };
+
+    const first = post("p1", "acme/old");
+    for (let i = 0; i < 200 && !writing; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(writing).toBe(true);
+
+    const second = await post("p2", "acme/new");
+    expect(second.status).toBe(409);
+    expect(second.body.code).toBe("in-use");
+    // The second one's refusal must not have released the first one's lock: the third is refused too.
+    const third = await post("p3", "acme/newer");
+    expect(third.status).toBe(409);
+    expect(third.body.code).toBe("in-use");
+
+    release();
+    expect((await first).status).toBe(201);
+    expect(
+      app.deps.registry
+        .projects()
+        .filter((p) => p.repoId === 77)
+        .map((p) => p.id),
+    ).toEqual(["p1"]);
+    // And once it's done the lock is gone with it, but the repo is now a project.
+    expect((await post("p4", "acme/newer")).status).toBe(409);
+  });
+});

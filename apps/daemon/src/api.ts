@@ -1024,10 +1024,10 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           await backfillRepoIds();
           const repoId = await repoIdOf(repo);
           if (repoId !== undefined) {
-            idKey = `#${repoId}`;
+            const idLock = `#${repoId}`;
             const sameById = projectUsing(repo, repoId);
-            if (sameById || inFlightRepos.has(idKey)) {
-              idKey = sameById ? null : idKey;
+            if (sameById || inFlightRepos.has(idLock)) {
+              // Not ours: leave idKey unset, so this request's finally can't release the other one's lock.
               return json(
                 {
                   error: sameById
@@ -1039,7 +1039,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
                 409,
               );
             }
-            inFlightRepos.add(idKey);
+            inFlightRepos.add(idLock);
+            idKey = idLock;
           }
 
           if (body.mode !== undefined && body.mode !== "direct" && body.mode !== "owner-merges") {
