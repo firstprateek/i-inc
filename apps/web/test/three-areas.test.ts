@@ -35,7 +35,9 @@ const ticket = (over: Partial<TicketView>): TicketView =>
 
 const UNASSIGNED = "unassigned, and no standing order covers it";
 
-/** A daemon that answers the board and the handbook, and nothing else. */
+let openProposals: unknown[] = [];
+
+/** A daemon that answers the board, the handbook and the open proposals, and nothing else. */
 function serve(tickets: TicketView[], awaiting: unknown[] = []) {
   vi.stubGlobal("fetch", async (url: string) => {
     const body =
@@ -43,7 +45,9 @@ function serve(tickets: TicketView[], awaiting: unknown[] = []) {
         ? { tickets }
         : url === "/api/knowledge/handbook"
           ? { pages: [], history: [], awaiting }
-          : {};
+          : url.startsWith("/api/proposals")
+            ? { proposals: openProposals }
+            : {};
     return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
   });
 }
@@ -70,6 +74,7 @@ const current = (root: ShadowRoot, sel: string) =>
     .map((a) => text(a));
 
 beforeEach(() => {
+  openProposals = [];
   phone(false);
   history.replaceState(null, "", "/");
   localStorage.clear();
@@ -143,6 +148,8 @@ describe("the Needs you count", () => {
     expect(needsYouCount(tickets, [])).toBe(2);
     expect(needsYouCount(tickets, [{ id: "p" } as never])).toBe(3);
     expect(needsYouCount([])).toBe(0);
+    // open follow-up proposals count too, so the badge matches the Needs you list
+    expect(needsYouCount(tickets, [], [{ id: "a" } as never, { id: "b" } as never])).toBe(4);
   });
 
   it("shows the count in the top bar and opens Work → Needs you", async () => {
@@ -160,6 +167,12 @@ describe("the Needs you count", () => {
     expect(badge.getAttribute("aria-label")).toBe("Needs you, 3 waiting");
     // the Needs you tab carries it too
     expect(text(root.querySelector('[role="tablist"] a[href="#/work/needs-you"]'))).toBe("Needs you 3");
+  });
+
+  it("includes open follow-up proposals in the badge", async () => {
+    openProposals = [{ id: "pr1" }, { id: "pr2" }];
+    const { root } = await mount("#/work/board");
+    expect(root.querySelector("header .needs-link .count")?.textContent).toBe("2");
   });
 
   it("shows 0 calmly, and no number until the first answer", async () => {
