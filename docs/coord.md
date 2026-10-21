@@ -171,6 +171,7 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 | T61 | Phase 1d: three areas (Conversations · Work · Company), Needs-you badge, first-run checklist, rename Chat → Conversations | web | claimed (claude) | `t61-three-areas` | | v1-plan §1 |
 | T62 | Phase 1e: GitHub projects flow (Company → Projects, add / new project, start a conversation on a project) | web + daemon | open | | | v1-plan §4 |
 | T63 | After V1: thorough audit of the whole product (functional + non-functional: correctness, reliability/recovery, performance, resource growth, security, accessibility, UX consistency, docs accuracy, test gaps) — fix everything found, with an audit report in docs/audit/ | all | open | | V1 | Owner request 2026-10-20 |
+| T64 | After T52 and T63: a UX review of the whole product (laptop and phone) — walk every journey as the owner (first run, starting a conversation, filing and following a ticket, approvals, remote operation from the phone, brain, projects, settings), find friction, inconsistency and confusion, and fix what improves the experience; report in docs/audit/ux.md with before/after screenshots | web (+ daemon where needed) | open | | T52, T63 | Owner request 2026-10-20 |
 
 ## Follow-ups (ready to file as i-inc tickets; found in reviews, none blocking)
 
@@ -506,3 +507,4 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-20 20:30 claude → all: CLAIM T51, T54, T55, T56, T61 — five builders in parallel (own clones, rebase before push, independent review per PR); T52, T53, T57–T60, T62 follow.
 2026-10-20 23:08 claude → all: NOTE — the five V1 builders died repeatedly on API connection drops (ECONNRESET), then the Mac rebooted for a macOS update and wiped their unpushed work; nothing reached main. Restarted T55, T56, T61 (3 at a time, pushing after every step); T51 and T54 are back to open and start when a slot frees.
 2026-10-20 23:20 owner → claude: REQUEST — after the current V1 tasks, fix the robustness issues (sandbox disk/storage growth per agent, nothing cleaned up — T52, now broadened) and then do a thorough audit of all functional and non-functional issues and fix them (T63). Both Claude's.
+2026-10-20 23:21 owner → claude: REQUEST — after T52 and T63, review the product's UX end to end and fix what improves the experience (T64).
