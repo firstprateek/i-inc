@@ -219,7 +219,13 @@ try {
     5_000,
     "the page to be focused",
   );
-  await sleep(1500); // the first presence report
+  await until(
+    async () =>
+      (await (await fetch(`${base}/__e2e/watching?session=${encodeURIComponent(conv.ahpSession)}`)).json())
+        .watching,
+    10_000,
+    "the app to report that it is looking",
+  );
   const before = (await pushes()).filter((p) => !p.resolve).length;
   const close2 = await startTurn(conv, "please edit the constant again", "turn-2");
   await until(async () => (await page.evaluate(cardState, CARD)).tool, 15_000, "the second card");

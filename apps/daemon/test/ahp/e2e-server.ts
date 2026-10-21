@@ -12,7 +12,8 @@
 //   "longtools"   thirty read calls, for a long turn
 // E2E_NO_COALESCE=1 turns off the host's joining of streamed text, so each piece is its own action.
 // Push (T65): the push sender is a fake that records what the daemon sends; `GET /__e2e/pushes` lists it as JSON
-// (`{ "pushes": NotificationPayload[] }`). E2E_PUSH_GRACE=<ms> sets how long a request waits before it is pushed
+// (`{ "pushes": NotificationPayload[] }`), and `GET /__e2e/watching?session=<uri>` says whether a client reports
+// that it is looking at that session (`{ "watching": boolean }`). E2E_PUSH_GRACE=<ms> sets how long a request waits before it is pushed
 // (default 20000, the daemon's own).
 import { existsSync, mkdirSync } from "node:fs";
 import { join, normalize } from "node:path";
@@ -216,6 +217,10 @@ Bun.serve<WsData>({
       if ("refusal" in g) return g.refusal;
       if (server.upgrade(req, { data: g.data })) return undefined;
       return new Response("websocket upgrade failed", { status: 400 });
+    }
+    if (new URL(req.url).pathname === "/__e2e/watching") {
+      const session = new URL(req.url).searchParams.get("session") ?? "";
+      return Response.json({ watching: app.ahp.host.isWatched(session) });
     }
     if (new URL(req.url).pathname === "/__e2e/pushes") {
       return Response.json({ pushes: (app.deps.push as FakePushService).sent });

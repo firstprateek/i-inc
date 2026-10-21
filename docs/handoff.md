@@ -212,17 +212,20 @@ at that conversation, your phone gets a notification that opens the card. The de
 - **Turn it on:** Company > Settings > Notifications. The device switch is the same as for tickets (on an iPhone,
   install i.inc to the Home Screen first). Under "What to be notified about": **Conversations need me** (on by default)
   and **A long reply finished** (off by default; only for a turn that ran a minute or more). They apply to every device.
-- **What you get:** "<Employee> needs you", a short redacted line (`Run: pnpm test`, `Edit src/app.ts`), no file contents.
+- **What you get:** "<Employee> needs you" and a lock-screen-safe line: a command is only its program and a couple of
+  well-known words (`Run: pnpm test`, `Run: mysql …`), a file its path (`Edit: src/app.ts`), a fetch its host. Arguments,
+  file contents and diffs never appear.
   Tapping opens the app at the card: it scrolls into view, the first button has focus and the card is outlined for a
   moment. If you (or another device) answered it already, the thread says "Already answered on another device".
   Approving happens in the app, never from the lock screen (iOS has no notification buttons, and the card is where
   the diff is).
 - **When it does not buzz:** nothing is sent for 20 s after the request appears, so answering at the laptop never
   buzzes the phone; nothing is sent while any signed-in page is open on that conversation, visible and focused (the
-  page says so every 15 s, and the host forgets it after 45 s); one push per request, ever; a newer request of the
+  page says so every 15 s while it is touched, stops after 2 minutes without a touch, and the host forgets it after 45 s); one push per request, ever; a newer request of the
   same conversation replaces the older notification (tag `conv-<id>`). When the request is answered, the turn ends
-  or the conversation is archived, a "resolve" push closes the notification (Safari shows a quiet stand-in for a
-  second, because it revokes subscriptions whose pushes show nothing).
+  or the conversation is archived, a "resolve" push closes the notification. It is not sent to iPhones (Apple revokes a
+  subscription whose pushes show nothing); there the app closes stale notifications itself when it is opened. After a
+  restart, notifications left up for requests the restart ended are closed.
 - **Code:** `apps/daemon/src/ahp/conversation-push.ts` (the rules, `describeRequest` for the line),
   `AhpHost.observe`/`isWatched` and `iinc/presence` in `host.ts`, `GET/PUT /api/push/settings` in `api.ts`;
   `apps/web/public/sw.js` (push, resolve, tap), `apps/web/src/ahp/presence.ts`, `?card=` in `routes.ts` and `conv-thread.ts`.
@@ -233,8 +236,9 @@ at that conversation, your phone gets a notification that opens the card. The de
   a scratch HOME with a fake push sender, `GET /__e2e/pushes` lists what it sent, and needs Playwright).
 - **Not verified on a real phone:** the iOS Home Screen app and Android Chrome. Everything above is tested against
   fakes and in desktop Chromium. Check on a device: a tap from the lock screen lands on the card on iOS (the worker cannot
-  navigate a window there, so it messages the app), the resolve stand-in on iOS, and that the visibility signal
-  quiets the phone while the app is open.
+  navigate a window there, so it messages the app), that the app closes a stale notification when opened on iOS, that Chrome on
+  Android shows no "updated in the background" message when a resolve push closes the only notification, and that the
+  visibility signal quiets the phone while the app is open.
 
 ## Storage and cleanup
 
