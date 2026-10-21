@@ -5,6 +5,7 @@ import { css, html, LitElement } from "lit";
 import { imageRules, refresh, refreshNow } from "../api.ts";
 import { hasNewFromOthers, isNearBottom, newFromOthers } from "../chat-scroll.ts";
 import { draftMemo } from "../drafts.ts";
+import { messageSent } from "../first-run.ts";
 import { showLogin } from "../login.ts";
 import { forget, ImagePicker, imagePickerStyles, type Picked } from "./image-picker.ts";
 import { LAYOUT_BREAKPOINTS, layoutStyles } from "./layout.ts";
@@ -508,6 +509,7 @@ export class IncChat extends LitElement {
 
       entry.status = "sent";
       entry.error = undefined;
+      messageSent();
       draftMemo.clearIfSent(empId, entry.text);
       // The daemon has the images now, and the thread shows its own copies.
       entry.picked?.forEach(forget);
@@ -698,17 +700,19 @@ export class IncChat extends LitElement {
   override render() {
     const me = (this.threads ?? []).find((t) => t.id === this.employeeId);
     return html`<div class="wrap layout-split">
-      <nav class="card layout-split-sidebar" aria-label="Chats">
+      <nav class="card layout-split-sidebar" aria-label="Conversations">
         ${(this.threads ?? []).map(
-          (t) => html`<a href="#/chat/${t.id}" aria-current=${t.id === this.employeeId ? "true" : "false"}>
+          (
+            t,
+          ) => html`<a href="#/conversations/${t.id}" aria-current=${t.id === this.employeeId ? "true" : "false"}>
             ${avatar(t, 40)}<span><b>${t.name}</b><small>${this.preview(t.last) ?? t.role}</small></span></a>`,
         )}
       </nav>
-      <section class="card thread layout-split-work" aria-label="Chat with ${me?.name ?? "the team"}">
+      <section class="card thread layout-split-work" aria-label="Conversation with ${me?.name ?? "the team"}">
         ${
           me
             ? html`<div class="head">${avatar(me, 44)}<div><h2>${me.name}</h2><span class="muted" style="font-size:13px">${me.role}</span></div>
-          <span style="flex-grow:1"></span><a class="btn ghost" href="#/brain/${me.id}" style="display:inline-flex;align-items:center;text-decoration:none">Brain</a></div>`
+          <span style="flex-grow:1"></span><a class="btn ghost" href="#/company/brain/${me.id}" style="display:inline-flex;align-items:center;text-decoration:none">Brain</a></div>`
             : ""
         }
         <div class="msgs-wrap">

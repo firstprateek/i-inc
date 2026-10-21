@@ -304,9 +304,9 @@ describe("Rich visual identity and color system (T38)", () => {
 
   it("office view renders health-coded quota bars and activity meters", async () => {
     const el = document.createElement("inc-office") as IncOffice;
+    el.show = "meters";
     (el as unknown as { data: unknown }).data = {
       employees: [],
-      tickets: [],
       accounts: [
         {
           id: "claude-pro",

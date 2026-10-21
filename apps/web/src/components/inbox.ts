@@ -1,7 +1,8 @@
-// The phone inbox (spec §10): what needs you and what's ready, each answerable in one tap.
+// Work → Needs you (spec §10): what needs you and what's ready, each answerable in one tap.
 import { css, html } from "lit";
 import { api, type PolicyProposal, type ProposalView, refreshNow, type TicketView } from "../api.ts";
 import { waitingLine, waitsForAssignee } from "../assign.ts";
+import { needsYouCount } from "../needs-you.ts";
 import { layoutStyles } from "./layout.ts";
 import { Loader } from "./loader.ts";
 import "./proposals.ts";
@@ -53,7 +54,7 @@ export class IncInbox extends Loader<{
         background: var(--working-bg); color: var(--working-fg); margin-bottom: 6px; }
       .clear .badge svg { width: 28px; height: 28px; display: block; }
       .clear h2 { font-size: 22px; margin: 0; }
-      .clear p { margin: 0; color: var(--ink-2); font-size: 15px; line-height: 1.4; max-width: 30ch; }
+      .clear p { margin: 0; color: var(--ink-2); font-size: 15px; line-height: 1.4; max-width: 34ch; }
       .clear .links { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 12px; width: 100%; }
       .clear .links .btn { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; min-width: 44px; box-sizing: border-box; text-decoration: none; }
     `,
@@ -61,14 +62,14 @@ export class IncInbox extends Loader<{
 
   override render() {
     if (this.error) return html`<p role="alert">${this.error}</p>`;
-    if (!this.data) return html`<p class="muted">Loading your inbox…</p>`;
+    if (!this.data) return html`<p class="muted">Loading what needs you…</p>`;
     const needs = this.data.tickets.filter((t) => t.status === "needs-you");
     const ready = this.data.tickets.filter((t) => t.status === "ready");
     const policies = this.data.policies;
     // A ticket nobody can start until the owner picks someone is the owner's to fix.
     const unassigned = this.data.tickets.filter(waitsForAssignee);
     const proposals = this.data.proposals;
-    const n = needs.length + policies.length + unassigned.length + proposals.length;
+    const n = needsYouCount(this.data.tickets, policies, proposals);
     return html`
       <p class="summary">${n ? `${n} ${n === 1 ? "thing needs" : "things need"} you` : "Nothing needs you"}</p>
       <div class="list">${needs.map((t) => this.ask(t))}${unassigned.map((t) => this.unassigned(t))}${policies.map((p) => this.policy(p))}</div>
@@ -82,10 +83,10 @@ export class IncInbox extends Loader<{
     return html`<div class="card clear" role="status">
       <span class="badge" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>
       <h2>All clear</h2>
-      <p>No tickets need your review or are waiting on employees</p>
+      <p>Nothing needs your answer. Tickets that do will show up here.</p>
       <div class="links">
-        <a class="btn" href="#/board">Go to Board</a>
-        <a class="btn ghost" href="#/chat/ada">Chat with Ada</a>
+        <a class="btn" href="#/work/board">Go to the board</a>
+        <a class="btn ghost" href="#/conversations/ada">Start a conversation</a>
       </div></div>`;
   }
 

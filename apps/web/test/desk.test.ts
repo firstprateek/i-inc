@@ -139,8 +139,10 @@ describe("My desk view and releases (T33)", () => {
     });
   }
 
-  async function mount(): Promise<{ el: IncDesk; root: ShadowRoot }> {
+  /** Work → Releases by default; Company → Usage is the other half of the old desk. */
+  async function mount(show: "usage" | "releases" = "releases"): Promise<{ el: IncDesk; root: ShadowRoot }> {
     const el = document.createElement("inc-desk") as IncDesk;
+    el.show = show;
     document.body.append(el);
     for (let i = 0; i < 6; i++) {
       await new Promise((r) => setTimeout(r, 0));
@@ -149,19 +151,45 @@ describe("My desk view and releases (T33)", () => {
     return { el, root: el.shadowRoot as ShadowRoot };
   }
 
-  it("renders bottleneck, spend, lessons learned, and releases", async () => {
+  it("Company → Usage renders the bottleneck, spend, waits and lessons learned, and no releases", async () => {
     serveDesk();
-    const { root } = await mount();
+    const { root } = await mount("usage");
 
     expect(root.textContent).toContain("The bottleneck");
     expect(root.textContent).toContain("Tickets waited 1.5 h for tokens");
     expect(root.textContent).toContain("Spend");
     expect(root.textContent).toContain("$46");
+    expect(root.textContent).toContain("Where work waited");
     expect(root.textContent).toContain("What the team learned");
     expect(root.textContent).toContain("Saved memory in sessions");
+    expect(root.querySelector(".releases")).toBeNull();
+    expect(root.textContent).not.toContain("Cut release");
+  });
+
+  it("Work → Releases renders pending and recent releases, and none of the usage", async () => {
+    serveDesk();
+    const { root } = await mount("releases");
+
     expect(root.textContent).toContain("Releases");
     expect(root.textContent).toContain("2 unreleased tickets");
     expect(root.textContent).toContain("v2026-10-17.1");
+    expect(root.textContent).not.toContain("The bottleneck");
+    expect(root.textContent).not.toContain("Spent this month");
+    expect(root.textContent).not.toContain("What the team learned");
+  });
+
+  it("keeps the lesson links at least 44px tall on a phone (CSS)", () => {
+    const css = (customElements.get("inc-desk") as unknown as { styles: { cssText: string }[] }).styles
+      .map((c) => c.cssText)
+      .join("\n");
+    const phoneRules = css.slice(css.indexOf("@media (max-width: 900px)"));
+    expect(phoneRules).toMatch(/\.learned a \{[^}]*min-height:\s*44px/);
+  });
+
+  it("links a lesson to the company brain's new address", async () => {
+    serveDesk();
+    const { root } = await mount("usage");
+    expect(root.querySelector(".learned a")?.getAttribute("href")).toBe("#/company/brain");
   });
 
   it("disables Cut release when a project has no pending tickets", async () => {

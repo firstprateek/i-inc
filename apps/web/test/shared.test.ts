@@ -20,8 +20,26 @@ describe("shared route headers", () => {
     const styles = IncLayout.styles.map((style) => style.cssText).join("\n");
     expect(styles).toMatch(/\.frame\.split\s+\.page-header\s*\{[^}]*max-width:\s*none;/);
     expect(styles).toMatch(/\.frame\.split\s+\.page-header\s*\{[^}]*margin-inline:\s*0;/);
-    expect(styles).toMatch(/\.frame\.page\s*\{[^}]*max-width:\s*var\(--page-width,\s*840px\);/);
-    expect(styles).toMatch(/\.frame\.wide\s*\{[^}]*max-width:\s*var\(--wide-width,\s*1400px\);/);
+  });
+
+  it("spans every template's header and tab row across one frame, and lets only the content follow its template", () => {
+    const styles = IncLayout.styles.map((style) => style.cssText).join("\n");
+    // one frame for Page, Wide and Split: the widest content
+    expect(styles).toMatch(/\.frame\s*\{[^}]*max-width:\s*var\(--wide-width,\s*1400px\);/);
+    expect(styles).not.toMatch(/\.frame\.page\s*\{[^}]*max-width:\s*var\(--page-width/);
+    // the header (and with it the tab row) is as wide as the frame
+    expect(styles).toMatch(/\.page-header\s*\{[^}]*max-width:\s*var\(--wide-width,\s*1400px\);/);
+    expect(styles).not.toMatch(/\.page-header\s*\{[^}]*max-width:\s*var\(--page-width/);
+    // Page content is the centred reading band inside that frame
+    expect(styles).toMatch(
+      /\.frame\.page\s+\.content\s*\{[^}]*max-width:\s*var\(--page-width,\s*840px\);[^}]*margin-inline:\s*auto;/,
+    );
+    // the heading block is never shorter than a 44px action, so the title does not move
+    expect(styles).toMatch(/\.heading-copy\s*\{[^}]*min-height:\s*44px;/);
+    // the compact login frame keeps its own narrow header
+    expect(styles).toMatch(
+      /\.frame\.page\.compact\s+\.page-header\s*\{[^}]*max-width:\s*var\(--compact-page-width/,
+    );
   });
 });
 

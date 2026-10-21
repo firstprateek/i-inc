@@ -29,13 +29,17 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
     ...Loader.properties,
     cutting: { state: true },
     actionError: { state: true },
+    /** Which half of the old desk to show: Company → Usage, or Work → Releases. */
+    show: { type: String },
   };
+  declare show: "usage" | "releases";
   // The projects whose release cut is in flight. Replaced (not mutated) on each change so Lit re-renders.
   declare cutting: ReadonlySet<string>;
   declare actionError: string | null;
 
   constructor() {
     super();
+    this.show = "usage";
     this.cutting = new Set();
     this.actionError = null;
   }
@@ -54,6 +58,7 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
       .tile { grid-column: span 3; padding: 18px 20px; display: flex; flex-direction: column; gap: 6px; }
       .tile b { font-family: var(--display); font-size: 36px; }
       .tile small, .note { font-size: 13px; color: var(--ink-2); }
+      .panel.learned-panel, .panel.releases { grid-column: 1 / -1; }
       .panel { grid-column: span 6; padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; }
       .bars { display: grid; grid-template-columns: 150px minmax(0, 1fr) 64px; gap: 10px; align-items: center; font-size: 13px; }
       .bar { height: 12px; border-radius: 0 4px 4px 0; background: var(--bar); min-width: 2px; }
@@ -131,12 +136,16 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
 
   override render() {
     if (this.error) return html`<p role="alert">The daemon isn't answering: ${this.error}</p>`;
-    if (!this.data) return html`<p class="muted">Opening your desk…</p>`;
+    if (!this.data)
+      return html`<p class="muted">Loading ${this.show === "releases" ? "releases" : "usage"}…</p>`;
     const d = this.data;
     const b = d.bottleneck;
     const max = Math.max(...d.spend.lines.map((l) => l.amount), 0.01);
     return html`<div class="grid layout-page-band">
-      <section class="hero">
+      ${
+        this.show === "releases"
+          ? ""
+          : html`<section class="hero">
         <small>The bottleneck</small>
         <h2>${b ? (reasons[b.reason]?.(hours(b.hours), b.tickets) ?? b.reason) : "Nothing has waited yet"}</h2>
         <span>${d.waits
@@ -170,19 +179,22 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
             : html`<span class="note">No waits this month.</span>`
         }
       </section>
-      <section class="card panel">
+      <section class="card panel learned-panel">
         <h2>What the team learned</h2>
         ${
           d.learned.length
             ? html`<div class="learned">${d.learned.map(
-                (c) => html`<a href="#/${c.repo === "handbook" ? "handbook" : `brain/${c.repo?.slice(6)}`}">
+                (c) => html`<a href="#/company/brain${c.repo === "handbook" ? "" : `/${c.repo?.slice(6)}`}">
                   <span>${describe(c.subject)}${c.reverted ? " (reverted)" : ""}</span>
                   <small>${c.authorName} · ${c.repo === "handbook" ? "handbook" : "own brain"}</small></a>`,
               )}</div>`
             : html`<span class="note">Nothing yet. Lessons arrive at each ticket's retro.</span>`
         }
-      </section>
-      <section class="card panel releases">
+      </section>`
+      }
+      ${
+        this.show === "releases"
+          ? html`<section class="card panel releases">
         <h2>Releases</h2>
         ${
           this.actionError
@@ -228,7 +240,7 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
                 }
               </div>`;
               })
-            : html`<span class="note">No projects configured.</span>`
+            : html`<span class="note">No projects yet. <a href="#/company/projects">Add a project</a> to start cutting releases.</span>`
         }
         <h3>Recent releases</h3>
         ${
@@ -251,10 +263,12 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
                 </div>`,
                 )}
             </div>`
-            : html`<span class="note">No releases cut yet.</span>`
+            : html`<span class="note">Nothing released yet. Cut a release once a project has merged tickets.</span>`
         }
         <inc-deploys></inc-deploys>
-      </section>
+      </section>`
+          : ""
+      }
     </div>`;
   }
 }

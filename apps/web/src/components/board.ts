@@ -104,6 +104,14 @@ const columns: [TicketView["column"], string, string][] = [
   ["done", "Done", "col-dot-done"],
 ];
 
+/** An empty column says what to do next, in one sentence. */
+const emptyColumn: Record<string, string> = {
+  todo: "No tickets waiting. Add one with the form above.",
+  "in-progress": "Nothing running. Tickets land here once an employee starts.",
+  review: "Nothing to review. Finished work waits here for your OK.",
+  done: "Nothing shipped yet. Approved tickets land here.",
+};
+
 export class IncBoard extends Loader<BoardData> {
   protected fetch = async () => {
     const [tickets, proposals]: [BoardTicket[], ProposalView[]] = await Promise.all([
@@ -190,7 +198,7 @@ export class IncBoard extends Loader<BoardData> {
       .waits i { width: 8px; height: 8px; border-radius: 50%; background: var(--needs-fg); flex-shrink: 0; margin-top: 5px; }
       .live, .who { font-size: 13px; color: var(--ink-2); min-width: 0; }
       .who { display: flex; align-items: center; gap: 8px; }
-      .empty { display: flex; align-items: center; justify-content: center; min-height: 64px; box-sizing: border-box; padding: 14px;
+      .empty { display: flex; align-items: center; justify-content: center; text-align: center; min-height: 64px; box-sizing: border-box; padding: 14px;
         border: 2px dashed var(--line-strong); border-radius: 14px; font-size: 14px; color: var(--ink-2); }
       @media (max-width: ${LAYOUT_BREAKPOINTS.phone}px) { .cols { grid-template-columns: minmax(0, 1fr); } }
     `,
@@ -213,7 +221,7 @@ export class IncBoard extends Loader<BoardData> {
         const list = tickets.filter((t) => t.column === id);
         return html`<section aria-label=${name}>
           <h2><span class="col-dot ${dotCls}" aria-hidden="true"></span>${name}<span>${list.length}</span></h2>
-          ${list.length ? list.map((t) => this.card(t)) : html`<div class="empty">Nothing here</div>`}
+          ${list.length ? list.map((t) => this.card(t)) : html`<div class="empty">${emptyColumn[id]}</div>`}
         </section>`;
       })}
     </div>`;

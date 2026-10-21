@@ -1,22 +1,29 @@
 import { css, html } from "lit";
-import { type AccountCost, type AccountRateLimit, api, type DeskEntry, type TicketView } from "../api.ts";
+import { type AccountCost, type AccountRateLimit, api, type DeskEntry } from "../api.ts";
 import { LAYOUT_BREAKPOINTS, layoutStyles } from "./layout.ts";
 import { Loader } from "./loader.ts";
 import { avatar, base, projectBadge, stateLabel } from "./shared.ts";
 
 interface Data {
   employees: DeskEntry[];
-  tickets: TicketView[];
   accounts?: AccountCost[];
   rateLimits?: Record<string, AccountRateLimit>;
 }
 
 export class IncOffice extends Loader<Data> {
+  static override properties = { ...Loader.properties, show: { type: String } };
+  /** Company → Team shows the floor; Company → Usage shows the account meters. */
+  declare show: "floor" | "meters";
+
+  constructor() {
+    super();
+    this.show = "floor";
+  }
+
   protected async fetch(): Promise<Data> {
-    const [office, tickets] = await Promise.all([api.office(), api.board()]);
+    const office = await api.office();
     return {
       employees: office.employees,
-      tickets,
       ...(office.accounts ? { accounts: office.accounts } : {}),
       ...(office.rateLimits ? { rateLimits: office.rateLimits } : {}),
     };
@@ -46,12 +53,12 @@ export class IncOffice extends Loader<Data> {
       .grow { flex-grow: 1; }
       .ticket { font-size: 14px; font-weight: 600; }
       .meta { font-size: 13px; color: var(--ink-2); }
-      aside { width: 340px; flex-shrink: 0; display: flex; flex-direction: column; gap: 16px; }
-      aside .card { padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; }
-      aside a { display: flex; flex-direction: column; justify-content: center; gap: 2px; text-decoration: none; min-height: 44px; }
-      aside a b { font-size: 14px; }
-      .empty { font-size: 14px; color: var(--ink-2); }
-      .accounts-card { display: flex; flex-direction: column; gap: 12px; }
+      .empty-note { margin: 0; font-size: 15px; color: var(--ink-2); }
+      .empty-note a, .empty-card a { display: inline-flex; align-items: center; min-height: 44px; }
+      .empty-card { padding: 18px 20px; display: flex; flex-direction: column; gap: 8px; }
+      .empty-card h2 { font-size: 20px; }
+      .empty-card p { margin: 0; color: var(--ink-2); }
+      .accounts-card { padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; }
       .accounts-list { display: flex; flex-direction: column; gap: 12px; }
       .account-item { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid var(--line); }
       .account-item:first-child { padding-top: 0; border-top: none; }
@@ -78,34 +85,34 @@ export class IncOffice extends Loader<Data> {
       .activity-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; gap: 8px; }
       .activity-val { font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
       .name, .ticket, .meta { overflow-wrap: anywhere; }
-      @media (max-width: ${LAYOUT_BREAKPOINTS.split - 1}px) { .wrap { flex-direction: column; align-self: stretch; } .wrap > * { width: 100%; box-sizing: border-box; } aside { width: 100%; } }
-      @media (max-width: 560px) { .floor { padding: 14px; border-radius: 22px; } .desks { gap: 12px; } aside .card { padding: 16px; } }
+      @media (max-width: ${LAYOUT_BREAKPOINTS.split - 1}px) { .wrap { flex-direction: column; align-self: stretch; } .wrap > * { width: 100%; box-sizing: border-box; } }
+      @media (max-width: 560px) { .floor { padding: 14px; border-radius: 22px; } .desks { gap: 12px; } .accounts-card { padding: 16px; } }
     `,
   ];
 
   override render() {
     if (this.error) return html`<p role="alert">The daemon isn't answering: ${this.error}</p>`;
-    if (!this.data) return html`<p class="muted">Opening the office…</p>`;
+    if (!this.data)
+      return html`<p class="muted">${this.show === "meters" ? "Loading accounts…" : "Loading your team…"}</p>`;
+    if (this.show === "meters") {
+      const { accounts, rateLimits } = this.data;
+      return accounts?.length
+        ? html`<div class="layout-page-band meters">${this.accountsSection(accounts, rateLimits)}</div>`
+        : html`<div class="card empty-card layout-page-band" role="status">
+            <h2>Accounts and quotas</h2>
+            <p>No accounts yet. <a href="#/company/settings/engines">Add an engine and account in Settings</a> to see its quota here.</p>
+          </div>`;
+    }
     const employees = this.data.employees ?? [];
-    const tickets = this.data.tickets ?? [];
-    const needs = tickets.filter((t) => t.status === "needs-you");
-    const ready = tickets.filter((t) => t.status === "ready");
     return html`<div class="wrap layout-wide-content">
       <section class="floor" aria-label="The floor">
         <h2>The floor</h2>
-        <div class="desks">${employees.map((e) => this.desk(e))}</div>
+        ${
+          employees.length
+            ? html`<div class="desks">${employees.map((e) => this.desk(e))}</div>`
+            : html`<p class="empty-note">Nobody works here yet. <a href="#/company/team/hiring">Hire your first employee</a>.</p>`
+        }
       </section>
-      <aside>
-        <div class="card">
-          <h2>Needs you ${needs.length ? html`<span class="chip needs">${needs.length}</span>` : ""}</h2>
-          ${needs.length ? needs.map((t) => this.link(t)) : html`<span class="empty">Nothing waits for you.</span>`}
-        </div>
-        <div class="card">
-          <h2>Ready for you</h2>
-          ${ready.length ? ready.map((t) => this.link(t)) : html`<span class="empty">No reports yet.</span>`}
-        </div>
-        ${this.data.accounts?.length ? this.accountsSection(this.data.accounts, this.data.rateLimits) : ""}
-      </aside>
     </div>`;
   }
 
@@ -197,7 +204,7 @@ export class IncOffice extends Loader<Data> {
     const [label, tone] = stateLabel[e.state] ?? ["Idle", ""];
     const needs = e.state === "needs-you";
     const off = e.state === "off" || e.state === "idle";
-    const href = e.ticket ? `#/ticket/${e.ticket.id}` : "#/board";
+    const href = e.ticket ? `#/ticket/${e.ticket.id}` : "#/work/board";
     return html`<a class="card desk ${needs ? "waiting" : ""}" href=${href} aria-label="${e.name}: ${label}">
       <div class="scene" aria-hidden="true">
         ${e.state === "off" ? "" : avatar(e, 52)}
@@ -205,13 +212,9 @@ export class IncOffice extends Loader<Data> {
         <div class="screen ${off ? "off" : ""}">${off ? "" : (e.ticket?.live ?? "")}</div>
       </div>
       <div class="row"><span class="name">${e.name}</span><span class="grow"></span><span class="chip ${tone}">${label}</span></div>
-      <div class="ticket">${e.ticket ? html`#${e.ticket.id} ${e.ticket.title} · ${projectBadge(e.ticket.project)}` : "No ticket"}</div>
+      <div class="ticket">${e.ticket ? html`#${e.ticket.id} ${e.ticket.title} · ${projectBadge(e.ticket.project)}` : "No ticket right now"}</div>
       <div class="meta">${e.role} · ${e.engine}</div>
     </a>`;
-  }
-
-  private link(t: TicketView) {
-    return html`<a href="#/ticket/${t.id}"><b>${t.title}</b><span class="muted">${t.assignee?.name ?? "Unassigned"} · ${projectBadge(t.project)}</span></a>`;
   }
 }
 

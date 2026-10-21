@@ -704,35 +704,52 @@ describe("sandboxes", () => {
   });
 });
 
-describe("the Setup area", () => {
-  it("is reachable from the nav and the More page, and shows the section in the address", async () => {
+describe("Company → Settings and Projects", () => {
+  it("has Projects as its own Company tab and four sections under Settings, shown in the address", async () => {
     serve();
-    location.hash = "#/setup/projects";
+    location.hash = "#/company/settings/engines";
     const root = await mount("inc-app");
     expect(root.querySelector("inc-setup")).not.toBeNull();
-    const links = [...root.querySelectorAll("nav a")].map((a) => a.getAttribute("href"));
-    expect(links).toContain("#/setup/teams");
+    const companyTabs = [...root.querySelectorAll('[role="tablist"] a')];
+    expect(companyTabs.map((a) => a.textContent?.trim())).toEqual([
+      "Team",
+      "Brain",
+      "Projects",
+      "Usage",
+      "Settings",
+    ]);
+    expect(companyTabs.find((a) => a.getAttribute("aria-selected") === "true")?.textContent?.trim()).toBe(
+      "Settings",
+    );
     const setup = root.querySelector("inc-setup") as HTMLElement;
     const tabs = [...(setup.shadowRoot?.querySelectorAll("nav a") ?? [])];
     expect(tabs.map((a) => a.textContent)).toEqual([
       "Teams",
-      "Projects",
       "Engines and accounts",
       "Sandboxes",
       "Notifications",
     ]);
-    expect(tabs.find((a) => a.getAttribute("aria-current") === "page")?.textContent).toBe("Projects");
-    expect(setup.shadowRoot?.querySelector("inc-setup-projects")).not.toBeNull();
+    expect(tabs.map((a) => a.getAttribute("href"))).toEqual([
+      "#/company/settings/teams",
+      "#/company/settings/engines",
+      "#/company/settings/sandboxes",
+      "#/company/settings/notifications",
+    ]);
+    expect(tabs.find((a) => a.getAttribute("aria-current") === "page")?.textContent).toBe(
+      "Engines and accounts",
+    );
+    expect(setup.shadowRoot?.querySelector("inc-setup-engines")).not.toBeNull();
 
-    location.hash = "#/more";
+    location.hash = "#/company/projects";
     window.dispatchEvent(new HashChangeEvent("hashchange"));
     await settle(root.host);
-    expect([...root.querySelectorAll(".more a")].map((a) => a.getAttribute("href"))).toContain(
-      "#/setup/teams",
-    );
-    expect([...root.querySelectorAll(".more a")].map((a) => a.getAttribute("href"))).toContain(
-      "#/setup/notifications",
-    );
+    expect(root.querySelector("inc-setup-projects")).not.toBeNull();
+    expect(root.querySelector("inc-setup")).toBeNull();
+    expect(
+      [...root.querySelectorAll('[role="tablist"] a')]
+        .find((a) => a.getAttribute("aria-selected") === "true")
+        ?.textContent?.trim(),
+    ).toBe("Projects");
     location.hash = "";
   });
 });

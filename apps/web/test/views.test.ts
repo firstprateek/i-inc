@@ -48,8 +48,9 @@ function serve(tickets: TicketView[], handbook: unknown = { pages: [], history: 
   });
 }
 
-async function mount(tag: string): Promise<ShadowRoot> {
+async function mount(tag: string, props: Record<string, string> = {}): Promise<ShadowRoot> {
   const el = document.createElement(tag);
+  Object.assign(el, props);
   document.body.append(el);
   for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
   await (el as unknown as { updateComplete: Promise<unknown> }).updateComplete;
@@ -108,10 +109,10 @@ describe("the board", () => {
       placeholder: s.querySelector(".empty")?.textContent?.trim() ?? null,
     }));
     expect(placeholders).toEqual([
-      { name: "To do", placeholder: "Nothing here" },
+      { name: "To do", placeholder: "No tickets waiting. Add one with the form above." },
       { name: "In progress", placeholder: null },
-      { name: "Review", placeholder: "Nothing here" },
-      { name: "Done", placeholder: "Nothing here" },
+      { name: "Review", placeholder: "Nothing to review. Finished work waits here for your OK." },
+      { name: "Done", placeholder: "Nothing shipped yet. Approved tickets land here." },
     ]);
   });
 });
@@ -183,18 +184,18 @@ describe("the inbox", () => {
     expect(root.querySelector(".summary")?.textContent).toBe("Nothing needs you");
   });
 
-  it("shows a calm all-clear card with two links when nothing needs you and nothing is ready", async () => {
+  it("shows a calm all-clear card, saying what to do next, when nothing needs you and nothing is ready", async () => {
     serve([view({})]);
     const root = await mount("inc-inbox");
     const card = root.querySelector(".clear");
     expect(card).not.toBeNull();
     expect(card?.querySelector("h2")?.textContent).toBe("All clear");
     expect(card?.querySelector("svg")).not.toBeNull();
-    expect(card?.textContent).toContain("No tickets need your review or are waiting on employees");
+    expect(card?.textContent).toContain("Nothing needs your answer. Tickets that do will show up here.");
     const links = [...(card?.querySelectorAll("a.btn") ?? [])] as HTMLAnchorElement[];
     expect(links.map((a) => [a.textContent?.trim(), a.getAttribute("href")])).toEqual([
-      ["Go to Board", "#/board"],
-      ["Chat with Ada", "#/chat/ada"],
+      ["Go to the board", "#/work/board"],
+      ["Start a conversation", "#/conversations/ada"],
     ]);
   });
 
@@ -298,6 +299,12 @@ describe("the shell", () => {
     });
 
     const root = await mount("inc-app");
+    // Sign out lives in the account menu.
+    expect([...root.querySelectorAll("button")].some((b) => b.textContent?.trim() === "Sign out")).toBe(
+      false,
+    );
+    (root.querySelector(".account-trigger") as HTMLButtonElement).click();
+    await new Promise((r) => setTimeout(r, 0));
     const signOutBtn = [...root.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Sign out");
     expect(signOutBtn).toBeTruthy();
 
@@ -313,24 +320,30 @@ describe("the shell", () => {
 });
 
 describe("the phone tab bar", () => {
-  it("reaches My desk, the handbook, hiring and Setup through More", async () => {
+  it("has Conversations, Work, Needs you and Company, and Company holds the old More screens as tabs", async () => {
     vi.stubGlobal(
       "fetch",
       async () => new Response(JSON.stringify({}), { headers: { "content-type": "application/json" } }),
     );
     location.hash = "#/more";
     const root = await mount("inc-app");
+    expect(location.hash).toBe("#/company/team");
     const tabs = [...(root.querySelectorAll(".tabs button") as NodeListOf<HTMLButtonElement>)];
-    expect(tabs.map((a) => a.textContent?.trim())).toEqual(["Inbox", "Office", "Board", "Chats", "More"]);
-    expect(tabs[4]?.getAttribute("aria-current")).toBe("page");
-    expect(tabs[4]?.getAttribute("aria-selected")).toBe("true");
-    const more = [...(root.querySelectorAll(".more a") as NodeListOf<HTMLAnchorElement>)];
-    expect(more.map((a) => a.getAttribute("href"))).toEqual([
-      "#/desk",
-      "#/handbook",
-      "#/hiring",
-      "#/setup/notifications",
-      "#/setup/teams",
+    expect(tabs.map((a) => a.querySelector(".tab-label")?.textContent?.trim())).toEqual([
+      "Conversations",
+      "Work",
+      "Needs you",
+      "Company",
+    ]);
+    expect(tabs[3]?.getAttribute("aria-current")).toBe("page");
+    expect(tabs[3]?.getAttribute("aria-selected")).toBe("true");
+    const rowTabs = [...(root.querySelectorAll('[role="tablist"] a') as NodeListOf<HTMLAnchorElement>)];
+    expect(rowTabs.map((a) => a.getAttribute("href"))).toEqual([
+      "#/company/team",
+      "#/company/brain",
+      "#/company/projects",
+      "#/company/usage",
+      "#/company/settings",
     ]);
     location.hash = "";
   });
@@ -383,9 +396,14 @@ describe("the office", () => {
       });
     });
 
-    const root = await mount("inc-office");
-    expect(root.textContent).toContain("The floor");
-    expect(root.textContent).toContain("Ada");
+    const floor = await mount("inc-office");
+    expect(floor.textContent).toContain("The floor");
+    expect(floor.textContent).toContain("Ada");
+    expect(floor.textContent).not.toContain("Accounts & quotas");
+    expect(floor.textContent).not.toContain("Needs you");
+    document.body.innerHTML = "";
+    const root = await mount("inc-office", { show: "meters" });
+    expect(root.textContent).not.toContain("The floor");
     expect(root.textContent).toContain("Accounts & quotas");
     expect(root.textContent).toContain("Claude Pro");
     expect(root.textContent).toContain("Cap: $100");
@@ -451,7 +469,7 @@ describe("the office", () => {
       });
     });
 
-    const root = await mount("inc-office");
+    const root = await mount("inc-office", { show: "meters" });
     expect(root.textContent).toContain("Google AI Pro");
     expect(root.textContent).toContain("gemini-2.5-pro");
     expect(root.textContent).toContain("3 sessions · 12m active");
@@ -476,7 +494,7 @@ describe("the office", () => {
   });
 });
 
-describe("My desk releases", () => {
+describe("Work → Releases", () => {
   it("renders pending releases with Cut release button and recent releases", async () => {
     calls = [];
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
@@ -537,7 +555,7 @@ describe("My desk releases", () => {
       });
     });
 
-    const root = await mount("inc-desk");
+    const root = await mount("inc-desk", { show: "releases" });
     expect(root.textContent).toContain("Releases");
     expect(root.textContent).toContain("1 unreleased ticket");
     expect(root.textContent).toContain("Add feature");
@@ -553,5 +571,50 @@ describe("My desk releases", () => {
       url: "/api/projects/Duet/release",
       body: {},
     });
+  });
+});
+
+describe("empty states say what to do next", () => {
+  const empty = () =>
+    vi.stubGlobal(
+      "fetch",
+      async () =>
+        new Response(
+          JSON.stringify({
+            employees: [],
+            accounts: [],
+            tickets: [],
+            projects: [],
+            releases: [],
+            pendingReleases: [],
+            waits: [],
+            spend: { lines: [], total: 0, perMergedPR: null },
+            bottleneck: null,
+            merged: 0,
+            changes: [],
+          }),
+          {
+            headers: { "content-type": "application/json" },
+          },
+        ),
+    );
+
+  it("the team floor links to hiring", async () => {
+    empty();
+    const root = await mount("inc-office");
+    expect(root.querySelector(".empty-note a")?.getAttribute("href")).toBe("#/company/team/hiring");
+  });
+
+  it("the account meters link to Settings", async () => {
+    empty();
+    const root = await mount("inc-office", { show: "meters" });
+    expect(root.querySelector(".empty-card a")?.getAttribute("href")).toBe("#/company/settings/engines");
+  });
+
+  it("releases link to Company → Projects when there are no projects", async () => {
+    empty();
+    const root = await mount("inc-desk", { show: "releases" });
+    expect(root.querySelector(".releases a")?.getAttribute("href")).toBe("#/company/projects");
+    expect(root.textContent).toContain("Nothing released yet.");
   });
 });

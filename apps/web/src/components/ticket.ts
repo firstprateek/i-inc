@@ -330,7 +330,7 @@ export class IncTicket extends Loader<Data> {
     if (!options.length) {
       return html`<div class="ask assign" id="assign" role="group" aria-labelledby="assign-h">
         <h3 id="assign-h">Who should do this?</h3>
-        <p>Nobody works on ${t.project} yet. Add the project to an employee, or <a href="#/hiring">hire someone</a>.</p>
+        <p>Nobody works on ${t.project} yet. Add the project to an employee, or <a href="#/company/team/hiring">hire someone</a>.</p>
       </div>`;
     }
     const chosen = this.choice(t);

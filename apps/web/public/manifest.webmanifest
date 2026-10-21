@@ -2,7 +2,7 @@
   "id": "/",
   "name": "i.inc",
   "short_name": "i.inc",
-  "description": "Your company of AI engineers: the board, the inbox and the reports.",
+  "description": "Your company of AI engineers: conversations, the board and what needs you.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

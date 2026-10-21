@@ -284,7 +284,7 @@ describe("editing someone's engines", () => {
     serve();
     const root = await mount();
     const link = root.querySelector('[aria-label="Your team"] a') as HTMLAnchorElement;
-    expect(link.getAttribute("href")).toBe("#/hiring/ada");
+    expect(link.getAttribute("href")).toBe("#/company/team/hiring/ada");
   });
 
   it("shows what the employee has now, and the fallback's harness", async () => {
@@ -316,7 +316,7 @@ describe("editing someone's engines", () => {
         fallbacks: ["qwen", "gemini"],
       },
     });
-    expect(location.hash).toBe("#/office");
+    expect(location.hash).toBe("#/company/team");
   });
 
   it("preselects the current team and sends the new team when editing", async () => {

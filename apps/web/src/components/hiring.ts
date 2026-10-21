@@ -364,7 +364,7 @@ export class IncHiring extends LitElement {
     }
     this.busy = false;
     refreshNow();
-    location.hash = "#/office";
+    location.hash = "#/company/team";
   }
 
   /** A PA works on home data, so only local engines are offered (spec §7). */
@@ -403,7 +403,7 @@ export class IncHiring extends LitElement {
     }
     this.busy = false;
     refreshNow();
-    location.hash = "#/office";
+    location.hash = "#/company/team";
   }
 
   static override styles = [
@@ -503,7 +503,7 @@ export class IncHiring extends LitElement {
       <ul class="team">
         ${(this.team ?? []).map(
           (m) => html`<li><span><b>${m.name}</b> <span class="muted">${m.role}</span></span>
-            <a class="btn ghost" href="#/hiring/${m.id}" aria-label="Edit ${m.name}'s engines">Edit engines</a></li>`,
+            <a class="btn ghost" href="#/company/team/hiring/${m.id}" aria-label="Edit ${m.name}'s engines">Edit engines</a></li>`,
         )}
       </ul>
     </section>`;
@@ -770,7 +770,7 @@ export class IncHiring extends LitElement {
         <button class="btn" type="submit" ?disabled=${this.busy || !this.name.trim() || !this.engine || (this.teams.length > 1 && !this.selectedTeamId)}>${
           editing ? "Save engines" : `Hire ${this.name.trim() || "them"}`
         }</button>
-        ${editing ? html`<a class="btn ghost" href="#/hiring">Cancel</a>` : ""}
+        ${editing ? html`<a class="btn ghost" href="#/company/team/hiring">Cancel</a>` : ""}
         ${this.error ? html`<span role="alert">${this.error}</span>` : ""}
       </div>
 
