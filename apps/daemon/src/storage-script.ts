@@ -1,0 +1,236 @@
+// The script that cleans one team machine (T52), and the reader of what it prints. One script per
+// machine per run, sent on stdin to `container machine run -i … -- bash -s` (machines.ts: `machine
+// run` re-splits arguments, so nothing goes on a command line). It is built from fixed text and
+// ticket ids that match [A-Za-z0-9_-], so no outside value is ever run as shell.
+//
+// What it may delete, and nothing else:
+//   - <work>/inc-<id> and <work>/inc-<id>.pre-checkout for the ids it is given: a ticket's worktree,
+//     a reviewer's copy of the branch, and the ticket's images under .inc/attachments (all in that
+//     folder). Never a symlink, never a folder whose real path isn't exactly that path, and a
+//     worktree with unpushed commits or uncommitted changes stays unless the id is on `force`.
+//   - rebuildable package caches: whole folders named in a fixed list under ~/.cache (only while
+//     ~/.cache is over the cap), ~/.npm/_cacache (only over the cap), `pnpm store prune`, and, when
+//     asked, Docker's stopped containers, dangling images and week-old build cache.
+// A dry run prints what each step would remove and changes nothing.
+import type { Id } from "@i-inc/core";
+
+export const idPattern = /^[A-Za-z0-9_-]{1,64}$/;
+const workPattern = /^\/[A-Za-z0-9._/-]+$/;
+
+/** ~/.cache folders that tools rebuild on their own, in the order they are removed. */
+export const rebuildableCaches = ["pip", "go-build", "yarn", "node-gyp", "typescript", "pnpm", "electron"];
+
+export interface CleanupScriptOptions {
+  /** The folder with the worktrees, such as /home/employee/work. */
+  work: string;
+  /** Closed tickets whose copies this machine may hold. */
+  ids: Id[];
+  /** Of those, the ones that go even with unpushed commits or uncommitted changes. */
+  force?: Id[];
+  dryRun: boolean;
+  /** The cap for ~/.cache, ~/.npm's cache and the pnpm store, in KB. */
+  cacheCapKb: number;
+  docker: boolean;
+  /** Ask the machine to hand freed blocks back to the host (`fstrim`), if its disk supports it. */
+  trim: boolean;
+}
+
+export function cleanupScript(o: CleanupScriptOptions): string {
+  if (!workPattern.test(o.work) || o.work.includes("..") || o.work.endsWith("/")) {
+    throw new Error(`not a work folder: ${o.work}`);
+  }
+  const ids = [...new Set(o.ids)];
+  const force = new Set(o.force ?? []);
+  for (const id of [...ids, ...force]) if (!idPattern.test(id)) throw new Error(`not a ticket id: ${id}`);
+  if (!Number.isInteger(o.cacheCapKb) || o.cacheCapKb < 1) throw new Error("the cache cap must be a number");
+  return [
+    "set -u",
+    `WORK='${o.work}'`,
+    `DRY=${o.dryRun ? 1 : 0}`,
+    `CAP=${o.cacheCapKb}`,
+    `DOCKER=${o.docker ? 1 : 0}`,
+    `TRIM=${o.trim ? 1 : 0}`,
+    `FORCE=' ${[...force].join(" ")} '`,
+    'export PATH="$HOME/.local/bin:$PATH"',
+    // A work folder that isn't exactly this path (a symlink, or not there) is left alone.
+    'cd "$WORK" 2>/dev/null || { echo @@no-work; echo @@done; exit 0; }',
+    '[ "$(pwd -P)" = "$WORK" ] || { echo @@refused work-folder; echo @@done; exit 0; }',
+    'kb() { du -sk "$1" 2>/dev/null | cut -f1; }',
+    "df_line() { df -Pk \"$WORK\" 2>/dev/null | awk 'NR==2 {print $2, $3}'; }",
+    "df_used() { df_line | cut -d' ' -f2; }",
+    'echo "@@df $(df_line)"',
+    "removed=0",
+    // With no ids the loop names one that can't be a ticket's folder, so the text stays valid.
+    `for id in ${ids.length ? ids.join(" ") : "none"}; do`,
+    '  for suffix in "" ".pre-checkout"; do',
+    '    q="$WORK/inc-$id$suffix"',
+    '    if [ -L "$q" ]; then echo "@@refused $id symlink"; continue; fi',
+    '    [ -d "$q" ] || continue',
+    '    if [ "$(cd "$q" 2>/dev/null && pwd -P)" != "$q" ]; then echo "@@refused $id path"; continue; fi',
+    '    if [ -z "$suffix" ] && git -C "$q" rev-parse --git-dir >/dev/null 2>&1; then',
+    '      case "$FORCE" in *" $id "*) ;; *)',
+    '        if [ "$(git -C "$q" rev-list --count HEAD --not --remotes 2>/dev/null || echo 0)" != 0 ]; then echo "@@kept $id unpushed"; continue; fi',
+    '        if [ -n "$(git -C "$q" status --porcelain 2>/dev/null | head -n 1)" ]; then echo "@@kept $id uncommitted"; continue; fi',
+    "      ;; esac",
+    "    fi",
+    '    size=$(kb "$q")',
+    '    if [ "$DRY" = 0 ]; then chmod -R u+w "$q" 2>/dev/null; rm -rf -- "$q"; fi',
+    '    if [ "$DRY" = 0 ] && [ -e "$q" ]; then echo "@@failed $id"; continue; fi',
+    '    echo "@@removed $id ${size:-0}"; removed=1',
+    "  done",
+    "done",
+    // Branches stay on GitHub. Locally, git forgets the removed worktrees and packs what it can.
+    'if [ "$DRY" = 0 ] && [ "$removed" = 1 ]; then',
+    '  for g in "$WORK"/*/.git; do',
+    '    [ -d "$g" ] || continue',
+    '    git -C "${g%/.git}" worktree prune >/dev/null 2>&1',
+    '    git -C "${g%/.git}" gc --auto --quiet >/dev/null 2>&1',
+    "  done",
+    "fi",
+    // ~/.cache: only the folders tools rebuild, and only while the whole of it is over the cap.
+    'if [ -d "$HOME/.cache" ] && [ ! -L "$HOME/.cache" ]; then',
+    '  total=$(kb "$HOME/.cache"); total=${total:-0}',
+    '  if [ "$total" -gt "$CAP" ]; then',
+    `    for name in ${rebuildableCaches.join(" ")}; do`,
+    '      d="$HOME/.cache/$name"',
+    '      if [ -L "$d" ] || [ ! -d "$d" ]; then continue; fi',
+    '      [ "$total" -gt "$CAP" ] || break',
+    '      s=$(kb "$d"); s=${s:-0}',
+    '      if [ "$DRY" = 0 ]; then rm -rf -- "$d"; fi',
+    '      echo "@@cache $name $s"; total=$((total - s))',
+    "    done",
+    '    if [ "$total" -gt "$CAP" ]; then echo "@@cache-over $total"; fi',
+    "  fi",
+    "fi",
+    'if [ -d "$HOME/.npm/_cacache" ] && [ ! -L "$HOME/.npm" ] && [ ! -L "$HOME/.npm/_cacache" ]; then',
+    '  s=$(kb "$HOME/.npm/_cacache"); s=${s:-0}',
+    '  if [ "$s" -gt "$CAP" ]; then',
+    '    if [ "$DRY" = 0 ]; then rm -rf -- "$HOME/.npm/_cacache"; fi',
+    '    echo "@@cache npm $s"',
+    "  fi",
+    "fi",
+    // The pnpm store keeps every version any worktree ever installed; prune drops the ones nothing
+    // links to. Worth running after worktrees went, or when the store is over the cap.
+    "if command -v pnpm >/dev/null 2>&1; then",
+    "  store=$(pnpm store path 2>/dev/null)",
+    '  if [ -n "$store" ] && [ -d "$store" ]; then',
+    '    before=$(kb "$store"); before=${before:-0}',
+    '    if [ "$removed" = 1 ] || [ "$before" -gt "$CAP" ]; then',
+    '      if [ "$DRY" = 0 ]; then',
+    "        pnpm store prune >/dev/null 2>&1",
+    '        after=$(kb "$store"); after=${after:-0}',
+    '        echo "@@pnpm-store $((before - after))"',
+    '      else echo "@@pnpm-store-would-prune $before"; fi',
+    '      if [ "$(kb "$store")" -gt "$CAP" ] 2>/dev/null; then echo "@@cache-over-store $(kb "$store")"; fi',
+    "    fi",
+    "  fi",
+    "fi",
+    'if [ "$DOCKER" = 1 ] && command -v docker >/dev/null 2>&1 && timeout 20 docker info >/dev/null 2>&1; then',
+    '  if [ "$DRY" = 1 ]; then echo "@@docker-present"; else',
+    "    b=$(df_used)",
+    "    docker container prune -f --filter until=72h >/dev/null 2>&1",
+    "    docker image prune -f >/dev/null 2>&1",
+    "    docker builder prune -f --filter until=168h >/dev/null 2>&1",
+    '    a=$(df_used); echo "@@docker $((b - a))"',
+    "  fi",
+    "fi",
+    'if [ "$TRIM" = 1 ] && [ "$DRY" = 0 ]; then sudo -n fstrim / >/dev/null 2>&1 && echo @@trimmed; fi',
+    'echo "@@df-after $(df_line)"',
+    "echo @@done",
+  ].join("\n");
+}
+
+const KB = 1024;
+
+export interface CleanupReport {
+  /** The script ran to its end. */
+  done: boolean;
+  /** The folder's disk before and after, in bytes. */
+  disk?: { total: number; used: number };
+  diskAfter?: { total: number; used: number };
+  /** Copies removed (or, in a dry run, that would be), with their sizes in bytes. */
+  removed: { ticket: Id; bytes: number }[];
+  kept: { ticket: Id; reason: string }[];
+  refused: { ticket: Id; reason: string }[];
+  failed: Id[];
+  /** Bytes freed (or that would be) by category: "worktrees", "cache:pip", "pnpm-store", "docker". */
+  freed: Record<string, number>;
+  /** A cache is still over the cap after cleaning, in bytes. */
+  cacheOver?: number;
+  trimmed: boolean;
+  dockerSeen: boolean;
+}
+
+/** Reads the script's output: lines that begin with @@, ignoring everything else. */
+export function readCleanup(output: string): CleanupReport {
+  const r: CleanupReport = {
+    done: false,
+    removed: [],
+    kept: [],
+    refused: [],
+    failed: [],
+    freed: {},
+    trimmed: false,
+    dockerSeen: false,
+  };
+  const add = (key: string, bytes: number) => {
+    if (bytes > 0) r.freed[key] = (r.freed[key] ?? 0) + bytes;
+  };
+  const num = (s: string | undefined) => {
+    const n = Number(s);
+    return Number.isFinite(n) ? n : 0;
+  };
+  for (const line of output.split("\n")) {
+    if (!line.startsWith("@@")) continue;
+    const [tag = "", a = "", b = "", c = ""] = line.slice(2).trim().split(/\s+/);
+    switch (tag) {
+      case "done":
+        r.done = true;
+        break;
+      case "df":
+        if (b) r.disk = { total: num(a) * KB, used: num(b) * KB };
+        break;
+      case "df-after":
+        if (b) r.diskAfter = { total: num(a) * KB, used: num(b) * KB };
+        break;
+      case "removed":
+        r.removed.push({ ticket: a, bytes: num(b) * KB });
+        add("worktrees", num(b) * KB);
+        break;
+      case "kept":
+        r.kept.push({ ticket: a, reason: b });
+        break;
+      case "refused":
+        r.refused.push({ ticket: a, reason: b });
+        break;
+      case "failed":
+        r.failed.push(a);
+        break;
+      case "cache":
+        add(`cache:${a}`, num(b) * KB);
+        break;
+      case "cache-over":
+      case "cache-over-store":
+        r.cacheOver = Math.max(r.cacheOver ?? 0, num(a) * KB);
+        break;
+      case "pnpm-store":
+        add("pnpm-store", num(a) * KB);
+        break;
+      case "pnpm-store-would-prune":
+        add("pnpm-store", 0);
+        break;
+      case "docker":
+        add("docker", num(a) * KB);
+        break;
+      case "docker-present":
+        r.dockerSeen = true;
+        break;
+      case "trimmed":
+        r.trimmed = true;
+        break;
+      default:
+        void c;
+    }
+  }
+  return r;
+}
