@@ -183,11 +183,35 @@ export class TurnMapper {
       displayName: title,
       ...(locations?.length ? { _meta: { "iinc.locations": locations } } : {}),
     });
-    // `pending` means the agent may still ask for permission; anything else is already running.
+    // `pending` means the agent may still ask for permission. Anything else is already past that:
+    // in_progress is running (its content so far shows), and completed or failed is over, with its
+    // result (an agent may announce a call that already finished, as one event).
     if (u.status && u.status !== "pending") {
       this.ready(id, u, ToolCallConfirmationReason.NotNeeded);
-      this.running(id, u);
+      if (u.status === "completed" || u.status === "failed") this.complete(id, u);
+      else this.running(id, u);
     }
+  }
+
+  /** The call is over: its result, with the content that came with the last update. */
+  private complete(id: string, u: Json): void {
+    const t = this.tools.get(id);
+    if (!t || t.phase === "done") return;
+    t.phase = "done";
+    const ok = u.status === "completed";
+    this.emit({
+      type: ActionType.ChatToolCallComplete,
+      toolCallId: id,
+      result: {
+        success: ok,
+        pastTenseMessage: t.title,
+        content: mapToolContent(u.content as Json[] | undefined, this.env.put),
+        ...(ok ? {} : { error: { message: `${t.title} failed` } }),
+      },
+      ...(u.locations && (u.locations as unknown[]).length
+        ? { _meta: { "iinc.locations": u.locations } }
+        : {}),
+    });
   }
 
   private ready(
@@ -245,21 +269,7 @@ export class TurnMapper {
     }
     if (u.status === "completed" || u.status === "failed") {
       if (t.phase === "pending-confirmation") return; // still waiting for the owner
-      t.phase = "done";
-      const ok = u.status === "completed";
-      this.emit({
-        type: ActionType.ChatToolCallComplete,
-        toolCallId: id,
-        result: {
-          success: ok,
-          pastTenseMessage: t.title,
-          content: mapToolContent(u.content as Json[] | undefined, this.env.put),
-          ...(ok ? {} : { error: { message: `${t.title} failed` } }),
-        },
-        ...(u.locations && (u.locations as unknown[]).length
-          ? { _meta: { "iinc.locations": u.locations } }
-          : {}),
-      });
+      this.complete(id, u);
     } else if (t.phase === "running") {
       this.running(id, u);
     }

@@ -153,6 +153,21 @@ does. It is worth one look on the mini, in a scratch machine, to see whether clo
 reaches the process (`container machine run -i -n <scratch> -- sleep 1000 < /dev/null`, then
 `ps` in the machine) and whether killing the client does.
 
+## Questions from the agent: a known gap
+
+The conversation daemon never raises an AHP input request (`session/inputNeeded` only ever lists
+tool confirmations). Checked against the adapters' public documentation, not run: ACP defines
+`elicitation/create` (a client method, "request structured information from the user") and
+`elicitation/complete`, used only if the client advertises the `elicitation` capability, which this
+daemon does not. Claude's adapter (`@agentclientprotocol/claude-agent-acp`) documents elicitation only
+for its experimental v2 (`CLAUDE_AGENT_ACP_EXPERIMENTAL_V2=1`) and for MCP sign-in links, and says
+nothing about Claude's `AskUserQuestion` tool; nothing was found for the Codex adapter. So today a
+question reaches the owner as ordinary text in the reply, and an `elicitation/create` request, if an
+adapter sent one anyway, is answered "not offered". To close the gap: advertise the capability, map
+`elicitation/create` to an AHP `ChatInputRequest` part (the host and the `inputNeeded` roll-up already
+carry those), answer it from the owner's `chat/inputAnswerChanged`, and check the request and answer
+shapes against a real adapter on the mini first.
+
 ## The screen (laptop first)
 
 - **Left: conversation list.** Grouped as "Needs you" (a pending permission or question),

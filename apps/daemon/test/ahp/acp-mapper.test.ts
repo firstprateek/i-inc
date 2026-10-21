@@ -81,6 +81,82 @@ describe("text", () => {
   });
 });
 
+describe("a tool call announced in the state it is in", () => {
+  const initial = (status: string, extra: Any = {}) => ({
+    sessionUpdate: "tool_call",
+    toolCallId: "c",
+    title: "Run tests",
+    kind: "execute",
+    status,
+    rawInput: { command: "pnpm test" },
+    content: [{ type: "content", content: { type: "text", text: "12 passed" } }],
+    ...extra,
+  });
+
+  it("completed: start, ready, complete with its content: not skipped, nothing lost", () => {
+    const { m, out, types } = mapper();
+    m.update(initial("completed", { locations: [{ path: "a.ts" }] }));
+    expect(types()).toEqual(["chat/toolCallStart", "chat/toolCallReady", "chat/toolCallComplete"]);
+    expect(out[1]).toMatchObject({ confirmed: "not-needed", toolInput: '{"command":"pnpm test"}' });
+    expect(out[2].result).toEqual({
+      success: true,
+      pastTenseMessage: "Run tests",
+      content: [{ type: "text", text: "12 passed" }],
+    });
+    expect(out[2]._meta).toEqual({ "iinc.locations": [{ path: "a.ts" }] });
+    // a late update for the finished call changes nothing
+    m.update({ sessionUpdate: "tool_call_update", toolCallId: "c", status: "completed" });
+    expect(types()).toHaveLength(3);
+  });
+
+  it("failed: complete with success false and an error, content kept", () => {
+    const { m, out, types } = mapper();
+    m.update(initial("failed"));
+    expect(types()).toEqual(["chat/toolCallStart", "chat/toolCallReady", "chat/toolCallComplete"]);
+    expect(out[2].result).toMatchObject({
+      success: false,
+      error: { message: "Run tests failed" },
+      content: [{ type: "text", text: "12 passed" }],
+    });
+  });
+
+  it("in_progress: start, ready, the content so far; pending: only the start", () => {
+    const a = mapper();
+    a.m.update(initial("in_progress"));
+    expect(a.types()).toEqual(["chat/toolCallStart", "chat/toolCallReady", "chat/toolCallContentChanged"]);
+    const b = mapper();
+    b.m.update(initial("pending"));
+    expect(b.types()).toEqual(["chat/toolCallStart"]);
+  });
+
+  it("is a finished card in the chat, with its output, once the turn is over", async () => {
+    // through the official reducers: what the thread shows
+    const { reduce } = await import("../../src/ahp/wire.ts");
+    const { m, out } = mapper();
+    m.update(initial("completed"));
+    let c = {
+      kind: "chat",
+      state: {
+        resource: "ahp-chat:/x",
+        title: "t",
+        status: 1,
+        modifiedAt: "2026-10-21T00:00:00.000Z",
+        turns: [],
+        activeTurn: {
+          id: "t",
+          startedAt: "2026-10-21T00:00:00.000Z",
+          message: { text: "go", origin: { kind: "user" } },
+          responseParts: [],
+        },
+      },
+    } as Any;
+    for (const a of out) c = reduce(c, a);
+    const call = c.state.activeTurn.responseParts.find((p: Any) => p.kind === "toolCall").toolCall;
+    expect(call.status).toBe("completed");
+    expect(call.content).toEqual([{ type: "text", text: "12 passed" }]);
+  });
+});
+
 describe("tool calls", () => {
   it("runs pending, in progress, completed: start, ready (not needed), complete with output", () => {
     const { m, out } = mapper();
