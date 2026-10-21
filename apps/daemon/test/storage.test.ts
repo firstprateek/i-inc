@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { AppleMachines, defaultMachineSettings, type Exec } from "../src/machines.ts";
 import { type MachineOps, Storage } from "../src/storage.ts";
+import { storageSettings } from "../src/storage-settings.ts";
 import { refunds, testApp } from "./setup.ts";
 
 const GB = 1024 ** 3;
@@ -359,11 +360,38 @@ describe("storage settings", () => {
     expect(storage.update({ nope: 1 })).toEqual({ error: "no such setting: nope" });
     expect(storage.update({ dockerPrune: "yes" })).toHaveProperty("error");
     expect(storage.update(["x"])).toHaveProperty("error");
+    // Keys that only exist on every object are not settings.
+    for (const key of ["toString", "constructor", "__proto__", "hasOwnProperty", "valueOf"]) {
+      expect(storage.update(JSON.parse(`{"${key}": 1}`))).toEqual({ error: `no such setting: ${key}` });
+    }
+    // Unpushed work must wait longer than finished work, in either direction of change.
+    expect(storage.update({ unpushedKeepDays: 5 })).toHaveProperty("error");
+    expect(storage.update({ unpushedKeepDays: 3 })).toHaveProperty("error");
+    expect(storage.update({ unpushedKeepDays: 6 })).toHaveProperty("settings");
+    expect(storage.update({ sandboxCleanupDays: 6 })).toEqual({
+      error: expect.stringContaining("unpushedKeepDays must be more than sandboxCleanupDays"),
+    });
+    expect(storage.update({ sandboxCleanupDays: 6, unpushedKeepDays: 7 })).toHaveProperty("settings");
+    // Off is allowed whatever the other says.
+    expect(storage.update({ sandboxCleanupDays: 0, unpushedKeepDays: 1 })).toHaveProperty("settings");
+    storage.update({ sandboxCleanupDays: 5, unpushedKeepDays: 30 });
     // A refused update changes nothing.
-    expect(storage.settings().sandboxCleanupDays).toBe(5);
+    expect(storage.settings()).toMatchObject({ sandboxCleanupDays: 5, unpushedKeepDays: 30 });
     const report = await storage.report();
     expect(report.defaults.sandboxCleanupDays).toBe(3);
     expect(report.settings.sandboxCleanupDays).toBe(5);
+  });
+});
+
+describe("saved settings that break the rule", () => {
+  it("are read with unpushed work still waiting longer than finished work", () => {
+    expect(storageSettings({ sandboxCleanupDays: 10, unpushedKeepDays: 5 })).toMatchObject({
+      sandboxCleanupDays: 10,
+      unpushedKeepDays: 11,
+    });
+    expect(storageSettings({ sandboxCleanupDays: 0, unpushedKeepDays: 1 }).unpushedKeepDays).toBe(1);
+    // Inherited names are not saved values.
+    expect(storageSettings(Object.create({ logKeep: 9 }) as never).logKeep).toBe(5);
   });
 });
 

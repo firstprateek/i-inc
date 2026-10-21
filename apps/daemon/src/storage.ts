@@ -34,6 +34,7 @@ import {
   readStorageSettings,
   type StorageSettings,
   storageSettings,
+  storageSettingsProblem,
 } from "./storage-settings.ts";
 import type { Tickets } from "./tickets.ts";
 
@@ -220,7 +221,10 @@ export class Storage {
   update(body: unknown): { settings: StorageSettings } | { error: string } {
     const read = readStorageSettings(body);
     if ("error" in read) return read;
-    this.d.registry.setSettings({ storage: { ...this.d.registry.settings().storage, ...read.ok } });
+    const merged = { ...this.d.registry.settings().storage, ...read.ok };
+    const problem = storageSettingsProblem(storageSettings(merged, false));
+    if (problem) return { error: problem };
+    this.d.registry.setSettings({ storage: merged });
     return { settings: this.settings() };
   }
 

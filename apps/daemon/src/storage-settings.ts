@@ -5,7 +5,10 @@
 export interface StorageSettings {
   /** Days after a ticket closes (or fails) before its sandbox copies are removed. 0 turns cleanup off. */
   sandboxCleanupDays: number;
-  /** A closed ticket's copy that holds unpushed or uncommitted work waits this long before it goes. */
+  /**
+   * A closed ticket's copy that holds unpushed or uncommitted work waits this long before it goes.
+   * It must be more than sandboxCleanupDays (when that is on), or it would not wait at all.
+   */
   unpushedKeepDays: number;
   /** Per-machine cap, in GB, for ~/.cache, ~/.npm's cache and the pnpm store. */
   cacheCapGb: number;
@@ -57,15 +60,29 @@ const bounds: Record<Exclude<keyof StorageSettings, "dockerPrune">, Bounds> = {
 };
 
 /** The settings as the owner has them: the defaults with the saved values over them. */
-export function storageSettings(saved: Partial<StorageSettings> | undefined): StorageSettings {
+export function storageSettings(saved: Partial<StorageSettings> | undefined, repair = true): StorageSettings {
   const out: StorageSettings = { ...defaultStorageSettings };
   for (const key of Object.keys(bounds) as (keyof typeof bounds)[]) {
-    const v = saved?.[key];
+    const v = saved && Object.hasOwn(saved, key) ? saved[key] : undefined;
     const b = bounds[key];
     if (typeof v === "number" && Number.isInteger(v) && v >= b.min && v <= b.max) out[key] = v;
   }
-  if (typeof saved?.dockerPrune === "boolean") out.dockerPrune = saved.dockerPrune;
+  if (saved && Object.hasOwn(saved, "dockerPrune") && typeof saved.dockerPrune === "boolean") {
+    out.dockerPrune = saved.dockerPrune;
+  }
+  // A saved pair that breaks the rule (the cleanup days raised past it by hand) still waits.
+  if (repair && out.sandboxCleanupDays > 0 && out.unpushedKeepDays <= out.sandboxCleanupDays) {
+    out.unpushedKeepDays = Math.min(bounds.unpushedKeepDays.max, out.sandboxCleanupDays + 1);
+  }
   return out;
+}
+
+/** The rule that spans two settings, or the reason the pair is refused. */
+export function storageSettingsProblem(s: StorageSettings): string | null {
+  if (s.sandboxCleanupDays > 0 && s.unpushedKeepDays <= s.sandboxCleanupDays) {
+    return "unpushedKeepDays must be more than sandboxCleanupDays, so unpushed work waits longer than finished work";
+  }
+  return null;
 }
 
 /** A partial update from the API, or the reason it is refused. */
@@ -78,7 +95,7 @@ export function readStorageSettings(body: unknown): { ok: Partial<StorageSetting
     if (key === "dockerPrune") {
       if (typeof value !== "boolean") return { error: "dockerPrune must be true or false" };
       out.dockerPrune = value;
-    } else if (key in bounds) {
+    } else if (Object.hasOwn(bounds, key)) {
       const b = bounds[key as keyof typeof bounds];
       if (typeof value !== "number" || !Number.isInteger(value) || value < b.min || value > b.max) {
         return { error: `${key} must be a whole number from ${b.min} to ${b.max}` };
