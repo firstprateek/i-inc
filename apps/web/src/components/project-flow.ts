@@ -134,7 +134,7 @@ export class IncProjectFlow extends LitElement {
     this.phase = "loading";
     this.id = "";
     this.checks = [];
-    this.mode = "owner-merges";
+    this.mode = "direct";
     this.protectedPaths = [];
     this.assigned = [];
     this.defaultBranch = "";
@@ -279,7 +279,7 @@ export class IncProjectFlow extends LitElement {
     }
     this.id = projectIdFromRepo(found.name);
     this.defaultBranch = found.defaultBranch;
-    this.mode = "owner-merges";
+    this.mode = "direct";
     this.assigned = [];
     this.protectedPaths = [".github/"];
     this.checks = ["pnpm install", "pnpm test"];

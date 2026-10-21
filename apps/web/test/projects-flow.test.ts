@@ -470,9 +470,9 @@ describe("add a repo", () => {
     );
     expect(checks).toEqual(["pnpm install --frozen-lockfile", "pnpm test"]);
 
-    // Each mode comes with one plain sentence, and owner-merges is the safe default.
+    // Each mode comes with one plain sentence, and direct is the preselected one (the daemon's own default).
     const radios = [...root.querySelectorAll('input[type="radio"][name="mode"]')] as HTMLInputElement[];
-    expect(radios.map((r) => r.value)).toEqual(["owner-merges", "direct"]);
+    expect(radios.map((r) => r.value)).toEqual(["direct", "owner-merges"]);
     expect(radios[0]?.checked).toBe(true);
     expect(text(root)).toContain("Finished work waits as a pull request, and only you merge it.");
     expect(text(root)).toContain(
@@ -491,7 +491,7 @@ describe("add a repo", () => {
     const post = calls.find((c) => c.method === "POST" && c.url === "/api/projects/notes/bootstrap");
     expect(post?.body).toMatchObject({
       repo: "acme/notes",
-      mode: "direct",
+      mode: "owner-merges",
       checks: ["pnpm install --frozen-lockfile", "pnpm test", "pnpm build"],
       protectedPaths: ["package.json", "pnpm-lock.yaml"],
       defaultBranch: "trunk",
@@ -658,7 +658,7 @@ describe("start a new project", () => {
     expect(calls.find((c) => c.url.endsWith("/bootstrap"))?.body).toMatchObject({
       repo: "acme/fresh",
       template: "web",
-      mode: "owner-merges",
+      mode: "direct",
       checks: ["pnpm install", "pnpm check", "pnpm test", "pnpm build"],
     });
     expect(text(root)).toContain("Started fresh");

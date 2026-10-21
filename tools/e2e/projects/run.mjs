@@ -306,7 +306,7 @@ try {
   await page.getByText("Added notes-api").waitFor();
   const added = await (await fetch(`http://127.0.0.1:${ORG.port}/api/projects/notes-api`)).json();
   ok(
-    added.project?.repo === "acme/notes-api" && added.mode === "direct",
+    added.project?.repo === "acme/notes-api" && added.mode === "owner-merges",
     `the project was added in the mode chosen with the arrow key (${added.mode})`,
   );
   ok(added.project?.checks?.[0] === "pnpm install --frozen-lockfile", "it kept the detected recipe");

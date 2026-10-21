@@ -259,7 +259,7 @@ export const draftStore = {
         name: d.name,
         visibility: d.visibility === "public" ? "public" : "private",
         template: TEMPLATES.some((t) => t.id === d.template) ? (d.template as TemplateId) : "ts-node",
-        mode: d.mode === "direct" ? "direct" : "owner-merges",
+        mode: d.mode === "owner-merges" ? "owner-merges" : "direct",
         description: typeof d.description === "string" ? d.description.slice(0, 350) : "",
         via: d.via === "bot" ? "bot" : "manual",
         ...(d.createAsked ? { createAsked: true } : {}),

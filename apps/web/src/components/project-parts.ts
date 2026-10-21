@@ -86,7 +86,7 @@ export function modePicker(name: string, mode: MergeMode, onChange: (m: MergeMod
   </label>`;
   return html`<fieldset class="field">
     <legend>How finished work reaches the main branch</legend>
-    <div class="choices">${one("owner-merges")}${one("direct")}</div>
+    <div class="choices">${one("direct")}${one("owner-merges")}</div>
   </fieldset>`;
 }
 
