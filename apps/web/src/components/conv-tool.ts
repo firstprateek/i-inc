@@ -9,6 +9,7 @@ import type {
 import { css, html, LitElement, nothing, type SVGTemplateResult, svg, type TemplateResult } from "lit";
 import { ahp } from "../ahp/hub.ts";
 import { ToolCallStatus } from "../ahp/wire.ts";
+import { renderMarkdown } from "../conversations/markdown.ts";
 import {
   CATEGORY_LABEL,
   isPlanCall,
@@ -24,8 +25,9 @@ import {
   toolOutputRefs,
   toolOutputText,
   toolTitle,
+  visible,
 } from "../conversations/model.ts";
-import { cardStyles } from "../conversations/styles.ts";
+import { cardStyles, markdownStyles } from "../conversations/styles.ts";
 import "./conv-diff.ts";
 
 export interface ConfirmDetail {
@@ -55,6 +57,7 @@ export class IncConvTool extends LitElement {
   static override properties = {
     call: { attribute: false },
     turnId: { type: String },
+    chat: { type: String },
     turnActive: { type: Boolean },
     open: { state: true },
     showAll: { state: true },
@@ -63,6 +66,8 @@ export class IncConvTool extends LitElement {
   };
   declare call: ToolCallState | undefined;
   declare turnId: string;
+  /** The chat this call is in (answers are remembered per chat). */
+  declare chat: string;
   declare turnActive: boolean;
   declare open: boolean | undefined;
   declare showAll: boolean;
@@ -72,6 +77,7 @@ export class IncConvTool extends LitElement {
   constructor() {
     super();
     this.turnId = "";
+    this.chat = "";
     this.turnActive = false;
     this.showAll = false;
     this.sending = null;
@@ -80,6 +86,7 @@ export class IncConvTool extends LitElement {
 
   static override styles = [
     cardStyles,
+    markdownStyles,
     css`
       :host { display: block; min-width: 0; }
       .tool { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); min-width: 0; }
@@ -110,6 +117,7 @@ export class IncConvTool extends LitElement {
       .err { color: var(--alarm-fg); font-weight: 600; }
       .perm { padding: 4px 12px 12px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
       .perm .what { margin: 6px 0 0; font-weight: 700; font-size: 15px; line-height: 1.35; overflow-wrap: anywhere; }
+      .perm .what p { margin: 0; } .perm .what .md-h { font-size: 15px; margin: 0; }
       .opts { display: flex; flex-wrap: wrap; gap: 8px; }
       .outcome { margin: 0; padding: 0 12px 10px; font-size: 13px; color: var(--ink-2); }
       .plan { padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 6px; }
@@ -173,14 +181,14 @@ export class IncConvTool extends LitElement {
 
   /** The confirmation's outcome in words, when the owner (here or elsewhere) answered it. */
   private outcome(call: ToolCallState): string {
-    const who = ahp().confirmation(call.toolCallId);
+    const who = ahp().confirmation(this.chat, call.toolCallId);
     const elsewhere = who && !who.byMe ? " on another device" : "";
     if (call.status === ToolCallStatus.Cancelled) {
       if (call.reason === ("denied" as never)) {
         const label = call.selectedOption?.label;
         return `${label && !/^deny$/i.test(label) ? label : "Denied"}${elsewhere}`;
       }
-      return call.reason === ("skipped" as never) ? "Skipped" : "";
+      return call.reason === ("skipped" as never) ? "Cancelled" : "";
     }
     if (
       (call.status === ToolCallStatus.Running || call.status === ToolCallStatus.Completed) &&
@@ -210,7 +218,7 @@ export class IncConvTool extends LitElement {
           ? html`<span class="stat bad"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>Failed</span>`
           : html`<span class="stat ok"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg><span class="sr-only">Done</span></span>`;
       default:
-        return html`<span class="stat">${this.outcome(call) || "Skipped"}</span>`;
+        return html`<span class="stat">${this.outcome(call) || "Cancelled"}</span>`;
     }
   }
 
@@ -228,16 +236,18 @@ export class IncConvTool extends LitElement {
   }
 
   private permission(call: ToolCallPendingConfirmationState): TemplateResult {
-    const title =
+    // The title may be markdown; it goes through the safe renderer, never in as HTML.
+    const raw =
       typeof call.confirmationTitle === "string"
         ? call.confirmationTitle
         : (call.confirmationTitle?.markdown ?? toolTitle(call));
+    const title = visible(raw);
     const edits = toolEdits(call);
     const input = toolInputText(call);
     const cat = toolCategory(call);
     const options = sortedOptions(call.options);
-    return html`<div class="perm" role="group" aria-label="Permission needed: ${title}">
-      <p class="what">${title}</p>
+    return html`<div class="perm" role="group" aria-label="Permission needed: ${title.replace(/[`*_#>]/g, "")}">
+      <div class="what md">${renderMarkdown(title)}</div>
       ${edits.length ? edits.map((e) => html`<inc-conv-diff .edit=${e}></inc-conv-diff>`) : input ? html`<pre tabindex="0" aria-label=${cat === "run" ? "Command" : "Input"}>${input}</pre>` : nothing}
       <div class="opts">
         ${

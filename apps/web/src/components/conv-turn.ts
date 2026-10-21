@@ -20,11 +20,13 @@ export class IncConvTurn extends LitElement {
     turn: { attribute: false },
     active: { type: Boolean },
     employee: { type: String },
+    chat: { type: String },
     images: { state: true },
   };
   declare turn: AnyTurn | undefined;
   declare active: boolean;
   declare employee: string;
+  declare chat: string;
   declare images: Record<string, string>;
   private readonly caches = new Map<string, MarkdownCache>();
 
@@ -32,6 +34,7 @@ export class IncConvTurn extends LitElement {
     super();
     this.active = false;
     this.employee = "";
+    this.chat = "";
     this.images = {};
   }
 
@@ -131,9 +134,9 @@ export class IncConvTurn extends LitElement {
       case ResponsePartKind.Reasoning:
         return html`<details class="think"><summary>${this.active && last ? "Thinking…" : "Thinking"}</summary><div class="md">${this.cache(p.id).render(p.content)}</div></details>`;
       case ResponsePartKind.ToolCall:
-        return html`<inc-conv-tool .call=${p.toolCall} .turnId=${turn.id} .turnActive=${this.active}></inc-conv-tool>`;
+        return html`<inc-conv-tool .call=${p.toolCall} .turnId=${turn.id} .chat=${this.chat} .turnActive=${this.active}></inc-conv-tool>`;
       case ResponsePartKind.InputRequest:
-        return html`<inc-conv-question .request=${p.request} .response=${p.response}></inc-conv-question>`;
+        return html`<inc-conv-question .request=${p.request} .response=${p.response} .chat=${this.chat}></inc-conv-question>`;
       case ResponsePartKind.SystemNotification:
         return html`<p class="sys">${typeof p.content === "string" ? p.content : p.content.markdown}</p>`;
       case ResponsePartKind.Error:

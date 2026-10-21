@@ -180,6 +180,24 @@ describe("the thread", () => {
     return h.host.received.filter((m) => m.method === "dispatchAction").at(-1)?.params.clientSeq as number;
   }
 
+  it("renders a markdown confirmation title safely and shows a call the turn ended as Cancelled", async () => {
+    const { host, tool } = await setup();
+    host.send(CHAT, started);
+    host.send(CHAT, toolStart);
+    host.send(CHAT, {
+      ...toolReady,
+      confirmationTitle: { markdown: "Edit **src/app.ts** <img src=x onerror=alert(1)> \u202egnp" },
+    });
+    await until(() => tool()?.querySelector(".perm .what"));
+    const what = tool()?.querySelector(".perm .what") as HTMLElement;
+    expect(what.querySelector("strong")?.textContent).toBe("src/app.ts");
+    expect(what.querySelector("img")).toBeNull();
+    expect(what.textContent).toContain("⟨U+202E⟩");
+    expect(what.textContent).not.toContain("**");
+    host.send(CHAT, { type: "chat/turnCancelled", turnId: "t1", duration: 5 });
+    await until(() => !tool()?.querySelector(".perm"));
+  });
+
   it("shows a refusal inline, and puts the message and its image back in the box (the host echoes only the type)", async () => {
     const h = await setup();
     const png = new File([new Uint8Array([1, 2, 3])], "junk.png", { type: "image/png" });

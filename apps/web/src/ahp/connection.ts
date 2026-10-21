@@ -207,8 +207,8 @@ export class AhpConnection {
     return this.chans.get(uri)?.gone === true;
   }
   /** Who answered a tool confirmation, if this connection saw it happen. */
-  confirmation(toolCallId: string): Confirmation | undefined {
-    return this.confirmations.get(toolCallId);
+  confirmation(chat: string, toolCallId: string): Confirmation | undefined {
+    return this.confirmations.get(`${chat}|${toolCallId}`);
   }
   /** How many channels this connection holds (tests and memory checks). */
   get channelCount(): number {
@@ -598,14 +598,14 @@ export class AhpConnection {
       done?.();
     }
     if (action.type === ActionType.ChatToolCallConfirmed && action.toolCallId) {
-      this.rememberAnswer(action.toolCallId, {
+      this.rememberAnswer(`${env.channel}|${action.toolCallId}`, {
         byMe: env.origin?.clientId === this.clientId,
         approved: action.approved === true,
         ...(action.selectedOptionId ? { optionId: action.selectedOptionId } : {}),
       });
     }
     if (action.type === ActionType.ChatInputCompleted && action.requestId) {
-      this.rememberAnswer(`input:${action.requestId}`, {
+      this.rememberAnswer(`${env.channel}|input:${action.requestId}`, {
         byMe: env.origin?.clientId === this.clientId,
         approved: action.response === "accept",
       });
@@ -721,14 +721,6 @@ export class AhpConnection {
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
-  }
-
-  /** Slash-command completions for a chat, from the host. */
-  async completions(chat: string, text: string, offset: number): Promise<CompletionItem[]> {
-    const client = this.client;
-    if (!client || this.infoNow.status !== "open") return [];
-    const r = await client.completions({ kind: "userMessage" as never, channel: chat, text, offset });
-    return r.items;
   }
 
   /** The text (or data URL, for an image) behind an `ahp-content:` URI; kept for the next time. */

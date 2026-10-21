@@ -570,9 +570,10 @@ export class IncConvThread extends LitElement {
                 ${repeat(
                   turns,
                   (t) => t.id,
-                  (t) => html`<inc-conv-turn .turn=${t} .employee=${name}></inc-conv-turn>`,
+                  (t) =>
+                    html`<inc-conv-turn .turn=${t} .employee=${name} .chat=${conv.ahpChat}></inc-conv-turn>`,
                 )}
-                ${chat.activeTurn ? html`<inc-conv-turn .turn=${chat.activeTurn} active .employee=${name}></inc-conv-turn>` : nothing}
+                ${chat.activeTurn ? html`<inc-conv-turn .turn=${chat.activeTurn} active .employee=${name} .chat=${conv.ahpChat}></inc-conv-turn>` : nothing}
                 ${
                   empty
                     ? html`<div class="empty"><h2>Start a conversation with ${name}</h2>

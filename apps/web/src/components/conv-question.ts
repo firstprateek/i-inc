@@ -17,17 +17,20 @@ export class IncConvQuestion extends LitElement {
   static override properties = {
     request: { attribute: false },
     response: { type: String },
+    chat: { type: String },
     draft: { state: true },
     sending: { state: true },
   };
   declare request: ChatInputRequest | undefined;
   /** Set once the request was answered (`accept`, `decline` or `cancel`). */
   declare response: string | undefined;
+  declare chat: string;
   declare draft: Draft;
   declare sending: boolean;
 
   constructor() {
     super();
+    this.chat = "";
     this.draft = {};
     this.sending = false;
   }
@@ -137,7 +140,7 @@ export class IncConvQuestion extends LitElement {
     const r = this.request;
     if (!r) return nothing;
     if (this.response !== undefined) {
-      const who = ahp().confirmation(`input:${r.id}`);
+      const who = ahp().confirmation(this.chat, `input:${r.id}`);
       const elsewhere = who && !who.byMe ? " on another device" : "";
       const text =
         this.response === "accept" ? "Answered" : this.response === "decline" ? "Declined" : "Cancelled";

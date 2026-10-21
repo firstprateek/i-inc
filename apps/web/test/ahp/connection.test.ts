@@ -283,7 +283,7 @@ describe("AhpConnection", () => {
     );
     await until(() => rejected.length === 1);
     expect(rejected[0].reason).toMatch(/no longer waiting/);
-    expect(conn.confirmation("tc1")).toEqual({ byMe: false, approved: true, optionId: "allow-once" });
+    expect(conn.confirmation(CHAT, "tc1")).toEqual({ byMe: false, approved: true, optionId: "allow-once" });
     expect(call().status).toBe(ToolCallStatus.Running);
     expect(conn.info.status).toBe("open");
   });
@@ -313,8 +313,10 @@ describe("AhpConnection", () => {
       { type: "chat/toolCallConfirmed", turnId: "t1", toolCallId: "tc1", approved: false, reason: "denied" },
       { clientId: "me", clientSeq: 9 },
     );
-    await until(() => conn.confirmation("tc1"));
-    expect(conn.confirmation("tc1")?.byMe).toBe(true);
+    await until(() => conn.confirmation(CHAT, "tc1"));
+    expect(conn.confirmation(CHAT, "tc1")?.byMe).toBe(true);
+    // the same tool-call id in another chat is another call
+    expect(conn.confirmation("ahp-chat:/other", "tc1")).toBeUndefined();
   });
 
   it("pages older turns with fetchTurns, and takes a bigger window when the host forgot the cursor", async () => {
