@@ -163,6 +163,7 @@ export class IncConversations extends LitElement {
     this.queries = [];
     refresh.removeEventListener("refresh", this.onRefresh);
     window.visualViewport?.removeEventListener("resize", this.onViewport);
+    document.removeEventListener("keydown", this.sheetKey, true);
     clearTimeout(this.reloadTimer);
     clearInterval(this.clock);
     super.disconnectedCallback();
@@ -202,12 +203,15 @@ export class IncConversations extends LitElement {
     if (changed.has("kb")) this.style.setProperty("--kb", `${this.kb}px`);
     if (changed.has("sheet")) {
       if (this.sheet) {
+        document.addEventListener("keydown", this.sheetKey, true);
         // Into the sheet: the close button takes focus, and Escape closes it.
         const ctx = this.renderRoot.querySelector<HTMLElement>(".sheet inc-conv-context");
         void (ctx as (HTMLElement & { updateComplete?: Promise<unknown> }) | null)?.updateComplete?.then(() =>
           ctx?.shadowRoot?.querySelector<HTMLElement>(".x")?.focus(),
         );
       } else if (changed.get("sheet") === true) {
+        document.removeEventListener("keydown", this.sheetKey, true);
+        // Back to the button that opened it.
         this.renderRoot
           .querySelector("inc-conv-thread")
           ?.shadowRoot?.querySelector<HTMLElement>(".tool-btn")
@@ -342,8 +346,40 @@ export class IncConversations extends LitElement {
     return this.ctx ? this.ctx === "open" : this.wide;
   }
 
-  private onSheetKey = (e: KeyboardEvent) => {
-    if (e.key === "Escape") this.sheet = false;
+  /** What a Tab can reach inside the open sheet. */
+  private sheetFocusables(): HTMLElement[] {
+    const ctx = this.renderRoot.querySelector<HTMLElement>(".sheet inc-conv-context");
+    return [
+      ...(ctx?.shadowRoot?.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], [tabindex="0"]') ??
+        []),
+    ];
+  }
+
+  /**
+   * The open sheet is modal: Tab loops inside it, and Escape closes it from wherever focus is. This listens on
+   * the document, in the capture phase, so it holds even if focus has strayed out of the sheet.
+   */
+  private sheetKey = (e: KeyboardEvent) => {
+    if (!this.sheet) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      this.sheet = false;
+      return;
+    }
+    if (e.key !== "Tab") return;
+    const items = this.sheetFocusables();
+    if (!items.length) {
+      e.preventDefault();
+      return;
+    }
+    let active: Element | null = document.activeElement;
+    while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+    const at = active ? items.indexOf(active as HTMLElement) : -1;
+    const to = at < 0 ? 0 : (at + (e.shiftKey ? -1 : 1) + items.length) % items.length;
+    // Always steer focus ourselves: the browser's next stop could be behind the sheet.
+    e.preventDefault();
+    items[to]?.focus();
   };
 
   // ───────────────────────────── view ─────────────────────────────
@@ -355,7 +391,9 @@ export class IncConversations extends LitElement {
     const open = this.ctxOpen() && !!conv;
     const inline = open && this.wide && !phone;
     const drawer = open && !this.wide && !phone;
-    const list = html`<inc-conv-list class="pane list-pane" ?hidden=${phone && !!this.selectedId} .items=${this.list} .employees=${this.employees}
+    // While the phone's sheet is open, everything behind it is out of reach (of Tab and of a screen reader).
+    const modal = phone && this.sheet && !!conv;
+    const list = html`<inc-conv-list class="pane list-pane" ?inert=${modal} ?hidden=${phone && !!this.selectedId} .items=${this.list} .employees=${this.employees}
       .projects=${this.projects} .selected=${this.selectedId} .now=${this.now} .loading=${this.loading} .error=${this.listError}
       .showArchived=${this.showArchived} .creating=${this.creating} .createError=${this.createError}
       @conv-create=${(e: CustomEvent<CreateDetail>) => void this.create(e.detail)}
@@ -369,7 +407,7 @@ export class IncConversations extends LitElement {
         this.loading = true;
         void this.loadList();
       }}></inc-conv-list>`;
-    const thread = html`<section class="pane thread-pane" ?hidden=${phone && !this.selectedId} aria-label="Conversation">
+    const thread = html`<section class="pane thread-pane" ?inert=${modal} ?hidden=${phone && !this.selectedId} aria-label="Conversation">
       ${this.lost ? html`<p class="lost" role="alert">${this.lost}</p>` : nothing}
       ${
         conv
@@ -394,7 +432,7 @@ export class IncConversations extends LitElement {
           ? html`<div class="backdrop" @click=${() => {
               this.sheet = false;
             }}></div>
-            <div class="sheet" role="dialog" aria-modal="true" aria-label="Conversation context" @keydown=${this.onSheetKey}><span class="grab" aria-hidden="true"></span>${context}</div>`
+            <div class="sheet" role="dialog" aria-modal="true" aria-label="Conversation context" ><span class="grab" aria-hidden="true"></span>${context}</div>`
           : nothing
       }
     </div>`;

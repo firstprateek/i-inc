@@ -86,6 +86,7 @@ export class IncConvTool extends LitElement {
       .tool.pending { border: 2px solid var(--needs-edge); background: var(--needs-surface); }
       .head { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 8px; width: 100%; min-height: 40px; padding: 4px 10px; cursor: pointer; min-width: 0; }
       .head:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 2px; border-radius: 12px; }
+      @media (pointer: coarse) { .head { min-height: 44px; } }
       .ico { flex: none; width: 18px; height: 18px; color: var(--ink-2); display: inline-flex; }
       .ico svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
       .cat { font-weight: 700; font-size: 13px; flex: none; }

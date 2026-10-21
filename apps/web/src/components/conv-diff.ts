@@ -4,7 +4,7 @@ import type { FileEdit } from "@microsoft/agent-host-protocol";
 import { css, html, LitElement, nothing } from "lit";
 import { ahp } from "../ahp/hub.ts";
 import { type DiffRow, diffStats, diffWithContext } from "../conversations/diff.ts";
-import { pathOf } from "../conversations/model.ts";
+import { pathOf, visible } from "../conversations/model.ts";
 import { cardStyles } from "../conversations/styles.ts";
 
 const SHOW_ROWS = 40;
@@ -109,7 +109,7 @@ export class IncConvDiff extends LitElement {
                   ${shown.map((r) =>
                     r.kind === "gap"
                       ? html`<div class="gap">${r.count} unchanged ${r.count === 1 ? "line" : "lines"}</div>`
-                      : html`<div class="row ${r.kind}"><span class="no" aria-hidden="true">${r.oldNo ?? ""}</span><span class="no" aria-hidden="true">${r.newNo ?? ""}</span><span class="sign" aria-label=${r.kind === "add" ? "added" : r.kind === "del" ? "removed" : "unchanged"}>${r.kind === "add" ? "+" : r.kind === "del" ? "−" : ""}</span><span class="text">${r.text}</span></div>`,
+                      : html`<div class="row ${r.kind}"><span class="no" aria-hidden="true">${r.oldNo ?? ""}</span><span class="no" aria-hidden="true">${r.newNo ?? ""}</span><span class="sign" aria-label=${r.kind === "add" ? "added" : r.kind === "del" ? "removed" : "unchanged"}>${r.kind === "add" ? "+" : r.kind === "del" ? "−" : ""}</span><span class="text">${visible(r.text)}</span></div>`,
                   )}
                 </div>
                 ${

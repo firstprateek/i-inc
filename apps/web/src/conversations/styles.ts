@@ -31,6 +31,7 @@ export const markdownStyles = css`
   .md .code-lang { font-family: var(--mono); }
   .md .copy { min-height: 32px; min-width: 44px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: var(--ink-2);
     font: 600 12px var(--body); cursor: pointer; }
+  @media (pointer: coarse) { .md .copy { min-height: 44px; min-width: 56px; } }
   .md .copy:hover { background: var(--sunken); color: var(--ink); }
   .md pre { margin: 0; padding: 12px 14px; overflow-x: auto; white-space: pre; font: 13px/1.5 var(--mono); font-variant-ligatures: none; tab-size: 2; max-width: 100%; }
   .md pre code { font: inherit; }
@@ -52,5 +53,7 @@ export const cardStyles = css`
   .link-btn { background: none; border: 0; padding: 0 4px; min-height: 32px; font: 600 13px var(--body); color: var(--reviewing-fg); text-decoration: underline;
     text-underline-offset: 2px; cursor: pointer; }
   .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+  /* A finger needs 44px (docs/layout.md): the small text buttons grow on a touch screen. */
+  @media (pointer: coarse) { .link-btn { min-height: 44px; min-width: 44px; padding: 0 10px; } }
   @media (prefers-reduced-motion: reduce) { * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } }
 `;

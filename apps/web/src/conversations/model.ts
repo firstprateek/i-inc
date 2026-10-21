@@ -19,6 +19,22 @@ import type { Conversation } from "../api.ts";
 type Json = Record<string, unknown>;
 const isObj = (v: unknown): v is Json => typeof v === "object" && v !== null && !Array.isArray(v);
 
+// ───────────────────────────── what the eye can be fooled by
+
+/**
+ * Shows control and format characters as `⟨U+202E⟩` instead of acting on them, so a path like "src/‮gnp.exe"
+ * cannot read as "src/exe.png" and nothing hides in a command or a diff. Used for everything a person decides
+ * on: permission cards, tool details, paths, the plan, titles. Tabs and line breaks stay. In a title, the
+ * zero-width joiners that build emoji (U+200D, U+200C) may stay (`keepJoiners`).
+ */
+export function visible(text: string, keepJoiners = false): string {
+  return text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, (ch) => {
+    if (ch === "\n" || ch === "\t" || ch === "\r") return ch;
+    if (keepJoiners && (ch === "\u200d" || ch === "\u200c")) return ch;
+    return `⟨U+${ch.codePointAt(0)?.toString(16).toUpperCase().padStart(4, "0")}⟩`;
+  });
+}
+
 // ───────────────────────────── the list ─────────────────────────────
 
 export type Group = "needs" | "running" | "recent";
@@ -125,7 +141,7 @@ export function toolTitle(tc: ToolCallState): string {
   const inv = "invocationMessage" in tc ? tc.invocationMessage : undefined;
   const text =
     typeof inv === "string" ? inv : isObj(inv) && typeof inv.markdown === "string" ? inv.markdown : "";
-  return text || tc.displayName || tc.toolName;
+  return visible(text || tc.displayName || tc.toolName);
 }
 
 /** The raw input, parsed when it is JSON. A reference to stored input is not read here. */
@@ -146,13 +162,14 @@ export function toolInput(tc: ToolCallState): unknown {
 export function toolInputText(tc: ToolCallState): string {
   const input = toolInput(tc);
   if (input === undefined) return "";
-  if (typeof input === "string") return input;
+  if (typeof input === "string") return visible(input);
   if (toolCategory(tc) === "run" && isObj(input)) {
     const cmd = input.command ?? input.cmd;
-    if (typeof cmd === "string") return cmd;
-    if (Array.isArray(cmd)) return cmd.map(String).join(" ");
+    if (typeof cmd === "string") return visible(cmd);
+    if (Array.isArray(cmd)) return visible(cmd.map(String).join(" "));
   }
-  return JSON.stringify(input, null, 2);
+  // JSON.stringify escapes control characters but not bidi or zero-width ones.
+  return visible(JSON.stringify(input, null, 2));
 }
 
 /** Where a tool call worked, from the agent's locations. */
@@ -174,10 +191,10 @@ export function toolDetail(tc: ToolCallState): string {
   if (isObj(input)) {
     for (const k of ["path", "file_path", "filePath", "pattern", "query", "url", "command", "description"]) {
       const v = input[k];
-      if (typeof v === "string" && v) return v.length > 160 ? `${v.slice(0, 157)}...` : v;
+      if (typeof v === "string" && v) return visible(v.length > 160 ? `${v.slice(0, 157)}...` : v);
     }
   }
-  if (loc) return loc.line ? `${loc.path}:${loc.line}` : loc.path;
+  if (loc) return visible(loc.line ? `${loc.path}:${loc.line}` : loc.path);
   return "";
 }
 
@@ -185,10 +202,12 @@ export function toolDetail(tc: ToolCallState): string {
 export function toolOutputText(tc: ToolCallState): string {
   const content = "content" in tc ? tc.content : undefined;
   if (!content) return "";
-  return content
-    .map((c) => (c.type === ToolResultContentType.Text ? c.text : ""))
-    .filter(Boolean)
-    .join("\n");
+  return visible(
+    content
+      .map((c) => (c.type === ToolResultContentType.Text ? c.text : ""))
+      .filter(Boolean)
+      .join("\n"),
+  );
 }
 
 /** Output that is a stored blob rather than text (images). */
@@ -215,7 +234,7 @@ export function toolFailed(tc: ToolCallState): boolean {
 }
 
 export function toolError(tc: ToolCallState): string {
-  return tc.status === ToolCallStatus.Completed ? (tc.error?.message ?? "") : "";
+  return tc.status === ToolCallStatus.Completed ? visible(tc.error?.message ?? "") : "";
 }
 
 export function isPlanCall(tc: Pick<ToolCallState, "toolName">): boolean {
@@ -234,7 +253,7 @@ export function planEntries(tc: Pick<ToolCallState, "_meta">): PlanEntry[] | und
   return raw
     .filter((e): e is Json => isObj(e) && typeof e.content === "string")
     .map((e) => ({
-      content: String(e.content),
+      content: visible(String(e.content)),
       status: e.status === "completed" || e.status === "in_progress" ? e.status : "pending",
       ...(typeof e.priority === "string" ? { priority: e.priority } : {}),
     }));
@@ -299,7 +318,7 @@ export interface ChangedFile {
 export function pathOf(uri: string): string {
   const p = uri.replace(/^file:\/\//, "");
   const m = /\/work\/conv-[0-9a-f]+\/(.*)$/.exec(p);
-  return m?.[1] ?? p.replace(/^\//, "");
+  return visible(m?.[1] ?? p.replace(/^\//, ""));
 }
 
 /** The files this conversation has changed, the latest edit of each, newest first. */

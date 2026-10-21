@@ -3,7 +3,13 @@
 import type { Employee } from "@i-inc/core";
 import { css, html, LitElement, nothing } from "lit";
 import type { Conversation } from "../api.ts";
-import { GROUP_LABEL, groupConversations, relativeTime, statusText } from "../conversations/model.ts";
+import {
+  GROUP_LABEL,
+  groupConversations,
+  relativeTime,
+  statusText,
+  visible,
+} from "../conversations/model.ts";
 import { cardStyles } from "../conversations/styles.ts";
 import { avatar, base, projectBadge, selectField } from "./shared.ts";
 
@@ -199,12 +205,12 @@ export class IncConvList extends LitElement {
     }}>
       <button class="open" type="button" tabindex=${stop} aria-current=${sel ? "true" : "false"} @click=${() => this.open(c.id)}>
         ${e ? avatar({ name: e.name, tint: e.tint ?? 0 }, 34) : nothing}
-        <span class="main"><span class="title">${c.title}</span>
+        <span class="main"><span class="title" title=${visible(c.title, true)}>${visible(c.title, true)}</span>
           <span class="sub"><span>${e?.name ?? c.employeeId}</span>${c.project ? projectBadge(c.project) : html`<span>no project</span>`}</span></span>
         <span class="side"><span>${relativeTime(c.modifiedAt, this.now)}</span>
           <span class="chip ${needs ? "needs" : status === "Running" ? "working" : ""}">${status}</span></span>
       </button>
-      <button class="dots" type="button" tabindex=${stop} aria-label="Actions for ${c.title}" aria-haspopup="menu" aria-expanded=${this.menu === c.id ? "true" : "false"}
+      <button class="dots" type="button" tabindex=${stop} aria-label="Actions for ${visible(c.title, true)}" aria-haspopup="menu" aria-expanded=${this.menu === c.id ? "true" : "false"}
         @click=${(ev: Event) => {
           ev.stopPropagation();
           this.menu = this.menu === c.id ? null : c.id;

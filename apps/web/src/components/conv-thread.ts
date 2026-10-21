@@ -20,7 +20,7 @@ import {
   setConfig,
   turnStarted,
 } from "../conversations/actions.ts";
-import { firstPending, modePicker, statusText } from "../conversations/model.ts";
+import { firstPending, modePicker, statusText, visible } from "../conversations/model.ts";
 import { cardStyles } from "../conversations/styles.ts";
 import { avatar, base, projectBadge } from "./shared.ts";
 import "./conv-composer.ts";
@@ -540,7 +540,7 @@ export class IncConvThread extends LitElement {
         }
         ${this.employee ? avatar({ name: this.employee.name, tint: this.employee.tint ?? 0 }, 36) : nothing}
         <div class="who">
-          <h2 class="title" title=${conv.title}>${chat?.title && chat.title !== "New conversation" ? chat.title : conv.title}</h2>
+          <h2 class="title" title=${visible(conv.title, true)}>${visible(chat?.title && chat.title !== "New conversation" ? chat.title : conv.title, true)}</h2>
           <div class="meta"><span>${name}</span>${conv.project ? projectBadge(conv.project) : html`<span>No project</span>`}
             ${conv.branch ? html`<code>${conv.branch}</code>` : nothing}
             <span class="status ${live.needs ? "needs" : live.running ? "run" : ""}">${status}</span></div>

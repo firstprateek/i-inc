@@ -9,6 +9,7 @@ import {
   type TicketView,
 } from "../api.ts";
 import { waitingLine, waitsForAssignee } from "../assign.ts";
+import { visible } from "../conversations/model.ts";
 import { needsYouCount, waitingConversations } from "../needs-you.ts";
 import { layoutStyles } from "./layout.ts";
 import { Loader } from "./loader.ts";
@@ -158,9 +159,9 @@ export class IncInbox extends Loader<{
     const who = this.data?.names[c.employeeId] ?? c.employeeId;
     return html`<div class="card item waiting">
       <div class="who"><span><b>${who}</b> · conversation${c.project ? html` · ${projectBadge(c.project)}` : ""}</span></div>
-      <div class="q">${c.title}</div>
+      <div class="q">${visible(c.title, true)}</div>
       <p class="waits"><i aria-hidden="true"></i><span>${who} is waiting for your permission or an answer.</span></p>
-      <div class="actions"><a class="btn" href="#/conversations/${c.id}" aria-label="Open the conversation: ${c.title}">Open the card</a></div></div>`;
+      <div class="actions"><a class="btn" href="#/conversations/${c.id}" aria-label="Open the conversation: ${visible(c.title, true)}">Open the card</a></div></div>`;
   }
 
   private policy(p: PolicyProposal) {

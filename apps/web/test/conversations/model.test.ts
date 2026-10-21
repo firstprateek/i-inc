@@ -28,6 +28,7 @@ import {
   toolEdits,
   toolInputText,
   usageTotals,
+  visible,
 } from "../../src/conversations/model.ts";
 
 // biome-ignore lint/suspicious/noExplicitAny: scripted protocol state.
@@ -136,6 +137,76 @@ describe("tool calls", () => {
     ];
     expect(sortedOptions(o as Any).map((x) => x.id)).toEqual(["o", "a", "d"]);
     expect(o.map((x) => optionKind(x as Any))).toEqual(["deny", "always", "once"]);
+  });
+});
+
+describe("characters that can fool the eye", () => {
+  it("shows bidi, zero-width and control characters visibly", () => {
+    expect(visible("src/\u202egnp.exe")).toBe("src/⟨U+202E⟩gnp.exe");
+    expect(visible("a\u200bb\u2066c\ufeffd\u0007")).toBe("a⟨U+200B⟩b⟨U+2066⟩c⟨U+FEFF⟩d⟨U+0007⟩");
+    expect(visible("line\n\ttab")).toBe("line\n\ttab");
+    expect(visible("plain ascii and ünïcode and 日本語")).toBe("plain ascii and ünïcode and 日本語");
+    expect(visible("\u2028")).toBe("⟨U+2028⟩");
+  });
+  it("lets emoji joiners through in a title, never in a path", () => {
+    const family = "\u{1F468}\u200d\u{1F469}";
+    expect(visible(family, true)).toBe(family);
+    expect(visible(family)).toContain("⟨U+200D⟩");
+  });
+  it("applies to paths, details, commands and the plan the model reads out", () => {
+    const call: Any = {
+      toolCallId: "t",
+      toolName: "execute",
+      displayName: "Run",
+      status: "pending-confirmation",
+      invocationMessage: "Run \u202ex",
+      toolInput: JSON.stringify({ command: "rm \u202e-rf /" }),
+    };
+    expect(toolInputText(call)).toBe("rm ⟨U+202E⟩-rf /");
+    expect(
+      toolDetail({ ...call, toolName: "read", toolInput: JSON.stringify({ path: "src/\u202egnp.exe" }) }),
+    ).toBe("src/⟨U+202E⟩gnp.exe");
+    expect(
+      changedFiles({
+        turns: [
+          {
+            id: "1",
+            responseParts: [
+              {
+                kind: "toolCall",
+                toolCall: {
+                  toolCallId: "e",
+                  status: "completed",
+                  success: true,
+                  content: [
+                    { type: "fileEdit", after: { uri: "file:///x/\u202egnp.exe", content: { uri: "u" } } },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      } as Any)[0]?.path,
+    ).toBe("x/⟨U+202E⟩gnp.exe");
+    expect(
+      latestPlan({
+        turns: [
+          {
+            id: "1",
+            responseParts: [
+              {
+                kind: "toolCall",
+                toolCall: {
+                  toolCallId: "p",
+                  toolName: "x-iinc-plan",
+                  _meta: { "iinc.plan": [{ content: "do \u202ethis", status: "pending" }] },
+                },
+              },
+            ],
+          },
+        ],
+      } as Any)?.[0]?.content,
+    ).toBe("do ⟨U+202E⟩this");
   });
 });
 
