@@ -152,7 +152,8 @@ export class IncConvComposer extends LitElement {
   }
 
   /** Puts text back in the box (a message the host refused), unless something new has been typed. */
-  restore(text: string): void {
+  restore(text: string, files: File[] = []): void {
+    if (files.length) this.picker.add(files);
     if (this.text.trim()) return;
     this.text = text;
     draftMemo.set(`conv:${this.conversationId}`, text);

@@ -160,37 +160,60 @@ describe("the thread", () => {
     expect(root().querySelector('[role="alert"]')).toBeNull();
   });
 
-  it("shows a refusal inline, and puts a message the host refused back in the box", async () => {
-    const { host, root, el } = await setup();
-    host.reject(
-      CHAT,
-      { type: "chat/turnStarted", turnId: "t9", message: { text: "my words", origin: USER_ORIGIN } },
-      { clientId: "me", clientSeq: 2 },
-      "a message needs text",
-    );
-    await until(() => root().querySelector(".notice"));
-    expect(root().querySelector(".notice")?.textContent).toContain(
-      "The host didn't accept that: a message needs text",
-    );
-    const composer = root().querySelector("inc-conv-composer");
-    await el.updateComplete;
-    expect(must<HTMLTextAreaElement>(composer?.shadowRoot?.querySelector("textarea")).value).toBe("my words");
+  /** Types into the composer and sends, as a person would; returns the clientSeq the host saw. */
+  async function typeAndSend(
+    h: Awaited<ReturnType<typeof setup>>,
+    text: string,
+    intent: "turn" | "queue" = "turn",
+    files: File[] = [],
+  ) {
+    const composer = h.root().querySelector("inc-conv-composer") as Any;
+    await composer.updateComplete;
+    if (files.length) composer.picker.add(files);
+    const ta = composer.shadowRoot.querySelector("textarea") as HTMLTextAreaElement;
+    ta.value = text;
+    ta.dispatchEvent(new Event("input"));
+    await composer.updateComplete;
+    const before = h.host.received.filter((m) => m.method === "dispatchAction").length;
+    await composer.submit(intent);
+    await until(() => h.host.received.filter((m) => m.method === "dispatchAction").length > before);
+    return h.host.received.filter((m) => m.method === "dispatchAction").at(-1)?.params.clientSeq as number;
+  }
+
+  it("shows a refusal inline, and puts the message and its image back in the box (the host echoes only the type)", async () => {
+    const h = await setup();
+    const png = new File([new Uint8Array([1, 2, 3])], "junk.png", { type: "image/png" });
+    const clientSeq = await typeAndSend(h, "my words", "turn", [png]);
+    h.host.reject(CHAT, { type: "chat/turnStarted", message: { text: "SECRET CONTENT NOT ECHOED" } }, { clientId: "me", clientSeq }, "junk.png isn't a PNG, JPEG, WebP or GIF");
+    await until(() => h.root().querySelector(".notice"));
+    expect(h.root().querySelector(".notice")?.textContent).toContain("junk.png isn't a PNG");
+    const composer = h.root().querySelector("inc-conv-composer") as Any;
+    await composer.updateComplete;
+    expect(must<HTMLTextAreaElement>(composer.shadowRoot?.querySelector("textarea")).value).toBe("my words");
+    expect(composer.shadowRoot.querySelectorAll(".thumbs li").length).toBe(1);
   });
 
-  it("queues a message instead when the turn could not start because one is running", async () => {
-    const { host, sent } = await setup();
-    host.reject(
-      CHAT,
-      { type: "chat/turnStarted", turnId: "t9", message: { text: "race", origin: USER_ORIGIN } },
-      { clientId: "me", clientSeq: 2 },
-      "a turn is already running: queue the message instead",
-    );
-    await until(() => sent().length);
-    expect(sent()[0]).toMatchObject({
-      type: "chat/pendingMessageSet",
-      kind: "queued",
-      message: { text: "race" },
-    });
+  it("queues a message instead when the turn could not start because one is running (a send from another tab)", async () => {
+    const h = await setup();
+    const clientSeq = await typeAndSend(h, "race");
+    h.host.reject(CHAT, { type: "chat/turnStarted" }, { clientId: "me", clientSeq }, "a turn is already running: queue the message instead");
+    await until(() => h.sent().some((a: Any) => a.type === "chat/pendingMessageSet"));
+    expect(h.sent().at(-1)).toMatchObject({ type: "chat/pendingMessageSet", kind: "queued", message: { text: "race" } });
+    // and the box is not refilled: it went to the queue
+    const composer = h.root().querySelector("inc-conv-composer") as Any;
+    expect(must<HTMLTextAreaElement>(composer.shadowRoot?.querySelector("textarea")).value).toBe("");
+  });
+
+  it("forgets a message once the host accepts it", async () => {
+    const h = await setup();
+    const clientSeq = await typeAndSend(h, "fine");
+    h.host.send(CHAT, started, { clientId: "me", clientSeq });
+    await tick(20);
+    // a late refusal of something we no longer hold changes nothing in the box
+    h.host.reject(CHAT, { type: "chat/turnStarted" }, { clientId: "me", clientSeq }, "whatever");
+    await until(() => h.root().querySelector(".notice"));
+    const composer = h.root().querySelector("inc-conv-composer") as Any;
+    expect(must<HTMLTextAreaElement>(composer.shadowRoot?.querySelector("textarea")).value).toBe("");
   });
 
   it("sends Stop as chat/turnCancelled for the running turn", async () => {

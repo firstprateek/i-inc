@@ -53,7 +53,10 @@ export interface ConnectionInfo {
 /** An action this client sent that the host refused (for instance a confirmation another device answered first). */
 export interface Rejection {
   channel: string;
+  /** What the host echoes of it: by design only the action's type, never its content. */
   action: StateAction;
+  /** The `clientSeq` `dispatch` returned for it, to find what was sent. */
+  clientSeq: number;
   reason: string;
 }
 
@@ -134,6 +137,7 @@ export class AhpConnection {
   private readonly infoListeners = new Set<(i: ConnectionInfo) => void>();
   private readonly changeListeners = new Set<(uris: Set<string>) => void>();
   private readonly rejectionListeners = new Set<(r: Rejection) => void>();
+  private readonly acceptedListeners = new Set<(clientSeq: number) => void>();
   private readonly rosterListeners = new Set<() => void>();
   private changed = new Set<string>();
   private rosterChanged = false;
@@ -167,6 +171,12 @@ export class AhpConnection {
   onRejected(fn: (r: Rejection) => void): () => void {
     this.rejectionListeners.add(fn);
     return () => this.rejectionListeners.delete(fn);
+  }
+
+  /** The host accepted an action this client sent (its echo came back with our `clientSeq`). */
+  onAccepted(fn: (clientSeq: number) => void): () => void {
+    this.acceptedListeners.add(fn);
+    return () => this.acceptedListeners.delete(fn);
   }
 
   /** Conversations came, went or changed summary (root notifications; not replayed, so re-list after a reconnect). */
@@ -508,7 +518,12 @@ export class AhpConnection {
     if (env.rejectionReason !== undefined) {
       if (env.origin?.clientId === this.clientId) {
         for (const fn of [...this.rejectionListeners])
-          fn({ channel: env.channel, action: env.action, reason: env.rejectionReason });
+          fn({
+            channel: env.channel,
+            action: env.action,
+            clientSeq: env.origin.clientSeq,
+            reason: env.rejectionReason,
+          });
       }
       return;
     }
@@ -526,6 +541,9 @@ export class AhpConnection {
       this.o.log?.(`ahp: could not apply ${action.type}: ${e instanceof Error ? e.message : e}`);
       void this.resnapshot(ch);
       return;
+    }
+    if (!paging && env.origin?.clientId === this.clientId) {
+      for (const fn of [...this.acceptedListeners]) fn(env.origin.clientSeq);
     }
     if (!paging) {
       ch.seq = env.serverSeq;

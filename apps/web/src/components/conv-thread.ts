@@ -149,6 +149,7 @@ export class IncConvThread extends LitElement {
         this.info = i;
       }),
       c.onRejected(this.onRejected),
+      c.onAccepted((seq) => this.inflight.delete(seq)),
     ];
     if (typeof ResizeObserver === "function") {
       this.resizer = new ResizeObserver(() => {
@@ -330,34 +331,52 @@ export class IncConvThread extends LitElement {
     this.notice = why;
   }
 
+  /** Messages sent and not yet accepted, by `clientSeq`: the host's refusal does not echo their content. */
+  private inflight = new Map<number, { text: string; files: File[] }>();
+
+  private remember(clientSeq: number, text: string, files: File[]) {
+    this.inflight.set(clientSeq, { text, files });
+    if (this.inflight.size > 30) {
+      const oldest = this.inflight.keys().next().value;
+      if (oldest !== undefined) this.inflight.delete(oldest);
+    }
+  }
+
   private onRejected = (r: Rejection) => {
     const conv = this.conv;
     if (!conv || (r.channel !== conv.ahpChat && r.channel !== conv.ahpSession)) return;
-    const a = r.action as unknown as { type: string; message?: { text: string; attachments?: unknown[] } };
-    // The turn could not start because one is already running: it goes into the queue instead.
-    if (a.type === ActionType.ChatTurnStarted && /already running/.test(r.reason) && a.message) {
-      ahp().dispatch(
-        conv.ahpChat,
-        pendingMessage("queued", a.message.text, (a.message.attachments ?? []) as never),
-      );
+    const type = (r.action as unknown as { type: string }).type;
+    const sent = this.inflight.get(r.clientSeq);
+    this.inflight.delete(r.clientSeq);
+    // The turn could not start because one is already running (say, from another tab): it is queued instead.
+    if (type === ActionType.ChatTurnStarted && /already running/.test(r.reason) && sent) {
+      void this.send({ text: sent.text, files: sent.files, intent: "queue" }).then((why) => {
+        if (why) this.restoreMessage(sent, why);
+      });
       return;
     }
     // A confirmation or question another device answered first is not an error: the card shows the outcome.
     if (
-      (a.type === ActionType.ChatToolCallConfirmed || a.type === ActionType.ChatInputCompleted) &&
+      (type === ActionType.ChatToolCallConfirmed || type === ActionType.ChatInputCompleted) &&
       /answered|not waiting|not open/.test(r.reason)
     )
       return;
-    // A message the host refused goes back into the box, so nothing typed is lost.
-    if ((a.type === ActionType.ChatTurnStarted || a.type === ActionType.ChatPendingMessageSet) && a.message) {
-      (
-        this.renderRoot.querySelector("inc-conv-composer") as
-          | (HTMLElement & { restore(text: string): void })
-          | null
-      )?.restore(a.message.text);
+    // A message the host refused goes back into the box, with its images, so nothing typed is lost.
+    if (sent) {
+      this.restoreMessage(sent, `The host didn't accept that: ${r.reason}`);
+      return;
     }
     this.fail(`The host didn't accept that: ${r.reason}`);
   };
+
+  private restoreMessage(sent: { text: string; files: File[] }, why: string) {
+    (
+      this.renderRoot.querySelector("inc-conv-composer") as
+        | (HTMLElement & { restore(text: string, files?: File[]): void })
+        | null
+    )?.restore(sent.text, sent.files);
+    this.fail(why);
+  }
 
   /** The composer's send. Returns a reason when it could not be sent (the text stays), or null. */
   private send = async (d: SendDetail): Promise<string | null> => {
@@ -378,6 +397,7 @@ export class IncConvThread extends LitElement {
         ? turnStarted(d.text, attachments)
         : pendingMessage(d.intent === "steer" ? "steering" : "queued", d.text, attachments);
     const sent = ahp().dispatch(conv.ahpChat, action);
+    if (sent.ok) this.remember(sent.clientSeq, d.text, d.files);
     return sent.ok ? null : sent.error;
   };
 

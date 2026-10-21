@@ -141,7 +141,8 @@ export class FakeHost {
     void this.transport.send({
       jsonrpc: "2.0",
       method: "action",
-      params: { channel, action, serverSeq: this.seq, origin, rejectionReason: reason },
+      // Like the real host: a refusal says what it refused by type only, never the content.
+      params: { channel, action: { type: action.type }, serverSeq: this.seq, origin, rejectionReason: reason },
     } as never);
   }
 
