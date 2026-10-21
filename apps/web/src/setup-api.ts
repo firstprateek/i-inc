@@ -99,6 +99,11 @@ export const policyDefaults = {
 /** A sandbox with no size of its own is this big. */
 export const defaultSandbox = { cpus: 6, memory: "12G" };
 
+/** Where the owner first installs the i.inc bot on GitHub. */
+export const GITHUB_INSTALL_URL = "https://github.com/apps/i-inc-bot/installations/new";
+/** Where the repositories an installed bot can see are managed (any installed GitHub App). */
+export const GITHUB_MANAGE_URL = "https://github.com/settings/installations";
+
 const enc = encodeURIComponent;
 
 export const setupApi = {

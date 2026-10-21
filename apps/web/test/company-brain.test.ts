@@ -30,7 +30,7 @@ afterEach(() => {
 });
 
 describe("Company brain discoverability (T26)", () => {
-  it("More page displays 'Company brain / Handbook' and links to #/handbook", async () => {
+  it("Company → Brain is a tab in the Company tab row and opens the company brain", async () => {
     vi.stubGlobal(
       "fetch",
       async () =>
@@ -38,26 +38,27 @@ describe("Company brain discoverability (T26)", () => {
           headers: { "content-type": "application/json" },
         }),
     );
-    location.hash = "#/more";
-    const { root } = await mountApp();
+    location.hash = "#/company/team";
+    const { app, root } = await mountApp();
 
-    const moreLinks = [...(root.querySelectorAll(".more a") as NodeListOf<HTMLAnchorElement>)];
-    const handbookItem = moreLinks.find((a) => a.getAttribute("href") === "#/handbook");
-    expect(handbookItem).toBeDefined();
-    expect(handbookItem?.querySelector("b")?.textContent?.trim()).toBe("Company brain / Handbook");
-    expect(handbookItem?.querySelector("span")?.textContent?.trim()).toBe(
-      "Organisation-wide knowledge: policies, facts, and what every employee knows",
-    );
+    const tabs = [
+      ...(root.querySelectorAll('[role="tablist"] a[role="tab"]') as NodeListOf<HTMLAnchorElement>),
+    ];
+    const brainTab = tabs.find((a) => a.getAttribute("href") === "#/company/brain");
+    expect(brainTab?.textContent?.trim()).toBe("Brain");
 
-    // Desktop header nav check
-    const navLinks = [...(root.querySelectorAll("header nav a") as NodeListOf<HTMLAnchorElement>)];
-    const navHandbook = navLinks.find((a) => a.getAttribute("href") === "#/handbook");
-    expect(navHandbook).toBeDefined();
-    expect(navHandbook?.textContent?.trim()).toBe("Company brain / Handbook");
-    expect(navHandbook?.getAttribute("title")).toBe("Company brain / Handbook");
+    location.hash = "#/company/brain";
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+    await app.updateComplete;
+    expect(root.querySelector("inc-knowledge")?.getAttribute("repo")).toBe("handbook");
+    expect(root.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.trim()).toBe("Brain");
+    // the old address lands on the same place
+    location.hash = "#/handbook";
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+    expect(location.hash).toBe("#/company/brain");
   });
 
-  it("Handbook view renders 'Company brain / Handbook' title and team sections", async () => {
+  it("The company brain renders its subtitle and team sections", async () => {
     vi.stubGlobal("fetch", async (url: string) => {
       if (url === "/api/knowledge/handbook") {
         return new Response(
@@ -122,15 +123,18 @@ describe("Company brain discoverability (T26)", () => {
 
     // Members linked to their brains
     const engLinks = [...(teamCards[0]?.querySelectorAll(".team-members a") ?? [])];
-    expect(engLinks.map((a) => a.getAttribute("href"))).toEqual(["#/brain/ada", "#/brain/kit"]);
+    expect(engLinks.map((a) => a.getAttribute("href"))).toEqual([
+      "#/company/brain/ada",
+      "#/company/brain/kit",
+    ]);
     expect(engLinks.map((a) => a.textContent?.trim())).toEqual(["Ada Lovelace", "Kit"]);
 
     const designLinks = [...(teamCards[1]?.querySelectorAll(".team-members a") ?? [])];
-    expect(designLinks.map((a) => a.getAttribute("href"))).toEqual(["#/brain/lin"]);
+    expect(designLinks.map((a) => a.getAttribute("href"))).toEqual(["#/company/brain/lin"]);
     expect(designLinks.map((a) => a.textContent?.trim())).toEqual(["Lin"]);
   });
 
-  it("Employee brain renders the link to 'Company brain / Handbook' (#/handbook)", async () => {
+  it("An employee's brain links to the company brain", async () => {
     vi.stubGlobal("fetch", async (url: string) => {
       if (url === "/api/knowledge/brains/ada") {
         return new Response(
@@ -152,8 +156,8 @@ describe("Company brain discoverability (T26)", () => {
     // Clear link in header
     const companyLink = root.querySelector("a.company-link");
     expect(companyLink).not.toBeNull();
-    expect(companyLink?.getAttribute("href")).toBe("#/handbook");
-    expect(companyLink?.textContent?.trim()).toBe("Company brain / Handbook →");
+    expect(companyLink?.getAttribute("href")).toBe("#/company/brain");
+    expect(companyLink?.textContent?.trim()).toBe("Company brain →");
 
     // Callout on map/INDEX.md page
     const callout = root.querySelector(".company-callout");
@@ -161,11 +165,11 @@ describe("Company brain discoverability (T26)", () => {
     expect(callout?.textContent).toContain("Part of the organisation.");
     expect(callout?.textContent).toContain("shared policies and facts.");
     const calloutLink = callout?.querySelector("a");
-    expect(calloutLink?.getAttribute("href")).toBe("#/handbook");
-    expect(calloutLink?.textContent?.trim()).toBe("Company brain / Handbook");
+    expect(calloutLink?.getAttribute("href")).toBe("#/company/brain");
+    expect(calloutLink?.textContent?.trim()).toBe("Company brain");
   });
 
-  it("Clicking the link navigates to #/handbook", async () => {
+  it("Clicking the link navigates to the company brain", async () => {
     vi.stubGlobal("fetch", async (url: string) => {
       if (url === "/api/knowledge/brains/ada") {
         return new Response(
@@ -197,7 +201,7 @@ describe("Company brain discoverability (T26)", () => {
       });
     });
 
-    location.hash = "#/brain/ada";
+    location.hash = "#/company/brain/ada";
     const { app, root: appRoot } = await mountApp();
 
     const knowledge = appRoot.querySelector("inc-knowledge") as IncKnowledge;
@@ -212,12 +216,12 @@ describe("Company brain discoverability (T26)", () => {
     for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
     await app.updateComplete;
 
-    expect(location.hash).toBe("#/handbook");
+    expect(location.hash).toBe("#/company/brain");
     const activeKnowledge = appRoot.querySelector("inc-knowledge") as IncKnowledge;
     expect(activeKnowledge.getAttribute("repo")).toBe("handbook");
 
-    // Also verify clicking callout link navigates to #/handbook
-    location.hash = "#/brain/ada";
+    // Also verify clicking callout link navigates to the company brain
+    location.hash = "#/company/brain/ada";
     for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
     await app.updateComplete;
 
@@ -230,6 +234,6 @@ describe("Company brain discoverability (T26)", () => {
     for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
     await app.updateComplete;
 
-    expect(location.hash).toBe("#/handbook");
+    expect(location.hash).toBe("#/company/brain");
   });
 });

@@ -4,7 +4,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IncApp, parse, type Route, routeName, routeTitle } from "../src/components/app.ts";
+import { IncApp, parse, routeName, routeTitle } from "../src/components/app.ts";
 import { arrive, entryKey, MAX_REMEMBERED, ScrollMemory, stampEntry } from "../src/scroll-memory.ts";
 
 const phone = (matches: boolean) =>
@@ -65,28 +65,32 @@ describe("arrive (Back/Forward versus a new page)", () => {
 
 describe("routeTitle", () => {
   const t = (hash: string) => routeTitle(parse(hash));
-  it("names every view in the tab title", () => {
+  it("names the tab, then the area, in the tab title", () => {
     phone(false);
-    expect(t("#/board")).toBe("Board · i.inc");
-    expect(t("#/office")).toBe("Office · i.inc");
-    expect(t("#/inbox")).toBe("Inbox · i.inc");
-    expect(t("#/desk")).toBe("My desk · i.inc");
-    expect(t("#/handbook")).toBe("Company brain · i.inc");
-    expect(t("#/brain/ada")).toBe("Ada’s brain · i.inc");
-    expect(t("#/hiring")).toBe("Hiring · i.inc");
-    expect(t("#/more")).toBe("More · i.inc");
-    expect(t("#/chat")).toBe("Chats · i.inc");
-    expect(t("#/chat/ada")).toBe("Ada · Chat · i.inc");
-    expect(t("#/ticket/12")).toBe("Ticket #12 · i.inc");
-    expect(t("#/setup/engines")).toBe("Engines · Setup · i.inc");
-    expect(t("#/setup")).toBe("Teams · Setup · i.inc");
+    expect(t("#/conversations")).toBe("Conversations · i.inc");
+    expect(t("#/conversations/ada")).toBe("Ada · Conversations · i.inc");
+    expect(t("#/work/board")).toBe("Board · Work · i.inc");
+    expect(t("#/work/needs-you")).toBe("Needs you · Work · i.inc");
+    expect(t("#/work/releases")).toBe("Releases · Work · i.inc");
+    expect(t("#/ticket/12")).toBe("Ticket #12 · Work · i.inc");
+    expect(t("#/company/team")).toBe("Team · Company · i.inc");
+    expect(t("#/company/team/hiring")).toBe("Hiring · Company · i.inc");
+    expect(t("#/company/brain")).toBe("Brain · Company · i.inc");
+    expect(t("#/company/brain/ada")).toBe("Ada’s brain · Company · i.inc");
+    expect(t("#/company/projects")).toBe("Projects · Company · i.inc");
+    expect(t("#/company/usage")).toBe("Usage · Company · i.inc");
+    expect(t("#/company/settings/engines")).toBe("Engines and accounts · Settings · Company · i.inc");
+    expect(t("#/company/settings")).toBe("Teams · Settings · Company · i.inc");
+    // an old hash is titled as the page it redirects to
+    expect(t("#/inbox")).toBe("Needs you · Work · i.inc");
     vi.unstubAllGlobals();
   });
 
-  it("falls back to the product name, and has a short form for narrow headers", () => {
-    expect(routeTitle({ view: "inbox" } as Route)).toBe("Inbox · i.inc");
+  it("names the area in the page heading, with a short form for narrow headers", () => {
+    expect(routeName({ view: "work", tab: "board" }).long).toBe("Work");
+    expect(routeName({ view: "usage" }).long).toBe("Company");
     expect(routeName({ view: "ticket", id: "9" }).short).toBe("#9");
-    expect(routeName({ view: "desk" }).short).toBe("Desk");
+    expect(routeTitle({ view: "work", tab: "needs-you" })).toBe("Needs you · Work · i.inc");
   });
 });
 
@@ -103,7 +107,7 @@ describe("the shell", () => {
     (Element.prototype as unknown as { scrollIntoView: unknown }).scrollIntoView = intoView;
     history.replaceState(null, "");
     localStorage.clear();
-    location.hash = "#/office";
+    location.hash = "#/company/team";
   });
   afterEach(() => {
     delete (Element.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView;
@@ -150,60 +154,60 @@ describe("the shell", () => {
   const stamp = () => entryKey() as string;
 
   it("renders the header, the one scrolling <main> and a page heading to focus", async () => {
-    const { root } = await mount("#/board");
+    const { root } = await mount("#/work/board");
     expect(root.querySelector("header")).not.toBeNull();
     const main = root.querySelector("main");
     expect(main?.getAttribute("tabindex")).toBe("-1");
     const h1 = main?.querySelector("h1#view-heading");
-    expect(h1?.textContent?.trim()).toBe("Board");
+    expect(h1?.textContent?.trim()).toBe("Work");
     expect(h1?.getAttribute("tabindex")).toBe("-1");
-    expect(document.title).toBe("Board · i.inc");
+    expect(document.title).toBe("Board · Work · i.inc");
     expect(app.hasAttribute("own-scroll")).toBe(false);
   });
 
-  it("the chat route owns its scrolling: main does not scroll, the panes do", async () => {
-    await mount("#/chat/ada");
+  it("the conversations route owns its scrolling: main does not scroll, the panes do", async () => {
+    await mount("#/conversations/ada");
     expect(app.hasAttribute("own-scroll")).toBe(true);
-    await go("#/board");
+    await go("#/work/board");
     expect(app.hasAttribute("own-scroll")).toBe(false);
     expect(document.documentElement.hasAttribute("data-fill")).toBe(false);
   });
 
   it("a new page starts at the top and takes focus without scrolling", async () => {
-    const { root, main, state } = await mount("#/board");
+    const { root, main, state } = await mount("#/work/board");
     state.top = 700;
     const focus = vi.spyOn(HTMLElement.prototype, "focus");
-    await go("#/desk");
+    await go("#/company/usage");
     expect(main.scrollTop).toBe(0);
-    expect(document.title).toBe("My desk · i.inc");
-    expect(root.querySelector("#view-heading")?.textContent?.trim()).toBe("My desk");
+    expect(document.title).toBe("Usage · Company · i.inc");
+    expect(root.querySelector("#view-heading")?.textContent?.trim()).toBe("Company");
     expect(focus).toHaveBeenCalledWith({ preventScroll: true });
     expect(root.activeElement?.id).toBe("view-heading");
   });
 
   it("Back puts a page back where it was, and a link click to the same page starts at the top", async () => {
-    const { main, state } = await mount("#/board");
+    const { main, state } = await mount("#/work/board");
     const boardEntry = stamp();
     state.top = 700;
-    await go("#/desk");
+    await go("#/company/usage");
     const deskEntry = stamp();
     state.top = 300;
-    await go("#/board", boardEntry); // Back
+    await go("#/work/board", boardEntry); // Back
     expect(main.scrollTop).toBe(700);
-    await go("#/desk", deskEntry); // Forward
+    await go("#/company/usage", deskEntry); // Forward
     expect(main.scrollTop).toBe(300);
-    await go("#/board"); // a link click: a new entry
+    await go("#/work/board"); // a link click: a new entry
     expect(main.scrollTop).toBe(0);
   });
 
   it("remembers positions per history entry, so the same page visited twice keeps both", async () => {
-    const { state } = await mount("#/board");
+    const { state } = await mount("#/work/board");
     state.top = 111;
-    await go("#/desk");
+    await go("#/company/usage");
     state.top = 222;
-    await go("#/board");
+    await go("#/work/board");
     state.top = 333;
-    await go("#/inbox");
+    await go("#/work/needs-you");
     const memory = (app as unknown as { memory: ScrollMemory }).memory;
     // The board's first visit (111) and second visit (333, saved on leaving) are separate entries.
     expect(memory.size).toBe(3);
@@ -215,44 +219,101 @@ describe("the shell", () => {
   });
 
   it("does not move focus when switching sections inside the same view from within it", async () => {
-    const { root, main } = await mount("#/setup/teams");
+    const { root, main } = await mount("#/company/settings/teams");
     const inner = document.createElement("a");
-    inner.href = "#/setup/engines";
+    inner.href = "#/company/settings/engines";
     main.append(inner);
     inner.focus();
     Object.defineProperty(root, "activeElement", { configurable: true, get: () => inner });
     const focus = vi.spyOn(HTMLElement.prototype, "focus");
-    await go("#/setup/engines");
+    await go("#/company/settings/engines");
     expect(focus).not.toHaveBeenCalled();
   });
 
-  it("closes the All views menu on a route change and keeps pins across navigation", async () => {
-    const { root } = await mount("#/office");
-    (root.querySelector(".all-views-trigger") as HTMLButtonElement).click();
+  it("keeps focus on the tab row while moving along an area's tabs", async () => {
+    const { root } = await mount("#/company/team");
+    const tab = root.querySelector('[role="tablist"] a[href="#/company/brain"]') as HTMLElement;
+    Object.defineProperty(root, "activeElement", { configurable: true, get: () => tab });
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    await go("#/company/brain");
+    expect(focus).not.toHaveBeenCalledWith({ preventScroll: true });
+  });
+
+  it("opens the account menu with theme and sign out, and closes it on a route change", async () => {
+    const { root } = await mount("#/company/team");
+    const trigger = root.querySelector(".account-trigger") as HTMLButtonElement;
+    expect(trigger.getAttribute("aria-haspopup")).toBe("menu");
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(root.querySelector(".account-menu")).toBeNull();
+    trigger.click();
     await app.updateComplete;
-    expect(root.querySelector(".all-views-dropdown")).not.toBeNull();
-    (root.querySelector('button[aria-label="Unpin Hiring from navigation"]') as HTMLButtonElement).click();
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    const items = [...root.querySelectorAll('.account-menu [role="menuitem"]')].map((i) =>
+      i.textContent?.trim(),
+    );
+    expect(items).toEqual(["Switch to dark theme", "Sign out"]);
+    await go("#/work/board");
+    expect(root.querySelector(".account-menu")).toBeNull();
+  });
+
+  it("switches the theme from the account menu and remembers it", async () => {
+    const { root } = await mount("#/work/board");
+    (root.querySelector(".account-trigger") as HTMLButtonElement).click();
     await app.updateComplete;
-    await go("#/board");
-    expect(root.querySelector(".all-views-dropdown")).toBeNull();
-    await go("#/desk");
-    const links = [...root.querySelectorAll("header nav .pinned-links a")].map((a) => a.textContent?.trim());
-    expect(links).not.toContain("Hiring");
-    expect(JSON.parse(localStorage.getItem("i-inc-nav-pinned") ?? "[]")).not.toContain("hiring");
+    (root.querySelector('.account-menu [role="menuitem"]') as HTMLButtonElement).click();
+    await app.updateComplete;
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(localStorage.getItem("i-inc-theme")).toBe("dark");
+    expect(root.querySelector(".account-menu")).toBeNull();
+    (root.querySelector(".account-trigger") as HTMLButtonElement).click();
+    await app.updateComplete;
+    expect(root.querySelector('.account-menu [role="menuitem"]')?.textContent?.trim()).toBe(
+      "Switch to light theme",
+    );
+    delete document.documentElement.dataset.theme;
+  });
+
+  it("closes the account menu on Escape, and on a click outside it", async () => {
+    const { root } = await mount("#/work/board");
+    const trigger = root.querySelector(".account-trigger") as HTMLButtonElement;
+    trigger.click();
+    await app.updateComplete;
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await app.updateComplete;
+    expect(root.querySelector(".account-menu")).toBeNull();
+    trigger.click();
+    await app.updateComplete;
+    document.body.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
+    await app.updateComplete;
+    expect(root.querySelector(".account-menu")).toBeNull();
+  });
+
+  it("forgets the customizable menu's pins from before the three areas", async () => {
+    localStorage.setItem("i-inc-nav-pinned", '["office","board"]');
+    await mount("#/work/board");
+    expect(localStorage.getItem("i-inc-nav-pinned")).toBeNull();
   });
 
   it("tapping the tab you are on scrolls main to the top", async () => {
     phone(true);
-    const { root, state } = await mount("#/inbox");
+    const { root, state } = await mount("#/work/needs-you");
     state.top = 500;
     (root.querySelector('.tabs button[aria-selected="true"]') as HTMLButtonElement).click();
     expect(state.top).toBe(0);
   });
 
   it("never scrolls the window or calls scrollIntoView, through a round of navigation", async () => {
-    const { state } = await mount("#/board");
+    const { state } = await mount("#/work/board");
     state.top = 400;
-    for (const h of ["#/desk", "#/office", "#/chat/ada", "#/inbox", "#/more", "#/board"]) await go(h);
+    for (const h of [
+      "#/company/usage",
+      "#/company/team",
+      "#/conversations/ada",
+      "#/work/needs-you",
+      "#/company/settings/engines",
+      "#/work/board",
+    ])
+      await go(h);
     expect(windowScroll).not.toHaveBeenCalled();
     expect(intoView).not.toHaveBeenCalled();
   });
@@ -325,13 +386,18 @@ describe("the shell's layout rules", () => {
     expect(appCss).not.toMatch(/position:\s*(sticky|fixed)/);
   });
 
-  it("keeps the sign-out icon visible in the narrow desktop header", () => {
-    const narrowDesktop = appCss.indexOf("@media (min-width: 901px) and (max-width: 1240px)");
-    const defaultIcon = appCss.indexOf(".sign-out .short-icon { display: none; }");
-    expect(narrowDesktop).toBeGreaterThan(-1);
-    expect(defaultIcon).toBeGreaterThan(-1);
-    expect(defaultIcon).toBeLessThan(narrowDesktop);
-    expect(appCss.slice(narrowDesktop)).toMatch(/\.sign-out \.short-icon\s*\{\s*display:\s*block;/);
+  it("a phone keeps the account menu in the header and moves the areas to the tab bar", () => {
+    const phoneRules = appCss.slice(appCss.indexOf("@media (max-width: 900px)"));
+    expect(phoneRules).toMatch(/header nav\.areas, header \.needs-link\s*\{\s*display:\s*none;/);
+    expect(appCss).toMatch(/repeat\(4, 1fr\)/);
+  });
+
+  it("a route that owns its scrolling has the same top padding as every other route, so headings do not move", () => {
+    const own = bodies(appCss, ":host([own-scroll]) main").join(" ");
+    const plain = bodies(appCss, "main").join(" ");
+    const top = (b: string) => /padding(?:-top)?:\s*(\d+)px/.exec(b)?.[1];
+    expect(own).toMatch(/padding-top:\s*20px/);
+    expect(top(plain)).toBe("20");
   });
 
   it("main is the one scroller, and a route that owns its scrolling clips it", () => {
@@ -401,7 +467,7 @@ describe("the shell's structure and header links", () => {
   });
 
   it("has header, main and the tab bar as the grid's direct children, in that order", async () => {
-    location.hash = "#/board";
+    location.hash = "#/work/board";
     const app = new IncApp();
     document.body.append(app);
     await app.updateComplete;
@@ -412,7 +478,7 @@ describe("the shell's structure and header links", () => {
   });
 
   it("clicking the link to the page you are on scrolls main to the top", async () => {
-    location.hash = "#/board";
+    location.hash = "#/work/board";
     const app = new IncApp();
     document.body.append(app);
     await app.updateComplete;
@@ -425,14 +491,14 @@ describe("the shell's structure and header links", () => {
       set: (v: number) => (top = v),
     });
     const link = (app.shadowRoot as ShadowRoot).querySelector(
-      'header nav a[href="#/board"]',
+      'header nav a[href="#/work/board"]',
     ) as HTMLAnchorElement;
     link.click();
     expect(top).toBe(0);
     // A link to another page leaves the position to the navigation logic.
     top = 480;
     (app.shadowRoot as ShadowRoot)
-      .querySelector('header nav a[href="#/desk"]')
+      .querySelector('header nav a[href="#/company/team"]')
       ?.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
     expect(top).toBe(480);
   });
