@@ -52,12 +52,19 @@ export async function brainRig(o: { delivered?: boolean; real?: boolean } = {}) 
     return { code: r.status ?? 1, output: `${r.stdout}${r.stderr}` };
   };
   const fake = new FakeSandbox();
+  /** Whether the machines are running (a copy is never made, or removed, by starting one). */
+  const machineUp = { value: true };
+  const setUp = (up: boolean) => {
+    machineUp.value = up;
+    (feed as unknown as { upSeen: Map<string, unknown> }).upSeen.clear();
+  };
   const ports = o.real
     ? realPorts({
         credentials: { "claude-pro": { CLAUDE_CODE_OAUTH_TOKEN: "sk-x" } },
         machine: noWalls,
         exec: async () => "",
         launch: fake.launch,
+        isUp: async () => machineUp.value,
         runScript: async (employeeId, script, _env, opts) =>
           /__INC_TAR__|\.snapshot\.id|@@removed/.test(script)
             ? local(employeeId, script, {}, opts)
@@ -83,6 +90,7 @@ export async function brainRig(o: { delivered?: boolean; real?: boolean } = {}) 
   app.daemon.ensureKnowledge();
   const feed = app.deps.brainFeed;
   if (!o.real && o.delivered !== false) feed.deliver = local;
+  if (!o.real) feed.isUp = async () => machineUp.value;
   const dirOf = (repo: string) =>
     repo === "handbook" ? join(knowledgeDir, "handbook") : join(knowledgeDir, "brains", repo);
   const git = (repo: string, ...a: string[]) =>
@@ -120,6 +128,8 @@ export async function brainRig(o: { delivered?: boolean; real?: boolean } = {}) 
   return {
     app,
     logs,
+    machineUp,
+    setUp,
     call,
     fake,
     feed,

@@ -39,6 +39,8 @@ export interface RealOptions {
   exec?: Exec;
   launch?: Launch;
   runScript?: RunScript;
+  /** Whether a machine is running; default: ask `container machine ls`. For tests. */
+  isUp?: (machine: string) => Promise<boolean>;
   ollama?: OllamaOptions;
 }
 
@@ -104,6 +106,10 @@ export function realPorts(o: RealOptions): Pick<
   // stream on stdin of `machine run -i`); the feed adds the brain to briefs only once it has one.
   const withBrain = (registry: Registry, brain: BrainFeed): BrainFeed => {
     brain.deliver ??= run(registry);
+    // A copy never starts a stopped machine: `machine ls` says what is running.
+    brain.isUp ??=
+      o.isUp ??
+      (async (name) => (await machines?.listMachines())?.find((m) => m.name === name)?.state === "running");
     return brain;
   };
   let machines: AppleMachines | undefined;

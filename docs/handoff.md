@@ -309,18 +309,22 @@ that applies it in the sandbox), `brain-tar.ts`, `brain-cli.cjs` (the `brain` co
   (`source: external`) are marked. The employee's `personality` page is never retrieved (the brief carries it).
   Demo mode has no sandboxes and adds nothing.
 - **Home data and shared sandboxes.** Inside a team sandbox all employees are the same Unix user, with the internet
-  open, so a PA's brain (home data, spec §7) must never be copied into a sandbox anyone else works in. **Chosen:** hiring a
-  PA (role "Personal Assistant") without a `teamId` creates a team `home-<id>` ("<Name>'s home") with only the PA in it,
-  so it has `inc-home-<id>` to itself; naming a team that has other members is refused (400, `needs a sandbox of its
-  own`), as is moving a PA, a change of role into a PA, putting anyone into a PA's team, or `PUT /api/teams/:id` with a
-  PA and someone else. A PA that was hired before this and still shares a sandbox gets **no copy** (its prompts still get
-  its own pages) and the daemon removes any copy of it there, once per start: move it into a team of its own
-  (`PUT /api/teams/home-<id>` with `{"name": "…", "members": ["<id>"]}`, then `PUT /api/employees/<id>` with
-  `{"teamId": "home-<id>"}`). A PA's own brain is part of a session only for errands and orientation and for
-  conversations with no project, never for code work. A copy is removed from the machine an employee moved away from
-  (also when they leave). Ordinary employees of one team still share a Unix user, so an agent could read a colleague's
-  folder under `/home/employee/brain/` with its own tools; the daemon never puts one employee's brain in another's
-  folder or prompt, and making it impossible needs a user per employee in the image (an owner decision, not done).
+  open, so a PA's brain (home data, spec §7) must never be copied into a sandbox anyone else works in. **Chosen: a PA
+  always has a team, and so a sandbox, of its own, and the API makes it so rather than refusing.** Hiring a PA (role
+  "Personal Assistant") makes a team `home-<id>` ("<Name>'s home") with only the PA, sized 2 CPUs and 4G (change it
+  with `PUT /api/teams/home-<id>` like any team's); the web form sends no team for a PA. A hire or an edit that names
+  a team with other people, or a PA left in a shared team by an older version, moves the PA to its own team (the one
+  it is alone in, or `home-<id>`). Refused (400, `needs a sandbox of its own`): putting anyone else into a PA's team,
+  or a PA and others in `PUT /api/teams/:id`; `DELETE /api/teams/:id` of a team holding a PA is 409. A PA that still
+  shares a sandbox gets **no copy** (its prompts still get its own pages) and the daemon removes any copy of it there.
+  A PA's own brain is part of a session only for errands and orientation and for conversations with no project; code
+  work gets a second copy of the PA's brain without its personal folder (`~/brain/<id>.code/`), so the two never share
+  a folder. A copy is removed from the machine an employee moved away from (also when they leave), but never by
+  starting a stopped machine: the removal stays recorded and is done when the machine is up. Ordinary employees of one
+  team still share a Unix user, so an agent could read a colleague's folder under `/home/employee/brain/` with its
+  own tools; the daemon never puts one employee's brain in another's folder or prompt, and making it impossible needs
+  a user per employee in the image (an owner decision, not done). Not changed here: spec §7 says a PA's machine
+  reaches only i.inc's API and Ollama, but the walls give every machine open internet; that is a host change.
 - **What the sandbox image must have.** Nothing is installed by the daemon, so these must be in the image (the current
   one has them, checked by reading the Dockerfile, not on a live machine): `bash`, `git` 2.28 or later, GNU `tar`,
   coreutils (`base64 -d`, `comm`, `sort`, `cp`, `mv`, `rm`, `cut`, `wc`, `tr`, `mkdir`, `dirname`, `chmod`, `mktemp`,

@@ -14,6 +14,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
   type BrainUse,
+  brainHome,
   buildMap,
   conversationQuery,
   fitMaps,
@@ -132,6 +133,10 @@ const repoKey = (r: Repo) => (r.kind === "handbook" ? "handbook" : `brain:${r.id
 const hash = (s: string) => createHash("sha1").update(s).digest("hex").slice(0, 16);
 
 export class BrainFeed {
+  /** Whether a machine is running now (`machine ls`). Absent: every machine is taken to be. */
+  isUp: ((machine: string) => Promise<boolean>) | undefined;
+  private readonly upSeen = new Map<string, { up: boolean; at: number }>();
+
   /** Runs a script in an employee's sandbox. Absent in demo mode and in tests without a machine: then nothing is added to prompts. */
   deliver: RunScript | undefined;
 
@@ -166,8 +171,33 @@ export class BrainFeed {
   private machineOf(employeeId: string): string {
     return `inc-${this.o.registry.teamOf(employeeId).id}`;
   }
-  private rootOf(employeeId: string): string {
-    return `${this.o.home ?? "/home/employee/brain"}/${employeeId}`;
+  private rootOf(copy: string): string {
+    return `${this.o.home ?? "/home/employee/brain"}/${copy}`;
+  }
+
+  /**
+   * Which copy a session uses. Everyone has one, at `<home>/<employee>/`. A PA has a second,
+   * `<home>/<employee>.code/` (employee ids have no dots), without its own brain, for work that goes to
+   * a repository: an errand and a code session running side by side never share a folder, so neither
+   * can take files out from under the other, and the code session never has the home data in reach.
+   */
+  copyId(employeeId: string, allowHome = true): string {
+    return !allowHome && this.isHome(employeeId) ? `${employeeId}.code` : employeeId;
+  }
+
+  /** Is the machine running? A copy is never made, or taken out, by starting a machine for it. */
+  private async machineIsUp(machine: string): Promise<boolean> {
+    if (!this.isUp) return true;
+    const seen = this.upSeen.get(machine);
+    if (seen && performance.now() - seen.at < 20_000) return seen.up;
+    let up = false;
+    try {
+      up = await this.isUp(machine);
+    } catch {
+      up = false;
+    }
+    this.upSeen.set(machine, { up, at: performance.now() });
+    return up;
   }
 
   /** Does this employee work on home data (a PA)? */
@@ -213,7 +243,7 @@ export class BrainFeed {
       if (r) repos.set(repoKey(r), r);
     }
     const key = `${[...repos.values()].map((r) => `${repoKey(r)}@${this.o.store.head(r)?.sha ?? ""}`).join(",")}|${scopes.join(",")}|${hash(commandSource.toString("utf8"))}`;
-    const cached = this.built.get(employeeId);
+    const cached = this.built.get(this.copyId(employeeId, allowHome));
     if (cached && cached.key === key) return cached;
 
     const files = new Map<string, SnapshotFile>();
@@ -297,7 +327,7 @@ export class BrainFeed {
       );
     const snap: Snapshot = { id: snapshotId(files.values()), employeeId, files, dirs, skipped, bytes };
     const b: Built = { key, snap, source, included, trimmed };
-    this.built.set(employeeId, b);
+    this.built.set(this.copyId(employeeId, allowHome), b);
     return b;
   }
 
@@ -345,13 +375,13 @@ export class BrainFeed {
     );
   }
 
-  private lastDelivered(key: string, employeeId: string): Delivered | undefined {
+  private lastDelivered(key: string, employeeId: string, copy: string): Delivered | undefined {
     const mem = this.delivered.get(key);
     if (mem) return mem;
     const [row] = this.o.db.all<{ snapshot_id: string; files: string; pending: string }>(
       "SELECT snapshot_id, files, pending FROM brain_synced WHERE machine = ? AND employee_id = ?",
       this.machineOf(employeeId),
-      employeeId,
+      copy,
     );
     if (!row) return undefined;
     try {
@@ -380,11 +410,12 @@ export class BrainFeed {
    * goes on without the files. A PA gets no copy while anyone else works in its sandbox.
    */
   async sync(employeeId: string, allowHome = true): Promise<SyncReport> {
-    const key = `${this.machineOf(employeeId)}:${employeeId}`;
+    const copy = this.copyId(employeeId, allowHome);
+    const key = `${this.machineOf(employeeId)}:${copy}`;
     const prior = this.locks.get(key) ?? Promise.resolve();
     const mine = prior.then(
-      () => this.syncNow(employeeId, key, allowHome),
-      () => this.syncNow(employeeId, key, allowHome),
+      () => this.syncNow(employeeId, copy, key, allowHome),
+      () => this.syncNow(employeeId, copy, key, allowHome),
     );
     this.locks.set(key, mine);
     try {
@@ -394,7 +425,12 @@ export class BrainFeed {
     }
   }
 
-  private async syncNow(employeeId: string, key: string, allowHome: boolean): Promise<SyncReport> {
+  private async syncNow(
+    employeeId: string,
+    copy: string,
+    key: string,
+    allowHome: boolean,
+  ): Promise<SyncReport> {
     try {
       const machine = this.machineOf(employeeId);
       // Copies in machines their employees no longer work in go first.
@@ -402,9 +438,10 @@ export class BrainFeed {
       // A PA's brain is home data: never into a sandbox (one Unix user, open internet) that anyone else
       // works in. Its prompts still get its pages; and a copy that may already be there goes, once.
       if (this.isHome(employeeId) && this.o.registry.machineMates(employeeId).length > 0) {
-        if (!this.cleaned.has(key)) {
-          this.cleaned.add(key);
-          await this.removeCopy(employeeId, machine);
+        // Both of its copies go, once each (and again later if the machine was down).
+        for (const id of [employeeId, `${employeeId}.code`]) {
+          if (this.cleaned.has(`${machine}:${id}`)) continue;
+          if (await this.removeCopy(id, machine)) this.cleaned.add(`${machine}:${id}`);
         }
         return {
           ok: false,
@@ -413,10 +450,19 @@ export class BrainFeed {
           detail: `${employeeId} works on home data and shares ${machine} with others, so nothing is copied there`,
         };
       }
+      // A stopped machine is not started for a copy; the session that follows will have started it.
+      if (!(await this.machineIsUp(machine))) {
+        return {
+          ok: false,
+          how: "skipped",
+          kept: [],
+          detail: `${machine} isn't running, so nothing is copied`,
+        };
+      }
       this.index.refresh();
       const b = this.build(employeeId, allowHome);
-      const root = this.rootOf(employeeId);
-      const last = this.lastDelivered(key, employeeId);
+      const root = this.rootOf(copy);
+      const last = this.lastDelivered(key, employeeId, copy);
       const now = this.o.now();
 
       if (last && last.snap.id === b.snap.id && last.pending.length === 0) {
@@ -520,26 +566,37 @@ export class BrainFeed {
 
   // ---- Copies that don't belong any more -------------------------------------------------------------
 
-  /** Takes an employee's copy out of a machine, and forgets it was there. */
-  async removeCopy(employeeId: string, machine: string): Promise<boolean> {
+  /**
+   * Takes a copy (an employee's, or a PA's `.code` one) out of a machine, and forgets it was there. Not
+   * done while the machine is stopped, which would start it: the record stays, and the next pass does it.
+   */
+  async removeCopy(copy: string, machine: string): Promise<boolean> {
     if (!this.deliver) return false;
-    try {
-      const r = await this.run(employeeId, removeScript(this.rootOf(employeeId)), machine);
-      if (r.code !== 0 || !r.output.includes("@@removed"))
-        throw new Error(r.output.trim().slice(-120) || "failed");
-      this.o.db.run("DELETE FROM brain_synced WHERE machine = ? AND employee_id = ?", machine, employeeId);
-      this.delivered.delete(`${machine}:${employeeId}`);
-      this.keptLogged.delete(`${machine}:${employeeId}`);
-      this.log(`removed ${employeeId}'s brain copy from ${machine}`);
-      return true;
-    } catch (e) {
-      const why = e instanceof Error ? e.message : String(e);
-      if (!this.removeWarned.has(`${machine}:${employeeId}`)) {
-        this.removeWarned.add(`${machine}:${employeeId}`);
+    const employeeId = copy.replace(/\.code$/, "");
+    const note = (why: string) => {
+      if (!this.removeWarned.has(`${machine}:${copy}`)) {
+        this.removeWarned.add(`${machine}:${copy}`);
         this.log(
-          `couldn't remove ${employeeId}'s brain copy from ${machine} (it will be tried again): ${why}`,
+          `${copy}'s brain copy is still in ${machine} (it is removed when the machine is up): ${why}`,
         );
       }
+    };
+    if (!(await this.machineIsUp(machine))) {
+      note(`${machine} isn't running`);
+      return false;
+    }
+    try {
+      const r = await this.run(employeeId, removeScript(this.rootOf(copy)), machine);
+      if (r.code !== 0 || !r.output.includes("@@removed"))
+        throw new Error(r.output.trim().slice(-120) || "failed");
+      this.o.db.run("DELETE FROM brain_synced WHERE machine = ? AND employee_id = ?", machine, copy);
+      this.delivered.delete(`${machine}:${copy}`);
+      this.keptLogged.delete(`${machine}:${copy}`);
+      this.removeWarned.delete(`${machine}:${copy}`);
+      this.log(`removed ${copy}'s brain copy from ${machine}`);
+      return true;
+    } catch (e) {
+      note(e instanceof Error ? e.message : String(e));
       return false;
     }
   }
@@ -565,8 +622,10 @@ export class BrainFeed {
         );
         const people = new Set(this.o.registry.employees().map((e) => e.id));
         for (const r of rows) {
-          if (!/^[a-z0-9-]{1,32}$/.test(r.employee_id) || !/^inc-[a-z0-9-]{1,32}$/.test(r.machine)) continue;
-          const here = people.has(r.employee_id) && this.machineOf(r.employee_id) === r.machine;
+          if (!/^[a-z0-9-]{1,32}(\.code)?$/.test(r.employee_id) || !/^inc-[a-z0-9-]{1,32}$/.test(r.machine))
+            continue;
+          const who = r.employee_id.replace(/\.code$/, "");
+          const here = people.has(who) && this.machineOf(who) === r.machine;
           if (!here) await this.removeCopy(r.employee_id, r.machine);
         }
       } while (this.reconcileAgain);
@@ -648,7 +707,7 @@ export class BrainFeed {
         pages,
         snapshot: report.ok,
         search: report.search !== false,
-        employeeId: i.employeeId,
+        employeeId: this.copyId(i.employeeId, allowHome),
         ...(this.o.home ? { home: this.o.home } : {}),
       },
       { maps: true },
@@ -707,7 +766,7 @@ export class BrainFeed {
           pages,
           snapshot: report.ok,
           search: report.search !== false,
-          employeeId: i.employeeId,
+          employeeId: this.copyId(i.employeeId, allowHome),
           ...(this.o.home ? { home: this.o.home } : {}),
         },
         { maps: changed.map((m) => m.scope) },
@@ -845,7 +904,19 @@ export class BrainFeed {
     const added: BrainUse[] = [];
     const wk = where.kind === "session" ? `s${where.id}` : `c${where.conversation}`;
     for (const path of paths) {
-      const at = pageOfPath(path, employeeId, this.o.home);
+      // The employee's own copy, or a PA's `.code` copy (which has no personal folder of its own).
+      let at = pageOfPath(path, employeeId, this.o.home);
+      if (!at) {
+        const code = `${this.o.home ?? brainHome}/${employeeId}.code/`;
+        if (path.startsWith(code)) {
+          at = pageOfPath(
+            `${this.o.home ?? brainHome}/${employeeId}/${path.slice(code.length)}`,
+            employeeId,
+            this.o.home,
+          );
+          if (at?.scope === `brain:${employeeId}`) at = null;
+        }
+      }
       if (!at || !scopes.includes(at.scope)) continue;
       const seenKey = `${wk}|${at.scope}:${at.slug}`;
       if (this.seenReads.has(seenKey)) continue;

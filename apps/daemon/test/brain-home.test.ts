@@ -199,13 +199,15 @@ describe("a PA's brain and a shared machine", () => {
     const report = await r.feed.sync("pip");
     expect(report).toMatchObject({ ok: false, how: "skipped" });
     expect(existsSync(r.copy("pip"))).toBe(false);
+    // One removal for each of its two copies (the one for errands and the one for code work).
     const removal = r.runs.filter((x) => x.script.includes("@@removed"));
-    expect(removal).toHaveLength(1);
+    expect(removal).toHaveLength(2);
+    expect(removal.map((x) => x.script).join()).toContain("/pip.code'");
     expect(removal[0]).toMatchObject({ employeeId: "pip", machine: "inc-engineering" });
     // Nothing of pip's went anywhere, and asking again doesn't send another removal.
     expect(r.runs.some((x) => x.script.includes("__INC_TAR__"))).toBe(false);
     await r.feed.sync("pip");
-    expect(r.runs.filter((x) => x.script.includes("@@removed"))).toHaveLength(1);
+    expect(r.runs.filter((x) => x.script.includes("@@removed"))).toHaveLength(2);
     // Its prompt still gets its own pages.
     const ctx = await r.feed.forTicket({
       employeeId: "pip",
@@ -219,8 +221,9 @@ describe("a PA's brain and a shared machine", () => {
     expect(existsSync(r.copy("ada", "personal/home"))).toBe(false);
   });
 
-  it("keeps a PA's home data out of work that goes to a repository", async () => {
+  it("keeps a PA's home data out of work that goes to a repository, in a copy of its own", async () => {
     const r = await shared();
+    // Code work first: a copy beside the PA's own, with no personal folder.
     const code = await r.feed.forTicket({
       employeeId: "pip",
       sessionId: null,
@@ -229,9 +232,12 @@ describe("a PA's brain and a shared machine", () => {
     });
     expect(code.text).not.toContain("homedata");
     expect(code.text).not.toContain("Your own brain");
+    expect(code.text).toContain("/pip.code/");
     expect(code.pages.map((p) => p.scope)).not.toContain("brain:pip");
-    // The copy for such a session has no personal folder either.
-    expect(existsSync(r.copy("pip", "personal"))).toBe(false);
+    expect(existsSync(r.copy("pip.code", "company/facts/gh.md"))).toBe(true);
+    expect(existsSync(r.copy("pip.code", "personal"))).toBe(false);
+    expect(existsSync(r.copy("pip"))).toBe(false);
+    // An errand next: the PA's own copy, which the code work can't have touched; and the other way round.
     const errand = await r.feed.forTicket({
       employeeId: "pip",
       sessionId: null,
@@ -239,6 +245,17 @@ describe("a PA's brain and a shared machine", () => {
       query: { title: "dentist address", project: "Home", doneWhen: [] },
     });
     expect(errand.text).toContain("homedata");
+    expect(errand.text).not.toContain("/pip.code/");
+    expect(existsSync(r.copy("pip", "personal/home/dentist.md"))).toBe(true);
+    const before = r.runs.length;
+    await r.feed.forTicket({
+      employeeId: "pip",
+      sessionId: null,
+      allowHome: false,
+      query: { title: "x", project: "Duet", doneWhen: [] },
+    });
+    // No script touched the errand's folder: they have separate copies, and the code one was already current.
+    expect(r.runs.slice(before).every((x) => !x.script.includes(`'${r.copy("pip")}'`))).toBe(true);
     expect(existsSync(r.copy("pip", "personal/home/dentist.md"))).toBe(true);
     // A conversation on a project is code work too.
     const turn = await r.feed.forTurn({
@@ -250,6 +267,79 @@ describe("a PA's brain and a shared machine", () => {
       allowHome: false,
     });
     expect(turn.text).not.toContain("homedata");
+    // Reads in either copy count; a path to a personal page in the code copy counts for nothing.
+    const read = r.feed.noteRead(
+      "pip",
+      [r.copy("pip.code", "company/facts/gh.md"), r.copy("pip.code", "personal/home/dentist.md")],
+      { kind: "session", id: 9 },
+    );
+    expect(read.map((x) => x.slug)).toEqual(["facts/gh"]);
+  });
+
+  it("takes out both of a PA's copies when it ends up sharing a machine", async () => {
+    const r = await shared();
+    await r.feed.sync("pip", true);
+    await r.feed.sync("pip", false);
+    expect(existsSync(r.copy("pip"))).toBe(true);
+    expect(existsSync(r.copy("pip.code"))).toBe(true);
+    r.app.deps.registry.setTeam({ id: "engineering", name: "Engineering", members: ["ada", "kit", "pip"] });
+    await r.feed.sync("pip", false);
+    expect(existsSync(r.copy("pip"))).toBe(false);
+    expect(existsSync(r.copy("pip.code"))).toBe(false);
+  });
+});
+
+describe("a stopped machine", () => {
+  it("is not started to copy into: the session goes on without a copy", async () => {
+    const r = await brainRig();
+    r.commit("handbook", { "facts/gh.md": page("GitHub CLI", "gh", "Use gh.") });
+    r.setUp(false);
+    expect(await r.feed.sync("ada")).toMatchObject({ ok: false, how: "skipped" });
+    expect(r.runs).toEqual([]);
+    const ctx = await r.feed.forTicket({
+      employeeId: "ada",
+      sessionId: null,
+      query: { title: "gh", project: "Duet", doneWhen: [] },
+    });
+    expect(ctx.copy).toBe(false);
+    expect(r.runs).toEqual([]);
+    r.setUp(true);
+    r.clock.advance(1);
+    expect((await r.feed.sync("ada")).ok).toBe(true);
+  });
+
+  it("is not started to take a copy out of; the removal is done once it is up", async () => {
+    const r = await brainRig();
+    r.commit("ada", { "tools/x.md": page("X", "x", "x") });
+    await r.feed.sync("ada");
+    const runs = r.runs.length;
+    r.setUp(false);
+    expect((await r.call("PUT", "/api/teams/design", { name: "Design", members: ["grace"] })).status).toBe(
+      200,
+    );
+    expect((await r.call("PUT", "/api/employees/ada", { teamId: "design" })).status).toBe(200);
+    await r.feed.reconcile();
+    expect(r.runs.length).toBe(runs); // nothing was run in the stopped machine
+    expect(existsSync(r.copy("ada", "personal/tools/x.md"))).toBe(true);
+    expect(r.app.deps.db.all("SELECT machine FROM brain_synced")).toHaveLength(1);
+    expect(r.logs.join("\n")).toContain("is removed when the machine is up");
+    // Up again (the cached answer is a few seconds old; a new look is made after it).
+    r.setUp(true);
+    await r.feed.reconcile();
+    expect(existsSync(r.copy("ada"))).toBe(false);
+    expect(r.runs.at(-1)).toMatchObject({ employeeId: "ada", machine: "inc-engineering" });
+    expect(r.app.deps.db.all("SELECT machine FROM brain_synced")).toEqual([]);
+  });
+
+  it("does not try to take a PA's old copy out of a machine that is stopped", async () => {
+    const r = await brainRig();
+    r.app.deps.registry.setTeam({ id: "engineering", name: "Engineering", members: ["ada", "kit", "pip"] });
+    r.setUp(false);
+    await r.feed.sync("pip");
+    expect(r.runs).toEqual([]);
+    r.setUp(true);
+    await r.feed.sync("pip");
+    expect(r.runs.filter((x) => x.script.includes("@@removed")).length).toBeGreaterThan(0);
   });
 });
 

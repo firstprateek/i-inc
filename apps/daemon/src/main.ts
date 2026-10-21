@@ -146,6 +146,12 @@ setInterval(watchDeploys, 30_000);
 setTimeout(() => void app.storage.maintain(), 2 * 60_000).unref();
 setInterval(() => void app.storage.maintain(), 10 * 60_000);
 
+// Brain copies in machines their employee has left (or that were stopped when it was tried) are removed.
+setInterval(
+  () => void app.deps.brainFeed.reconcile().catch((err) => log(`brain: couldn't tidy copies: ${err}`)),
+  10 * 60_000,
+);
+
 // Each team sandbox in use stays signed in to GitHub as the bot.
 if (real) setInterval(() => void real.keepLoginsFresh(), 5 * 60_000);
 

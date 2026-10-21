@@ -133,10 +133,10 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
   const homeTeamFor = (e: Employee): { id: string; made: boolean } => {
     const teams = d.registry.teams();
     const mine = teams.find((t) => t.members.includes(e.id));
-    if (mine && mine.members.every((m) => m === e.id)) return { id: mine.id, made: false };
+    if (mine?.members.every((m) => m === e.id)) return { id: mine.id, made: false };
     const base = `home-${e.id}`.slice(0, 32);
     const sole = teams.find((t) => t.id === base);
-    if (sole && sole.members.every((m) => m === e.id)) return { id: sole.id, made: false };
+    if (sole?.members.every((m) => m === e.id)) return { id: sole.id, made: false };
     let n = 0;
     let id = base;
     const taken = new Set(teams.map((t) => t.id));
