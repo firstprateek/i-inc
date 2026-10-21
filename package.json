@@ -11,7 +11,8 @@
     "fix": "biome check --write .",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test && pnpm test:host",
-    "test:host": "sh tools/host/test-codex-tools.sh"
+    "test:host": "sh tools/host/test-codex-tools.sh",
+    "bench": "pnpm --filter @i-inc/daemon bench"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.14",

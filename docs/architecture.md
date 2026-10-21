@@ -154,7 +154,8 @@ stored, viewable and revertible but never read back. The foundation is in place:
 frontmatter, a disposable SQLite FTS5 index (`<home>/brain-index.db`, rebuilt from git) and a map per
 scope, with search and map routes (contract C19). Retrieval into briefs, with a copy of the readable
 scopes inside the sandbox, is the next step (T57). The design is in
-[design/brain.md](design/brain.md).
+[design/brain.md](design/brain.md). Timings for the index (1,000-page rebuild, query latency,
+hostile input, 10,000-page maps) are an opt-in benchmark, `pnpm bench`, not part of `pnpm test`.
 
 ## Safety that stays
 

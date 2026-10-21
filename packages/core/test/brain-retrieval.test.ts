@@ -57,7 +57,7 @@ describe("buildQuery", () => {
     expect(buildQuery("NEAR AND OR NOT")).toBe('"near"');
   });
 
-  it("handles 100 KB of hostile input in well under 50 ms", () => {
+  it("handles 100 KB of hostile input quickly (a loose bound; strict numbers are in `pnpm bench`)", () => {
     const inputs = [
       '"(*^:'.repeat(20_000),
       "a".repeat(100_000),
@@ -67,7 +67,7 @@ describe("buildQuery", () => {
     for (const text of inputs) {
       const t = performance.now();
       const q = buildQuery(text);
-      expect(performance.now() - t).toBeLessThan(50);
+      expect(performance.now() - t).toBeLessThan(2000);
       expect(q.length).toBeLessThan(2000);
     }
   });

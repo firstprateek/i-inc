@@ -483,6 +483,11 @@ export class BrainIndex implements RetrievalSource {
       .all<PageRow>("SELECT slug, title, description FROM pages WHERE scope = ? ORDER BY slug", scope)
       .map((r) => ({ slug: r.slug, title: r.title, description: r.description }));
     const built = buildMap(pages);
+    // Shared between callers, so read-only.
+    for (const lines of Object.values(built.sections)) Object.freeze(lines);
+    Object.freeze(built.root);
+    Object.freeze(built.sections);
+    Object.freeze(built);
     this.maps.set(scope, built);
     return built;
   }
