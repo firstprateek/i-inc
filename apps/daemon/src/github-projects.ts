@@ -290,6 +290,12 @@ export class GitHubProjects {
     return value;
   }
 
+  /** The bot's login on GitHub (`<slug>[bot]`), which the commits it makes are authored by; unknown with a stand-in token. */
+  async botLogin(): Promise<string | undefined> {
+    const info = await this.installation().catch(() => null);
+    return info ? `${info.slug}[bot]` : undefined;
+  }
+
   async status(): Promise<GitHubStatus> {
     const install = `https://github.com/apps/${DEFAULT_SLUG}/installations/new`;
     if (!this.tokens) {

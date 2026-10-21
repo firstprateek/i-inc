@@ -158,6 +158,12 @@ const activeLabel = (page) =>
       .slice(0, 60);
   });
 
+/** "Refresh now" within 3 s of the last list fetch is held back by the daemon, so let that pass first. */
+const refreshNow = async (page) => {
+  await page.waitForTimeout(3300);
+  await page.getByRole("button", { name: "Refresh now" }).click();
+};
+
 const settle = (page, ms = 600) => page.waitForTimeout(ms);
 
 async function audit(page, combo, label) {
@@ -356,7 +362,7 @@ try {
   await page.getByText("Waiting for you").first().waitFor();
   ok(true, "after a reload the steps are still there");
   ok((await page.locator("input[name=name]").count()) === 0, "a reload does not start the form over");
-  await page.getByRole("button", { name: "Refresh now" }).click();
+  await refreshNow(page);
   await page.getByText("Not there yet").waitFor();
   const personalCalls = (await stubCall(PERSONAL, { op: "calls" })).calls;
   ok(
@@ -385,7 +391,7 @@ try {
     files: { "README.md": "# mine" },
     sizeLag: true,
   });
-  await page.getByRole("button", { name: "Refresh now" }).click();
+  await refreshNow(page);
   await page.waitForFunction(
     () =>
       document

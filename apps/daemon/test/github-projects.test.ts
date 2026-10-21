@@ -21,6 +21,8 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
 
   it("lists installation repositories and flags already registered ones", async () => {
     const fakeFetch = (async (url: string | URL | Request) => {
+      // A repo that looks empty is asked of GitHub's commit list; this one has none.
+      if (String(url).includes("/commits")) return new Response("{}", { status: 409 });
       expect(String(url)).toContain("/installation/repositories");
       return new Response(
         JSON.stringify({
@@ -62,6 +64,7 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
 
     expect(repos).toHaveLength(2);
     expect(repos[0]).toEqual({
+      id: 1,
       fullName: "firstprateek/duet",
       name: "duet",
       owner: "firstprateek",
@@ -778,10 +781,16 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
     }
   });
 
-  it("carries on a bootstrap only from its own commits, adding what is missing and never overwriting", async () => {
+  it("carries on a bootstrap only from commits the bot wrote to the starter's own paths", async () => {
     const puts: { path: string; sha?: string }[] = [];
-    const scaffold = { sha: "1", commit: { message: "Initialize README.md (i.inc scaffold)" } };
-    const make = (commits: unknown[], putStatus = 201) =>
+    type C = { sha: string; message: string; author: string; files: string[] };
+    const mine: C = {
+      sha: "a".repeat(40),
+      message: "Initialize README.md (i.inc scaffold)",
+      author: "i-inc-bot[bot]",
+      files: ["README.md"],
+    };
+    const make = (commits: C[], putStatus = 201) =>
       (async (url: string | URL | Request, init?: RequestInit) => {
         const u = String(url);
         if (init?.method === "PUT") {
@@ -789,33 +798,74 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
           puts.push({ path: u.split("/contents/")[1] ?? "", ...(body.sha ? { sha: body.sha } : {}) });
           return new Response(JSON.stringify({ content: {}, message: "exists" }), { status: putStatus });
         }
-        if (u.includes("/commits")) return new Response(JSON.stringify(commits), { status: 200 });
+        const one = /\/commits\/([0-9a-f]+)$/.exec(u);
+        if (one) {
+          const c = commits.find((x) => x.sha === one[1]);
+          return c
+            ? new Response(JSON.stringify({ sha: c.sha, files: c.files.map((filename) => ({ filename })) }), {
+                status: 200,
+              })
+            : new Response("{}", { status: 404 });
+        }
+        if (u.includes("/commits")) {
+          return new Response(
+            JSON.stringify(
+              commits.map((c) => ({
+                sha: c.sha,
+                commit: { message: c.message },
+                author: { login: c.author },
+              })),
+            ),
+            { status: 200 },
+          );
+        }
         if (u.includes("/contents/README.md"))
           return new Response(JSON.stringify({ sha: "x" }), { status: 200 });
         return new Response("Not found", { status: 404 });
       }) as unknown as typeof fetch;
     const o = { api: "https://mock.github" };
+    const force = { repo: "o/r", template: "minimal" as const, force: true, botLogin: "i-inc-bot[bot]" };
 
     // No force: a repo with a commit is refused.
     await expect(
-      bootstrapRepo(fakeTokenSource, { repo: "o/r", template: "minimal" }, { ...o, fetch: make([scaffold]) }),
+      bootstrapRepo(fakeTokenSource, { repo: "o/r", template: "minimal" }, { ...o, fetch: make([mine]) }),
     ).rejects.toBeInstanceOf(NotEmptyError);
-    // Force, but a commit that isn't a scaffold commit: refused.
+    // Force, but a commit that isn't a starter commit: refused.
+    await expect(
+      bootstrapRepo(fakeTokenSource, force, {
+        ...o,
+        fetch: make([mine, { ...mine, sha: "b".repeat(40), message: "Add my notes", files: ["notes.md"] }]),
+      }),
+    ).rejects.toBeInstanceOf(NotEmptyError);
+    // Someone else's commit with the starter's message: refused (the author must be the bot).
+    await expect(
+      bootstrapRepo(fakeTokenSource, force, { ...o, fetch: make([{ ...mine, author: "mallory" }]) }),
+    ).rejects.toBeInstanceOf(NotEmptyError);
+    // The bot's login unknown (a stand-in token): refused.
     await expect(
       bootstrapRepo(
         fakeTokenSource,
         { repo: "o/r", template: "minimal", force: true },
-        { ...o, fetch: make([scaffold, { sha: "2", commit: { message: "Add my notes" } }]) },
+        { ...o, fetch: make([mine]) },
       ),
+    ).rejects.toBeInstanceOf(NotEmptyError);
+    // The right author and message, but the commit touches a file outside the starter's paths: refused.
+    await expect(
+      bootstrapRepo(fakeTokenSource, force, {
+        ...o,
+        fetch: make([{ ...mine, files: ["README.md", "secrets.env"] }]),
+      }),
+    ).rejects.toBeInstanceOf(NotEmptyError);
+    await expect(
+      bootstrapRepo(fakeTokenSource, force, {
+        ...o,
+        fetch: make([{ ...mine, message: "Initialize evil.sh (i.inc scaffold)", files: ["evil.sh"] }]),
+      }),
     ).rejects.toBeInstanceOf(NotEmptyError);
     expect(puts).toEqual([]);
 
-    // Force, all commits are scaffold commits: README.md is there and is left alone; .gitignore is added, with no sha.
-    const res = await bootstrapRepo(
-      fakeTokenSource,
-      { repo: "o/r", template: "minimal", force: true },
-      { ...o, fetch: make([scaffold]) },
-    );
+    // All starter commits by the bot: README.md is there and is left alone; .gitignore is added, with no sha.
+    const res = await bootstrapRepo(fakeTokenSource, force, { ...o, fetch: make([mine]) });
     expect(res.commits).toBe(1);
     expect(puts).toEqual([{ path: ".gitignore" }]);
 

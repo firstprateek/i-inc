@@ -535,6 +535,8 @@ export interface GitHubRepoSummary {
   empty: boolean;
   pushedAt: string | null;
   alreadyRegistered: boolean;
+  /** GitHub's numeric id: it survives a rename or a transfer, so "the same repo" is told by it when known. */
+  id?: number;
 }
 
 export interface GitHubInspectResult {
@@ -562,6 +564,8 @@ export interface BootstrapOptions {
    * commit; it then adds the files that are missing and never changes one that is there.
    */
   force?: boolean;
+  /** The bot's login (`<slug>[bot]`): the author a starter commit must have for `force` to carry on from it. */
+  botLogin?: string;
 }
 
 export interface BootstrapResult {
@@ -599,11 +603,12 @@ export async function fetchInstallationRepos(
     }
     page++;
   }
-  return rawRepos.map((r) => {
+  const out: InstallationRepo[] = rawRepos.map((r) => {
     const fullName = String(r.full_name ?? "");
     const size = typeof r.size === "number" ? r.size : 0;
     const pushedAt = typeof r.pushed_at === "string" ? r.pushed_at : null;
     return {
+      ...(typeof r.id === "number" ? { id: r.id } : {}),
       fullName,
       name: String(r.name ?? ""),
       owner: String((r.owner as Record<string, unknown>)?.login ?? fullName.split("/")[0] ?? ""),
@@ -615,12 +620,35 @@ export async function fetchInstallationRepos(
       pushedAt,
     };
   });
+  // The size and push time lag (a README-only repo can read 0), so a repo they call empty is asked of GitHub's
+  // commit list. The answer is cached with the list. At most 20 are asked a time; the rest stay a hint.
+  const hinted = out.filter((r) => r.empty && isValidRepo(r.fullName)).slice(0, EMPTY_CHECKS_PER_LIST);
+  await Promise.all(
+    hinted.map(async (r) => {
+      try {
+        if (await hasCommits(f, api, r.fullName, { authorization: `Bearer ${token}` })) r.empty = false;
+      } catch {
+        // Can't tell: it stays a hint, and the daemon checks again before anything is written.
+      }
+    }),
+  );
+  return out;
 }
 
+const EMPTY_CHECKS_PER_LIST = 20;
+
 /** Marks which of the repos are projects already. */
-export function markRegistered(repos: InstallationRepo[], registeredRepos: string[]): GitHubRepoSummary[] {
+export function markRegistered(
+  repos: InstallationRepo[],
+  registeredRepos: string[],
+  registeredIds: Iterable<number> = [],
+): GitHubRepoSummary[] {
   const registered = new Set(registeredRepos.map((r) => r.toLowerCase()));
-  return repos.map((r) => ({ ...r, alreadyRegistered: registered.has(r.fullName.toLowerCase()) }));
+  const ids = new Set(registeredIds);
+  return repos.map((r) => ({
+    ...r,
+    alreadyRegistered: registered.has(r.fullName.toLowerCase()) || (r.id !== undefined && ids.has(r.id)),
+  }));
 }
 
 /** Lists all repositories accessible to the GitHub App installation. */
@@ -697,24 +725,41 @@ async function hasCommits(
   }
 }
 
-/** The scaffold writes every commit with this message, so a repo made only of them is ours to finish. */
-const scaffoldMessage = /^Initialize .+ \(i\.inc scaffold\)$/;
+const scaffoldMessage = /^Initialize (.+) \(i\.inc scaffold\)$/;
 
+/**
+ * Whether every commit in the repo is one this bootstrap made: written by the bot (its login), with the starter's
+ * own message, and touching exactly one file, which is one of the starter's paths. A message alone proves nothing,
+ * since anyone can write it.
+ */
 async function onlyScaffoldCommits(
   f: typeof fetch,
   api: string,
   repo: string,
   headers: HeadersInit,
+  starterPaths: Set<string>,
+  botLogin: string | undefined,
 ): Promise<boolean> {
+  if (!botLogin) return false;
   const list = (await call(f, `${api}/repos/${repo}/commits?per_page=100`, {
     method: "GET",
     headers,
   })) as unknown;
-  if (!Array.isArray(list) || list.length === 0 || list.length >= 100) return false;
-  return list.every((c) => {
-    const message = ((c as { commit?: { message?: unknown } })?.commit?.message ?? "") as string;
-    return typeof message === "string" && scaffoldMessage.test(message);
-  });
+  // A starter is a handful of files: more commits than paths means something else is in there.
+  if (!Array.isArray(list) || list.length === 0 || list.length > starterPaths.size) return false;
+  for (const c of list as { sha?: unknown; author?: { login?: unknown }; commit?: { message?: unknown } }[]) {
+    const message = typeof c?.commit?.message === "string" ? c.commit.message : "";
+    const path = scaffoldMessage.exec(message)?.[1];
+    const login = typeof c?.author?.login === "string" ? c.author.login : "";
+    if (!path || !starterPaths.has(path) || login.toLowerCase() !== botLogin.toLowerCase()) return false;
+    if (typeof c.sha !== "string" || !/^[0-9a-f]{7,64}$/i.test(c.sha)) return false;
+    const detail = (await call(f, `${api}/repos/${repo}/commits/${c.sha}`, { method: "GET", headers })) as {
+      files?: { filename?: unknown }[];
+    };
+    const touched = Array.isArray(detail.files) ? detail.files.map((x) => x.filename) : [];
+    if (touched.length !== 1 || touched[0] !== path) return false;
+  }
+  return true;
 }
 
 /** Inspects a repository to detect language, build tools, check recipes, and default branch. */
@@ -1039,7 +1084,7 @@ export async function bootstrapRepo(
     if (!opts.force) {
       throw new NotEmptyError("This repository already has files, so i.inc won't write a starter into it.");
     }
-    if (!(await onlyScaffoldCommits(f, api, repo, authHeader))) {
+    if (!(await onlyScaffoldCommits(f, api, repo, authHeader, new Set(Object.keys(files)), opts.botLogin))) {
       throw new NotEmptyError(
         "This repository has files that i.inc didn't write, so i.inc won't write a starter into it.",
       );

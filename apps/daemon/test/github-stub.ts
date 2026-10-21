@@ -16,8 +16,18 @@ export interface StubRepo {
   defaultBranch?: string;
   /** GitHub's `size` lags: report 0 KB although the repo has files (a fresh README-only repo does this). */
   sizeLag?: boolean;
-  /** Commit messages, oldest first. Files given up front count as one "Initial commit". */
-  commits?: string[];
+  /** Commits, oldest first. Files given up front count as one "Initial commit" by their owner. */
+  commits?: StubCommit[];
+  /** GitHub's numeric repo id: it stays when the repo is renamed. */
+  id?: number;
+}
+
+export interface StubCommit {
+  sha: string;
+  message: string;
+  /** The author's login. A starter commit's is the bot's (`state.botLogin`). */
+  author: string;
+  files: string[];
 }
 
 export interface StubOptions {
@@ -45,7 +55,10 @@ export function createGitHubStub(o: StubOptions = {}) {
     accountType: o.accountType ?? ("Organization" as "Organization" | "User"),
     permissions: o.permissions ?? { contents: "write", pull_requests: "write", administration: "write" },
     installationId: o.installationId ?? "4242",
-    repos: (o.repos ?? []).map((r) => ({ ...r })),
+    repos: (o.repos ?? []).map((r, i): StubRepo => ({ ...r, id: r.id ?? i + 1 })),
+    /** Who the commits written with the installation token are authored by. */
+    botLogin: "i-inc-bot[bot]",
+    shaCounter: 0,
     /** When set, every call fails with this: `{ status, headers?, message? }`. */
     fail: null as null | { status: number; headers?: Record<string, string>; message?: string },
     /** A per-path failure, such as a 422 on creating a repo. */
@@ -70,10 +83,18 @@ export function createGitHubStub(o: StubOptions = {}) {
       (r) => r.owner.toLowerCase() === owner.toLowerCase() && r.name.toLowerCase() === name.toLowerCase(),
     );
 
+  const sha = () => (++state.shaCounter).toString(16).padStart(40, "0");
+  /** A repo's commits; files given up front are one earlier commit of someone else's. */
+  const commitsOf = (r: StubRepo): StubCommit[] => {
+    r.commits ??= Object.keys(r.files ?? {}).length
+      ? [{ sha: sha(), message: "Initial commit", author: r.owner, files: Object.keys(r.files ?? {}) }]
+      : [];
+    return r.commits;
+  };
   const meta = (r: StubRepo) => {
     const files = Object.keys(r.files ?? {});
     return {
-      id: 1,
+      id: r.id ?? 1,
       name: r.name,
       full_name: `${r.owner}/${r.name}`,
       owner: { login: r.owner },
@@ -150,6 +171,7 @@ export function createGitHubStub(o: StubOptions = {}) {
         );
       }
       const repo: StubRepo = {
+        id: Math.max(0, ...state.repos.map((r) => r.id ?? 0)) + 1,
         owner,
         name: b.name,
         private: b.private ?? true,
@@ -165,11 +187,24 @@ export function createGitHubStub(o: StubOptions = {}) {
       if (!repo) return reply({ message: "Not Found" }, 404);
       const rest = m4[3] ?? "";
       if (req.method === "GET" && rest === "") return reply(meta(repo));
+      const one = at("GET", /^\/commits\/([0-9a-f]+)$/, rest);
+      if (one) {
+        const c = commitsOf(repo).find((x) => x.sha === one[1]);
+        if (!c) return reply({ message: "No commit found" }, 404);
+        return reply({
+          sha: c.sha,
+          commit: { message: c.message },
+          author: { login: c.author },
+          files: c.files.map((filename) => ({ filename })),
+        });
+      }
       if (req.method === "GET" && rest.startsWith("/commits")) {
-        repo.commits ??= Object.keys(repo.files ?? {}).length ? ["Initial commit"] : [];
-        if (!repo.commits.length) return reply({ message: "Git Repository is empty." }, 409);
+        const list = commitsOf(repo);
+        if (!list.length) return reply({ message: "Git Repository is empty." }, 409);
         return reply(
-          [...repo.commits].reverse().map((message, i) => ({ sha: `c${i}`, commit: { message } })),
+          [...list]
+            .reverse()
+            .map((c) => ({ sha: c.sha, commit: { message: c.message }, author: { login: c.author } })),
         );
       }
       if (req.method === "GET" && rest === "/contents") {
@@ -190,8 +225,12 @@ export function createGitHubStub(o: StubOptions = {}) {
         if (repo.files[file] !== undefined && !(body as { sha?: string })?.sha) {
           return reply({ message: "Invalid request. sha wasn't supplied." }, 422);
         }
-        repo.commits ??= Object.keys(repo.files).length ? ["Initial commit"] : [];
-        repo.commits.push(String((body as { message?: string }).message ?? ""));
+        commitsOf(repo).push({
+          sha: sha(),
+          message: String((body as { message?: string }).message ?? ""),
+          author: state.botLogin,
+          files: [file],
+        });
         repo.files[file] = Buffer.from(
           String((body as { content?: string }).content ?? ""),
           "base64",

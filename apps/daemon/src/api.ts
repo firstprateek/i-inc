@@ -171,6 +171,43 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     return out;
   };
 
+  /** GitHub's numeric id of a repo the bot can see (from the cached list), or undefined when it can't be told. */
+  const repoIdOf = async (repo: string): Promise<number | undefined> => {
+    if (!gh.configured) return undefined;
+    try {
+      const list = await gh.repos();
+      return list.repos.find((r) => r.fullName.toLowerCase() === repo.toLowerCase())?.id;
+    } catch {
+      return undefined;
+    }
+  };
+
+  /** Records, as projects are read, the GitHub id of those that don't have one (told by name, from the cached list). */
+  const backfillRepoIds = async () => {
+    const missing = d.registry.projects().filter((p) => p.repoId === undefined);
+    if (!missing.length || !gh.configured) return;
+    let repos: { fullName: string; id?: number }[];
+    try {
+      repos = (await gh.repos()).repos;
+    } catch {
+      return;
+    }
+    for (const p of missing) {
+      const id = repos.find((r) => r.fullName.toLowerCase() === p.repo.toLowerCase())?.id;
+      if (id !== undefined) d.registry.addProject({ ...p, repoId: id });
+    }
+  };
+
+  /** The project that already uses this repo: by GitHub's id when both are known (a rename keeps it), and by name. */
+  const projectUsing = (repo: string, repoId: number | undefined, except?: string) =>
+    d.registry
+      .projects()
+      .find(
+        (p) =>
+          p.id !== except &&
+          (p.repo.toLowerCase() === repo.toLowerCase() || (repoId !== undefined && p.repoId === repoId)),
+      );
+
   /** One line for a ticket in a project's list: how it ended, or where it is. */
   const ticketLine = (st: TicketState): string => st.outcome ?? st.status;
 
@@ -695,8 +732,12 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         if (!checks.length || !checks.every((c) => typeof c === "string" && c.trim())) {
           return json({ error: "checks must be the recipe's commands, in order" }, 400);
         }
-        const repoLower = body.repo.toLowerCase();
-        const usedBy = d.registry.projects().find((p) => p.id !== id && p.repo.toLowerCase() === repoLower);
+        await backfillRepoIds();
+        const priorProject = d.registry.project(id);
+        const sameRepo = priorProject?.repo.toLowerCase() === body.repo.toLowerCase();
+        const repoId =
+          sameRepo && priorProject?.repoId !== undefined ? priorProject.repoId : await repoIdOf(body.repo);
+        const usedBy = projectUsing(body.repo, repoId, id);
         if (usedBy) {
           return json(
             {
@@ -744,6 +785,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           ...(perDay !== undefined ? { followUpsPerDay: perDay as number } : {}),
           ...(body.autoRelease !== undefined ? { autoRelease: body.autoRelease } : {}),
           ...(defaultBranch ? { defaultBranch } : {}),
+          ...(repoId !== undefined ? { repoId } : {}),
         });
         return json({ project: d.registry.project(id), policy: d.registry.projectPolicy(id) });
       },
@@ -779,10 +821,16 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         try {
           const refresh = new URL(req.url).searchParams.get("refresh") === "1";
           const list = await gh.repos(refresh);
-          const registered = d.registry.projects().map((p) => p.repo);
+          await backfillRepoIds();
+          const projects = d.registry.projects();
+          const ids = projects.flatMap((p) => (p.repoId === undefined ? [] : [p.repoId]));
           return json({
             configured: true,
-            repos: markRegistered(list.repos, registered),
+            repos: markRegistered(
+              list.repos,
+              projects.map((p) => p.repo),
+              ids,
+            ),
             fetchedAt: list.fetchedAt,
             ...(list.warning ? { warning: list.warning } : {}),
             ...(list.throttled ? { throttled: true } : {}),
@@ -880,6 +928,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       "GET",
       "/api/project-overview",
       async () => {
+        await backfillRepoIds();
         const out = [];
         for (const p of d.registry.projects()) out.push(await projectStatus(p));
         return json({ projects: out });
@@ -890,6 +939,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       "GET",
       "/api/projects/:id",
       async (_req, { id = "" }) => {
+        await backfillRepoIds();
         const p = d.registry.project(id);
         if (!p) return json({ error: "no such project" }, 404);
         const status = await projectStatus(p);
@@ -934,6 +984,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
 
         inFlightBootstraps.add(normalizedId);
         let repoKey: string | null = null;
+        let idKey: string | null = null;
         try {
           const body = (await req.json().catch(() => ({}))) as {
             repo?: unknown;
@@ -953,7 +1004,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           }
           const repo = body.repo;
           // One project per repo, whatever the project is called and however the repo's case is written.
-          const using = d.registry.projects().find((p) => p.repo.toLowerCase() === repo.toLowerCase());
+          const using = projectUsing(repo, undefined);
           if (using || inFlightRepos.has(repo.toLowerCase())) {
             return json(
               {
@@ -968,6 +1019,28 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           }
           repoKey = repo.toLowerCase();
           inFlightRepos.add(repoKey);
+
+          // The same repo under a new name (renamed or transferred on GitHub) is told by GitHub's id.
+          await backfillRepoIds();
+          const repoId = await repoIdOf(repo);
+          if (repoId !== undefined) {
+            idKey = `#${repoId}`;
+            const sameById = projectUsing(repo, repoId);
+            if (sameById || inFlightRepos.has(idKey)) {
+              idKey = sameById ? null : idKey;
+              return json(
+                {
+                  error: sameById
+                    ? `${repo} is already the project "${sameById.id}" (as ${sameById.repo}). A repo can be one project only.`
+                    : `${repo} is being added right now. Wait for that to finish.`,
+                  code: "in-use",
+                  ...(sameById ? { project: sameById.id } : {}),
+                },
+                409,
+              );
+            }
+            inFlightRepos.add(idKey);
+          }
 
           if (body.mode !== undefined && body.mode !== "direct" && body.mode !== "owner-merges") {
             return json({ error: 'mode must be "direct" or "owner-merges"' }, 400);
@@ -1061,6 +1134,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
               return upstream(e, "failed to inspect before bootstrap");
             }
 
+            // Only a carry-on needs to know who the bot is: it may continue from commits the bot wrote.
+            const botLogin = force ? await gh.botLogin() : undefined;
             try {
               const res = await bootstrapRepo(
                 gh.source,
@@ -1070,6 +1145,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
                   ...(typeof body.description === "string" ? { description: body.description } : {}),
                   ...(typeof body.defaultBranch === "string" ? { defaultBranch: body.defaultBranch } : {}),
                   ...(force ? { force: true } : {}),
+                  ...(botLogin ? { botLogin } : {}),
                 },
                 gh.fetchDeps,
               );
@@ -1125,6 +1201,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
             protectedPaths,
             autoRelease: body.autoRelease === true,
             ...(defaultBranch ? { defaultBranch } : {}),
+            ...(repoId !== undefined ? { repoId } : {}),
           });
 
           if (Array.isArray(body.employees)) {
@@ -1146,6 +1223,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         } finally {
           inFlightBootstraps.delete(normalizedId);
           if (repoKey) inFlightRepos.delete(repoKey);
+          if (idKey) inFlightRepos.delete(idKey);
         }
       },
     ],

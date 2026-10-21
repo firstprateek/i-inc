@@ -541,8 +541,8 @@ describe("a repo's files are never written over (review of #88)", () => {
   it("reads a README-only repo whose size GitHub still reports as 0 as having files", async () => {
     const { call, stub } = await setup({ repos: [readme] });
     const list = await call("GET", "/api/github/repos");
-    // The list can only go by size and push time: a hint.
-    expect(list.body.repos[0].empty).toBe(true);
+    // The list asks GitHub's commit list about a repo that looks empty, so the badge is right too.
+    expect(list.body.repos[0].empty).toBe(false);
     const inspected = await call("GET", "/api/github/repos/acme/notes/inspect");
     expect(inspected.body.empty).toBe(false);
 
@@ -673,5 +673,129 @@ describe("a repo's files are never written over (review of #88)", () => {
     await call("GET", "/api/github/repos");
     const r = await call("GET", "/api/github/repos?refresh=1");
     expect(r.body.throttled).toBe(true);
+  });
+});
+
+describe("the starter's commits can't be spoofed, and a rename doesn't make a second project (review of #88)", () => {
+  const hex = (n: number) => n.toString(16).padStart(40, "0");
+  const starter = (author: string, path = "README.md", files = [path]) => ({
+    sha: hex(author.length + path.length),
+    message: `Initialize ${path} (i.inc scaffold)`,
+    author,
+    files,
+  });
+
+  it("won't carry on from a commit that only has the starter's message", async () => {
+    const { call, stub } = await setup({
+      repos: [
+        {
+          owner: "acme",
+          name: "spoof",
+          files: { "README.md": "# not yours to change" },
+          commits: [starter("mallory")],
+        },
+      ],
+    });
+    const r = await call("POST", "/api/projects/spoof/bootstrap", {
+      repo: "acme/spoof",
+      template: "minimal",
+      force: true,
+    });
+    expect(r.status).toBe(409);
+    expect(r.body.code).toBe("not-empty");
+    expect(stub.state.repos[0]?.files?.["README.md"]).toBe("# not yours to change");
+    expect(stub.state.calls.filter((c) => c.method === "PUT")).toEqual([]);
+  });
+
+  it("won't carry on from the bot's commit if it touched something that isn't the starter's", async () => {
+    const bot = "i-inc-bot[bot]";
+    for (const commit of [starter(bot, "evil.sh"), starter(bot, "README.md", ["README.md", "secrets.env"])]) {
+      const { call, stub } = await setup({
+        repos: [{ owner: "acme", name: "odd", files: { "README.md": "x" }, commits: [commit] }],
+      });
+      const r = await call("POST", "/api/projects/odd/bootstrap", {
+        repo: "acme/odd",
+        template: "minimal",
+        force: true,
+      });
+      expect(r.status, JSON.stringify(commit.files)).toBe(409);
+      expect(stub.state.calls.filter((c) => c.method === "PUT")).toEqual([]);
+    }
+  });
+
+  it("still carries on from the bot's own starter commits", async () => {
+    const { call, stub } = await setup({
+      repos: [
+        {
+          owner: "acme",
+          name: "mine",
+          files: { "README.md": "# mine" },
+          commits: [starter("i-inc-bot[bot]")],
+        },
+      ],
+    });
+    const r = await call("POST", "/api/projects/mine/bootstrap", {
+      repo: "acme/mine",
+      template: "minimal",
+      force: true,
+    });
+    expect(r.status).toBe(201);
+    expect(stub.state.repos[0]?.files?.["README.md"]).toBe("# mine");
+    expect(stub.state.repos[0]?.files?.[".gitignore"]).toBeDefined();
+  });
+
+  it("knows a renamed repo is the same repo: a project keeps GitHub's id", async () => {
+    const { call, stub, app } = await setup({
+      repos: [{ owner: "acme", name: "old", id: 77, files: { "package.json": "{}" } }],
+    });
+    const added = await call("POST", "/api/projects/p1/bootstrap", { repo: "acme/old", checks: ["make"] });
+    expect(added.status).toBe(201);
+    expect(app.deps.registry.project("p1")?.repoId).toBe(77);
+
+    const first = stub.state.repos[0];
+    if (first) first.name = "new"; // renamed on GitHub: same id
+    app.clock.advance(1);
+    const list = await call("GET", "/api/github/repos");
+    expect(list.body.repos.find((r: { id: number }) => r.id === 77)).toMatchObject({
+      fullName: "acme/new",
+      alreadyRegistered: true,
+    });
+
+    const again = await call("POST", "/api/projects/p2/bootstrap", { repo: "acme/new", checks: ["make"] });
+    expect(again.status).toBe(409);
+    expect(again.body).toMatchObject({ code: "in-use", project: "p1" });
+    const edit = await call("PUT", "/api/projects/p3", { repo: "acme/new", checks: ["make"] });
+    expect(edit.status).toBe(409);
+    expect(app.deps.registry.projects().filter((p) => p.repoId === 77).length).toBe(1);
+  });
+
+  it("learns the id of a project that has none, when it is next read, and a later rename is caught", async () => {
+    const { call, stub, app } = await setup();
+    app.deps.registry.addProject({ id: "legacy", repo: "acme/duet-web", checks: ["make"] });
+    expect(app.deps.registry.project("legacy")?.repoId).toBeUndefined();
+    await call("GET", "/api/project-overview");
+    const id = stub.state.repos[0]?.id;
+    expect(app.deps.registry.project("legacy")?.repoId).toBe(id);
+
+    const first = stub.state.repos[0];
+    if (first) first.name = "duet-web-2";
+    app.clock.advance(1);
+    const again = await call("POST", "/api/projects/second/bootstrap", {
+      repo: "acme/duet-web-2",
+      checks: ["make"],
+    });
+    expect(again.status).toBe(409);
+    expect(again.body.project).toBe("legacy");
+  });
+
+  it("keeps the id when a project is edited, and finds it again when its repo changes", async () => {
+    const { call, app } = await setup();
+    await call("POST", "/api/projects/a/bootstrap", { repo: "acme/duet-web", checks: ["make"] });
+    const id = app.deps.registry.project("a")?.repoId;
+    expect(id).toBeDefined();
+    await call("PUT", "/api/projects/a", { repo: "acme/duet-web", checks: ["x"] });
+    expect(app.deps.registry.project("a")?.repoId).toBe(id);
+    await call("PUT", "/api/projects/a", { repo: "acme/empty-one", checks: ["x"] });
+    expect(app.deps.registry.project("a")?.repoId).not.toBe(id);
   });
 });
