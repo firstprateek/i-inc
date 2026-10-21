@@ -130,7 +130,9 @@ export class IncConvTurn extends LitElement {
   private renderPart(p: ResponsePart, last: boolean, turn: AnyTurn) {
     switch (p.kind) {
       case ResponsePartKind.Markdown:
-        return p.content ? html`<div class="md">${this.cache(p.id).render(p.content, this.active && last)}</div>` : nothing;
+        return p.content
+          ? html`<div class="md">${this.cache(p.id).render(p.content, this.active && last)}</div>`
+          : nothing;
       case ResponsePartKind.Reasoning:
         return html`<details class="think"><summary>${this.active && last ? "Thinking…" : "Thinking"}</summary><div class="md">${this.cache(p.id).render(p.content, this.active && last)}</div></details>`;
       case ResponsePartKind.ToolCall:

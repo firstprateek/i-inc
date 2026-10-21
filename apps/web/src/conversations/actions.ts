@@ -216,3 +216,18 @@ export async function attachmentOf(file: File): Promise<Json> {
     data: btoa(bin),
   };
 }
+
+/** The daemon's words for a refused conversation, as a sentence for the owner. Anything unknown is said plainly. */
+export function friendlyError(message: string): string {
+  const m = message.trim();
+  if (/^no employee\b/i.test(m)) return "That employee isn't available.";
+  if (/^no project\b/i.test(m)) return "That project isn't available.";
+  const works = /^(.+) doesn't work on (.+)$/.exec(m);
+  if (works) return `${works[1]} doesn't work on ${works[2]}. Pick another project or another employee.`;
+  if (/^no engine\b/i.test(m)) return "That employee has no engine set up.";
+  if (/free slot|\d+ of \d+ conversations/i.test(m))
+    return "The team already has all its conversations running. Stop or archive one, then try again.";
+  if (/github app|couldn't open|could not open|502/i.test(m)) return `Couldn't start the conversation: ${m}`;
+  if (/Can't reach i\.inc/i.test(m)) return "Can't reach i.inc. Check the connection and try again.";
+  return m ? `Couldn't start the conversation: ${m}` : "Couldn't start the conversation.";
+}

@@ -6,6 +6,7 @@ import type { Employee } from "@i-inc/core";
 import { css, html, LitElement, nothing } from "lit";
 import { ahp, useAhp } from "../ahp/hub.ts";
 import { type AccountRateLimit, api, type Conversation, refresh } from "../api.ts";
+import { friendlyError } from "../conversations/actions.ts";
 import { cardStyles } from "../conversations/styles.ts";
 import { notifyNeedsYou } from "../needs-you.ts";
 import { draftHash } from "../routes.ts";
@@ -42,6 +43,7 @@ export class IncConversations extends LitElement {
     lost: { state: true },
     kb: { state: true },
     sheet: { state: true },
+    ready: { state: true },
   };
   declare selectedId: string;
   /** `#/conversations/new/<employee>[/<project>]`: a conversation the first message will create. */
@@ -63,6 +65,7 @@ export class IncConversations extends LitElement {
   declare lost: string;
   declare kb: number;
   declare sheet: boolean;
+  declare ready: boolean;
   declare limit: AccountRateLimit | undefined;
   declare accountName: string;
   declare info: ReturnType<typeof ahp>["info"];
@@ -91,6 +94,7 @@ export class IncConversations extends LitElement {
     this.lost = "";
     this.kb = 0;
     this.sheet = false;
+    this.ready = false;
     this.accountName = "";
     this.info = ahp().info;
   }
@@ -254,6 +258,7 @@ export class IncConversations extends LitElement {
     this.projects = projects.map((p) => p.id);
     this.sideData = { engines, office };
     this.pickLimit();
+    this.ready = true;
   }
 
   private sideData:
@@ -295,7 +300,7 @@ export class IncConversations extends LitElement {
 
   /** The draft's first message: it makes the conversation, then the new thread sends the message. */
   private createFromDraft = async (d: SendDetail): Promise<string | null> => {
-    const draft = this.draft;
+    const draft = this.draftView()?.draft;
     if (!draft) return "There is no conversation to start.";
     try {
       const c = await api.createConversation({
@@ -307,9 +312,25 @@ export class IncConversations extends LitElement {
       location.hash = `#/conversations/${c.id}`;
       return null;
     } catch (e) {
-      return e instanceof Error ? e.message : String(e);
+      return friendlyError(e instanceof Error ? e.message : String(e));
     }
   };
+
+  /** The draft as the screen can honour it: an unknown project becomes "no project", and the owner is told. */
+  private draftView(): { draft: { employee: string; project: string }; note: string } | undefined {
+    const d = this.draft;
+    if (!d) return undefined;
+    if (!this.ready) return { draft: d, note: "" };
+    const employee = this.employees.find((e) => e.id === d.employee);
+    const knownProject = !d.project || this.projects.includes(d.project);
+    const note = [
+      employee ? "" : "That employee isn't available.",
+      knownProject ? "" : "That project isn't available, so this conversation has no project.",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    return { draft: { employee: d.employee, project: knownProject ? d.project : "" }, note };
+  }
 
   private focusComposer() {
     const thread = this.renderRoot.querySelector("inc-conv-thread");
@@ -398,7 +419,7 @@ export class IncConversations extends LitElement {
     const modal = phone && this.sheet && !!conv;
     const list = html`<inc-conv-list class="pane list-pane" ?inert=${modal} ?hidden=${phone && (!!this.selectedId || !!this.draft)} .items=${this.list} .employees=${this.employees}
       .projects=${this.projects} .selected=${this.selectedId} .now=${this.now} .loading=${this.loading} .error=${this.listError}
-      .showArchived=${this.showArchived} .preset=${this.form}
+      .showArchived=${this.showArchived} .preset=${this.form} .ready=${this.ready}
       @conv-create=${(e: CustomEvent<CreateDetail>) => {
         location.hash = draftHash(e.detail.employeeId, e.detail.project);
       }}
@@ -424,7 +445,8 @@ export class IncConversations extends LitElement {
               }}
               @conv-toggle-context=${this.toggleContext}></inc-conv-thread>`
           : this.draft
-            ? html`<inc-conv-thread .draft=${this.draft} .employee=${this.employees.find((e) => e.id === this.draft?.employee)}
+            ? html`<inc-conv-thread .draft=${this.draftView()?.draft} .draftNote=${this.draftView()?.note ?? ""}
+                .employee=${this.employees.find((e) => e.id === this.draft?.employee)}
                 .phone=${phone} .onCreate=${this.createFromDraft}></inc-conv-thread>`
             : this.selectedId && this.loading
               ? html`<div class="none" aria-busy="true"><p>Loading…</p></div>`

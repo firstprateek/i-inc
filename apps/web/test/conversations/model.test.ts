@@ -4,6 +4,7 @@ import {
   cancelTurn,
   checkOutgoing,
   confirmTool,
+  friendlyError,
   judgeTextFile,
   LIMITS,
   pendingMessage,
@@ -463,5 +464,23 @@ describe("text files in a message", () => {
     expect(
       checkOutgoing("", [{ size: LIMITS.textFileBytes + 1, type: "text/plain", name: "a.txt" }]),
     ).toMatch(/a\.txt is over 256 KB/);
+  });
+});
+
+describe("the daemon's refusals, as sentences", () => {
+  it("never shows the raw words", () => {
+    expect(friendlyError("no project nope-unknown")).toBe("That project isn't available.");
+    expect(friendlyError("no employee ghost")).toBe("That employee isn't available.");
+    expect(friendlyError("Ada doesn't work on Duet")).toBe(
+      "Ada doesn't work on Duet. Pick another project or another employee.",
+    );
+    expect(
+      friendlyError("Waiting for a free slot: 3 of 3 conversations are running in the company sandbox."),
+    ).toMatch(/already has all its conversations running/);
+    expect(friendlyError("no engine ghost")).toMatch(/no engine/);
+    expect(
+      friendlyError("the GitHub App isn't set up yet, so a conversation can't work on a project"),
+    ).toMatch(/^Couldn't start the conversation:/);
+    expect(friendlyError("")).toBe("Couldn't start the conversation.");
   });
 });

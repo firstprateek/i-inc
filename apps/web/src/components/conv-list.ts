@@ -29,6 +29,8 @@ export class IncConvList extends LitElement {
     error: { type: String },
     showArchived: { type: Boolean },
     preset: { attribute: false },
+    ready: { type: Boolean },
+    presetNote: { state: true },
     form: { state: true },
     menu: { state: true },
     rove: { state: true },
@@ -47,6 +49,9 @@ export class IncConvList extends LitElement {
   declare showArchived: boolean;
   /** Opens the form with this employee and project chosen (from `#/conversations?new=1&project=<id>`). */
   declare preset: { employee: string; project: string } | undefined;
+  /** The employees and projects have arrived, so a preset can be checked against them. */
+  declare ready: boolean;
+  declare presetNote: string;
   declare form: boolean;
   declare menu: string | null;
   /** The row that is the list's one tab stop; arrow keys move between rows. */
@@ -67,6 +72,8 @@ export class IncConvList extends LitElement {
     this.error = "";
     this.showArchived = false;
     this.preset = undefined;
+    this.ready = false;
+    this.presetNote = "";
     this.form = false;
     this.menu = null;
     this.rove = "";
@@ -155,19 +162,34 @@ export class IncConvList extends LitElement {
 
   override willUpdate(changed: Map<string, unknown>): void {
     const preset = this.preset;
-    if (changed.has("preset") && preset) {
-      this.form = true;
+    if (changed.has("preset") && preset) this.form = true;
+    if (changed.has("employees") && this.employees[0] && !this.pickEmployee)
+      this.pickEmployee = this.employees[0].id;
+    if (preset && !this.ready && changed.has("preset")) {
+      // Until the employees and projects arrive, show what the address asked for.
       this.pickProject = preset.project;
       if (preset.employee) this.pickEmployee = preset.employee;
     }
-    if (changed.has("employees") && this.employees[0]) {
-      if (!this.pickEmployee) this.pickEmployee = this.employees[0].id;
-      // The address named a project but no employee: the first who works on it.
-      if (preset?.project && !preset.employee) {
-        const p = preset.project;
-        const e = this.employees.find((x) => !x.projects?.length || x.projects.includes(p));
+    if (
+      preset &&
+      this.ready &&
+      (changed.has("preset") || changed.has("ready") || changed.has("employees") || changed.has("projects"))
+    ) {
+      const known = this.employees.some((e) => e.id === preset.employee);
+      const project = preset.project && this.projects.includes(preset.project) ? preset.project : "";
+      // An unknown project or employee is said so, and the form falls back to No project and the first employee.
+      this.presetNote = [
+        preset.employee && !known ? "That employee isn't available." : "",
+        preset.project && !project ? "That project isn't available." : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      if (known) this.pickEmployee = preset.employee;
+      else if (project) {
+        const e = this.employees.find((x) => !x.projects?.length || x.projects.includes(project));
         if (e) this.pickEmployee = e.id;
       }
+      this.pickProject = project;
     }
   }
 
@@ -275,6 +297,7 @@ export class IncConvList extends LitElement {
         ${
           this.form
             ? html`<form class="create" @submit=${this.submitCreate} aria-label="New conversation">
+                ${this.presetNote ? html`<p class="problem" role="status">${this.presetNote} Pick one below.</p>` : nothing}
                 <label>Employee<select .value=${this.pickEmployee} @change=${(e: Event) => {
                   this.pickEmployee = (e.target as HTMLSelectElement).value;
                   this.pickProject = "";

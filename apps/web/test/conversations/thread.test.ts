@@ -248,7 +248,9 @@ describe("the thread", () => {
     expect(h.root().querySelector(".notice")?.textContent).toContain("Not sent: the connection was lost");
     const composer = h.root().querySelector("inc-conv-composer") as Any;
     await composer.updateComplete;
-    expect(must<HTMLTextAreaElement>(composer.shadowRoot?.querySelector("textarea")).value).toBe("into the void");
+    expect(must<HTMLTextAreaElement>(composer.shadowRoot?.querySelector("textarea")).value).toBe(
+      "into the void",
+    );
     // and nothing was sent twice: the new host saw no turn
     expect(h.h.made[1]?.received.filter((m) => m.method === "dispatchAction")).toHaveLength(0);
   });
@@ -259,7 +261,22 @@ describe("the thread", () => {
     await typeAndSend(h, "it got there", "turn").catch(() => {});
     await until(() => (h.root().querySelector("inc-conv-composer") as Any).text === "");
     // the host did start the turn (its state has it) but the client never saw the echo
-    h.host.states.set(CHAT, chatState({ turns: [{ id: "tx", startedAt: new Date().toISOString(), duration: 5, message: { text: "it got there", origin: USER_ORIGIN }, responseParts: [], usage: undefined, state: "complete" }] }));
+    h.host.states.set(
+      CHAT,
+      chatState({
+        turns: [
+          {
+            id: "tx",
+            startedAt: new Date().toISOString(),
+            duration: 5,
+            message: { text: "it got there", origin: USER_ORIGIN },
+            responseParts: [],
+            usage: undefined,
+            state: "complete",
+          },
+        ],
+      }),
+    );
     await h.host.drop();
     await until(() => h.h.made.length === 2 && h.c.info.status === "open", 3000);
     await tick(80);

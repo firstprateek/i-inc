@@ -13,4 +13,3 @@ export function visible(text: string, keepJoiners = false): string {
     return `⟨U+${ch.codePointAt(0)?.toString(16).toUpperCase().padStart(4, "0")}⟩`;
   });
 }
-

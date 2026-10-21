@@ -40,6 +40,7 @@ export class IncConvThread extends LitElement {
   static override properties = {
     conv: { attribute: false },
     draft: { attribute: false },
+    draftNote: { type: String },
     first: { attribute: false },
     onCreate: { attribute: false },
     employee: { attribute: false },
@@ -54,6 +55,8 @@ export class IncConvThread extends LitElement {
   declare conv: Conversation | undefined;
   /** A conversation not made yet: the first message creates it (the screen does, through `onCreate`). */
   declare draft: { employee: string; project: string } | undefined;
+  /** What is wrong with the draft's address (an unknown employee or project), in a sentence. */
+  declare draftNote: string;
   /** The message that made this conversation, sent once its chat is loaded. */
   declare first: SendDetail | undefined;
   declare onCreate: ((d: SendDetail) => Promise<string | null>) | undefined;
@@ -88,6 +91,7 @@ export class IncConvThread extends LitElement {
   constructor() {
     super();
     this.phone = false;
+    this.draftNote = "";
     this.contextOpen = false;
     this.info = ahp().info;
     this.stick = true;
@@ -428,7 +432,8 @@ export class IncConvThread extends LitElement {
     this.lost = false;
     const unsent = [...this.inflight.values()].filter((m) => !this.holds(chat, m));
     this.inflight.clear();
-    for (const m of unsent) this.restoreMessage(m, "Not sent: the connection was lost. Your message is back in the box.");
+    for (const m of unsent)
+      this.restoreMessage(m, "Not sent: the connection was lost. Your message is back in the box.");
   }
 
   private onRejected = (r: Rejection) => {
@@ -633,10 +638,11 @@ export class IncConvThread extends LitElement {
       <div class="stage"><div class="scroller" tabindex="-1"><div class="inner">
         <div class="empty"><h2>Start a conversation with ${name}</h2>
           <p>${d.project ? `Ask ${name} about ${d.project}, or tell them what to change.` : `Ask ${name} anything, or tell them what to do.`} The conversation is created when you send your first message; leave this page and nothing is kept.</p>
-          <p>Attach a screenshot or a text file by pasting or dropping it.</p></div>
+          <p>Attach a screenshot or a text file by pasting or dropping it.</p>
+          ${this.draftNote ? html`<p class="notice" role="status">${this.draftNote}</p>` : nothing}</div>
       </div></div></div>
       <div class="dock">
-        <inc-conv-composer .conversationId=${`draft:${d.employee}:${d.project}`} .name=${name} .blocked=${""} .onSend=${this.onCreate}></inc-conv-composer>
+        <inc-conv-composer .conversationId=${`draft:${d.employee}:${d.project}`} .name=${name} .blocked=${/employee/.test(this.draftNote) ? "Pick an employee from the list first." : ""} .onSend=${this.onCreate}></inc-conv-composer>
       </div>`;
   }
 
