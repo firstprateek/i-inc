@@ -16,6 +16,7 @@ import { AhpHost, type TransportLimits } from "./ahp/host.ts";
 import { AhpTransport } from "./ahp/transport.ts";
 import { type ApiOptions, createApi } from "./api.ts";
 import { same } from "./auth.ts";
+import { BrainIndex } from "./brain-index.ts";
 import { ChatLog } from "./chat.ts";
 import { Daemon, type DaemonDeps } from "./daemon.ts";
 import { openDb } from "./db.ts";
@@ -42,6 +43,8 @@ export interface AppOptions extends ApiOptions {
   dbPath: string;
   /** Where brains and the handbook live: git repos on the host, never pushed. */
   knowledgeDir: string;
+  /** The brain's search index: a disposable SQLite file (`<home>/brain-index.db`). Default: in memory. */
+  brainIndexPath?: string;
   clock: Clock;
   sessions?: SessionStore;
   machines: FromRegistry<MachineProvider>;
@@ -96,6 +99,11 @@ export async function createApp(o: AppOptions) {
   const store = new SqliteEventStore(db);
   store.onAppend = (id) => live.notifyTicket(id);
 
+  const knowledge = new KnowledgeStore(o.knowledgeDir);
+  // Fails here, at startup, with a clear message, if this SQLite has no FTS5.
+  const brain = await BrainIndex.open(o.brainIndexPath ?? ":memory:", knowledge, o.log);
+  knowledge.onCommit = (repo) => brain.follow(repo);
+
   const deps: DaemonDeps = {
     clock: o.clock,
     store,
@@ -113,7 +121,8 @@ export async function createApp(o: AppOptions) {
     helper: o.helper,
     chat: o.chat,
     chatLog: new ChatLog(db),
-    knowledge: new KnowledgeStore(o.knowledgeDir),
+    knowledge,
+    brain,
     db,
     push: o.push ? make(o.push) : new WebPushSender(registry, o.configDir ? { configDir: o.configDir } : {}),
     live,
@@ -185,6 +194,7 @@ export async function createApp(o: AppOptions) {
   }
   backend.attachApp?.({ storage, awake: (id) => daemon.noteAwake(id) });
   daemon.ensureKnowledge();
+  brain.rebuild();
   const handle = createApi(daemon, deps, {
     ...(o.token ? { token: o.token } : {}),
     ...(o.hosts ? { hosts: o.hosts } : {}),
