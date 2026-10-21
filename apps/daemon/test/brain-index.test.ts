@@ -15,7 +15,7 @@ import { dirname, join } from "node:path";
 import { buildQuery, type ProposedEdit, retrieve, type Scope } from "@i-inc/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.ts";
-import { BrainIndex, Fts5UnavailableError } from "../src/brain-index.ts";
+import { BrainIndex, bm25Weights, Fts5UnavailableError } from "../src/brain-index.ts";
 import { openDb } from "../src/db.ts";
 import { KnowledgeStore } from "../src/knowledge.ts";
 
@@ -188,6 +188,55 @@ describe("ranking", () => {
     const hits = index.search(buildQuery("flaky"), ["company"], 10);
     expect(hits.map((h) => h.slug)).toEqual(["facts/title", "facts/desc", "facts/tags", "facts/body-only"]);
     expect(hits.every((h) => h.score > 0)).toBe(true);
+  });
+
+  it("pins the BM25 column weights: title 5, description 3, tags 2, body 1", async () => {
+    expect([...bm25Weights]).toEqual([5, 3, 2, 1]);
+    // The same term in one column only, in four otherwise alike pages. A reference FTS5 table built in
+    // the test with the weights written out (5, 3, 2, 1) must score every page exactly as the index
+    // does, so changing a weight in the index fails here.
+    const { index, commit } = await setup();
+    const filler = ["alpha beta", "gamma delta", "sigma omega", "theta iota"];
+    const mk = (hit: "title" | "description" | "tags" | "body") => {
+      const cols = { title: filler[0], description: filler[1], tags: filler[2], body: filler[3] };
+      const text = (c: keyof typeof cols) => (c === hit ? `zorb ${cols[c]}` : `${cols[c]} kappa`);
+      return page(text("title"), text("description"), text("body"), text("tags").split(" "));
+    };
+    commit("handbook", {
+      "facts/title.md": mk("title"),
+      "facts/description.md": mk("description"),
+      "facts/tags.md": mk("tags"),
+      "facts/body.md": mk("body"),
+    });
+    const ref = await openDb(":memory:");
+    ref.exec(
+      "CREATE VIRTUAL TABLE r USING fts5(title, description, tags, body, tokenize = 'porter unicode61')",
+    );
+    for (const p of index.pages()) {
+      const full = index.page(p.scope, p.slug);
+      ref.run(
+        "INSERT INTO r (title, description, tags, body) VALUES (?, ?, ?, ?)",
+        p.title,
+        p.description,
+        p.tags.join(" "),
+        full?.body ?? "",
+      );
+    }
+    const all = index.pages();
+    const expected = new Map(
+      ref
+        .all<{ id: number; s: number }>(
+          "SELECT rowid AS id, bm25(r, 5, 3, 2, 1) AS s FROM r WHERE r MATCH '\"zorb\"'",
+        )
+        .map((r) => [all[r.id - 1]?.slug ?? "", -r.s]),
+    );
+    const got = index.search(buildQuery("zorb"), ["company"], 10);
+    expect(got.length).toBe(4);
+    expect(expected.size).toBe(4);
+    for (const h of got) expect(h.score).toBeCloseTo(expected.get(h.slug) ?? Number.NaN, 12);
+    // And the order that follows from them.
+    expect(got.map((h) => h.slug)).toEqual(["facts/title", "facts/description", "facts/tags", "facts/body"]);
+    ref.close();
   });
 
   it("stems words (porter) and gives a snippet", async () => {
