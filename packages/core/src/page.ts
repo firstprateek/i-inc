@@ -249,7 +249,13 @@ export function serializePage(p: { meta: PageMeta; body: string }): string {
   if (m.source) front.source = m.source;
   if (m.needsTidy) front["needs-tidy"] = true;
   for (const [k, v] of Object.entries(m.extra ?? {})) if (!(k in front)) front[k] = v;
-  const yaml = YAML.stringify(front, { lineWidth: 0 });
+  const doc = new YAML.Document(front);
+  // tags and sources read best on one line: tags: [a, b]
+  for (const k of ["tags", "sources"]) {
+    const node = doc.get(k, true);
+    if (YAML.isSeq(node)) node.flow = true;
+  }
+  const yaml = doc.toString({ lineWidth: 0, flowCollectionPadding: false });
   return `---\n${yaml}---\n${p.body}`;
 }
 
