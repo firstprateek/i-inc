@@ -169,3 +169,15 @@ prompt-injected agent could interfere with a teammate's work, but not reach past
   each month, for a macOS bug that stops finished connections expiring after ~49.7 days of uptime.
 - `inc.i.container`, `inc.i.daemon` and `inc.i.ollama-relay`: Apple's container service, the
   daemon and the Ollama relay, at login.
+- `inc.i.deployer`: the automatic deployer (`apps/deployer`, installed by `tools/host/install-deployer.sh`).
+  It is separate from the daemon and runs from the owner's checkout (`~/i-inc`), so a broken daemon
+  cannot stop its own repair. The daemon runs from `~/i-inc-releases/current`, a link to one of the last
+  5 release folders (`~/i-inc-releases/<sha>`: a clone at that commit, with `node_modules` and the web
+  build). Every 2 minutes the deployer takes a commit on `main` whose CI concluded `success` (GitHub's
+  public API, no credentials), builds it, smoke-tests it on a spare port in demo mode, waits for the
+  daemon's `GET /api/health` to say `busy: false`, repoints `current`, kickstarts `inc.i.daemon`, and
+  waits for `/api/health` to report the new sha; on any failure it switches back and never retries that
+  commit. Each attempt is a line in `~/.i-inc/deploys.jsonl` (C21), which the daemon serves at
+  `GET /api/deploys` and turns into a push when a deploy fails. Its state (bad commits, a deploy in
+  flight) is `~/i-inc-releases/state.json`; the single-instance lock is `~/i-inc-releases/deployer.lock`.
+  How to see, pause, force and roll back: [handoff.md](handoff.md#deploying-to-the-mini).

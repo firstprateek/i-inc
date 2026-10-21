@@ -2,6 +2,7 @@ import { css, html } from "lit";
 import { api, type DeskView, type NamedChange, refreshNow } from "../api.ts";
 import { describe } from "./knowledge.ts";
 import { LAYOUT_BREAKPOINTS, layoutStyles } from "./layout.ts";
+import "./deploys.ts";
 import { Loader } from "./loader.ts";
 import { base, projectBadge } from "./shared.ts";
 
@@ -264,6 +265,7 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
             </div>`
             : html`<span class="note">Nothing released yet. Cut a release once a project has merged tickets.</span>`
         }
+        <inc-deploys></inc-deploys>
       </section>`
           : ""
       }

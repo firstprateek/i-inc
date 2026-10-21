@@ -14,6 +14,7 @@ import { type ApiOptions, createApi } from "./api.ts";
 import { ChatLog } from "./chat.ts";
 import { Daemon, type DaemonDeps } from "./daemon.ts";
 import { openDb } from "./db.ts";
+import { DeployNotifier } from "./deploys.ts";
 import type { TokenSource } from "./github.ts";
 import { KnowledgeStore } from "./knowledge.ts";
 import { LiveEvents } from "./live.ts";
@@ -136,6 +137,16 @@ export async function createApp(o: AppOptions) {
     ...(o.token ? { token: o.token } : {}),
     ...(o.hosts ? { hosts: o.hosts } : {}),
     ...(o.heartbeatMs !== undefined ? { heartbeatMs: o.heartbeatMs } : {}),
+    ...(o.version ? { version: o.version } : {}),
+    ...(o.deploysPath ? { deploysPath: o.deploysPath } : {}),
   });
-  return { db, deps, daemon, handle, live, storage };
+  // Tells the owner (push) about a failed deploy the deployer recorded; main.ts calls check() on a timer.
+  const deploys = new DeployNotifier({
+    path: o.deploysPath,
+    db,
+    push: deps.push,
+    now: () => o.clock.now(),
+    ...(o.log ? { log: o.log } : {}),
+  });
+  return { db, deps, daemon, handle, live, storage, deploys };
 }

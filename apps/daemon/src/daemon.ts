@@ -86,6 +86,9 @@ export const ACCEPTED_LABEL = "accepted-proposal";
 
 export class Daemon {
   private readonly running = new Map<Id, Promise<void>>();
+  /** Turns in flight that are not tickets (an owner chat turn today, conversations later). */
+  private turns = 0;
+  private readonly busyHooks: Array<() => boolean> = [];
   /** The session each ticket is in now, so an urgent message can stop it. */
   private readonly sessions = new Map<Id, { employeeId: Id; controller: AbortController }>();
   /** Why each ticket that didn't start is waiting, from the last tick. */
@@ -95,9 +98,6 @@ export class Daemon {
 
   constructor(private readonly d: DaemonDeps) {}
 
-  /** Turns in flight that are not tickets (an owner chat turn today, conversations later). */
-  private turns = 0;
-  private readonly busyHooks: Array<() => boolean> = [];
   /** Employees waiting for their sandbox's cleanup to finish, with why: shown on their tickets. */
   private readonly holds = new Map<Id, string>();
 
@@ -130,8 +130,9 @@ export class Daemon {
 
   /**
    * Whether the daemon is doing work that a restart or a VACUUM would cut short: a ticket stage or
-   * session, a chat turn, or anything a registered hook says (a project bootstrap; conversations will
-   * register theirs).
+   * session, a chat turn, a long write tracked in api.ts (a project bootstrap), or anything a registered
+   * hook says (conversations will register theirs). The deployer waits for false before it switches
+   * releases (GET /api/health, contract C21).
    */
   busy(): boolean {
     return this.running.size > 0 || this.turns > 0 || this.busyHooks.some((h) => h());

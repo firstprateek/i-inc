@@ -1,0 +1,698 @@
+// The deployer's decisions (docs/design/v1-plan.md §5): watch main, wait for green CI, build in a
+// fresh release folder, smoke-test it on a spare port, wait for the running daemon to be idle,
+// switch, check health, and roll back on any failure. Every I/O is a port (types.ts).
+import type {
+  Ci,
+  Clock,
+  DaemonControl,
+  DeployRecord,
+  Lock,
+  Outcome,
+  Releases,
+  Remote,
+  Settings,
+  Smoke,
+  State,
+  Store,
+} from "./types.ts";
+
+export type CycleAction =
+  | "idle"
+  | "no-current"
+  | "known-bad"
+  | "waiting-ci"
+  | "retry-wait"
+  | "paused"
+  | "rate-limited"
+  | "ci-error"
+  | "remote-error"
+  | "deferred"
+  | Outcome;
+
+export interface CycleResult {
+  action: CycleAction;
+  sha?: string;
+}
+
+export interface DeployerDeps {
+  clock: Clock;
+  remote: Remote;
+  ci: Ci;
+  releases: Releases;
+  smoke: Smoke;
+  daemon: DaemonControl;
+  store: Store;
+  lock: Lock;
+  settings: Settings;
+  log: (line: string) => void;
+}
+
+const short = (sha: string | null) => (sha ? sha.slice(0, 7) : "none");
+/** One short line for a log or a push: no absolute home paths (they would show in the UI), no newlines. */
+export const oneLine = (s: string) =>
+  s
+    .replace(/(?:\/Users|\/home)\/[^/\s"')]+/g, "~")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 300);
+
+/** Failures that say nothing about the commit: a full disk, the network, a timeout, a busy service. */
+const transientPattern =
+  /ENOSPC|no space left|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EMFILE|ENOMEM|timed out|Could not resolve host|unable to access|Connection (?:reset|timed out|refused)|fetch failed|rate limit|Temporary failure|HTTP (?:429|50[234])|\b50[234]\b|launchctl|kickstart|switching failed/i;
+export const isTransient = (reason: string) => transientPattern.test(reason);
+
+export class Deployer {
+  private lastStatus = "";
+  /** Since when the running daemon has not answered /api/health (this process only). */
+  private downSince: number | null = null;
+  /** Set when a deploy went ahead because the daemon was down: said in the record and the push. */
+  private recoveryNote = "";
+
+  constructor(private readonly d: DeployerDeps) {}
+
+  /** Logs a line only when it differs from the last status line, so a quiet loop stays quiet. */
+  private status(line: string): void {
+    if (line === this.lastStatus) return;
+    this.lastStatus = line;
+    this.d.log(line);
+  }
+
+  private event(line: string): void {
+    this.lastStatus = "";
+    this.d.log(line);
+  }
+
+  private mutate(fn: (s: State) => void): State {
+    const s = this.d.store.state();
+    fn(s);
+    this.d.store.save(s);
+    return s;
+  }
+
+  /** Takes the single-instance lock. False means another deployer is alive. */
+  acquire(): boolean {
+    return this.d.lock.acquire();
+  }
+
+  release(): void {
+    this.d.lock.release();
+  }
+
+  /**
+   * Finishes (or rolls back) a deploy that was cut short by a crash or a restart of the deployer
+   * itself. Call it once at startup, after acquire().
+   */
+  async recover(): Promise<CycleResult | undefined> {
+    const flight = this.d.store.state().inFlight;
+    if (!flight) return undefined;
+    const { sha, from } = flight;
+    this.event(`recovering a deploy of ${short(sha)} that was cut short in "${flight.phase}"`);
+    if (flight.phase === "rollback") {
+      return this.rollback(sha, from, flight.reason ?? "rollback was cut short", flight.startedAt);
+    }
+    if (flight.phase === "switch") {
+      const current = await this.d.releases.current();
+      if (current === sha) {
+        // The link was repointed, but the crash may have come before the kickstart: the old daemon may
+        // still be running. Restart onto the candidate first; only a candidate that then fails its
+        // health check is rolled back.
+        const running = await this.d.daemon.health().catch(() => null);
+        if (!(running?.ok && running.version === sha)) {
+          try {
+            this.event(`${short(sha)}: the daemon is not on it yet, kickstarting`);
+            await this.d.daemon.restart();
+          } catch (err) {
+            return this.rollback(
+              sha,
+              from,
+              `switching failed after a restart of the deployer: ${oneLine(String(err))}`,
+              flight.startedAt,
+            );
+          }
+        }
+        const ok = await this.waitForVersion(sha);
+        if (ok)
+          return this.finishDeployed(sha, from, flight.startedAt, "resumed after a restart of the deployer");
+        return this.rollback(
+          sha,
+          from,
+          "the new daemon was not healthy after the deployer restarted",
+          flight.startedAt,
+        );
+      }
+    }
+    // Nothing was switched: the attempt simply never finished. It counts towards maxAttempts.
+    this.mutate((s) => {
+      s.inFlight = null;
+    });
+    return { action: "idle", sha };
+  }
+
+  /** One pass: look at main and, if there is a green new commit, deploy it. */
+  async cycle(): Promise<CycleResult> {
+    const { releases, remote, ci } = this.d;
+    const current = await releases.current();
+    if (!current) {
+      this.status("no current release: run tools/host/install-deployer.sh --apply");
+      return { action: "no-current" };
+    }
+    let head: string;
+    try {
+      head = await remote.head();
+    } catch (err) {
+      this.status(`could not read origin/main: ${oneLine(String(err))}`);
+      return { action: "remote-error" };
+    }
+    if (head === current) {
+      this.status(`idle: ${short(current)} is current`);
+      return { action: "idle", sha: head };
+    }
+    const state = this.d.store.state();
+    // After a rollback by hand the tip that was rolled back from is not deployed again; the next
+    // commit on main lifts the pause (or `--resume`).
+    if (state.paused) {
+      if (head === state.paused.sha) {
+        this.status(this.pausedSummary(state.paused));
+        return { action: "paused", sha: head };
+      }
+      this.event(`main moved to ${short(head)} (paused at ${short(state.paused.sha)}): deploying resumes`);
+      this.mutate((s) => {
+        s.paused = null;
+      });
+    }
+    const bad = state.bad[head];
+    if (bad) {
+      this.status(`${short(head)} was marked bad (${oneLine(bad.reason)}): waiting for a newer commit`);
+      return { action: "known-bad", sha: head };
+    }
+    const retry = state.retry[head];
+    if (retry && this.d.clock.now() < retry.nextAt) {
+      this.status(
+        `${short(head)}: failed ${retry.failures + retry.transients} time(s), retrying at ${new Date(retry.nextAt).toISOString()}`,
+      );
+      return { action: "retry-wait", sha: head };
+    }
+
+    // Only a commit that continues the running release is deployed. A force-push to an older or
+    // unrelated commit is skipped (and reported once); the owner can allow it with --sha.
+    if (!state.allowRewrite.includes(head)) {
+      const descends = await this.d.remote.descends(current, head).catch(() => null);
+      if (descends === false) {
+        if (!state.ancestrySkipped.includes(head)) {
+          this.mutate((s) => {
+            s.ancestrySkipped.push(head);
+          });
+          const reason = `main moved to a commit that does not include the running release ${short(current)} (force-push?); not deploying it. Allow it with: bun apps/deployer/src/main.ts --once --sha ${head}`;
+          this.record(
+            {
+              at: this.d.clock.now(),
+              sha: head,
+              from: current,
+              outcome: "skipped-ancestry",
+              reason,
+              durationMs: 0,
+            },
+            `${head}:skipped-ancestry:0`,
+          );
+          this.event(`${short(head)}: WARNING ${reason}`);
+        } else {
+          this.status(`${short(head)}: does not descend from ${short(current)}, skipped`);
+        }
+        return { action: "skipped-ancestry", sha: head };
+      }
+      if (descends === null) {
+        this.status(`${short(head)}: could not check that it descends from ${short(current)}, will retry`);
+        return { action: "remote-error", sha: head };
+      }
+    }
+
+    // A commit that already built and passed its smoke test is past the CI question.
+    if (!state.ready[head]) {
+      const result = await ci.check(head);
+      switch (result.state) {
+        case "pending":
+          this.status(`${short(head)}: waiting for CI (${oneLine(result.reason)})`);
+          return { action: "waiting-ci", sha: head };
+        case "rate-limited":
+          this.status(
+            `${short(head)}: GitHub rate limit, backing off until ${new Date(result.until).toISOString()}`,
+          );
+          return { action: "rate-limited", sha: head };
+        case "error":
+          this.status(`${short(head)}: could not read CI (${oneLine(result.reason)})`);
+          return { action: "ci-error", sha: head };
+        case "failure": {
+          if (!state.ciFailed.includes(head)) {
+            this.mutate((s) => {
+              s.ciFailed.push(head);
+            });
+            this.record(
+              {
+                at: this.d.clock.now(),
+                sha: head,
+                from: current,
+                outcome: "skipped-ci",
+                reason: oneLine(result.reason),
+                durationMs: 0,
+              },
+              `${head}:skipped-ci:0`,
+            );
+            this.event(`${short(head)}: CI failed (${oneLine(result.reason)}), skipped`);
+          } else {
+            this.status(`${short(head)}: CI failed, skipped`);
+          }
+          return { action: "skipped-ci", sha: head };
+        }
+        case "success":
+          break;
+      }
+    }
+    return this.deploy(head, current);
+  }
+
+  private async deploy(sha: string, from: string): Promise<CycleResult> {
+    const { releases, smoke, clock, settings } = this.d;
+    const startedAt = clock.now();
+    this.recoveryNote = "";
+    const fresh = this.d.store.state();
+    const ready = !!fresh.ready[sha] && (await releases.has(sha));
+    const attempts = (fresh.attempts[sha] ?? 0) + 1;
+    if (!ready && attempts > settings.maxAttempts) {
+      return this.fail(
+        sha,
+        from,
+        "failed-build",
+        `gave up after ${settings.maxAttempts} interrupted attempts`,
+        startedAt,
+        true,
+      );
+    }
+    this.mutate((s) => {
+      s.attempts[sha] = attempts;
+      s.inFlight = { sha, from, phase: "build", startedAt };
+    });
+
+    if (!ready) {
+      this.event(`${short(sha)}: CI is green, building (was ${short(from)})`);
+      try {
+        await releases.remove(sha); // an earlier, interrupted build of the same commit
+        await releases.build(sha);
+      } catch (err) {
+        return this.fail(
+          sha,
+          from,
+          "failed-build",
+          oneLine(String(err instanceof Error ? err.message : err)),
+          startedAt,
+        );
+      }
+      this.event(`${short(sha)}: built, smoke-testing on a spare port`);
+      const result = await smoke.run(sha).catch((err) => ({ ok: false as const, reason: String(err) }));
+      if (!result.ok) return this.fail(sha, from, "failed-smoke", oneLine(result.reason), startedAt);
+      this.mutate((s) => {
+        s.ready[sha] = { drainSince: null };
+      });
+      this.event(`${short(sha)}: smoke test passed`);
+    }
+
+    // Drain: switch only when no ticket stage or conversation turn is running.
+    this.mutate((s) => {
+      if (s.inFlight) s.inFlight.phase = "drain";
+    });
+    const drained = await this.drain(sha);
+    if (!drained) {
+      this.mutate((s) => {
+        s.inFlight = null;
+      });
+      return { action: "deferred", sha };
+    }
+
+    this.mutate((s) => {
+      s.inFlight = { sha, from, phase: "switch", startedAt };
+    });
+    this.event(`${short(sha)}: switching (kickstart inc.i.daemon)`);
+    try {
+      await releases.point(sha);
+      await this.d.daemon.restart();
+    } catch (err) {
+      return this.rollback(sha, from, `switching failed: ${oneLine(String(err))}`, startedAt);
+    }
+    if (await this.waitForVersion(sha)) return this.finishDeployed(sha, from, startedAt, this.recoveryNote);
+    return this.rollback(
+      sha,
+      from,
+      `the new daemon did not report version ${short(sha)} on /api/health within ${Math.round(settings.healthTimeoutMs / 1000)} s`,
+      startedAt,
+    );
+  }
+
+  /** True when the running daemon is idle (or the owner's --force-after has passed). */
+  private async drain(sha: string): Promise<boolean> {
+    const { daemon, clock, settings } = this.d;
+    const began = clock.now();
+    let announced = false;
+    for (;;) {
+      const health = await daemon.health().catch(() => null);
+      // Only a daemon that answers and says it is idle is idle: an answer we cannot read is unknown, and
+      // unknown waits like busy does. But a daemon that is down has nothing to drain, and waiting for it
+      // would block the very deploy that may repair it: launchd saying it is not running, or ten minutes
+      // without an answer, lets the deploy go ahead.
+      if (health) {
+        this.downSince = null;
+        if (!health.busy) {
+          this.event(`${short(sha)}: the daemon is idle`);
+          return true;
+        }
+      } else {
+        const now = clock.now();
+        this.downSince ??= now;
+        const down = now - this.downSince;
+        const launchd =
+          down >= settings.drainPollMs
+            ? await daemon.launchdState().catch(() => "unknown" as const)
+            : "unknown";
+        if (launchd === "not-running" || down >= settings.downProceedMs) {
+          this.recoveryNote = `recovery: the daemon was down (${launchd === "not-running" ? "launchd reports it not running" : `no answer for ${Math.round(down / 60_000)} min`}), so this was deployed without waiting for it to drain`;
+          this.event(`${short(sha)}: ${this.recoveryNote}`);
+          return true;
+        }
+      }
+      const state = this.d.store.state();
+      const since = state.ready[sha]?.drainSince ?? began;
+      if (state.ready[sha]?.drainSince == null) {
+        this.mutate((s) => {
+          const r = s.ready[sha];
+          if (r) r.drainSince = since;
+        });
+      }
+      if (settings.forceAfterMs !== undefined && clock.now() - since >= settings.forceAfterMs) {
+        this.event(
+          `${short(sha)}: still busy after ${Math.round((clock.now() - since) / 60_000)} min, forcing the switch`,
+        );
+        return true;
+      }
+      if (clock.now() - began >= settings.drainMaxMs) {
+        this.event(
+          `${short(sha)}: the daemon is still busy after ${Math.round(settings.drainMaxMs / 60_000)} min, will retry next cycle`,
+        );
+        return false;
+      }
+      if (!announced) {
+        this.event(`${short(sha)}: waiting for the daemon to be idle`);
+        announced = true;
+      }
+      await clock.sleep(settings.drainPollMs);
+    }
+  }
+
+  /** Polls /api/health until it reports `version` = sha, within the health timeout. */
+  private async waitForVersion(sha: string): Promise<boolean> {
+    const { daemon, clock, settings } = this.d;
+    const deadline = clock.now() + settings.healthTimeoutMs;
+    for (;;) {
+      const health = await daemon.health().catch(() => null);
+      if (health?.ok && health.version === sha) return true;
+      if (clock.now() >= deadline) return false;
+      await clock.sleep(settings.healthPollMs);
+    }
+  }
+
+  private finishDeployed(
+    sha: string,
+    from: string | null,
+    startedAt: number,
+    note: string,
+  ): Promise<CycleResult> {
+    const at = this.d.clock.now();
+    this.record(
+      { at, sha, from, outcome: "deployed", reason: note, durationMs: at - startedAt },
+      `${sha}:deployed:${startedAt}`,
+    );
+    this.mutate((s) => {
+      s.inFlight = null;
+      delete s.ready[sha];
+      delete s.attempts[sha];
+      s.retry = {}; // a new baseline: nothing is half-way through a retry any more
+      if (s.history.length === 0 && from) s.history.push(from);
+      s.history = [...s.history.filter((h) => h !== sha), sha].slice(-20);
+    });
+    this.event(`${short(sha)}: deployed (from ${short(from)}) in ${Math.round((at - startedAt) / 1000)} s`);
+    return this.prune().then(() => ({ action: "deployed" as const, sha }));
+  }
+
+  /** Puts the previous release back, restarts, records, and never tries this commit again. */
+  private async rollback(
+    sha: string,
+    from: string | null,
+    reason: string,
+    startedAt: number,
+  ): Promise<CycleResult> {
+    this.mutate((s) => {
+      s.inFlight = { sha, from, phase: "rollback", startedAt, reason };
+    });
+    this.event(`${short(sha)}: rolling back to ${short(from)}: ${reason}`);
+    let note = reason;
+    if (from) {
+      try {
+        await this.d.releases.point(from);
+        await this.d.daemon.restart();
+        if (!(await this.waitForVersion(from))) {
+          note += `; the previous release ${short(from)} did not report healthy either`;
+        }
+      } catch (err) {
+        note += `; rolling back failed: ${oneLine(String(err))}`;
+      }
+    } else {
+      note += "; there was no previous release";
+    }
+    const at = this.d.clock.now();
+    // A health failure is retried once from clean before the commit is written off, and a failure
+    // that says nothing about the commit (a full disk, a launchctl error) is never written off.
+    const verdict = this.schedule(sha, isTransient(reason), at);
+    if (verdict === "bad") this.markBad(sha, note, at);
+    this.record(
+      { at, sha, from, outcome: "rolled-back", reason: oneLine(note), durationMs: at - startedAt },
+      `${sha}:rolled-back:${startedAt}`,
+    );
+    this.mutate((s) => {
+      s.inFlight = null;
+      delete s.ready[sha];
+      delete s.attempts[sha]; // this attempt finished; only interrupted ones count towards maxAttempts
+    });
+    await this.d.releases.remove(sha).catch(() => {});
+    this.event(
+      `${short(sha)}: rolled back to ${short(from)}, ${verdict === "bad" ? "marked bad" : "will be retried"}`,
+    );
+    return { action: "rolled-back", sha };
+  }
+
+  /**
+   * Build or smoke failed before anything was switched: nothing to roll back. A failure that says
+   * nothing about the commit (disk, network, timeout) is retried with backoff and never written off;
+   * any other failure is retried once from a clean folder and written off if it fails again.
+   */
+  private async fail(
+    sha: string,
+    from: string,
+    outcome: "failed-build" | "failed-smoke",
+    reason: string,
+    startedAt: number,
+    final = false,
+  ): Promise<CycleResult> {
+    const at = this.d.clock.now();
+    const transient = !final && isTransient(reason);
+    const before = this.d.store.state().retry[sha];
+    const verdict = final ? "bad" : this.schedule(sha, transient, at);
+    if (verdict === "bad") {
+      this.markBad(sha, reason, at);
+      this.record(
+        { at, sha, from, outcome, reason: oneLine(reason), durationMs: at - startedAt },
+        `${sha}:${outcome}:${startedAt}`,
+      );
+    } else if (transient && !before?.transients) {
+      // Said once, so a long outage is not a push every cycle.
+      this.record(
+        {
+          at,
+          sha,
+          from,
+          outcome,
+          reason: `${oneLine(reason)} (temporary: will be retried)`,
+          durationMs: at - startedAt,
+        },
+        `${sha}:${outcome}:${startedAt}`,
+      );
+    }
+    this.mutate((s) => {
+      s.inFlight = null;
+      delete s.ready[sha];
+      delete s.attempts[sha]; // this attempt finished; only interrupted ones count towards maxAttempts
+    });
+    await this.d.releases.remove(sha).catch(() => {});
+    this.event(
+      `${short(sha)}: ${outcome} (${oneLine(reason)}), ${verdict === "bad" ? "marked bad" : "will be retried"}; ${short(from)} keeps running`,
+    );
+    return { action: outcome, sha };
+  }
+
+  /** Decides what a failure means for the commit, and when to try again. */
+  private schedule(sha: string, transient: boolean, now: number): "bad" | "retry" {
+    let verdict: "bad" | "retry" = "retry";
+    this.mutate((s) => {
+      const r = s.retry[sha] ?? { failures: 0, transients: 0, nextAt: 0 };
+      if (transient) {
+        r.transients += 1;
+        r.nextAt = now + Math.min(60 * 60_000, 2 * 60_000 * 2 ** (r.transients - 1));
+      } else {
+        r.failures += 1;
+        r.nextAt = now + 2 * 60_000;
+        if (r.failures >= 2) verdict = "bad";
+      }
+      s.retry[sha] = r;
+    });
+    return verdict;
+  }
+
+  private markBad(sha: string, reason: string, at: number): void {
+    this.mutate((s) => {
+      s.bad[sha] = { at, reason: oneLine(reason) };
+      delete s.attempts[sha];
+      delete s.ready[sha];
+      delete s.retry[sha];
+    });
+  }
+
+  /** Appends a record unless this attempt's record is already there (a restart repeats nothing). */
+  private record(r: DeployRecord, key = `${r.sha}:${r.outcome}:${r.at}`): void {
+    if (this.d.store.state().recorded.includes(key)) return;
+    this.d.store.append(r);
+    this.mutate((s) => {
+      s.recorded = [...s.recorded, key].slice(-100);
+    });
+  }
+
+  /** Keeps the last `keep` releases (always including `current`) and removes the rest. */
+  async prune(): Promise<string[]> {
+    const { releases, settings } = this.d;
+    const current = await releases.current();
+    const flight = this.d.store.state().inFlight;
+    const previous = current ? await this.previousDeployed(current) : null;
+    const protectedShas = new Set(
+      [current, previous, flight?.sha, flight?.from].filter((x): x is string => !!x),
+    );
+    const all = await releases.list();
+    const keep = new Set<string>(protectedShas);
+    for (const r of all) {
+      if (keep.size >= settings.keep) break;
+      keep.add(r.sha);
+    }
+    const removed: string[] = await releases.sweep([...protectedShas]);
+    for (const r of all) {
+      if (keep.has(r.sha)) continue;
+      await releases.remove(r.sha);
+      removed.push(r.sha);
+    }
+    if (removed.length) this.event(`pruned ${removed.map(short).join(", ")}`);
+    return removed;
+  }
+
+  /** The release deployed before `current` that is still on disk and not marked bad. */
+  async previousDeployed(current: string): Promise<string | null> {
+    const state = this.d.store.state();
+    for (const sha of [...state.history].reverse()) {
+      if (sha === current || state.bad[sha]) continue;
+      if (await this.d.releases.has(sha)) return sha;
+    }
+    return null;
+  }
+
+  pausedSummary(p: { sha: string; to: string }): string {
+    return `paused after hand rollback at ${short(p.sha)} — resumes on the next commit (now on ${short(p.to)})`;
+  }
+
+  /** What `--status` says about a pause, or null. */
+  pauseStatus(): string | null {
+    const p = this.d.store.state().paused;
+    return p ? this.pausedSummary(p) : null;
+  }
+
+  /** `--resume`: deploy main's tip again even though it is the one that was rolled back from. */
+  resume(): boolean {
+    const was = this.d.store.state().paused;
+    this.mutate((s) => {
+      s.paused = null;
+    });
+    if (was) this.event(`resumed: ${short(was.sha)} may be deployed again`);
+    return !!was;
+  }
+
+  /** The owner's `--sha`: deploy this commit even though it does not continue the running release. */
+  allowRewrite(sha: string): void {
+    this.mutate((s) => {
+      if (!s.allowRewrite.includes(sha)) s.allowRewrite.push(sha);
+    });
+  }
+
+  /** Records the first release (`--seed`) so a later rollback has somewhere to go back to. */
+  noteSeeded(sha: string): void {
+    this.mutate((s) => {
+      if (!s.history.includes(sha)) s.history.push(sha);
+    });
+  }
+
+  /**
+   * Rolls back by hand (`--rollback [sha]`). The target is the previous release that was actually
+   * deployed (from the history, never a candidate that was only built), or `target`, which must also be
+   * one of those. The daemon must be idle unless `force`. Auto-deploy then pauses at main's tip, so the
+   * commit just rolled back from is not redeployed; the next commit on main (or `resume`) lifts it.
+   */
+  async rollbackByHand(target?: string, opts: { force?: boolean } = {}): Promise<CycleResult> {
+    const current = await this.d.releases.current();
+    if (!current) throw new Error("there is no current release");
+    const state = this.d.store.state();
+    const to = target ?? (await this.previousDeployed(current));
+    if (!to)
+      throw new Error("no previous deployed release is recorded: pass the sha of one in ~/i-inc-releases");
+    if (to === current) throw new Error(`${short(to)} is already current`);
+    if (!state.history.includes(to)) {
+      throw new Error(`${short(to)} was never deployed (it may be a candidate that was only built)`);
+    }
+    if (!(await this.d.releases.has(to))) throw new Error(`release ${short(to)} is no longer on disk`);
+    if (!opts.force) {
+      const health = await this.d.daemon.health();
+      if (!health) throw new Error("the daemon does not answer /api/health: use --force to roll back anyway");
+      if (health.busy)
+        throw new Error("the daemon is busy (a ticket or chat turn is running): wait, or use --force");
+    }
+    const startedAt = this.d.clock.now();
+    this.event(`rolling back by hand from ${short(current)} to ${short(to)}`);
+    await this.d.releases.point(to);
+    await this.d.daemon.restart();
+    const healthy = await this.waitForVersion(to);
+    const at = this.d.clock.now();
+    // Main's tip is what was just rolled back from (it is newer than the release left, or the same):
+    // pause until main moves past it. No release is marked bad.
+    const tip = await this.d.remote.head().catch(() => current);
+    this.mutate((s) => {
+      // Going back means the releases after `to` are no longer "previous" ones.
+      const idx = s.history.lastIndexOf(to);
+      s.history = (idx >= 0 ? s.history.slice(0, idx + 1) : [...s.history, to]).slice(-20);
+      s.paused = { sha: tip, at, to };
+    });
+    this.event(this.pausedSummary({ sha: tip, to }));
+    this.record(
+      {
+        at,
+        sha: current,
+        from: current,
+        outcome: "rolled-back",
+        reason: healthy
+          ? `rolled back by hand to ${short(to)}`
+          : `rolled back by hand to ${short(to)}, but the daemon did not report healthy`,
+        durationMs: at - startedAt,
+      },
+      `${current}:rolled-back:${startedAt}`,
+    );
+    return { action: "rolled-back", sha: current };
+  }
+}

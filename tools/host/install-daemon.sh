@@ -9,6 +9,12 @@
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
+# Once the deployer is installed (tools/host/install-deployer.sh) the daemon runs from the release
+# the deployer last switched to, not from this checkout: keep it there.
+if [ -L "$HOME/i-inc-releases/current" ]; then
+  repo="$HOME/i-inc-releases/current"
+  echo "the deployer is installed: the daemon stays on $repo"
+fi
 [ "$(id -u)" != 0 ] || { echo "run it as the owner, not root" >&2; exit 1; }
 bun=$(command -v bun || echo /opt/homebrew/bin/bun)
 [ -x "$bun" ] || { echo "no bun: brew install bun" >&2; exit 1; }
