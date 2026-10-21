@@ -165,7 +165,8 @@ describe("an agent the daemon left behind", () => {
     };
     const logs: string[] = [];
     expect(await reapMachines(machines, (m) => logs.push(m))).toBe(1);
-    expect(alive(orphan?.pid as number)).toBe(false);
+    // SIGKILL is delivered asynchronously, and the killed child lingers as a zombie until this process reaps it.
+    await until(() => !alive(orphan?.pid as number), 4000, "the orphan to be stopped");
     expect(sb.notes()).toEqual([]);
     expect(logs.join("\n")).toContain("left running");
   }, 15_000);
@@ -274,7 +275,7 @@ describe("what the sweep will and will not touch", () => {
     const took = Date.now() - t0;
     // three agents that ignore SIGTERM, one after another, would be nine seconds of waiting
     expect(took).toBeLessThan(7000);
-    for (const pid of pids) expect(alive(pid)).toBe(false);
+    for (const pid of pids) await until(() => !alive(pid), 4000, `agent ${pid} to be stopped`);
     expect(asked).toEqual(["inc-engineering"]); // a stopped machine is never started to be looked at
   }, 20_000);
 
