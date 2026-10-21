@@ -142,7 +142,7 @@ describe("vacuuming the database", () => {
       ran: false,
       reason: "busy",
     });
-    expect(vacuumIfNeeded(db, { freePct: 99, minFreeBytes: 1024, idle: true })).toMatchObject({ ran: false });
+    expect(vacuumIfNeeded(db, { freePct: 100.5, minFreeBytes: 1024, idle: true })).toMatchObject({ ran: false });
     expect(vacuumIfNeeded(db, { freePct: 20, minFreeBytes: 1024 ** 3, idle: true })).toMatchObject({
       ran: false,
     });
