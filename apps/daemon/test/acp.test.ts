@@ -728,7 +728,8 @@ describe("a ticket's agent and the daemon's end", () => {
 
     await a.shutdown(30);
     expect(s.proc.stdin.writableEnded).toBe(true);
-    expect(order).toEqual(["reap ada /home/employee/work/inc-42", "launch", "reap ada - all"]);
+    // (the sandboxes are swept for what ignored this by the caller, once, by machine)
+    expect(order).toEqual(["reap ada /home/employee/work/inc-42", "launch"]);
     // the session that was running ends as stuck, not hung, and nothing new starts
     expect(await running).toMatchObject({ kind: "stuck" });
     expect(await a.run(request())).toEqual({
@@ -736,7 +737,7 @@ describe("a ticket's agent and the daemon's end", () => {
       reason: "the daemon is stopping",
       startup: true,
     });
-    expect(order).toHaveLength(3);
+    expect(order).toHaveLength(2);
   });
 });
 

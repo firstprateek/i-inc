@@ -259,7 +259,11 @@ export class FakeAcpAgent {
             path: "/repo/.env",
             oldText: "TOKEN=\n",
             newText:
-              "TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789\nNAME=keep_this_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6\n",
+              "TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789\nNAME=keep_this_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6\n" +
+              "PGP=-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: GnuPG v2\n\nlQOYBGJhbXcBCADd8jM4pgpbodyline\n-----END PGP PRIVATE KEY BLOCK-----\n" +
+              "URL=https://deploy.example.com/hook?pwd=hunter2queryvalue&x=1\n" +
+              "GIT=https://deploy:p@sswordwithat@example.com/repo.git\n" +
+              "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n",
           },
         ],
       });

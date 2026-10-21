@@ -150,7 +150,7 @@ export class AcpAgent implements Agent {
 
   /**
    * The daemon is going down: close every session's stdin, kill what is still there after `graceMs`,
-   * then sweep the sandboxes for any agent that ignored both (reaper.ts). A ticket whose session
+   * (the caller then sweeps the sandboxes for any agent that ignored both: reaper.ts). A ticket whose session
    * ends this way is picked up again by the scheduler when the daemon returns.
    */
   async shutdown(graceMs = 2500): Promise<void> {
@@ -162,14 +162,6 @@ export class AcpAgent implements Agent {
       new Promise<void>((r) => setTimeout(r, graceMs + 200).unref?.()),
     ]);
     for (const [rpc] of rpcs) rpc.kill();
-    if (this.o.reap) {
-      const reap = this.o.reap;
-      const employees = new Set(rpcs.map(([, e]) => e));
-      await Promise.race([
-        Promise.all([...employees].map((e) => reap(e, { all: true }))),
-        new Promise<void>((r) => setTimeout(r, 4000).unref?.()),
-      ]);
-    }
   }
 
   /** Entries in the transient-retry counter: it should be empty once nothing is retrying. */

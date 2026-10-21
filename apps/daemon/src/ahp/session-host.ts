@@ -572,8 +572,8 @@ export class SessionHost implements AgentBackend {
   /**
    * The daemon is going down (SIGTERM, a deploy): end every agent politely, then not. A running turn
    * gets `session/cancel`, then each agent's stdin is closed; whatever is still there after `graceMs`
-   * is killed, and a last sweep of the sandboxes stops anything that ignored both (the `container`
-   * client dying does not stop the process in the machine). Conversations are kept: they start
+   * is killed. The caller then sweeps the sandboxes for anything that ignored both (`reapMachines`: the
+   * `container` client dying does not stop the process in the machine). Conversations are kept: they start
    * again on the next message.
    */
   async shutdown(graceMs = 2500): Promise<void> {
@@ -581,9 +581,7 @@ export class SessionHost implements AgentBackend {
     this.timer = undefined;
     this.shuttingDown = true;
     const conns: AcpConnection[] = [];
-    const employees = new Set<string>();
     for (const live of this.lives.values()) {
-      employees.add(live.info.employeeId);
       const conn = live.conn;
       live.conn = undefined;
       this.release(live);
@@ -597,13 +595,6 @@ export class SessionHost implements AgentBackend {
       new Promise<void>((r) => setTimeout(r, graceMs + 200).unref?.()),
     ]);
     for (const c of conns) c.kill();
-    // The processes in the machines: stop any that the end of their stdin did not.
-    if (this.o.reap) {
-      await Promise.race([
-        Promise.all([...employees].map((e) => this.o.reap?.(e, { all: true }))),
-        new Promise<void>((r) => setTimeout(r, 4000).unref?.()),
-      ]);
-    }
   }
   private shuttingDown = false;
 

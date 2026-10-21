@@ -118,6 +118,31 @@ function redactPem(t: string): string {
 }
 
 /**
+ * The patterns that are unmistakably credentials, whatever the text is: private key blocks (PGP's
+ * too), URL userinfo (a password may hold an `@`), secret-looking query parameters (`?pwd=`, `?token=`),
+ * and tokens of the known kinds (GitHub, OpenAI/Anthropic, Google, Slack, AWS key ids and keyed
+ * secrets, JWTs, bearer headers). Source code and prose alike: none of these mangles either. The one
+ * set behind `redactText` (everything an agent says) and `redactTokens` (diffs and files).
+ */
+function redactCredentials(text: string): string {
+  let t = redactPem(text);
+  t = t.replace(USERINFO, "$1[redacted]@").replace(SECRET_QUERY, "$1[redacted]");
+  t = t.replace(/(bearer\s+)[A-Za-z0-9._~+/=-]{16,}/gi, "$1[redacted]");
+  t = t.replace(/\b(?:ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]{20,}\b/g, "[redacted]");
+  t = t.replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, "[redacted]");
+  t = t.replace(/\bAIza[0-9A-Za-z_-]{30,}\b/g, "[redacted]");
+  t = t.replace(/\bxox[baprs]-[0-9A-Za-z-]{10,}\b/g, "[redacted]");
+  t = t.replace(/\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\b/g, "[redacted]");
+  t = t.replace(/\bAKIA[0-9A-Z]{16}\b/g, "[redacted]");
+  // AWS's 40-character secret access key, named: aws_secret_access_key = ..., "SecretAccessKey": "..."
+  t = t.replace(
+    /((?:aws[_-]?)?secret[_-]?(?:access[_-]?)?key["']?\s{0,5}[=:]\s{0,5}["']?)[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/gi,
+    "$1[redacted]",
+  );
+  return t;
+}
+
+/**
  * `redactSecrets` over a text of any length, in time linear in it (`redactSecrets` itself is bounded:
  * no pattern rescans a long run). In order:
  *  - runs of blanks collapse, so a 64 KB block of newlines costs nothing;
@@ -136,8 +161,7 @@ export function redactText(text: string): string {
     (_m, mime: string, payload: string) =>
       `[${mime} data, ${Math.max(1, Math.round(payload.length / 1024))} KB]`,
   );
-  t = redactPem(t);
-  t = t.replace(USERINFO, "$1[redacted]@").replace(SECRET_QUERY, "$1[redacted]");
+  t = redactCredentials(t);
   t = redactSecrets(t);
   return t.replace(LONG_RUN, (m) => `[${m.length} characters in one unbroken run, not kept]`);
 }
@@ -194,21 +218,9 @@ export function sanitizeAction<T>(action: T, caps: Pick<Caps, "maxString" | "max
 /**
  * Only the patterns that are unmistakably credentials, for file contents (diffs) where the full
  * redactor's hex and base64 rules would mangle source code: GitHub, OpenAI/Anthropic, Google, Slack,
- * AWS and JWT tokens, bearer headers, private key blocks and passwords in URLs.
+ * AWS and JWT tokens, bearer headers, private key blocks and passwords in URLs: the same set
+ * `redactText` starts with (`redactCredentials`).
  */
 export function redactTokens(text: string): string {
-  let out = text.length > 1_000_000 ? text.slice(0, 1_000_000) : text;
-  out = out.replace(
-    /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g,
-    "[redacted private key]",
-  );
-  out = out.replace(/(bearer\s+)[A-Za-z0-9._~+/=-]{16,}/gi, "$1[redacted]");
-  out = out.replace(/\b(?:ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]{20,}\b/g, "[redacted]");
-  out = out.replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, "[redacted]");
-  out = out.replace(/\bAIza[0-9A-Za-z_-]{30,}\b/g, "[redacted]");
-  out = out.replace(/\bxox[baprs]-[0-9A-Za-z-]{10,}\b/g, "[redacted]");
-  out = out.replace(/\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\b/g, "[redacted]");
-  out = out.replace(/\bAKIA[0-9A-Z]{16}\b/g, "[redacted]");
-  out = out.replace(/([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)([^:\s/@]+):([^@\s/]+)@/g, "$1$2:[redacted]@");
-  return out;
+  return redactCredentials(text.length > 1_000_000 ? text.slice(0, 1_000_000) : text);
 }

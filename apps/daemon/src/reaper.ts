@@ -41,11 +41,17 @@ export const AGENT_NOTES = "$HOME/.inc-agents";
 
 /**
  * Runs in the sandbox (`bash -s`), with I_INC_KEEP (tokens not to touch) and I_INC_SWEEP_CWD (only
- * agents working there) in the environment. Prints `@@reaped <pid> <folder>` for each one it stopped.
- * For each note: a pid that is gone, or whose start time or token differs, is a stale note and is
- * just removed; a match gets SIGTERM with its descendants, and SIGKILL after three seconds.
+ * agents working there) in the environment. Prints `@@launcher current|old` (does the sandbox's
+ * launcher write notes at all?) and `@@reaped <pid> <folder>` for each agent it stopped.
+ *
+ * A note is used only if its name is a launch token, 16 to 64 lower-case hex digits: anything else
+ * is not ours, and is left alone. For each note: a pid that is gone, or whose start time or token
+ * differs, is a stale note and is just removed; a match is stopped. All the matches are sent SIGTERM
+ * together (with their descendants), and the ones still there three seconds later get SIGKILL, so
+ * any number of agents takes three seconds, not three seconds each.
  */
 export const SWEEP_SCRIPT = `
+if grep -q inc-agents /usr/local/lib/i-inc/acp-env.sh 2>/dev/null; then echo "@@launcher current"; else echo "@@launcher old"; fi
 d="${AGENT_NOTES}"
 [ -d "$d" ] || exit 0
 keep=" \${I_INC_KEEP:-} "
@@ -54,9 +60,12 @@ st() {
   else ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//'; fi
 }
 kids() { for c in $(pgrep -P "$1" 2>/dev/null); do kids "$c"; echo "$c"; done; }
+victims=""; notes=(); lines=()
 for f in "$d"/*.pid; do
   [ -e "$f" ] || continue
   tok=$(basename "$f" .pid)
+  case "$tok" in ''|*[!0-9a-f]*) continue ;; esac
+  [ "\${#tok}" -ge 16 ] && [ "\${#tok}" -le 64 ] || continue
   case "$keep" in *" $tok "*) continue ;; esac
   pid=""; start=""; cwd=""
   IFS="|" read -r pid start cwd < "$f" || true
@@ -64,22 +73,26 @@ for f in "$d"/*.pid; do
   case "$pid" in ''|*[!0-9]*) rm -f "$f"; continue ;; esac
   now=$(st "$pid")
   if [ -z "$now" ] || [ "$now" != "$start" ]; then rm -f "$f"; continue; fi
-  if [ -r "/proc/$pid/environ" ] && ! tr '\\0' '\\n' < "/proc/$pid/environ" | grep -qx "I_INC_AGENT=$tok"; then
+  if [ -r "/proc/$pid/environ" ] && ! tr '\\0' '\\n' < "/proc/$pid/environ" | grep -qxF "I_INC_AGENT=$tok"; then
     rm -f "$f"; continue
   fi
   all="$(kids "$pid") $pid"
-  kill -TERM $all 2>/dev/null
+  victims="$victims $all"
+  notes+=("$f"); lines+=("@@reaped $pid $cwd")
+done
+if [ -n "$victims" ]; then
+  kill -TERM $victims 2>/dev/null
   alive=""
   for i in 1 2 3 4 5 6; do
     sleep 0.5
     alive=""
-    for p in $all; do kill -0 "$p" 2>/dev/null && alive="$alive $p"; done
+    for p in $victims; do kill -0 "$p" 2>/dev/null && alive="$alive $p"; done
     [ -n "$alive" ] || break
   done
   [ -z "$alive" ] || kill -KILL $alive 2>/dev/null
-  rm -f "$f"
-  echo "@@reaped $pid $cwd"
-done
+  for f in "\${notes[@]}"; do rm -f "$f"; done
+  for l in "\${lines[@]}"; do echo "$l"; done
+fi
 exit 0
 `;
 
@@ -99,15 +112,54 @@ export interface ReapOptions {
 
 export type Reap = (employeeId: Id, o?: ReapOptions) => Promise<string[]>;
 
+/** Machines whose launcher writes no notes (made before agent notes existed): no leftover agent there can be found. */
+const oldLauncher = new Set<string>();
+
+/** The launcher check in a sweep's or a probe's output: logged once per machine, and shown in Setup. */
+export function noteLauncher(machine: string, current: boolean, log?: (m: string) => void): void {
+  if (current) {
+    oldLauncher.delete(machine);
+    return;
+  }
+  if (oldLauncher.has(machine)) return;
+  oldLauncher.add(machine);
+  log?.(
+    `${machine}: its launcher writes no agent notes, so an agent left running by a crash can't be found. Needs update: run tools/host/update-machine.sh ${machine.replace(/^inc-/, "")} on the host`,
+  );
+}
+
+/** Does this machine need `tools/host/update-machine.sh`? Known once a sweep or a probe has looked. */
+export const launcherNeedsUpdate = (machine: string): boolean => oldLauncher.has(machine);
+
+function readLauncher(machine: string, output: string, log?: (m: string) => void): void {
+  const m = /@@launcher (current|old)/.exec(output);
+  if (m) noteLauncher(machine, m[1] === "current", log);
+}
+
+/** Launches wait for the startup sweep, so an agent started in its window is never in its way. */
+let startupSweep: Promise<unknown> | undefined;
+const SWEEP_WAIT_MS = 120_000;
+async function afterStartupSweep(): Promise<void> {
+  if (!startupSweep) return;
+  await Promise.race([startupSweep, new Promise((r) => setTimeout(r, SWEEP_WAIT_MS).unref?.())]);
+}
+
 /** The sweep as a function of the employee whose sandbox it goes through; it never throws. */
-export function reaper(run: RunInMachine, log?: (m: string) => void): Reap {
+export function reaper(
+  run: RunInMachine,
+  log?: (m: string) => void,
+  machineOf?: (employeeId: Id) => string,
+): Reap {
   return async (employeeId, o = {}) => {
     try {
+      // Not while the startup sweep is still going: it decides what is left over by what it finds.
+      if (!o.all) await afterStartupSweep();
       const env: Record<string, string> = {
         I_INC_KEEP: o.all ? "" : liveAgentIds().join(" "),
         ...(o.cwd ? { I_INC_SWEEP_CWD: o.cwd } : {}),
       };
       const r = await run(employeeId, SWEEP_SCRIPT, env);
+      if (machineOf) readLauncher(machineOf(employeeId), r.output, log);
       const reaped = r.output
         .split("\n")
         .filter((l) => l.startsWith("@@reaped "))
@@ -121,34 +173,57 @@ export function reaper(run: RunInMachine, log?: (m: string) => void): Reap {
   };
 }
 
-/** `sweep` as run on a machine by name (a startup sweep of every machine that is up). */
+/**
+ * The sweep on every machine that is up, by name, all at once. Never starts a machine: only those
+ * `listMachines` shows as running are touched. At startup it holds launches back until it is done
+ * (`all` false); at shutdown (`all` true) it takes every agent, this daemon's own included.
+ */
 export async function reapMachines(
   machines: {
     listMachines(): Promise<{ name: string; state: string }[]>;
     runIn(m: string, s: string, t?: number): Promise<string>;
   },
   log?: (m: string) => void,
+  o: { all?: boolean; timeoutMs?: number } = {},
 ): Promise<number> {
-  let n = 0;
-  try {
-    for (const m of await machines.listMachines()) {
-      if (!m.name.startsWith("inc-") || m.state !== "running") continue;
-      try {
-        const out = await machines.runIn(
-          m.name,
-          `export I_INC_KEEP='${liveAgentIds().join(" ")}'\n${SWEEP_SCRIPT}`,
-          60_000,
-        );
-        for (const line of out.split("\n").filter((l) => l.startsWith("@@reaped "))) {
-          n++;
-          log?.(`stopped an agent left running in ${m.name} by an earlier daemon (pid ${line.slice(9)})`);
-        }
-      } catch (e) {
-        log?.(`looking for agents left running in ${m.name} failed: ${e instanceof Error ? e.message : e}`);
-      }
+  const work = (async () => {
+    let n = 0;
+    try {
+      const up = (await machines.listMachines()).filter(
+        (m) => m.name.startsWith("inc-") && m.state === "running",
+      );
+      await Promise.all(
+        up.map(async (m) => {
+          try {
+            const keep = o.all ? "" : liveAgentIds().join(" ");
+            const out = await machines.runIn(
+              m.name,
+              `export I_INC_KEEP='${keep}'\n${SWEEP_SCRIPT}`,
+              o.timeoutMs ?? 60_000,
+            );
+            readLauncher(m.name, out, log);
+            for (const line of out.split("\n").filter((l) => l.startsWith("@@reaped "))) {
+              n++;
+              log?.(`stopped an agent left running in ${m.name} by an earlier daemon (pid ${line.slice(9)})`);
+            }
+          } catch (e) {
+            log?.(
+              `looking for agents left running in ${m.name} failed: ${e instanceof Error ? e.message : e}`,
+            );
+          }
+        }),
+      );
+    } catch (e) {
+      log?.(`looking for agents left running failed: ${e instanceof Error ? e.message : e}`);
     }
-  } catch (e) {
-    log?.(`looking for agents left running failed: ${e instanceof Error ? e.message : e}`);
-  }
-  return n;
+    return n;
+  })();
+  if (!o.all) startupSweep = work;
+  return work;
+}
+
+/** Test hook: a new process has no startup sweep and has seen no launcher. */
+export function forgetSweepState(): void {
+  startupSweep = undefined;
+  oldLauncher.clear();
 }

@@ -127,6 +127,11 @@ if (demo && app.deps.registry.employees().length === 0) {
   seedDemoLater(app.deps.tickets, agent, Date.now());
   seedDemoProposals(app.deps.proposals, Date.now());
 }
+// Agents an earlier daemon left running (it crashed, was killed, or a deploy did not wait for it) are
+// stopped before anything launches: every launch waits for this sweep (reaper.ts), so no agent this
+// daemon starts can be taken for a leftover. It runs on every machine that is up, all at once.
+if (real)
+  void real.sweepAgents().then((n) => n && log(`stopped ${n} agent(s) an earlier daemon left running`));
 await app.daemon.tick();
 setInterval(() => void app.daemon.tick(), 30_000);
 
@@ -185,12 +190,6 @@ const server = Bun.serve<WsData>({
   websocket: app.ahp.transport.websocket,
 });
 
-// Agents an earlier daemon left running (it crashed, was killed, or a deploy did not wait for it)
-// are stopped, so each conversation and ticket has the one agent this daemon starts (reaper.ts).
-// Each launch also does it for its own folder first; this catches the rest.
-if (real)
-  void real.sweepAgents().then((n) => n && log(`stopped ${n} agent(s) an earlier daemon left running`));
-
 // SIGTERM (launchd, the deployer's kickstart) and SIGINT: stop the agents politely (session/cancel,
 // close their stdin, kill after a short grace), close the sockets, fold the database's log back in,
 // and leave inside launchd's exit timeout (20 s by default); a second signal leaves at once.
@@ -211,6 +210,9 @@ async function shutdown(signal: string): Promise<void> {
       app.ahp.backend instanceof SessionHost ? app.ahp.backend.shutdown() : undefined,
       agent.shutdown?.(),
     ]);
+    // Whatever ignored both the end of its stdin and the kill of its client, in every machine that is
+    // up (a stopped one is not started to look), all at once, within a few seconds.
+    if (real) await real.sweepAgents({ all: true, timeoutMs: 8000 });
     app.ahp.host.close();
     await new Promise((r) => setTimeout(r, 50)); // let the runs the close ended write their last lines
     checkpoint(app.db);

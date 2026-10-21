@@ -20,7 +20,7 @@ import {
   StartupError,
 } from "@i-inc/core";
 import type { AgentProcess, Launch } from "./acp.ts";
-import { newAgentId, trackAgent } from "./reaper.ts";
+import { launcherNeedsUpdate, newAgentId, noteLauncher, trackAgent } from "./reaper.ts";
 
 export const BOOT_FAILURES: Record<SandboxFaultKind, { reason: string; fix: string; waiting: string }> = {
   "stale-hostname": {
@@ -484,6 +484,7 @@ export class AppleMachines implements MachineProvider {
       cpus: size.cpus,
       memory: size.memory,
       signedIn,
+      ...(launcherNeedsUpdate(machine) ? { launcher: "needs-update" as const } : {}),
       ...(fault && inFault ? { reason: fault.reason, kind: fault.kind, retryAt: fault.retryAt } : {}),
     };
   }
@@ -495,7 +496,7 @@ export class AppleMachines implements MachineProvider {
     // ~/.local/bin, which that shell doesn't have on its PATH. The string is fixed: no input reaches it.
     const input =
       'export PATH="$HOME/.local/bin:$PATH"; ' +
-      "[ -s ~/.claude/.credentials.json ] && echo claude; [ -s ~/.gemini/antigravity-acp/acp_token.json ] && echo antigravity; codex login status >/dev/null 2>&1 && echo codex; [ -s ~/.config/gh/hosts.yml ] && echo github; true\n";
+      "[ -s ~/.claude/.credentials.json ] && echo claude; [ -s ~/.gemini/antigravity-acp/acp_token.json ] && echo antigravity; codex login status >/dev/null 2>&1 && echo codex; [ -s ~/.config/gh/hosts.yml ] && echo github; if grep -q inc-agents /usr/local/lib/i-inc/acp-env.sh 2>/dev/null; then echo agentnotes; else echo noagentnotes; fi; true\n";
     const output = await this.exec(
       this.s.bin,
       ["machine", "run", "-i", "-u", this.s.user, "-n", machine, "--", "bash", "-s"],
@@ -508,6 +509,10 @@ export class AppleMachines implements MachineProvider {
       codex: found.has("codex"),
       github: found.has("github"),
     };
+    // A launcher from before agent notes: said once in the log, and shown in Setup (reaper.ts).
+    if (found.has("agentnotes") || found.has("noagentnotes")) {
+      noteLauncher(machine, found.has("agentnotes"), this.log);
+    }
     this.signedInCache.set(machine, result);
     return result;
   }

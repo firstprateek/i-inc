@@ -62,8 +62,11 @@ export function realPorts(o: RealOptions): Pick<
 > & {
   /** Renews the GitHub sign-in of every sandbox in use. main.ts calls it on a timer. */
   keepLoginsFresh: () => Promise<void>;
-  /** Stops the agents an earlier daemon left running in any sandbox that is up. main.ts calls it once at startup. */
-  sweepAgents: () => Promise<number>;
+  /**
+   * Stops the agents an earlier daemon left running in every sandbox that is up (never starting one),
+   * all machines at once. main.ts calls it at startup, before anything launches, and with `all` at shutdown.
+   */
+  sweepAgents: (o?: { all?: boolean; timeoutMs?: number }) => Promise<number>;
 } {
   const base = o.machine ?? defaultMachineSettings;
   const now = o.now ?? Date.now;
@@ -101,7 +104,7 @@ export function realPorts(o: RealOptions): Pick<
   // work (reaper.ts), and the sandboxes are swept once at startup.
   let reapOnce: Reap | undefined;
   const reap = (registry: Registry): Reap => {
-    reapOnce ??= reaper(run(registry), o.log);
+    reapOnce ??= reaper(run(registry), o.log, (employeeId) => machineOf(teams(registry), employeeId));
     return reapOnce;
   };
 
@@ -183,6 +186,7 @@ export function realPorts(o: RealOptions): Pick<
               identity,
               worktree: (ticketId) => workDir(ticketId, base),
               run: run(registry),
+              ...(o.log ? { log: o.log } : {}),
             }),
         }
       : {}),
@@ -224,7 +228,7 @@ export function realPorts(o: RealOptions): Pick<
       }),
     helper: new OllamaHelper(o.ollama),
     chat: new OllamaChat(o.ollama),
-    sweepAgents: async () => (machines ? reapMachines(machines, o.log) : 0),
+    sweepAgents: async (opts) => (machines ? reapMachines(machines, o.log, opts) : 0),
     keepLoginsFresh: async () => {
       if (!machines || !registryRef) return;
       const registry = registryRef;

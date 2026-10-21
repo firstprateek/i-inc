@@ -105,7 +105,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 
 **C1 `GET /api/sandboxes`** → `{ "sandboxes": [{ "team": "engineering", "machine": "inc-engineering",
 "state": "running" | "stopped" | "missing" | "error", "cpus": 6, "memory": "12G",
-"signedIn": { "claude": boolean, "antigravity": boolean, "github": boolean } }] }`
+"signedIn": { "claude": boolean, "antigravity": boolean, "github": boolean }, "launcher"?: "needs-update" }] }` (`launcher` is set when the machine's launcher writes no agent notes, so a leftover agent can't be found there: run `sh tools/host/update-machine.sh <team>`; Setup → Sandboxes says so)
 
 **C2 Web Push** → `GET /api/push/key` → `{ "publicKey": "<VAPID public key>" }`;
 `POST /api/push/subscribe` with a browser `PushSubscription` JSON → `{ "ok": true }`;

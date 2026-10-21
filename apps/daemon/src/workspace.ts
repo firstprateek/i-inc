@@ -30,6 +30,7 @@ export interface WorkspaceOptions {
   policy?: (project: string) => ProjectPolicy;
   /** Where the repo is cloned from; tests use a local path. */
   remote?: (repo: string) => string;
+  log?: (msg: string) => void;
   /** The images the owner attached to a ticket, with their bytes. */
   attachments?: (ticketId: string) => AttachmentFile[];
 }
@@ -97,6 +98,13 @@ export function openScript(o: {
   message: string;
   /** Owner-merges mode pushes the branch for a PR; direct mode keeps it local. Default: push. */
   push?: boolean;
+  /**
+   * What to do with a local branch that has commits GitHub's copy lacks, when the worktree is made
+   * again. "keep" (conversations) checks the local branch out as it is. "origin" (tickets) resets it
+   * to GitHub's, after saving the local one as `refs/inc-backup/<branch>-<time>` and saying so
+   * (`@@backup <ref>`), so nothing is lost. Default: origin.
+   */
+  local?: "keep" | "origin";
 }): string {
   if (!isSafeRefName(o.branch)) throw new Error(`not a branch name: ${o.branch}`);
   const [remote, repoDir, worktree, branch] = [o.remote, o.repoDir, o.worktree, o.branch].map(quote);
@@ -125,9 +133,19 @@ export function openScript(o: {
     "COPY=existing",
     `if ! git -C ${worktree} rev-parse --is-inside-work-tree >/dev/null 2>&1; then`,
     `  if git show-ref --quiet --verify refs/remotes/origin/${o.branch}; then`,
-    // A local branch with commits that were never pushed is checked out as it is, never reset.
     `    if git show-ref --quiet --verify refs/heads/${o.branch} && [ "$(git rev-list --count ${branch} --not origin/${o.branch})" != 0 ]; then`,
-    `      git worktree add --quiet ${worktree} ${branch}; COPY=restored`,
+    ...(o.local === "keep"
+      ? [
+          // A conversation's local branch with commits that were never pushed is checked out as it is, never reset.
+          `      git worktree add --quiet ${worktree} ${branch}; COPY=restored`,
+        ]
+      : [
+          // A ticket's is reset to GitHub's, as before, but first saved where it can be found again.
+          `      BACKUP="refs/inc-backup/${o.branch}-$(date +%s)"`,
+          `      git update-ref "$BACKUP" refs/heads/${o.branch}`,
+          '      echo "@@backup $BACKUP"',
+          `      git worktree add --quiet -B ${branch} ${worktree} origin/${o.branch}; COPY=remote`,
+        ]),
     "    else",
     `      git worktree add --quiet -B ${branch} ${worktree} origin/${o.branch}; COPY=remote`,
     "    fi",
@@ -304,6 +322,7 @@ export async function prepareConversationCopy(
     ...who,
     message: "",
     push: false,
+    local: "keep",
   });
   const r = await o.run(c.employee.id, script, { GH_TOKEN: token });
   if (r.code !== 0 || !r.output.includes("@@ready")) throw fail(r);
@@ -341,8 +360,14 @@ export class GitHubWorkspace implements Workspace {
       throw new Error(`git in ${builder.name}'s machine failed: ${tail}`);
     }
     await this.attach(ticket, builder);
+    // A local branch with commits GitHub did not have was reset to GitHub's; the ticket says where the old one is.
+    const backup = /@@backup (\S+)/.exec(r.output)?.[1];
+    const note = backup
+      ? `${branch} in ${builder.name}'s machine had commits GitHub's copy lacked. They are kept as ${backup} (git branch <name> ${backup} brings them back); the working copy now matches GitHub's branch.`
+      : undefined;
+    if (note) this.o.log?.(`${ticket.id}: ${note}`);
     // Direct mode: a local branch; the reviewed work is pushed to main at the gates.
-    if (direct) return { branch };
+    if (direct) return { branch, ...(note ? { note } : {}) };
     const pr =
       (await this.o.prs.find(repo, branch)) ??
       (await this.o.prs.openDraft(repo, {
@@ -357,7 +382,7 @@ export class GitHubWorkspace implements Workspace {
           ...ticket.doneWhen.map((d) => `- ${d}`),
         ].join("\n"),
       }));
-    return { number: pr.number, url: pr.url, nodeId: pr.nodeId, branch };
+    return { number: pr.number, url: pr.url, nodeId: pr.nodeId, branch, ...(note ? { note } : {}) };
   }
 
   /**

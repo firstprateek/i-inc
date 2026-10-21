@@ -1,6 +1,6 @@
 // What the host keeps from an agent: secrets out wherever they fall, and no input that stalls it.
 import { describe, expect, it } from "vitest";
-import { redactText, sanitizeAction } from "../../src/ahp/sanitize.ts";
+import { redactText, redactTokens, sanitizeAction } from "../../src/ahp/sanitize.ts";
 import { redactSecrets } from "../../src/sessions.ts";
 
 // Assembled here so that no secret scanner mistakes the example for a real key.
@@ -60,29 +60,37 @@ describe("redaction leaves no secret at any position", () => {
 });
 
 /**
- * The best of several runs, in ms. How long a run takes depends on how busy the machine is, so the
- * tests ask how the time GROWS: four times the text must cost less than six times the time (a pattern
- * that backtracks is quadratic or worse: sixteen times at least, and seconds at 64 KB). A run too
- * short to measure counts as fast. The absolute limits (50 ms for 64 KB, 200 ms for an action) are
- * checked when I_INC_BENCH is set, on a quiet machine.
+ * How long things take depends on how busy the machine is, so the tests ask how the time GROWS: four
+ * times the text must cost less than eight times the time. A pattern that backtracks is quadratic or
+ * worse: sixteen times at least, and seconds at 64 KB. Each size is the best of nine runs, timed in turns; the pair
+ * is measured up to three times, because a busy machine can spoil one measurement and a quadratic
+ * pattern spoils every one. A run under 20 ms counts as fast whatever the ratio. The absolute limits
+ * (50 ms for 64 KB, 200 ms for an action) are checked when I_INC_BENCH is set, on a quiet machine.
  */
-const fastest = <T>(fn: () => T, runs = 5): { ms: number; value: T } => {
-  let best = Number.POSITIVE_INFINITY;
-  let value = undefined as T;
-  for (let i = 0; i < runs; i++) {
-    const t = performance.now();
-    value = fn();
-    best = Math.min(best, performance.now() - t);
-  }
-  return { ms: best, value };
-};
 const bench = !!process.env.I_INC_BENCH;
-/** Time of the full-size input, and whether it grew linearly from a quarter of it. */
+/**
+ * Time of the full-size input, and whether it grew linearly from a quarter of it. The two sizes are
+ * timed in turns, so a busy machine slows both together and the ratio is what it would be on a quiet one.
+ */
 function scaling<T>(whole: () => T, quarter: () => unknown): { ms: number; linear: boolean; value: T } {
   quarter(); // warm up
-  const small = fastest(quarter).ms;
-  const big = fastest(whole);
-  return { ms: big.ms, linear: big.ms < 8 || big.ms / Math.max(small, 0.5) < 6, value: big.value };
+  let last: { ms: number; linear: boolean; value: T } | undefined;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let small = Number.POSITIVE_INFINITY;
+    let big = Number.POSITIVE_INFINITY;
+    let value = undefined as T;
+    for (let i = 0; i < 9; i++) {
+      let t = performance.now();
+      quarter();
+      small = Math.min(small, performance.now() - t);
+      t = performance.now();
+      value = whole();
+      big = Math.min(big, performance.now() - t);
+    }
+    last = { ms: big, linear: big < 20 || big / Math.max(small, 0.5) < 8, value };
+    if (last.linear) break;
+  }
+  return last as { ms: number; linear: boolean; value: T };
 }
 
 describe("hostile input costs milliseconds", () => {
@@ -344,6 +352,36 @@ describe("what redaction keeps and what it takes", () => {
       expect(leaks).toEqual([]);
     });
   }
+});
+
+describe("diffs and files get the same credential patterns as everything else", () => {
+  const samples: Record<string, [string, string]> = {
+    pgp: [
+      "-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nlQOYBGJhbXcBCADd8jM4abcd\n-----END PGP PRIVATE KEY BLOCK-----",
+      "lQOYBGJhbXcBCADd8jM4",
+    ],
+    pgpNoEnd: [
+      "-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBGJhbXcBCADd8jM4abcd\n\nlQOYBGJhbXcBCADd8jM4efgh\n",
+      "lQOYBGJhbXcBCADd8jM4",
+    ],
+    pwdQuery: ["curl https://h.io/x?pwd=hunter2queryvalue&a=1", "hunter2queryvalue"],
+    atInPassword: ["git clone https://deploy:p@sswordwithat@example.com/r.git", "sswordwithat"],
+    awsSecret: ["aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "wJalrXUtnFEMI"],
+    awsJson: ['{"SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"}', "wJalrXUtnFEMI"],
+    github: ["TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789", "ghp_abcdefghijklmnop"],
+    bearer: ["Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345", "abcdefghijklmnopqrstuvwx"],
+    key: [`${AKIA} in a config`, "ABCDEFGHIJKLMNOP"],
+  };
+  for (const [name, [text, secret]] of Object.entries(samples)) {
+    it(`takes ${name} from a diff, as it does from the agent's own words`, () => {
+      expect(redactTokens(`+ ${text}\n`)).not.toContain(secret);
+      expect(redactText(`+ ${text}\n`)).not.toContain(secret);
+    });
+  }
+  it("leaves source code alone: hashes, ids and long constants are not credentials", () => {
+    const code = `const sha = "${"0123456789abcdef".repeat(4)}";\nconst blob = "${"QUJD".repeat(200)}";\nconst u = "https://example.com/a?page=2&sort=name";`;
+    expect(redactTokens(code)).toBe(code);
+  });
 });
 
 describe("redaction comes before the cut", () => {

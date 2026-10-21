@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NoSlotError } from "../../src/ahp/session-host.ts";
-import { openScript, removeCopyScript } from "../../src/workspace.ts";
+import { branchName, GitHubWorkspace, openScript, removeCopyScript } from "../../src/workspace.ts";
 import { sessionRig, until } from "./session-rig.ts";
 import { type Any, turnStarted } from "./support.ts";
 
@@ -51,6 +51,7 @@ const open = (branch = "conv/c1", cwd = join(work, "conv-c1")) =>
       email: "bot@example.com",
       message: "",
       push: false,
+      local: "keep", // a conversation's
     }),
   );
 
@@ -127,6 +128,70 @@ describe("a conversation's working copy made again after the cleanup", () => {
     expect(open()).toContain("@@copy restored");
     expect(git(cwd, "rev-parse", "HEAD").trim()).toBe(tip);
     expect(readFileSync(join(cwd, "b.txt"), "utf8")).toBe("not pushed\n");
+  });
+});
+
+describe("a ticket's worktree made again over a diverged local branch", () => {
+  it("is reset to GitHub's, as before, after the local one is saved where it can be found, and the ticket says so", async () => {
+    const logs: string[] = [];
+    const ticket = {
+      id: "7",
+      title: "Fix refunds",
+      project: "Duet",
+      type: "fix",
+      effort: "medium",
+      doneWhen: [],
+    } as never;
+    const ada = { id: "ada", name: "Ada" } as never;
+    const worktree = join(work, "inc-7");
+    const ws = new GitHubWorkspace({
+      project: () => ({ id: "Duet", repo: "o/repo", checks: [] }) as never,
+      tokens: { token: async () => "t" },
+      prs: {} as never,
+      identity: async () => ({ name: "Ada (i.inc)", email: "bot@example.com" }),
+      worktree: () => worktree,
+      policy: () => ({ mode: "direct" }) as never,
+      remote: () => remote,
+      run: async (_e, script) => {
+        const r = spawnSync("bash", ["-s"], {
+          input: script,
+          encoding: "utf8",
+          env: { ...process.env, HOME: root },
+        });
+        return { code: r.status ?? 1, output: r.stdout + r.stderr };
+      },
+      log: (m) => logs.push(m),
+    });
+    const branch = branchName(ticket);
+    expect((await ws.open(ticket, ada)).note).toBeUndefined();
+    // GitHub has the branch at one commit; the machine's has a second, never pushed
+    writeFileSync(join(worktree, "a.txt"), "pushed\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "--quiet", "-m", "pushed");
+    git(worktree, "push", "--quiet", "origin", branch);
+    writeFileSync(join(worktree, "b.txt"), "only here\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "--quiet", "-m", "local only");
+    const lost = git(worktree, "rev-parse", "HEAD").trim();
+    const onGithub = git(worktree, "rev-parse", `origin/${branch}`).trim();
+    cleanedUp(worktree);
+
+    const ref = await ws.open(ticket, ada);
+    expect(git(worktree, "rev-parse", "HEAD").trim()).toBe(onGithub); // as before: GitHub's
+    expect(existsSync(join(worktree, "b.txt"))).toBe(false);
+    const backups = git(
+      join(work, "repo"),
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+      "refs/inc-backup/",
+    ).trim();
+    expect(backups).toMatch(new RegExp(`^refs/inc-backup/${branch}-\\d+ ${lost}$`));
+    expect(ref.note).toContain(backups.split(" ")[0] as string);
+    expect(ref.note).toContain("had commits GitHub's copy lacked");
+    expect(logs.some((l) => l.includes("inc-backup"))).toBe(true);
+    // behind only (nothing local that GitHub lacks): reset without a backup
+    cleanedUp(worktree);
+    expect((await ws.open(ticket, ada)).note).toBeUndefined();
   });
 });
 

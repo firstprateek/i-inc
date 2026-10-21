@@ -819,6 +819,11 @@ describe("mapper and brief details", () => {
     expect(after).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789");
     expect(after).toContain("TOKEN=[redacted]");
     expect(after).toContain("NAME=keep_this_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6"); // not mangled like the full redactor would
+    // the stored diff gets the same credential patterns as everything else the agent says
+    for (const leak of ["pgpbodyline", "hunter2queryvalue", "sswordwithat", "wJalrXUtnFEMI"])
+      expect(after).not.toContain(leak);
+    expect(after).toContain("hook?pwd=[redacted]&x=1");
+    expect(after).toContain("@example.com/repo.git");
   });
 
   it("puts only the last six turns in a continuation brief, with secrets redacted from both sides", async () => {

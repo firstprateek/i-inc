@@ -189,6 +189,7 @@ export class IncSetupSandboxes extends Loader<Data> {
             return html`<li class=${on ? "in" : "out"}>${name}: ${on ? "signed in" : "not signed in"}</li>`;
           })}
         </ul>
+        ${s.launcher === "needs-update" ? html`<p class="bad launcher-help" role="alert">Needs update: run <code>sh tools/host/update-machine.sh ${s.team}</code> on the host. This sandbox was made before agents left notes of themselves, so an agent that outlives a crashed or restarted daemon can't be found here and stopped.</p>` : ""}
         ${this.disk(s.machine)}
         ${s.signedIn?.codex !== true ? html`<p class="note codex-help">To sign Codex in, run <code>sh tools/host/sign-in-codex.sh ${s.team}</code> on the host. Authentication stays there; don't enter credentials in i.inc. <a href="https://github.com/firstprateek/i-inc/blob/main/docs/codex.md" target="_blank" rel="noreferrer">Owner sign-in instructions</a>.</p>` : ""}
       </section>`;

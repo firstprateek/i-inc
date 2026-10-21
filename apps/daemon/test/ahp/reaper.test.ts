@@ -20,11 +20,13 @@ import type { Launch } from "../../src/acp.ts";
 import { type MachineSettings, machineLaunch } from "../../src/machines.ts";
 import {
   forgetLiveAgents,
+  forgetSweepState,
   liveAgentIds,
   type Reap,
   type RunInMachine,
   reaper,
   reapMachines,
+  SWEEP_SCRIPT,
 } from "../../src/reaper.ts";
 import { sessionRig, until } from "./session-rig.ts";
 import { turnStarted } from "./support.ts";
@@ -106,6 +108,7 @@ afterEach(() => {
   }
   spawned.length = 0;
   forgetLiveAgents();
+  forgetSweepState();
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -223,8 +226,89 @@ describe("an agent the daemon left behind", () => {
   });
 });
 
+describe("what the sweep will and will not touch", () => {
+  it("ignores a note whose name is not a launch token, so a pattern in a file name can't reach a live agent", async () => {
+    const sb = sandbox();
+    const rig = await sessionRig({ host: { launch: sb.launch, reap: sb.reap, startTimeoutMs: 5000 } });
+    const c = await rig.create("c1");
+    await rig.say(await rig.client(c), c.chat, "hello");
+    const [real] = sb.notes();
+    const live = real as { token: string; pid: number; start: string; cwd: string };
+    // notes that point at the live agent's pid and start time, under names that are not tokens: a glob
+    // that would match every token as a pattern, a short one, upper case, too long, and one with a dot
+    const names = ["[0-9a-f]*", ".*", "abc", "ABCDEF0123456789AB", "a".repeat(65), `${live.token}.x`];
+    for (const name of names) {
+      writeFileSync(join(home, ".inc-agents", `${name}.pid`), `${live.pid}|${live.start}|${live.cwd}\n`);
+    }
+    // the real note is kept (this daemon holds its token): only the odd names stand between the agent and the sweep
+    const out = await sb.run("x", SWEEP_SCRIPT, { I_INC_KEEP: live.token });
+    expect(out.output).not.toContain("@@reaped");
+    expect(alive(live.pid)).toBe(true);
+    // the real note is still honoured when it is not kept; the odd ones are neither used nor removed
+    const reaped = await sb.run("x", SWEEP_SCRIPT, { I_INC_KEEP: "" });
+    expect(reaped.output).toContain(`@@reaped ${live.pid} `);
+    await until(() => !alive(live.pid), 4000, "the agent to stop");
+    for (const name of names) expect(existsSync(join(home, ".inc-agents", `${name}.pid`))).toBe(true);
+  });
+
+  it("takes every agent at once, however many ignore SIGTERM, and only in machines that are up", async () => {
+    const sb = sandbox("term");
+    const first = await sessionRig({ host: { launch: sb.launch, startTimeoutMs: 5000 } });
+    const made = [await first.create("c1"), await first.create("c2"), await first.create("c3")];
+    for (const c of made) await first.say(await first.client(c), c.chat, "hello");
+    const pids = sb.notes().map((n) => n.pid);
+    expect(pids).toHaveLength(3);
+    const asked: string[] = [];
+    const machines = {
+      listMachines: async () => [
+        { name: "inc-engineering", state: "running" },
+        { name: "inc-design", state: "stopped" },
+      ],
+      runIn: async (name: string, script: string) => {
+        asked.push(name);
+        return (await sb.run("x", script)).output;
+      },
+    };
+    const t0 = Date.now();
+    expect(await reapMachines(machines, undefined, { all: true })).toBe(3);
+    const took = Date.now() - t0;
+    // three agents that ignore SIGTERM, one after another, would be nine seconds of waiting
+    expect(took).toBeLessThan(7000);
+    for (const pid of pids) expect(alive(pid)).toBe(false);
+    expect(asked).toEqual(["inc-engineering"]); // a stopped machine is never started to be looked at
+  }, 20_000);
+
+  it("holds launches back until the startup sweep has finished", async () => {
+    const order: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const machines = {
+      listMachines: async () => [{ name: "inc-engineering", state: "running" }],
+      runIn: async () => {
+        order.push("startup sweep begins");
+        await gate;
+        order.push("startup sweep ends");
+        return "";
+      },
+    };
+    const sweeping = reapMachines(machines);
+    const launch = reaper(async () => {
+      order.push("launch sweep");
+      return { code: 0, output: "" };
+    })("ada", { cwd: "/home/employee/work/conv-x" });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(order).toEqual(["startup sweep begins"]); // the launch is waiting
+    release();
+    await sweeping;
+    await launch;
+    expect(order).toEqual(["startup sweep begins", "startup sweep ends", "launch sweep"]);
+  });
+});
+
 describe("the daemon stopping (SIGTERM, a deploy)", () => {
-  it("cancels the running turn, closes every agent's stdin, kills one that ignores it, and sweeps the sandbox", async () => {
+  it("cancels the running turn, closes every agent's stdin, and kills one that ignores it", async () => {
     const calls: { employee: string; all?: boolean | undefined }[] = [];
     const reap: Reap = async (employee, o) => {
       calls.push({ employee, all: o?.all });
@@ -254,8 +338,8 @@ describe("the daemon stopping (SIGTERM, a deploy)", () => {
     expect(one?.stdin.writableEnded).toBe(true);
     expect(two?.stdin.writableEnded).toBe(true);
     expect(rig.sandbox.live).toHaveLength(0); // neither took the end of its input as the end: both were killed
-    expect(calls.map((c) => c.employee).sort()).toEqual(["ada", "kit"]);
-    expect(calls.every((c) => c.all === true)).toBe(true);
+    // the sandboxes are swept by the caller, once, by machine (reapMachines): not here, one employee at a time
+    expect(calls).toEqual([]);
     // the turn that was running was cancelled by the agent itself, not left hanging
     await until(() => !rig.host.chatState(a.chat)?.activeTurn, 2000, "the turn to end");
     expect(rig.host.chatState(a.chat)?.turns.at(-1)?.state).toBe("cancelled");
