@@ -381,7 +381,9 @@ export async function rig(o: Partial<HostOptions> & { path?: string } = {}): Pro
   const db = o.db ?? (await openDb(o.path ?? ":memory:"));
   const backend = (o.backend as ScriptedBackend | undefined) ?? new ScriptedBackend();
   const time = { now: 1_700_000_000_000 };
-  const host = new AhpHost({ ...o, db, backend, now: () => time.now });
+  // Snapshots as often as the test asks, whatever the clock: the real pacing has tests of its own.
+  const limits = { snapshotMinBytes: 0, snapshotMinMs: 0, ...o.limits };
+  const host = new AhpHost({ ...o, limits, db, backend, now: () => time.now });
   return {
     host,
     backend,

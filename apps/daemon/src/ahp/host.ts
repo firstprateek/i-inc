@@ -15,6 +15,8 @@ import {
   type ActionEnvelope,
   type AgentInfo,
   AhpErrorCodes,
+  type ChatDeltaAction,
+  type ChatReasoningAction,
   type ChatSummary,
   type ContentRef,
   isClientDispatchable,
@@ -57,6 +59,7 @@ import {
 } from "./wire.ts";
 
 export const DEFAULT_TITLE = "New conversation";
+const CUT_MARKER = "\n[…cut: a part of a reply is kept to its first 2 MB]";
 
 /** What a socket must offer the host. The Bun glue in transport.ts adapts `ServerWebSocket` to it. */
 export interface Socket {
@@ -86,6 +89,9 @@ export interface TransportLimits {
   maxReplayActions: number;
   /** Turns per page for fetchTurns. */
   turnsPage: number;
+  /** Streamed text pieces are joined for this many ms, or this many characters. */
+  deltaFlushMs: number;
+  deltaFlushChars: number;
   /** The log is pruned this often (ms), and after this many actions, as well as at startup. */
   pruneEveryMs: number;
   pruneEveryActions: number;
@@ -102,6 +108,8 @@ export const defaultTransportLimits: TransportLimits = {
   idleCloseMs: 90_000,
   maxReplayActions: 5000,
   turnsPage: 20,
+  deltaFlushMs: 25,
+  deltaFlushChars: 16_384,
   pruneEveryMs: 3_600_000,
   pruneEveryActions: 5000,
 };
@@ -195,6 +203,10 @@ interface Channel {
   sinceSnapshot: number;
   /** The newest log row of this channel (0: none yet). */
   lastSeq: number;
+  /** Bytes of log since the last snapshot, the size of the state then, and when it was taken (ms). */
+  logBytes: number;
+  stateBytes: number;
+  snapshotAt: number;
 }
 
 interface Run {
@@ -236,9 +248,19 @@ export class AhpHost {
   private pruneSoon = false;
 
   constructor(private readonly o: HostOptions) {
-    const { snapshotEvery, retainMs, maxActionRows, maxBlobBytes, ...transport } = o.limits ?? {};
+    const {
+      snapshotEvery,
+      snapshotMinBytes,
+      snapshotMinMs,
+      retainMs,
+      maxActionRows,
+      maxBlobBytes,
+      ...transport
+    } = o.limits ?? {};
     this.store = new AhpStore(o.db, {
       snapshotEvery: snapshotEvery ?? defaultLimits.snapshotEvery,
+      snapshotMinBytes: snapshotMinBytes ?? defaultLimits.snapshotMinBytes,
+      snapshotMinMs: snapshotMinMs ?? defaultLimits.snapshotMinMs,
       retainMs: retainMs ?? defaultLimits.retainMs,
       maxActionRows: maxActionRows ?? defaultLimits.maxActionRows,
       maxBlobBytes: maxBlobBytes ?? defaultLimits.maxBlobBytes,
@@ -297,6 +319,9 @@ export class AhpHost {
         createdAt: r.createdAt,
         meta: r.meta,
         sinceSnapshot: 0,
+        logBytes: 0,
+        stateBytes: 0,
+        snapshotAt: 0,
         lastSeq: Math.max(lastSeqs.get(r.uri) ?? 0, snap?.seq ?? 0, r.createdSeq),
       });
       if (c.kind === "session") for (const chat of c.state.chats) this.chatSession.set(chat.resource, r.uri);
@@ -357,6 +382,7 @@ export class AhpHost {
   }
 
   state<T = unknown>(uri: string): T | undefined {
+    this.flushDeltas(uri);
     return this.chans.get(uri)?.c.state as T | undefined;
   }
   sessionState(uri: string): SessionState | undefined {
@@ -364,6 +390,7 @@ export class AhpHost {
     return c?.kind === "session" ? c.state : undefined;
   }
   chatState(uri: string): ChatState | undefined {
+    this.flushDeltas(uri);
     const c = this.chans.get(uri)?.c;
     return c?.kind === "chat" ? c.state : undefined;
   }
@@ -407,15 +434,31 @@ export class AhpHost {
   apply(channel: string, action: StateAction, origin?: ActionEnvelope["origin"]): ActionEnvelope {
     const ch = this.chans.get(channel);
     if (!ch) throw new RpcError(AhpErrorCodes.NotFound, `no channel ${channel}`);
+    this.flushDeltas(channel);
     const next = reduce(ch.c, action);
     const seq = this.seq + 1;
-    const snapshotDue = ch.sinceSnapshot + 1 >= this.store.limits.snapshotEvery;
-    this.store.append(
-      { seq, channel, at: this.now(), action, ...(origin ? { origin } : {}) },
+    const json = JSON.stringify(action);
+    const at = this.now();
+    // A snapshot costs as much as the state is big, so it is taken when the log since the last one is
+    // at least that big (a state that grows is not rewritten on every few actions), and not within
+    // a few seconds of the last. An idle channel is snapshotted by the prune.
+    const lim = this.store.limits;
+    const logBytes = ch.logBytes + json.length;
+    const snapshotDue =
+      ch.sinceSnapshot + 1 >= lim.snapshotEvery &&
+      logBytes >= Math.max(lim.snapshotMinBytes, ch.stateBytes) &&
+      at - ch.snapshotAt >= lim.snapshotMinMs;
+    const size = this.store.append(
+      { seq, channel, at, action, json, ...(origin ? { origin } : {}) },
       snapshotDue ? next.state : undefined,
     );
     this.seq = seq;
     ch.c = next;
+    ch.logBytes = snapshotDue ? 0 : logBytes;
+    if (snapshotDue) {
+      ch.stateBytes = size ?? 0;
+      ch.snapshotAt = at;
+    }
     ch.lastSeq = seq;
     // A lot of writing since the last prune: do it soon, but not inside this action.
     if (++this.actionsSincePrune >= this.limits.pruneEveryActions && !this.pruneSoon) {
@@ -446,8 +489,68 @@ export class AhpHost {
    * An action from the agent side (a backend, the mapper): redacted and capped on the way in. For
    * a turn's own actions use `TurnRun.emit`, which also drops them once the turn is over.
    */
-  emit(channel: string, action: StateAction): ActionEnvelope {
+  emit(channel: string, action: StateAction): ActionEnvelope | undefined {
+    if (action.type === ActionType.ChatDelta || action.type === ActionType.ChatReasoning) {
+      this.queueDelta(channel, action);
+      return undefined;
+    }
     return this.apply(channel, sanitizeAction(action, this.caps));
+  }
+
+  // ── streaming text: many small deltas become few actions ─────────────────────────────────────
+
+  private readonly pendingDeltas = new Map<
+    string,
+    { action: ChatDeltaAction | ChatReasoningAction; timer: ReturnType<typeof setTimeout> }
+  >();
+
+  /**
+   * An agent streams a reply in tiny pieces. Pieces of the same part that follow each other are joined
+   * into one delta, sent and kept after a few milliseconds or 16 KB, whichever is first; anything else
+   * for the chat (another part, a tool call, the end of the turn) sends it first, so order holds.
+   */
+  private queueDelta(channel: string, a: ChatDeltaAction | ChatReasoningAction): void {
+    if (!this.chans.has(channel)) return;
+    const cur = this.pendingDeltas.get(channel);
+    if (
+      cur &&
+      cur.action.type === a.type &&
+      cur.action.turnId === a.turnId &&
+      cur.action.partId === a.partId
+    ) {
+      cur.action = { ...cur.action, content: cur.action.content + a.content };
+      if (cur.action.content.length >= this.limits.deltaFlushChars) this.flushDeltas(channel);
+      return;
+    }
+    this.flushDeltas(channel);
+    const timer = setTimeout(() => this.flushDeltas(channel), this.limits.deltaFlushMs);
+    timer.unref?.();
+    this.pendingDeltas.set(channel, { action: a, timer });
+  }
+
+  /** Sends the joined delta waiting for this chat, if any. */
+  private flushDeltas(channel: string): void {
+    const p = this.pendingDeltas.get(channel);
+    if (!p) return;
+    this.pendingDeltas.delete(channel);
+    clearTimeout(p.timer);
+    const ch = this.chans.get(channel);
+    if (ch?.c.kind !== "chat") return;
+    // A part is kept to maxPart characters: the rest is cut, once, with a marker, and nothing more is added.
+    const part = ch.c.state.activeTurn?.responseParts.find(
+      (x) =>
+        (x.kind === ResponsePartKind.Markdown || x.kind === ResponsePartKind.Reasoning) &&
+        x.id === p.action.partId,
+    );
+    let action = p.action;
+    if (part && (part.kind === ResponsePartKind.Markdown || part.kind === ResponsePartKind.Reasoning)) {
+      const room = this.caps.maxPart - part.content.length;
+      if (room <= 0) return;
+      if (action.content.length > room) {
+        action = { ...action, content: `${action.content.slice(0, room)}${CUT_MARKER}` };
+      }
+    }
+    this.apply(channel, sanitizeAction(action, this.caps));
   }
 
   private broadcast(channel: string, env: ActionEnvelope): void {
@@ -641,6 +744,7 @@ export class AhpHost {
   /** Stops everything: runs aborted, connections closed. The database stays open (the app owns it). */
   close(): void {
     this.closed = true;
+    for (const channel of [...this.pendingDeltas.keys()]) this.flushDeltas(channel);
     if (this.pruneTimer) clearInterval(this.pruneTimer);
     this.pruneTimer = undefined;
     for (const r of this.runs.values()) {
@@ -1069,7 +1173,15 @@ export class AhpHost {
           meta: { session },
         });
       });
-      const base = { sinceSnapshot: 0, lastSeq: this.seq, createdAt: now, meta: {} as Json };
+      const base = {
+        sinceSnapshot: 0,
+        lastSeq: this.seq,
+        createdAt: now,
+        meta: {} as Json,
+        logBytes: 0,
+        stateBytes: 0,
+        snapshotAt: 0,
+      };
       this.chans.set(session, { ...base, uri: session, c: { kind: "session", state: sessionInitial } });
       this.chans.set(chat, {
         ...base,
@@ -1177,6 +1289,9 @@ export class AhpHost {
       createdAt: now,
       meta: { session: sessionUri },
       sinceSnapshot: 0,
+      logBytes: 0,
+      stateBytes: 0,
+      snapshotAt: 0,
       lastSeq: this.seq,
     });
     this.chatSession.set(chat, sessionUri);
@@ -1737,8 +1852,10 @@ export class AhpHost {
         signal: controller.signal,
         emit: (action) => {
           const live = this.runs.get(chat);
-          if (!live || live.turnId !== turnId || live.over || this.chatState(chat)?.activeTurn?.id !== turnId)
-            return false;
+          // (peeks at the state without sending waiting text: this runs for every piece of a stream)
+          const state = this.chans.get(chat)?.c;
+          const active = state?.kind === "chat" ? state.state.activeTurn : undefined;
+          if (!live || live.turnId !== turnId || live.over || active?.id !== turnId) return false;
           const t = (action as { turnId?: string }).turnId;
           if (t !== undefined && t !== turnId) return false;
           try {

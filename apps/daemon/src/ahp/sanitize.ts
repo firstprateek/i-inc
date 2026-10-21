@@ -33,9 +33,11 @@ export interface Caps {
   maxString: number;
   /** The most an action may take once serialised (bytes, roughly). */
   maxAction: number;
+  /** The most text a streamed part of a reply may grow to. */
+  maxPart: number;
 }
 
-export const defaultCaps: Caps = { maxString: 64 * 1024, maxAction: 1024 * 1024 };
+export const defaultCaps: Caps = { maxString: 64 * 1024, maxAction: 1024 * 1024, maxPart: 2 * 1024 * 1024 };
 
 const cut = (s: string, max: number): string =>
   s.length <= max ? s : `${s.slice(0, max)}\n[…${s.length - max} more characters not kept]`;
@@ -77,7 +79,7 @@ function walk(v: unknown, key: string | undefined, max: number, redact: boolean)
  * An action from the backend, made safe to keep: text fields redacted, strings capped, and the
  * whole action shrunk (shorter strings) if it is still over the cap.
  */
-export function sanitizeAction<T>(action: T, caps: Caps = defaultCaps): T {
+export function sanitizeAction<T>(action: T, caps: Pick<Caps, "maxString" | "maxAction"> = defaultCaps): T {
   let max = caps.maxString;
   let out = walk(action, undefined, max, true);
   // Strings are cut hard until the action fits: a tool that returns hundreds of big parts.

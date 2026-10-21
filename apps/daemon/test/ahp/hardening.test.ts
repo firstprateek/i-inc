@@ -226,7 +226,8 @@ describe("a client's action is rebuilt from the fields it is allowed", () => {
     });
     await done.promise;
     await t.host.idle();
-    const tc = (t.host.chatState(chat)?.turns[0]?.responseParts.find((p: Any) => p.toolCall) as Any).toolCall;
+    const parts = (t.host.chatState(chat)?.turns[0]?.responseParts ?? []) as Any[];
+    const tc = parts.find((p) => p.toolCall)?.toolCall;
     expect(tc.toolInput).toBe('{"command":"rm -rf build"}');
     expect(JSON.stringify(t.db.all("SELECT action FROM ahp_actions"))).not.toContain("curl evil");
     expect(JSON.stringify(a.envelopes)).not.toContain("curl evil");

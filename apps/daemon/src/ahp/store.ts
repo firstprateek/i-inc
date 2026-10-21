@@ -23,6 +23,8 @@ export interface ChannelRow {
 }
 
 export interface ActionRow {
+  /** The action as JSON, if the caller has made it already. */
+  json?: string;
   seq: number;
   channel: string;
   at: number;
@@ -31,8 +33,13 @@ export interface ActionRow {
 }
 
 export interface Limits {
-  /** Take a snapshot of a channel after this many actions. */
+  /** A snapshot of a channel is due after this many actions... */
   snapshotEvery: number;
+  /** ...and once the log since the last one is this big (and as big as the state itself), so a state that
+   * grows takes snapshots of geometric, not constant, spacing... */
+  snapshotMinBytes: number;
+  /** ...and no sooner than this many ms after the last one. */
+  snapshotMinMs: number;
   /** Keep actions at least this long (ms) even when a snapshot covers them, for reconnects. */
   retainMs: number;
   /** Never keep more than this many action rows once snapshots cover them. */
@@ -43,6 +50,8 @@ export interface Limits {
 
 export const defaultLimits: Limits = {
   snapshotEvery: 200,
+  snapshotMinBytes: 256 * 1024,
+  snapshotMinMs: 5000,
   retainMs: 24 * 3_600_000,
   maxActionRows: 200_000,
   maxBlobBytes: 512 * 1024 * 1024,
@@ -171,18 +180,20 @@ export class AhpStore {
   // ── the log ─────────────────────────────────────────────────────────────────────────────────
 
   /** Appends one sequenced action, and a snapshot in the same transaction when one is due. */
-  append(row: ActionRow, snapshot?: unknown): void {
+  append(row: ActionRow, snapshot?: unknown): number | undefined {
+    let size: number | undefined;
     this.db.transaction(() => {
       this.db.run(
         "INSERT INTO ahp_actions (server_seq, channel, at, action, origin) VALUES (?, ?, ?, ?, ?)",
         row.seq,
         row.channel,
         row.at,
-        JSON.stringify(row.action),
+        row.json ?? JSON.stringify(row.action),
         row.origin ? JSON.stringify(row.origin) : null,
       );
-      if (snapshot !== undefined) this.snapshotNoTx(row.channel, row.seq, snapshot);
+      if (snapshot !== undefined) size = this.snapshotNoTx(row.channel, row.seq, snapshot);
     });
+    return size;
   }
 
   private static parse(r: {
@@ -224,16 +235,22 @@ export class AhpStore {
 
   // ── snapshots ───────────────────────────────────────────────────────────────────────────────
 
-  snapshot(channel: string, seq: number, state: unknown): void {
-    this.db.transaction(() => this.snapshotNoTx(channel, seq, state));
+  /** Keeps a snapshot; returns its size in bytes of JSON. */
+  snapshot(channel: string, seq: number, state: unknown): number {
+    let size = 0;
+    this.db.transaction(() => {
+      size = this.snapshotNoTx(channel, seq, state);
+    });
+    return size;
   }
 
-  private snapshotNoTx(channel: string, seq: number, state: unknown): void {
+  private snapshotNoTx(channel: string, seq: number, state: unknown): number {
+    const json = JSON.stringify(state);
     this.db.run(
       "INSERT OR REPLACE INTO ahp_snapshots (channel, server_seq, state) VALUES (?, ?, ?)",
       channel,
       seq,
-      JSON.stringify(state),
+      json,
     );
     this.db.run(
       `DELETE FROM ahp_snapshots WHERE channel = ? AND server_seq NOT IN (
@@ -242,6 +259,7 @@ export class AhpStore {
       channel,
       SNAPSHOTS_KEPT,
     );
+    return json.length;
   }
 
   latestSnapshot(channel: string): { seq: number; state: unknown } | undefined {
