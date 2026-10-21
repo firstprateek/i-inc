@@ -8,6 +8,7 @@
 // growing chunk is parsed again, and a long reply costs the same per frame as a short one.
 import { html, nothing, type TemplateResult } from "lit";
 import { highlight, type Token } from "./highlight.ts";
+import { probe } from "./probe.ts";
 import { visible } from "./visible.ts";
 
 // ───────────────────────────── the tree ─────────────────────────────
@@ -125,6 +126,7 @@ export function chunkStarts(text: string, from = 0): number[] {
     let end = text.indexOf("\n", pos);
     if (end < 0) end = text.length;
     const line = text.slice(pos, end);
+    probe.work?.(line.length + 1);
     if (fence !== undefined) {
       if (fenceClose(line, fence)) {
         fence = undefined;
@@ -166,6 +168,7 @@ const startsBlock = (line: string): boolean =>
 
 /** Parses one chunk (or a nested part of one) into blocks. `open` marks a code block the text ended inside. */
 export function parseBlocks(text: string, depth = 0): Block[] {
+  probe.work?.(text.length);
   const lines = text.split("\n");
   const out: Block[] = [];
   let i = 0;
@@ -354,6 +357,7 @@ const isWord = (c: string | undefined): boolean => c !== undefined && /[\p{L}\p{
  * `[`, of `*a `, of backticks) costs more than a pass or two over the text.
  */
 export function inline(src: string, depth = 0): Inline[] {
+  probe.work?.(src.length);
   const out: Inline[] = [];
   let text = "";
   const flush = () => {
@@ -384,7 +388,9 @@ export function inline(src: string, depth = 0): Inline[] {
       while (src.charAt(i + n) === "`") n++;
       const mark = "`".repeat(n);
       const failed = noCode.get(n);
-      const end = failed !== undefined && i + n >= failed ? -1 : src.indexOf(mark, i + n);
+      const searched = failed === undefined || i + n < failed;
+      const end = searched ? src.indexOf(mark, i + n) : -1;
+      if (searched) probe.work?.((end > 0 ? end : src.length) - i);
       if (end > 0) {
         flush();
         let code = src.slice(i + n, end);
@@ -425,6 +431,7 @@ export function inline(src: string, depth = 0): Inline[] {
       }
     }
     if (c === "<" && (src.startsWith("<http", i) || src.startsWith("<mailto:", i))) {
+      probe.work?.(Math.min(2000, src.length - i));
       const m = /^<((?:https?:\/\/|mailto:)[^\s<>]+)>/.exec(src.slice(i, i + 2000));
       if (m) {
         const href = safeHref(m[1] ?? "");
@@ -442,6 +449,7 @@ export function inline(src: string, depth = 0): Inline[] {
       !isWord(src.charAt(i - 1)) &&
       depth < 4
     ) {
+      probe.work?.(Math.min(2000, src.length - i));
       const m = /^https?:\/\/[^\s<>()[\]]+/i.exec(src.slice(i, i + 2000));
       if (m) {
         let url = m[0];
@@ -490,35 +498,47 @@ export function inline(src: string, depth = 0): Inline[] {
 function findClose(src: string, open: number): number {
   let depth = 0;
   const stop = Math.min(src.length, open + WINDOW);
-  for (let j = open; j < stop; j++) {
+  let j = open;
+  let found = -1;
+  for (; j < stop; j++) {
     const ch = src.charAt(j);
     if (ch === "\\") j++;
     else if (ch === "[") {
-      if (++depth > 3) return -1;
-    } else if (ch === "]" && --depth === 0) return j;
+      if (++depth > 3) break;
+    } else if (ch === "]" && --depth === 0) {
+      found = j;
+      break;
+    }
   }
-  return -1;
+  probe.work?.(j - open + 1);
+  return found;
 }
 
 /** The `)` closing the `(` at `open`, on the same line, within a window, no more than three deep. */
 function findParen(src: string, open: number): number {
   let depth = 0;
   const stop = Math.min(src.length, open + WINDOW);
-  for (let j = open; j < stop; j++) {
+  let j = open;
+  let found = -1;
+  for (; j < stop; j++) {
     const ch = src.charAt(j);
     if (ch === "\\") j++;
     else if (ch === "(") {
-      if (++depth > 3) return -1;
-    } else if (ch === ")" && --depth === 0) return j;
-    else if (ch === "\n") return -1;
+      if (++depth > 3) break;
+    } else if (ch === ")" && --depth === 0) {
+      found = j;
+      break;
+    } else if (ch === "\n") break;
   }
-  return -1;
+  probe.work?.(j - open + 1);
+  return found;
 }
 
 function findEmphasisEnd(src: string, from: number, delim: string, underscore: boolean): number {
   let j = from;
   while (j < src.length) {
     const at = src.indexOf(delim, j);
+    probe.work?.((at < 0 ? src.length : at) - j + 1);
     if (at < 0) return -1;
     const prev = src.charAt(at - 1);
     const next = src.charAt(at + delim.length);

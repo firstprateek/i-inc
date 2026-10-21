@@ -10,6 +10,7 @@ import {
   renderMarkdown,
   safeHref,
 } from "../../src/conversations/markdown.ts";
+import { probe } from "../../src/conversations/probe.ts";
 
 function htmlOf(text: string): string {
   const host = document.createElement("div");
@@ -146,6 +147,9 @@ describe("markdown", () => {
   });
 });
 
+/** What a single run of hostile input may take: far above a loaded machine's need, far below a blow-up. */
+const BUDGET_MS = 5_000;
+
 describe("hostile input costs a pass over the text, not more", () => {
   const rep = (unit: string, n: number) => unit.repeat(Math.ceil(n / unit.length)).slice(0, n);
   /** One hostile text of each class, `n` characters long. */
@@ -185,23 +189,40 @@ describe("hostile input costs a pass over the text, not more", () => {
     fn();
     return performance.now() - t;
   };
-  /** The best of three runs, so a busy machine cannot make one slow run look like growth. */
+  /** The best of three runs: only for the opt-in bench. */
   const best = (fn: () => void) => Math.min(timed(fn), timed(fn), timed(fn));
+  /** The characters the scanners looked at while `fn` ran (see src/conversations/probe.ts). */
+  const workOf = (fn: () => void): number => {
+    let n = 0;
+    probe.work = (chars) => {
+      n += chars;
+    };
+    try {
+      fn();
+    } finally {
+      probe.work = undefined;
+    }
+    return n;
+  };
 
-  // Load-independent: not "under N ms" but "four times the text costs about four times the time". A backtracking
-  // regex or a rescan per character grows with the square or the cube and fails this by a wide margin on a
-  // machine of any speed; absolute milliseconds are in the opt-in bench below.
+  // Load-independent and exact: not a time but a count of the characters every search and scan looked at, and four
+  // times the text must cost no more than five times the count. A parser that rescans from each character (square)
+  // fails this by a wide margin whatever the machine. Backtracking inside a regular expression cannot be counted:
+  // the next test runs every class once under a budget that only a blow-up reaches.
   it.each(names)("%s: four times the text costs about four times the work", (name) => {
-    const small = cases(40 * 1024)[name] ?? "";
-    const big = cases(160 * 1024)[name] ?? "";
-    const t1 = best(() => renderMarkdown(small));
-    const t4 = best(() => renderMarkdown(big));
-    // Text that is thousands of nested list items builds thousands of them, and a bigger heap collects more: a
-    // wider allowance there. A parser that rescans (square) or backtracks (cube) is far past either.
-    const nested = ["list markers", "ordered markers", "quotes", "rules"].includes(name);
-    expect(t4, `${name}: ${t1.toFixed(1)} ms -> ${t4.toFixed(1)} ms`).toBeLessThan(
-      nested ? 30 * t1 + 80 : 8 * t1 + 20,
-    );
+    const w1 = workOf(() => renderMarkdown(cases(40 * 1024)[name] ?? ""));
+    const w4 = workOf(() => renderMarkdown(cases(160 * 1024)[name] ?? ""));
+    expect(w1, `${name}: nothing was counted`).toBeGreaterThan(0);
+    expect(w4 / w1, `${name}: ${w1} -> ${w4} characters looked at`).toBeLessThanOrEqual(5);
+  });
+
+  // A single run, not a ratio of two timings: 100 KB of any class finishes in a few milliseconds when the code is
+  // linear, and a cubic pattern takes more than ten seconds. The budget is far above what a loaded machine needs
+  // and far below a blow-up. The precise limits are in the opt-in bench below.
+  it.each(names)("%s: 100 KB is parsed within the budget", { timeout: 60_000 }, (name) => {
+    const text = cases(100 * 1024)[name] ?? "";
+    const ms = timed(() => renderMarkdown(text));
+    expect(ms, `${name}: ${ms.toFixed(0)} ms`).toBeLessThan(BUDGET_MS);
   });
 
   // Counting, not timing: while a reply streams, a render parses only the chunk that grew.
@@ -246,9 +267,12 @@ describe("hostile input costs a pass over the text, not more", () => {
       const small = hostile(10_000);
       const big = hostile(40_000);
       small.forEach((text, i) => {
-        const t1 = best(() => highlight(text, lang));
-        const t4 = best(() => highlight(big[i] ?? "", lang));
-        expect(t4, `${lang} #${i}: ${t1.toFixed(1)} -> ${t4.toFixed(1)} ms`).toBeLessThan(8 * t1 + 60);
+        const w1 = workOf(() => highlight(text, lang));
+        const w4 = workOf(() => highlight(big[i] ?? "", lang));
+        // Four times the code: no more than five times the characters looked at (a rescan is sixteen).
+        expect(w4, `${lang} #${i}: ${w1} -> ${w4} characters looked at`).toBeLessThanOrEqual(
+          5 * Math.max(w1, 1),
+        );
         expect(tokensText(highlight(big[i] ?? "", lang))).toBe(big[i]);
       });
     }
