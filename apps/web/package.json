@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@microsoft/agent-host-protocol": "1.0.0",
     "lit": "^3.3.3"
   },
   "devDependencies": {

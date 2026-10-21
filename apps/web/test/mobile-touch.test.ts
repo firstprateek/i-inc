@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DeskView, OfficeResponse, TicketView } from "../src/api.ts";
 import { IncApp, parse } from "../src/components/app.ts";
 import "../src/components/board.ts";
-import "../src/components/chat.ts";
+import "../src/components/conversations.ts";
 import "../src/components/desk.ts";
 import "../src/components/hiring.ts";
 import "../src/components/inbox.ts";
@@ -209,14 +209,14 @@ describe("T27: Mobile bug hunt & touch regression tests (390x844)", () => {
     expect(needsBtn.getAttribute("aria-selected")).toBe("false");
     expect(app.shadowRoot?.querySelector("inc-board")).not.toBeNull();
 
-    // 3. Tap Conversations: routes to #/conversations and mounts <inc-chat>
+    // 3. Tap Conversations: routes to #/conversations and mounts <inc-conversations>
     conversationsBtn.click();
     await app.updateComplete;
     expect(location.hash).toBe("#/conversations");
     expect(conversationsBtn.getAttribute("aria-current")).toBe("page");
     expect(conversationsBtn.getAttribute("aria-selected")).toBe("true");
     expect(workBtn.getAttribute("aria-selected")).toBe("false");
-    expect(app.shadowRoot?.querySelector("inc-chat")).not.toBeNull();
+    expect(app.shadowRoot?.querySelector("inc-conversations")).not.toBeNull();
 
     // 4. Tap Company: routes to #/company/team and mounts the team floor
     companyBtn.click();

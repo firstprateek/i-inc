@@ -41,7 +41,16 @@ export const isSection = (s: string | undefined): s is Section => sections.some(
 const isWorkTab = (s: string | undefined): s is WorkTab => WORK_TABS.some(([id]) => id === s);
 
 export type Route =
-  | { view: "conversations"; id: string }
+  /** `id` is a conversation (8 hex), or empty for the list. With `old`, it is the employee of the old chat. */
+  | {
+      view: "conversations";
+      id: string;
+      old?: true;
+      /** `#/conversations/new/<employee>[/<project>]`: a conversation not made yet; it starts with the first message. */
+      draft?: { employee: string; project: string };
+      /** `#/conversations?new=1[&employee=<id>][&project=<id>]`: the New conversation form, open and preset. */
+      form?: { employee: string; project: string };
+    }
   | { view: "work"; tab: WorkTab }
   | { view: "ticket"; id: string }
   | { view: "team" }
@@ -122,7 +131,7 @@ export function legacyTarget(hash: string): string | null {
     case "brain":
       return id ? `#/company/brain/${id}` : "#/company/brain";
     case "chat":
-      return id ? `#/conversations/${id}` : "#/conversations";
+      return id ? `#/conversations/old/${id}` : "#/conversations/old";
     case "hiring":
       return id ? `#/company/team/hiring/${id}` : "#/company/team/hiring";
     case "setup":
@@ -150,9 +159,24 @@ export function redirectFor(hash: string): string | null {
     out = out.replace(/[^/]*$/, rest[0]);
   if (!out) {
     switch (v) {
-      case "conversations":
-        out = `#/${tail(v, rest[0])}`;
+      case "conversations": {
+        // A conversation is 8 hex digits; "old" is the previous chat. Anything else is an employee from the
+        // addresses the chat used to have (#/conversations/ada), which now live under "old".
+        const a = rest[0];
+        out =
+          a === undefined
+            ? "#/conversations"
+            : lower(a) === "old"
+              ? `#/${tail(v, "old", rest[1])}`
+              : lower(a) === "new"
+                ? rest[1]
+                  ? `#/${tail(v, "new", rest[1], rest[2])}`
+                  : "#/conversations?new=1"
+                : CONVERSATION_ID.test(a)
+                  ? `#/conversations/${a.toLowerCase()}`
+                  : `#/conversations/old/${a}`;
         break;
+      }
       case "work":
         out =
           rest[0] === undefined
@@ -203,11 +227,34 @@ export function homeRoute(): Route {
   return onPhone() ? { view: "work", tab: "needs-you" } : { view: "conversations", id: "" };
 }
 
+/** The address of a conversation about to start: the first message creates it. */
+export const draftHash = (employee: string, project: string | null): string =>
+  `#/conversations/new/${encodeURIComponent(employee)}${project ? `/${encodeURIComponent(project)}` : ""}`;
+
+/** A conversation's id in an address. */
+export const CONVERSATION_ID = /^[0-9a-f]{8}$/i;
+
 export function parse(hash: string): Route {
-  const [, view, a, b, c] = (redirectFor(hash) ?? hash).split("?")[0]?.split("/") ?? [];
+  const full = redirectFor(hash) ?? hash;
+  const [, view, a, b, c] = full.split("?")[0]?.split("/") ?? [];
   switch (view) {
-    case "conversations":
+    case "conversations": {
+      if (a === "old") return { view: "conversations", id: b ?? "", old: true };
+      if (a === "new" && b)
+        return {
+          view: "conversations",
+          id: "",
+          draft: { employee: decodeURIComponent(b), project: c ? decodeURIComponent(c) : "" },
+        };
+      const q = hashQuery(full);
+      if (a === undefined && q.get("new") === "1")
+        return {
+          view: "conversations",
+          id: "",
+          form: { employee: q.get("employee") ?? "", project: q.get("project") ?? "" },
+        };
       return { view: "conversations", id: a ?? "" };
+    }
     case "work":
       return { view: "work", tab: isWorkTab(a) ? a : "board" };
     case "ticket":
@@ -265,7 +312,11 @@ function titleParts(r: Route): string[] {
     list.find(([t]) => t === id)?.[1] ?? "";
   switch (r.view) {
     case "conversations":
-      return r.id ? [cap(r.id), "Conversations"] : ["Conversations"];
+      return r.old
+        ? ["Old chat", "Conversations"]
+        : r.draft
+          ? ["New conversation", "Conversations"]
+          : ["Conversations"];
     case "work":
       return [tab(WORK_TABS, r.tab), "Work"];
     case "ticket":

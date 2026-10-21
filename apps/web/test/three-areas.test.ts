@@ -127,7 +127,7 @@ describe("the top bar", () => {
   it("opens on Conversations on a laptop and on Work → Needs you on a phone", async () => {
     let { root } = await mount("");
     expect(current(root, 'header nav[aria-label="Areas"] a')).toEqual(["Conversations"]);
-    expect(root.querySelector("inc-chat")).not.toBeNull();
+    expect(root.querySelector("inc-conversations")).not.toBeNull();
     document.body.innerHTML = "";
     phone(true);
     ({ root } = await mount(""));
@@ -364,7 +364,8 @@ describe("the browser title", () => {
     for (const [hash, title] of [
       ["#/work/needs-you", "Needs you · Work · i.inc"],
       ["#/company/usage", "Usage · Company · i.inc"],
-      ["#/conversations/ada", "Ada · Conversations · i.inc"],
+      ["#/conversations/old/ada", "Old chat · Conversations · i.inc"],
+      ["#/conversations/ab12cd34", "Conversations · i.inc"],
       ["#/ticket/9", "Ticket #9 · Work · i.inc"],
       ["#/company/settings/sandboxes", "Sandboxes · Settings · Company · i.inc"],
     ]) {

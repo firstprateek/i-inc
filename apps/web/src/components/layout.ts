@@ -77,14 +77,22 @@ export class IncLayout extends LitElement {
   static override properties = {
     kind: { type: String, reflect: true },
     compact: { type: Boolean, reflect: true },
+    /** A route with no tab row may use a short heading block (the Conversations screen needs the height). */
+    dense: { type: Boolean, reflect: true },
+    /** The heading stays for assistive technology but takes no room (a phone's thread view, which has its own title). */
+    hideHeading: { type: Boolean, reflect: true, attribute: "hide-heading" },
   };
   declare kind: LayoutKind;
   declare compact: boolean;
+  declare dense: boolean;
+  declare hideHeading: boolean;
 
   constructor() {
     super();
     this.kind = "page";
     this.compact = false;
+    this.dense = false;
+    this.hideHeading = false;
   }
 
   static override styles = [
@@ -107,6 +115,10 @@ export class IncLayout extends LitElement {
         overflow-wrap: anywhere;
       }
       ::slotted([slot="subtitle"]) { display: block; margin: 6px 0 0; color: var(--ink-2); font-size: 15px; line-height: 1.4; }
+      :host([dense]) ::slotted([slot="heading"]) { font-size: 24px; line-height: 1.2; }
+      :host([dense]) .page-header { margin-bottom: 8px; padding-bottom: 8px; }
+      :host([hide-heading]) .page-header { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
+        clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
       .content { width: 100%; min-width: 0; box-sizing: border-box; }
       .frame.wide .content { max-width: var(--wide-width, 1400px); margin-inline: auto; }
       .frame.split .page-header { max-width: none; margin-inline: 0; flex: none; }

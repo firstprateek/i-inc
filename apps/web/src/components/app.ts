@@ -1,9 +1,10 @@
 import { css, html, LitElement } from "lit";
+import { ahp, useAhp } from "../ahp/hub.ts";
 import { logout, refresh } from "../api.ts";
 import { connection, isOffline } from "../connection.ts";
 import { isDismissed, showGettingStarted } from "../first-run.ts";
 import { startLiveUpdates } from "../live.ts";
-import { loadNeedsYouCount } from "../needs-you.ts";
+import { loadNeedsYouCount, needsYouSignal } from "../needs-you.ts";
 import {
   AREAS,
   areaOf,
@@ -31,6 +32,7 @@ import "./desk.ts";
 import "./inbox.ts";
 import "./hiring.ts";
 import "./chat.ts";
+import "./conversations.ts";
 import "./getting-started.ts";
 import "./knowledge.ts";
 import "./offline.ts";
@@ -96,6 +98,9 @@ export class IncApp extends LitElement {
   private needsToken = 0;
   private phoneQuery: MediaQueryList | null = null;
   private lastView: Route["view"] = "conversations";
+  private releaseAhp: (() => void) | undefined;
+  private offRoster: (() => void) | undefined;
+  private rosterTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor() {
     super();
@@ -126,6 +131,13 @@ export class IncApp extends LitElement {
     addEventListener("hashchange", this.onHash);
     connection.addEventListener("change", this.onConnection);
     refresh.addEventListener("refresh", this.loadNeeds);
+    needsYouSignal.addEventListener("change", this.loadNeeds);
+    // The host tells the shell when a conversation starts or stops waiting for the owner.
+    this.releaseAhp = useAhp();
+    this.offRoster = ahp().onRoster(() => {
+      clearTimeout(this.rosterTimer);
+      this.rosterTimer = setTimeout(() => void this.loadNeeds(), 600);
+    });
     // The logo goes home, and home differs between a laptop and a phone: follow a resize across the line.
     this.phoneQuery = matchMedia(`(max-width: ${LAYOUT_BREAKPOINTS.phone}px)`);
     this.phoneQuery.addEventListener?.("change", this.onPhoneChange);
@@ -176,6 +188,10 @@ export class IncApp extends LitElement {
     removeEventListener("hashchange", this.onHash);
     connection.removeEventListener("change", this.onConnection);
     refresh.removeEventListener("refresh", this.loadNeeds);
+    needsYouSignal.removeEventListener("change", this.loadNeeds);
+    this.offRoster?.();
+    this.releaseAhp?.();
+    clearTimeout(this.rosterTimer);
     this.phoneQuery?.removeEventListener?.("change", this.onPhoneChange);
     document.removeEventListener("click", this.onDocumentClick);
     document.removeEventListener("keydown", this.onDocumentKeydown);
@@ -442,7 +458,8 @@ export class IncApp extends LitElement {
 
       /* The conversation screen: the first-run checklist (when there is one) above the conversations. */
       .conv-host { display: flex; flex-direction: column; gap: 12px; height: 100%; min-height: 0; }
-      .conv-host > inc-chat { flex: 1 1 0; min-height: 0; }
+      .conv-host > inc-chat, .conv-host > inc-conversations { flex: 1 1 0; min-height: 0; }
+      .old-note { align-self: flex-start; min-height: 44px; display: inline-flex; align-items: center; font-weight: 600; font-size: 14px; }
       .stack { display: flex; flex-direction: column; gap: var(--layout-section-gap, 20px); min-width: 0; }
 
       /* A narrow desktop window: keep the header to one row, since it no longer scrolls away. */
@@ -573,6 +590,8 @@ export class IncApp extends LitElement {
         }
       }
       @media (min-width: 901px) { .tabs { display: none; } }
+      /* The keyboard is up over the conversation composer: no tab bar, so no gap above the keyboard. */
+      :host([composing]) .tabs { display: none; }
 
       /* A route that owns its scrolling (the conversations) turns <main> into a plain flex box that clips: the
          route lays its panes out inside it and scrolls them itself. */
@@ -635,6 +654,8 @@ export class IncApp extends LitElement {
     if (r.view === "ticket") {
       return html`<a slot="subtitle" class="back" href="#/work/board">← Back to Work</a>`;
     }
+    // Conversations needs the height: its heading is one short line, with no subtitle.
+    if (r.view === "conversations") return "";
     return html`<p slot="subtitle">${AREA_SUBTITLES[area]}</p>
       ${
         r.view === "team"
@@ -648,6 +669,18 @@ export class IncApp extends LitElement {
                 : ""
       }`;
   }
+
+  /** On a phone, a conversation's thread has its own back button and title, so the page heading steps aside. */
+  private threadOnPhone(): boolean {
+    const r = this.route;
+    return r.view === "conversations" && !r.old && !!(r.id || r.draft) && !!this.phoneQuery?.matches;
+  }
+
+  /** The thread's composer has focus on a phone: the keyboard is up, so the tab bar gives its row back. */
+  private onComposerFocus = (e: Event) => {
+    const open = (e as CustomEvent<{ focused: boolean }>).detail.focused;
+    this.toggleAttribute("composing", open && !!this.phoneQuery?.matches);
+  };
 
   override render() {
     const tabRoute = phoneTabOf(this.route);
@@ -699,8 +732,8 @@ export class IncApp extends LitElement {
           }
         </div>
       </header>
-      <main tabindex="-1">
-        <inc-layout .kind=${layoutForRoute(this.route)}>
+      <main tabindex="-1" @conv-focus=${this.onComposerFocus}>
+        <inc-layout .kind=${layoutForRoute(this.route)} ?dense=${this.route.view === "conversations"} ?hide-heading=${this.threadOnPhone()}>
           <h1 id="view-heading" tabindex="-1" slot="heading">${routeName(this.route).long}</h1>
           ${this.renderHeadExtras()}
           ${this.renderTabs()}
@@ -717,7 +750,9 @@ export class IncApp extends LitElement {
     const r = this.route;
     switch (r.view) {
       case "conversations":
-        return html`<div class="conv-host"><inc-getting-started></inc-getting-started><inc-chat .employeeId=${r.id}></inc-chat></div>`;
+        return r.old
+          ? html`<div class="conv-host"><a class="old-note" href="#/conversations">← Back to conversations</a><inc-chat .employeeId=${r.id}></inc-chat></div>`
+          : html`<div class="conv-host"><inc-getting-started></inc-getting-started><inc-conversations .selectedId=${r.id} .draft=${r.draft} .form=${r.form}></inc-conversations></div>`;
       case "work":
         return r.tab === "board"
           ? html`<inc-board role="tabpanel" aria-labelledby="tab-board"></inc-board>`

@@ -363,7 +363,7 @@ describe("the checklist on Conversations", () => {
     const host = app.shadowRoot?.querySelector(".conv-host");
     expect([...(host?.children ?? [])].map((c) => c.tagName.toLowerCase())).toEqual([
       "inc-getting-started",
-      "inc-chat",
+      "inc-conversations",
     ]);
     for (const hash of ["#/work/board", "#/company/team", "#/work/needs-you"]) {
       location.hash = hash;
