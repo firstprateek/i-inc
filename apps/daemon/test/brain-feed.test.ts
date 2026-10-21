@@ -13,7 +13,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { estimateTokens } from "@i-inc/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { applyScript, type Snapshot } from "../src/brain-snapshot.ts";
 import { brainRig, cleanRigs, page } from "./brain-rig.ts";

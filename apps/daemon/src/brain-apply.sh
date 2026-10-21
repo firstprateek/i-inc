@@ -27,18 +27,24 @@ apply() {
   mkdir -p "$tmp/new" && tar -xf "$tmp/in.tar" -C "$tmp/new" --no-same-owner --no-same-permissions || { echo "@@fail tar"; return 1; }
   (cd "$tmp/new" && find . -type f | sed 's|^\./||' | sort) > "$tmp/sent"
 
-  if [ -f "$tmp/new/.bin/brain" ]; then
-    mkdir -p .bin && cp -f "$tmp/new/.bin/brain" .bin/brain && chmod 755 .bin/brain
-  fi
   grep -vFx '.bin/brain' "$tmp/sent" > "$tmp/sent.pages" || true
   comm -12 "$tmp/sent.pages" "$tmp/dirty" > "$tmp/kept"
   comm -23 "$tmp/sent.pages" "$tmp/dirty" > "$tmp/apply"
 
   : > "$tmp/applied"; : > "$tmp/removed"
-  while IFS= read -r p; do
-    if mkdir -p "$(dirname "$p")" 2>/dev/null && cp -f "$tmp/new/$p" "$p" 2>/dev/null; then echo "$p" >> "$tmp/applied"
-    else echo "$p" >> "$tmp/kept"; fi
-  done < "$tmp/apply"
+  # Everything that is not locally edited goes in with one copy; the edited files are taken out of the
+  # staging folder first. (If that one copy can't be made, say a file stands where a folder should, each
+  # file is tried by itself and the ones that can't be written are kept as they are.)
+  while IFS= read -r p; do rm -f -- "$tmp/new/$p"; done < "$tmp/kept"
+  if cp -R "$tmp/new/." . 2>/dev/null; then
+    cp "$tmp/apply" "$tmp/applied"
+  else
+    while IFS= read -r p; do
+      if mkdir -p "$(dirname "$p")" 2>/dev/null && cp -f "$tmp/new/$p" "$p" 2>/dev/null; then echo "$p" >> "$tmp/applied"
+      else echo "$p" >> "$tmp/kept"; fi
+    done < "$tmp/apply"
+  fi
+  [ -f .bin/brain ] && chmod 755 .bin/brain
 
   if [ -n "$old" ]; then
     git ls-tree -r -z --name-only "$BR" | tr '\0' '\n' | sort > "$tmp/tracked"

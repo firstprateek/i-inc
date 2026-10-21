@@ -434,7 +434,9 @@ export class BrainFeed {
 
   private retrieveFor(employeeId: string, query: string, exclude: string[]): RetrievedPage[] {
     const scopes = this.readable(employeeId);
-    return retrieve(this.index, { query, scopes, exclude });
+    // The personality page is the role instructions, which the brief already carries; it stays in the
+    // map and the copy, but is never what a task "matches".
+    return retrieve(this.index, { query, scopes, exclude: [...exclude, `brain:${employeeId}:personality`] });
   }
 
   /**
