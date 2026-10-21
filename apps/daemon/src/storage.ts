@@ -330,7 +330,10 @@ export class Storage {
   /** Cleans a machine in the background, then calls `done` (the daemon stops the machine after). */
   startClean(machine: string, done: () => void): void {
     // The lock is taken now, before anything else, so no new work can start in the machine.
-    if (!this.lock(machine)) return done();
+    if (!this.lock(machine)) {
+      done();
+      return;
+    }
     void this.cleanMachine(machine, { held: true })
       .catch((err) => this.log(`${machine}: cleanup failed: ${String(err)}`))
       .finally(() => {

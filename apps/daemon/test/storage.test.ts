@@ -98,6 +98,11 @@ describe("cleaning a machine", () => {
     // The ticket merged: that may release uncommitted noise after a fresh fetch, never unpushed commits.
     expect(scripts[1]).toContain("MERGED=' 1 '");
     expect(scripts[1]).toContain("AGED='  '");
+
+    // Past unpushedKeepDays (30), it is aged: the owner's own setting lets unpushed work go.
+    app.clock.advance(27 * DAY_MIN);
+    await storage.cleanMachine("inc-engineering", { manual: true });
+    expect(scripts[2]).toContain("AGED=' 1 '");
   });
 
   it("never removes anything for a ticket that isn't over, or for a team that never touched it", async () => {
