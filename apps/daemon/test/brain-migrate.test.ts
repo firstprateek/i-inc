@@ -1,13 +1,12 @@
 // The migration of existing pages to the V1 format: dry run by default, --apply commits, no text lost.
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
-import type { ProposedEdit } from "@i-inc/core";
+import { dirname, join, relative } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { main, migrateKnowledge, parseArgs } from "../scripts/brain-migrate.ts";
 import { BrainIndex } from "../src/brain-index.ts";
-import { KnowledgeStore } from "../src/knowledge.ts";
+import { KnowledgeStore, pageTitle } from "../src/knowledge.ts";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -28,25 +27,35 @@ function legacy() {
   const root = join(home, "knowledge");
   mkdirSync(root);
   const store = new KnowledgeStore(root);
-  const who = () => ({ name: "Ada", role: "Engineer" });
-  const edit = (
-    n: number,
-    ticket: string,
-    layer: "fact" | "brain",
-    page: string,
-    text: string,
-  ): ProposedEdit => ({
-    id: `${ticket}:${n}:a0`,
-    ticketId: ticket,
-    author: "ada",
-    at: 0,
-    edit: { layer, page, text },
-  });
-  store.apply(edit(0, "3", "fact", "gh-cli", "gh pr checks --watch waits for CI."), who);
-  store.apply(edit(1, "5", "fact", "gh-cli", "Use --fail-fast to stop early."), who);
-  store.apply(edit(2, "9", "fact", "gh-cli", "It needs a token with checks:read."), who);
-  store.apply(edit(3, "5", "fact", "merging", "Squash-merge every PR."), who);
-  store.apply(edit(4, "7", "brain", "tools/vitest", "Reset mocks between tests."), who);
+  store.ensureHandbook();
+  store.ensureBrain({ id: "ada", name: "Ada", role: "Engineer" });
+  // Pages as the daemon wrote them before frontmatter: a heading, then each edit appended.
+  const oldApply = (repoDir: string, path: string, ticket: string, n: number, text: string) => {
+    const file = join(repoDir, path);
+    const isNew = !existsSync(file);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(
+      file,
+      isNew ? `# ${pageTitle(path)}\n\n${text}\n` : `${readFileSync(file, "utf8").trimEnd()}\n\n${text}\n`,
+    );
+    git(repoDir, "add", "-A");
+    git(
+      repoDir,
+      "commit",
+      "-q",
+      "-m",
+      `${isNew ? "Add" : "Update"} ${path}`,
+      "-m",
+      `Author: ada\nTicket: ${ticket}\nEdit-Id: ${ticket}:${n}:a0`,
+    );
+  };
+  const hbDir = join(root, "handbook");
+  const adaDir = join(root, "brains", "ada");
+  oldApply(hbDir, "facts/gh-cli.md", "3", 0, "gh pr checks --watch waits for CI.");
+  oldApply(hbDir, "facts/gh-cli.md", "5", 1, "Use --fail-fast to stop early.");
+  oldApply(hbDir, "facts/gh-cli.md", "9", 2, "It needs a token with checks:read.");
+  oldApply(hbDir, "facts/merging.md", "5", 3, "Squash-merge every PR.");
+  oldApply(adaDir, "tools/vitest.md", "7", 4, "Reset mocks between tests.");
 
   const hb = join(root, "handbook");
   mkdirSync(join(hb, "teams", "eng"), { recursive: true });
