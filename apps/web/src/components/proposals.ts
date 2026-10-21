@@ -45,18 +45,22 @@ export class IncProposals extends LitElement {
       h2 .n { font-size: 14px; color: var(--ink-2); font-family: var(--body); font-weight: 600; }
       .hint { margin: 0; padding: 0 4px; font-size: 14px; line-height: 1.4; color: var(--ink-2); }
       ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-      li.card { padding: 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; box-sizing: border-box; }
+      li.card { padding: 14px; display: flex; flex-direction: column; gap: 4px; min-width: 0; box-sizing: border-box; }
       .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
       .title { font-size: 16px; font-weight: 700; line-height: 1.3; overflow-wrap: anywhere; min-width: 0; margin: 0; }
       .by { display: flex; align-items: center; gap: 8px; font-size: 13px; line-height: 1.35; color: var(--ink-2); min-width: 0; flex-wrap: wrap; }
-      .by a { display: inline-flex; align-items: center; min-height: 44px; box-sizing: border-box; }
+      .by a { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; min-width: 44px; box-sizing: border-box; font-weight: 700; }
       details { min-width: 0; }
-      summary { display: flex; align-items: center; min-height: 44px; box-sizing: border-box; font-size: 14px; font-weight: 600; color: var(--ink); }
+      summary { display: flex; align-items: center; gap: 8px; list-style: none; min-height: 44px; box-sizing: border-box; font-size: 14px; font-weight: 600; color: var(--ink); }
+      summary::-webkit-details-marker { display: none; }
+      summary::before { content: ""; width: 7px; height: 7px; border-right: 2px solid var(--ink-2); border-bottom: 2px solid var(--ink-2); transform: rotate(-45deg); transition: transform 0.12s ease; flex-shrink: 0; margin: 0 4px 0 2px; }
+      details[open] > summary::before { transform: rotate(45deg); }
       summary:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 2px; border-radius: 8px; }
       .why { margin: 0 0 6px; font-size: 15px; line-height: 1.45; overflow-wrap: anywhere; white-space: pre-wrap; }
-      .done { margin: 0 0 6px; padding-left: 20px; font-size: 14px; line-height: 1.45; color: var(--ink-2); overflow-wrap: anywhere; }
-      .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+      ul.criteria { display: block; list-style: disc; margin: 0 0 6px; padding-left: 22px; font-size: 14px; line-height: 1.45; color: var(--ink-2); overflow-wrap: anywhere; }
+      .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
       .actions .btn { font-size: 16px; min-height: 44px; min-width: 44px; flex: 1 1 120px; }
+      .actions .btn.ghost { border-color: var(--control-edge); }
       .actions .btn:disabled { opacity: 0.6; }
       .err { background: var(--needs-bg); color: var(--needs-fg); border: 1px solid var(--alarm); border-radius: 10px; padding: 10px 12px; font-size: 14px; overflow-wrap: anywhere; }
     `,
@@ -84,7 +88,7 @@ export class IncProposals extends LitElement {
         p.body || p.doneWhen.length
           ? html`<details><summary>Why, and when it's done</summary>
               ${p.body ? html`<p class="why">${p.body}</p>` : nothing}
-              ${p.doneWhen.length ? html`<ul class="done" aria-label="Done when">${p.doneWhen.map((d) => html`<li>${d}</li>`)}</ul>` : nothing}
+              ${p.doneWhen.length ? html`<ul class="criteria" aria-label="Done when">${p.doneWhen.map((d) => html`<li>${d}</li>`)}</ul>` : nothing}
             </details>`
           : nothing
       }
