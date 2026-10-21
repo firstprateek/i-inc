@@ -61,6 +61,25 @@ describe("My desk view and releases (T33)", () => {
     ],
   };
 
+  const deploysData = [
+    {
+      at: 1792300000000,
+      sha: "a".repeat(40),
+      from: "b".repeat(40),
+      outcome: "deployed",
+      reason: "",
+      durationMs: 95_000,
+    },
+    {
+      at: 1792290000000,
+      sha: "c".repeat(40),
+      from: "b".repeat(40),
+      outcome: "rolled-back",
+      reason: "the new daemon did not report version ccccccc on /api/health within 90 s",
+      durationMs: 130_000,
+    },
+  ];
+
   beforeEach(() => {
     document.body.innerHTML = "";
     calls = [];
@@ -80,6 +99,8 @@ describe("My desk view and releases (T33)", () => {
     bothPending?: boolean;
     // Fail only for this project's release (the others succeed).
     failFor?: string;
+    // An older daemon: no /api/deploys.
+    noDeploys?: boolean;
   }) {
     const data = overrides?.bothPending
       ? {
@@ -100,6 +121,13 @@ describe("My desk view and releases (T33)", () => {
 
       if (url === "/api/desk") {
         return new Response(JSON.stringify(data), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url === "/api/deploys") {
+        if (overrides?.noDeploys)
+          return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+        return new Response(JSON.stringify({ deploys: deploysData }), {
           headers: { "content-type": "application/json" },
         });
       }
@@ -162,6 +190,28 @@ describe("My desk view and releases (T33)", () => {
     expect(root.textContent).toContain("Releases");
     expect(root.textContent).toContain("2 unreleased tickets");
     expect(root.textContent).toContain("v2026-10-17.1");
+  });
+
+  it("lists the deployer's recent deploys next to the releases, failures marked", async () => {
+    serveDesk();
+    const { root } = await mount();
+    const rows = root.querySelectorAll(".deploy");
+    expect(rows.length).toBe(2);
+    expect(rows[0]?.textContent).toContain("Deployed");
+    expect(rows[0]?.textContent).toContain("aaaaaaa");
+    expect(rows[0]?.classList.contains("bad")).toBe(false);
+    expect(rows[1]?.textContent).toContain("Rolled back");
+    expect(rows[1]?.textContent).toContain("ccccccc");
+    expect(rows[1]?.textContent).toContain("did not report version");
+    expect(rows[1]?.classList.contains("bad")).toBe(true);
+  });
+
+  it("shows no deploy list, and still renders the desk, when the daemon is older", async () => {
+    serveDesk({ noDeploys: true });
+    const { root } = await mount();
+    expect(root.querySelectorAll(".deploy").length).toBe(0);
+    expect(root.textContent).toContain("No deploys yet");
+    expect(root.textContent).toContain("Recent releases");
   });
 
   it("disables Cut release when a project has no pending tickets", async () => {

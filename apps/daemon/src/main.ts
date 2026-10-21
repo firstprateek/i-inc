@@ -12,6 +12,7 @@ import { FakeAgent, FakeChat, FakeHarness, FakeHelper, FakeMachines } from "@i-i
 import { createApp } from "./app.ts";
 import { configDir, readCredentials, webToken } from "./config.ts";
 import { seedDemo, seedDemoLater, seedDemoProposals, seedDemoTickets } from "./demo.ts";
+import { resolveVersion } from "./deploys.ts";
 import { GitHubApp, readGitHubAppConfig } from "./github.ts";
 import { AppleMachines, defaultMachineSettings, wallsUp } from "./machines.ts";
 import { realPorts } from "./real.ts";
@@ -22,6 +23,8 @@ const host = process.env.HOST ?? "127.0.0.1";
 const web = process.env.I_INC_WEB ?? join(import.meta.dir, "../../web/dist");
 
 const demo = process.env.I_INC_DEMO === "1";
+// The release this process runs, for /api/health: the deployer's checkouts know their own sha.
+const version = resolveVersion(process.env, import.meta.dir);
 const log = (m: string) => console.log(new Date().toISOString(), m);
 const common = {
   knowledgeDir: join(home, "knowledge"),
@@ -40,6 +43,9 @@ const common = {
   ],
   log,
   configDir: configDir(),
+  version,
+  // The deployer (apps/deployer) records every attempt here; GET /api/deploys and the push read it.
+  deploysPath: join(home, "deploys.jsonl"),
 };
 mkdirSync(home, { recursive: true });
 
@@ -105,6 +111,11 @@ if (demo && app.deps.registry.employees().length === 0) {
 await app.daemon.tick();
 setInterval(() => void app.daemon.tick(), 30_000);
 
+// A failed deploy (rolled back, or never switched) becomes a push, once.
+const watchDeploys = () => void app.deploys.check().catch((err) => log(`deploy notifications: ${err}`));
+watchDeploys();
+setInterval(watchDeploys, 30_000);
+
 // Each team sandbox in use stays signed in to GitHub as the bot.
 if (real) setInterval(() => void real.keepLoginsFresh(), 5 * 60_000);
 
@@ -136,5 +147,5 @@ Bun.serve({
     new URL(req.url).pathname.startsWith("/api/") || !existsSync(web) ? app.handle(req) : serveWeb(req),
 });
 console.log(
-  `i.inc daemon on http://${host}:${port}${demo ? " (demo mode)" : ""}${existsSync(web) ? "" : " · build apps/web to serve the app"}`,
+  `i.inc daemon ${version.slice(0, 7)} on http://${host}:${port}${demo ? " (demo mode)" : ""}${existsSync(web) ? "" : " · build apps/web to serve the app"}`,
 );

@@ -72,6 +72,9 @@ export const ACCEPTED_LABEL = "accepted-proposal";
 
 export class Daemon {
   private readonly running = new Map<Id, Promise<void>>();
+  /** Turns in flight that are not tickets (an owner chat turn today, conversations later). */
+  private turns = 0;
+  private readonly busyHooks: Array<() => boolean> = [];
   /** The session each ticket is in now, so an urgent message can stop it. */
   private readonly sessions = new Map<Id, { employeeId: Id; controller: AbortController }>();
   /** Why each ticket that didn't start is waiting, from the last tick. */
@@ -596,6 +599,30 @@ export class Daemon {
     if (!s || s.employeeId !== employeeId || s.controller.signal.aborted) return false;
     s.controller.abort("the owner sent an urgent message");
     return true;
+  }
+
+  /**
+   * Whether the daemon is doing work that a restart would cut short: a ticket stage or session, a chat
+   * turn, or anything a registered hook says (conversations will register theirs). The deployer waits
+   * for false before it switches releases (GET /api/health, contract C21).
+   */
+  busy(): boolean {
+    return this.running.size > 0 || this.turns > 0 || this.busyHooks.some((h) => h());
+  }
+
+  /** Registers a source of busyness, such as "a conversation turn is running". */
+  onBusy(hook: () => boolean): void {
+    this.busyHooks.push(hook);
+  }
+
+  /** Counts a turn as running until it settles. */
+  async track<T>(turn: Promise<T>): Promise<T> {
+    this.turns++;
+    try {
+      return await turn;
+    } finally {
+      this.turns--;
+    }
   }
 
   /** Resolves when nothing is running. For tests and a clean shutdown. */

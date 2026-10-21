@@ -27,6 +27,7 @@ import {
   type Ticket,
 } from "@i-inc/core";
 import { ACCEPTED_LABEL, type Daemon, type DaemonDeps } from "./daemon.ts";
+import { readDeploys } from "./deploys.ts";
 import {
   bootstrapRepo,
   inspectRepo,
@@ -62,6 +63,10 @@ export interface ApiOptions {
   hosts?: string[];
   /** Heartbeat interval for SSE in ms. Default 25_000. */
   heartbeatMs?: number;
+  /** The sha of the release that is running, for GET /api/health. */
+  version?: string;
+  /** ~/.i-inc/deploys.jsonl, which the deployer writes, for GET /api/deploys. */
+  deploysPath?: string;
 }
 
 type Handler = (req: Request, params: Record<string, string>) => Promise<Response>;
@@ -93,6 +98,7 @@ const inFlightBootstraps = new Set<string>();
 
 export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) {
   const lastSandboxRetry = new Map<string, number>();
+  const startedAt = d.clock.now();
   /** The projects a chat draft for this employee can be filed under: the ones it works on (C12). */
   const projectChoices = (e: Employee): string[] => e.projects ?? d.registry.projects().map((pr) => pr.id);
   const ports = {
@@ -947,18 +953,20 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           .map(({ r }) => r.ticket.project)
           .reverse()
           .find((pr) => !e.projects || e.projects.includes(pr));
-        const out = await handleMessage(
-          said,
-          {
-            employee: e,
-            engine: d.registry.engine(e.engines.default),
-            current: current ? { ...current.r.ticket, assignee: e.id } : null,
-            notes,
-            defaultProject: recentProject ?? e.projects?.[0] ?? "General",
-            companyProjects: d.registry.projects().map((pr) => pr.id),
-          },
-          d.helper,
-          d.chat,
+        const out = await daemon.track(
+          handleMessage(
+            said,
+            {
+              employee: e,
+              engine: d.registry.engine(e.engines.default),
+              current: current ? { ...current.r.ticket, assignee: e.id } : null,
+              notes,
+              defaultProject: recentProject ?? e.projects?.[0] ?? "General",
+              companyProjects: d.registry.projects().map((pr) => pr.id),
+            },
+            d.helper,
+            d.chat,
+          ),
         );
 
         const at = d.clock.now();
@@ -1192,6 +1200,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         });
       },
     ],
+
+    ["GET", "/api/deploys", async () => json({ deploys: readDeploys(opts.deploysPath, 20) })],
 
     [
       "GET",
@@ -1812,10 +1822,21 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
   return async function handle(req: Request): Promise<Response> {
     const path = new URL(req.url).pathname;
     const authStatus = req.method === "GET" && path === "/api/auth";
+    // The deployer polls this without a login. It says nothing but the release's sha, whether work is
+    // running, and when it started; the Host check below still applies.
+    const healthCheck = req.method === "GET" && path === "/api/health";
     const signup = req.method === "POST" && path === "/api/signup";
     const login = req.method === "POST" && path === "/api/login";
     const logout = req.method === "POST" && path === "/api/logout";
-    if (opts.token && !authStatus && !signup && !login && !logout && !authorized(req, opts.token)) {
+    if (
+      opts.token &&
+      !authStatus &&
+      !healthCheck &&
+      !signup &&
+      !login &&
+      !logout &&
+      !authorized(req, opts.token)
+    ) {
       return json({ error: "unauthorized" }, 401);
     }
     const host = req.headers.get("host") ?? "";
@@ -1835,6 +1856,9 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     }
     if (authStatus) {
       return json({ initialized: getOwner() !== undefined });
+    }
+    if (healthCheck) {
+      return json({ ok: true, version: opts.version ?? "unknown", busy: daemon.busy(), startedAt });
     }
     if (signup) {
       if (getOwner()) return json({ error: "owner account already exists" }, 409);
