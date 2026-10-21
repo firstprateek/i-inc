@@ -120,6 +120,11 @@ export class AcpConnection {
     );
   }
 
+  /** Resolves when the process has ended. */
+  waitExit(): Promise<void> {
+    return this.exited ? Promise.resolve() : this.proc.exited.then(() => {});
+  }
+
   /** Ends the process now. */
   kill(): void {
     try {

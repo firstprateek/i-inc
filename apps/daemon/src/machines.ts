@@ -20,6 +20,7 @@ import {
   StartupError,
 } from "@i-inc/core";
 import type { AgentProcess, Launch } from "./acp.ts";
+import { newAgentId, trackAgent } from "./reaper.ts";
 
 export const BOOT_FAILURES: Record<SandboxFaultKind, { reason: string; fix: string; waiting: string }> = {
   "stale-hostname": {
@@ -573,7 +574,10 @@ export function machineLaunch(
     assertWalls(s);
     const launcher = launchers[engine.harness];
     if (!launcher) throw new Error(`no ACP launcher for ${engine.harness}`);
-    const vars: Record<string, string> = { I_INC_CWD: cwd, ...env };
+    // The launcher notes this token, the pid and the start time in the sandbox (reaper.ts), so an
+    // agent that outlives the daemon can be found and stopped.
+    const agentId = newAgentId();
+    const vars: Record<string, string> = { I_INC_CWD: cwd, ...env, I_INC_AGENT: agentId };
     for (const name of Object.keys(vars)) {
       if (!/^[A-Z_][A-Z0-9_]*$/.test(name)) throw new Error(`can't pass ${name} into a machine`);
     }
@@ -584,7 +588,9 @@ export function machineLaunch(
       { ...process.env, ...vars },
     );
     const exited = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
+    trackAgent(agentId, exited);
     const proc: AgentProcess = {
+      agentId,
       stdin: child.stdin,
       stdout: child.stdout,
       stderr: child.stderr,

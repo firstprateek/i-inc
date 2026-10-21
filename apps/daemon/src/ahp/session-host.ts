@@ -23,6 +23,7 @@ import {
   upstreamReason,
   usageReport,
 } from "../acp.ts";
+import type { Reap } from "../reaper.ts";
 import type { AccountRateLimit } from "../registry.ts";
 import { isSafeRefName, isSafeWorkDir } from "../workspace.ts";
 import { AcpConnection, EXITED, type RpcReply, TIMED_OUT } from "./acp-connection.ts";
@@ -71,6 +72,11 @@ export interface SessionHostOptions {
   employeeKnown?: (employeeId: Id) => boolean;
   /** The reasoning effort Codex is asked for. */
   effort?: (employeeId: Id) => string;
+  /**
+   * Stops an agent an earlier daemon left running in the sandbox (reaper.ts). Called before every
+   * launch, with the folder, so a restart never ends up with two agents for one conversation.
+   */
+  reap?: Reap;
   /** Live conversations per team. Default 3. */
   perTeamCap?: number;
   /** A conversation with nothing happening for this long is suspended. Default 15 minutes. */
@@ -520,6 +526,44 @@ export class SessionHost implements AgentBackend {
     }
   }
 
+  /**
+   * The daemon is going down (SIGTERM, a deploy): end every agent politely, then not. A running turn
+   * gets `session/cancel`, then each agent's stdin is closed; whatever is still there after `graceMs`
+   * is killed, and a last sweep of the sandboxes stops anything that ignored both (the `container`
+   * client dying does not stop the process in the machine). Conversations are kept: they start
+   * again on the next message.
+   */
+  async shutdown(graceMs = 2500): Promise<void> {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+    this.shuttingDown = true;
+    const conns: AcpConnection[] = [];
+    const employees = new Set<string>();
+    for (const live of this.lives.values()) {
+      employees.add(live.info.employeeId);
+      const conn = live.conn;
+      live.conn = undefined;
+      this.release(live);
+      if (!conn || conn.exited) continue;
+      if (live.run && live.acpSessionId) conn.notify("session/cancel", { sessionId: live.acpSessionId });
+      conns.push(conn);
+    }
+    for (const c of conns) c.close(graceMs);
+    await Promise.race([
+      Promise.all(conns.map((c) => c.waitExit())),
+      new Promise<void>((r) => setTimeout(r, graceMs + 200).unref?.()),
+    ]);
+    for (const c of conns) c.kill();
+    // The processes in the machines: stop any that the end of their stdin did not.
+    if (this.o.reap) {
+      await Promise.race([
+        Promise.all([...employees].map((e) => this.o.reap?.(e, { all: true }))),
+        new Promise<void>((r) => setTimeout(r, 4000).unref?.()),
+      ]);
+    }
+  }
+  private shuttingDown = false;
+
   /** What the cap is doing, for a status view and the tests. */
   status(): { session: string; team: string; live: boolean; busy: boolean }[] {
     return [...this.lives.values()].map((l) => ({
@@ -592,7 +636,10 @@ export class SessionHost implements AgentBackend {
    */
   private async launchSession(live: Live, o: { fresh: boolean; mode?: unknown }): Promise<Json> {
     const { info } = live;
+    if (this.shuttingDown) throw new Error("the daemon is stopping");
     const env = await this.o.credentials(info.engine, info);
+    // An agent a dead daemon left for this conversation would work in the same folder as the new one.
+    await this.o.reap?.(info.employeeId, { cwd: info.cwd });
     const proc = this.o.launch({ employeeId: info.employeeId, engine: info.engine, cwd: info.cwd, env });
     this.app?.awake(info.employeeId);
     const conn = new AcpConnection(proc, this.o.log);
@@ -899,6 +946,13 @@ export class SessionHost implements AgentBackend {
     const text = String(done.error?.message ?? "");
     if (active.cancelled || turn.signal.aborted) return { kind: "cancelled" };
     if (done.error) {
+      if (done.error.code === EXITED && this.shuttingDown) {
+        return {
+          kind: "error",
+          errorType: "host_restarted",
+          message: "The daemon restarted while this turn was running. Send a message to carry on.",
+        };
+      }
       if (done.error.code === EXITED) {
         return {
           kind: "error",

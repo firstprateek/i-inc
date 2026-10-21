@@ -18,6 +18,7 @@ import type {
   SessionTranscriptItem,
   Ticket,
 } from "@i-inc/core";
+import type { Reap } from "./reaper.ts";
 import type { AccountRateLimit } from "./registry.ts";
 import { capText } from "./sessions.ts";
 
@@ -25,6 +26,8 @@ type Json = Record<string, unknown>;
 
 /** The ACP server's stdio, however it was started. */
 export interface AgentProcess {
+  /** The launch's token in the sandbox (reaper.ts); the fakes in tests have none. */
+  agentId?: string;
   stdin: Writable;
   stdout: Readable;
   stderr: Readable;
@@ -67,6 +70,8 @@ export interface AcpOptions {
   onRateLimit?: (accountId: Id, limit: AccountRateLimit) => void;
   now?: () => number;
   log?: (msg: string) => void;
+  /** Stops an agent an earlier daemon left running in the sandbox, before each launch (reaper.ts). */
+  reap?: Reap;
   /** How long a cancelled session gets to wind down before it's killed. */
   cancelGraceMs?: number;
   /** When an engine's limits show only as errors (Antigravity), how long to wait before trying again. */
@@ -137,7 +142,35 @@ export class AcpAgent implements Agent {
   /** Transient errors in a row, per employee and ticket. */
   private readonly transient = new Map<string, number>();
 
+  /** Sessions in progress, for `shutdown`. */
+  private readonly open = new Map<Rpc, Id>();
+  private shuttingDown = false;
+
   constructor(private readonly o: AcpOptions) {}
+
+  /**
+   * The daemon is going down: close every session's stdin, kill what is still there after `graceMs`,
+   * then sweep the sandboxes for any agent that ignored both (reaper.ts). A ticket whose session
+   * ends this way is picked up again by the scheduler when the daemon returns.
+   */
+  async shutdown(graceMs = 2500): Promise<void> {
+    this.shuttingDown = true;
+    const rpcs = [...this.open.entries()];
+    for (const [rpc] of rpcs) rpc.close(graceMs);
+    await Promise.race([
+      Promise.all(rpcs.map(([rpc]) => rpc.waitExit())),
+      new Promise<void>((r) => setTimeout(r, graceMs + 200).unref?.()),
+    ]);
+    for (const [rpc] of rpcs) rpc.kill();
+    if (this.o.reap) {
+      const reap = this.o.reap;
+      const employees = new Set(rpcs.map(([, e]) => e));
+      await Promise.race([
+        Promise.all([...employees].map((e) => reap(e, { all: true }))),
+        new Promise<void>((r) => setTimeout(r, 4000).unref?.()),
+      ]);
+    }
+  }
 
   /** Entries in the transient-retry counter: it should be empty once nothing is retrying. */
   footprint(): { transient: number } {
@@ -146,13 +179,14 @@ export class AcpAgent implements Agent {
 
   async run(r: SessionRequest): Promise<SessionOutcome> {
     const now = this.o.now ?? Date.now;
-    const proc = this.o.launch({
-      employeeId: r.employee.id,
-      engine: r.engine,
-      cwd: this.o.cwdFor(r.ticket.id),
-      env: await this.o.credentials(r.engine, r.ticket, r.duty, r.employee.id),
-    });
+    if (this.shuttingDown) return stuck("the daemon is stopping", true);
+    const cwd = this.o.cwdFor(r.ticket.id);
+    const env = await this.o.credentials(r.engine, r.ticket, r.duty, r.employee.id);
+    // An agent a dead daemon left on this ticket would work in the same folder as the new one.
+    await this.o.reap?.(r.employee.id, { cwd });
+    const proc = this.o.launch({ employeeId: r.employee.id, engine: r.engine, cwd, env });
     const rpc = new Rpc(proc, this.o.log);
+    this.open.set(rpc, r.employee.id);
     let limit: { rejected: boolean; resetsAt: number | null; fromMeta?: boolean } = {
       rejected: false,
       resetsAt: null,
@@ -406,6 +440,7 @@ export class AcpAgent implements Agent {
       // interrupted, ran out of tokens, or never comes back) must not leave an entry behind.
       if (!retrying) this.transient.delete(`${r.employee.id}/${r.ticket.id}`);
       flushText();
+      this.open.delete(rpc);
       rpc.close();
     }
   }
@@ -547,10 +582,20 @@ class Rpc {
     }
   }
 
-  close(): void {
+  close(graceMs = 3000): void {
     try {
       this.p.stdin.end();
     } catch {}
-    setTimeout(() => this.p.kill(), 3000).unref?.();
+    setTimeout(() => this.p.kill(), graceMs).unref?.();
+  }
+
+  kill(): void {
+    try {
+      this.p.kill();
+    } catch {}
+  }
+
+  waitExit(): Promise<void> {
+    return this.exited ? Promise.resolve() : this.p.exited.then(() => {});
   }
 }

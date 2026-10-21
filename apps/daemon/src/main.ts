@@ -18,6 +18,7 @@ import { resolveVersion } from "./deploys.ts";
 import { GitHubApp, readGitHubAppConfig } from "./github.ts";
 import { AppleMachines, defaultMachineSettings, wallsUp } from "./machines.ts";
 import { realPorts } from "./real.ts";
+import { checkpoint } from "./retention.ts";
 
 const home = process.env.I_INC_HOME ?? join(homedir(), ".i-inc");
 const port = Number(process.env.PORT ?? 7420);
@@ -165,7 +166,7 @@ async function serveWeb(req: Request): Promise<Response> {
 app.ahp.transport.start();
 // Idle conversations are suspended, so their agents don't hold the sandbox.
 if (app.ahp.backend instanceof SessionHost) app.ahp.backend.start();
-Bun.serve<WsData>({
+const server = Bun.serve<WsData>({
   port,
   hostname: host,
   idleTimeout: 60,
@@ -183,6 +184,45 @@ Bun.serve<WsData>({
   },
   websocket: app.ahp.transport.websocket,
 });
+
+// Agents an earlier daemon left running (it crashed, was killed, or a deploy did not wait for it)
+// are stopped, so each conversation and ticket has the one agent this daemon starts (reaper.ts).
+// Each launch also does it for its own folder first; this catches the rest.
+if (real)
+  void real.sweepAgents().then((n) => n && log(`stopped ${n} agent(s) an earlier daemon left running`));
+
+// SIGTERM (launchd, the deployer's kickstart) and SIGINT: stop the agents politely (session/cancel,
+// close their stdin, kill after a short grace), close the sockets, fold the database's log back in,
+// and leave inside launchd's exit timeout (20 s by default); a second signal leaves at once.
+let stopping = false;
+async function shutdown(signal: string): Promise<void> {
+  if (stopping) process.exit(1);
+  stopping = true;
+  log(`${signal}: stopping`);
+  const hard = setTimeout(() => {
+    log("shutdown took too long: leaving");
+    process.exit(1);
+  }, 12_000);
+  try {
+    server.stop();
+    app.ahp.transport.stop();
+    const agent = app.deps.agent as { shutdown?: (graceMs?: number) => Promise<void> };
+    await Promise.all([
+      app.ahp.backend instanceof SessionHost ? app.ahp.backend.shutdown() : undefined,
+      agent.shutdown?.(),
+    ]);
+    app.ahp.host.close();
+    await new Promise((r) => setTimeout(r, 50)); // let the runs the close ended write their last lines
+    checkpoint(app.db);
+    app.db.close();
+  } catch (err) {
+    log(`shutdown: ${err instanceof Error ? err.message : err}`);
+  }
+  clearTimeout(hard);
+  process.exit(0);
+}
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));
 console.log(
   `i.inc daemon ${version.slice(0, 7)} on http://${host}:${port}${demo ? " (demo mode)" : ""}${existsSync(web) ? "" : " · build apps/web to serve the app"}`,
 );

@@ -699,6 +699,47 @@ describe("an ACP session", () => {
   });
 });
 
+describe("a ticket's agent and the daemon's end", () => {
+  it("looks for an agent an earlier daemon left in the ticket's folder before it starts one, and ends its sessions when the daemon stops", async () => {
+    const order: string[] = [];
+    let pending = false;
+    const s = server((method, params, reply, id) => {
+      claudeLike(() => {
+        pending = true;
+      })(method, params, reply, id);
+    });
+    const a = new AcpAgent({
+      launch: (r) => {
+        order.push("launch");
+        s.launches.push(r);
+        return s.proc;
+      },
+      reap: async (employee, o) => {
+        order.push(`reap ${employee} ${o?.cwd ?? "-"}${o?.all ? " all" : ""}`);
+        return [];
+      },
+      credentials: () => ({}),
+      cwdFor: (id) => `/home/employee/work/inc-${id}`,
+      now: () => 1_000,
+    });
+    const running = a.run(request());
+    while (!pending) await new Promise((r) => setTimeout(r, 1));
+    expect(order).toEqual(["reap ada /home/employee/work/inc-42", "launch"]);
+
+    await a.shutdown(30);
+    expect(s.proc.stdin.writableEnded).toBe(true);
+    expect(order).toEqual(["reap ada /home/employee/work/inc-42", "launch", "reap ada - all"]);
+    // the session that was running ends as stuck, not hung, and nothing new starts
+    expect(await running).toMatchObject({ kind: "stuck" });
+    expect(await a.run(request())).toEqual({
+      kind: "stuck",
+      reason: "the daemon is stopping",
+      startup: true,
+    });
+    expect(order).toHaveLength(3);
+  });
+});
+
 describe("Apple container machines", () => {
   const boot = ["machine", "run", "-n", "inc-ada", "--", "true"];
   // What container 1.4.1 prints for a missing machine.
@@ -799,9 +840,13 @@ describe("Apple container machines", () => {
       "I_INC_CWD",
       "-e",
       "CLAUDE_CODE_OAUTH_TOKEN",
+      "-e",
+      "I_INC_AGENT",
       "--",
       "acp-claude",
     ]);
+    // each launch has a token the launcher notes in the sandbox, so a leftover agent can be found (reaper.ts)
+    expect(call?.env.I_INC_AGENT).toMatch(/^[0-9a-f]{16}$/);
     expect(call?.args.join(" ")).not.toContain("sk-token");
     expect(call?.env.CLAUDE_CODE_OAUTH_TOKEN).toBe(token);
     expect(call?.env.I_INC_CWD).toBe("/home/employee/work/inc-1");

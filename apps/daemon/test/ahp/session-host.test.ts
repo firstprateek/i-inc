@@ -861,9 +861,12 @@ describe("the sandbox", () => {
       "I_INC_PORTS",
       "-e",
       "I_INC_CONV",
+      "-e",
+      "I_INC_AGENT",
       "--",
       "acp-claude",
     ]);
+    expect(seen[0]?.env.I_INC_AGENT).toMatch(/^[0-9a-f]{16}$/);
     expect(seen[0]?.args.join(" ")).not.toContain("sk-ant");
     expect(seen[0]?.env.CLAUDE_CODE_OAUTH_TOKEN).toBe("sk-ant-oat01-secret");
     expect(seen[0]?.env.I_INC_CWD).toBe("/home/employee/work/conv-c1");

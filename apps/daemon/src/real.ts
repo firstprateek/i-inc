@@ -23,6 +23,7 @@ import {
   workDir,
 } from "./machines.ts";
 import { OllamaChat, OllamaHelper, type OllamaOptions } from "./ollama.ts";
+import { type Reap, reaper, reapMachines } from "./reaper.ts";
 import type { Registry } from "./registry.ts";
 import { GitHubWorkspace, prepareConversationCopy } from "./workspace.ts";
 
@@ -61,6 +62,8 @@ export function realPorts(o: RealOptions): Pick<
 > & {
   /** Renews the GitHub sign-in of every sandbox in use. main.ts calls it on a timer. */
   keepLoginsFresh: () => Promise<void>;
+  /** Stops the agents an earlier daemon left running in any sandbox that is up. main.ts calls it once at startup. */
+  sweepAgents: () => Promise<number>;
 } {
   const base = o.machine ?? defaultMachineSettings;
   const now = o.now ?? Date.now;
@@ -94,6 +97,13 @@ export function realPorts(o: RealOptions): Pick<
     return runner;
   };
   let machines: AppleMachines | undefined;
+  // Agents a dead daemon left running in a sandbox are stopped before a new one starts for the same
+  // work (reaper.ts), and the sandboxes are swept once at startup.
+  let reapOnce: Reap | undefined;
+  const reap = (registry: Registry): Reap => {
+    reapOnce ??= reaper(run(registry), o.log);
+    return reapOnce;
+  };
 
   // Each sandbox is signed in to GitHub as the bot, for all the App's repos, renewed before it
   // expires. A session's token in its environment would stop working after an hour; this doesn't.
@@ -123,6 +133,7 @@ export function realPorts(o: RealOptions): Pick<
     agent: (registry) =>
       new AcpAgent({
         launch: o.launch ?? machineLaunch(teams(registry)),
+        reap: reap(registry),
         // The account's credential if it has one (machines sign in themselves by default), and the
         // ticket's ports. GitHub comes from the sandbox's sign-in.
         credentials: async (engine, ticket, _duty, employeeId) => {
@@ -179,6 +190,7 @@ export function realPorts(o: RealOptions): Pick<
     ahpBackend: (registry): AgentBackend =>
       new SessionHost({
         launch: o.launch ?? machineLaunch(teams(registry)),
+        reap: reap(registry),
         agents: () => agentsFromRegistry(registry),
         engine: (id) => registry.engines().find((e) => e.id === id),
         teamOf: (employeeId) => registry.teamOf(employeeId).id,
@@ -209,6 +221,7 @@ export function realPorts(o: RealOptions): Pick<
       }),
     helper: new OllamaHelper(o.ollama),
     chat: new OllamaChat(o.ollama),
+    sweepAgents: async () => (machines ? reapMachines(machines, o.log) : 0),
     keepLoginsFresh: async () => {
       if (!machines || !registryRef) return;
       const registry = registryRef;

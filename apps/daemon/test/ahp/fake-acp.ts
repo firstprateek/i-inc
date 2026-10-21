@@ -38,6 +38,8 @@ export interface FakeOptions {
   initFails?: boolean;
   /** Stay silent on `initialize` (a sandbox that never comes up). */
   hang?: boolean;
+  /** Carry on when stdin closes (an agent that does not take the end of its input as the end). */
+  ignoreEof?: boolean;
 }
 
 export class FakeAcpAgent {
@@ -76,7 +78,9 @@ export class FakeAcpAgent {
         } else void this.handle(m);
       }
     });
-    this.stdin.on("end", () => this.die(0));
+    this.stdin.on("end", () => {
+      if (!this.opts.ignoreEof) this.die(0);
+    });
   }
 
   private out(m: Json): void {
