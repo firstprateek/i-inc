@@ -26,6 +26,8 @@ import {
   type SandboxStatus,
   type Ticket,
 } from "@i-inc/core";
+import { ConversationError } from "./ahp/conversations.ts";
+import { authorized, hostAllowed, originAllowed, same } from "./auth.ts";
 import { ACCEPTED_LABEL, type Daemon, type DaemonDeps } from "./daemon.ts";
 import { readDeploys } from "./deploys.ts";
 import {
@@ -36,6 +38,7 @@ import {
   listInstallationRepos,
   UpstreamGitHubError,
 } from "./github.ts";
+import { sniffImage } from "./images.ts";
 import type { Change, Repo } from "./knowledge.ts";
 import { type ProposalStatus, RECOVERED_BODY } from "./proposals.ts";
 import type { PushSubscription } from "./push.ts";
@@ -1100,6 +1103,77 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       },
     ],
 
+    // Conversations (C22): the list, creation and the row-level edits. What happens inside one is AHP, at /ahp.
+    [
+      "GET",
+      "/api/conversations",
+      async (req) => {
+        if (!d.conversations) return json({ error: "conversations are not enabled" }, 404);
+        const q = new URL(req.url).searchParams;
+        const archived = q.get("archived");
+        const employee = q.get("employee");
+        return json({
+          conversations: d.conversations.list({
+            archived: archived === "all" ? "all" : archived === "true" || archived === "1",
+            ...(employee ? { employeeId: employee } : {}),
+          }),
+        });
+      },
+    ],
+
+    [
+      "GET",
+      "/api/conversations/:id",
+      async (_req, p) => {
+        const c = d.conversations?.get(p.id ?? "");
+        return c ? json({ conversation: c }) : json({ error: "no such conversation" }, 404);
+      },
+    ],
+
+    [
+      "POST",
+      "/api/conversations",
+      async (req) => {
+        if (!d.conversations) return json({ error: "conversations are not enabled" }, 404);
+        const b = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+        if (typeof b !== "object" || b === null || Array.isArray(b)) {
+          return json({ error: "send a JSON object" }, 400);
+        }
+        if (typeof b.employeeId !== "string") return json({ error: "employeeId is required" }, 400);
+        try {
+          const conversation = await d.conversations.create({
+            employeeId: b.employeeId,
+            ...(b.project === null || typeof b.project === "string" ? { project: b.project } : {}),
+            ...(typeof b.title === "string" ? { title: b.title } : {}),
+            ...(typeof b.mode === "string" ? { mode: b.mode } : {}),
+            ...(typeof b.engineId === "string" ? { engineId: b.engineId } : {}),
+          });
+          return json({ conversation }, 201);
+        } catch (e) {
+          if (e instanceof ConversationError) return json({ error: e.message }, e.status);
+          throw e;
+        }
+      },
+    ],
+
+    [
+      "PATCH",
+      "/api/conversations/:id",
+      async (req, p) => {
+        if (!d.conversations) return json({ error: "conversations are not enabled" }, 404);
+        const b = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+        if (typeof b !== "object" || b === null || Array.isArray(b)) {
+          return json({ error: "send a JSON object" }, 400);
+        }
+        try {
+          return json({ conversation: d.conversations.update(p.id ?? "", b) });
+        } catch (e) {
+          if (e instanceof ConversationError) return json({ error: e.message }, e.status);
+          throw e;
+        }
+      },
+    ],
+
     ["GET", "/api/employees", async () => json({ employees: d.registry.employees() })],
 
     [
@@ -1882,14 +1956,9 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       return json({ error: "unauthorized" }, 401);
     }
     const host = req.headers.get("host") ?? "";
-    if (opts.hosts && !opts.hosts.includes(host)) return json({ error: `not served as ${host}` }, 421);
+    if (!hostAllowed(opts.hosts, host)) return json({ error: `not served as ${host}` }, 421);
     if (req.method !== "GET" && req.method !== "HEAD") {
-      const origin = req.headers.get("origin");
-      if (
-        origin &&
-        opts.hosts &&
-        !opts.hosts.some((h) => origin === `http://${h}` || origin === `https://${h}`)
-      ) {
+      if (!originAllowed(opts.hosts, req.headers.get("origin"))) {
         return json({ error: "cross-site request refused" }, 403);
       }
       if (!(req.headers.get("content-type") ?? "").startsWith("application/json") && !isUpload(req, path)) {
@@ -1980,20 +2049,6 @@ function verifyPassword(password: string, stored: string): boolean {
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
-/** Compares secrets in constant time. */
-function same(a: string, b: string): boolean {
-  const x = Buffer.from(a);
-  const y = Buffer.from(b);
-  return x.length === y.length && timingSafeEqual(x, y);
-}
-
-/** The token as the web app's cookie, or as a bearer header. */
-function authorized(req: Request, token: string): boolean {
-  const bearer = /^Bearer (.+)$/.exec(req.headers.get("authorization") ?? "")?.[1];
-  const cookie = /(?:^|;\s*)i_inc=([^;]+)/.exec(req.headers.get("cookie") ?? "")?.[1];
-  return [bearer, cookie].some((t) => t !== undefined && same(t, token));
-}
-
 function safeDecodeURIComponent(str: string): string | null {
   try {
     return decodeURIComponent(str);
@@ -2041,16 +2096,7 @@ function isUpload(req: Request, path: string): boolean {
   );
 }
 
-/** The image types a ticket takes, told by their leading bytes. No SVG: it can carry script. */
-export function sniffImage(b: Uint8Array): string | null {
-  const starts = (sig: number[], at = 0) => sig.every((x, i) => b[at + i] === x);
-  const ascii = (t: string) => [...t].map((c) => c.charCodeAt(0));
-  if (starts([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return "image/png";
-  if (starts([0xff, 0xd8, 0xff])) return "image/jpeg";
-  if (starts(ascii("GIF87a")) || starts(ascii("GIF89a"))) return "image/gif";
-  if (starts(ascii("RIFF")) && starts(ascii("WEBP"), 8)) return "image/webp";
-  return null;
-}
+export { sniffImage };
 
 type Refused = { error: string; status: number };
 
