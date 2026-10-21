@@ -3,4 +3,4 @@
 // a function and is told how many characters each search or scan looked at, so it can assert that the total
 // grows in step with the text (4x the text, about 4x the count) instead of timing the code, which depends on
 // how busy the machine is. A scanner that rescans (square) or backtracks (cube) fails that by a wide margin.
-export const probe: { work?: (chars: number) => void } = {};
+export const probe: { work?: ((chars: number) => void) | undefined } = {};
