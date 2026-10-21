@@ -56,7 +56,12 @@ export class IncNewTicket extends LitElement {
     recent: { state: true },
     assignee: { state: true },
     assigneeChosen: { state: true },
+    /** A project page presets the project and opens the form (T62). */
+    presetProject: { type: String },
+    startOpen: { type: Boolean },
   };
+  declare presetProject: string;
+  declare startOpen: boolean;
   declare open: boolean;
   declare projects: string[];
   declare project: string;
@@ -90,16 +95,21 @@ export class IncNewTicket extends LitElement {
     this.recent = [];
     this.assignee = "";
     this.assigneeChosen = false;
+    this.presetProject = "";
+    this.startOpen = false;
   }
 
   override connectedCallback(): void {
     super.connectedCallback();
+    if (this.startOpen) this.open = true;
     api
       .projects()
       .then((ps) => {
         this.projects = ps.map((p) => p.id);
-        // Default to the last project used, else the first one.
-        if (!this.projects.includes(this.project)) this.project = this.projects[0] ?? "";
+        // The project page's project wins; otherwise the last project used, else the first one.
+        if (this.presetProject && this.projects.includes(this.presetProject))
+          this.project = this.presetProject;
+        else if (!this.projects.includes(this.project)) this.project = this.projects[0] ?? "";
         this.followProject();
       })
       .catch((e) => {

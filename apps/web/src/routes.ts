@@ -48,7 +48,11 @@ export type Route =
   | { view: "hiring"; id?: string }
   /** An empty id is the company brain (the handbook); otherwise one employee's brain. */
   | { view: "brain"; id: string }
-  | { view: "projects" }
+  /**
+   * `#/company/projects` is the list. After it: `add` (pick or confirm a repo to add, `?repo=owner/name`),
+   * `new` (start a new project), or a project's id (its page).
+   */
+  | { view: "projects"; flow?: "add" | "new"; id?: string }
   | { view: "usage" }
   | { view: "settings"; section: Section };
 
@@ -135,7 +139,8 @@ export function legacyTarget(hash: string): string | null {
  */
 export function redirectFor(hash: string): string | null {
   if (!hash || hash === "#" || hash === "#/") return null;
-  const [h, view = "", ...rest] = hash.split("?")[0]?.replace(/\/+$/, "").split("/") ?? [];
+  const path = hash.split("?")[0] ?? hash;
+  const [h, view = "", ...rest] = path.replace(/\/+$/, "").split("/");
   if (h !== "#") return homeHash();
   const lower = (s: string | undefined) => s?.toLowerCase();
   const v = view.toLowerCase();
@@ -163,8 +168,12 @@ export function redirectFor(hash: string): string | null {
         const a = lower(rest[0]);
         if (a === undefined) out = "#/company";
         else if (a === "brain") out = `#/${tail(v, a, rest[1])}`;
-        else if (a === "projects" || a === "usage") out = `#/company/${a}`;
-        else if (a === "settings")
+        else if (a === "usage") out = `#/company/${a}`;
+        else if (a === "projects") {
+          // add and new are the flows; anything else is a project's id, which keeps its case.
+          const sub = lower(rest[1]) === "add" || lower(rest[1]) === "new" ? lower(rest[1]) : rest[1];
+          out = `#/${tail(v, a, sub)}`;
+        } else if (a === "settings")
           out =
             rest[1] === undefined
               ? "#/company/settings"
@@ -175,8 +184,18 @@ export function redirectFor(hash: string): string | null {
     }
   }
   const target = out ?? homeHash();
-  return target === hash ? null : target;
+  if (target === hash) return null;
+  // A page that reads its own query (`#/conversations?new=1&project=Duet`, `#/company/projects/add?repo=a/b`)
+  // keeps it when the address is otherwise canonical. Every other address drops its query.
+  if (target === path && queryPages.test(path)) return null;
+  return target;
 }
+
+/** The addresses whose query string means something (see redirectFor). */
+const queryPages = /^#\/(?:conversations|company\/projects)(?:\/|$)/;
+
+/** The query of a hash: `#/conversations?new=1&project=Duet` gives `new=1&project=Duet`. */
+export const hashQuery = (hash: string): URLSearchParams => new URLSearchParams(hash.split("?")[1] ?? "");
 
 /** Where the app opens with no hash. */
 export function homeRoute(): Route {
@@ -184,7 +203,7 @@ export function homeRoute(): Route {
 }
 
 export function parse(hash: string): Route {
-  const [, view, a, b, c] = (redirectFor(hash) ?? hash).split("/");
+  const [, view, a, b, c] = (redirectFor(hash) ?? hash).split("?")[0]?.split("/") ?? [];
   switch (view) {
     case "conversations":
       return { view: "conversations", id: a ?? "" };
@@ -198,7 +217,11 @@ export function parse(hash: string): Route {
         case "brain":
           return { view: "brain", id: b ?? "" };
         case "projects":
-          return { view: "projects" };
+          return b === "add" || b === "new"
+            ? { view: "projects", flow: b }
+            : b
+              ? { view: "projects", id: safeDecode(b) }
+              : { view: "projects" };
         case "usage":
           return { view: "usage" };
         case "settings":
@@ -209,6 +232,14 @@ export function parse(hash: string): Route {
   }
   return homeRoute();
 }
+
+const safeDecode = (s: string) => {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+};
 
 const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
 
@@ -245,7 +276,11 @@ function titleParts(r: Route): string[] {
     case "brain":
       return [r.id ? `${cap(r.id)}’s brain` : "Brain", "Company"];
     case "projects":
-      return ["Projects", "Company"];
+      return r.id
+        ? [r.id, "Projects", "Company"]
+        : r.flow
+          ? [r.flow === "add" ? "Add a repo" : "New project", "Projects", "Company"]
+          : ["Projects", "Company"];
     case "usage":
       return ["Usage", "Company"];
     case "settings":

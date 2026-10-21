@@ -7,6 +7,7 @@ import {
   AREAS,
   areaOf,
   COMPANY_TABS,
+  hashQuery,
   homeHash,
   legacyTarget,
   redirectFor,
@@ -401,5 +402,37 @@ describe("the tab bar", () => {
     expect(location.hash).toBe("#/company/team");
     expect(app.shadowRoot?.querySelector("inc-layout")?.innerHTML).toContain("<inc-office");
     app.remove();
+  });
+});
+
+describe("project addresses and queries (T62)", () => {
+  it.each([
+    ["#/company/projects", { view: "projects" }],
+    ["#/company/projects/add", { view: "projects", flow: "add" }],
+    ["#/company/projects/new", { view: "projects", flow: "new" }],
+    ["#/company/projects/Duet", { view: "projects", id: "Duet" }],
+    ["#/company/projects/New%20API", { view: "projects", id: "New API" }],
+    ["#/company/projects/add?repo=acme%2Fduet", { view: "projects", flow: "add" }],
+  ])("%s parses to %j", (hash, route) => {
+    expect(parse(hash)).toEqual(route);
+  });
+
+  it("keeps a project's id in its case, and tidies add and new", () => {
+    expect(redirectFor("#/company/projects/Duet")).toBeNull();
+    expect(redirectFor("#/Company/Projects/ADD")).toBe("#/company/projects/add");
+    expect(redirectFor("#/company/projects/New%20API")).toBeNull();
+  });
+
+  it("leaves the query of the pages that read one", () => {
+    expect(redirectFor("#/conversations?new=1&project=Duet")).toBeNull();
+    expect(redirectFor("#/company/projects/add?repo=acme%2Fduet")).toBeNull();
+    expect(parse("#/conversations?new=1&project=Duet")).toEqual({ view: "conversations", id: "" });
+    expect(hashQuery("#/conversations?new=1&project=Duet").get("project")).toBe("Duet");
+    expect(hashQuery("#/conversations").get("project")).toBeNull();
+  });
+
+  it("still drops the query elsewhere", () => {
+    expect(redirectFor("#/ticket/12?from=push")).toBe("#/ticket/12");
+    expect(redirectFor("#/work/board?x=1")).toBe("#/work/board");
   });
 });
