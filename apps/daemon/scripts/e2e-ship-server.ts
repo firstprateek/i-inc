@@ -143,6 +143,7 @@ const backend = app.ahp.backend as { start?: () => void };
 backend.start?.();
 
 async function control(req: Request): Promise<Response> {
+  // biome-ignore lint/suspicious/noExplicitAny: the run's own control messages
   const b = (await req.json()) as Record<string, any>;
   if (b.op === "write") {
     const file = join(work, `conv-${b.conversation}`, b.path);
