@@ -11,6 +11,9 @@
 //   "markdown"    a reply with headings, lists, a table, a link and highlighted code, streamed in small chunks
 //   "longtools"   thirty read calls, for a long turn
 // E2E_NO_COALESCE=1 turns off the host's joining of streamed text, so each piece is its own action.
+// Push (T65): the push sender is a fake that records what the daemon sends; `GET /__e2e/pushes` lists it as JSON
+// (`{ "pushes": NotificationPayload[] }`). E2E_PUSH_GRACE=<ms> sets how long a request waits before it is pushed
+// (default 20000, the daemon's own).
 import { existsSync, mkdirSync } from "node:fs";
 import { join, normalize } from "node:path";
 import { FakeAgent, FakeChat, FakeHarness, FakeHelper, FakeMachines } from "@i-inc/core/testing";
@@ -19,6 +22,7 @@ import { SessionHost } from "../../src/ahp/session-host.ts";
 import type { WsData } from "../../src/ahp/transport.ts";
 import { createApp } from "../../src/app.ts";
 import { seedDemo } from "../../src/demo.ts";
+import { FakePushService } from "../../src/push.ts";
 import { FakeAcpAgent, FakeSandbox } from "./fake-acp.ts";
 
 // biome-ignore lint/suspicious/noExplicitAny: patching the fake agent
@@ -164,6 +168,8 @@ const app = await createApp({
   harness: new FakeHarness(),
   helper: new FakeHelper(),
   chat: new FakeChat(),
+  push: (registry) => new FakePushService(registry),
+  ...(process.env.E2E_PUSH_GRACE ? { ahpPush: { graceMs: Number(process.env.E2E_PUSH_GRACE) } } : {}),
   // E2E_NO_COALESCE=1: every streamed piece goes out as its own action (the worst case for the client)
   ...(process.env.E2E_NO_COALESCE ? { ahpLimits: { deltaFlushMs: 0, deltaFlushChars: 1 } } : {}),
   // E2E_REPLAY_LIMIT=0: a client that missed anything is answered with snapshots, not a replay
@@ -210,6 +216,9 @@ Bun.serve<WsData>({
       if ("refusal" in g) return g.refusal;
       if (server.upgrade(req, { data: g.data })) return undefined;
       return new Response("websocket upgrade failed", { status: 400 });
+    }
+    if (new URL(req.url).pathname === "/__e2e/pushes") {
+      return Response.json({ pushes: (app.deps.push as FakePushService).sent });
     }
     return new URL(req.url).pathname.startsWith("/api/") || !existsSync(web)
       ? app.handle(req)
