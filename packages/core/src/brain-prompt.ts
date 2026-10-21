@@ -158,7 +158,7 @@ export interface BrainPrompt {
 
 const escapeAttr = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/[<>]/g, "");
-const escapeBody = (s: string): string => s.replace(/<(\/?)(brain-page|brain)\b/gi, "<\\$1$2");
+const escapeBody = (s: string): string => s.replace(/<\s*(\/?)\s*(brain-page|brain)\b/gi, "<\\$1$2");
 
 /** What the pages used by a prompt look like to the owner (visibility, contract C19). */
 export function usesOf(pages: RetrievedPage[]): BrainUse[] {
@@ -198,9 +198,10 @@ export function renderBrainPrompt(p: BrainPrompt, o: { maps?: boolean } = {}): s
     for (const m of p.maps) {
       out.push(
         "",
-        `Map · ${m.label} (${m.dir}/, ${m.pages} page${m.pages === 1 ? "" : "s"}); [[slug]] names a page:`,
+        `Map · ${escapeBody(m.label)} (${escapeBody(m.dir)}/, ${m.pages} page${m.pages === 1 ? "" : "s"}); [[slug]] names a page:`,
       );
-      out.push(...m.lines);
+      // A map line is a slug and a description: text an agent or a web page may have written.
+      out.push(...m.lines.map(escapeBody));
     }
   }
   if (p.pages.length) {

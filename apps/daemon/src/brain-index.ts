@@ -110,7 +110,7 @@ const scopeFilter = (r: Repo): { sql: string; params: Param[] } =>
 
 export class BrainIndex implements RetrievalSource {
   /** Built maps by scope. Pages only change through `sync` and `rebuild`, which clear it. */
-  private readonly maps = new Map<Scope, BuiltMap>();
+  private readonly maps = new Map<string, BuiltMap>();
 
   /** When `refresh` last looked, so a busy caller can ask often and cost little. */
   private refreshedAt = 0;
@@ -614,20 +614,32 @@ export class BrainIndex implements RetrievalSource {
     return null;
   }
 
-  /** A scope's map: one line per page by folder; split into named sections when it passes 150 lines. */
-  mapFor(scope: Scope): BuiltMap {
-    const cached = this.maps.get(scope);
+  /**
+   * A scope's map: one line per page by folder; split into named sections when it passes 150 lines.
+   * With `mark`, the line of a page built from untrusted content starts with "(untrusted)", so an
+   * agent reading the map can't take such a description for the company's own words.
+   */
+  mapFor(scope: Scope, mark = false): BuiltMap {
+    const key = (mark ? "!" : "") + scope;
+    const cached = this.maps.get(key);
     if (cached) return cached;
     const pages: MapPage[] = this.db
-      .all<PageRow>("SELECT slug, title, description FROM pages WHERE scope = ? ORDER BY slug", scope)
-      .map((r) => ({ slug: r.slug, title: r.title, description: r.description }));
+      .all<PageRow>(
+        "SELECT slug, title, description, external FROM pages WHERE scope = ? ORDER BY slug",
+        scope,
+      )
+      .map((r) => ({
+        slug: r.slug,
+        title: r.title,
+        description: mark && r.external === 1 ? `(untrusted) ${r.description}` : r.description,
+      }));
     const built = buildMap(pages);
     // Shared between callers, so read-only.
     for (const lines of Object.values(built.sections)) Object.freeze(lines);
     Object.freeze(built.root);
     Object.freeze(built.sections);
     Object.freeze(built);
-    this.maps.set(scope, built);
+    this.maps.set(key, built);
     return built;
   }
 

@@ -204,6 +204,56 @@ describe("the copy", () => {
   });
 });
 
+describe("a kept edit does not go stale", () => {
+  it("is offered again until the edit is gone, then replaced by the upstream text", async () => {
+    const r = await seeded();
+    await r.feed.sync("ada");
+    const dir = r.copy("ada");
+    const file = join(dir, "company/facts/gh.md");
+    writeFileSync(file, "Ada's note.\n");
+    r.commit("handbook", { "facts/gh.md": page("GitHub CLI", "gh pr checks waits for CI", "Upstream v2.") });
+    const first = await r.feed.sync("ada");
+    expect(first.kept).toEqual(["company/facts/gh.md"]);
+    expect(readFileSync(file, "utf8")).toBe("Ada's note.\n");
+    // While the edit stays, every copy keeps it (and says so only once).
+    r.logs.length = 0;
+    const again = await r.feed.sync("ada");
+    expect(again).toMatchObject({ ok: true, kept: ["company/facts/gh.md"] });
+    expect(again.how).not.toBe("current");
+    expect(r.logs.filter((l) => l.includes("kept ada's own edits"))).toHaveLength(0);
+    expect(readFileSync(file, "utf8")).toBe("Ada's note.\n");
+    // The agent throws the edit away: the next copy brings the upstream text, with nothing more to keep.
+    gitIn(dir, "checkout", "--", "company/facts/gh.md");
+    const last = await r.feed.sync("ada");
+    expect(last).toMatchObject({ ok: true, kept: [] });
+    expect(readFileSync(file, "utf8")).toContain("Upstream v2.");
+    expect(gitIn(dir, "status", "--short")).toBe("");
+    expect((await r.feed.sync("ada")).how).toBe("current");
+  });
+
+  it("is offered again after a restart too (the record is in the database)", async () => {
+    const r = await seeded();
+    await r.feed.sync("ada");
+    writeFileSync(r.copy("ada", "company/facts/gh.md"), "Ada's note.\n");
+    r.commit("handbook", { "facts/gh.md": page("GitHub CLI", "gh pr checks waits for CI", "Upstream v2.") });
+    await r.feed.sync("ada");
+    // A new feed over the same database knows nothing in memory.
+    const { BrainFeed } = await import("../src/brain-feed.ts");
+    const fresh = new BrainFeed({
+      index: r.app.deps.brain,
+      store: r.app.deps.knowledge,
+      registry: r.app.deps.registry,
+      db: r.app.deps.db,
+      now: () => r.clock.now(),
+      home: r.sandbox,
+    });
+    fresh.deliver = r.feed.deliver;
+    gitIn(r.copy("ada"), "checkout", "--", "company/facts/gh.md");
+    expect(await fresh.sync("ada")).toMatchObject({ ok: true, kept: [] });
+    expect(readFileSync(r.copy("ada", "company/facts/gh.md"), "utf8")).toContain("Upstream v2.");
+  });
+});
+
 describe("path safety", () => {
   it("leaves out pages whose names aren't plain, symlinks, huge pages and dot-files", async () => {
     const r = await seeded();

@@ -570,7 +570,7 @@ export class BrainFeed {
       dir: scopeDir(scope) ?? scope,
       label: scopeLabel(scope, this.o.registry),
       pages: this.index.count(scope),
-      lines: [...this.index.mapFor(scope).root],
+      lines: [...this.index.mapFor(scope, true).root],
     }));
   }
 
