@@ -1,3 +1,4 @@
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: the script is shell, and its ${var} is not a template
 // The script that cleans one team machine (T52), and the reader of what it prints. One script per
 // machine per run, sent on stdin to `container machine run -i … -- bash -s` (machines.ts: `machine
 // run` re-splits arguments, so nothing goes on a command line). It is built from fixed text and
