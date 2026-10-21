@@ -42,7 +42,7 @@ describe("the New conversation form", () => {
     await el.updateComplete;
     const seen: unknown[] = [];
     el.addEventListener("conv-create", (e) => seen.push((e as CustomEvent).detail));
-    (el.shadowRoot?.querySelector("form.create") as HTMLFormElement).dispatchEvent(
+    must<HTMLFormElement>(el.shadowRoot?.querySelector("form.create")).dispatchEvent(
       new Event("submit", { cancelable: true }),
     );
     expect(seen).toEqual([{ employeeId: "zed", project: "Duet" }]);
