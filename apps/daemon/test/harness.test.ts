@@ -234,6 +234,29 @@ describe("the machine harness in direct mode", () => {
     expect(await direct(work).runGates(ticket, { ownerApproved: true })).toMatchObject({ ok: true });
   });
 
+  it("holds a file moved out of a protected folder, and a protected file with a quote in its name", async () => {
+    const { work, origin } = directRepos();
+    // main has a workflow; the ticket moves it out of .github/ (git sees a rename), and adds an odd name inside.
+    execFileSync("mkdir", ["-p", join(origin, ".github/workflows")]);
+    writeFileSync(join(origin, ".github/workflows/ci.yml"), "name: ci\n".repeat(20));
+    git(origin, "add", "-A");
+    git(origin, "-c", "user.name=o", "-c", "user.email=o@x.invalid", "commit", "-q", "-m", "workflow");
+    git(work, "fetch", "-q", "origin");
+    git(work, "rebase", "-q", "origin/main");
+    execFileSync("mkdir", ["-p", join(work, "docs")]);
+    git(work, "mv", ".github/workflows/ci.yml", "docs/ci.yml");
+    writeFileSync(join(work, '.github/a"b\tc.txt'), "x\n");
+    git(work, "add", "-A");
+    git(work, "commit", "-q", "-m", "move a workflow out");
+    const before = git(origin, "rev-parse", "main").trim();
+    const held = await direct(work).runGates(ticket);
+    expect(held).toMatchObject({ ok: false });
+    expect(held.ok ? [] : (held.protectedPaths ?? [])).toEqual(
+      expect.arrayContaining([".github/workflows/ci.yml", '.github/a"b\tc.txt']),
+    );
+    expect(git(origin, "rev-parse", "main").trim()).toBe(before);
+  });
+
   it("rebases and tries again when main moves while the checks run", async () => {
     const { work, origin } = directRepos();
     const other = join(work, "..", "other-clone");
