@@ -39,6 +39,10 @@ export class FakeHost {
   windowCursor: string | undefined;
   readonly pushed: ActionEnvelope[] = [];
   closed = false;
+  /** Runs before the reply to initialize, reconnect or subscribe: actions the host sends ahead of its answer. */
+  beforeReply: ((method: string, p: Any) => void) | undefined;
+  /** Runs right after the reply: the first live action after a snapshot, which can overtake the client's handling of it. */
+  afterReply: ((method: string, p: Any) => void) | undefined;
   constructor(readonly transport: AhpTransport) {
     this.states.set("ahp-root://", { agents: [] });
     this.states.set(SESSION, sessionState());
@@ -59,8 +63,9 @@ export class FakeHost {
     }
   }
 
-  private reply(id: Any, result: Any): void {
+  private reply(id: Any, result: Any, method?: string, p?: Any): void {
     void this.transport.send({ jsonrpc: "2.0", id, result } as never);
+    if (method) this.afterReply?.(method, p);
   }
   private fail(id: Any, code: number, message: string): void {
     void this.transport.send({ jsonrpc: "2.0", id, error: { code, message } } as never);
@@ -82,6 +87,7 @@ export class FakeHost {
 
   private handle(m: Any): unknown {
     const p = m.params ?? {};
+    if (["initialize", "reconnect", "subscribe"].includes(m.method)) this.beforeReply?.(m.method, p);
     switch (m.method) {
       case "initialize":
         return this.reply(m.id, {
@@ -96,7 +102,7 @@ export class FakeHost {
         return this.fail(m.id, -32603, "no reconnect");
       case "subscribe": {
         if (!this.states.has(p.channel)) return this.fail(m.id, -32001, `no channel ${p.channel}`);
-        return this.reply(m.id, { snapshot: this.snapshot(p.channel, p.view?.turns) });
+        return this.reply(m.id, { snapshot: this.snapshot(p.channel, p.view?.turns) }, "subscribe", p);
       }
       case "fetchTurns": {
         const state = this.states.get(p.channel);
@@ -137,12 +143,12 @@ export class FakeHost {
   }
 
   /** Echoes a refusal to the sender alone. */
-  reject(channel: string, action: Any, origin: Any, reason: string): void {
+  reject(channel: string, action: Any, origin: Any, reason: string, serverSeq = this.seq): void {
     void this.transport.send({
       jsonrpc: "2.0",
       method: "action",
       // Like the real host: a refusal says what it refused by type only, never the content.
-      params: { channel, action: { type: action.type }, serverSeq: this.seq, origin, rejectionReason: reason },
+      params: { channel, action: { type: action.type }, serverSeq, origin, rejectionReason: reason },
     } as never);
   }
 

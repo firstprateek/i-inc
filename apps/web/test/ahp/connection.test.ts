@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AhpConnection } from "../../src/ahp/connection.ts";
 import { ActionType, ROOT, ToolCallStatus, USER_ORIGIN } from "../../src/ahp/wire.ts";
 import { CHAT, chatState, hosts, SESSION, tick, until } from "./fake-host.ts";
@@ -348,6 +348,50 @@ describe("AhpConnection", () => {
     expect(new Set(conn.chat(CHAT)?.turns.map((t) => t.id)).size).toBe(conn.chat(CHAT)?.turns.length);
   });
 
+  it("keeps the window of a chat paged up to turn 237 of 300 across a reconnect that answers with a snapshot", async () => {
+    const { h, conn } = setup();
+    const turns = Array.from({ length: 300 }, (_, i) => ({
+      id: `t${i}`,
+      message: { text: `q${i}`, origin: USER_ORIGIN },
+      responseParts: [],
+      usage: undefined,
+      state: "complete",
+    }));
+    conn.start();
+    await until(() => conn.info.status === "open");
+    (h.made[0] as NonNullable<(typeof h.made)[number]>).states.set(CHAT, chatState({ turns }));
+    conn.watch(CHAT, { turns: 30 });
+    await until(() => conn.chat(CHAT));
+    // page up three times (the fake host serves two turns a page)
+    for (let i = 0; i < 3; i++) await conn.fetchTurns(CHAT);
+    const held = conn.chat(CHAT)?.turns.map((t) => t.id) ?? [];
+    expect(held.length).toBe(36);
+    expect(held[0]).toBe("t264");
+    const changes: string[][] = [];
+    conn.onChange((u) => {
+      if (u.has(CHAT)) changes.push((conn.chat(CHAT)?.turns ?? []).map((t) => t.id).slice(0, 1));
+    });
+    h.onConnect = (second) => {
+      second.onReconnect = () => ({
+        type: "snapshot",
+        snapshots: [
+          { resource: ROOT, state: { agents: [] }, fromSeq: 500 },
+          { resource: CHAT, state: chatState({ turns }), fromSeq: 500 },
+        ],
+      });
+    };
+    await (h.made[0] as NonNullable<(typeof h.made)[number]>).drop();
+    await until(() => h.made.length === 2 && conn.info.status === "open", 3000);
+    await until(
+      () => conn.chat(CHAT)?.turnsNextCursor !== undefined && conn.chat(CHAT)?.turns.length === 36,
+      3000,
+    );
+    // the same turns, the same first one: nothing jumped to the end of a 300-turn chat
+    expect(conn.chat(CHAT)?.turns.map((t) => t.id)).toEqual(held);
+    // and the chat was never shown as the whole 300 turns, nor blank, in between
+    expect(changes.every((c) => c[0] === "t264")).toBe(true);
+  });
+
   it("tells a view when its conversation no longer exists on the host", async () => {
     const { h, conn } = setup();
     conn.start();
@@ -419,5 +463,168 @@ describe("AhpConnection", () => {
       changes: {},
     });
     await until(() => n > before);
+  });
+
+  it("applies, in order, actions that arrive ahead of the reply to a reconnect", async () => {
+    const { h, conn } = setup();
+    conn.start();
+    conn.watch(CHAT);
+    await until(() => conn.info.status === "open" && conn.chat(CHAT));
+    const first = h.made[0] as NonNullable<(typeof h.made)[number]>;
+    first.send(CHAT, turnStarted());
+    first.send(CHAT, mdPart());
+    first.send(CHAT, delta("p1", "one "));
+    await until(() => text(conn) === "one ");
+    const seen = conn.lastSeenServerSeq as number;
+    h.onConnect = (second) => {
+      second.seq = seen + 2;
+      second.onReconnect = () => ({
+        type: "replay",
+        missing: [],
+        actions: [{ channel: CHAT, action: delta("p1", "two "), serverSeq: seen + 1 }],
+      });
+      // a live action sent before the host answers: it must wait behind the replay, not jump ahead of it
+      second.beforeReply = (method) => {
+        if (method === "reconnect") {
+          void second.transport.send({
+            jsonrpc: "2.0",
+            method: "action",
+            params: { channel: CHAT, action: delta("p1", "three"), serverSeq: seen + 2 },
+          } as never);
+        }
+      };
+    };
+    await first.drop();
+    await until(() => text(conn) === "one two three", 3000);
+  });
+
+  it("keeps actions that arrive for a channel before its snapshot, and applies them after it", async () => {
+    const { h, conn } = setup();
+    conn.start();
+    await until(() => conn.info.status === "open");
+    const host = h.made[0] as NonNullable<(typeof h.made)[number]>;
+    host.states.set(
+      CHAT,
+      chatState({
+        activeTurn: {
+          id: "t1",
+          startedAt: "2026-10-21T10:00:00.000Z",
+          message: { text: "hi", origin: USER_ORIGIN },
+          responseParts: [{ kind: "markdown", id: "p1", content: "snap " }],
+          usage: undefined,
+        },
+      }),
+    );
+    host.afterReply = (method) => {
+      if (method === "subscribe") host.send(CHAT, delta("p1", "then-live"));
+    };
+    conn.watch(CHAT);
+    await until(() => text(conn) === "snap then-live");
+  });
+
+  it("sends a rejection to the sender alone, and never applies it as an action", async () => {
+    const { h, conn } = setup();
+    const rejected: Any[] = [];
+    conn.onRejected((r) => rejected.push(r));
+    conn.start();
+    conn.watch(CHAT);
+    await until(() => conn.chat(CHAT));
+    const host = h.made[0] as NonNullable<(typeof h.made)[number]>;
+    host.send(CHAT, turnStarted());
+    host.send(CHAT, mdPart());
+    await until(() => active(conn));
+    const before = conn.lastSeenServerSeq;
+    // a refusal addressed to another client: not ours to show
+    host.reject(CHAT, delta("p1", "NOPE"), { clientId: "someone-else", clientSeq: 3 }, "no", host.seq + 5);
+    // and one addressed to us: shown, with the clientSeq, but not applied, and it uses no serverSeq
+    host.reject(CHAT, delta("p1", "NOPE"), { clientId: "me", clientSeq: 4 }, "not allowed", host.seq + 5);
+    await tick(30);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]).toMatchObject({
+      clientSeq: 4,
+      reason: "not allowed",
+      action: { type: "chat/delta" },
+    });
+    expect(text(conn)).toBe("");
+    expect(conn.lastSeenServerSeq).toBe(before);
+  });
+
+  it("does not let go of a channel another view still holds when a lease is released twice", async () => {
+    const { h, conn } = setup();
+    conn.start();
+    const a = conn.watch(CHAT);
+    conn.watch(CHAT);
+    await until(() => conn.chat(CHAT));
+    a();
+    a();
+    await tick(30);
+    expect(conn.chat(CHAT)).toBeDefined();
+    expect(
+      (h.made[0] as NonNullable<(typeof h.made)[number]>).received.some((m) => m.method === "unsubscribe"),
+    ).toBe(false);
+  });
+
+  it("closes a transport that came up after it was stopped, and starts nothing on it", async () => {
+    const h = hosts();
+    let release: (() => void) | undefined;
+    const late = new Promise<void>((r) => {
+      release = r;
+    });
+    let n = 0;
+    const conn = new AhpConnection({
+      connect: async () => {
+        n++;
+        if (n === 1) await late;
+        return h.connect();
+      },
+      clientId: "me",
+      backoff: () => 5,
+      schedule: micro,
+      pingMs: 0,
+    });
+    open.push(conn);
+    conn.start();
+    conn.stop();
+    conn.start(); // a second attempt, while the first is still connecting
+    await until(() => conn.info.status === "open");
+    release?.();
+    await tick(40);
+    // the second attempt connected first; the first one's transport came up late, was shut, and never initialised
+    expect(h.made).toHaveLength(2);
+    expect(h.made[0]?.received.map((m) => m.method)).toContain("initialize");
+    expect(h.made[1]?.received.map((m) => m.method)).not.toContain("initialize");
+    await until(() => h.made[1]?.closed);
+    expect(conn.info.status).toBe("open");
+  });
+
+  it("clears the retry and the ping timers when stopped", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = hosts();
+      const conn = new AhpConnection({
+        connect: h.connect,
+        clientId: "me",
+        backoff: () => 5000,
+        schedule: micro,
+        pingMs: 1000,
+      });
+      open.push(conn);
+      conn.start();
+      await vi.advanceTimersByTimeAsync(50);
+      expect(conn.info.status).toBe("open");
+      expect(vi.getTimerCount()).toBeGreaterThan(0); // the ping
+      conn.stop();
+      expect(vi.getTimerCount()).toBe(0);
+      // and a pending retry too
+      h.failNext(1);
+      conn.start();
+      await vi.advanceTimersByTimeAsync(50);
+      expect(["connecting", "reconnecting"]).toContain(conn.info.status);
+      expect(vi.getTimerCount()).toBeGreaterThan(0); // the backoff
+      conn.stop();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

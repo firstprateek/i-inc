@@ -97,6 +97,8 @@ interface Chan {
   subscribing: Promise<void> | undefined;
   loading: (() => void) | undefined;
   gone: boolean;
+  /** A fresh windowed snapshot is on its way: the old state stays on screen, and new actions wait for it. */
+  resyncing: boolean;
 }
 
 export const defaultBackoff = (attempt: number): number =>
@@ -244,6 +246,7 @@ export class AhpConnection {
       root.seq = 0;
     }
     this.held = [];
+    this.windows = [];
     this.syncing = false;
     this.lastSeen = undefined;
     this.changed.clear();
@@ -302,6 +305,7 @@ export class AhpConnection {
       subscribing: undefined,
       loading: undefined,
       gone: false,
+      resyncing: false,
     };
   }
 
@@ -339,6 +343,9 @@ export class AhpConnection {
       this.rosterChanged = true;
       this.scheduleFlush();
       this.startPing(gen, client);
+      const windows = this.windows;
+      this.windows = [];
+      for (const [ch, turns] of windows) void this.refreshWindow(ch, turns);
       // Channels a view asked for while it was connecting.
       for (const ch of this.chans.values()) if (!ch.cs && ch.refs > 0) void this.subscribeIfOpen(ch);
     } catch (e) {
@@ -366,8 +373,11 @@ export class AhpConnection {
       } catch (e) {
         if (e instanceof RpcError && e.code === -32005) throw e;
         this.o.log?.(`ahp: reconnect failed (${e instanceof Error ? e.message : e}); starting fresh`);
-        // Fall through to a fresh initialize, and take new snapshots of everything.
+        // Fall through to a fresh initialize, and take new snapshots of everything (a chat paged up
+        // to turn N asks for N turns again, not for the default window).
         for (const c of this.chans.values()) {
+          if (c.cs?.kind === "chat")
+            c.view = { turns: Math.max(c.view?.turns ?? 0, c.cs.state.turns.length) };
           c.cs = undefined;
           c.seq = 0;
           c.buffer = [];
@@ -389,7 +399,18 @@ export class AhpConnection {
 
   private applyReconnect(result: ReconnectResult): void {
     if (result.type === "snapshot") {
-      for (const snap of result.snapshots) this.takeSnapshot(snap);
+      for (const snap of result.snapshots) {
+        // The host's snapshot of a chat holds every turn; a reader who had paged up to turn 237 of 300 keeps
+        // the same window (and their place), so it is asked for again with the turns they held.
+        const held = this.chans.get(snap.resource)?.cs;
+        const turns = held?.kind === "chat" ? held.state.turns.length : 0;
+        const snapTurns = (snap.state as { turns?: unknown[] }).turns?.length ?? 0;
+        const ch = this.chans.get(snap.resource);
+        if (ch && turns > 0 && snapTurns > turns) {
+          ch.resyncing = true;
+          this.windows.push([ch, turns]);
+        } else this.takeSnapshot(snap);
+      }
       // A channel the host no longer has simply gets no snapshot: it is gone.
       for (const ch of this.chans.values()) {
         if (ch.refs > 0 && ch.uri !== ROOT && ch.cs && !result.snapshots.some((s) => s.resource === ch.uri)) {
@@ -403,6 +424,28 @@ export class AhpConnection {
       if (ch) this.markGone(ch);
     }
     for (const env of result.actions) this.apply(env);
+  }
+
+  /** Chats to take a windowed snapshot of once the connection is open again (see `applyReconnect`). */
+  private windows: [Chan, number][] = [];
+
+  /** Takes a fresh snapshot of a chat with its last `turns` turns, replacing the state in one step. */
+  private async refreshWindow(ch: Chan, turns: number): Promise<void> {
+    const client = this.client;
+    ch.resyncing = true;
+    ch.view = { turns };
+    try {
+      if (!client || this.infoNow.status !== "open") throw new Error("not open");
+      const { result } = await client.subscribe(ch.uri, { view: { turns } });
+      if (result.snapshot) this.takeSnapshot(result.snapshot);
+      else throw new Error("no snapshot");
+    } catch {
+      // Keep what is held, and let whatever waited for the snapshot through.
+      ch.resyncing = false;
+      const waiting = ch.buffer;
+      ch.buffer = [];
+      for (const env of waiting) this.apply(env);
+    }
   }
 
   private markGone(ch: Chan): void {
@@ -421,6 +464,7 @@ export class AhpConnection {
     ch.cs = cs;
     ch.seq = snap.fromSeq;
     ch.gone = false;
+    ch.resyncing = false;
     const buffered = ch.buffer;
     ch.buffer = [];
     for (const env of buffered) this.apply(env);
@@ -529,7 +573,7 @@ export class AhpConnection {
     }
     const ch = this.chans.get(env.channel);
     if (!ch) return;
-    if (!ch.cs) {
+    if (!ch.cs || ch.resyncing) {
       if (ch.buffer.length < 20_000) ch.buffer.push(env);
       return;
     }
@@ -656,7 +700,7 @@ export class AhpConnection {
     } catch {
       // The host forgot our window (it does after a reconnect): ask for a bigger one outright.
       ch.loading = undefined;
-      await this.resnapshot(ch, state.turns.length + (this.o.turnsWindow ?? 20));
+      await this.refreshWindow(ch, state.turns.length + (this.o.turnsWindow ?? 20));
     } finally {
       ch.loading = undefined;
     }

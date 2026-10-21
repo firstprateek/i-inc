@@ -22,6 +22,7 @@ import {
   relativeTime,
   slashQuery,
   sortedOptions,
+  statusText,
   toolCategory,
   toolDetail,
   toolEdits,
@@ -65,6 +66,20 @@ describe("the list", () => {
       ["recent", ["4", "1"]],
     ]);
     expect(groupConversations([conv()]).map((x) => x.group)).toEqual(["recent"]);
+  });
+  it("reads the status bits: only the full input-needed pair is Needs you, and the read flag changes nothing", () => {
+    const g = (status: number) => groupConversations([conv({ status })])[0]?.group;
+    expect(g(1)).toBe("recent");
+    expect(g(1 | 32)).toBe("recent");
+    expect(g(2)).toBe("recent");
+    expect(g(8)).toBe("running");
+    expect(g(8 | 32)).toBe("running");
+    expect(g(24)).toBe("needs");
+    expect(g(24 | 32)).toBe("needs");
+    expect(statusText(conv({ status: 24 }))).toBe("Needs you");
+    expect(statusText(conv({ status: 8 }))).toBe("Running");
+    expect(statusText(conv({ status: 2 }))).toBe("Error");
+    expect(statusText(conv({ status: 1, archivedAt: 5 }))).toBe("Archived");
   });
   it("says how long ago", () => {
     const now = 10_000_000;

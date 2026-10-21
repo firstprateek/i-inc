@@ -184,7 +184,12 @@ describe("the thread", () => {
     const h = await setup();
     const png = new File([new Uint8Array([1, 2, 3])], "junk.png", { type: "image/png" });
     const clientSeq = await typeAndSend(h, "my words", "turn", [png]);
-    h.host.reject(CHAT, { type: "chat/turnStarted", message: { text: "SECRET CONTENT NOT ECHOED" } }, { clientId: "me", clientSeq }, "junk.png isn't a PNG, JPEG, WebP or GIF");
+    h.host.reject(
+      CHAT,
+      { type: "chat/turnStarted", message: { text: "SECRET CONTENT NOT ECHOED" } },
+      { clientId: "me", clientSeq },
+      "junk.png isn't a PNG, JPEG, WebP or GIF",
+    );
     await until(() => h.root().querySelector(".notice"));
     expect(h.root().querySelector(".notice")?.textContent).toContain("junk.png isn't a PNG");
     const composer = h.root().querySelector("inc-conv-composer") as Any;
@@ -196,9 +201,18 @@ describe("the thread", () => {
   it("queues a message instead when the turn could not start because one is running (a send from another tab)", async () => {
     const h = await setup();
     const clientSeq = await typeAndSend(h, "race");
-    h.host.reject(CHAT, { type: "chat/turnStarted" }, { clientId: "me", clientSeq }, "a turn is already running: queue the message instead");
+    h.host.reject(
+      CHAT,
+      { type: "chat/turnStarted" },
+      { clientId: "me", clientSeq },
+      "a turn is already running: queue the message instead",
+    );
     await until(() => h.sent().some((a: Any) => a.type === "chat/pendingMessageSet"));
-    expect(h.sent().at(-1)).toMatchObject({ type: "chat/pendingMessageSet", kind: "queued", message: { text: "race" } });
+    expect(h.sent().at(-1)).toMatchObject({
+      type: "chat/pendingMessageSet",
+      kind: "queued",
+      message: { text: "race" },
+    });
     // and the box is not refilled: it went to the queue
     const composer = h.root().querySelector("inc-conv-composer") as Any;
     expect(must<HTMLTextAreaElement>(composer.shadowRoot?.querySelector("textarea")).value).toBe("");
