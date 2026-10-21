@@ -94,6 +94,8 @@ export interface StorageDeps {
     /** The machine the copy was made in, when recorded: it outlives a team change or an employee leaving. */
     machine?: string | null;
   }[];
+  /** Told which archived conversations' copies a real pass found gone (removed now, or not there): their tombstones can go in time. */
+  copiesGone?: (ids: Id[]) => void;
   /** Ask a machine to hand freed blocks back to the host. */
   trim?: boolean;
   memory?: () => NodeJS.MemoryUsage;
@@ -506,6 +508,13 @@ export class Storage {
           measuredAt: now,
         };
         memo.fs = result.fs;
+      }
+      if (!dryRun && this.d.copiesGone) {
+        const listed = new Set(convs.map((c) => `conv-${c.id}`));
+        const gone = [...report.removed.map((r) => r.ticket), ...report.absent]
+          .filter((label) => listed.has(label))
+          .map((label) => label.slice("conv-".length));
+        if (gone.length) this.d.copiesGone(gone);
       }
       if (!dryRun) {
         const summary: CleanupSummary = {

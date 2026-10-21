@@ -227,8 +227,8 @@ describe("what redaction keeps and what it takes", () => {
 
   const long = {
     jwt: `eyJ${"hGciOiJIUzI1NiJ9".repeat(30)}.eyJ${"c3ViIjoiMTIzIn0".repeat(30)}.${"SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV".repeat(10)}`,
-    pem: `-----BEGIN RSA PRIVATE KEY-----\n${("MIIEpAIBAAKCAQEA3Tz2mr7SZiAMfQyuvBjM9Oi".repeat(2) + "\n").repeat(20)}-----END RSA PRIVATE KEY-----`,
-    pemNoEnd: `-----BEGIN PRIVATE KEY-----\n${("MIIEvQIBADANBgkqhkiG9w0BAQEFAASC".repeat(2) + "\n").repeat(30)}`,
+    pem: `-----BEGIN RSA PRIVATE KEY-----\n${`${"MIIEpAIBAAKCAQEA3Tz2mr7SZiAMfQyuvBjM9Oi".repeat(2)}\n`.repeat(20)}-----END RSA PRIVATE KEY-----`,
+    pemNoEnd: `-----BEGIN PRIVATE KEY-----\n${`${"MIIEvQIBADANBgkqhkiG9w0BAQEFAASC".repeat(2)}\n`.repeat(30)}`,
     anthropic: `sk-ant-api03-${"AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-".repeat(6)}`,
     github: `github_pat_${"11ABCDEFG0".repeat(20)}`,
     awsSecret: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
@@ -273,7 +273,7 @@ describe("redaction comes before the cut", () => {
       const out = (sanitizeAction({ text }, { maxString: 65_536, maxAction: 1_000_000 }) as { text: string })
         .text;
       for (let n = 4; n <= pw.length; n++)
-        if (out.includes(`:${pw.slice(0, n)}`) || out.includes(pw.slice(0, n) + "@")) leaks.push(off);
+        if (out.includes(`:${pw.slice(0, n)}`) || out.includes(`${pw.slice(0, n)}@`)) leaks.push(off);
     }
     expect(leaks).toEqual([]);
   });

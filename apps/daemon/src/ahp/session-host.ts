@@ -62,7 +62,7 @@ export interface SessionHostOptions {
   engine: (id: Id) => Engine | undefined;
   teamOf: (employeeId: Id) => string;
   /** Makes (or finds) the conversation's working copy in the sandbox. Throwing fails the session. */
-  workingCopy: (c: ConversationInfo) => Promise<CopyState | undefined | void>;
+  workingCopy: (c: ConversationInfo) => Promise<CopyState | undefined>;
   /**
    * Takes away a working copy that was just made for a session that then failed to open, if nothing
    * of the owner's is in it. Failing to is fine: the storage cleanup finds what is left.
@@ -225,7 +225,7 @@ export class SessionHost implements AgentBackend {
     live.needsBrief = false;
     live.opening = true;
     this.lives.set(req.session, live);
-    let copy: CopyState | undefined | void;
+    let copy: CopyState | undefined;
     try {
       // A sandbox being cleaned must not hold the owner's request for minutes. If the agent's
       // settings are known from an earlier session the conversation is made now, without an agent,

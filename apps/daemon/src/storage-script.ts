@@ -101,7 +101,8 @@ export function cleanupScript(o: CleanupScriptOptions): string {
         `  for cid in ${convs.join(" ")}; do`,
         '    id="conv-$cid"; q="$WORK/conv-$cid"',
         '    if [ -L "$q" ]; then echo "@@refused $id symlink"; continue; fi',
-        '    [ -d "$q" ] || continue',
+        // Not there at all: the copy is gone (an earlier pass took it, or it was never made).
+        '    [ -d "$q" ] || { echo "@@absent $id"; continue; }',
         '    if [ "$(cd "$q" 2>/dev/null && pwd -P)" != "$q" ]; then echo "@@refused $id path"; continue; fi',
         '    reason=""',
         '    if ! guard "$q" "$id"; then echo "@@kept $id ${reason:-gitfail}"; continue; fi',
@@ -247,6 +248,8 @@ export interface CleanupReport {
   kept: { ticket: Id; reason: string }[];
   refused: { ticket: Id; reason: string }[];
   failed: Id[];
+  /** Archived conversations whose folder was not there at all (`conv-<id>`). */
+  absent: Id[];
   /** Bytes freed (or that would be) by category: "worktrees", "cache:pip", "pnpm-store", "docker". */
   freed: Record<string, number>;
   /** A cache is still over the cap after cleaning, in bytes. */
@@ -263,6 +266,7 @@ export function readCleanup(output: string): CleanupReport {
     kept: [],
     refused: [],
     failed: [],
+    absent: [],
     freed: {},
     trimmed: false,
     dockerSeen: false,
@@ -299,6 +303,9 @@ export function readCleanup(output: string): CleanupReport {
         break;
       case "failed":
         r.failed.push(a);
+        break;
+      case "absent":
+        r.absent.push(a);
         break;
       case "cache":
         add(`cache:${a}`, num(b) * KB);

@@ -403,6 +403,7 @@ describe("a conversation's copy is never forgotten", () => {
       footprint: () => ({}),
       trim: false,
       archivedConversations: () => app.deps.conversations?.forCleanup() ?? [],
+      copiesGone: (ids) => app.deps.conversations?.copiesGone(ids),
     });
     if (app.deps.conversations) app.deps.conversations.machineOf = (e) => machineFor(e);
     return { app, storage };
@@ -457,6 +458,42 @@ describe("a conversation's copy is never forgotten", () => {
     await storage.cleanMachine("inc-engineering", { manual: true });
     expect(existsSync(copies.unpushed)).toBe(false);
     expect(existsSync(copies.live)).toBe(true);
+  });
+
+  it("drops a tombstone a week after its copy is seen to be gone, and never one whose copy is still there", async () => {
+    const { app, storage } = await realStorage();
+    const gone = await make(app);
+    const kept = await make(app);
+    const archived = await make(app);
+    const copies = { gone: convCopy(gone.id), kept: convCopy(kept.id, { unpushed: true }) };
+    await dispose(app, gone);
+    await dispose(app, kept);
+    await app.call("PATCH", `/api/conversations/${archived.id}`, { archived: true });
+    const rows = () =>
+      (app.db.all("SELECT id FROM conversations ORDER BY id") as { id: string }[]).map((r) => r.id);
+    expect(rows()).toHaveLength(3);
+
+    app.clock.advance(4 * DAY_MIN);
+    await storage.cleanMachine("inc-engineering", { manual: true });
+    expect(existsSync(copies.gone)).toBe(false);
+    expect(existsSync(copies.kept)).toBe(true); // unpushed work: not gone
+    const goneAt = (id: string) =>
+      (app.db.all("SELECT copy_gone_at AS t FROM conversations WHERE id = ?", id)[0] as Any)?.t;
+    expect(goneAt(gone.id)).toEqual(expect.any(Number));
+    expect(goneAt(kept.id)).toBeNull();
+    expect(rows()).toHaveLength(3); // seen gone just now: the tombstone stays for a week
+
+    app.clock.advance(6 * DAY_MIN);
+    await storage.cleanMachine("inc-engineering", { manual: true });
+    expect(rows()).toContain(gone.id);
+    app.clock.advance(2 * DAY_MIN);
+    await storage.cleanMachine("inc-engineering", { manual: true });
+    expect(rows()).not.toContain(gone.id); // a week and more since it was seen gone
+    expect(rows()).toContain(kept.id); // its copy is still there (kept for unpushed commits)
+    expect(rows()).toContain(archived.id); // archived, not disposed: a conversation, not a tombstone
+    // and the same pass is harmless the next time
+    await storage.cleanMachine("inc-engineering", { manual: true });
+    expect(rows()).toHaveLength(2);
   });
 
   it("finds a copy in the machine it was made in, after a team change or an employee leaving", async () => {

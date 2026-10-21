@@ -166,6 +166,7 @@ export async function createApp(o: AppOptions) {
     hostBusy: () => daemon.busy(),
     ticketActive: (id) => daemon.isRunning(id),
     archivedConversations: () => conversations.forCleanup(),
+    copiesGone: (ids) => conversations.copiesGone(ids),
     footprint: () => ({
       ...daemon.footprint(),
       ...(ops.footprint ? ops.footprint() : {}),

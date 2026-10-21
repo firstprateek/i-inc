@@ -103,6 +103,8 @@ export interface TransportLimits {
   maxLoadedChats: number;
   /** The same, by size: bytes of JSON across the chats in memory. */
   maxLoadedBytes: number;
+  /** Idle, unwatched chats over the limits are put out of memory at least this often (ms), writes or not. */
+  evictEveryMs: number;
 }
 
 export const defaultTransportLimits: TransportLimits = {
@@ -124,6 +126,7 @@ export const defaultTransportLimits: TransportLimits = {
   pruneEveryActions: 5000,
   maxLoadedChats: 20,
   maxLoadedBytes: 50 * 1024 * 1024,
+  evictEveryMs: 5000,
 };
 
 /** What a prompt may carry. Images are checked by their bytes. */
@@ -315,7 +318,12 @@ export class AhpHost {
     // Pruning at startup alone would let a daemon that runs for months keep every row it ever wrote.
     this.pruneTimer = setInterval(() => this.pruneQuietly(), this.limits.pruneEveryMs);
     this.pruneTimer.unref?.();
+    // After a burst the chats that did the work are idle but nothing writes to push them out: look
+    // now and then (and when a turn ends or a client lets go of a chat).
+    this.evictTimer = setInterval(() => this.trim(), this.limits.evictEveryMs);
+    this.evictTimer.unref?.();
   }
+  private evictTimer: ReturnType<typeof setInterval> | undefined;
 
   private pruneQuietly(): void {
     this.actionsSincePrune = 0;
@@ -449,6 +457,11 @@ export class AhpHost {
     const ch = this.chans.get(uri);
     return !!ch?.c && ch.c.kind === "chat" && !!ch.c.state.activeTurn;
   }
+  /** Is this chat held in memory (not only on disk)? */
+  isLoaded(uri: string): boolean {
+    const ch = this.chans.get(uri);
+    return !!ch?.c && ch.kind === "chat";
+  }
   /** Chats held in memory now (the rest are on disk). */
   get loadedChats(): number {
     let n = 0;
@@ -476,7 +489,7 @@ export class AhpHost {
   }
 
   /** May this chat leave memory? Not while it is working, being looked at, or the one in use. */
-  private evictable(ch: Channel, keep: Channel): boolean {
+  private evictable(ch: Channel, keep: Channel | undefined): boolean {
     if (ch === keep || ch.kind !== "chat" || !ch.c || ch.c.kind !== "chat" || ch.c.state.activeTurn)
       return false;
     if (this.runs.has(ch.uri)) return false;
@@ -485,7 +498,7 @@ export class AhpHost {
   }
 
   /** Puts idle chats out of memory, least recently used first, down to the limits. */
-  private trim(keep: Channel): void {
+  private trim(keep?: Channel): void {
     const held = [...this.chans.values()].filter((c) => c.kind === "chat" && c.c);
     let bytes = held.reduce((n, c) => n + c.bytes, 0);
     let count = held.length;
@@ -561,6 +574,12 @@ export class AhpHost {
       ch.sinceSnapshot + 1 >= lim.snapshotEvery &&
       logBytes >= Math.max(lim.snapshotMinBytes, ch.stateBytes) &&
       at - ch.snapshotAt >= lim.snapshotMinMs;
+    // Write ahead: the chat is marked as running before the action that starts its turn is stored, so
+    // a crash between the two leaves a mark with no turn (harmless: it is read and found idle), never
+    // a turn with no mark (a chat stuck on "turn running" that a restart does not look at).
+    if (ch.kind === "chat" && action.type === ActionType.ChatTurnStarted && ch.meta.active !== true) {
+      this.setChannelMeta(channel, { active: true });
+    }
     const size = this.store.append(
       { seq, channel, at, action, json, ...(origin ? { origin } : {}) },
       snapshotDue ? next.state : undefined,
@@ -826,6 +845,7 @@ export class AhpHost {
     conn.subs.clear();
     conn.windows.clear();
     this.conns.delete(conn);
+    this.trim(); // the chats it was watching may be idle and over the limits
   }
 
   private drop(conn: Conn, code: number, reason: string): void {
@@ -864,6 +884,8 @@ export class AhpHost {
     for (const channel of [...this.pendingDeltas.keys()]) this.flushDeltas(channel);
     if (this.pruneTimer) clearInterval(this.pruneTimer);
     this.pruneTimer = undefined;
+    if (this.evictTimer) clearInterval(this.evictTimer);
+    this.evictTimer = undefined;
     for (const r of this.runs.values()) {
       r.over = true;
       r.controller.abort();
@@ -996,6 +1018,7 @@ export class AhpHost {
       case "unsubscribe":
         conn.subs.delete(str(p.channel, "channel"));
         conn.windows.delete(str(p.channel, "channel"));
+        this.trim();
         return undefined;
       case "dispatchAction":
         this.dispatch(conn, p);
@@ -2056,6 +2079,8 @@ export class AhpHost {
     this.tails.set(chat, done);
     void done.then(() => {
       if (this.runs.get(chat) === run) this.runs.delete(chat);
+      // The chat is idle now, and nothing else may write to push it out of memory.
+      this.trim();
       try {
         this.drain(chat);
       } catch (e) {
@@ -2107,6 +2132,7 @@ export class AhpHost {
     run.controller.abort();
     this.o.backend.cancelTurn?.(run.run);
     this.runs.delete(chat);
+    this.trim();
   }
 
   /**

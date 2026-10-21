@@ -99,6 +99,9 @@ const toConversation = (r: Row): Conversation => ({
   ahpChat: r.ahp_chat,
 });
 
+/** A tombstone is kept this long after its working copy is seen to be gone. */
+export const TOMBSTONE_DAYS = 7;
+
 /** Where a conversation's working copy lives in its employee's sandbox. */
 export const conversationDir = (id: string): string => `/home/employee/work/conv-${id}`;
 
@@ -141,8 +144,43 @@ export class ConversationService {
     const have = db.all<{ name: string }>("PRAGMA table_info(conversations)").map((c) => c.name);
     if (!have.includes("disposed_at")) db.exec("ALTER TABLE conversations ADD COLUMN disposed_at INTEGER");
     if (!have.includes("machine")) db.exec("ALTER TABLE conversations ADD COLUMN machine TEXT");
+    // When a cleanup pass found a disposed conversation's copy gone: the tombstone goes some days later.
+    if (!have.includes("copy_gone_at")) db.exec("ALTER TABLE conversations ADD COLUMN copy_gone_at INTEGER");
     this.attach();
     this.reconcile();
+  }
+
+  /**
+   * A cleanup pass found these conversations' working copies gone. A tombstone (a disposed
+   * conversation kept only so its copy can be found) is dropped TOMBSTONE_DAYS after that.
+   */
+  copiesGone(ids: string[]): void {
+    const now = this.clock.now();
+    for (const id of ids) {
+      this.db.run(
+        "UPDATE conversations SET copy_gone_at = COALESCE(copy_gone_at, ?) WHERE id = ? AND disposed_at IS NOT NULL",
+        now,
+        id,
+      );
+    }
+    this.pruneTombstones();
+  }
+
+  /** Drops tombstones whose copy has been gone for TOMBSTONE_DAYS; returns how many. */
+  pruneTombstones(): number {
+    const cutoff = this.clock.now() - TOMBSTONE_DAYS * 86_400_000;
+    const before =
+      this.db.all<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM conversations WHERE disposed_at IS NOT NULL AND copy_gone_at IS NOT NULL AND copy_gone_at <= ?",
+        cutoff,
+      )[0]?.n ?? 0;
+    if (before > 0) {
+      this.db.run(
+        "DELETE FROM conversations WHERE disposed_at IS NOT NULL AND copy_gone_at IS NOT NULL AND copy_gone_at <= ?",
+        cutoff,
+      );
+    }
+    return before;
   }
 
   /** Where an employee's conversations run (a machine name), for the cleanup to find their copies. */
@@ -155,6 +193,7 @@ export class ConversationService {
    */
   private reconcile(): void {
     const now = this.clock.now();
+    this.pruneTombstones();
     for (const r of this.db.all<Row>("SELECT * FROM conversations WHERE disposed_at IS NULL")) {
       if (!this.host.sessionState(r.ahp_session)) this.tombstone(r.ahp_session, now);
     }

@@ -144,3 +144,120 @@ describe("memory", () => {
     expect(t.host.serverSeq).toBeGreaterThan(seen);
   });
 });
+
+describe("memory is given back when the work is over, not at the next write", () => {
+  const settle = () => new Promise<void>((r) => setTimeout(r, 5));
+
+  it("after a burst of turns, the chats that did the work go out of memory when their turns end", async () => {
+    const t = await rig({ limits: { maxLoadedChats: 3, evictEveryMs: 3_600_000 } });
+    const chats = [];
+    for (let i = 0; i < 40; i++) chats.push(await t.session());
+    const g = gate();
+    t.backend.script = async () => {
+      await g.promise;
+      return { kind: "complete" };
+    };
+    const driver = t.client();
+    await driver.init([ROOT]);
+    for (const [i, c] of chats.entries()) driver.dispatch(c.chat, turnStarted("work", `t${i}`));
+    await settle();
+    expect(t.host.loadedChats).toBe(40); // all working: all held
+    g.resolve();
+    await t.host.idle();
+    await settle();
+    // nothing wrote after the last turn ended; the chats are out of memory all the same
+    expect(t.host.loadedChats).toBeLessThanOrEqual(3);
+    // and they come back whole
+    expect(t.host.chatState(chats[7]?.chat as string)?.turns[0]?.state).toBe("complete");
+  });
+
+  it("when a client lets go of a chat, or goes away", async () => {
+    const t = await rig({ limits: { maxLoadedChats: 1, evictEveryMs: 3_600_000 } });
+    const chats = [];
+    for (let i = 0; i < 6; i++) chats.push(await t.session());
+    const a = t.client("a");
+    const b = t.client("b");
+    await a.init([ROOT, ...chats.slice(0, 3).map((c) => c.chat)]);
+    await b.init([ROOT, ...chats.slice(3).map((c) => c.chat)]);
+    expect(t.host.loadedChats).toBe(6); // six watched: all held, over the limit
+    await a.call("unsubscribe", { channel: chats[0]?.chat as string });
+    expect(t.host.isLoaded(chats[0]?.chat as string)).toBe(false);
+    expect(t.host.isLoaded(chats[1]?.chat as string)).toBe(true); // still watched by a
+    b.disconnect();
+    expect(t.host.loadedChats).toBeLessThanOrEqual(3); // a's two chats, and at most one more
+    expect(t.host.isLoaded(chats[1]?.chat as string)).toBe(true);
+  });
+
+  it("on a short timer, whatever else happens", async () => {
+    const t = await rig({ limits: { maxLoadedChats: 1, evictEveryMs: 20 } });
+    const chats = [];
+    for (let i = 0; i < 5; i++) chats.push(await t.session());
+    const a = t.client("a");
+    await a.init([ROOT, ...chats.map((c) => c.chat)]);
+    expect(t.host.loadedChats).toBe(5);
+    // the client lets go in a way that tells the host nothing (a half-closed socket, say)
+    for (const c of chats) a.conn.subs.delete(c.chat);
+    expect(t.host.loadedChats).toBe(5);
+    await new Promise((r) => setTimeout(r, 120));
+    expect(t.host.loadedChats).toBeLessThanOrEqual(1);
+    t.host.close();
+  });
+});
+
+describe("the guards that keep a chat in memory, one at a time", () => {
+  let host: AhpHost;
+  /** Any write to a chat looks at what is over the limits. */
+  const write = (chat: string) =>
+    host.apply(chat, { type: ActionType.ChatIsReadChanged, isRead: true } as never);
+
+  it("a chat a client watches stays, though the limit is one", async () => {
+    const t = await rig({ limits: { maxLoadedChats: 1, evictEveryMs: 3_600_000 } });
+    host = t.host;
+    const chats: { session: string; chat: string }[] = [];
+    for (let i = 0; i < 4; i++) chats.push(await t.session());
+    const watcher = t.client();
+    await watcher.init([ROOT, chats[0]?.chat as string]);
+    for (const c of chats.slice(1)) write(c.chat);
+    expect(t.host.isLoaded(chats[0]?.chat as string)).toBe(true);
+    expect(t.host.loadedChats).toBeLessThanOrEqual(2);
+  });
+
+  it("a chat with a turn in its state stays, even if no run is recorded for it", async () => {
+    const t = await rig({ limits: { maxLoadedChats: 1, evictEveryMs: 3_600_000 } });
+    host = t.host;
+    const chats: { session: string; chat: string }[] = [];
+    for (let i = 0; i < 4; i++) chats.push(await t.session());
+    t.host.apply(
+      chats[0]?.chat as string,
+      {
+        type: ActionType.ChatTurnStarted,
+        turnId: "orphan",
+        startedAt: new Date().toISOString(),
+        message: { text: "hi", origin: { kind: "user" } },
+      } as never,
+    );
+    expect(t.host.hasActiveTurn(chats[0]?.chat as string)).toBe(true);
+    for (const c of chats.slice(1)) write(c.chat);
+    expect(t.host.isLoaded(chats[0]?.chat as string)).toBe(true);
+    expect(t.host.hasActiveTurn(chats[0]?.chat as string)).toBe(true);
+  });
+
+  it("a chat whose run is still going stays, in the moment after its turn is recorded as over", async () => {
+    const t = await rig({ limits: { maxLoadedChats: 1, evictEveryMs: 3_600_000 } });
+    host = t.host;
+    const chats: { session: string; chat: string }[] = [];
+    for (let i = 0; i < 4; i++) chats.push(await t.session());
+    const mine = chats[0]?.chat as string;
+    let loadedAtTheEnd: boolean | undefined;
+    t.host.hooks.onApplied = (channel, action) => {
+      if (channel !== mine || action.type !== ActionType.ChatTurnComplete) return;
+      for (const c of chats.slice(1)) write(c.chat); // writes elsewhere, over the limit
+      loadedAtTheEnd = t.host.isLoaded(mine);
+    };
+    const driver = t.client();
+    await driver.init([ROOT]);
+    driver.dispatch(mine, turnStarted("work", "t1"));
+    await t.host.idle();
+    expect(loadedAtTheEnd).toBe(true);
+  });
+});
