@@ -60,41 +60,47 @@ describe("redaction leaves no secret at any position", () => {
 });
 
 /**
- * How long things take depends on how busy the machine is, so the tests ask how the time GROWS: four
- * times the text must cost less than eight times the time. A pattern that backtracks is quadratic or
- * worse: sixteen times at least, and seconds at 64 KB. Each size is the best of nine runs, timed in turns; the pair
- * is measured up to three times, because a busy machine can spoil one measurement and a quadratic
- * pattern spoils every one. A run under 20 ms counts as fast whatever the ratio. The absolute limits
- * (50 ms for 64 KB, 200 ms for an action) are checked when I_INC_BENCH is set, on a quiet machine.
+ * How long things take depends on how busy the machine is, so a test in the default suite never compares
+ * two timings and never holds code to a tight limit. A pattern that backtracks (a quadratic or cubic one)
+ * is not a few percent slower, it is thousands of times slower: 64 KB takes seconds to minutes where
+ * linear code takes a few milliseconds. So each hostile input runs ONCE under a budget so large that load
+ * cannot reach it (`BUDGET_MS`, about a hundred times what a quiet machine needs) and only a blow-up
+ * does. The precise limits (50 ms for 64 KB, 200 ms for an action) and the growth ratio between sizes
+ * are timed when I_INC_BENCH is set, on a quiet machine.
  */
 const bench = !!process.env.I_INC_BENCH;
-/**
- * Time of the full-size input, and whether it grew linearly from a quarter of it. The two sizes are
- * timed in turns, so a busy machine slows both together and the ratio is what it would be on a quiet one.
- */
-function scaling<T>(whole: () => T, quarter: () => unknown): { ms: number; linear: boolean; value: T } {
+const BUDGET_MS = 5_000;
+/** The test's own time limit: past the budget the assertion fails with a message, not a vitest timeout. */
+const LIMIT_MS = 60_000;
+
+/** One run of `run`, with the time it took. */
+function once<T>(run: () => T): { ms: number; value: T } {
+  const t = performance.now();
+  const value = run();
+  return { ms: performance.now() - t, value };
+}
+
+/** The best of nine runs, timed in turns: only for the opt-in bench. */
+function scaling<T>(whole: () => T, quarter: () => unknown): { ms: number; ratio: number; value: T } {
   quarter(); // warm up
-  let last: { ms: number; linear: boolean; value: T } | undefined;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    let small = Number.POSITIVE_INFINITY;
-    let big = Number.POSITIVE_INFINITY;
-    let value = undefined as T;
-    for (let i = 0; i < 9; i++) {
-      let t = performance.now();
-      quarter();
-      small = Math.min(small, performance.now() - t);
-      t = performance.now();
-      value = whole();
-      big = Math.min(big, performance.now() - t);
-    }
-    last = { ms: big, linear: big < 20 || big / Math.max(small, 0.5) < 8, value };
-    if (last.linear) break;
+  let small = Number.POSITIVE_INFINITY;
+  let big = Number.POSITIVE_INFINITY;
+  let value = undefined as T;
+  for (let i = 0; i < 9; i++) {
+    let t = performance.now();
+    quarter();
+    small = Math.min(small, performance.now() - t);
+    t = performance.now();
+    value = whole();
+    big = Math.min(big, performance.now() - t);
   }
-  return last as { ms: number; linear: boolean; value: T };
+  return { ms: big, ratio: big / Math.max(small, 0.5), value };
 }
 
 describe("hostile input costs milliseconds", () => {
-  it("takes 60 KB of one letter, of hex, of base64 and of dotted words without stalling", () => {
+  it("takes 60 KB of one letter, of hex, of base64 and of dotted words without stalling", {
+    timeout: LIMIT_MS,
+  }, () => {
     for (const text of [
       "z".repeat(65_536),
       "a1".repeat(32_768),
@@ -103,12 +109,16 @@ describe("hostile input costs milliseconds", () => {
       `${"key-".repeat(13_000)}=`,
       `${"https:".repeat(10_000)}`,
     ]) {
-      const r = scaling(
-        () => redactText(text),
-        () => redactText(text.slice(0, text.length / 4)),
-      );
-      expect(r.linear).toBe(true);
-      if (bench) expect(r.ms).toBeLessThan(400);
+      const r = once(() => redactText(text));
+      expect(r.ms, `${text.slice(0, 12)}…: ${r.ms.toFixed(0)} ms`).toBeLessThan(BUDGET_MS);
+      if (bench) {
+        const s = scaling(
+          () => redactText(text),
+          () => redactText(text.slice(0, text.length / 4)),
+        );
+        expect(s.ms).toBeLessThan(400);
+        expect(s.ms < 20 || s.ratio < 8).toBe(true);
+      }
     }
   });
   it("drops a long unbroken run, with its length, and keeps ordinary lines whole", () => {
@@ -190,18 +200,24 @@ describe("hostile input costs time linear in its length, of every class", () => 
     pwdQueries: rep("?pwd=&pass=&"),
   };
   for (const [name, text] of Object.entries(classes)) {
-    it(`redacts 64 KB of ${name} in time linear in its length`, () => {
-      const r = scaling(
-        () => redactText(text),
-        () => redactText(text.slice(0, N / 4)),
-      );
-      expect(r.linear).toBe(true);
+    it(`redacts 64 KB of ${name} in time linear in its length`, { timeout: LIMIT_MS }, () => {
+      const r = once(() => redactText(text));
+      expect(r.ms, `${name}: ${r.ms.toFixed(0)} ms`).toBeLessThan(BUDGET_MS);
       expect(r.value.length).toBeLessThanOrEqual(text.length * 2);
-      if (bench) expect(r.ms).toBeLessThan(50);
+      if (bench) {
+        const s = scaling(
+          () => redactText(text),
+          () => redactText(text.slice(0, N / 4)),
+        );
+        expect(s.ms).toBeLessThan(50);
+        expect(s.ms < 20 || s.ratio < 8, `${name}: 4x the text cost ${s.ratio.toFixed(1)}x`).toBe(true);
+      }
     });
   }
 
-  it("keeps a whole maximum-size action, sixteen such strings, linear in its size", () => {
+  it("keeps a whole maximum-size action, sixteen such strings, linear in its size", {
+    timeout: LIMIT_MS,
+  }, () => {
     const names = Object.keys(classes);
     // the same four strings over again, so sixteen of them are four times the work of four
     const four = [0, 5, 11, 20].map((k) => classes[names[k % names.length] as string]);
@@ -209,13 +225,17 @@ describe("hostile input costs time linear in its length, of every class", () => 
       result: { content: Array.from({ length: n }, (_, i) => ({ type: "text", text: four[i % 4] })) },
     });
     const caps = { maxString: 64 * 1024, maxAction: 1024 * 1024 };
-    const r = scaling(
-      () => sanitizeAction(action(16), caps),
-      () => sanitizeAction(action(4), caps),
-    );
-    expect(r.linear).toBe(true);
+    const r = once(() => sanitizeAction(action(16), caps));
+    expect(r.ms, `sixteen strings: ${r.ms.toFixed(0)} ms`).toBeLessThan(BUDGET_MS);
     expect(JSON.stringify(r.value).length).toBeLessThanOrEqual(1024 * 1024 + 1000);
-    if (bench) expect(r.ms).toBeLessThan(200);
+    if (bench) {
+      const s = scaling(
+        () => sanitizeAction(action(16), caps),
+        () => sanitizeAction(action(4), caps),
+      );
+      expect(s.ms).toBeLessThan(200);
+      expect(s.ms < 20 || s.ratio < 8).toBe(true);
+    }
     // and 64 KB blocks of blanks, the worst class for the old redactor, sixteen at a time
     const blanks = (n: number) => ({
       result: {
@@ -225,12 +245,16 @@ describe("hostile input costs time linear in its length, of every class", () => 
         })),
       },
     });
-    const b = scaling(
-      () => sanitizeAction(blanks(16)),
-      () => sanitizeAction(blanks(4)),
-    );
-    expect(b.linear).toBe(true);
-    if (bench) expect(b.ms).toBeLessThan(200);
+    const b = once(() => sanitizeAction(blanks(16)));
+    expect(b.ms, `sixteen blocks of blanks: ${b.ms.toFixed(0)} ms`).toBeLessThan(BUDGET_MS);
+    if (bench) {
+      const s = scaling(
+        () => sanitizeAction(blanks(16)),
+        () => sanitizeAction(blanks(4)),
+      );
+      expect(s.ms).toBeLessThan(200);
+      expect(s.ms < 20 || s.ratio < 8).toBe(true);
+    }
   });
 });
 
