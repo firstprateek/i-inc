@@ -131,7 +131,7 @@ export class IncProposals extends LitElement {
       .more .chev { margin: 0 2px 0 0; width: 6px; height: 6px; }
       .actions { grid-area: actions; display: flex; gap: 6px; align-self: center; }
       .actions .btn { font-size: 14px; min-height: 32px; min-width: 32px; padding: 0 14px; }
-      .actions .btn.ghost { border-color: var(--control-edge); }
+      .actions .btn.ghost { border-color: var(--ink-2); }
       .actions .btn:disabled { opacity: 0.6; }
       .body { grid-area: body; padding: 4px 0 2px; min-width: 0; }
       .why { margin: 0 0 6px; font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; white-space: pre-wrap; }
