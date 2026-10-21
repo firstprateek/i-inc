@@ -148,7 +148,13 @@ pushes it with `tools/host/push-for-owner.sh` and then OKs the ticket.
 - **The handbook:** the company's shared knowledge, with a section per team for its conventions.
 - **Each employee's brain:** what it learned itself.
 
-Both live on the mini, outside the sandboxes, and reach agents through their briefs.
+Both live on the mini, outside the sandboxes, as markdown git repos. **They do not reach agents
+yet.** No brief, prompt or sandbox carries the handbook or a brain, so what the employees write is
+stored, viewable and revertible but never read back. The foundation is in place: every page has
+frontmatter, a disposable SQLite FTS5 index (`<home>/brain-index.db`, rebuilt from git) and a map per
+scope, with search and map routes (contract C19). Retrieval into briefs, with a copy of the readable
+scopes inside the sandbox, is the next step (T57). The design is in
+[design/brain.md](design/brain.md).
 
 ## Safety that stays
 
