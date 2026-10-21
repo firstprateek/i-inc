@@ -16,8 +16,8 @@ const host = createHost({
   path: cwd,
   agents: [
     acpAgent({
-      provider: "fake", displayName: "Fake ACP", command: "bun", honoursTrust: true,
-      args: [join(import.meta.dir, "fake-acp-agent.ts")],
+      provider: "fake", displayName: "Fake ACP", command: "bun", honoursTrust: true, // the agent process is Bun either way; the HOST can be Node or Bun
+      args: [join(import.meta.dirname, "fake-acp-agent.ts")],
     }),
   ],
   onEvent: (l: string) => console.log(`[ahpd] ${l}`),

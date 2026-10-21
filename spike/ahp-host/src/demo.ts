@@ -64,6 +64,18 @@ try {
   const bad = await fetch(`http://127.0.0.1:${PORT}/ahp`, { headers: { upgrade: "websocket", connection: "Upgrade", "sec-websocket-key": "x3JJHMbDL1EzLkh9GBhXDw==", "sec-websocket-version": "13" } });
   assert(bad.status === 401, `unauthenticated upgrade should be 401, got ${bad.status}`);
   ok("upgrade without the token -> 401 (same bearer/cookie check as the REST API)");
+  for (const [how, mk] of [
+    ["Cookie: i_inc=<token> (what the browser web app sends)", () => new (WebSocket as any)(URL, { headers: { cookie: `i_inc=${TOKEN}` } })],
+    ["?tkn=<token> (what VS Code's chat.remoteAgentHosts sends)", () => new WebSocket(`${URL}?tkn=${TOKEN}`)],
+  ] as const) {
+    const ws = mk() as WebSocket;
+    await new Promise<void>((res, rej) => {
+      ws.addEventListener("open", () => res());
+      ws.addEventListener("error", () => rej(new Error(`websocket refused for ${how}`)));
+    });
+    ws.close();
+    ok(`upgrade accepted with ${how}`);
+  }
 
   step("Client A: initialize (protocolVersions) -> create session -> subscribe -> snapshot");
   const A = await connect(URL, "client-A", { token: TOKEN });

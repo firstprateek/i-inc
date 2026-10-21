@@ -14,7 +14,10 @@ const same = (a: string, b: string) => {
 export function authorized(req: Request, token: string): boolean {
   const bearer = /^Bearer (.+)$/.exec(req.headers.get("authorization") ?? "")?.[1];
   const cookie = /(?:^|;\s*)i_inc=([^;]+)/.exec(req.headers.get("cookie") ?? "")?.[1];
-  return [bearer, cookie].some((t) => t !== undefined && same(t, token));
+  // `?tkn=` is VS Code's own convention for a remote agent host's connection token (chat.remoteAgentHosts);
+  // accepting it is what would let VS Code attach. Tokens in URLs end up in logs, so keep it tailnet-only.
+  const tkn = new URL(req.url).searchParams.get("tkn") ?? undefined;
+  return [bearer, cookie, tkn].some((t) => t !== undefined && same(t, token));
 }
 
 export interface ServeOptions {
