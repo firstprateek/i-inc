@@ -100,7 +100,7 @@ export class Daemon {
   storage?: StorageHooks;
 
   /** How many entries each long-lived structure holds, to show growth (GET /api/storage) and test it. */
-  footprint(): Record<string, number> {
+  footprint() {
     return {
       daemonRunning: this.running.size,
       daemonSessions: this.sessions.size,
