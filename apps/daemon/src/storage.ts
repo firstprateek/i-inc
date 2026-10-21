@@ -195,7 +195,8 @@ const sizeText = (bytes: number) =>
 
 export class Storage {
   private readonly memo = new Map<string, MachineMemo>();
-  private readonly cleaning = new Set<string>();
+  /** Machines being cleaned, with a promise that settles when each is free again. */
+  private readonly locks = new Map<string, { free: Promise<void>; open: () => void }>();
   private maintaining = false;
   private lastHost: HostMaintenance | null = null;
   private lastHostAt = 0;
@@ -273,25 +274,64 @@ export class Storage {
     }
   }
 
-  /** A cleanup is running in this machine, so it must stay up until that ends. */
+  /**
+   * A cleanup is running in this machine: it stays up until that ends, and the daemon makes new
+   * sessions, tickets and conversation turns wait for it (`untilFree`) before they start there.
+   */
   holding(machine: string): boolean {
-    return this.cleaning.has(machine);
+    return this.locks.has(machine);
+  }
+
+  /** Takes a machine's lock. False if a cleanup already holds it. */
+  private lock(machine: string): boolean {
+    if (this.locks.has(machine)) return false;
+    let open: () => void = () => {};
+    const free = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    this.locks.set(machine, { free, open });
+    return true;
+  }
+
+  private unlock(machine: string): void {
+    const l = this.locks.get(machine);
+    this.locks.delete(machine);
+    l?.open();
+  }
+
+  /**
+   * Resolves true once no cleanup holds the machine, or false after `maxMs` (the caller then says
+   * why it is waiting). Work that is about to start in a machine calls this first.
+   */
+  async untilFree(machine: string, maxMs: number): Promise<boolean> {
+    const l = this.locks.get(machine);
+    if (!l) return true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), maxMs);
+    });
+    try {
+      return await Promise.race([l.free.then(() => true), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** Whether this machine is due a cleanup: it is on, and the last one was over an hour ago. */
   due(machine: string): boolean {
     if (!this.d.ops || this.settings().sandboxCleanupDays <= 0) return false;
-    if (this.cleaning.has(machine)) return false;
+    if (this.locks.has(machine)) return false;
     return this.d.clock.now() - (this.memoOf(machine).lastAttemptAt ?? 0) >= HOUR;
   }
 
   /** Cleans a machine in the background, then calls `done` (the daemon stops the machine after). */
   startClean(machine: string, done: () => void): void {
-    this.cleaning.add(machine);
-    void this.cleanMachine(machine)
+    // The lock is taken now, before anything else, so no new work can start in the machine.
+    if (!this.lock(machine)) return done();
+    void this.cleanMachine(machine, { held: true })
       .catch((err) => this.log(`${machine}: cleanup failed: ${String(err)}`))
       .finally(() => {
-        this.cleaning.delete(machine);
+        this.unlock(machine);
         done();
       });
   }
@@ -338,7 +378,34 @@ export class Storage {
    */
   async cleanMachine(
     machine: string,
-    o: { dryRun?: boolean; manual?: boolean } = {},
+    o: { dryRun?: boolean; manual?: boolean; held?: boolean } = {},
+  ): Promise<MachineCleanup> {
+    // Taking the lock comes first: from here until the end, nothing new starts in the machine. A dry
+    // run changes nothing, so it doesn't make work wait.
+    const takes = o.held !== true && o.dryRun !== true;
+    if (takes && !this.lock(machine)) {
+      return {
+        machine,
+        dryRun: false,
+        status: "skipped",
+        reason: "a cleanup is already running",
+        removed: [],
+        kept: [],
+        refused: [],
+        freed: {},
+        freedBytes: 0,
+      };
+    }
+    try {
+      return await this.cleanLocked(machine, o);
+    } finally {
+      if (takes) this.unlock(machine);
+    }
+  }
+
+  private async cleanLocked(
+    machine: string,
+    o: { dryRun?: boolean; manual?: boolean },
   ): Promise<MachineCleanup> {
     const dryRun = o.dryRun === true;
     const result: MachineCleanup = {
@@ -375,9 +442,12 @@ export class Storage {
 
       const cutoff = now - settings.sandboxCleanupDays * DAY;
       const unpushedCutoff = now - settings.unpushedKeepDays * DAY;
+      // The ticket list is read now, after the lock is held, and the machine's use is checked once
+      // more right before the script (the delete step) goes in.
       const mine = (await this.closedTickets()).filter(
         (t) => t.machines.has(machine) && (settings.sandboxCleanupDays > 0 ? t.endedAt <= cutoff : false),
       );
+      if (await this.d.machineBusy(machine)) return skip("the machine came into use");
       const script = cleanupScript({
         work: this.d.work ?? "/home/employee/work",
         ids: mine.map((t) => t.id),
@@ -620,10 +690,7 @@ export class Storage {
         this.memoOf(row.name).diskBytes = row.diskBytes;
         this.save(row.name);
       }
-      if (row.state === "running" && !this.cleaning.has(row.name) && this.due(row.name)) {
-        this.cleaning.add(row.name);
-        await this.cleanMachine(row.name).finally(() => this.cleaning.delete(row.name));
-      }
+      if (row.state === "running" && this.due(row.name)) await this.cleanMachine(row.name);
     }
   }
 
@@ -640,26 +707,7 @@ export class Storage {
         this.log(`couldn't list the machines: ${String(err)}`);
       }
       for (const row of rows) {
-        if (this.cleaning.has(row.name)) {
-          machines.push({
-            machine: row.name,
-            dryRun: o.dryRun,
-            status: "skipped",
-            reason: "a cleanup is already running",
-            removed: [],
-            kept: [],
-            refused: [],
-            freed: {},
-            freedBytes: 0,
-          });
-          continue;
-        }
-        this.cleaning.add(row.name);
-        try {
-          machines.push(await this.cleanMachine(row.name, { dryRun: o.dryRun, manual: true }));
-        } finally {
-          this.cleaning.delete(row.name);
-        }
+        machines.push(await this.cleanMachine(row.name, { dryRun: o.dryRun, manual: true }));
       }
     }
     const host = await this.maintainHost({ dryRun: o.dryRun, manual: true });
@@ -779,7 +827,7 @@ export class Storage {
 
   /** Entry counts of this class's own maps. */
   footprint(): Record<string, number> {
-    return { storageMachines: this.memo.size, storageCleaning: this.cleaning.size };
+    return { storageMachines: this.memo.size, storageLocks: this.locks.size };
   }
 
   private async logSizes(): Promise<{ bytes: number; files: number }> {

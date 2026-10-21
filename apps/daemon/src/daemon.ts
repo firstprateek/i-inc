@@ -76,6 +76,8 @@ export interface StorageHooks {
   /** A cleanup is running in this machine, so it stays up until that ends. */
   holding(machine: string): boolean;
   due(machine: string): boolean;
+  /** Resolves true when no cleanup holds the machine, false after `maxMs`. */
+  untilFree(machine: string, maxMs: number): Promise<boolean>;
   startClean(machine: string, done: () => void): void;
 }
 
@@ -93,6 +95,12 @@ export class Daemon {
 
   constructor(private readonly d: DaemonDeps) {}
 
+  /** Turns in flight that are not tickets (an owner chat turn today, conversations later). */
+  private turns = 0;
+  private readonly busyHooks: Array<() => boolean> = [];
+  /** Employees waiting for their sandbox's cleanup to finish, with why: shown on their tickets. */
+  private readonly holds = new Map<Id, string>();
+
   /** Employees whose machines are up, as far as this daemon knows. */
   private readonly awake = new Set<Id>();
 
@@ -105,6 +113,8 @@ export class Daemon {
       daemonRunning: this.running.size,
       daemonSessions: this.sessions.size,
       daemonAwake: this.awake.size,
+      daemonHolds: this.holds.size,
+      daemonTurns: this.turns,
       daemonWaiting: this.waiting.length,
       daemonWaitingUntil: Object.keys(this.waitingUntil).length,
       sessionsActive: this.d.sessions.footprint().active,
@@ -118,9 +128,28 @@ export class Daemon {
     return this.running.has(id);
   }
 
-  /** Whether any ticket is being driven, so maintenance that stops the database waits. */
-  isWorking(): boolean {
-    return this.running.size > 0;
+  /**
+   * Whether the daemon is doing work that a restart or a VACUUM would cut short: a ticket stage or
+   * session, a chat turn, or anything a registered hook says (a project bootstrap; conversations will
+   * register theirs).
+   */
+  busy(): boolean {
+    return this.running.size > 0 || this.turns > 0 || this.busyHooks.some((h) => h());
+  }
+
+  /** Registers a source of busyness, such as "a conversation turn is running". */
+  onBusy(hook: () => boolean): void {
+    this.busyHooks.push(hook);
+  }
+
+  /** Counts a turn as running until it settles. */
+  async track<T>(turn: Promise<T>): Promise<T> {
+    this.turns++;
+    try {
+      return await turn;
+    } finally {
+      this.turns--;
+    }
   }
 
   /**
@@ -178,6 +207,23 @@ export class Daemon {
     const retrySandbox = m.retrySandbox;
     const machines: MachineProvider = {
       ensureUp: async (id: Id) => {
+        // A sandbox being cleaned takes no new work until it is done (storage.ts); this waits a few
+        // minutes, shows why on the employee's tickets, and only then gives up with a reason.
+        const storage = this.storage;
+        const machine = storage?.machineOf(id);
+        if (storage && machine && storage.holding(machine)) {
+          this.holds.set(id, "its sandbox is being cleaned up and starts again in a moment");
+          try {
+            if (!(await storage.untilFree(machine, 5 * 60_000))) {
+              throw new StartupError(
+                "its sandbox is still being cleaned up, trying again shortly",
+                clock.now() + 60_000,
+              );
+            }
+          } finally {
+            this.holds.delete(id);
+          }
+        }
         await m.ensureUp(id);
         this.awake.add(id);
       },
@@ -398,6 +444,13 @@ export class Daemon {
     };
     const plan = schedule(snap, this.company);
     this.waiting = [...plan.waiting, ...sandboxWaiting];
+    // A ticket whose builder waits for its sandbox's cleanup says so.
+    for (const r of records) {
+      const reason = this.holds.get(states.get(r.ticket.id)?.assignee ?? r.ticket.assignee);
+      if (reason && this.running.has(r.ticket.id) && !this.waiting.some((w) => w.ticketId === r.ticket.id)) {
+        this.waiting.push({ ticketId: r.ticket.id, reason });
+      }
+    }
     this.waitingUntil = { ...(plan.resets ?? {}), ...sandboxWaitingUntil };
 
     for (const start of plan.starts) {

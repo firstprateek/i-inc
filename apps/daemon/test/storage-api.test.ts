@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeAgent, FakeChat, FakeClock, FakeHarness, FakeHelper, FakeMachines } from "@i-inc/core/testing";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.ts";
 import { type MachineOps, Storage } from "../src/storage.ts";
 import { refunds, testApp } from "./setup.ts";
@@ -40,7 +40,7 @@ function withOps(app: Awaited<ReturnType<typeof testApp>>, machineOps: MachineOp
     paths: { home, dbPath: join(home, "i-inc.db"), knowledgeDir: join(home, "knowledge") },
     ops: machineOps,
     machineBusy: (m) => app.daemon.machineBusy(m),
-    hostBusy: () => app.daemon.isWorking(),
+    hostBusy: () => app.daemon.busy(),
     ticketActive: (id) => app.daemon.isRunning(id),
     footprint: () => app.daemon.footprint(),
     trim: false,
@@ -267,6 +267,153 @@ describe("the daemon's pass", () => {
       await new Promise((r) => setImmediate(r));
     }
     expect(await app.daemon.machineBusy("inc-engineering")).toBe(true);
+    expect(app.daemon.interrupt("1", "ada")).toBe(true);
+    await app.daemon.idle();
+  });
+});
+
+describe("a cleanup holds its machine", () => {
+  const wait = async (cond: () => boolean) => {
+    for (let i = 0; i < 300 && !cond(); i++) await new Promise((r) => setImmediate(r));
+  };
+
+  it("makes a new ticket's session wait for the cleanup, says why, and then goes ahead", async () => {
+    const app = await testApp();
+    let release: () => void = () => {};
+    const hold = new Promise<void>((r) => {
+      release = r;
+    });
+    const events: string[] = [];
+    const { ops: machineOps } = ops({
+      runIn: async () => {
+        events.push("cleanup-started");
+        await hold;
+        events.push("cleanup-ended");
+        return "@@df 1000000 400000\n@@df-after 1000000 400000\n@@done";
+      },
+    });
+    const storage = withOps(app, machineOps);
+    const machines = app.deps.machines as unknown as { started: string[] };
+    const realEnsure = app.deps.machines.ensureUp.bind(app.deps.machines);
+    app.deps.machines.ensureUp = async (id) => {
+      events.push(`start-${id}`);
+      return realEnsure(id);
+    };
+
+    storage.startClean("inc-engineering", () => {});
+    expect(storage.holding("inc-engineering")).toBe(true);
+    await wait(() => events.includes("cleanup-started"));
+
+    // A ticket is filed now: its builder's machine is the one being cleaned.
+    await app.call("POST", "/api/tickets", refunds);
+    await app.daemon.tick();
+    for (let i = 0; i < 30; i++) await new Promise((r) => setImmediate(r));
+    expect(machines.started).toEqual([]);
+    expect(events).toEqual(["cleanup-started"]);
+    // The ticket shows why it waits.
+    expect(app.daemon.waiting).toEqual([
+      { ticketId: "1", reason: "its sandbox is being cleaned up and starts again in a moment" },
+    ]);
+
+    release();
+    await app.daemon.idle();
+    expect(events.indexOf("cleanup-ended")).toBeLessThan(events.indexOf("start-ada"));
+    expect(machines.started).toContain("ada");
+    expect(storage.holding("inc-engineering")).toBe(false);
+    expect((await app.call("GET", "/api/tickets/1")).body.ticket.status).toBe("ready");
+    expect(app.daemon.footprint().daemonHolds).toBe(0);
+  });
+
+  it("gives up with a reason, not a failure, when the cleanup lasts too long", async () => {
+    vi.useFakeTimers();
+    try {
+      const app = await testApp();
+      const storage = withOps(app, ops().ops);
+      const lock = storage as unknown as { lock(m: string): boolean; unlock(m: string): void };
+      lock.lock("inc-engineering");
+      const waiting = storage.untilFree("inc-engineering", 1000);
+      await vi.advanceTimersByTimeAsync(1001);
+      expect(await waiting).toBe(false);
+      const second = storage.untilFree("inc-engineering", 60_000);
+      lock.unlock("inc-engineering");
+      expect(await second).toBe(true);
+      expect(await storage.untilFree("inc-engineering", 1)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("checks the machine's use again, and the ticket list, right before the delete step", async () => {
+    const app = await testApp();
+    await app.call("POST", "/api/tickets", refunds);
+    await app.daemon.idle();
+    await app.call("POST", "/api/tickets/1/decide", { decision: "approve" });
+    await app.daemon.idle();
+    app.clock.advance(5 * DAY_MIN);
+    const { ops: machineOps, scripts } = ops();
+    const storage = withOps(app, machineOps);
+    // Idle at the first look, in use by the time the ticket list has been read.
+    let looks = 0;
+    (storage as unknown as { d: { machineBusy: () => Promise<boolean> } }).d.machineBusy = async () =>
+      ++looks > 1;
+    const r = await storage.cleanMachine("inc-engineering", { manual: true });
+    expect(r).toMatchObject({ status: "skipped", reason: "the machine came into use" });
+    expect(looks).toBe(2);
+    expect(scripts).toEqual([]);
+    expect(storage.holding("inc-engineering")).toBe(false);
+  });
+
+  it("refuses a second cleanup while one runs, and always lets go of the lock", async () => {
+    const app = await testApp();
+    let release: () => void = () => {};
+    const hold = new Promise<void>((r) => {
+      release = r;
+    });
+    const { ops: machineOps } = ops({
+      runIn: async () => {
+        await hold;
+        return "@@done";
+      },
+    });
+    const storage = withOps(app, machineOps);
+    const first = storage.cleanMachine("inc-engineering", { manual: true });
+    await wait(() => storage.holding("inc-engineering"));
+    expect(await storage.cleanMachine("inc-engineering", { manual: true })).toMatchObject({
+      status: "skipped",
+      reason: "a cleanup is already running",
+    });
+    release();
+    expect((await first).status).toBe("cleaned");
+    expect(storage.holding("inc-engineering")).toBe(false);
+  });
+});
+
+describe("what counts as busy", () => {
+  it("includes a tracked turn, a registered source and a running ticket, as GET /api/health will", async () => {
+    const app = await testApp();
+    expect(app.daemon.busy()).toBe(false);
+    let release: () => void = () => {};
+    const turn = app.daemon.track(
+      new Promise<void>((r) => {
+        release = r;
+      }),
+    );
+    expect(app.daemon.busy()).toBe(true);
+    release();
+    await turn;
+    expect(app.daemon.busy()).toBe(false);
+    let open = true;
+    app.daemon.onBusy(() => open);
+    expect(app.daemon.busy()).toBe(true);
+    open = false;
+    expect(app.daemon.busy()).toBe(false);
+    app.agent.on({ stage: "build" }, { kind: "hang" });
+    await app.call("POST", "/api/tickets", refunds);
+    for (let i = 0; i < 100 && !app.daemon.busy(); i++) await new Promise((r) => setImmediate(r));
+    expect(app.daemon.busy()).toBe(true);
+    for (let i = 0; i < 200 && app.daemon.footprint().daemonSessions === 0; i++) {
+      await new Promise((r) => setImmediate(r));
+    }
     expect(app.daemon.interrupt("1", "ada")).toBe(true);
     await app.daemon.idle();
   });

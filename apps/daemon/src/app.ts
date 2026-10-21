@@ -122,7 +122,7 @@ export async function createApp(o: AppOptions) {
     ...(o.log ? { log: o.log } : {}),
     ...(o.trimMachines !== undefined ? { trim: o.trimMachines } : {}),
     machineBusy: (machine) => daemon.machineBusy(machine),
-    hostBusy: () => daemon.isWorking(),
+    hostBusy: () => daemon.busy(),
     ticketActive: (id) => daemon.isRunning(id),
     footprint: () => ({
       ...daemon.footprint(),
