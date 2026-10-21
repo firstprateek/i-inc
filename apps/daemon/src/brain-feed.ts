@@ -16,6 +16,7 @@ import {
   type BrainUse,
   buildMap,
   conversationQuery,
+  fitMaps,
   isHomeEmployee,
   isSafeSnapshotPath,
   type PromptMap,
@@ -114,6 +115,10 @@ interface Built {
   snap: Snapshot;
   /** Where each tracked page's blob lives, and the text of generated files. */
   source: Map<string, { repo: Repo; sha: string } | { data: Buffer }>;
+  /** The slugs that really are in the copy, by scope: a page left out (too big, odd name, copy full) is in no map. */
+  included: Map<Scope, Set<string>>;
+  /** Scopes where some page was left out. */
+  trimmed: Set<Scope>;
 }
 
 export const scopeLabel = (scope: Scope, registry?: Registry): string => {
@@ -217,6 +222,8 @@ export class BrainFeed {
     const source: Built["source"] = new Map();
     const skipped: string[] = [];
     const dirs: Record<string, string> = {};
+    const included = new Map<Scope, Set<string>>();
+    const trimmed = new Set<Scope>();
     const maxFile = this.o.maxFileBytes ?? 256 * 1024;
     let bytes = 0;
     const cap = this.o.maxBytes ?? 16 * 1024 * 1024;
@@ -226,6 +233,8 @@ export class BrainFeed {
       const dir = scopeDir(scope);
       if (!repo || !dir) continue;
       dirs[scope] = dir;
+      const here = new Set<string>();
+      included.set(scope, here);
       const entries: { path: string; sha: string; slug: string }[] = [];
       for (const [path, sha] of this.tree(repo)) {
         const at = scopeOfPath(repo, path);
@@ -233,6 +242,7 @@ export class BrainFeed {
         const rel = snapshotPath(scope, at.slug);
         if (!rel) {
           skipped.push(`${scope}:${at.slug} (name)`);
+          trimmed.add(scope);
           continue;
         }
         entries.push({ path: rel, sha, slug: at.slug });
@@ -243,19 +253,25 @@ export class BrainFeed {
         const size = sizes.get(e.sha) ?? 0;
         if (size > maxFile) {
           skipped.push(`${scope}:${e.slug} (${Math.round(size / 1024)} KB)`);
+          trimmed.add(scope);
           continue;
         }
         if (bytes + size > cap) {
           skipped.push(`${scope}:${e.slug} (copy full)`);
+          trimmed.add(scope);
           continue;
         }
         bytes += size;
         files.set(e.path, { path: e.path, sha: e.sha, tracked: true });
         source.set(e.path, { repo, sha: e.sha });
+        here.add(e.slug);
       }
       // The scope's whole map, as a file (the prompt gets the same map cut to about 150 lines).
       const map = buildMap(
-        this.index.pages([scope]).map((p) => ({ slug: p.slug, title: p.title, description: p.description })),
+        this.index
+          .pages([scope])
+          .filter((p) => here.has(p.slug))
+          .map((p) => ({ slug: p.slug, title: p.title, description: p.description })),
         1_000_000,
       );
       const text = Buffer.from(
@@ -282,7 +298,7 @@ export class BrainFeed {
         `${employeeId}'s copy leaves out ${skipped.length} page(s): ${skipped.slice(0, 5).join(", ")}`,
       );
     const snap: Snapshot = { id: snapshotId(files.values()), employeeId, files, dirs, skipped, bytes };
-    const b: Built = { key, snap, source };
+    const b: Built = { key, snap, source, included, trimmed };
     this.built.set(employeeId, b);
     return b;
   }
@@ -564,14 +580,38 @@ export class BrainFeed {
 
   // ---- The prompt ----------------------------------------------------------------------------------
 
-  private maps(scopes: Scope[]): PromptMap[] {
-    return scopes.map((scope) => ({
-      scope,
-      dir: scopeDir(scope) ?? scope,
-      label: scopeLabel(scope, this.o.registry),
-      pages: this.index.count(scope),
-      lines: [...this.index.mapFor(scope, true).root],
-    }));
+  /**
+   * The maps for a prompt: only pages that are in the copy, each scope's cut to its share of about 150
+   * lines in all (closest scope first).
+   */
+  private maps(employeeId: string, scopes: Scope[], allowHome: boolean): PromptMap[] {
+    const built = this.build(employeeId, allowHome);
+    return fitMaps(
+      scopes.map((scope) => {
+        const keep = built.trimmed.has(scope) ? built.included.get(scope) : undefined;
+        const lines = keep
+          ? [
+              ...buildMap(
+                this.index
+                  .pages([scope])
+                  .filter((p) => keep.has(p.slug))
+                  .map((p) => ({
+                    slug: p.slug,
+                    title: p.title,
+                    description: p.external ? `(untrusted) ${p.description}` : p.description,
+                  })),
+              ).root,
+            ]
+          : [...this.index.mapFor(scope, true).root];
+        return {
+          scope,
+          dir: scopeDir(scope) ?? scope,
+          label: scopeLabel(scope, this.o.registry),
+          pages: keep ? keep.size : this.index.count(scope),
+          lines,
+        };
+      }),
+    );
   }
 
   private retrieveFor(
@@ -605,7 +645,7 @@ export class BrainFeed {
     const pages = this.retrieveFor(i.employeeId, ticketQuery(i.query), [], allowHome);
     const text = renderBrainPrompt(
       {
-        maps: this.maps(scopes),
+        maps: this.maps(i.employeeId, scopes, allowHome),
         pages,
         snapshot: report.ok,
         employeeId: i.employeeId,
@@ -635,18 +675,23 @@ export class BrainFeed {
     fresh?: boolean;
     /** The conversation may carry home data (a PA's own brain): it has no project, so nothing leaves the chat. Default: yes. */
     allowHome?: boolean;
-  }): Promise<BrainContext & { conversationPages: BrainUse[] }> {
-    if (!this.enabled) return { text: "", pages: [], copy: false, maps: false, conversationPages: [] };
+  }): Promise<BrainContext & { conversationPages: BrainUse[]; commit: () => void }> {
+    if (!this.enabled) {
+      return { text: "", pages: [], copy: false, maps: false, conversationPages: [], commit: () => {} };
+    }
     const allowHome = i.allowHome ?? true;
     const report = await this.sync(i.employeeId, allowHome);
     const scopes = this.readable(i.employeeId, allowHome);
     const earlier = this.turnsOf(i.conversation).filter((t) => t.unit !== i.turn);
     // Pages the agent was given or opened itself are in its context already.
     const sent = i.fresh ? [] : earlier.flatMap((t) => t.body.pages.map((p) => `${p.scope}:${p.slug}`));
-    const maps = this.maps(scopes);
-    const mapsHash = hash(JSON.stringify(maps.map((m) => [m.scope, m.lines])));
-    const lastMaps = [...earlier].reverse().find((t) => t.body.maps)?.body.maps;
-    const withMaps = i.fresh === true || lastMaps !== mapsHash;
+    const maps = this.maps(i.employeeId, scopes, allowHome);
+    // Each map is sent again only when its own lines changed (or the agent has lost its memory).
+    const mapHashes: Record<string, string> = {};
+    for (const m of maps) mapHashes[m.scope] = hash(JSON.stringify(m.lines));
+    const lastHashes: Record<string, string> = {};
+    for (const t of earlier) Object.assign(lastHashes, t.body.maps ?? {});
+    const changed = maps.filter((m) => i.fresh === true || lastHashes[m.scope] !== mapHashes[m.scope]);
     const pages = this.retrieveFor(
       i.employeeId,
       conversationQuery({ message: i.message, title: i.title, project: i.project }),
@@ -655,7 +700,7 @@ export class BrainFeed {
     );
     const uses = usesOf(pages);
     let text = "";
-    if (withMaps || pages.length) {
+    if (changed.length || pages.length) {
       text = renderBrainPrompt(
         {
           maps,
@@ -664,18 +709,51 @@ export class BrainFeed {
           employeeId: i.employeeId,
           ...(this.o.home ? { home: this.o.home } : {}),
         },
-        { maps: withMaps },
+        { maps: changed.map((m) => m.scope) },
       );
     }
-    this.record("turn", i.conversation, i.turn, { pages: uses, ...(withMaps ? { maps: mapsHash } : {}) });
-    this.countUse(scopes, uses);
+    const record = {
+      pages: uses,
+      ...(changed.length
+        ? { maps: Object.fromEntries(changed.map((m) => [m.scope, mapHashes[m.scope] as string])) }
+        : {}),
+    };
+    // Nothing is recorded as sent until the prompt has been accepted (`commit`): a turn that is
+    // cancelled or fails before the agent has it leaves the pages to go with the next one.
+    const commit = () => {
+      this.commitTurn(i.conversation, i.turn, record);
+      this.countUse(scopes, uses);
+    };
+    const shown = new Map<string, BrainUse>();
+    for (const p of [...uses, ...this.conversationPages(i.conversation)]) {
+      if (!shown.has(`${p.scope}:${p.slug}`)) shown.set(`${p.scope}:${p.slug}`, p);
+    }
     return {
       text,
       pages: uses,
       copy: report.ok,
-      maps: withMaps,
-      conversationPages: this.conversationPages(i.conversation),
+      maps: changed.length > 0,
+      conversationPages: [...shown.values()].slice(-100),
+      commit,
     };
+  }
+
+  /** Records a turn's pages (and the maps it sent), merging with what the agent opened during the turn. */
+  private commitTurn(
+    conversation: string,
+    turn: string,
+    record: { pages: BrainUse[]; maps?: Record<string, string> },
+  ): void {
+    const mine = this.turnsOf(conversation).find((t) => t.unit === turn);
+    const pages = new Map<string, BrainUse>();
+    for (const p of [...record.pages, ...(mine?.body.pages ?? [])]) {
+      if (!pages.has(`${p.scope}:${p.slug}`)) pages.set(`${p.scope}:${p.slug}`, p);
+    }
+    const maps = { ...(mine?.body.maps ?? {}), ...(record.maps ?? {}) };
+    this.record("turn", conversation, turn, {
+      pages: [...pages.values()],
+      ...(Object.keys(maps).length ? { maps } : {}),
+    });
   }
 
   // ---- The record ----------------------------------------------------------------------------------
@@ -684,7 +762,7 @@ export class BrainFeed {
     kind: "session" | "turn",
     ref: string,
     unit: string,
-    body: { pages: BrainUse[]; maps?: string },
+    body: { pages: BrainUse[]; maps?: Record<string, string> },
   ): void {
     try {
       this.o.db.run(
@@ -700,7 +778,9 @@ export class BrainFeed {
     }
   }
 
-  private turnsOf(conversation: string): { unit: string; body: { pages: BrainUse[]; maps?: string } }[] {
+  private turnsOf(
+    conversation: string,
+  ): { unit: string; body: { pages: BrainUse[]; maps?: Record<string, string> } }[] {
     return this.o.db
       .all<{ unit: string; body: string }>(
         "SELECT unit, body FROM brain_used WHERE kind = 'turn' AND ref = ? ORDER BY at, rowid",
@@ -708,7 +788,12 @@ export class BrainFeed {
       )
       .flatMap((r) => {
         try {
-          return [{ unit: r.unit, body: JSON.parse(r.body) as { pages: BrainUse[]; maps?: string } }];
+          return [
+            {
+              unit: r.unit,
+              body: JSON.parse(r.body) as { pages: BrainUse[]; maps?: Record<string, string> },
+            },
+          ];
         } catch {
           return [];
         }

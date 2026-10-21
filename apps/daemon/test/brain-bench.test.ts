@@ -68,3 +68,41 @@ describe("a thousand pages", () => {
     expect(found.stdout).toContain("page-500");
   });
 });
+
+describe("how big the brief gets", () => {
+  const sizes = bench ? [1000, 10_000] : [1000];
+  it.each(sizes)(
+    "a brief on a brain of %i pages stays within a fixed size",
+    { timeout: 300_000 },
+    async (n) => {
+      const r = await brainRig();
+      const files: Record<string, string> = {};
+      for (let i = 0; i < n; i++) {
+        files[`area${i % 130}/topic${i % 40}/page-${i}.md`] = page(
+          `Page ${i}`,
+          `A description of page ${i} that is a typical sentence long`,
+          `body ${i} token${i}`,
+        );
+      }
+      r.commit("handbook", files);
+      const own: Record<string, string> = {};
+      for (let i = 0; i < 40; i++)
+        own[`tools/own-${i}.md`] = page(`Own ${i}`, `Ada's note number ${i}`, `own ${i}`);
+      r.commit("ada", own);
+      const ctx = await r.feed.forTicket({
+        employeeId: "ada",
+        sessionId: null,
+        query: { title: "token5 something", project: "Duet", doneWhen: [] },
+      });
+      const tokens = Math.ceil(ctx.text.length / 4);
+      const mapLines = ctx.text.split("\n").filter((l) => /^(- \[\[|## |… )/.test(l)).length;
+      if (bench)
+        console.log(
+          `bench brief at ${n} pages: ${ctx.text.length} chars, about ${tokens} tokens, ${mapLines} map lines`,
+        );
+      // The maps carry about 150 lines in all and the pages about 3,000 tokens, however big the brain is.
+      expect(mapLines).toBeLessThanOrEqual(155);
+      expect(tokens).toBeLessThanOrEqual(3000 + 1800);
+    },
+  );
+});

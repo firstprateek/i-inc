@@ -4,7 +4,9 @@ import {
   buildQuery,
   conversationQuery,
   fileNamesIn,
+  fitMaps,
   isSafeSnapshotPath,
+  mapLinesTotal,
   pageOfPath,
   type RetrievedPage,
   renderBrainPrompt,
@@ -181,5 +183,51 @@ describe("the text of a prompt", () => {
       { scope: "company", slug: "projects/duet", title: "Duet", updated: "2026-10-20", via: "search" },
       { scope: "company", slug: "w", title: "Duet", updated: "2026-10-20", via: "link", untrusted: true },
     ]);
+  });
+});
+
+describe("fitting the maps into a prompt", () => {
+  const map = (scope: "company" | "team:x" | "brain:ada", dir: string, n: number) => ({
+    scope,
+    dir,
+    label: dir,
+    pages: n,
+    lines: ["## all", ...Array.from({ length: n }, (_, i) => `- [[p${i}]] — d`)],
+  });
+
+  it("leaves small maps alone", () => {
+    const maps = [map("brain:ada", "personal", 5), map("company", "company", 5)];
+    expect(fitMaps(maps)).toEqual(maps);
+  });
+
+  it("keeps the closest scope whole and cuts the later ones, each with a line that says what is left out", () => {
+    const out = fitMaps([
+      map("brain:ada", "personal", 100),
+      map("team:x", "team-x", 100),
+      map("company", "company", 100),
+    ]);
+    const total = out.reduce((n, m) => n + m.lines.length, 0);
+    expect(total).toBeLessThanOrEqual(mapLinesTotal);
+    expect(out[0]?.lines).toHaveLength(101);
+    expect(out[1]?.lines.at(-1)).toMatch(/^… \d+ more pages in team-x\/ /);
+    expect(out[2]?.lines.length).toBeGreaterThanOrEqual(1);
+    expect(out[2]?.lines.at(-1)).toMatch(/^… 100 more pages in company\//);
+    // The count is the pages not shown.
+    const shown = (out[1]?.lines ?? []).filter((l) => l.startsWith("- [[")).length;
+    expect(out[1]?.lines.at(-1)).toContain(`${100 - shown} more pages`);
+  });
+
+  it("counts the pages behind a map that is already only a list of sections", () => {
+    const sections = {
+      scope: "company" as const,
+      dir: "company",
+      label: "c",
+      pages: 900,
+      lines: ["## Sections", ...Array.from({ length: 100 }, (_, i) => `- [[section:s${i}]] — 9 pages`)],
+    };
+    const out = fitMaps([map("brain:ada", "personal", 100), sections]);
+    const last = out[1]?.lines.at(-1) ?? "";
+    const shown = (out[1]?.lines.length ?? 0) - 2;
+    expect(last).toContain(`${900 - shown * 9} more pages`);
   });
 });

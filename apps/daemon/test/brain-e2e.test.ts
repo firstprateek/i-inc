@@ -231,4 +231,29 @@ describe("a conversation", () => {
     // The turn is recorded, for the app and for the "already sent" memory.
     expect(w.app.deps.brainFeed.conversationPages(c.id).map((p) => p.slug)).toContain("facts/duet-hotfix");
   });
+
+  it("does not count pages as sent when the prompt failed", async () => {
+    const w = await world();
+    const made = await w.call("POST", "/api/conversations", { employeeId: "ada" });
+    const c = made.body.conversation;
+    const client = new TestClient(w.app.ahp.host);
+    await client.init(["ahp-root://", c.ahpSession, c.ahpChat]);
+    const send = async (text: string, id: string) => {
+      client.dispatch(c.ahpChat, turnStarted(text, id));
+      await until(
+        () =>
+          w.app.ahp.host.chatState(c.ahpChat)?.turns.some((t) => t.id === id) &&
+          !w.app.ahp.host.chatState(c.ahpChat)?.activeTurn,
+      );
+    };
+    // The agent refuses the prompt (a usage limit): it never had the pages.
+    await send("limit: how do we cut a Duet release?", "t1");
+    expect(w.app.deps.brainFeed.conversationPages(c.id)).toEqual([]);
+    await send("plain: how do we cut a Duet release?", "t2");
+    const prompts = w.fake.last.prompts as Any[];
+    const text = (n: number) => prompts[n].blocks.map((b: Any) => b.text).join("\n");
+    expect(text(0)).toContain('slug="projects/duet"');
+    expect(text(1)).toContain('slug="projects/duet"');
+    expect(w.app.deps.brainFeed.conversationPages(c.id).map((p) => p.slug)).toContain("projects/duet");
+  });
 });

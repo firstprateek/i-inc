@@ -1,5 +1,6 @@
 // What goes into a brief or a turn (T57): ranking by scope, links, the token budget, the maps, what is
 // not sent twice, what is marked untrusted, and what is recorded and counted.
+import { readdirSync, readFileSync } from "node:fs";
 import { estimateTokens } from "@i-inc/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { brainRig, cleanRigs, page } from "./brain-rig.ts";
@@ -162,13 +163,14 @@ describe("what is marked, and what is kept out", () => {
 });
 
 describe("a conversation turn", () => {
-  const turn = (
+  // The host commits a turn's pages once the agent has accepted the prompt.
+  const turn = async (
     r: Awaited<ReturnType<typeof rig>>,
     n: number,
     message: string,
     more: Record<string, unknown> = {},
-  ) =>
-    r.feed.forTurn({
+  ) => {
+    const ctx = await r.feed.forTurn({
       employeeId: "ada",
       conversation: "c1",
       turn: `t${n}`,
@@ -177,6 +179,9 @@ describe("a conversation turn", () => {
       project: "Duet",
       ...more,
     });
+    ctx.commit();
+    return ctx;
+  };
 
   it("does not send a page again in the same conversation, nor the maps while they are the same", async () => {
     const r = await rig();
@@ -213,6 +218,7 @@ describe("a conversation turn", () => {
       turn: "t1",
       message: "Duet release",
     });
+    other.commit();
     expect(other.pages.length).toBeGreaterThanOrEqual(3);
   });
 
@@ -232,6 +238,7 @@ describe("a conversation turn", () => {
       project: "Duet",
       title: "Tauri work",
     });
+    ctx.commit();
     expect(ctx.pages.map((p) => p.slug)).toEqual(["projects/duet"]);
     const after = r.app.deps.brain.pages(["company"]).find((p) => p.slug === "projects/duet");
     expect(after?.useCount).toBe(1);
@@ -348,6 +355,7 @@ describe("what the agent sees", () => {
       message: "Who signs a Duet release?",
       project: "Duet",
     });
+    one.commit();
     expect(clean(one.text)).toMatchInlineSnapshot(`
       "<brain>
       Your brain: i.inc's shared memory, markdown pages in three scopes. A read-only copy is in <sandbox>/ada/ (personal/, team-engineering/, company/), each folder with an INDEX.md map. Search it with \`<sandbox>/ada/.bin/brain search "<words>"\`, or just read the files. Read it, don't edit it: edits are not collected yet.
@@ -387,6 +395,7 @@ describe("what the agent sees", () => {
       message: "And what runs on pnpm in Duet?",
       project: "Duet",
     });
+    two.commit();
     expect(clean(two.text)).toMatchInlineSnapshot(`
       "<brain>
       Your brain: i.inc's shared memory, markdown pages in three scopes. A read-only copy is in <sandbox>/ada/ (personal/, team-engineering/, company/), each folder with an INDEX.md map. Search it with \`<sandbox>/ada/.bin/brain search "<words>"\`, or just read the files. Read it, don't edit it: edits are not collected yet.
@@ -430,5 +439,114 @@ describe("the maps can't close the section either", () => {
     // The page built from outside content says so on its map line.
     expect(ctx.text).toMatch(/- \[\[facts\/evil\]\] — \(untrusted\) /);
     expect(ctx.text).not.toMatch(/- \[\[facts\/spaced\]\] — \(untrusted\)/);
+  });
+});
+
+describe("the maps stay small", () => {
+  it("carry about 150 lines in all, the closest scope first, the rest summarised", async () => {
+    const r = await rig();
+    const company: Record<string, string> = {};
+    const own: Record<string, string> = {};
+    for (let i = 0; i < 300; i++) company[`area${i % 130}/p${i}.md`] = page(`P${i}`, `company ${i}`, "x");
+    for (let i = 0; i < 60; i++) own[`tools/q${i}.md`] = page(`Q${i}`, `own ${i}`, "x");
+    r.commit("handbook", company);
+    r.commit("ada", own);
+    const ctx = await r.feed.forTicket({ employeeId: "ada", sessionId: null, query: ticket("zzz nothing") });
+    const mapLines = ctx.text
+      .split("\n")
+      .filter((l) => l.startsWith("- [[") || l.startsWith("## ") || l.startsWith("… "));
+    expect(mapLines.length).toBeLessThanOrEqual(155);
+    // Own brain (61 pages and 2 headings) is whole; the company handbook gets what is left, then a summary.
+    expect(ctx.text).toContain("- [[tools/q59]]");
+    expect(ctx.text).toMatch(/… \d+ more pages in company\/ \(not listed here\): `brain search/);
+    expect(ctx.text).toMatch(/Map · Company handbook \(company\/, 300 pages\)/);
+  });
+
+  it("send again only the map that changed", async () => {
+    const r = await rig();
+    r.commit("handbook", { "projects/duet.md": page("Duet", "d", "Duet text") });
+    r.commit("ada", { "tools/x.md": page("X", "x", "x text") });
+    const ask = async (n: number) => {
+      const c = await r.feed.forTurn({
+        employeeId: "ada",
+        conversation: "m1",
+        turn: `t${n}`,
+        message: "zzz nothing",
+        project: "Duet",
+      });
+      c.commit();
+      return c.text;
+    };
+    const first = await ask(1);
+    expect(first).toContain("Map · Company handbook");
+    expect(first).toContain("Map · Your own brain");
+    expect(await ask(2)).toBe("");
+    r.commit("handbook", { "facts/new.md": page("New", "a new fact", "new") });
+    const third = await ask(3);
+    expect(third).toContain("Map · Company handbook");
+    expect(third).toContain("[[facts/new]]");
+    expect(third).not.toContain("Map · Your own brain");
+    expect(third).not.toContain("Map · Team");
+  });
+});
+
+describe("a turn that never reached the agent", () => {
+  it("leaves its pages unsent: they go with the next turn", async () => {
+    const r = await rig();
+    r.commit("handbook", { "projects/duet.md": page("Duet", "The finance app", "Tauri and Lit.") });
+    const ask = (n: number) =>
+      r.feed.forTurn({
+        employeeId: "ada",
+        conversation: "u1",
+        turn: `t${n}`,
+        message: "Duet app",
+        project: "Duet",
+      });
+    const lost = await ask(1); // the prompt failed or was cancelled: no commit
+    expect(lost.pages).toHaveLength(1);
+    const retry = await ask(2);
+    expect(retry.pages.map((p) => p.slug)).toEqual(["projects/duet"]);
+    expect(retry.maps).toBe(true);
+    retry.commit();
+    expect((await ask(3)).pages).toEqual([]);
+  });
+});
+
+describe("a copy that left pages out", () => {
+  it("lists only the pages that are in it, in the file and in the prompt", async () => {
+    const r = await rig();
+    const { BrainFeed } = await import("../src/brain-feed.ts");
+    const feed = new BrainFeed({
+      index: r.app.deps.brain,
+      store: r.app.deps.knowledge,
+      registry: r.app.deps.registry,
+      db: r.app.deps.db,
+      now: () => r.clock.now(),
+      home: r.sandbox,
+      maxFileBytes: 600,
+      maxBytes: 2000,
+    });
+    feed.deliver = r.feed.deliver;
+    r.commit("handbook", {
+      "facts/small.md": page("Small", "fits easily", "tiny"),
+      "facts/big.md": page("Big", "far too big for the copy", "word ".repeat(400)),
+      "facts/a.md": page("A", "first of the filler", "filler ".repeat(60)),
+      "facts/b.md": page("B", "second of the filler", "filler ".repeat(60)),
+      "facts/c.md": page("C", "third of the filler", "filler ".repeat(60)),
+      "facts/d.md": page("D", "fourth of the filler", "filler ".repeat(60)),
+    });
+    await feed.sync("kit");
+    const mapFile = readFileSync(r.copy("kit", "company/INDEX.md"), "utf8");
+    const inCopy = readdirSync(r.copy("kit", "company/facts")).map((f) => f.replace(/\.md$/, ""));
+    expect(inCopy).toContain("small");
+    expect(inCopy).not.toContain("big");
+    expect(inCopy.length).toBeLessThan(6);
+    for (const slug of ["small", "big", "a", "b", "c", "d"]) {
+      const listed = mapFile.includes(`- [[facts/${slug}]]`);
+      expect(listed, `${slug} in the map file`).toBe(inCopy.includes(slug));
+    }
+    const ctx = await feed.forTicket({ employeeId: "kit", sessionId: null, query: ticket("zzz nothing") });
+    expect(ctx.text).not.toContain("- [[facts/big]]");
+    for (const slug of inCopy) expect(ctx.text).toContain(`- [[facts/${slug}]]`);
   });
 });
