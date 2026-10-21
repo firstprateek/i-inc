@@ -280,7 +280,8 @@ export class ConversationService {
         ...(input.session ? { session: input.session } : {}),
         provider: engineId,
         title: title ?? DEFAULT_TITLE,
-        workingDirectories: project === null ? [] : [`file://${conversationDir(id)}`],
+        // With no project the working directory is an empty scratch folder at the same place.
+        workingDirectories: [`file://${conversationDir(id)}`],
         ...(input.mode ? { config: { mode: input.mode } } : {}),
         meta: {
           "iinc.conversation": id,
@@ -291,7 +292,7 @@ export class ConversationService {
     } catch (e) {
       const code = e instanceof RpcError ? e.code : undefined;
       const status =
-        code === AhpErrorCodes.SessionAlreadyExists
+        code === AhpErrorCodes.SessionAlreadyExists || (e instanceof Error && e.name === "NoSlotError")
           ? 409
           : code === JsonRpcErrorCodes.InvalidParams || code === AhpErrorCodes.ProviderNotFound
             ? 400

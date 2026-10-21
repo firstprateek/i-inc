@@ -6,6 +6,9 @@
 // registry. The helper model and chat use Ollama on the host.
 import type { Employee, Id } from "@i-inc/core";
 import { AcpAgent, type Launch } from "./acp.ts";
+import type { AgentBackend } from "./ahp/backend.ts";
+import { agentsFromRegistry } from "./ahp/conversations.ts";
+import { SessionHost } from "./ahp/session-host.ts";
 import type { AppOptions } from "./app.ts";
 import { type Credentials, credentialsFor } from "./config.ts";
 import { commitIdentity, PullRequests, type TokenSource, waitForCi } from "./github.ts";
@@ -21,7 +24,7 @@ import {
 } from "./machines.ts";
 import { OllamaChat, OllamaHelper, type OllamaOptions } from "./ollama.ts";
 import type { Registry } from "./registry.ts";
-import { GitHubWorkspace } from "./workspace.ts";
+import { GitHubWorkspace, prepareConversationCopy } from "./workspace.ts";
 
 export interface RealOptions {
   credentials: Credentials;
@@ -54,7 +57,7 @@ const loginEveryMs = 25 * 60_000;
 
 export function realPorts(o: RealOptions): Pick<
   AppOptions,
-  "machines" | "agent" | "harness" | "workspace" | "tokens" | "helper" | "chat"
+  "machines" | "agent" | "harness" | "workspace" | "tokens" | "helper" | "chat" | "ahpBackend"
 > & {
   /** Renews the GitHub sign-in of every sandbox in use. main.ts calls it on a timer. */
   keepLoginsFresh: () => Promise<void>;
@@ -172,6 +175,37 @@ export function realPorts(o: RealOptions): Pick<
             }),
         }
       : {}),
+    // Conversations: long-lived agent sessions in the same team sandboxes, behind the AHP host.
+    ahpBackend: (registry): AgentBackend =>
+      new SessionHost({
+        launch: o.launch ?? machineLaunch(teams(registry)),
+        agents: () => agentsFromRegistry(registry),
+        engine: (id) => registry.engines().find((e) => e.id === id),
+        teamOf: (employeeId) => registry.teamOf(employeeId).id,
+        workingCopy: async (c) => {
+          if (c.project !== null && !github) {
+            throw new Error("the GitHub App isn't set up yet, so a conversation can't work on a project");
+          }
+          await prepareConversationCopy(
+            {
+              project: (name) => registry.project(name),
+              tokens: github?.tokens ?? { token: async () => "" },
+              identity,
+              run: run(registry),
+            },
+            { employee: registry.employee(c.employeeId), project: c.project, branch: c.branch, cwd: c.cwd },
+          );
+        },
+        credentials: async (engine, c) => {
+          await signIn(registry, c.employeeId);
+          return { ...account(engine), I_INC_PORTS: portsFor(`conv-${c.id}`) };
+        },
+        effort: (employeeId) => registry.employee(employeeId).effort ?? "medium",
+        onUsage: (u) => registry.recordUsage(u),
+        onRateLimit: (accountId, limit) => registry.setAccountRateLimit(accountId, limit),
+        now,
+        ...(o.log ? { log: o.log } : {}),
+      }),
     helper: new OllamaHelper(o.ollama),
     chat: new OllamaChat(o.ollama),
     keepLoginsFresh: async () => {

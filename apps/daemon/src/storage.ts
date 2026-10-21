@@ -85,6 +85,8 @@ export interface StorageDeps {
   footprint: () => Record<string, number>;
   /** The folder with the worktrees inside a machine. */
   work?: string;
+  /** Archived conversations, with when they were archived: their working copies are cleaned like closed tickets'. */
+  archivedConversations?: () => { id: Id; employeeId: Id; project: string | null; archivedAt: number }[];
   /** Ask a machine to hand freed blocks back to the host. */
   trim?: boolean;
   memory?: () => NodeJS.MemoryUsage;
@@ -454,11 +456,22 @@ export class Storage {
         (t) => t.machines.has(machine) && (settings.sandboxCleanupDays > 0 ? t.endedAt <= cutoff : false),
       );
       if (await this.d.machineBusy(machine)) return skip("the machine came into use");
+      // Archived conversations are cleaned like closed tickets: past the same retention, with the same
+      // fail-safe rules, and unpushed work kept for unpushedKeepDays.
+      const convs =
+        settings.sandboxCleanupDays > 0
+          ? (this.d.archivedConversations?.() ?? []).filter(
+              (c) => c.archivedAt <= cutoff && this.machineOf(c.employeeId) === machine,
+            )
+          : [];
       const script = cleanupScript({
         work: this.d.work ?? "/home/employee/work",
         ids: mine.map((t) => t.id),
         aged: mine.filter((t) => t.endedAt <= unpushedCutoff).map((t) => t.id),
         merged: mine.filter((t) => t.merged).map((t) => t.id),
+        convs: convs.map((c) => c.id),
+        convsAged: convs.filter((c) => c.archivedAt <= unpushedCutoff).map((c) => c.id),
+        convsScratch: convs.filter((c) => c.project === null).map((c) => c.id),
         dryRun,
         cacheCapKb: settings.cacheCapGb * 1024 * 1024,
         docker: settings.dockerPrune,

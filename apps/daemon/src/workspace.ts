@@ -3,7 +3,7 @@
 // no PR without a commit, so a new branch starts with an empty one; the squash merge drops it. The
 // report stage writes the PR's body and takes it out of draft. Both are safe to repeat: a crash, a
 // handoff or a new machine finds the branch and the PR that are already there.
-import { dirname } from "node:path";
+import { dirname, posix } from "node:path";
 import {
   attachmentPath,
   type Employee,
@@ -34,6 +34,42 @@ export interface WorkspaceOptions {
   attachments?: (ticketId: string) => AttachmentFile[];
 }
 
+/**
+ * Is this a branch name git would take, by `git check-ref-format --branch`'s rules and a stricter
+ * one on whitespace? Nothing else may reach a script run in a sandbox: no `..`, no leading `-`, no
+ * control characters or spaces, none of `~^:?*[\\`, no `@{`, no component that starts with `.` or ends
+ * `.lock`, no empty component, no trailing `.` or `/`.
+ */
+export function isSafeRefName(name: unknown): name is string {
+  if (typeof name !== "string" || name.length === 0 || name.length > 200) return false;
+  if (
+    name === "@" ||
+    name.startsWith("-") ||
+    name.startsWith("/") ||
+    name.endsWith("/") ||
+    name.endsWith(".")
+  ) {
+    return false;
+  }
+  if (name.includes("..") || name.includes("@{") || name.includes("//")) return false;
+  // Beyond git's rules: plain characters only, so nothing is ever left for a shell to read.
+  if (!/^[A-Za-z0-9._/-]+$/.test(name)) return false;
+  return name.split("/").every((part) => part.length > 0 && !part.startsWith(".") && !part.endsWith(".lock"));
+}
+
+/** Where conversations and tickets work in a sandbox. */
+export const WORK_ROOT = "/home/employee/work/";
+
+/**
+ * A working directory is a normalised path directly under the work root, named `conv-<id>` or
+ * `inc-<id>`. Anything else (`/etc/x`, `../..`, spaces, `$(...)`) is refused before it reaches a shell.
+ */
+export function isSafeWorkDir(cwd: unknown): cwd is string {
+  if (typeof cwd !== "string" || !cwd.startsWith(WORK_ROOT)) return false;
+  if (posix.normalize(cwd) !== cwd) return false;
+  return /^(?:conv|inc)-[A-Za-z0-9_-]{1,64}$/.test(cwd.slice(WORK_ROOT.length));
+}
+
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
 
 export const branchName = (ticket: Ticket) => {
@@ -62,7 +98,7 @@ export function openScript(o: {
   /** Owner-merges mode pushes the branch for a PR; direct mode keeps it local. Default: push. */
   push?: boolean;
 }): string {
-  if (!/^[A-Za-z0-9._/-]+$/.test(o.branch)) throw new Error(`not a branch name: ${o.branch}`);
+  if (!isSafeRefName(o.branch)) throw new Error(`not a branch name: ${o.branch}`);
   const [remote, repoDir, worktree, branch] = [o.remote, o.repoDir, o.worktree, o.branch].map(quote);
   return [
     "set -e",
@@ -118,7 +154,7 @@ export function checkoutScript(o: {
   worktree: string;
   branch: string;
 }): string {
-  if (!/^[A-Za-z0-9._/-]+$/.test(o.branch)) throw new Error(`not a branch name: ${o.branch}`);
+  if (!isSafeRefName(o.branch)) throw new Error(`not a branch name: ${o.branch}`);
   const [remote, repoDir, worktree, branch] = [o.remote, o.repoDir, o.worktree, o.branch].map(quote);
   const aside = quote(`${o.worktree}.pre-checkout`);
   return [
@@ -179,6 +215,44 @@ export function attachmentScript(o: { worktree: string; file: AttachmentFile }):
     `if [ -f ${path} ]; then cat > /dev/null; else base64 -d > ${path}.part; mv ${path}.part ${path}; fi; echo @@attached`,
     base64,
   ].join("\n");
+}
+
+/**
+ * A conversation's working copy in its employee's sandbox: a branch worktree of the project's repo,
+ * made like a ticket's but never committed to or pushed (the owner turns the work into a ticket when it
+ * should ship), or, with no project, an empty folder to work in. Safe to repeat: a worktree that is
+ * already there is left as it is.
+ */
+export async function prepareConversationCopy(
+  o: Pick<WorkspaceOptions, "project" | "tokens" | "identity" | "run" | "remote">,
+  c: { employee: Employee; project: string | null; branch: string | null; cwd: string },
+): Promise<void> {
+  const fail = (r: { output: string }) => {
+    const tail = r.output.trim().split("\n").slice(-5).join("\n");
+    return new Error(`git in ${c.employee.name}'s machine failed: ${tail}`);
+  };
+  if (!isSafeWorkDir(c.cwd)) throw new Error(`not a safe folder: ${String(c.cwd)}`);
+  if (c.project === null || c.branch === null) {
+    const r = await o.run(c.employee.id, `set -e\nmkdir -p ${quote(c.cwd)}\necho @@ready`);
+    if (r.code !== 0 || !r.output.includes("@@ready")) throw fail(r);
+    return;
+  }
+  if (!isSafeRefName(c.branch)) throw new Error(`not a branch name: ${c.branch}`);
+  const project = o.project(c.project);
+  if (!project) throw new Error(`no project ${c.project}`);
+  const { repo } = project;
+  const [token, who] = await Promise.all([o.tokens.token(repo), o.identity(c.employee)]);
+  const script = openScript({
+    remote: o.remote?.(repo) ?? `https://github.com/${repo}.git`,
+    repoDir: `${dirname(c.cwd)}/${repo.split("/")[1]}`,
+    worktree: c.cwd,
+    branch: c.branch,
+    ...who,
+    message: "",
+    push: false,
+  });
+  const r = await o.run(c.employee.id, script, { GH_TOKEN: token });
+  if (r.code !== 0 || !r.output.includes("@@ready")) throw fail(r);
 }
 
 export class GitHubWorkspace implements Workspace {

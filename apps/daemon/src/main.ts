@@ -9,6 +9,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, normalize } from "node:path";
 import { FakeAgent, FakeChat, FakeHarness, FakeHelper, FakeMachines } from "@i-inc/core/testing";
+import { SessionHost } from "./ahp/session-host.ts";
 import type { WsData } from "./ahp/transport.ts";
 import { createApp } from "./app.ts";
 import { configDir, readCredentials, webToken } from "./config.ts";
@@ -162,6 +163,8 @@ async function serveWeb(req: Request): Promise<Response> {
 }
 
 app.ahp.transport.start();
+// Idle conversations are suspended, so their agents don't hold the sandbox.
+if (app.ahp.backend instanceof SessionHost) app.ahp.backend.start();
 Bun.serve<WsData>({
   port,
   hostname: host,

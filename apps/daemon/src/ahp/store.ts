@@ -262,12 +262,23 @@ export class AhpStore {
     return json.length;
   }
 
-  latestSnapshot(channel: string): { seq: number; state: unknown } | undefined {
+  /** The seq of a channel's newest snapshot, without reading it (0: none). */
+  snapshotSeq(channel: string): number {
+    const [r] = this.db.all<{ s: number | null }>(
+      "SELECT MAX(server_seq) AS s FROM ahp_snapshots WHERE channel = ?",
+      channel,
+    );
+    return r?.s ?? 0;
+  }
+
+  latestSnapshot(channel: string): { seq: number; state: unknown; bytes: number } | undefined {
     const [r] = this.db.all<{ server_seq: number; state: string }>(
       "SELECT server_seq, state FROM ahp_snapshots WHERE channel = ? ORDER BY server_seq DESC LIMIT 1",
       channel,
     );
-    return r ? { seq: r.server_seq, state: JSON.parse(r.state) as unknown } : undefined;
+    return r
+      ? { seq: r.server_seq, state: JSON.parse(r.state) as unknown, bytes: r.state.length }
+      : undefined;
   }
 
   /** The newest log row of each channel, for the channels that have rows. */

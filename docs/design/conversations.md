@@ -2,8 +2,10 @@
 
 Status: approved 2026-10-20. Corrected by the AHP spike ([ahp-spike.md](ahp-spike.md)): AHP is 1.0, not pre-1.0, and
 `serverSeq` is one counter for the whole host. The host core, the action store, the `/ahp` transport and the
-conversations table and REST routes are built (T59a, contract C22 in [coord.md](../coord.md)); the session host
-and the ACP mapper follow (T59b). The Conversations screen is T60.
+conversations table and REST routes are built (T59a, contract C22 in [coord.md](../coord.md)), and so are the
+session host and the ACP mapper (T59b: `apps/daemon/src/ahp/session-host.ts`, `acp-mapper.ts`). Tickets still run
+on their own path, with their transcripts as before; moving their stages onto the host is a follow-up. The
+Conversations screen is T60.
 
 ## Goal
 
@@ -101,6 +103,15 @@ Pieces in the daemon:
    Origin checks, keepalive pings, a frame size limit and a slow-consumer limit.
    Everything that is not a session stays plain REST.
 
+As built (T59b):
+- A conversation's agent runs in its employee's team sandbox, in `/home/employee/work/conv-<id>`: a worktree
+  of the project's repo on branch `conv/<id>`, made like a ticket's but never committed to or pushed, or an
+  empty folder with no project. At most three conversations are live per team: opening a fourth suspends the
+  least recently used idle one, and a message to a sleeping conversation when all three are busy waits in the
+  queue with the reason shown in the chat. Creating a conversation when all three are busy is refused (409).
+  Idle conversations suspend after 15 minutes; a daemon restart suspends them all. A crashed or killed agent
+  ends the turn with an error and starts again on the next message.
+
 The spike (T55, [ahp-spike.md](ahp-spike.md)) answered the open questions:
 - The official `@microsoft/agent-host-protocol` 1.0.0 works under Bun and Node (types, reducers, client,
   WebSocket transport). We pin it exactly and build our own host on its reducers; `@ahpd/sdk` is a
@@ -121,8 +132,10 @@ The spike (T55, [ahp-spike.md](ahp-spike.md)) answered the open questions:
   edits show a diff; long terminal output is truncated with "show all"; errors carry Retry.
 - **Composer.** Multi-line, Enter sends and Shift+Enter breaks a line; paste or drop images and
   files; the agent's slash commands (from `available_commands_update`); mode and model pickers;
-  a **Stop** button while a turn runs. Typing while it runs either **steers** the current turn or
-  **queues** a message (AHP pending messages).
+  a **Stop** button while a turn runs. Typing while it runs **queues** a message or sends it as a
+  **steering** message (AHP pending messages). A steering message runs as the next turn, ahead of the
+  queue; it does not interrupt the current turn, because ACP has no way to inject into a running one. To
+  interrupt, press **Stop**.
 - **Right: context panel (collapsible).** Project and branch, files changed with diffs, the
   agent's plan, the brain pages used for this turn, and usage.
 - **Phone:** the same stream in one column; the context panel becomes a sheet.

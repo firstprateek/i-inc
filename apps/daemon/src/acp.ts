@@ -89,9 +89,9 @@ export function extractRateLimit(rl: Record<string, unknown>, now = Date.now()):
   };
 }
 
-const bypassMode = /bypass|yolo|allow.?all|full.?access|dangerous/i;
+export const bypassMode = /bypass|yolo|allow.?all|full.?access|dangerous/i;
 // Claude Code says "You've hit your session limit · resets 3:30am (UTC)" (seen on the mini).
-const limitError =
+export const limitError =
   /rate.?limit|usage limit|session limit|weekly limit|hit your .{0,20}limit|(?<!disk )quota|resource.?exhausted|\b429\b|too many requests|limit reached/i;
 
 /** Transient errors in a row for one ticket before it counts as stuck. */
@@ -435,7 +435,7 @@ export function upstreamReason(e: unknown): string {
 }
 
 /** Select options can be nested by an ACP peer to group related choices. */
-function configChoices(config: Json): { value: string; name: string }[] {
+export function configChoices(config: Json): { value: string; name: string }[] {
   const choices: { value: string; name: string }[] = [];
   const visit = (value: unknown) => {
     if (!value || typeof value !== "object") return;
@@ -464,7 +464,7 @@ function toMs(v: unknown): number | null {
   return null;
 }
 
-function usageReport(accountId: Id, rl: Json): UsageReport {
+export function usageReport(accountId: Id, rl: Json): UsageReport {
   const windows = Object.entries((rl.unifiedWindows ?? {}) as Record<string, Json>).map(([name, w]) => ({
     name,
     utilization: Number(w.utilization ?? 0),

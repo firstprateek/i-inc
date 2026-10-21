@@ -154,3 +154,25 @@ export function sanitizeAction<T>(action: T, caps: Pick<Caps, "maxString" | "max
   }
   return out as T;
 }
+
+/**
+ * Only the patterns that are unmistakably credentials, for file contents (diffs) where the full
+ * redactor's hex and base64 rules would mangle source code: GitHub, OpenAI/Anthropic, Google, Slack,
+ * AWS and JWT tokens, bearer headers, private key blocks and passwords in URLs.
+ */
+export function redactTokens(text: string): string {
+  let out = text.length > 1_000_000 ? text.slice(0, 1_000_000) : text;
+  out = out.replace(
+    /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g,
+    "[redacted private key]",
+  );
+  out = out.replace(/(bearer\s+)[A-Za-z0-9._~+/=-]{16,}/gi, "$1[redacted]");
+  out = out.replace(/\b(?:ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]{20,}\b/g, "[redacted]");
+  out = out.replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, "[redacted]");
+  out = out.replace(/\bAIza[0-9A-Za-z_-]{30,}\b/g, "[redacted]");
+  out = out.replace(/\bxox[baprs]-[0-9A-Za-z-]{10,}\b/g, "[redacted]");
+  out = out.replace(/\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\b/g, "[redacted]");
+  out = out.replace(/\bAKIA[0-9A-Z]{16}\b/g, "[redacted]");
+  out = out.replace(/([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)([^:\s/@]+):([^@\s/]+)@/g, "$1$2:[redacted]@");
+  return out;
+}

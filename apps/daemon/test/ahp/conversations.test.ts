@@ -73,7 +73,10 @@ describe("REST /api/conversations", () => {
       title: "Lunch ideas",
       engineId: "gemini",
     });
-    expect(app.ahp.host.sessionState(made.body.conversation.ahpSession)?.workingDirectories).toBeUndefined();
+    // no project: an empty scratch folder at the same place
+    expect(app.ahp.host.sessionState(made.body.conversation.ahpSession)?.workingDirectories).toEqual([
+      `file://${conversationDir(made.body.conversation.id)}`,
+    ]);
   });
 
   it("lists newest activity first, hides archived by default, and filters by employee", async () => {

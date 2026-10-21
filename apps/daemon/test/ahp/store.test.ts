@@ -75,9 +75,11 @@ describe("persistence across a restart", () => {
       log: (m) => logs.push(m),
     });
     expect(plain(two.chatState(chat))).toEqual(plain(one.host.chatState(chat)));
-    const replayed = Number(/replayed (\d+) actions/.exec(logs[0] ?? "")?.[1]);
-    const total = (one.db.all("SELECT COUNT(*) AS n FROM ahp_actions")[0] as { n: number }).n;
-    expect(replayed).toBeLessThan(total);
+    const total = two.store.countChannelActionsAfter(chat, 0);
+    const tail = two.store.countChannelActionsAfter(chat, two.store.snapshotSeq(chat));
+    expect(two.store.snapshotSeq(chat)).toBeGreaterThan(0);
+    expect(tail).toBeLessThan(total);
+    expect(logs[0]).toMatch(/rebuilt \d+ channels/);
   });
 
   it("ends a turn that was running when the daemon died, keeping the text so far, and says why", async () => {

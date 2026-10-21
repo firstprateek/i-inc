@@ -120,7 +120,9 @@ export async function createApp(o: AppOptions) {
     ...(o.log ? { log: o.log } : {}),
   };
   const token = o.token;
-  const backend = o.ahpBackend ? make(o.ahpBackend) : new NoAgentBackend(() => agentsFromRegistry(registry));
+  const backend: AgentBackend = o.ahpBackend
+    ? make(o.ahpBackend)
+    : new NoAgentBackend(() => agentsFromRegistry(registry));
   const host = new AhpHost({
     db,
     backend,
@@ -163,6 +165,14 @@ export async function createApp(o: AppOptions) {
     machineBusy: (machine) => daemon.machineBusy(machine),
     hostBusy: () => daemon.busy(),
     ticketActive: (id) => daemon.isRunning(id),
+    archivedConversations: () =>
+      conversations
+        .list({ archived: true })
+        .flatMap((c) =>
+          c.archivedAt === null
+            ? []
+            : [{ id: c.id, employeeId: c.employeeId, project: c.project, archivedAt: c.archivedAt }],
+        ),
     footprint: () => ({
       ...daemon.footprint(),
       ...(ops.footprint ? ops.footprint() : {}),
@@ -170,6 +180,14 @@ export async function createApp(o: AppOptions) {
   });
   deps.storage = storage;
   daemon.storage = storage;
+  // Conversations count as work: the health check, the deployer's drain and VACUUM see their turns,
+  // and a machine with a live conversation agent is neither cleaned nor stopped.
+  daemon.onBusy(() => host.busy());
+  if (backend.liveEmployees) {
+    const live = () => backend.liveEmployees?.() ?? [];
+    daemon.onMachineBusy((machine) => live().some((e) => storage.machineOf(e) === machine));
+  }
+  backend.attachApp?.({ storage, awake: (id) => daemon.noteAwake(id) });
   daemon.ensureKnowledge();
   const handle = createApi(daemon, deps, {
     ...(o.token ? { token: o.token } : {}),
@@ -186,5 +204,14 @@ export async function createApp(o: AppOptions) {
     now: () => o.clock.now(),
     ...(o.log ? { log: o.log } : {}),
   });
-  return { db, deps, daemon, handle, live, storage, deploys, ahp: { host, transport, conversations } };
+  return {
+    db,
+    deps,
+    daemon,
+    handle,
+    live,
+    storage,
+    deploys,
+    ahp: { host, transport, conversations, backend },
+  };
 }

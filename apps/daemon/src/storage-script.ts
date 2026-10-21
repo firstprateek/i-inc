@@ -11,6 +11,9 @@
 //   - <work>/inc-<id> and <work>/inc-<id>.pre-checkout for the ids it is given: a ticket's worktree,
 //     a reviewer's copy of the branch, and the ticket's images under .inc/attachments (all in that
 //     folder). Never a symlink, never a folder whose real path isn't exactly that path.
+//   - <work>/conv-<id> for the archived conversations it is given (T59): the same rules as a ticket's
+//     copy, with unpushed commits and uncommitted changes kept until `aged`. A conversation with no
+//     project is a plain folder, which goes only when empty or aged.
 //   - A checkout stays whenever git can't tell it the copy is safe: any git failure, a missing git,
 //     unpushed commits, or uncommitted changes. Two lists relax that, and only that:
 //       `aged`   the ticket ended past unpushedKeepDays: the owner's policy says it goes (a copy git
@@ -41,6 +44,15 @@ export interface CleanupScriptOptions {
   aged?: Id[];
   /** Of those, the ones the owner approved: uncommitted noise may go once a fetch shows HEAD is on a remote. */
   merged?: Id[];
+  /**
+   * Archived conversations whose copies (<work>/conv-<id>) this machine may hold, under the same rules
+   * as a ticket's: a copy stays on any git doubt, with unpushed commits or with uncommitted changes.
+   */
+  convs?: Id[];
+  /** Of those, the ones past unpushedKeepDays: they go even with unpushed or uncommitted work (git must still work). */
+  convsAged?: Id[];
+  /** Of those, the ones with no project: a plain folder, no git, removable once aged (or if empty). */
+  convsScratch?: Id[];
   dryRun: boolean;
   /** The cap for ~/.cache, ~/.npm's cache and the pnpm store, in KB. */
   cacheCapKb: number;
@@ -56,8 +68,12 @@ export function cleanupScript(o: CleanupScriptOptions): string {
   const ids = [...new Set(o.ids)];
   const aged = new Set(o.aged ?? []);
   const merged = new Set(o.merged ?? []);
+  const convs = [...new Set(o.convs ?? [])];
   for (const id of [...ids, ...aged, ...merged])
     if (!idPattern.test(id)) throw new Error(`not a ticket id: ${id}`);
+  for (const id of [...convs, ...(o.convsAged ?? []), ...(o.convsScratch ?? [])])
+    if (!idPattern.test(id)) throw new Error(`not a conversation id: ${id}`);
+  const label = (id: Id) => `conv-${id}`;
   if (!Number.isInteger(o.cacheCapKb) || o.cacheCapKb < 1) throw new Error("the cache cap must be a number");
   const loop = ids.length
     ? [
@@ -79,6 +95,23 @@ export function cleanupScript(o: CleanupScriptOptions): string {
         "  done",
       ]
     : ["  # No closed tickets to clean here."];
+  // An archived conversation's copy: the same guard, reported as conv-<id>. It has no reviewer's twin.
+  const convLoop = convs.length
+    ? [
+        `  for cid in ${convs.join(" ")}; do`,
+        '    id="conv-$cid"; q="$WORK/conv-$cid"',
+        '    if [ -L "$q" ]; then echo "@@refused $id symlink"; continue; fi',
+        '    [ -d "$q" ] || continue',
+        '    if [ "$(cd "$q" 2>/dev/null && pwd -P)" != "$q" ]; then echo "@@refused $id path"; continue; fi',
+        '    reason=""',
+        '    if ! guard "$q" "$id"; then echo "@@kept $id ${reason:-gitfail}"; continue; fi',
+        '    size=$(kb "$q")',
+        '    if [ "$DRY" = 0 ]; then chmod -R u+w "$q" 2>/dev/null; rm -rf $RMFLAGS -- "$q"; fi',
+        '    if [ "$DRY" = 0 ] && [ -e "$q" ]; then echo "@@failed $id"; continue; fi',
+        '    echo "@@removed $id ${size:-0}"; removed=1',
+        "  done",
+      ]
+    : [];
   return [
     "set -u",
     `WORK='${o.work}'`,
@@ -86,7 +119,8 @@ export function cleanupScript(o: CleanupScriptOptions): string {
     `CAP=${o.cacheCapKb}`,
     `DOCKER=${o.docker ? 1 : 0}`,
     `TRIM=${o.trim ? 1 : 0}`,
-    `AGED=' ${[...aged].join(" ")} '`,
+    `AGED=' ${[...aged, ...(o.convsAged ?? []).map(label)].join(" ")} '`,
+    `SCRATCH=' ${(o.convsScratch ?? []).map(label).join(" ")} '`,
     `MERGED=' ${[...merged].join(" ")} '`,
     "main() {",
     '  export PATH="$HOME/.local/bin:$PATH"',
@@ -109,6 +143,8 @@ export function cleanupScript(o: CleanupScriptOptions): string {
     "      # Not a checkout: the launcher's empty folder, which holds at most the images.",
     '      extra=$(ls -A "$gq" | grep -v "^[.]inc$" | head -n 1) || { reason=notcheckout; return 1; }',
     '      [ -z "$extra" ] && return 0',
+    // A conversation with no project is a plain folder by design: its files go once they are aged.
+    '      case "$SCRATCH" in *" $gid "*) [ "$gaged" = 1 ] && return 0 ;; esac',
     "      reason=notcheckout; return 1",
     "    fi",
     '    [ "$GIT" = 1 ] || { reason=nogit; return 1; }',
@@ -132,6 +168,7 @@ export function cleanupScript(o: CleanupScriptOptions): string {
     '  echo "@@df $(df_line)"',
     "  removed=0",
     ...loop,
+    ...convLoop,
     // Branches stay on GitHub. Locally, git forgets the removed worktrees and packs what it can.
     '  if [ "$DRY" = 0 ] && [ "$removed" = 1 ] && [ "$GIT" = 1 ]; then',
     '    for g in "$WORK"/*/.git; do',

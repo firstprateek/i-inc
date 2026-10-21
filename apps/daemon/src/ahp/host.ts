@@ -99,6 +99,10 @@ export interface TransportLimits {
   /** The log is pruned this often (ms), and after this many actions, as well as at startup. */
   pruneEveryMs: number;
   pruneEveryActions: number;
+  /** Chats kept in memory once idle and unwatched; the rest are read from disk when needed. */
+  maxLoadedChats: number;
+  /** The same, by size: bytes of JSON across the chats in memory. */
+  maxLoadedBytes: number;
 }
 
 export const defaultTransportLimits: TransportLimits = {
@@ -118,6 +122,8 @@ export const defaultTransportLimits: TransportLimits = {
   deltaFlushChars: 16_384,
   pruneEveryMs: 3_600_000,
   pruneEveryActions: 5000,
+  maxLoadedChats: 20,
+  maxLoadedBytes: 50 * 1024 * 1024,
 };
 
 /** What a prompt may carry. Images are checked by their bytes. */
@@ -208,7 +214,19 @@ const invalid = (m: string) => new RpcError(JsonRpcErrorCodes.InvalidParams, m);
 
 interface Channel {
   uri: string;
-  c: ChannelState;
+  kind: ChannelKind;
+  /**
+   * The channel's state. A chat that is idle and that nobody is looking at is dropped from memory
+   * (undefined) and rebuilt from its snapshot and log when next needed; the root and sessions are
+   * small and always held.
+   */
+  c: ChannelState | undefined;
+  /** The state the channel was created with, to rebuild it from. */
+  initial: unknown;
+  /** When it was last used (a counter), for the least-recently-used choice. */
+  touched: number;
+  /** Roughly how big its state is (bytes of JSON), as of its last snapshot or load. */
+  bytes: number;
   createdAt: number;
   meta: Json;
   sinceSnapshot: number;
@@ -268,6 +286,7 @@ export class AhpHost {
   private pruneTimer: ReturnType<typeof setInterval> | undefined;
   private actionsSincePrune = 0;
   private pruneSoon = false;
+  private tick = 0;
 
   constructor(private readonly o: HostOptions) {
     const {
@@ -291,6 +310,7 @@ export class AhpHost {
     this.caps = { ...defaultCaps, ...o.caps };
     this.now = o.now ?? Date.now;
     this.log = o.log ?? (() => {});
+    o.backend.attach?.(this);
     this.rebuild();
     // Pruning at startup alone would let a daemon that runs for months keep every row it ever wrote.
     this.pruneTimer = setInterval(() => this.pruneQuietly(), this.limits.pruneEveryMs);
@@ -327,32 +347,39 @@ export class AhpHost {
       rows.unshift(row);
     }
     this.seq = this.store.maxSeq();
-    let replayed = 0;
+    const snapSeqs = this.store.snapshotSeqByChannel();
     for (const r of rows) {
-      const snap = this.store.latestSnapshot(r.uri);
-      let c = { kind: r.kind, state: snap?.state ?? r.initial } as ChannelState;
-      for (const a of this.store.channelActionsAfter(r.uri, snap?.seq ?? r.createdSeq)) {
-        c = reduce(c, a.action as StateAction);
-        replayed++;
-      }
-      this.chans.set(r.uri, {
+      const ch: Channel = {
         uri: r.uri,
-        c,
+        kind: r.kind,
+        c: undefined,
+        initial: r.initial,
+        touched: 0,
+        bytes: 0,
         createdAt: r.createdAt,
         meta: r.meta,
         sinceSnapshot: 0,
         logBytes: 0,
         stateBytes: 0,
         snapshotAt: 0,
-        lastSeq: Math.max(lastSeqs.get(r.uri) ?? 0, snap?.seq ?? 0, r.createdSeq),
-      });
+        lastSeq: Math.max(lastSeqs.get(r.uri) ?? 0, snapSeqs.get(r.uri) ?? 0, r.createdSeq),
+      };
+      this.chans.set(r.uri, ch);
+      // Chats stay on disk until someone needs them; only one that was mid-turn when the host died
+      // (or from before this was recorded) is read now, to end its turn.
+      if (r.kind === "chat" && r.meta.active === false) continue;
+      const c = this.cs(ch);
       if (c.kind === "session") for (const chat of c.state.chats) this.chatSession.set(chat.resource, r.uri);
     }
-    this.log(`ahp: rebuilt ${rows.length} channels at serverSeq ${this.seq}, replayed ${replayed} actions`);
+    this.log(
+      `ahp: rebuilt ${rows.length} channels at serverSeq ${this.seq}, ${this.loadedChats} chats held in memory`,
+    );
     this.refreshAgents();
     // What was running when the host stopped did not finish (spec: unexpected disconnection).
-    for (const ch of this.chans.values()) {
-      if (ch.c.kind === "session" && ch.c.state.lifecycle === SessionLifecycle.Creating) {
+    for (const ch of [...this.chans.values()]) {
+      const c = ch.c;
+      if (!c) continue;
+      if (c.kind === "session" && c.state.lifecycle === SessionLifecycle.Creating) {
         this.apply(ch.uri, {
           type: ActionType.SessionCreationFailed,
           error: {
@@ -361,8 +388,8 @@ export class AhpHost {
           },
         });
       }
-      if (ch.c.kind === "chat" && ch.c.state.activeTurn) {
-        const t = ch.c.state.activeTurn;
+      if (c.kind === "chat" && c.state.activeTurn) {
+        const t = c.state.activeTurn;
         this.apply(ch.uri, {
           type: ActionType.ChatError,
           turnId: t.id,
@@ -385,9 +412,9 @@ export class AhpHost {
   /** The root channel's agents follow the backend's providers. */
   refreshAgents(): void {
     const root = this.chans.get(ROOT);
-    if (root?.c.kind !== "root") return;
+    if (root?.kind !== "root") return;
     const agents = this.o.backend.agents();
-    if (JSON.stringify(agents) !== JSON.stringify(root.c.state.agents)) {
+    if (JSON.stringify(agents) !== JSON.stringify((this.cs(root).state as RootState).agents)) {
       this.apply(ROOT, { type: ActionType.RootAgentsChanged, agents });
     }
   }
@@ -396,25 +423,85 @@ export class AhpHost {
   prune(): void {
     // A channel with log rows but no snapshot of them gets one first, so its old rows can go.
     const snaps = this.store.snapshotSeqByChannel();
-    for (const ch of this.chans.values()) {
-      if (ch.lastSeq > (snaps.get(ch.uri) ?? 0)) this.store.snapshot(ch.uri, ch.lastSeq, ch.c.state);
+    for (const ch of [...this.chans.values()]) {
+      if (ch.lastSeq > (snaps.get(ch.uri) ?? 0)) this.store.snapshot(ch.uri, ch.lastSeq, this.cs(ch).state);
     }
     const removed = this.store.prune(this.now());
     if (removed > 0) this.log(`ahp: pruned ${removed} log rows`);
   }
 
   state<T = unknown>(uri: string): T | undefined {
-    this.flushDeltas(uri);
-    return this.chans.get(uri)?.c.state as T | undefined;
+    const ch = this.chans.get(uri);
+    return ch ? (this.cs(ch).state as T) : undefined;
   }
   sessionState(uri: string): SessionState | undefined {
-    const c = this.chans.get(uri)?.c;
-    return c?.kind === "session" ? c.state : undefined;
+    const ch = this.chans.get(uri);
+    if (ch?.kind !== "session") return undefined;
+    return this.cs(ch).state as SessionState;
   }
   chatState(uri: string): ChatState | undefined {
-    this.flushDeltas(uri);
-    const c = this.chans.get(uri)?.c;
-    return c?.kind === "chat" ? c.state : undefined;
+    const ch = this.chans.get(uri);
+    if (ch?.kind !== "chat") return undefined;
+    return this.cs(ch).state as ChatState;
+  }
+  /** Is a turn running in this chat? Does not read a chat that is out of memory (it has none). */
+  hasActiveTurn(uri: string): boolean {
+    const ch = this.chans.get(uri);
+    return !!ch?.c && ch.c.kind === "chat" && !!ch.c.state.activeTurn;
+  }
+  /** Chats held in memory now (the rest are on disk). */
+  get loadedChats(): number {
+    let n = 0;
+    for (const ch of this.chans.values()) if (ch.kind === "chat" && ch.c) n++;
+    return n;
+  }
+
+  /**
+   * A channel's state, read from its snapshot and log if it is out of memory. Using one makes it the
+   * most recently used, and may put the least recently used idle chats out of memory.
+   */
+  private cs(ch: Channel): ChannelState {
+    if (ch.kind === "chat") this.flushDeltas(ch.uri);
+    ch.touched = ++this.tick;
+    if (!ch.c) {
+      const snap = this.store.latestSnapshot(ch.uri);
+      let c = { kind: ch.kind, state: snap?.state ?? ch.initial } as ChannelState;
+      for (const a of this.store.channelActionsAfter(ch.uri, snap?.seq ?? 0))
+        c = reduce(c, a.action as StateAction);
+      ch.c = c;
+      ch.bytes = snap?.bytes ?? 0;
+      this.trim(ch);
+    }
+    return ch.c;
+  }
+
+  /** May this chat leave memory? Not while it is working, being looked at, or the one in use. */
+  private evictable(ch: Channel, keep: Channel): boolean {
+    if (ch === keep || ch.kind !== "chat" || !ch.c || ch.c.kind !== "chat" || ch.c.state.activeTurn)
+      return false;
+    if (this.runs.has(ch.uri)) return false;
+    for (const conn of this.conns) if (conn.subs.has(ch.uri)) return false;
+    return true;
+  }
+
+  /** Puts idle chats out of memory, least recently used first, down to the limits. */
+  private trim(keep: Channel): void {
+    const held = [...this.chans.values()].filter((c) => c.kind === "chat" && c.c);
+    let bytes = held.reduce((n, c) => n + c.bytes, 0);
+    let count = held.length;
+    if (count <= this.limits.maxLoadedChats && bytes <= this.limits.maxLoadedBytes) return;
+    for (const ch of held.sort((a, b) => a.touched - b.touched)) {
+      if (count <= this.limits.maxLoadedChats && bytes <= this.limits.maxLoadedBytes) break;
+      if (!this.evictable(ch, keep) || !ch.c) continue;
+      // Leave a snapshot at the newest action, so it comes back without replaying a long tail.
+      if (ch.lastSeq > this.store.snapshotSeq(ch.uri)) {
+        ch.bytes = this.store.snapshot(ch.uri, ch.lastSeq, ch.c.state);
+        ch.sinceSnapshot = 0;
+      }
+      ch.c = undefined;
+      count--;
+      bytes -= ch.bytes;
+    }
   }
   /** The newest serverSeq. */
   get serverSeq(): number {
@@ -424,7 +511,11 @@ export class AhpHost {
     return this.chatSession.get(chat);
   }
   sessions(): string[] {
-    return [...this.chans].filter(([, ch]) => ch.c.kind === "session").map(([uri]) => uri);
+    return [...this.chans].filter(([, ch]) => ch.kind === "session").map(([uri]) => uri);
+  }
+  /** Is any turn running (including one waiting for a slot or for the agent to start)? */
+  busy(): boolean {
+    return this.runs.size > 0;
   }
   connectionCount(): number {
     return this.conns.size;
@@ -457,7 +548,7 @@ export class AhpHost {
     const ch = this.chans.get(channel);
     if (!ch) throw new RpcError(AhpErrorCodes.NotFound, `no channel ${channel}`);
     this.flushDeltas(channel);
-    const next = reduce(ch.c, action);
+    const next = reduce(this.cs(ch), action);
     const seq = this.seq + 1;
     const json = JSON.stringify(action);
     const at = this.now();
@@ -481,6 +572,7 @@ export class AhpHost {
       ch.stateBytes = size ?? 0;
       ch.snapshotAt = at;
     }
+    if (size !== undefined) ch.bytes = size;
     ch.lastSeq = seq;
     // A lot of writing since the last prune: do it soon, but not inside this action.
     if (++this.actionsSincePrune >= this.limits.pruneEveryActions && !this.pruneSoon) {
@@ -496,12 +588,13 @@ export class AhpHost {
       this.log(`ahp: onApplied failed for ${action.type}: ${e instanceof Error ? e.message : e}`);
     }
     if (
-      ch.c.kind === "chat" &&
+      ch.kind === "chat" &&
       action.type !== ActionType.ChatDelta &&
       action.type !== ActionType.ChatReasoning
     ) {
       this.afterChat(channel);
-    } else if (ch.c.kind === "session") {
+      this.trim(ch);
+    } else if (ch.kind === "session") {
       this.noteSummary(channel);
     }
     return env;
@@ -556,10 +649,10 @@ export class AhpHost {
     if (!p) return;
     this.pendingDeltas.delete(channel);
     clearTimeout(p.timer);
-    const ch = this.chans.get(channel);
-    if (ch?.c.kind !== "chat") return;
+    const c = this.chans.get(channel)?.c;
+    if (c?.kind !== "chat") return; // a chat with text waiting is mid-turn, so it is in memory
     // A part is kept to maxPart characters: the rest is cut, once, with a marker, and nothing more is added.
-    const part = ch.c.state.activeTurn?.responseParts.find(
+    const part = c.state.activeTurn?.responseParts.find(
       (x) =>
         (x.kind === ResponsePartKind.Markdown || x.kind === ResponsePartKind.Reasoning) &&
         x.id === p.action.partId,
@@ -609,7 +702,8 @@ export class AhpHost {
   private sessionStatus(uri: string): number {
     const s = this.sessionState(uri);
     if (!s) return SessionStatus.Idle;
-    const chats = s.chats.map((c) => this.chatState(c.resource)).filter((c): c is ChatState => !!c);
+    // The session's catalogue follows its chats (afterChat), so a list never reads a chat from disk.
+    const chats = s.chats;
     const main = chats.find((c) => c.resource === s.defaultChat) ?? chats[chats.length - 1];
     let act = main ? activity(main.status) : SessionStatus.Idle;
     if (chats.some((c) => activity(c.status) === SessionStatus.InputNeeded)) act = SessionStatus.InputNeeded;
@@ -619,12 +713,9 @@ export class AhpHost {
 
   summary(uri: string): SessionSummary | undefined {
     const ch = this.chans.get(uri);
-    if (ch?.c.kind !== "session") return undefined;
-    const s = ch.c.state;
-    const modified = Math.max(
-      ch.createdAt,
-      ...s.chats.map((c) => Date.parse(this.chatState(c.resource)?.modifiedAt ?? c.modifiedAt) || 0),
-    );
+    if (ch?.kind !== "session") return undefined;
+    const s = this.cs(ch).state as SessionState;
+    const modified = Math.max(ch.createdAt, ...s.chats.map((c) => Date.parse(c.modifiedAt) || 0));
     return {
       resource: uri,
       provider: s.provider,
@@ -637,7 +728,7 @@ export class AhpHost {
       chats: s.chats.map((c) => ({
         resource: c.resource,
         title: c.title,
-        status: this.chatState(c.resource)?.status ?? c.status,
+        status: c.status,
       })),
       ...(s.defaultChat ? { defaultChat: s.defaultChat } : {}),
       ...(s._meta ? { _meta: s._meta } : {}),
@@ -669,6 +760,10 @@ export class AhpHost {
     const chat = this.chatState(chatUri);
     const session = sessionUri ? this.sessionState(sessionUri) : undefined;
     if (!sessionUri || !chat || !session) return;
+    // Whether a turn is running is kept with the chat's record, so a restart knows which chats to read.
+    const ch = this.chans.get(chatUri);
+    if (ch && (ch.meta.active === true) !== !!chat.activeTurn)
+      this.setChannelMeta(chatUri, { active: !!chat.activeTurn });
     const entry = session.chats.find((c) => c.resource === chatUri);
     const changes: Partial<ChatSummary> = {};
     if (entry?.status !== chat.status) changes.status = chat.status;
@@ -993,17 +1088,18 @@ export class AhpHost {
         `no channel ${uri}`,
       );
     }
-    let state: unknown = ch.c.state;
+    const c = this.cs(ch);
+    let state: unknown = c.state;
     conn.windows.delete(uri);
-    if (ch.c.kind === "chat" && typeof view?.turns === "number" && view.turns >= 0) {
+    if (c.kind === "chat" && typeof view?.turns === "number" && view.turns >= 0) {
       // A windowed snapshot: the last N completed turns and a cursor for the older ones.
-      const turns = ch.c.state.turns;
+      const turns = c.state.turns;
       const keep = Math.floor(view.turns);
       if (turns.length > keep) {
         const start = turns.length - keep;
         const cursor = `before:${keep === 0 ? "END" : turns[start]?.id}`;
         conn.windows.set(uri, cursor);
-        state = { ...ch.c.state, turns: turns.slice(start), turnsNextCursor: cursor };
+        state = { ...c.state, turns: turns.slice(start), turnsNextCursor: cursor };
       }
     }
     return { resource: uri, state, fromSeq: this.seq };
@@ -1160,8 +1256,9 @@ export class AhpHost {
     if (!agent) throw new RpcError(AhpErrorCodes.ProviderNotFound, `no agent for provider ${spec.provider}`);
     const chat = `ahp-chat:/${crypto.randomUUID()}`;
     this.creating.add(session);
+    let opened: Awaited<ReturnType<AgentBackend["openSession"]>> | undefined;
     try {
-      const opened = await this.o.backend.openSession({
+      opened = await this.o.backend.openSession({
         session,
         chat,
         provider: spec.provider,
@@ -1210,24 +1307,34 @@ export class AhpHost {
           initial: chatInitial,
           createdSeq: this.seq,
           createdAt: now,
-          meta: { session },
+          meta: { session, active: false },
         });
       });
       const base = {
         sinceSnapshot: 0,
         lastSeq: this.seq,
         createdAt: now,
-        meta: {} as Json,
+        bytes: 0,
+        touched: ++this.tick,
         logBytes: 0,
         stateBytes: 0,
         snapshotAt: 0,
       };
-      this.chans.set(session, { ...base, uri: session, c: { kind: "session", state: sessionInitial } });
+      this.chans.set(session, {
+        ...base,
+        uri: session,
+        kind: "session",
+        initial: sessionInitial,
+        c: { kind: "session", state: sessionInitial },
+        meta: {},
+      });
       this.chans.set(chat, {
         ...base,
         uri: chat,
+        kind: "chat",
+        initial: chatInitial,
         c: { kind: "chat", state: chatInitial },
-        meta: { session },
+        meta: { session, active: false },
       });
       this.chatSession.set(chat, session);
       this.apply(session, {
@@ -1236,11 +1343,16 @@ export class AhpHost {
       });
       this.apply(session, { type: ActionType.SessionDefaultChatChanged, defaultChat: chat });
       this.apply(session, { type: ActionType.SessionReady });
+      this.o.backend.afterCreate?.(session, chat);
       this.lastSummary.delete(session);
       this.noteSummary(session);
       const sum = this.summary(session);
       if (sum) this.notify(ROOT, "root/sessionAdded", { summary: sum });
       return { session, chat };
+    } catch (e) {
+      // The agent side opened but the session did not come to be: let the backend let go of it.
+      if (opened && !this.chans.has(session)) await this.o.backend.closeSession(session).catch(() => {});
+      throw e;
     } finally {
       this.creating.delete(session);
     }
@@ -1321,13 +1433,17 @@ export class AhpHost {
       initial,
       createdSeq: this.seq,
       createdAt: now,
-      meta: { session: sessionUri },
+      meta: { session: sessionUri, active: false },
     });
     this.chans.set(chat, {
       uri: chat,
+      kind: "chat",
+      initial,
       c: { kind: "chat", state: initial },
+      touched: ++this.tick,
+      bytes: 0,
       createdAt: now,
-      meta: { session: sessionUri },
+      meta: { session: sessionUri, active: false },
       sinceSnapshot: 0,
       logBytes: 0,
       stateBytes: 0,
@@ -1402,7 +1518,7 @@ export class AhpHost {
     if (!isObj(action) || typeof action.type !== "string") return refuse("not an action");
     const a = action as unknown as StateAction;
     if (!isClientDispatchable(a as never)) return refuse(`${a.type} is not client-dispatchable`);
-    const kind: ChannelKind = ch.c.kind;
+    const kind: ChannelKind = ch.kind;
     if (!a.type.startsWith(`${kind}/`)) return refuse(`${a.type} does not belong on a ${kind} channel`);
     const origin = { clientId: conn.clientId ?? `conn-${conn.id}`, clientSeq };
     try {
@@ -1428,8 +1544,9 @@ export class AhpHost {
     const channel = ch.uri;
     const raw = a as unknown as Json;
     const short = (v: unknown, name: string) => str(v, name, attachmentLimits.shortChars);
-    if (ch.c.kind === "chat") {
-      const st = ch.c.state;
+    const c = this.cs(ch);
+    if (c.kind === "chat") {
+      const st = c.state;
       switch (a.type) {
         case ActionType.ChatTurnStarted: {
           if (st.activeTurn) return no("a turn is already running: queue the message instead");
@@ -1619,7 +1736,7 @@ export class AhpHost {
           return no(`${a.type} is not supported by this host`);
       }
     }
-    if (ch.c.kind === "session") {
+    if (c.kind === "session") {
       switch (a.type) {
         case ActionType.SessionTitleChanged: {
           if (typeof raw.title !== "string" || raw.title.trim().length === 0)
@@ -1646,7 +1763,7 @@ export class AhpHost {
           return;
         }
         case ActionType.SessionConfigChanged: {
-          const config = ch.c.state.config;
+          const config = c.state.config;
           const asked = isObj(raw.config) ? raw.config : undefined;
           if (!config || !asked) return no("this session has no config to change");
           if (raw.replace) return no("config values are changed one at a time");
