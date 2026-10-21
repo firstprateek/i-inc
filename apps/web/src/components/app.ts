@@ -1,6 +1,7 @@
 import { css, html, LitElement } from "lit";
 import { logout, refresh } from "../api.ts";
 import { connection, isOffline } from "../connection.ts";
+import { isDismissed, showGettingStarted } from "../first-run.ts";
 import { startLiveUpdates } from "../live.ts";
 import { loadNeedsYouCount } from "../needs-you.ts";
 import {
@@ -8,10 +9,11 @@ import {
   areaOf,
   COMPANY_TABS,
   companyTabHref,
+  homeHash,
   layoutForRoute,
-  legacyTarget,
   parse,
   type Route,
+  redirectFor,
   routeName,
   routeTitle,
   tabOf,
@@ -89,6 +91,7 @@ export class IncApp extends LitElement {
   private left = false;
   private settleToken = 0;
   private needsToken = 0;
+  private phoneQuery: MediaQueryList | null = null;
   private lastView: Route["view"] = "conversations";
 
   constructor() {
@@ -101,9 +104,12 @@ export class IncApp extends LitElement {
     this.needsCount = null;
   }
 
-  /** An old hash is rewritten in place to its new one (no history entry); returns the hash to parse. */
+  /**
+   * An old, mistyped or unknown hash is rewritten in place to its canonical one, or to the home route (no
+   * history entry); returns the hash to parse.
+   */
   private canonicalHash(): string {
-    const to = legacyTarget(location.hash);
+    const to = redirectFor(location.hash);
     if (to) {
       try {
         history.replaceState(history.state, "", to);
@@ -117,6 +123,9 @@ export class IncApp extends LitElement {
     addEventListener("hashchange", this.onHash);
     connection.addEventListener("change", this.onConnection);
     refresh.addEventListener("refresh", this.loadNeeds);
+    // The logo goes home, and home differs between a laptop and a phone: follow a resize across the line.
+    this.phoneQuery = matchMedia(`(max-width: ${LAYOUT_BREAKPOINTS.phone}px)`);
+    this.phoneQuery.addEventListener?.("change", this.onPhoneChange);
     document.addEventListener("click", this.onDocumentClick);
     document.addEventListener("keydown", this.onDocumentKeydown);
     this.stopLive = startLiveUpdates();
@@ -164,6 +173,7 @@ export class IncApp extends LitElement {
     removeEventListener("hashchange", this.onHash);
     connection.removeEventListener("change", this.onConnection);
     refresh.removeEventListener("refresh", this.loadNeeds);
+    this.phoneQuery?.removeEventListener?.("change", this.onPhoneChange);
     document.removeEventListener("click", this.onDocumentClick);
     document.removeEventListener("keydown", this.onDocumentKeydown);
     this.stopLive?.();
@@ -239,6 +249,8 @@ export class IncApp extends LitElement {
       return;
     this.renderRoot.querySelector<HTMLElement>("#view-heading")?.focus({ preventScroll: true });
   }
+
+  private onPhoneChange = () => this.requestUpdate();
 
   private onConnection = () => {
     this.offline = isOffline();
@@ -317,6 +329,13 @@ export class IncApp extends LitElement {
     tabs[to]?.focus();
   };
 
+  /** Brings the first-run checklist back, on Conversations where it lives. */
+  private showGettingStarted() {
+    this.accountOpen = false;
+    showGettingStarted();
+    this.navigate("conversations");
+  }
+
   private isDark(): boolean {
     return this.theme ? this.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
   }
@@ -380,9 +399,12 @@ export class IncApp extends LitElement {
       nav.areas a { display: inline-flex; align-items: center; min-height: 44px; box-sizing: border-box; padding: 0 16px;
         border-radius: 999px; font-weight: 600; font-size: 15px; text-decoration: none; }
       nav.areas a[aria-current="page"] { background: var(--ink); color: var(--on-ink); }
+      /* A filter chip, not a place: pressed means Work is showing only what needs you. Work stays the
+         highlighted area; the chip gets an outline, never the filled "current" look. */
       .needs-link { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; box-sizing: border-box; padding: 0 14px;
-        border-radius: 999px; border: 1px solid var(--line-strong); font-weight: 600; font-size: 15px; text-decoration: none; white-space: nowrap; }
-      .needs-link[aria-current="page"] { background: var(--ink); color: var(--on-ink); border-color: var(--ink); }
+        border-radius: 999px; border: 1px solid var(--line-strong); background: transparent; color: var(--ink);
+        font: 600 15px var(--body); white-space: nowrap; }
+      .needs-link[aria-pressed="true"] { background: var(--sunken); border: 2px solid var(--ink); padding: 0 13px; }
       .count { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; padding: 0 6px;
         box-sizing: border-box; border-radius: 999px; font-size: 12px; font-weight: 800; background: var(--neutral-bg); color: var(--neutral-fg); }
       .count.some { background: var(--needs-bg); color: var(--needs-fg); border: 1px solid var(--needs-edge); }
@@ -640,16 +662,17 @@ export class IncApp extends LitElement {
 
     return html`
       <header @click=${this.onHeaderClick}>
-        <a class="mark" href="#/conversations">i.inc</a>
+        <a class="mark" href=${homeHash()}>i.inc</a>
         <nav class="areas" aria-label="Areas">
           ${AREAS.map((a) => html`<a href=${a.href} aria-current=${a.id === area ? "page" : "false"}>${a.label}</a>`)}
         </nav>
-        <a class="needs-link" href="#/work/needs-you" aria-current=${needsActive ? "page" : "false"}
-          aria-label=${count ? `Needs you, ${count} waiting` : "Needs you"}>Needs you${
+        <button class="needs-link" type="button" aria-pressed=${needsActive ? "true" : "false"}
+          aria-label=${count ? `Needs you, ${count} waiting` : "Needs you"}
+          @click=${() => this.navigate(needsActive ? "work/board" : "work/needs-you")}>Needs you${
             count === null
               ? ""
               : html`<span class="count ${count ? "some" : ""}" aria-hidden="true">${count}</span>`
-          }</a>
+          }</button>
         <span class="spacer"></span>
         <div class="account-wrap">
           <button class="icon account-trigger" type="button" aria-label="Account menu" aria-haspopup="menu"
@@ -658,6 +681,11 @@ export class IncApp extends LitElement {
             this.accountOpen
               ? html`<div class="account-menu" role="menu" aria-label="Account" @keydown=${this.onMenuKey} @click=${(e: Event) => e.stopPropagation()}>
                   <button type="button" role="menuitem" @click=${() => this.toggleTheme()}>${this.isDark() ? "Switch to light theme" : "Switch to dark theme"}</button>
+                  ${
+                    isDismissed()
+                      ? html`<button type="button" role="menuitem" @click=${() => this.showGettingStarted()}>Show getting started</button>`
+                      : ""
+                  }
                   <button type="button" role="menuitem" @click=${() => logout()}>Sign out</button>
                 </div>`
               : ""

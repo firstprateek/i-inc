@@ -178,6 +178,14 @@ describe("My desk view and releases (T33)", () => {
     expect(root.textContent).not.toContain("What the team learned");
   });
 
+  it("keeps the lesson links at least 44px tall on a phone (CSS)", () => {
+    const css = (customElements.get("inc-desk") as unknown as { styles: { cssText: string }[] }).styles
+      .map((c) => c.cssText)
+      .join("\n");
+    const phoneRules = css.slice(css.indexOf("@media (max-width: 900px)"));
+    expect(phoneRules).toMatch(/\.learned a \{[^}]*min-height:\s*44px/);
+  });
+
   it("links a lesson to the company brain's new address", async () => {
     serveDesk();
     const { root } = await mount("usage");

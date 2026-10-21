@@ -3,7 +3,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { IncApp, layoutForRoute, parse, routeName } from "../src/components/app.ts";
 import { IncLogin } from "../src/login.ts";
-import { AREAS, areaOf, COMPANY_TABS, legacyTarget, tabOf, WORK_TABS } from "../src/routes.ts";
+import {
+  AREAS,
+  areaOf,
+  COMPANY_TABS,
+  homeHash,
+  legacyTarget,
+  redirectFor,
+  tabOf,
+  WORK_TABS,
+} from "../src/routes.ts";
 
 const phone = (matches: boolean) =>
   vi.stubGlobal("matchMedia", (query: string) => ({
@@ -130,6 +139,97 @@ describe("old hashes keep working", () => {
     await app.updateComplete;
     expect(location.hash).toBe("#/conversations/ada");
     expect(app.route).toEqual({ view: "conversations", id: "ada" });
+    app.remove();
+  });
+});
+
+describe("redirectFor: tidying, mistyped and unknown hashes", () => {
+  it.each([
+    ["#/Inbox", "#/work/needs-you"],
+    ["#/INBOX", "#/work/needs-you"],
+    ["#/inbox?x=1", "#/work/needs-you"],
+    ["#/inbox/", "#/work/needs-you"],
+    ["#/Chat/Ada", "#/conversations/Ada"],
+    ["#/chat/ada?draft=1", "#/conversations/ada"],
+    ["#/Setup/Projects", "#/company/projects"],
+    ["#/Setup/Engines", "#/company/settings/engines"],
+    ["#/Work/Board", "#/work/board"],
+    ["#/work/Needs-You", "#/work/needs-you"],
+    ["#/work/nonsense", "#/work/board"],
+    ["#/Company/Settings/Sandboxes", "#/company/settings/sandboxes"],
+    ["#/company/settings/nonsense", "#/company/settings/teams"],
+    ["#/company/Team/Hiring/ada", "#/company/team/hiring/ada"],
+    ["#/company/brain/Ada?x", "#/company/brain/Ada"],
+    ["#/company/whatever", "#/company/team"],
+    ["#/Ticket/12/Assign", "#/ticket/12/assign"],
+    ["#/ticket/12?from=push", "#/ticket/12"],
+    ["#/Conversations/ada/", "#/conversations/ada"],
+  ])("%s becomes %s", (hash, to) => {
+    expect(redirectFor(hash)).toBe(to);
+    phone(false);
+    expect(parse(hash)).toEqual(parse(to));
+  });
+
+  it("sends a hash the app does not know to the home route: Conversations on a laptop, Needs you on a phone", () => {
+    for (const h of ["#/bogus", "#/ticket", "#//", "#/Bogus/thing", "bogus", "#/ticketing/1"]) {
+      phone(false);
+      expect(redirectFor(h), h).toBe("#/conversations");
+      phone(true);
+      expect(redirectFor(h), h).toBe("#/work/needs-you");
+    }
+  });
+
+  it("leaves canonical hashes and an empty hash alone", () => {
+    for (const h of [
+      "",
+      "#",
+      "#/",
+      "#/work",
+      "#/work/board",
+      "#/company",
+      "#/company/team/hiring",
+      "#/ticket/12/assign",
+      "#/conversations/ada",
+    ])
+      expect(redirectFor(h), h).toBeNull();
+  });
+
+  it("the home hash is the phone home on a phone and Conversations on a laptop", () => {
+    phone(true);
+    expect(homeHash()).toBe("#/work/needs-you");
+    phone(false);
+    expect(homeHash()).toBe("#/conversations");
+  });
+
+  it("the app rewrites a bogus hash to the home route in place, without a new history entry", async () => {
+    for (const [onPhone, home] of [
+      [false, "#/conversations"],
+      [true, "#/work/needs-you"],
+    ] as const) {
+      phone(onPhone);
+      vi.stubGlobal("fetch", () => new Promise(() => {}));
+      history.replaceState(null, "", "/");
+      location.hash = "#/bogus";
+      const before = history.length;
+      const app = new IncApp();
+      document.body.append(app);
+      await app.updateComplete;
+      expect(location.hash).toBe(home);
+      expect(history.length).toBe(before);
+      expect(app.route).toEqual(parse(home));
+      app.remove();
+    }
+  });
+
+  it.each(["#/Inbox", "#/inbox?x=1"])("the app rewrites %s to Work → Needs you", async (hash) => {
+    phone(false);
+    vi.stubGlobal("fetch", () => new Promise(() => {}));
+    history.replaceState(null, "", "/");
+    location.hash = hash;
+    const app = new IncApp();
+    document.body.append(app);
+    await app.updateComplete;
+    expect(location.hash).toBe("#/work/needs-you");
     app.remove();
   });
 });

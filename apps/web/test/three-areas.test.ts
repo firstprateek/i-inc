@@ -96,7 +96,7 @@ describe("the top bar", () => {
       ["Work", "#/work/board"],
       ["Company", "#/company/team"],
     ]);
-    expect(root.querySelector('header a[href="#/work/needs-you"]')).not.toBeNull();
+    expect(root.querySelector("header button.needs-link")).not.toBeNull();
     expect(root.querySelector(".account-trigger")).not.toBeNull();
     expect(root.querySelector(".all-views-trigger")).toBeNull();
     expect(root.querySelector(".pin-btn")).toBeNull();
@@ -136,6 +136,41 @@ describe("the top bar", () => {
   });
 });
 
+describe("the logo", () => {
+  it("goes to Conversations on a laptop and to Work → Needs you on a phone", async () => {
+    let { root } = await mount("#/company/team");
+    expect(root.querySelector("header .mark")?.getAttribute("href")).toBe("#/conversations");
+    document.body.innerHTML = "";
+    phone(true);
+    ({ root } = await mount("#/company/team"));
+    expect(root.querySelector("header .mark")?.getAttribute("href")).toBe("#/work/needs-you");
+  });
+});
+
+describe("the account menu's Show getting started", () => {
+  it("is offered only after the checklist was dismissed, and brings it back on Conversations", async () => {
+    const { app, root } = await mount("#/work/board");
+    const items = () => [...root.querySelectorAll('.account-menu [role="menuitem"]')].map((i) => text(i));
+    (root.querySelector(".account-trigger") as HTMLButtonElement).click();
+    await app.updateComplete;
+    expect(items()).toEqual(["Switch to dark theme", "Sign out"]);
+    (root.querySelector(".account-trigger") as HTMLButtonElement).click();
+    await app.updateComplete;
+
+    localStorage.setItem("i-inc-getting-started-dismissed", "1");
+    (root.querySelector(".account-trigger") as HTMLButtonElement).click();
+    await app.updateComplete;
+    expect(items()).toEqual(["Switch to dark theme", "Show getting started", "Sign out"]);
+    const show = [...root.querySelectorAll('.account-menu [role="menuitem"]')][1] as HTMLButtonElement;
+    show.click();
+    await settle(app);
+    expect(localStorage.getItem("i-inc-getting-started-dismissed")).toBeNull();
+    expect(location.hash).toBe("#/conversations");
+    expect(root.querySelector(".account-menu")).toBeNull();
+    expect(root.querySelector("inc-getting-started")).not.toBeNull();
+  });
+});
+
 describe("the Needs you count", () => {
   it("counts tickets that need the owner, tickets nobody can start, and policy proposals", () => {
     const tickets = [
@@ -160,9 +195,12 @@ describe("the Needs you count", () => {
       ],
       [{ id: "p", ticketId: "4", author: "G", at: 0, page: "m", text: "t" }],
     );
-    const { root } = await mount("#/work/board");
-    const badge = root.querySelector("header .needs-link") as HTMLAnchorElement;
-    expect(badge.getAttribute("href")).toBe("#/work/needs-you");
+    const { app, root } = await mount("#/work/board");
+    const badge = root.querySelector("header .needs-link") as HTMLButtonElement;
+    expect(badge.getAttribute("aria-pressed")).toBe("false");
+    badge.click();
+    await settle(app);
+    expect(location.hash).toBe("#/work/needs-you");
     expect(badge.querySelector(".count")?.textContent).toBe("3");
     expect(badge.getAttribute("aria-label")).toBe("Needs you, 3 waiting");
     // the Needs you tab carries it too
@@ -182,9 +220,20 @@ describe("the Needs you count", () => {
     expect(text(root.querySelector('[role="tablist"] a[href="#/work/needs-you"]'))).toBe("Needs you");
   });
 
-  it("marks the badge when Needs you is the open page", async () => {
-    const { root } = await mount("#/work/needs-you");
-    expect(current(root, "header .needs-link")).toEqual(["Needs you0"]);
+  it("is a filter chip: pressed on Needs you, with Work still the one current area, and unpressing goes back to the board", async () => {
+    const { app, root } = await mount("#/work/needs-you");
+    const chip = root.querySelector("header .needs-link") as HTMLButtonElement;
+    expect(chip.getAttribute("aria-pressed")).toBe("true");
+    expect(chip.hasAttribute("aria-current")).toBe(false);
+    expect(current(root, 'header nav[aria-label="Areas"] a')).toEqual(["Work"]);
+    expect(current(root, "header .needs-link")).toEqual([]);
+    chip.click();
+    await settle(app);
+    expect(location.hash).toBe("#/work/board");
+    expect(chip.getAttribute("aria-pressed")).toBe("false");
+    // on any other page it is not pressed
+    const other = (await mount("#/company/team")).root.querySelector("header .needs-link");
+    expect(other?.getAttribute("aria-pressed")).toBe("false");
   });
 
   it("updates when the daemon says something changed", async () => {

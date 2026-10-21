@@ -93,6 +93,13 @@ export function layoutForRoute(route: Route): LayoutKind {
   }
 }
 
+/** True on a phone-sized screen, where the app opens on what needs the owner. */
+const onPhone = () =>
+  typeof matchMedia === "function" && matchMedia(`(max-width: ${LAYOUT_BREAKPOINTS.phone}px)`).matches;
+
+/** Where the app opens with no hash, and where the logo goes: Conversations on a laptop, Needs you on a phone. */
+export const homeHash = () => (onPhone() ? "#/work/needs-you" : "#/conversations");
+
 /** Old hashes (before the three areas) and the canonical hash each one lands on. */
 export function legacyTarget(hash: string): string | null {
   const [, view, id] = hash.split("/");
@@ -121,15 +128,63 @@ export function legacyTarget(hash: string): string | null {
   }
 }
 
-/** Where the app opens with no hash: the laptop on Conversations, the phone on what needs you. */
+/**
+ * Where a hash should be rewritten to, or null when it is fine as it is (or empty). An old hash lands on
+ * its new address; case and a query string are ignored (`#/Inbox`, `#/inbox?x=1`); a canonical address
+ * is tidied (`#/Work/Board`); anything the app does not know goes home.
+ */
+export function redirectFor(hash: string): string | null {
+  if (!hash || hash === "#" || hash === "#/") return null;
+  const [h, view = "", ...rest] = hash.split("?")[0]?.replace(/\/+$/, "").split("/") ?? [];
+  if (h !== "#") return homeHash();
+  const lower = (s: string | undefined) => s?.toLowerCase();
+  const v = view.toLowerCase();
+  const tail = (...parts: (string | undefined)[]) => parts.filter(Boolean).join("/");
+  let out = legacyTarget(["#", v, lower(rest[0])].join("/")) ?? null;
+  if (out && (v === "brain" || v === "chat" || v === "hiring") && rest[0])
+    out = out.replace(/[^/]*$/, rest[0]);
+  if (!out) {
+    switch (v) {
+      case "conversations":
+        out = `#/${tail(v, rest[0])}`;
+        break;
+      case "work":
+        out =
+          rest[0] === undefined
+            ? "#/work"
+            : isWorkTab(lower(rest[0]))
+              ? `#/work/${lower(rest[0])}`
+              : "#/work/board";
+        break;
+      case "ticket":
+        out = rest[0] ? `#/${tail(v, rest[0], lower(rest[1]) === "assign" ? "assign" : undefined)}` : null;
+        break;
+      case "company": {
+        const a = lower(rest[0]);
+        if (a === undefined) out = "#/company";
+        else if (a === "brain") out = `#/${tail(v, a, rest[1])}`;
+        else if (a === "projects" || a === "usage") out = `#/company/${a}`;
+        else if (a === "settings")
+          out =
+            rest[1] === undefined
+              ? "#/company/settings"
+              : `#/company/settings/${isSection(lower(rest[1])) ? lower(rest[1]) : "teams"}`;
+        else out = lower(rest[1]) === "hiring" ? `#/${tail(v, "team", "hiring", rest[2])}` : "#/company/team";
+        break;
+      }
+    }
+  }
+  const target = out ?? homeHash();
+  return target === hash ? null : target;
+}
+
+/** Where the app opens with no hash. */
 export function homeRoute(): Route {
-  const onPhone =
-    typeof matchMedia === "function" && matchMedia(`(max-width: ${LAYOUT_BREAKPOINTS.phone}px)`).matches;
-  return onPhone ? { view: "work", tab: "needs-you" } : { view: "conversations", id: "" };
+  return onPhone() ? { view: "work", tab: "needs-you" } : { view: "conversations", id: "" };
 }
 
 export function parse(hash: string): Route {
-  const [, view, a, b, c] = (legacyTarget(hash) ?? hash).split("/");
+  const [, view, a, b, c] = (redirectFor(hash) ?? hash).split("/");
   switch (view) {
     case "conversations":
       return { view: "conversations", id: a ?? "" };

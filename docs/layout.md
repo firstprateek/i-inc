@@ -66,7 +66,7 @@ safe-area-aware viewport gutter, independent of shell inset ownership.
 ## Shared API
 
 - `IncLayout` renders the common route frame, visible page heading, optional subtitle/actions slots,
-  and a Page, Wide, or Split content band. Page and Wide headers share the centred Page-width band;
+  and a Page, Wide, or Split content band. Every header spans the frame (see the header rule above);
   Split headers span the full frame above both grid tracks. Put route titles in the `heading` slot;
   keep actions in the `actions` slot so they stay aligned to the right of the heading.
 - `layoutStyles` provides `.layout-page-band`, `.layout-wide-content`, `.layout-split`,
