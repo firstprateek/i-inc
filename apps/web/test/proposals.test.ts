@@ -75,6 +75,12 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
+const many = (n: number) =>
+  Array.from({ length: n }, (_, i) => proposal({ id: i + 1, title: `Follow-up number ${i + 1}` }));
+const rows = (s: ShadowRoot) => [...s.querySelectorAll<HTMLElement>("li.row")];
+const head = (s: ShadowRoot) => s.querySelector<HTMLButtonElement>("button.head") as HTMLButtonElement;
+const listOf = (s: ShadowRoot) => s.querySelector<HTMLElement>("#proposed-list") as HTMLElement;
+
 describe("Proposed on the board", () => {
   it("is hidden when there are none", async () => {
     const root = await mount("inc-board");
@@ -82,59 +88,107 @@ describe("Proposed on the board", () => {
     expect(root.textContent).not.toContain("Proposed");
   });
 
-  it("shows each proposal above the columns, with who proposed it and after which ticket", async () => {
+  it("shows a one-line header and a dense row for each, above the columns", async () => {
     open = [
       proposal(),
       proposal({ id: 2, title: "Cache the rates", project: "fintrack", sourceTicket: "9" }),
     ];
     const root = await mount("inc-board");
     const s = section(root) as ShadowRoot;
-    expect(s.querySelector("h2")?.textContent).toContain("Proposed");
-    expect(s.querySelector("h2 .n")?.textContent).toBe("2");
-    const cards = [...s.querySelectorAll("li.card")];
-    expect(cards).toHaveLength(2);
-    expect(cards[0]?.querySelector(".title")?.textContent).toBe("Add retry to the sync");
-    expect(cards[0]?.querySelector(".proj-badge")?.textContent).toContain("Duet");
-    expect(cards[0]?.querySelector(".by")?.textContent?.replace(/\s+/g, " ")).toContain(
-      "Proposed by Ada after #12",
+    expect(head(s).textContent?.replace(/\s+/g, " ").trim()).toBe(
+      "Proposed (2) — follow-ups waiting for you",
     );
-    expect(cards[0]?.querySelector<HTMLAnchorElement>(".by a")?.getAttribute("href")).toBe("#/ticket/12");
-    // Above the columns in the document.
+    expect(head(s).getAttribute("aria-expanded")).toBe("true");
+    const r = rows(s);
+    expect(r).toHaveLength(2);
+    expect(r[0]?.querySelector(".title")?.textContent).toBe("Add retry to the sync");
+    expect(r[0]?.querySelector(".proj-badge")?.textContent).toContain("Duet");
+    expect(r[0]?.querySelector(".meta")?.textContent?.replace(/\s+/g, " ")).toContain("by Ada after #12");
+    expect(r[0]?.querySelector<HTMLAnchorElement>(".meta a")?.getAttribute("href")).toBe("#/ticket/12");
     const proposed = root.querySelector("inc-proposals") as Element;
     const cols = root.querySelector(".cols") as Element;
     expect(proposed.compareDocumentPosition(cols) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("keeps the body and done-when behind an expander", async () => {
-    open = [proposal()];
+  it("starts collapsed above three proposals, and the header opens and closes it", async () => {
+    open = many(4);
     const s = section(await mount("inc-board")) as ShadowRoot;
-    const details = s.querySelector("details") as HTMLDetailsElement;
-    expect(details.open).toBe(false);
-    expect(details.querySelector("summary")).not.toBeNull();
-    expect(details.textContent).toContain("The sync gives up on the first timeout.");
-    expect(details.textContent).toContain("A timeout is retried twice");
+    expect(head(s).getAttribute("aria-expanded")).toBe("false");
+    expect(listOf(s).hidden).toBe(true);
+    expect(head(s).textContent).toContain("Proposed (4)");
+    head(s).click();
+    await tick();
+    expect(head(s).getAttribute("aria-expanded")).toBe("true");
+    expect(listOf(s).hidden).toBe(false);
+    head(s).click();
+    await tick();
+    expect(listOf(s).hidden).toBe(true);
   });
 
-  it("has no expander for a recovered proposal with nothing to say, and no ticket link", async () => {
+  it("stays open for three or fewer", async () => {
+    open = many(3);
+    const s = section(await mount("inc-board")) as ShadowRoot;
+    expect(head(s).getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("shows five at most, with Show all for the rest", async () => {
+    open = many(8);
+    const s = section(await mount("inc-board")) as ShadowRoot;
+    head(s).click();
+    await tick();
+    expect(rows(s)).toHaveLength(5);
+    const more = s.querySelector<HTMLButtonElement>(".foot .more");
+    expect(more?.textContent).toBe("Show all (8)");
+    more?.click();
+    await tick();
+    expect(rows(s)).toHaveLength(8);
+    expect(s.querySelector(".foot .more")?.textContent).toBe("Show fewer");
+  });
+
+  it("has no Show all for five or fewer", async () => {
+    open = many(5);
+    const s = section(await mount("inc-board")) as ShadowRoot;
+    head(s).click();
+    await tick();
+    expect(s.querySelector(".foot")).toBeNull();
+  });
+
+  it("keeps the body and done-when behind a Why toggle on the row", async () => {
+    open = [proposal()];
+    const s = section(await mount("inc-board")) as ShadowRoot;
+    const body = s.querySelector<HTMLElement>("#body-1") as HTMLElement;
+    expect(body.hidden).toBe(true);
+    expect(body.textContent).toContain("The sync gives up on the first timeout.");
+    expect(body.textContent).toContain("A timeout is retried twice");
+    const why = s.querySelector<HTMLButtonElement>("button.more") as HTMLButtonElement;
+    expect(why.getAttribute("aria-expanded")).toBe("false");
+    why.click();
+    await tick();
+    expect(why.getAttribute("aria-expanded")).toBe("true");
+    expect(body.hidden).toBe(false);
+  });
+
+  it("has no Why toggle for a recovered proposal with nothing to say, and no ticket link", async () => {
     open = [proposal({ body: "", doneWhen: [], sourceTicket: "" })];
     const s = section(await mount("inc-board")) as ShadowRoot;
-    expect(s.querySelector("details")).toBeNull();
-    expect(s.querySelector(".by a")).toBeNull();
-    expect(s.querySelector(".by")?.textContent).toContain("Proposed by Ada");
+    expect(s.querySelector("button.more")).toBeNull();
+    expect(s.querySelector(".meta a")).toBeNull();
+    expect(s.querySelector(".meta")?.textContent).toContain("by Ada");
   });
 
   it("Accept posts to the accept route and the proposal leaves the list", async () => {
     open = [proposal(), proposal({ id: 2, title: "Cache the rates" })];
     const root = await mount("inc-board");
     const s = section(root) as ShadowRoot;
-    const accept = s.querySelector<HTMLButtonElement>("li.card button:not(.ghost)");
+    const accept = s.querySelector<HTMLButtonElement>("li.row button.btn:not(.ghost)");
     expect(accept?.textContent).toBe("Accept");
     expect(accept?.getAttribute("aria-label")).toBe("Accept: Add retry to the sync");
     accept?.click();
     await tick();
     expect(calls).toContainEqual({ method: "POST", url: "/api/proposals/1/accept" });
-    const after = section(root) as ShadowRoot;
-    expect([...after.querySelectorAll(".title")].map((t) => t.textContent)).toEqual(["Cache the rates"]);
+    expect([...(section(root) as ShadowRoot).querySelectorAll(".title")].map((t) => t.textContent)).toEqual([
+      "Cache the rates",
+    ]);
   });
 
   it("Decline posts to the decline route, and the last one hides the section", async () => {
@@ -151,21 +205,50 @@ describe("Proposed on the board", () => {
     const root = await mount("inc-board");
     failWith = { status: 409, error: "proposal 1 is already accepted" };
     open = [];
-    section(root)?.querySelector<HTMLButtonElement>("button:not(.ghost)")?.click();
+    section(root)?.querySelector<HTMLButtonElement>("button.btn:not(.ghost)")?.click();
     await tick();
-    // The refresh finds nothing open, so the section is gone rather than showing a stale card.
     expect(section(root)?.querySelector(".proposed")).toBeNull();
   });
 
-  it("shows the error and keeps the card when the call fails for another reason", async () => {
+  it("shows the error and keeps the row when the call fails for another reason", async () => {
     open = [proposal()];
     const root = await mount("inc-board");
     failWith = { status: 409, error: "Kit doesn't work on Duet" };
-    section(root)?.querySelector<HTMLButtonElement>("button:not(.ghost)")?.click();
+    section(root)?.querySelector<HTMLButtonElement>("button.btn:not(.ghost)")?.click();
     await tick();
     const s = section(root) as ShadowRoot;
     expect(s.querySelector("[role=alert]")?.textContent).toContain("Kit doesn't work on Duet");
-    expect(s.querySelectorAll("li.card")).toHaveLength(1);
+    expect(rows(s)).toHaveLength(1);
+  });
+
+  it("moves keyboard focus to the next row after a decision", async () => {
+    open = many(3);
+    const root = await mount("inc-board");
+    const s = section(root) as ShadowRoot;
+    const first = s.querySelector<HTMLButtonElement>(
+      '[data-row="1"] button.btn:not(.ghost)',
+    ) as HTMLButtonElement;
+    first.focus();
+    first.click();
+    await tick();
+    const after = section(root) as ShadowRoot;
+    expect(after.querySelector('[data-row="1"]')).toBeNull();
+    const focused = after.activeElement as HTMLElement | null;
+    expect(focused?.closest("[data-row]")?.getAttribute("data-row")).toBe("2");
+  });
+
+  it("moves focus to a short note after the last one is decided", async () => {
+    open = [proposal()];
+    const root = await mount("inc-board");
+    const s = section(root) as ShadowRoot;
+    const decline = s.querySelector<HTMLButtonElement>("button.ghost") as HTMLButtonElement;
+    decline.focus();
+    decline.click();
+    await tick();
+    const after = section(root) as ShadowRoot;
+    expect(after.querySelector(".proposed")).toBeNull();
+    expect(after.querySelector(".all-done")?.textContent).toContain("All decided");
+    expect(after.activeElement?.classList.contains("all-done")).toBe(true);
   });
 
   it("still shows the board when the daemon has no proposals route", async () => {
@@ -181,7 +264,7 @@ describe("Proposed on the board", () => {
     open = [proposal()];
     refreshNow();
     await tick();
-    expect(section(root)?.querySelectorAll("li.card")).toHaveLength(1);
+    expect(rows(section(root) as ShadowRoot)).toHaveLength(1);
   });
 });
 
@@ -191,7 +274,7 @@ describe("Proposed in the inbox", () => {
     const root = await mount("inc-inbox");
     expect(root.querySelector(".summary")?.textContent).toBe("2 things need you");
     expect(root.querySelector(".clear")).toBeNull();
-    expect(section(root)?.querySelectorAll("li.card")).toHaveLength(2);
+    expect(section(root)?.querySelectorAll("li.row")).toHaveLength(2);
   });
 
   it("says nothing needs you, and shows no Proposed section, when there are none", async () => {
@@ -204,7 +287,7 @@ describe("Proposed in the inbox", () => {
   it("Accept works there too", async () => {
     open = [proposal()];
     const root = await mount("inc-inbox");
-    section(root)?.querySelector<HTMLButtonElement>("button:not(.ghost)")?.click();
+    section(root)?.querySelector<HTMLButtonElement>("button.btn:not(.ghost)")?.click();
     await tick();
     expect(calls).toContainEqual({ method: "POST", url: "/api/proposals/1/accept" });
     expect(root.querySelector(".summary")?.textContent).toBe("Nothing needs you");
