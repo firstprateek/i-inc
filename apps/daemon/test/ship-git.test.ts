@@ -77,7 +77,9 @@ describe("the scan for credentials", () => {
     const clean = Array.from({ length: 60_000 }, (_, i) => `export const n${i} = ${i};`).join("\n");
     expect(scanPatch(patchOf({ "big.ts": clean }))).toBe(false);
     expect(
-      scanPatch(patchOf({ "big.ts": `${clean}\nconst t = "gh\u0070_abcdefghijklmnopqrstuvwxyz0123456789";` })),
+      scanPatch(
+        patchOf({ "big.ts": `${clean}\nconst t = "gh\u0070_abcdefghijklmnopqrstuvwxyz0123456789";` }),
+      ),
     ).toBe(true);
     const removing = [
       "diff --git a/a.ts b/a.ts",
@@ -103,9 +105,9 @@ describe("the scan for credentials", () => {
     expect(addedLines(tricky)).toContain("gh\u0070_");
     expect(scanPatch(tricky)).toBe(true);
     // And the lines before a hunk are never read as added.
-    expect(addedLines("diff --git a/x b/x\n--- a/x\n+++ b/gh\u0070_abcdefghijklmnopqrstuvwxyz0123456789\n")).toBe(
-      "",
-    );
+    expect(
+      addedLines("diff --git a/x b/x\n--- a/x\n+++ b/gh\u0070_abcdefghijklmnopqrstuvwxyz0123456789\n"),
+    ).toBe("");
   });
 
   it("says which files and commits and never what is in them", () => {
