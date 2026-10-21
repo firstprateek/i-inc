@@ -23,16 +23,12 @@
 // Exit code 1 when anything at "error" level is found. Uses the Chromium that Playwright finds;
 // set PW_CHROMIUM to point at another executable.
 
-import { execSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-// Use the workspace's Playwright once there is one; until then, NODE_PATH or the global install.
-const { chromium, request } = await import("playwright").catch(() => {
-  const root = process.env.NODE_PATH || execSync("npm root -g").toString().trim();
-  return import(pathToFileURL(`${root}/playwright/index.mjs`).href);
-});
+// The repo's own Playwright (a root devDependency; `pnpm e2e:install` downloads its browser).
+import { chromium, request } from "playwright";
 
 const args = process.argv.slice(2);
 let outDir = "ui-check-out";

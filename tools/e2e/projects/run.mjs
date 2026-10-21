@@ -14,14 +14,12 @@ import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+// The repo's own Playwright (a root devDependency; `pnpm e2e:install` downloads its browser).
+import { chromium } from "playwright";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "../../..");
-const { chromium } = await import("playwright").catch(() => {
-  const dir = process.env.NODE_PATH || execFileSync("npm", ["root", "-g"]).toString().trim();
-  return import(pathToFileURL(`${dir}/playwright/index.mjs`).href);
-});
 
 const args = process.argv.slice(2);
 const outDir = resolve(args[args.indexOf("--out") + 1] ?? "e2e-out");
@@ -475,7 +473,7 @@ try {
       try {
         out = execFileSync("node", argv, {
           encoding: "utf8",
-          env: { ...process.env, NODE_PATH: process.env.NODE_PATH ?? "" },
+          env: process.env,
         });
       } catch (e) {
         out = String(e.stdout ?? e.message);
