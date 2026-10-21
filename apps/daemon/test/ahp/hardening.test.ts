@@ -1,7 +1,7 @@
 // What a client can make the host keep: nothing it didn't ask for, nothing big, nothing twice.
 import { describe, expect, it } from "vitest";
 import { ActionType, PendingMessageKind, ROOT } from "../../src/ahp/wire.ts";
-import { type Any, gate, rig, turnStarted, userMessage } from "./support.ts";
+import { type Any, gate, rig, TestClient, turnStarted, userMessage } from "./support.ts";
 
 const settle = () => new Promise<void>((r) => setTimeout(r, 0));
 const rows = (t: Awaited<ReturnType<typeof rig>>) =>
@@ -73,6 +73,119 @@ describe("a frame is small unless it carries an attachment", () => {
       type: "resource",
       sizeHint: png.length,
     });
+  });
+});
+
+describe("the frame cap is structural, not a substring check", () => {
+  const png = (n: number) =>
+    Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(n, 5)]);
+  const withImages = (...sizes: number[]) =>
+    turnStarted("look", "t1", {
+      attachments: sizes.map((n, i) => ({
+        type: "embeddedResource",
+        label: `i${i}.png`,
+        data: png(n).toString("base64"),
+        contentType: "image/png",
+      })),
+    });
+
+  it("refuses a 13 MB ping that mentions dispatchAction and embeddedResource, and closes a repeat offender", async () => {
+    const t = await rig();
+    const { chat } = await t.session();
+    const c = t.client();
+    await c.init([ROOT, chat]);
+    const before = rows(t);
+    // the two words as real keys, so they are in the frame as `"dispatchAction"` and `"embeddedResource"`
+    const pad = "x".repeat(13 * 1024 * 1024);
+    const ping = (id: number) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "ping",
+        params: { dispatchAction: 1, embeddedResource: 1, pad },
+      });
+    expect(ping(1)).toContain('"dispatchAction"');
+    expect(ping(1)).toContain('"embeddedResource"');
+    for (const id of [1, 2]) {
+      await t.host.receive(c.conn, ping(1000 + id));
+      expect(c.socket.frames.at(-1)).toMatchObject({ id: 1000 + id, error: { code: -32600 } });
+      expect(String((c.socket.frames.at(-1) as Any).error.message)).toMatch(/too large/);
+      expect(c.socket.closed).toBeUndefined();
+    }
+    await t.host.receive(c.conn, ping(1003));
+    expect(c.socket.closed?.code).toBe(1008);
+    expect(rows(t)).toBe(before);
+    expect(t.host.connectionCount()).toBe(0);
+  });
+
+  it("refuses a dispatchAction that is big but carries no attachment, and one whose attachments are over the limit", async () => {
+    const t = await rig();
+    const { chat } = await t.session();
+    const c = t.client();
+    await c.init([ROOT, chat]);
+    const before = rows(t);
+    // a big dispatchAction of the wrong kind, padded with a fake attachment-looking field
+    await t.host.receive(
+      c.conn,
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 5,
+        method: "dispatchAction",
+        params: {
+          channel: chat,
+          clientSeq: 1,
+          action: { type: ActionType.ChatIsReadChanged, isRead: true, embeddedResource: "y".repeat(2e6) },
+        },
+      }),
+    );
+    expect(c.socket.frames.at(-1)).toMatchObject({ id: 5, error: { code: -32600 } });
+    expect(rows(t)).toBe(before);
+    // two 5.3 MB images are each fine and together over 10 MB: refused, and the strike counts
+    c.dispatch(chat, withImages(5.3e6, 5.3e6));
+    expect(rows(t)).toBe(before);
+    expect(c.rejections().at(-1)?.rejectionReason).toMatch(/10 MB/);
+    expect(c.socket.closed).toBeUndefined();
+    c.dispatch(chat, withImages(5.3e6, 5.3e6));
+    expect(c.socket.closed?.code).toBe(1008); // the third strike: the fake attachment, then these two
+  });
+
+  it("accepts one 10 MB image, the largest legitimate frame, and closes a frame over the transport cap", async () => {
+    const t = await rig();
+    const { chat } = await t.session();
+    const c = t.client();
+    await c.init([ROOT, chat]);
+    c.dispatch(chat, withImages(10 * 1024 * 1024 - 8));
+    await t.host.idle();
+    expect(c.rejections()).toEqual([]);
+    expect(t.host.chatState(chat)?.turns[0]?.message.attachments?.[0]).toMatchObject({ type: "resource" });
+    expect(t.host.limits.maxMessageBytes).toBeLessThan(15 * 1024 * 1024);
+    expect(t.host.limits.maxMessageBytes).toBeGreaterThan(Math.ceil((10 * 1024 * 1024 * 4) / 3));
+    const huge = "x".repeat(t.host.limits.maxMessageBytes + 1);
+    await t.host.receive(
+      c.conn,
+      `{"jsonrpc":"2.0","id":9,"method":"ping","params":{"p":"dispatchAction embeddedResource ${huge}"}}`,
+    );
+    expect(c.socket.closed?.code).toBe(1009);
+  });
+
+  it("holds a connection that hasn't authenticated to 64 KB a frame", async () => {
+    const t = await rig();
+    const c = new TestClient(t.host, "stranger", false);
+    await t.host.receive(
+      c.conn,
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping", params: { pad: "x".repeat(70 * 1024) } }),
+    );
+    expect(c.socket.closed?.code).toBe(1009);
+    expect(c.socket.frames.find((f) => f.id === 1)).toBeUndefined();
+    // the same frame is fine once authenticated (a 70 KB frame is under the 1 MB cap)
+    const d = t.client();
+    await d.init();
+    await t.host.receive(
+      d.conn,
+      JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping", params: { pad: "x".repeat(70 * 1024) } }),
+    );
+    expect(d.socket.frames.find((f) => f.id === 2)).toMatchObject({ id: 2 });
+    expect(d.socket.closed).toBeUndefined();
   });
 });
 
@@ -229,6 +342,15 @@ describe("a client's action is rebuilt from the fields it is allowed", () => {
     const parts = (t.host.chatState(chat)?.turns[0]?.responseParts ?? []) as Any[];
     const tc = parts.find((p) => p.toolCall)?.toolCall;
     expect(tc.toolInput).toBe('{"command":"rm -rf build"}');
+    // what was logged is the answer and nothing else: not the edit, not the extra field
+    const answers = t.db
+      .all("SELECT action FROM ahp_actions")
+      .map((r) => JSON.parse((r as { action: string }).action) as Any)
+      .filter((a) => a.type === ActionType.ChatToolCallConfirmed);
+    expect(answers).toHaveLength(1);
+    expect(Object.keys(answers[0]).sort()).toEqual(
+      ["approved", "confirmed", "selectedOptionId", "toolCallId", "turnId", "type"].sort(),
+    );
     expect(JSON.stringify(t.db.all("SELECT action FROM ahp_actions"))).not.toContain("curl evil");
     expect(JSON.stringify(a.envelopes)).not.toContain("curl evil");
   });
@@ -236,16 +358,27 @@ describe("a client's action is rebuilt from the fields it is allowed", () => {
 
 describe("reconnect and input requests", () => {
   it("replays each channel once however many times the client lists it", async () => {
-    const t = await rig();
+    // maxReplayActions is set so that one listing replays and three listings, if counted three times, would not
+    const t = await rig({ limits: { maxReplayActions: 5 } });
     const { chat } = await t.session();
     const c = t.client();
     await c.init([ROOT, chat]);
     c.dispatch(chat, turnStarted("hi", "t1"));
     await t.host.idle();
+    const total = t.host.store.countChannelActionsAfter(chat, 0);
+    expect(total).toBeGreaterThan(1);
+    expect(total).toBeLessThanOrEqual(5);
+    expect(total * 3).toBeGreaterThan(5);
     const once = await t.client().reconnect(0, [chat]);
-    const thrice = await t.client().reconnect(0, [chat, chat, chat]);
-    expect(thrice.actions).toHaveLength(once.actions.length);
-    expect(thrice.actions.map((e: Any) => e.serverSeq)).toEqual(once.actions.map((e: Any) => e.serverSeq));
+    const thrice = await t.client().reconnect(0, [chat, chat, chat, "ahp-chat:/gone", "ahp-chat:/gone"]);
+    expect(once.type).toBe("replay");
+    expect(thrice.type).toBe("replay");
+    expect(once.actions).toHaveLength(total);
+    expect(thrice.actions).toHaveLength(total);
+    const seqs = thrice.actions.map((e: Any) => e.serverSeq);
+    expect(new Set(seqs).size).toBe(total);
+    expect(seqs).toEqual([...seqs].sort((x: number, y: number) => x - y));
+    expect(thrice.missing).toEqual(["ahp-chat:/gone"]);
     const init = await t.client().rpc("initialize", {
       channel: ROOT,
       protocolVersions: ["1.0.0"],
@@ -253,6 +386,16 @@ describe("reconnect and input requests", () => {
       initialSubscriptions: [chat, chat, chat],
     });
     expect((init.result as Any).snapshots).toHaveLength(1);
+    // three listings count as one against the subscription limit too
+    const e = t.client();
+    const lim = t.host.limits.maxSubscriptions;
+    const many = await e.rpc("reconnect", {
+      channel: ROOT,
+      clientId: "e",
+      lastSeenServerSeq: 0,
+      subscriptions: Array(lim * 3).fill(chat),
+    });
+    expect(many.error).toBeUndefined();
   });
 
   async function asking() {

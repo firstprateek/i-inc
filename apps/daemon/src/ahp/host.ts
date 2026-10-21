@@ -76,6 +76,10 @@ export interface TransportLimits {
   maxMessageBytes: number;
   /** An ordinary frame is at most this big; only a message with attachments may be bigger (up to maxMessageBytes). */
   maxFrameBytes: number;
+  /** A socket that has not authenticated may send frames of at most this size. */
+  maxUnauthenticatedFrameBytes: number;
+  /** Frames refused as too big, per connection, before it is closed. */
+  maxAbuse: number;
   /** Sockets that upgraded without credentials (deferred auth), at most, apart from the authenticated ones. */
   maxUnauthenticated: number;
   /** More queued output than this and the client is dropped (1013); it reconnects and replays. */
@@ -98,7 +102,9 @@ export interface TransportLimits {
 }
 
 export const defaultTransportLimits: TransportLimits = {
-  maxMessageBytes: 24 * 1024 * 1024,
+  maxMessageBytes: 14 * 1024 * 1024,
+  maxUnauthenticatedFrameBytes: 64 * 1024,
+  maxAbuse: 3,
   maxFrameBytes: 1024 * 1024,
   maxUnauthenticated: 8,
   maxBufferedBytes: 8 * 1024 * 1024,
@@ -117,6 +123,8 @@ export const defaultTransportLimits: TransportLimits = {
 /** What a prompt may carry. Images are checked by their bytes. */
 export const attachmentLimits = {
   count: 6,
+  /** All the attachments of one message together: the frame limit is sized to this. */
+  totalBytes: 10 * 1024 * 1024,
   imageBytes: 10 * 1024 * 1024,
   fileBytes: 1024 * 1024,
   textChars: 256_000,
@@ -162,6 +170,9 @@ export class Conn {
   windows = new Map<string, string>();
   lastActive: number;
   authFailures = 0;
+  abuse = 0;
+  /** Actions refused on this connection, ever. */
+  rejects = 0;
   private windowStart = 0;
   private windowCount = 0;
   constructor(
@@ -223,6 +234,17 @@ const str = (v: unknown, name: string, max = 2048): string => {
   if (typeof v !== "string" || v.length === 0 || v.length > max) throw invalid(`${name} must be a string`);
   return v;
 };
+/** Is this a dispatchAction of a message with an embedded attachment: the one kind of frame that may be big? */
+function carriesAttachment(msg: Json): boolean {
+  if (msg.method !== "dispatchAction" || !isObj(msg.params) || !isObj(msg.params.action)) return false;
+  const a = msg.params.action;
+  if (a.type !== ActionType.ChatTurnStarted && a.type !== ActionType.ChatPendingMessageSet) return false;
+  const attachments = isObj(a.message) ? a.message.attachments : undefined;
+  return (
+    Array.isArray(attachments) &&
+    attachments.some((x) => isObj(x) && x.type === "embeddedResource" && typeof x.data === "string")
+  );
+}
 const isObj = (v: unknown): v is Json => typeof v === "object" && v !== null && !Array.isArray(v);
 
 export class AhpHost {
@@ -761,23 +783,17 @@ export class AhpHost {
     if (conn.closed) return;
     this.touch(conn);
     if (text.length > this.limits.maxMessageBytes) return this.drop(conn, 1009, "message too big");
+    if (!conn.authed && text.length > this.limits.maxUnauthenticatedFrameBytes) {
+      return this.drop(conn, 1009, "message too big");
+    }
     if (!conn.allow(this.now(), this.limits.maxMessagesPerSecond)) {
       return this.drop(conn, 1008, "too many messages");
     }
-    // Only a message that carries attachments is allowed to be big; anything else over the frame
-    // cap is refused before it is parsed, whatever it says it is.
-    if (
-      text.length > this.limits.maxFrameBytes &&
-      !(text.includes('"dispatchAction"') && text.includes('"embeddedResource"'))
-    ) {
-      const id = /"id"\s*:\s*(\d{1,15}|"[^"\\]{0,64}")/.exec(text.slice(0, 1024))?.[1];
-      return this.send(conn, {
-        id: id === undefined ? null : (JSON.parse(id) as number | string),
-        error: {
-          code: JsonRpcErrorCodes.InvalidRequest,
-          message: `message too large: at most ${this.limits.maxFrameBytes} bytes`,
-        },
-      });
+    // Only a message that really carries an attachment may be bigger than the frame cap. A frame
+    // that cannot be one is refused without being parsed; one that might be is parsed and checked.
+    const big = text.length > this.limits.maxFrameBytes;
+    if (big && !(text.includes('"dispatchAction"') && text.includes('"embeddedResource"'))) {
+      return this.tooBig(conn, text);
     }
     let msg: unknown;
     try {
@@ -794,13 +810,19 @@ export class AhpHost {
         error: { code: JsonRpcErrorCodes.InvalidRequest, message: "not a JSON-RPC request" },
       });
     }
+    if (big && !carriesAttachment(msg)) return this.tooBig(conn, text);
     const id = msg.id;
     const isRequest = typeof id === "number" || typeof id === "string";
     const params = isObj(msg.params) ? msg.params : {};
     let result: unknown;
+    const rejected = conn.rejects;
     try {
       result = this.dispatchMethod(conn, msg.method, params, isRequest);
+      // A big frame that was refused, or went to a channel that isn't there, was not a proper attachment message.
+      if (big && (conn.rejects > rejected || !this.chans.has(String(params.channel)))) this.strike(conn);
     } catch (e) {
+      // A big frame that turns out not to be a proper attachment message counts as abuse.
+      if (big) this.strike(conn);
       if (isRequest) return this.fail(conn, id, e);
       if (!(e instanceof RpcError))
         this.log(`ahp: ${msg.method} failed: ${e instanceof Error ? (e.stack ?? e.message) : e}`);
@@ -819,6 +841,24 @@ export class AhpHost {
         if (isRequest && !conn.closed) this.fail(conn, id, e);
       },
     );
+  }
+
+  /** Refuses a frame over the cap with an error naming the request, and closes a connection that keeps doing it. */
+  private tooBig(conn: Conn, text: string): void {
+    const id = /"id"\s*:\s*(\d{1,15}|"[^"\\]{0,64}")/.exec(text.slice(0, 1024))?.[1];
+    this.send(conn, {
+      id: id === undefined ? null : (JSON.parse(id) as number | string),
+      error: {
+        code: JsonRpcErrorCodes.InvalidRequest,
+        message: `message too large: at most ${this.limits.maxFrameBytes} bytes, unless it carries an attachment`,
+      },
+    });
+    this.strike(conn);
+  }
+
+  /** One more oversized or malformed big message; a connection that keeps sending them is closed. */
+  private strike(conn: Conn): void {
+    if (++conn.abuse >= this.limits.maxAbuse) this.drop(conn, 1008, "too many oversized messages");
   }
 
   private fail(conn: Conn, id: unknown, e: unknown): void {
@@ -1335,6 +1375,7 @@ export class AhpHost {
 
   /** Rejections go to the sender alone, carry the current serverSeq and use none (spec: Actions). */
   private reject(conn: Conn, channel: string, clientSeq: number, action: unknown, reason: string): void {
+    conn.rejects++;
     this.send(conn, {
       method: "action",
       params: {
@@ -1709,6 +1750,7 @@ export class AhpHost {
       throw invalid(`at most ${attachmentLimits.count} attachments`);
     const short = (v: unknown, name: string, max = attachmentLimits.shortChars) => str(v, name, max);
     const out: MessageAttachment[] = [];
+    let total = 0;
     for (const raw of (attachments ?? []) as unknown[]) {
       if (!isObj(raw) || typeof raw.type !== "string") throw invalid("a bad attachment");
       const label = short(raw.label, "label");
@@ -1736,6 +1778,8 @@ export class AhpHost {
       if (typeof raw.data !== "string" || typeof raw.contentType !== "string")
         throw invalid("a bad embedded attachment");
       const bytes = Buffer.from(raw.data, "base64");
+      total += bytes.byteLength;
+      if (total > attachmentLimits.totalBytes) throw invalid("attachments are at most 10 MB together");
       let contentType = raw.contentType.slice(0, 128);
       if (contentType.startsWith("image/")) {
         if (bytes.byteLength > attachmentLimits.imageBytes) throw invalid(`${label} is over 10 MB`);
