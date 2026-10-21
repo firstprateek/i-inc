@@ -107,7 +107,7 @@ describe("Enter in the composer", () => {
     expect(must<HTMLButtonElement>(el.shadowRoot?.querySelector(".send")).disabled).toBe(true);
   });
 
-  it("puts a refused message back in the box, unless something new was typed", async () => {
+  it("puts a refused message back in the box, ahead of anything typed since (nothing is thrown away)", async () => {
     const { el, ta, type } = await mount();
     el.restore("lost words");
     await el.updateComplete;
@@ -115,7 +115,11 @@ describe("Enter in the composer", () => {
     await type("newer");
     el.restore("other");
     await el.updateComplete;
-    expect(ta.value).toBe("newer");
+    expect(ta.value).toBe("other\n\nnewer");
+    // restoring what is already there does not double it
+    el.restore("other\n\nnewer");
+    await el.updateComplete;
+    expect(ta.value).toBe("other\n\nnewer");
   });
 
   it("remembers a draft per conversation", async () => {

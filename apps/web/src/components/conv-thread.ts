@@ -2,6 +2,7 @@
 // follows the stream only while you are at the bottom ("Jump to latest" appears when you scroll up), pages
 // older turns in when you scroll to the top, and renders at most a window of turns so a long chat stays fast.
 import type { Employee } from "@i-inc/core";
+import type { ChatState } from "@microsoft/agent-host-protocol";
 import { css, html, LitElement, nothing } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 import type { ConnectionInfo, Rejection } from "../ahp/connection.ts";
@@ -154,12 +155,14 @@ export class IncConvThread extends LitElement {
       c.onChange((uris) => {
         const conv = this.conv;
         if (conv && (uris.has(conv.ahpChat) || uris.has(conv.ahpSession))) {
+          if (this.lost && this.info.status === "open") this.settleLost();
           this.noteTransitions();
           this.requestUpdate();
         }
       }),
       c.onInfo((i) => {
         this.info = i;
+        this.onInfoChanged(i.status);
       }),
       c.onRejected(this.onRejected),
       c.onAccepted((seq) => this.inflight.delete(seq)),
@@ -174,6 +177,8 @@ export class IncConvThread extends LitElement {
   override disconnectedCallback(): void {
     for (const off of this.offs) off();
     this.offs = [];
+    for (const t of this.probes) clearTimeout(t);
+    this.probes.clear();
     this.unwatch();
     this.resizer?.disconnect();
     clearTimeout(this.announceTimer);
@@ -363,14 +368,63 @@ export class IncConvThread extends LitElement {
   }
 
   /** Messages sent and not yet accepted, by `clientSeq`: the host's refusal does not echo their content. */
-  private inflight = new Map<number, { text: string; files: File[] }>();
+  private inflight = new Map<number, { text: string; files: File[]; at: number }>();
+  private probes = new Set<ReturnType<typeof setTimeout>>();
+  /** The connection dropped with sends unanswered: once it is back, each is found in the chat or given back. */
+  private lost = false;
 
   private remember(clientSeq: number, text: string, files: File[]) {
-    this.inflight.set(clientSeq, { text, files });
+    this.inflight.set(clientSeq, { text, files, at: Date.now() });
     if (this.inflight.size > 30) {
       const oldest = this.inflight.keys().next().value;
       if (oldest !== undefined) this.inflight.delete(oldest);
     }
+    // The echo normally comes in milliseconds. If it has not come in 5 s, ask the socket whether it is there at
+    // all, rather than waiting out the 20 s heartbeat to find out the message went nowhere.
+    const t = setTimeout(() => {
+      this.probes.delete(t);
+      if (this.inflight.has(clientSeq)) void ahp().probe();
+    }, 5000);
+    this.probes.add(t);
+  }
+
+  /** Whether the chat already holds this message (the host took it; only the echo was lost). */
+  private holds(chat: ChatState, m: { text: string; at: number }): boolean {
+    const same = (x?: { message: { text: string } }) => x?.message.text === m.text;
+    const turn = (t: { message: { text: string }; startedAt?: string | undefined }) =>
+      t.message.text === m.text && Date.parse(t.startedAt ?? "") >= m.at - 2000;
+    return (
+      chat.turns.some(turn) ||
+      (chat.activeTurn ? turn(chat.activeTurn) : false) ||
+      same(chat.steeringMessage) ||
+      (chat.queuedMessages ?? []).some(same)
+    );
+  }
+
+  /**
+   * When the connection drops, a message sent just before may never have reached the host. When it is back,
+   * each unanswered send is looked for in the chat: found, it went through (only its echo was lost) and is
+   * forgotten; not found, it goes back into the box with a notice. Never both, never neither. The list is
+   * emptied either way, because the next connection numbers its actions from 1 again.
+   */
+  private onInfoChanged(status: string) {
+    if (status !== "open") {
+      if (this.inflight.size) this.lost = true;
+      return;
+    }
+    if (!this.lost) return;
+    this.settleLost();
+  }
+
+  private settleLost() {
+    const conv = this.conv;
+    const chat = conv ? ahp().chat(conv.ahpChat) : undefined;
+    // The chat is not loaded yet (a fresh start): settle when it arrives.
+    if (!chat) return;
+    this.lost = false;
+    const unsent = [...this.inflight.values()].filter((m) => !this.holds(chat, m));
+    this.inflight.clear();
+    for (const m of unsent) this.restoreMessage(m, "Not sent: the connection was lost. Your message is back in the box.");
   }
 
   private onRejected = (r: Rejection) => {

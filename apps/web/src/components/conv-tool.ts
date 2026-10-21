@@ -134,6 +134,21 @@ export class IncConvTool extends LitElement {
     `,
   ];
 
+  private offInfo: (() => void) | undefined;
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    // An answer sent into a socket that then dropped never gets its echo: let the buttons be used again.
+    this.offInfo = ahp().onInfo((i) => {
+      if (i.status !== "open") this.sending = null;
+    });
+  }
+
+  override disconnectedCallback(): void {
+    this.offInfo?.();
+    super.disconnectedCallback();
+  }
+
   override willUpdate(): void {
     // The answer went out and the call moved on (from here or another device): the buttons are done with.
     if (this.sending && this.call?.status !== ToolCallStatus.PendingConfirmation) this.sending = null;

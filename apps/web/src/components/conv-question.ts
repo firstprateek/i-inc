@@ -55,6 +55,21 @@ export class IncConvQuestion extends LitElement {
     `,
   ];
 
+  private offInfo: (() => void) | undefined;
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    // An answer sent into a socket that then dropped never gets its echo: let the buttons be used again.
+    this.offInfo = ahp().onInfo((i) => {
+      if (i.status !== "open") this.sending = false;
+    });
+  }
+
+  override disconnectedCallback(): void {
+    this.offInfo?.();
+    super.disconnectedCallback();
+  }
+
   override willUpdate(): void {
     if (this.sending && this.response !== undefined) this.sending = false;
   }

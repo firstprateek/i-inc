@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AhpConnection } from "../../src/ahp/connection.ts";
 import { resetAhp, setAhp } from "../../src/ahp/hub.ts";
 import { USER_ORIGIN } from "../../src/ahp/wire.ts";
@@ -234,6 +234,60 @@ describe("the thread", () => {
     // and the box is not refilled: it went to the queue
     const composer = h.root().querySelector("inc-conv-composer") as Any;
     expect(must<HTMLTextAreaElement>(composer.shadowRoot?.querySelector("textarea")).value).toBe("");
+  });
+
+  it("gives a message back, with a notice, when the socket was dead and the host never got it (never both ways)", async () => {
+    const h = await setup();
+    h.host.blackhole = true; // frames go nowhere: no turn, no echo
+    h.h.onConnect = undefined;
+    await typeAndSend(h, "into the void", "turn").catch(() => {});
+    await until(() => (h.root().querySelector("inc-conv-composer") as Any).text === "");
+    await h.host.drop();
+    await until(() => h.h.made.length === 2 && h.c.info.status === "open", 3000);
+    await until(() => h.root().querySelector(".notice"));
+    expect(h.root().querySelector(".notice")?.textContent).toContain("Not sent: the connection was lost");
+    const composer = h.root().querySelector("inc-conv-composer") as Any;
+    await composer.updateComplete;
+    expect(must<HTMLTextAreaElement>(composer.shadowRoot?.querySelector("textarea")).value).toBe("into the void");
+    // and nothing was sent twice: the new host saw no turn
+    expect(h.h.made[1]?.received.filter((m) => m.method === "dispatchAction")).toHaveLength(0);
+  });
+
+  it("does not give it back when the host did take it and only the echo was lost", async () => {
+    const h = await setup();
+    h.host.blackhole = true;
+    await typeAndSend(h, "it got there", "turn").catch(() => {});
+    await until(() => (h.root().querySelector("inc-conv-composer") as Any).text === "");
+    // the host did start the turn (its state has it) but the client never saw the echo
+    h.host.states.set(CHAT, chatState({ turns: [{ id: "tx", startedAt: new Date().toISOString(), duration: 5, message: { text: "it got there", origin: USER_ORIGIN }, responseParts: [], usage: undefined, state: "complete" }] }));
+    await h.host.drop();
+    await until(() => h.h.made.length === 2 && h.c.info.status === "open", 3000);
+    await tick(80);
+    expect(h.root().querySelector(".notice")).toBeNull();
+    const composer = h.root().querySelector("inc-conv-composer") as Any;
+    expect(must<HTMLTextAreaElement>(composer.shadowRoot?.querySelector("textarea")).value).toBe("");
+  });
+
+  it("asks the socket if it is alive when a send has had no echo for 5 seconds", async () => {
+    const h = await setup(); // real timers while it connects
+    h.host.blackhole = true;
+    const composer = h.root().querySelector("inc-conv-composer") as Any;
+    await composer.updateComplete;
+    const ta = composer.shadowRoot.querySelector("textarea") as HTMLTextAreaElement;
+    ta.value = "waiting";
+    ta.dispatchEvent(new Event("input"));
+    await composer.updateComplete;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await composer.submit("turn");
+      await vi.advanceTimersByTimeAsync(4900);
+      expect(h.h.made).toHaveLength(1); // not yet: the echo may just be slow
+      await vi.advanceTimersByTimeAsync(300); // 5 s: it asks
+      await vi.advanceTimersByTimeAsync(3100); // gives the ping 3 s, finds nothing, and reconnects
+      expect(h.h.made.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("forgets a message once the host accepts it", async () => {

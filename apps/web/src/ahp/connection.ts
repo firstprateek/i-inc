@@ -538,6 +538,33 @@ export class AhpConnection {
     this.dropped(gen, client, "The connection to the host closed.");
   }
 
+  /**
+   * Checks the socket is alive right now (a send is waiting for its echo): a ping that must be answered within
+   * `timeoutMs`, else the connection is treated as dropped and reconnects, without waiting for the next heartbeat.
+   */
+  probe(timeoutMs = 3000): Promise<boolean> {
+    const client = this.client;
+    const gen = this.gen;
+    if (!client || this.infoNow.status !== "open") return Promise.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        this.dropped(gen, client, "The host stopped answering.");
+        resolve(false);
+      }, timeoutMs);
+      client.ping().then(
+        () => {
+          clearTimeout(timer);
+          resolve(true);
+        },
+        () => {
+          clearTimeout(timer);
+          this.dropped(gen, client, "The host stopped answering.");
+          resolve(false);
+        },
+      );
+    });
+  }
+
   private startPing(gen: number, client: AhpClient): void {
     clearInterval(this.pingTimer);
     const every = this.o.pingMs ?? 20_000;

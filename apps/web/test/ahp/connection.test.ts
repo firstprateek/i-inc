@@ -599,6 +599,20 @@ describe("AhpConnection", () => {
     expect(conn.info.status).toBe("open");
   });
 
+  it("finds a dead socket in a few seconds when asked, instead of waiting for the heartbeat", async () => {
+    const { h, conn } = setup();
+    conn.start();
+    await until(() => conn.info.status === "open");
+    expect(await conn.probe(500)).toBe(true);
+    (h.made[0] as NonNullable<(typeof h.made)[number]>).blackhole = true;
+    const t0 = Date.now();
+    expect(await conn.probe(200)).toBe(false);
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(conn.info.status).not.toBe("open");
+    // and it reconnects on its own
+    await until(() => conn.info.status === "open" && h.made.length === 2, 3000);
+  });
+
   it("clears the retry and the ping timers when stopped", async () => {
     vi.useFakeTimers();
     try {

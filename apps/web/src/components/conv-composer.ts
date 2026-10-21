@@ -165,12 +165,13 @@ export class IncConvComposer extends LitElement {
     if (changed.has("text") || changed.has("conversationId")) this.fit();
   }
 
-  /** Puts text back in the box (a message the host refused), unless something new has been typed. */
+  /** Puts a message back in the box (one the host refused, or the connection lost), ahead of anything typed since. */
   restore(text: string, files: File[] = []): void {
     if (files.length) void this.addFiles(files);
-    if (this.text.trim()) return;
-    this.text = text;
-    draftMemo.set(`conv:${this.conversationId}`, text);
+    const typed = this.text.trim();
+    this.text = typed && typed !== text.trim() ? `${text}\n\n${typed}` : text;
+    const next = this.text;
+    draftMemo.set(`conv:${this.conversationId}`, next);
     this.focusInput();
   }
 
