@@ -8,7 +8,7 @@ import { AhpHost } from "../../src/ahp/host.ts";
 import { sanitizeAction } from "../../src/ahp/sanitize.ts";
 import { ActionType, ResponsePartKind, ROOT, SessionLifecycle, TurnState } from "../../src/ahp/wire.ts";
 import { openDb } from "../../src/db.ts";
-import { gate, rig, ScriptedBackend, turnStarted } from "./support.ts";
+import { type Any, gate, rig, ScriptedBackend, turnStarted } from "./support.ts";
 
 const tmp = () => join(mkdtempSync(join(tmpdir(), "ahp-store-")), "ahp.db");
 const settle = () => new Promise<void>((r) => setTimeout(r, 0));
@@ -136,9 +136,9 @@ describe("persistence across a restart", () => {
     expect(echoed?.origin).toEqual({ clientId: "laptop", clientSeq: seq });
     const phone = t.client("phone");
     const r = await phone.reconnect(0, [chat]);
-    const replayed = r.actions.find((e: any) => e.action.type === ActionType.ChatTurnStarted);
+    const replayed = r.actions.find((e: Any) => e.action.type === ActionType.ChatTurnStarted);
     expect(replayed.origin).toEqual({ clientId: "laptop", clientSeq: seq });
-    const agentSide = r.actions.find((e: any) => e.action.type === ActionType.ChatResponsePart);
+    const agentSide = r.actions.find((e: Any) => e.action.type === ActionType.ChatResponsePart);
     expect(agentSide.origin).toBeUndefined();
   });
 });
@@ -292,7 +292,7 @@ describe("what is persisted from an agent", () => {
     const capped = sanitizeAction(
       { result: { content: [{ type: "text", text: huge }] } },
       { maxString: 1000, maxAction: 10_000 },
-    ) as any;
+    ) as Any;
     expect(capped.result.content[0].text.length).toBeLessThan(1100);
     expect(capped.result.content[0].text).toContain("more characters not kept");
     const many = {

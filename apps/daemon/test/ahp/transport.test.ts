@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { AhpTransport, type BunSocket, type WsData } from "../../src/ahp/transport.ts";
 import { ROOT } from "../../src/ahp/wire.ts";
 import { same } from "../../src/auth.ts";
-import { FakeSocket, rig, TestClient, turnStarted } from "./support.ts";
+import { type Any, FakeSocket, rig, TestClient, turnStarted } from "./support.ts";
 
 const TOKEN = "s3cret-token";
 const upgrade = (headers: Record<string, string> = {}, url = "http://127.0.0.1:7420/ahp") =>
@@ -245,7 +245,7 @@ describe("limits on a connection", () => {
     expect(t.host.connectionCount()).toBe(1);
     expect(slow.conn.subs.size).toBe(0);
     const sentToSlow = slow.socket.frames.length;
-    expect(fast.state<any>(chat).turns).toHaveLength(1); // the fast one saw it all
+    expect(fast.state<Any>(chat).turns).toHaveLength(1); // the fast one saw it all
     // later traffic never touches the dropped socket
     fast.dispatch(chat, turnStarted("again", "t2"));
     await t.host.idle();
@@ -308,14 +308,12 @@ describe("limits on a connection", () => {
     ).toMatchObject({ code: -32602 });
     expect(
       (
-        await t
-          .client()
-          .rpc("reconnect", {
-            channel: ROOT,
-            clientId: "e",
-            lastSeenServerSeq: 0,
-            subscriptions: [ROOT, a.chat, b.chat],
-          })
+        await t.client().rpc("reconnect", {
+          channel: ROOT,
+          clientId: "e",
+          lastSeenServerSeq: 0,
+          subscriptions: [ROOT, a.chat, b.chat],
+        })
       ).error,
     ).toMatchObject({ code: -32602 });
   });

@@ -12,7 +12,7 @@ import {
   ToolCallStatus,
   TurnState,
 } from "../../src/ahp/wire.ts";
-import { gate, rig, ScriptedBackend, turnStarted, userMessage } from "./support.ts";
+import { type Any, gate, rig, turnStarted, userMessage } from "./support.ts";
 
 const settle = () => new Promise<void>((r) => setTimeout(r, 0));
 const confirm = (turnId: string, toolCallId: string, approved: boolean, optionId?: string) =>
@@ -135,7 +135,7 @@ describe("subscribe, snapshot and ordered actions", () => {
     const c = t.client();
     await c.init();
     const list = (await c.call("listSessions", { channel: ROOT })).items;
-    expect(list.map((s: any) => s.resource)).toEqual([two.session, one.session]);
+    expect(list.map((s: Any) => s.resource)).toEqual([two.session, one.session]);
     expect(list[0].status & SessionStatus.Idle).toBeTruthy();
     expect(list[0].defaultChat).toBe(two.chat);
     const g = gate();
@@ -146,7 +146,7 @@ describe("subscribe, snapshot and ordered actions", () => {
     c.dispatch(one.chat, turnStarted("work"));
     await settle();
     const running = (await c.call("listSessions", { channel: ROOT })).items.find(
-      (s: any) => s.resource === one.session,
+      (s: Any) => s.resource === one.session,
     );
     expect(running.status & SessionStatus.InProgress).toBeTruthy();
     g.resolve();
@@ -170,7 +170,7 @@ describe("subscribe, snapshot and ordered actions", () => {
     c.absorb();
     const changed = c.notes.filter((n) => n.method === "root/sessionSummaryChanged");
     expect(changed.length).toBeGreaterThan(0);
-    expect((changed.at(-1)?.params as any).session).toBe(session);
+    expect(changed.at(-1)).toMatchObject({ params: { session } });
   });
 });
 
@@ -194,14 +194,14 @@ describe("reconnect", () => {
     expect(r.type).toBe("replay");
     expect(r.missing).toEqual([]);
     const missed = a.actions().filter((e) => e.serverSeq > seen);
-    expect(r.actions.map((e: any) => e.serverSeq)).toEqual(missed.map((e) => e.serverSeq));
+    expect(r.actions.map((e: Any) => e.serverSeq)).toEqual(missed.map((e) => e.serverSeq));
     expect(b2.lastSeq).toBe(t.host.serverSeq);
     // b2 never saw the first half (no snapshot): replay on top of its old state is what b held
     expect(b.state(chat)).toBeDefined();
     // and it is subscribed again: live actions arrive
     a.dispatch(chat, turnStarted("third", "t3"));
     await t.host.idle();
-    expect(b2.actions(chat).some((e) => (e.action as any).turnId === "t3")).toBe(true);
+    expect(b2.actions(chat).some((e) => (e.action as Any).turnId === "t3")).toBe(true);
   });
 
   it("names the channels that are gone, and carries on for the rest", async () => {
@@ -257,9 +257,9 @@ describe("first confirmation wins", () => {
   it("shows the card to both clients and in the session's inputNeeded roll-up", async () => {
     const { t, session, chat, a, b } = await pending();
     const call = (c: typeof a) =>
-      c.state(chat).activeTurn.responseParts.find((p: any) => p.kind === ResponsePartKind.ToolCall).toolCall;
+      c.state(chat).activeTurn.responseParts.find((p: Any) => p.kind === ResponsePartKind.ToolCall).toolCall;
     expect(call(a).status).toBe(ToolCallStatus.PendingConfirmation);
-    expect(call(b).options.map((o: any) => o.id)).toEqual([
+    expect(call(b).options.map((o: Any) => o.id)).toEqual([
       "allow-once",
       "allow-always",
       "reject-once",
@@ -622,7 +622,7 @@ describe("validation of what clients send", () => {
       Buffer.alloc(9000, 7),
     ]);
     const data = png.toString("base64");
-    let seen: any;
+    let seen: Any;
     t.backend.script = async (run) => {
       seen = run.message.attachments;
       return { kind: "complete" };
@@ -642,7 +642,7 @@ describe("validation of what clients send", () => {
       data,
     });
     // what the log and every client's state hold: a reference, not 12 KB of base64
-    const kept = t.host.chatState(chat)?.turns[0]?.message.attachments?.[0] as any;
+    const kept = t.host.chatState(chat)?.turns[0]?.message.attachments?.[0] as Any;
     expect(kept.type).toBe("resource");
     expect(kept.uri).toMatch(/^ahp-content:\/[0-9a-f]{32}$/);
     expect(JSON.stringify(t.db.all("SELECT action FROM ahp_actions"))).not.toContain(data);
@@ -675,7 +675,7 @@ describe("session config", () => {
     await settle();
     expect(t.host.sessionState(session)?.config?.values.mode).toBe("plan");
     expect(t.backend.configs).toEqual([{ mode: "plan" }]);
-    expect(a.state<any>(session).config.values.mode).toBe("plan");
+    expect(a.state<Any>(session).config.values.mode).toBe("plan");
   });
 
   it("rejects an unknown key, a value outside the enum and a value fixed at creation", async () => {
@@ -704,7 +704,7 @@ describe("session config", () => {
     await settle();
     await settle();
     expect(t.host.sessionState(session)?.config?.values.mode).toBe("bypass");
-    expect(a.state<any>(session).config.values.mode).toBe("bypass");
+    expect(a.state<Any>(session).config.values.mode).toBe("bypass");
   });
 
   it("creates a session in the mode asked for, and refuses a mode the agent does not have", async () => {
@@ -733,7 +733,7 @@ describe("chats", () => {
     const second = "ahp-chat:/second";
     await a.call("createChat", { channel: session, chat: second });
     expect(t.host.sessionState(session)?.chats.map((c) => c.resource)).toEqual([chat, second]);
-    expect(a.state<any>(session).chats).toHaveLength(2);
+    expect(a.state<Any>(session).chats).toHaveLength(2);
     expect((await a.rpc("createChat", { channel: session, chat: second })).error).toMatchObject({
       code: -32010,
     });
@@ -794,14 +794,14 @@ describe("paging long chats", () => {
     const b = t.client();
     await b.init([ROOT]);
     const { snapshot } = await b.subscribe(chat, { turns: 2 });
-    expect(snapshot.state.turns.map((x: any) => x.id)).toEqual(["t5", "t6"]);
+    expect(snapshot.state.turns.map((x: Any) => x.id)).toEqual(["t5", "t6"]);
     expect(snapshot.state.turnsNextCursor).toBe("before:t5");
     await b.call("fetchTurns", { channel: chat, cursor: "before:t5" });
-    expect(b.state<any>(chat).turns.map((x: any) => x.id)).toEqual(["t3", "t4", "t5", "t6"]);
-    expect(b.state<any>(chat).turnsNextCursor).toBe("before:t3");
+    expect(b.state<Any>(chat).turns.map((x: Any) => x.id)).toEqual(["t3", "t4", "t5", "t6"]);
+    expect(b.state<Any>(chat).turnsNextCursor).toBe("before:t3");
     await b.call("fetchTurns", { channel: chat }); // no cursor: the next older page
     await b.call("fetchTurns", { channel: chat, cursor: "before:t1" });
-    expect(b.state<any>(chat).turns.map((x: any) => x.id)).toEqual([
+    expect(b.state<Any>(chat).turns.map((x: Any) => x.id)).toEqual([
       "t0",
       "t1",
       "t2",
@@ -810,7 +810,7 @@ describe("paging long chats", () => {
       "t5",
       "t6",
     ]);
-    expect(b.state<any>(chat).turnsNextCursor).toBeUndefined();
+    expect(b.state<Any>(chat).turnsNextCursor).toBeUndefined();
     expect(await b.call("fetchTurns", { channel: chat })).toBeNull(); // nothing older
     // the paging actions are for this client alone and use no serverSeq
     const loaded = b.envelopes.filter((e) => e.action.type === ActionType.ChatTurnsLoaded);
@@ -829,11 +829,11 @@ describe("paging long chats", () => {
     expect((await b.rpc("fetchTurns", { channel: chat, cursor: "bogus" })).error).toMatchObject({
       code: -32602,
     });
-    expect(a.state<any>(chat).turns).toHaveLength(5); // a holds everything and was told nothing
+    expect(a.state<Any>(chat).turns).toHaveLength(5); // a holds everything and was told nothing
     expect(a.envelopes.some((e) => e.action.type === ActionType.ChatTurnsLoaded)).toBe(false);
     a.dispatch(chat, turnStarted("live", "t5"));
     await t.host.idle();
-    expect(b.state<any>(chat).turns.map((x: any) => x.id)).toEqual(["t4", "t5"]);
+    expect(b.state<Any>(chat).turns.map((x: Any) => x.id)).toEqual(["t4", "t5"]);
     const none = t.client();
     await none.init([ROOT]);
     expect((await none.rpc("fetchTurns", { channel: chat })).error).toBeTruthy(); // not subscribed
