@@ -6,7 +6,7 @@ import { css, html, LitElement, nothing } from "lit";
 import { ahp } from "../ahp/hub.ts";
 import { ResponsePartKind, TurnState } from "../ahp/wire.ts";
 import { MarkdownCache } from "../conversations/markdown.ts";
-import { durationText, usageLine } from "../conversations/model.ts";
+import { durationText, usageLine, visible } from "../conversations/model.ts";
 import { cardStyles, markdownStyles } from "../conversations/styles.ts";
 import "./conv-question.ts";
 import "./conv-tool.ts";
@@ -130,17 +130,17 @@ export class IncConvTurn extends LitElement {
   private renderPart(p: ResponsePart, last: boolean, turn: AnyTurn) {
     switch (p.kind) {
       case ResponsePartKind.Markdown:
-        return p.content ? html`<div class="md">${this.cache(p.id).render(p.content)}</div>` : nothing;
+        return p.content ? html`<div class="md">${this.cache(p.id).render(p.content, this.active && last)}</div>` : nothing;
       case ResponsePartKind.Reasoning:
-        return html`<details class="think"><summary>${this.active && last ? "Thinking…" : "Thinking"}</summary><div class="md">${this.cache(p.id).render(p.content)}</div></details>`;
+        return html`<details class="think"><summary>${this.active && last ? "Thinking…" : "Thinking"}</summary><div class="md">${this.cache(p.id).render(p.content, this.active && last)}</div></details>`;
       case ResponsePartKind.ToolCall:
         return html`<inc-conv-tool .call=${p.toolCall} .turnId=${turn.id} .chat=${this.chat} .turnActive=${this.active}></inc-conv-tool>`;
       case ResponsePartKind.InputRequest:
         return html`<inc-conv-question .request=${p.request} .response=${p.response} .chat=${this.chat}></inc-conv-question>`;
       case ResponsePartKind.SystemNotification:
-        return html`<p class="sys">${typeof p.content === "string" ? p.content : p.content.markdown}</p>`;
+        return html`<p class="sys">${visible(typeof p.content === "string" ? p.content : p.content.markdown, true)}</p>`;
       case ResponsePartKind.Error:
-        return html`<div class="error" role="alert"><p>${p.error.message}</p>
+        return html`<div class="error" role="alert"><p>${visible(p.error.message, true)}</p>
           ${!this.active ? html`<div><button class="cbtn" type="button" @click=${() => this.retry(turn.message.text)}>Retry</button></div>` : nothing}</div>`;
       default:
         return nothing;
@@ -161,7 +161,7 @@ export class IncConvTurn extends LitElement {
       (p) => p.kind === ResponsePartKind.ToolCall && p.toolCall.status === ("pending-confirmation" as never),
     );
     return html`<article class="turn" aria-label="Turn">
-      <div class="user">${turn.message.text}${this.attachments(turn.message)}</div>
+      <div class="user">${visible(turn.message.text, true)}${this.attachments(turn.message)}</div>
       <div class="agent">
         ${parts.map((p, i) => this.renderPart(p, i === parts.length - 1, turn))}
         ${

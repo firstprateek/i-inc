@@ -8,6 +8,7 @@
 // growing chunk is parsed again, and a long reply costs the same per frame as a short one.
 import { html, nothing, type TemplateResult } from "lit";
 import { highlight, type Token } from "./highlight.ts";
+import { visible } from "./visible.ts";
 
 // ───────────────────────────── the tree ─────────────────────────────
 
@@ -540,9 +541,9 @@ const renderInline = (nodes: Inline[]): unknown[] =>
   nodes.map((n) => {
     switch (n.k) {
       case "text":
-        return n.s;
+        return visible(n.s, true);
       case "code":
-        return html`<code class="ic">${n.s}</code>`;
+        return html`<code class="ic">${visible(n.s)}</code>`;
       case "strong":
         return html`<strong>${renderInline(n.c)}</strong>`;
       case "em":
@@ -564,11 +565,11 @@ const highlighted = new Map<string, TemplateResult>();
 /** Highlighted code, cached by language and source (a finished code block is rendered once). */
 function codeBody(code: string, lang: string, open: boolean): TemplateResult {
   // While a block is still streaming, highlighting it again for every token would be wasted work.
-  if (open || code.length > 40_000) return html`${code}`;
+  if (open || code.length > 40_000) return html`${visible(code)}`;
   const key = `${lang}\u0000${code}`;
   const hit = highlighted.get(key);
   if (hit) return hit;
-  const tpl = html`${highlight(code, lang).map((t) => (t.t ? html`<span class=${tokenClass(t)}>${t.s}</span>` : t.s))}`;
+  const tpl = html`${highlight(code, lang).map((t) => (t.t ? html`<span class=${tokenClass(t)}>${visible(t.s)}</span>` : visible(t.s)))}`;
   highlighted.set(key, tpl);
   if (highlighted.size > 300) {
     const oldest = highlighted.keys().next().value;
@@ -641,6 +642,9 @@ export function renderBlocks(blocks: Block[]): TemplateResult[] {
  * Renders one reply incrementally. Call `render(text)` with the growing text: finished chunks come back
  * from the cache, only the last one is parsed again. One cache per message part.
  */
+/** An open block over this many characters is shown as plain text while it streams. */
+export const STREAMING_PLAIN = 16_000;
+
 export class MarkdownCache {
   private prevText = "";
   private starts: number[] = [];
@@ -648,7 +652,7 @@ export class MarkdownCache {
   /** For tests: how many chunks were parsed by the last render. */
   parsed = 0;
 
-  render(text: string): TemplateResult[] {
+  render(text: string, streaming = false): TemplateResult[] {
     // Append-only growth keeps every chunk but the last as it was.
     let starts: number[];
     if (this.prevText && text.startsWith(this.prevText) && this.starts.length > 1) {
@@ -663,6 +667,12 @@ export class MarkdownCache {
     const out: TemplateResult[] = [];
     starts.forEach((s, n) => {
       const src = text.slice(s, starts[n + 1] ?? text.length);
+      // A block still growing, and big: showing it as plain text costs one text node a frame, where a parsed
+      // table of thousands of rows would cost a long task each time. It is parsed once it closes or the turn ends.
+      if (streaming && n === starts.length - 1 && src.length > STREAMING_PLAIN) {
+        out.push(html`<pre class="plain-open">${visible(src, true)}</pre>`);
+        return;
+      }
       let tpl = next.get(src) ?? this.cache.get(src);
       if (!tpl) {
         tpl = renderBlocks(parseBlocks(src));

@@ -147,101 +147,116 @@ describe("markdown", () => {
 });
 
 describe("hostile input costs a pass over the text, not more", () => {
-  const KB = 100 * 1024;
-  const rep = (unit: string, n = KB) => unit.repeat(Math.ceil(n / unit.length)).slice(0, n);
-  const cases: Record<string, string> = {
-    "a heading with spaces": `# a${" ".repeat(KB)}x`,
-    "a run of #": rep("#"),
-    "headings of #": rep("# a #\n"),
-    spaces: rep(" "),
-    "[": rep("["),
-    "[a](": rep("[a]("),
-    "[a](b": rep("[a](b "),
-    "*a ": rep("*a "),
-    "**a ": rep("**a "),
-    "_a ": rep("_a "),
-    "nested emphasis": rep("**a *b ~~c "),
-    backticks: rep("`"),
-    "unmatched code spans": rep("`a ``b ```c "),
-    "fence-like lines": rep("``` ``` ```\n"),
-    "a fence with spaces": `\`\`\`${" ".repeat(KB)}x`,
-    "table rows": `|${rep("-|")}\n|${rep("-|")}\n|a|`,
-    "table separators": rep("|-|-|-|-|-|-|-|-|-|-\n"),
-    "(": rep("("),
-    "\\": rep("\\"),
-    "<": rep("<"),
-    "<http": rep("<http://a "),
-    http: rep("http://a "),
-    tildes: rep("~~a ~b "),
-    unicode: rep("\u202e\u200b*a "),
-  };
+  const rep = (unit: string, n: number) => unit.repeat(Math.ceil(n / unit.length)).slice(0, n);
+  /** One hostile text of each class, `n` characters long. */
+  const cases = (n: number): Record<string, string> => ({
+    "a heading with spaces": `# a${" ".repeat(n)}x`,
+    "a run of #": rep("#", n),
+    "headings of #": rep("# a #\n", n),
+    spaces: rep(" ", n),
+    "[": rep("[", n),
+    "[a](": rep("[a](", n),
+    "[a](b": rep("[a](b ", n),
+    "*a ": rep("*a ", n),
+    "**a ": rep("**a ", n),
+    "_a ": rep("_a ", n),
+    "nested emphasis": rep("**a *b ~~c ", n),
+    backticks: rep("`", n),
+    "unmatched code spans": rep("`a ``b ```c ", n),
+    "fence-like lines": rep("``` ``` ```\n", n),
+    "a fence with spaces": `\`\`\`${" ".repeat(n)}x`,
+    "table rows": `|${rep("-|", n)}\n|${rep("-|", n)}\n|a|`,
+    "table separators": rep("|-|-|-|-|-|-|-|-|-|-\n", n),
+    "(": rep("(", n),
+    "\\": rep("\\", n),
+    "<": rep("<", n),
+    "<http": rep("<http://a ", n),
+    http: rep("http://a ", n),
+    tildes: rep("~~a ~b ", n),
+    unicode: rep("\u202e\u200b*a ", n),
+    "list markers": rep("- - - - - -\n", n),
+    "ordered markers": rep("1. 1. 1. 1.\n", n),
+    quotes: rep("> > > > > > >\n", n),
+    rules: rep("- - - - -x\n", n),
+  });
+  const names = Object.keys(cases(100));
   const timed = (fn: () => void): number => {
     const t = performance.now();
     fn();
     return performance.now() - t;
   };
-  // Text that really is thousands of nested list items and quotes builds thousands of them: linear, but a
-  // heavier constant, so it gets a wider budget (a ReDoS would be seconds).
-  const structural: Record<string, string> = {
-    "list markers": rep("- - - - - -\n"),
-    "ordered markers": rep("1. 1. 1. 1.\n"),
-    quotes: rep("> > > > > > >\n"),
-    rules: rep("- - - - -x\n"),
-  };
-  it.each(Object.entries(structural))("%s: 100 KB of nested structure in under 250 ms", (_name, text) => {
-    expect(
-      Math.min(
-        timed(() => renderMarkdown(text)),
-        timed(() => renderMarkdown(text)),
-      ),
-    ).toBeLessThan(250);
+  /** The best of three runs, so a busy machine cannot make one slow run look like growth. */
+  const best = (fn: () => void) => Math.min(timed(fn), timed(fn), timed(fn));
+
+  // Load-independent: not "under N ms" but "four times the text costs about four times the time". A backtracking
+  // regex or a rescan per character grows with the square or the cube and fails this by a wide margin on a
+  // machine of any speed; absolute milliseconds are in the opt-in bench below.
+  it.each(names)("%s: four times the text costs about four times the work", (name) => {
+    const small = cases(40 * 1024)[name] ?? "";
+    const big = cases(160 * 1024)[name] ?? "";
+    const t1 = best(() => renderMarkdown(small));
+    const t4 = best(() => renderMarkdown(big));
+    expect(t4, `${name}: ${t1.toFixed(1)} ms -> ${t4.toFixed(1)} ms`).toBeLessThan(8 * t1 + 20);
   });
 
-  it.each(Object.entries(cases))("%s: 100 KB in a single pass", (_name, text) => {
-    // the faster of two runs: a cold first run pays for compiling, and a ReDoS is seconds, not milliseconds
-    expect(
-      Math.min(
-        timed(() => renderMarkdown(text)),
-        timed(() => renderMarkdown(text)),
-      ),
-    ).toBeLessThan(50);
+  // Counting, not timing: while a reply streams, a render parses only the chunk that grew.
+  it.each(names)("%s: streamed in pieces, each render parses at most the open chunk", (name) => {
+    const text = cases(60 * 1024)[name] ?? "";
+    const cache = new MarkdownCache();
+    let worst = 0;
+    for (let at = 4000; at <= text.length + 3999; at += 4000) {
+      cache.render(text.slice(0, at), true);
+      worst = Math.max(worst, cache.parsed);
+    }
+    expect(worst).toBeLessThanOrEqual(2);
   });
 
-  it.each(Object.entries(cases))("%s: 100 KB streamed in pieces, every render", (_name, text) => {
-    // the better of two passes: a loaded machine can stall one, a ReDoS stalls both
-    const pass = () => {
+  it("shows a big block as plain text while it streams, and parses it when the turn ends", () => {
+    const table = `| a | b |\n|---|---|\n${"| 1 | 2 |\n".repeat(3000)}`;
+    const cache = new MarkdownCache();
+    const host = document.createElement("div");
+    render(cache.render(table, true), host);
+    expect(host.querySelector("pre.plain-open")).not.toBeNull();
+    expect(host.querySelector("table")).toBeNull();
+    expect(cache.parsed).toBe(0);
+    render(cache.render(table, false), host);
+    expect(host.querySelector("table")).not.toBeNull();
+    expect(host.querySelector("pre.plain-open")).toBeNull();
+  });
+
+  it("shows control characters in a reply's text, links and code visibly", () => {
+    const out = htmlOf("see src/\u202egnp.exe and `x\u202ey` and [a\u200bb](https://example.com)\n\n```\nlet a\u202e = 1\n```");
+    expect(out).not.toMatch(/[\u202e\u200b]/);
+    expect(out.match(/⟨U\+202E⟩/g)?.length).toBe(3);
+    expect(out).toContain("⟨U+200B⟩");
+    // an emoji joiner is left alone in prose
+    expect(htmlOf("\u{1F468}\u200d\u{1F469}")).toContain("\u200d");
+  });
+
+  it("highlights hostile code with work in proportion to its size, and keeps every character", () => {
+    const hostile = (n: number) => [rep("<!--", n), rep('"a', n), rep("/*", n), rep("`", n), rep("<a b=", n)];
+    for (const lang of ["html", "ts", "py", "sh", "css", "diff", "json"]) {
+      const small = hostile(10_000);
+      const big = hostile(40_000);
+      small.forEach((text, i) => {
+        const t1 = best(() => highlight(text, lang));
+        const t4 = best(() => highlight(big[i] ?? "", lang));
+        expect(t4, `${lang} #${i}: ${t1.toFixed(1)} -> ${t4.toFixed(1)} ms`).toBeLessThan(8 * t1 + 20);
+        expect(tokensText(highlight(big[i] ?? "", lang))).toBe(big[i]);
+      });
+    }
+  });
+
+  // Absolute milliseconds, for a person to run on a quiet machine: I_INC_BENCH=1 pnpm --filter @i-inc/web test
+  describe.skipIf(!process.env.I_INC_BENCH)("bench (opt in)", () => {
+    it.each(names)("%s: 100 KB in under 50 ms, whole and streamed", (name) => {
+      const text = cases(100 * 1024)[name] ?? "";
+      expect(best(() => renderMarkdown(text))).toBeLessThan(name.includes("markers") || name === "quotes" || name === "rules" ? 250 : 50);
       const cache = new MarkdownCache();
       let worst = 0;
-      for (let at = 4000; at <= text.length + 3999; at += 4000) {
-        worst = Math.max(
-          worst,
-          timed(() => cache.render(text.slice(0, at))),
-        );
-      }
-      return worst;
-    };
-    expect(Math.min(pass(), pass())).toBeLessThan(50);
-  });
-
-  it("highlights hostile code in bounded time and keeps every character", () => {
-    for (const lang of ["html", "ts", "py", "sh", "css", "diff", "json"]) {
-      for (const text of [
-        rep("<!--", 40_000),
-        rep('"a', 40_000),
-        rep("/*", 40_000),
-        rep("`", 40_000),
-        rep("<a b=", 40_000),
-      ]) {
-        let tokens: ReturnType<typeof highlight> = [];
-        expect(
-          timed(() => {
-            tokens = highlight(text, lang);
-          }),
-          `${lang}`,
-        ).toBeLessThan(80);
-        expect(tokensText(tokens)).toBe(text);
-      }
-    }
+      for (let at = 4000; at <= text.length + 3999; at += 4000) worst = Math.max(worst, timed(() => cache.render(text.slice(0, at), true)));
+      expect(worst).toBeLessThan(50);
+    });
   });
 
   it("still reads the ordinary shapes the scanners replaced", () => {

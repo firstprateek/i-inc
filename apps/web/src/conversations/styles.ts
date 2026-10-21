@@ -33,6 +33,7 @@ export const markdownStyles = css`
     font: 600 12px var(--body); cursor: pointer; }
   @media (pointer: coarse) { .md .copy { min-height: 44px; min-width: 56px; } }
   .md .copy:hover { background: var(--sunken); color: var(--ink); }
+  .md pre.plain-open { white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.5 var(--mono); background: var(--code-bg); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin: 0 0 0.9em; }
   .md pre { margin: 0; padding: 12px 14px; overflow-x: auto; white-space: pre; font: 13px/1.5 var(--mono); font-variant-ligatures: none; tab-size: 2; max-width: 100%; }
   .md pre code { font: inherit; }
   .tk-kw { color: var(--tk-kw); font-weight: 600; } .tk-str { color: var(--tk-str); } .tk-com { color: var(--tk-com); font-style: italic; }
