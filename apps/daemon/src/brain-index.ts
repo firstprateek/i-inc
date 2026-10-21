@@ -2,6 +2,8 @@
 // next to the daemon's. Markdown in git is the truth; this is rebuilt from the repos at any time (at
 // startup, and incrementally after every KnowledgeStore commit). It holds a page table, an FTS5 table
 // (BM25 weighted title 5, description 3, tags 2, body 1; porter + unicode61) and the [[links]].
+
+import { existsSync, renameSync, rmSync } from "node:fs";
 import {
   type BuiltMap,
   buildMap,
@@ -24,6 +26,12 @@ const schemaVersion = 1;
 
 /** BM25 column weights, in the FTS table's column order: title, description, tags, body. */
 export const bm25Weights = [5, 3, 2, 1] as const;
+
+/** Whether this SQLite can make an FTS5 table. Throws if not. */
+export function probeFts5(db: Db): void {
+  db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS temp.fts5_probe USING fts5(x)");
+  db.exec("DROP TABLE IF EXISTS temp.fts5_probe");
+}
 
 export class Fts5UnavailableError extends Error {
   constructor(cause: unknown) {
@@ -98,19 +106,42 @@ export class BrainIndex implements RetrievalSource {
 
   /**
    * Opens (or creates) the index file. Throws `Fts5UnavailableError` when this SQLite has no FTS5, so
-   * the daemon refuses to start with a clear message rather than failing on the first search.
+   * the daemon refuses to start with a clear message rather than failing on the first search. A file
+   * that isn't a usable SQLite database (the index is disposable) is moved aside and made again; the
+   * caller rebuilds it from git. `o.probe` is the FTS5 capability check, injectable for tests.
    */
-  static async open(path: string, store: KnowledgeStore, log: (msg: string) => void = () => {}) {
-    const db = await openDb(path);
-    const index = new BrainIndex(db, store, log);
-    index.init();
-    return index;
+  static async open(
+    path: string,
+    store: KnowledgeStore,
+    log: (msg: string) => void = () => {},
+    o: { probe?: (db: Db) => void } = {},
+  ): Promise<BrainIndex> {
+    const attempt = async () => {
+      const db = await openDb(path);
+      try {
+        const index = new BrainIndex(db, store, log);
+        index.init(o.probe ?? probeFts5);
+        return index;
+      } catch (e) {
+        db.close();
+        throw e;
+      }
+    };
+    try {
+      return await attempt();
+    } catch (e) {
+      if (e instanceof Fts5UnavailableError || path === ":memory:" || !existsSync(path)) throw e;
+      const aside = `${path}.corrupt-${Date.now()}`;
+      log(`brain index: ${path} is not a usable database (${String(e)}); moved to ${aside} and rebuilding`);
+      renameSync(path, aside);
+      for (const ext of ["-wal", "-shm"]) rmSync(`${path}${ext}`, { force: true });
+      return await attempt();
+    }
   }
 
-  private init(): void {
+  private init(probe: (db: Db) => void): void {
     try {
-      this.db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS temp.fts5_probe USING fts5(x)");
-      this.db.exec("DROP TABLE IF EXISTS temp.fts5_probe");
+      probe(this.db);
     } catch (e) {
       throw new Fts5UnavailableError(e);
     }

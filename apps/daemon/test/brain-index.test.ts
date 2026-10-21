@@ -1,12 +1,22 @@
 // The brain's search index: built from the git repos, kept current after every commit, ranked by BM25
 // and scope, linked, mapped, and fast.
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { buildQuery, type ProposedEdit, retrieve, type Scope } from "@i-inc/core";
 import { afterEach, describe, expect, it } from "vitest";
-import { BrainIndex } from "../src/brain-index.ts";
+import { createApp } from "../src/app.ts";
+import { BrainIndex, Fts5UnavailableError } from "../src/brain-index.ts";
+import { openDb } from "../src/db.ts";
 import { KnowledgeStore } from "../src/knowledge.ts";
 
 const roots: string[] = [];
@@ -342,5 +352,73 @@ describe("performance", () => {
     );
     expect(rebuildMs).toBeLessThan(3000);
     expect(queryMs).toBeLessThan(20);
+  });
+});
+
+describe("startup", () => {
+  it("fails loudly, with a clear message, when SQLite has no FTS5", async () => {
+    const root = mkdtempSync(join(tmpdir(), "i-inc-brain-"));
+    roots.push(root);
+    const noFts5 = () => {
+      throw new Error("no such module: fts5");
+    };
+    const store = new KnowledgeStore(root);
+    const err = await BrainIndex.open(":memory:", store, undefined, { probe: noFts5 }).catch((e) => e);
+    expect(err).toBeInstanceOf(Fts5UnavailableError);
+    expect(err.message).toMatch(/needs SQLite's FTS5/);
+    expect(err.message).toMatch(/no such module: fts5/);
+
+    // The whole app refuses to start, and a file index is not moved aside for it.
+    const file = join(root, "brain-index.db");
+    const app = createApp({
+      dbPath: ":memory:",
+      knowledgeDir: join(root, "knowledge"),
+      brainIndexPath: file,
+      brainProbe: noFts5,
+      // biome-ignore lint/suspicious/noExplicitAny: the ports aren't reached before the index fails
+      ...({} as any),
+    });
+    await expect(app).rejects.toBeInstanceOf(Fts5UnavailableError);
+    expect(readdirSync(root).filter((f) => f.includes("corrupt"))).toEqual([]);
+  });
+
+  it("moves a corrupt index file aside and rebuilds from git", async () => {
+    const { root, store, commit } = await setup();
+    commit("handbook", { "facts/a.md": page("A", "alpha", "alpha body") });
+    const file = join(root, "brain-index.db");
+    writeFileSync(file, Buffer.alloc(5000, "this is not a sqlite database "));
+    writeFileSync(`${file}-wal`, "junk");
+    const logs: string[] = [];
+    const index = await BrainIndex.open(file, store, (m) => logs.push(m));
+    index.rebuild();
+    expect(index.pages(["company"]).map((p) => p.slug)).toEqual(["facts/a"]);
+    expect(index.search(buildQuery("alpha"), ["company"], 5).length).toBe(1);
+    const aside = readdirSync(root).filter((f) => f.startsWith("brain-index.db.corrupt-"));
+    expect(aside.length).toBe(1);
+    expect(
+      readFileSync(join(root, aside[0] ?? ""))
+        .subarray(0, 12)
+        .toString(),
+    ).toBe("this is not ");
+    expect(logs.join("\n")).toMatch(/not a usable database/);
+    index.close();
+
+    // A good file is left alone and reused.
+    const again = await BrainIndex.open(file, store);
+    expect(again.pages(["company"]).length).toBe(1);
+    expect(readdirSync(root).filter((f) => f.includes("corrupt")).length).toBe(1);
+    again.close();
+  });
+
+  it("opens the index file in WAL mode with a 5 s busy timeout", async () => {
+    const { root, store } = await setup();
+    const file = join(root, "brain-index.db");
+    const index = await BrainIndex.open(file, store);
+    index.close();
+    expect(existsSync(file)).toBe(true);
+    const raw = await openDb(file);
+    expect(raw.all("PRAGMA busy_timeout")).toEqual([{ timeout: 5000 }]);
+    expect(raw.all("PRAGMA journal_mode")).toEqual([{ journal_mode: "wal" }]);
+    raw.close();
   });
 });

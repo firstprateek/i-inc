@@ -19,7 +19,7 @@ import { same } from "./auth.ts";
 import { BrainIndex } from "./brain-index.ts";
 import { ChatLog } from "./chat.ts";
 import { Daemon, type DaemonDeps } from "./daemon.ts";
-import { openDb } from "./db.ts";
+import { type Db, openDb } from "./db.ts";
 import { DeployNotifier } from "./deploys.ts";
 import type { TokenSource } from "./github.ts";
 import { KnowledgeStore } from "./knowledge.ts";
@@ -45,6 +45,8 @@ export interface AppOptions extends ApiOptions {
   knowledgeDir: string;
   /** The brain's search index: a disposable SQLite file (`<home>/brain-index.db`). Default: in memory. */
   brainIndexPath?: string;
+  /** The FTS5 capability check, replaceable in tests (the default makes a throwaway FTS5 table). */
+  brainProbe?: (db: Db) => void;
   clock: Clock;
   sessions?: SessionStore;
   machines: FromRegistry<MachineProvider>;
@@ -101,7 +103,9 @@ export async function createApp(o: AppOptions) {
 
   const knowledge = new KnowledgeStore(o.knowledgeDir);
   // Fails here, at startup, with a clear message, if this SQLite has no FTS5.
-  const brain = await BrainIndex.open(o.brainIndexPath ?? ":memory:", knowledge, o.log);
+  const brain = await BrainIndex.open(o.brainIndexPath ?? ":memory:", knowledge, o.log, {
+    ...(o.brainProbe ? { probe: o.brainProbe } : {}),
+  });
   knowledge.onCommit = (repo) => brain.follow(repo);
 
   const deps: DaemonDeps = {
