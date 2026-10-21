@@ -155,7 +155,7 @@ export class IncConvContext extends LitElement {
         t
           ? html`<div class="ship-row"><a href="#/ticket/${t.id}">Ticket #${t.id}${t.title ? `: ${t.title}` : ""}</a>
               <span class="sub"><span class="pill ${t.status === "done" ? "ok" : t.status === "failed" || t.status === "needs-you" ? "bad" : ""}">${this.statusWord(t)}</span>
-                ${t.live ? html` ${t.live}` : nothing}</span>
+                ${t.live && !this.statusWord(t).toLowerCase().includes(t.live.toLowerCase()) ? html` ${t.live}` : nothing}</span>
               ${t.held ? html`<span class="sub">It has this conversation's files; the conversation is paused until it is done.</span>` : nothing}</div>`
           : nothing
       }

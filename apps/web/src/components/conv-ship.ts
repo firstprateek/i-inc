@@ -99,8 +99,8 @@ export class IncConvShip extends LitElement {
       footer { flex: none; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; padding: 12px 20px max(16px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--ground); }
       .skeleton { display: flex; flex-direction: column; gap: 10px; }
       .skeleton i { display: block; height: 56px; border-radius: 12px; background: var(--sunken); }
-      .done { padding: 8px 20px 16px; display: flex; flex-direction: column; gap: 10px; }
-      .done a { color: var(--reviewing-fg); font-weight: 700; text-underline-offset: 2px; display: inline-flex; align-items: center; min-height: 44px; }
+      .finished { padding: 8px 20px 16px; display: flex; flex-direction: column; gap: 10px; }
+      .finished a { color: var(--reviewing-fg); font-weight: 700; text-underline-offset: 2px; display: inline-flex; align-items: center; min-height: 44px; }
       @media (max-width: 767px) {
         .backdrop { align-items: end; padding: 0; }
         .panel { width: 100%; max-height: 92dvh; border-radius: 22px 22px 0 0; border-bottom: 0; }
@@ -142,7 +142,7 @@ export class IncConvShip extends LitElement {
     const items = this.focusables();
     const field =
       items.find((e) => e instanceof HTMLInputElement) ?? items.find((e) => e.dataset.main !== undefined);
-    (field ?? items[0])?.focus();
+    (field ?? items[0])?.focus({ preventScroll: true });
   }
 
   private close = () => {
@@ -331,7 +331,7 @@ export class IncConvShip extends LitElement {
   }
 
   private finished(r: ShipDone) {
-    return html`<div class="done" role="status">
+    return html`<div class="finished" role="status">
       ${
         r.kind === "ticket"
           ? html`<p><b>Done.</b> This work is now ticket #${r.ticketId}. ${this.name()} is paused on this conversation's files while it runs; you can follow it here or on the ticket.</p>

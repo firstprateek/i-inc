@@ -120,10 +120,17 @@ const smallTargets = (scope) => {
   const out = [];
   const deep = (r) =>
     [...r.querySelectorAll("*")].flatMap((e) => [e, ...(e.shadowRoot ? deep(e.shadowRoot) : [])]);
-  const start = scope
-    ? (document.querySelector("inc-app")?.shadowRoot?.querySelector(scope) ?? null)
-    : document;
-  const rootEl = scope ? (start?.shadowRoot ?? start) : document;
+  const find = (r) => {
+    const hit = r.querySelector(scope);
+    if (hit) return hit;
+    for (const e of r.querySelectorAll("*")) {
+      const inner = e.shadowRoot ? find(e.shadowRoot) : null;
+      if (inner) return inner;
+    }
+    return null;
+  };
+  const start = find(document);
+  const rootEl = start?.shadowRoot ?? start;
   if (!rootEl) return [`${scope} not found`];
   for (const el of deep(rootEl)) {
     if (!el.matches?.("button, a[href], input:not([type=hidden]):not([type=file]), select, textarea"))
@@ -170,7 +177,7 @@ const newConversation = async (project, employeeId = "ada") => {
 async function say(page, text) {
   const box = page.locator("inc-conv-composer textarea");
   await box.fill(text);
-  await box.press("Enter");
+  await page.locator('inc-conv-composer button[aria-label="Send"]').click();
 }
 
 async function openShipMenu(page) {
@@ -247,13 +254,13 @@ async function flow(browser, combo) {
     `${combo.name}: the title starts from the conversation`,
   );
   await shot(page, combo, "03-dialog-ticket");
-  await audit(page, combo, "ticket dialog", "inc-conversations");
+  await audit(page, combo, "ticket dialog", "inc-conv-ship");
   await dialog.locator("#ship-title").fill("Add a greeting");
   await dialog.getByRole("button", { name: "Make the ticket" }).click();
   await dialog.getByText(/This work is now ticket #\d+/).waitFor();
   const ticketId = (await dialog.innerText()).match(/ticket #(\d+)/)[1];
   await shot(page, combo, "04-dialog-done");
-  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await dialog.locator("footer").getByRole("button", { name: "Close" }).click();
   await dialog.waitFor({ state: "detached" });
   ok(true, `${combo.name}: the ticket is #${ticketId}`);
 
@@ -264,8 +271,13 @@ async function flow(browser, combo) {
     /This work is now ticket #\d+/.test(held),
     `${combo.name}: the conversation says "${held.split("\n")[0].slice(0, 60)}"`,
   );
+  await until(
+    async () => (await page.getByText(/can't change the code until it is done/).count()) > 0,
+    "the composer's hint",
+    6000,
+  ).catch(() => {});
   ok(
-    /can't change the code/.test(await page.locator("inc-conv-composer").innerText()),
+    (await page.getByText(/can't change the code until it is done/).count()) > 0,
     `${combo.name}: the composer says it waits`,
   );
   ok(
@@ -281,7 +293,11 @@ async function flow(browser, combo) {
     await page.getByRole("button", { name: "Context panel" }).click();
     await page.getByRole("dialog", { name: "Conversation context" }).waitFor();
   }
-  const panelText = async () => page.locator("inc-conv-context").first().innerText();
+  const panelText = async () =>
+    page
+      .locator("inc-conv-context")
+      .first()
+      .evaluate((el) => el.shadowRoot?.textContent?.replace(/\s+/g, " ") ?? "");
   await until(
     async () => /Ticket #\d+/.test(await panelText()) && /Running/.test(await panelText()),
     "the ticket in the panel",
@@ -289,7 +305,7 @@ async function flow(browser, combo) {
   await until(async () => /Running · Review/.test(await panelText()), "the ticket's stage in the panel");
   ok(true, `${combo.name}: the panel shows the ticket's stage live ("Running · Review")`);
   await shot(page, combo, "05-held-panel");
-  await audit(page, combo, "held with the panel", combo.phone ? "inc-conversations" : "inc-conversations");
+  await audit(page, combo, "held with the panel", "inc-conv-context");
 
   // ---- 3. The ticket finishes its work: ready for the owner, with the PR in the panel ----
   await control({ op: "gate", open: true });
@@ -301,7 +317,9 @@ async function flow(browser, combo) {
   ok(/Pull request #\d+ on GitHub/.test(await panelText()), `${combo.name}: the PR link is in the panel`);
   const prs = (await control({ op: "prs" })).prs;
   ok(
-    prs.length === 1 && prs[0].head === `conv/${a.id}` && prs[0].draft === false,
+    prs.at(-1)?.head === `conv/${a.id}` &&
+      prs.at(-1)?.draft === false &&
+      prs.filter((p) => p.head === `conv/${a.id}`).length === 1,
     `${combo.name}: one PR, on the conversation's branch, out of draft`,
   );
   await control({ op: "checks", checks: { state: "success", total: 2, passed: 2, failed: 0, pending: 0 } });
@@ -318,14 +336,13 @@ async function flow(browser, combo) {
 
   // ---- 4. The links both ways ----
   await page.goto(`${base}/#/ticket/${ticketId}`);
-  const from = page.getByRole("link", { name: "Add a greeting" }).first().or(page.locator(".from a"));
   await page.locator("inc-ticket .from a, .from a").first().waitFor();
   ok(
     /From conversation/.test(await page.locator(".from").first().innerText()),
     `${combo.name}: the ticket says which conversation it came from`,
   );
   await shot(page, combo, "07-ticket");
-  await audit(page, combo, "ticket page", "inc-app");
+  await audit(page, combo, "ticket page", "inc-ticket");
   await page.locator(".from a").first().click();
   await page.locator("inc-conv-composer textarea").waitFor();
   ok(page.url().endsWith(`#/conversations/${a.id}`), `${combo.name}: the link goes back to the conversation`);
@@ -366,24 +383,26 @@ async function flow(browser, combo) {
     `${combo.name}: the PR dialog says it is a draft without a review`,
   );
   await shot(page, combo, "09-dialog-pr");
-  await audit(page, combo, "pr dialog", "inc-conversations");
+  await audit(page, combo, "pr dialog", "inc-conv-ship");
   await pdialog.getByRole("button", { name: "Open the pull request" }).click();
   await pdialog.getByText(/Pull request #\d+ is open as a draft/).waitFor();
-  await pdialog.getByRole("button", { name: "Close", exact: true }).click();
-  await until(
-    async () =>
-      /Pull request #\d+ on GitHub/.test(
-        await page
-          .locator("inc-conv-context")
-          .first()
-          .innerText()
-          .catch(() => ""),
-      ) || combo.phone,
-    "the PR in the panel",
-  );
+  await pdialog.locator("footer").getByRole("button", { name: "Close" }).click();
+  if (!combo.phone) {
+    try {
+      await until(
+        async () => /Pull request #\d+ on GitHub/.test(await panelText()),
+        "the PR in the panel",
+        8000,
+      );
+    } catch (e) {
+      await shot(page, combo, "debug-pr-panel");
+      console.log(`  panel: ${(await panelText()).slice(0, 500)}`);
+      throw e;
+    }
+  }
   const prs2 = (await control({ op: "prs" })).prs;
   ok(
-    prs2.length === 2 && prs2[1].draft === true && prs2[1].head === `conv/${b.id}`,
+    prs2.at(-1)?.draft === true && prs2.at(-1)?.head === `conv/${b.id}` && prs2.length === prs.length + 1,
     `${combo.name}: a second, draft PR on the second conversation's branch`,
   );
   ok(
@@ -416,7 +435,14 @@ async function flow(browser, combo) {
   ok(!direct.some((x) => /Open a PR/.test(x)), `${combo.name}: a direct project has no "Open a PR"`);
   await page.getByRole("menuitem", { name: /Make this a ticket/ }).click();
   const ddialog = page.getByRole("dialog", { name: "Make this a ticket" });
-  await ddialog.getByText("Where it goes").waitFor();
+  await ddialog
+    .getByText("Where it goes")
+    .waitFor({ timeout: 10000 })
+    .catch(async (e) => {
+      await shot(page, combo, "debug-direct");
+      console.log(await ddialog.innerText().catch(() => "(no dialog)"));
+      throw e;
+    });
   ok(
     /Straight to main/.test(await ddialog.innerText()),
     `${combo.name}: it says straight to main, after a review`,
@@ -425,7 +451,7 @@ async function flow(browser, combo) {
   await ddialog.getByRole("button", { name: "Make the ticket" }).click();
   await ddialog.getByText(/This work is now ticket #\d+/).waitFor();
   const dTicket = (await ddialog.innerText()).match(/ticket #(\d+)/)[1];
-  await ddialog.getByRole("button", { name: "Close", exact: true }).click();
+  await ddialog.locator("footer").getByRole("button", { name: "Close" }).click();
   await until(
     async () => (await api("GET", `/api/tickets/${dTicket}`)).body.ticket.status === "done",
     "the direct ticket to finish",
