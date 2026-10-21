@@ -50,10 +50,13 @@ export interface Settings {
   utcOffsetMinutes: number;
   pricePerKWh: number;
   currency: string;
+  /** Retention and cleanup settings the owner changed (T52); the rest keep their defaults. */
+  storage?: Partial<StorageSettings>;
 }
 
 const defaultSettings: Settings = { utcOffsetMinutes: 0, pricePerKWh: 0, currency: "USD" };
 
+import type { StorageSettings } from "./storage-settings.ts";
 import type { AccountRateLimit } from "./view-types.ts";
 
 export type { AccountRateLimit };

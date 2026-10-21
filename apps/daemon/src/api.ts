@@ -93,6 +93,8 @@ const inFlightBootstraps = new Set<string>();
 
 export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) {
   const lastSandboxRetry = new Map<string, number>();
+  // A project being set up is work too (GET /api/health and VACUUM wait for it).
+  daemon.onBusy(() => inFlightBootstraps.size > 0);
   /** The projects a chat draft for this employee can be filed under: the ones it works on (C12). */
   const projectChoices = (e: Employee): string[] => e.projects ?? d.registry.projects().map((pr) => pr.id);
   const ports = {
@@ -405,6 +407,40 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           }
         }
         return json({ sandboxes });
+      },
+    ],
+
+    // C23: what the daemon keeps and how much room it takes (T52).
+    [
+      "GET",
+      "/api/storage",
+      async () => (d.storage ? json(await d.storage.report()) : json({ error: "storage isn't set up" }, 404)),
+    ],
+
+    [
+      "PUT",
+      "/api/storage/settings",
+      async (req) => {
+        if (!d.storage) return json({ error: "storage isn't set up" }, 404);
+        const body = await readObject(req);
+        if (body === null) return json({ error: "send a JSON object of settings" }, 400);
+        const r = d.storage.update(body);
+        return "error" in r ? json(r, 400) : json(r);
+      },
+    ],
+
+    // Dry run unless the body says `{ "dryRun": false }`.
+    [
+      "POST",
+      "/api/storage/cleanup",
+      async (req) => {
+        if (!d.storage) return json({ error: "storage isn't set up" }, 404);
+        const body = await readObject(req);
+        if (body === null) return json({ error: "send a JSON object" }, 400);
+        if (body.dryRun !== undefined && typeof body.dryRun !== "boolean") {
+          return json({ error: "dryRun must be true or false" }, 400);
+        }
+        return json(await d.storage.cleanupNow({ dryRun: body.dryRun !== false }));
       },
     ],
 
@@ -947,18 +983,21 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           .map(({ r }) => r.ticket.project)
           .reverse()
           .find((pr) => !e.projects || e.projects.includes(pr));
-        const out = await handleMessage(
-          said,
-          {
-            employee: e,
-            engine: d.registry.engine(e.engines.default),
-            current: current ? { ...current.r.ticket, assignee: e.id } : null,
-            notes,
-            defaultProject: recentProject ?? e.projects?.[0] ?? "General",
-            companyProjects: d.registry.projects().map((pr) => pr.id),
-          },
-          d.helper,
-          d.chat,
+        // A chat turn is work a VACUUM or a restart would cut short.
+        const out = await daemon.track(
+          handleMessage(
+            said,
+            {
+              employee: e,
+              engine: d.registry.engine(e.engines.default),
+              current: current ? { ...current.r.ticket, assignee: e.id } : null,
+              notes,
+              defaultProject: recentProject ?? e.projects?.[0] ?? "General",
+              companyProjects: d.registry.projects().map((pr) => pr.id),
+            },
+            d.helper,
+            d.chat,
+          ),
         );
 
         const at = d.clock.now();

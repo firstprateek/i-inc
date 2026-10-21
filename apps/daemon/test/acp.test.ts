@@ -226,6 +226,42 @@ describe("an ACP session", () => {
     expect((await agent(server(failing("ENOSPC: Disk quota exceeded"))).run(request())).kind).toBe("stuck");
   });
 
+  it("forgets a ticket's retry count when the retrying stops, even by an urgent message", async () => {
+    const transient = "Failed to refresh OAuth token. This is usually transient; retry in a minute";
+    let pendingPrompt: number | undefined;
+    let mode: "fail" | "hang" = "fail";
+    const a = new AcpAgent({
+      launch: () =>
+        server((method, params, reply, id) => {
+          if (mode === "fail") {
+            claudeLike((rep, i) =>
+              setTimeout(() => rep({ id: i, error: { code: -32603, message: transient } }), 5),
+            )(method, params, reply, id);
+            return;
+          }
+          claudeLike(() => {})(method, params, reply, id);
+          if (method === "session/prompt") pendingPrompt = id;
+          if (method === "session/cancel") reply({ id: pendingPrompt, result: { stopReason: "cancelled" } });
+        }).proc,
+      credentials: () => ({}),
+      cwdFor: (id) => `/home/employee/work/inc-${id}`,
+      now: () => 1_000,
+      cancelGraceMs: 50,
+    });
+    expect((await a.run(request())).kind).toBe("out-of-tokens");
+    // While it is retrying, the count is kept, so the retries are bounded.
+    expect(a.footprint()).toEqual({ transient: 1 });
+
+    // The next session ends another way: the count must not outlive the retrying.
+    mode = "hang";
+    const controller = new AbortController();
+    const run = a.run(request({ signal: controller.signal }));
+    while (pendingPrompt === undefined) await new Promise((r) => setTimeout(r, 1));
+    controller.abort("the owner sent an urgent message");
+    expect((await run).kind).toBe("interrupted");
+    expect(a.footprint()).toEqual({ transient: 0 });
+  });
+
   it("reads Claude's rate limits, and pauses until the reset when the account is out", async () => {
     const usage: UsageReport[] = [];
     const rateLimits: { accountId: string; limit: AccountRateLimit }[] = [];

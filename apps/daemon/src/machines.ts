@@ -114,6 +114,8 @@ export const workDir = (ticketId: Id, s: MachineSettings = defaultMachineSetting
 export interface ExecOptions {
   env?: Record<string, string>;
   input?: string;
+  /** Kill the command after this long. */
+  timeoutMs?: number;
 }
 
 /** Runs a command and resolves with its output, or rejects with its error output. */
@@ -127,6 +129,8 @@ const execDefault: Exec = (bin, args, opts) =>
       {
         encoding: "utf8",
         ...(opts?.env ? { env: { ...process.env, ...opts.env } } : {}),
+        ...(opts?.timeoutMs ? { timeout: opts.timeoutMs } : {}),
+        maxBuffer: 8 * 1024 * 1024,
       },
       (err, stdout, stderr) => (err ? reject(new Error(stderr.trim() || err.message)) : resolve(stdout)),
     );
@@ -361,6 +365,50 @@ export class AppleMachines implements MachineProvider {
     return [...this.up.values()].flatMap((working) => [...working]);
   }
 
+  /** The machine an employee works in. */
+  machineFor(employeeId: Id): string {
+    return machineOf(this.s, employeeId);
+  }
+
+  /**
+   * The machines `container machine ls` shows, with the disk each takes on the host (its DISK
+   * column), which grows as a machine writes and which the listing gives even for a stopped machine.
+   */
+  async listMachines(): Promise<MachineRow[]> {
+    return parseMachineListing(await this.exec(this.s.bin, ["machine", "ls"]));
+  }
+
+  /**
+   * Runs a script in a machine that's already running, as the employee user, with the script on
+   * stdin. It never boots a machine: `machine run` would, so a machine that isn't running is refused
+   * (T52: cleaning must not wake a machine).
+   */
+  async runIn(machine: string, script: string, timeoutMs = 15 * 60_000): Promise<string> {
+    assertWalls(this.s);
+    if (!/^inc-[a-z0-9-]{1,32}$/.test(machine)) throw new Error(`not a machine name: ${machine}`);
+    const row = (await this.listMachines()).find((m) => m.name === machine);
+    if (row?.state !== "running") throw new Error(`${machine} isn't running, so nothing is run in it`);
+    return this.exec(
+      this.s.bin,
+      ["machine", "run", "-i", "-u", this.s.user, "-n", machine, "--", "bash", "-s"],
+      {
+        input: script,
+        timeoutMs,
+      },
+    );
+  }
+
+  /** How many entries the long-lived maps hold, for GET /api/storage and the leak test. */
+  footprint(): Record<string, number> {
+    return {
+      machinesUp: this.up.size,
+      signedInCache: this.signedInCache.size,
+      faults: this.faults.size,
+      attempts: this.attempts.size,
+      lastLogged: this.lastLogged.size,
+    };
+  }
+
   async deliverCallback(teamId: Id, url: string): Promise<void> {
     assertWalls(this.s);
     const machine = machineName(teamId);
@@ -462,6 +510,36 @@ export class AppleMachines implements MachineProvider {
     this.signedInCache.set(machine, result);
     return result;
   }
+}
+
+export interface MachineRow {
+  name: string;
+  state: "running" | "stopped" | string;
+  /** The machine's disk on the host, in bytes, when the listing has one. */
+  diskBytes?: number;
+}
+
+const units: Record<string, number> = { K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 };
+
+/** Reads `container machine ls`: a header line, then a row per machine ending in DISK, STATE and DEFAULT. */
+export function parseMachineListing(listing: string): MachineRow[] {
+  const rows: MachineRow[] = [];
+  for (const line of listing.split("\n").slice(1)) {
+    const cols = line.trim().split(/\s+/);
+    const name = cols[0];
+    if (!name?.startsWith("inc-")) continue;
+    const state = cols.find((c) => c === "running" || c === "stopped") ?? "unknown";
+    // The DISK column is the size right before the state, such as "20.4G".
+    const at = cols.indexOf(state);
+    const m = /^(\d+(?:\.\d+)?)([KMGT])B?$/i.exec(cols[at - 1] ?? "");
+    const unit = units[(m?.[2] ?? "").toUpperCase()];
+    rows.push({
+      name,
+      state,
+      ...(m && unit ? { diskBytes: Math.round(Number(m[1]) * unit) } : {}),
+    });
+  }
+  return rows;
 }
 
 /** Which one-word launcher starts each harness's ACP server in the base image (M1's acp-launchers.sh). */

@@ -227,6 +227,11 @@ export class GitHubApp implements TokenSource {
     this.readKey = deps.readKey ?? readPrivateKey;
   }
 
+  /** Tokens held; expired ones are dropped whenever a new one is minted. */
+  footprint(): { tokens: number } {
+    return { tokens: this.cache.size };
+  }
+
   async token(repo: string, access: "write" | "read" = "write"): Promise<string> {
     const key = `${repo} ${access}`;
     const cached = this.cache.get(key);
@@ -250,6 +255,8 @@ export class GitHubApp implements TokenSource {
     if (typeof body.token !== "string") throw new Error("GitHub sent no installation token");
     const token = body.token;
     this.cache.set(key, { token, expiresAt: Date.parse(String(body.expires_at)) });
+    // A token that has expired is never used again; drop it so a repo that's gone doesn't keep one.
+    for (const [k, v] of this.cache) if (v.expiresAt <= this.now()) this.cache.delete(k);
     return token;
   }
 }

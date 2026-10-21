@@ -42,6 +42,7 @@ import type { Proposals } from "./proposals.ts";
 import type { NotificationPayload, PushService } from "./push.ts";
 import type { Registry } from "./registry.ts";
 import { capText, type SessionStore } from "./sessions.ts";
+import type { Storage } from "./storage.ts";
 import type { SqliteEventStore } from "./store.ts";
 import type { TicketRecord, Tickets } from "./tickets.ts";
 
@@ -64,7 +65,20 @@ export interface DaemonDeps {
   db: Db;
   push?: PushService;
   live?: LiveEvents;
+  /** Retention and cleanup (T52). Set by createApp. */
+  storage?: Storage;
   log?: (msg: string) => void;
+}
+
+/** What the daemon asks of storage when it decides to stop a machine (storage.ts, T52). */
+export interface StorageHooks {
+  machineOf(employeeId: Id): string | undefined;
+  /** A cleanup is running in this machine, so it stays up until that ends. */
+  holding(machine: string): boolean;
+  due(machine: string): boolean;
+  /** Resolves true when no cleanup holds the machine, false after `maxMs`. */
+  untilFree(machine: string, maxMs: number): Promise<boolean>;
+  startClean(machine: string, done: () => void): void;
 }
 
 /** On a ticket the owner accepted from a proposal, so the daily follow-up budget doesn't count it. */
@@ -81,8 +95,78 @@ export class Daemon {
 
   constructor(private readonly d: DaemonDeps) {}
 
+  /** Turns in flight that are not tickets (an owner chat turn today, conversations later). */
+  private turns = 0;
+  private readonly busyHooks: Array<() => boolean> = [];
+  /** Employees waiting for their sandbox's cleanup to finish, with why: shown on their tickets. */
+  private readonly holds = new Map<Id, string>();
+
   /** Employees whose machines are up, as far as this daemon knows. */
   private readonly awake = new Set<Id>();
+
+  /** Set by createApp once storage exists: cleaning runs while a machine is up and idle. */
+  storage?: StorageHooks;
+
+  /** How many entries each long-lived structure holds, to show growth (GET /api/storage) and test it. */
+  footprint() {
+    return {
+      daemonRunning: this.running.size,
+      daemonSessions: this.sessions.size,
+      daemonAwake: this.awake.size,
+      daemonHolds: this.holds.size,
+      daemonTurns: this.turns,
+      daemonWaiting: this.waiting.length,
+      daemonWaitingUntil: Object.keys(this.waitingUntil).length,
+      sessionsActive: this.d.sessions.footprint().active,
+      liveListeners:
+        (this.d.live?.listenerCount("ticket") ?? 0) + (this.d.live?.listenerCount("office") ?? 0),
+    };
+  }
+
+  /** Whether this ticket is being driven now. */
+  isRunning(id: Id): boolean {
+    return this.running.has(id);
+  }
+
+  /**
+   * Whether the daemon is doing work that a restart or a VACUUM would cut short: a ticket stage or
+   * session, a chat turn, or anything a registered hook says (a project bootstrap; conversations will
+   * register theirs).
+   */
+  busy(): boolean {
+    return this.running.size > 0 || this.turns > 0 || this.busyHooks.some((h) => h());
+  }
+
+  /** Registers a source of busyness, such as "a conversation turn is running". */
+  onBusy(hook: () => boolean): void {
+    this.busyHooks.push(hook);
+  }
+
+  /** Counts a turn as running until it settles. */
+  async track<T>(turn: Promise<T>): Promise<T> {
+    this.turns++;
+    try {
+      return await turn;
+    } finally {
+      this.turns--;
+    }
+  }
+
+  /**
+   * Whether something is using a machine now: a session in it, or a running ticket whose builder
+   * works there. Cleanup never runs in such a machine.
+   */
+  async machineBusy(machine: string): Promise<boolean> {
+    const at = (id: Id) => this.storage?.machineOf(id) === machine;
+    if ([...this.sessions.values()].some((s) => at(s.employeeId))) return true;
+    for (const id of this.running.keys()) {
+      const record = this.d.tickets.get(id);
+      const state = await this.state(id);
+      if (record && at(state.assignee ?? record.ticket.assignee)) return true;
+      if (Object.values(state.helpers).some((h) => h && at(h))) return true;
+    }
+    return false;
+  }
 
   get company(): Company {
     const reg = this.d.registry;
@@ -123,6 +207,23 @@ export class Daemon {
     const retrySandbox = m.retrySandbox;
     const machines: MachineProvider = {
       ensureUp: async (id: Id) => {
+        // A sandbox being cleaned takes no new work until it is done (storage.ts); this waits a few
+        // minutes, shows why on the employee's tickets, and only then gives up with a reason.
+        const storage = this.storage;
+        const machine = storage?.machineOf(id);
+        if (storage && machine && storage.holding(machine)) {
+          this.holds.set(id, "its sandbox is being cleaned up and starts again in a moment");
+          try {
+            if (!(await storage.untilFree(machine, 5 * 60_000))) {
+              throw new StartupError(
+                "its sandbox is still being cleaned up, trying again shortly",
+                clock.now() + 60_000,
+              );
+            }
+          } finally {
+            this.holds.delete(id);
+          }
+        }
         await m.ensureUp(id);
         this.awake.add(id);
       },
@@ -343,6 +444,13 @@ export class Daemon {
     };
     const plan = schedule(snap, this.company);
     this.waiting = [...plan.waiting, ...sandboxWaiting];
+    // A ticket whose builder waits for its sandbox's cleanup says so.
+    for (const r of records) {
+      const reason = this.holds.get(states.get(r.ticket.id)?.assignee ?? r.ticket.assignee);
+      if (reason && this.running.has(r.ticket.id) && !this.waiting.some((w) => w.ticketId === r.ticket.id)) {
+        this.waiting.push({ ticketId: r.ticket.id, reason });
+      }
+    }
     this.waitingUntil = { ...(plan.resets ?? {}), ...sandboxWaitingUntil };
 
     for (const start of plan.starts) {
@@ -397,8 +505,26 @@ export class Daemon {
   private async sleepIdle(busy: Set<Id>): Promise<void> {
     if (!this.d.machines.stop) return;
     const inSession = new Set([...this.sessions.values()].map((s) => s.employeeId));
+    // A machine is in use while any employee awake in it is, and is cleaned (when it is due) once
+    // none is: it is up, and about to stop, so cleaning never has to wake it.
+    const storage = this.storage;
+    const inUse = new Set<string>();
+    if (storage) {
+      for (const id of this.awake) {
+        const m = storage.machineOf(id);
+        if (m && (busy.has(id) || inSession.has(id))) inUse.add(m);
+      }
+    }
     for (const id of [...this.awake]) {
       if (busy.has(id) || inSession.has(id)) continue;
+      const machine = storage?.machineOf(id);
+      if (storage && machine && !inUse.has(machine)) {
+        if (storage.holding(machine)) continue;
+        if (storage.due(machine)) {
+          storage.startClean(machine, () => void this.tick().catch(() => {}));
+          continue;
+        }
+      }
       this.awake.delete(id);
       try {
         await this.d.machines.stop(id);

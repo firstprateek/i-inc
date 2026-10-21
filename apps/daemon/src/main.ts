@@ -43,6 +43,18 @@ const common = {
 };
 mkdirSync(home, { recursive: true });
 
+// What storage cleanup measures or trims on the host (storage.ts). The container data folder and the
+// deployer's releases are only measured.
+const releases = process.env.I_INC_RELEASES ?? join(homedir(), "i-inc-releases");
+const storagePaths = {
+  home,
+  logDir: join(homedir(), "Library", "Logs"),
+  containerData:
+    process.env.I_INC_CONTAINER_DATA ??
+    join(homedir(), "Library", "Application Support", "com.apple.container"),
+  ...(existsSync(releases) ? { releases } : {}),
+};
+
 const credentials = demo ? {} : readCredentials();
 // The GitHub App, once it's set up (docs/github-app.md). Without it, tickets run with no branch or PR.
 const appConfig =
@@ -62,6 +74,7 @@ const app = demo
   ? await createApp({
       ...common,
       dbPath: join(home, "demo.db"),
+      storagePaths,
       machines: new FakeMachines(),
       agent,
       harness,
@@ -71,6 +84,7 @@ const app = demo
   : await createApp({
       ...common,
       dbPath: join(home, "i-inc.db"),
+      storagePaths,
       ...(real as NonNullable<typeof real>),
     });
 
@@ -104,6 +118,11 @@ if (demo && app.deps.registry.employees().length === 0) {
 }
 await app.daemon.tick();
 setInterval(() => void app.daemon.tick(), 30_000);
+
+// Bounded growth (T52): trim the host and clean any machine that is up, idle and due, every ten
+// minutes. A machine about to be stopped is cleaned by the daemon's own pass (daemon.ts, sleepIdle).
+setTimeout(() => void app.storage.maintain(), 2 * 60_000).unref();
+setInterval(() => void app.storage.maintain(), 10 * 60_000);
 
 // Each team sandbox in use stays signed in to GitHub as the bot.
 if (real) setInterval(() => void real.keepLoginsFresh(), 5 * 60_000);
