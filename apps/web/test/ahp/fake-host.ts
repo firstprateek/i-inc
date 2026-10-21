@@ -196,3 +196,9 @@ export async function until(cond: () => unknown, ms = 2000): Promise<void> {
     await tick(2);
   }
 }
+
+/** The element, or a clear failure: tests click and read things that must be there. */
+export function must<T extends Element = HTMLElement>(n: Element | null | undefined): T {
+  if (!n) throw new Error("expected the element to be there");
+  return n as T;
+}

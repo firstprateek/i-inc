@@ -4,6 +4,7 @@
 // (runs next, ahead of the queue) or Queue; the queued messages are listed and removable.
 import type { ChatState, SessionState } from "@microsoft/agent-host-protocol";
 import { css, html, LitElement, nothing } from "lit";
+import { checkOutgoing } from "../conversations/actions.ts";
 import {
   type Command,
   commandsOf,
@@ -150,6 +151,14 @@ export class IncConvComposer extends LitElement {
     if (changed.has("text") || changed.has("conversationId")) this.fit();
   }
 
+  /** Puts text back in the box (a message the host refused), unless something new has been typed. */
+  restore(text: string): void {
+    if (this.text.trim()) return;
+    this.text = text;
+    draftMemo.set(`conv:${this.conversationId}`, text);
+    this.focusInput();
+  }
+
   focusInput(): void {
     this.renderRoot.querySelector<HTMLTextAreaElement>("textarea")?.focus();
   }
@@ -232,6 +241,7 @@ export class IncConvComposer extends LitElement {
     const text = this.text.trim();
     const files = this.picker.files;
     if ((!text && !files.length) || this.sending || this.blocked || !this.onSend) return;
+    if (checkOutgoing(text, files)) return; // the box already says why
     this.sending = true;
     this.error = null;
     const problem = await this.onSend({ text, files, intent });
@@ -279,7 +289,8 @@ export class IncConvComposer extends LitElement {
     const hasInput = !!this.text.trim() || this.picker.files.length > 0;
     const mode = modePicker(this.session);
     const others = otherPickers(this.session);
-    const dis = !!this.blocked;
+    const tooBig = checkOutgoing(this.text, this.picker.files);
+    const dis = !!this.blocked || !!tooBig;
     return html`<form class="composer" @submit=${(e: Event) => e.preventDefault()}
       @dragover=${(e: DragEvent) => {
         if (e.dataTransfer?.types.includes("Files")) {
@@ -312,12 +323,13 @@ export class IncConvComposer extends LitElement {
       }
       ${this.picker.problem ? html`<p class="problem" role="alert">${this.picker.problem}</p>` : nothing}
       ${this.error ? html`<p class="problem" role="alert">${this.error}</p>` : nothing}
+      ${tooBig ? html`<p class="problem" role="alert">${tooBig}</p>` : nothing}
       ${this.blocked ? html`<p class="hint" role="status">${this.blocked}</p>` : nothing}
       <div class="box ${this.dragging ? "drag" : ""}">
         ${this.picker.thumbs({ compact: true })}
         <textarea rows="1" .value=${this.text} placeholder=${running ? "Type to steer or queue…" : `Message ${this.name || "the agent"}…`}
           aria-label="Message" role="combobox" aria-autocomplete="list" aria-expanded=${this.slash.length ? "true" : "false"}
-          aria-controls="slash-list" aria-activedescendant=${this.slash.length ? `slash-${this.slashIndex}` : nothing}
+          aria-controls=${this.slash.length ? "slash-list" : nothing} aria-activedescendant=${this.slash.length ? `slash-${this.slashIndex}` : nothing}
           enterkeyhint="send" autocomplete="off" autocapitalize="sentences"
           @input=${this.onInput} @keydown=${this.onKeydown}
           @click=${(e: Event) => this.updateSlash(e.target as HTMLTextAreaElement)}

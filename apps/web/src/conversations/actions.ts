@@ -9,6 +9,37 @@ import {
   USER_ORIGIN,
 } from "../ahp/wire.ts";
 
+/**
+ * What the host accepts (contract C22), so the client can say no before it sends: a message is at most 256,000
+ * characters, a frame without an attachment 1 MB, and a whole frame 24 MiB (over that the host closes the
+ * connection), so the images in one message are kept to 12 MB in all (base64 adds a third).
+ */
+export const LIMITS = {
+  messageChars: 256_000,
+  plainFrameBytes: 900_000,
+  attachments: 6,
+  attachmentBytes: 12 * 1024 * 1024,
+  label: 200,
+} as const;
+
+/** Why a message cannot be sent, in words, or null when it can. */
+export function checkOutgoing(text: string, files: { size: number }[]): string | null {
+  if (text.length > LIMITS.messageChars) {
+    const over = (text.length - LIMITS.messageChars).toLocaleString("en-US");
+    return `That message is ${over} characters over the limit (${LIMITS.messageChars.toLocaleString("en-US")}). Shorten it or send it in parts.`;
+  }
+  if (files.length > LIMITS.attachments) return `A message takes at most ${LIMITS.attachments} attachments.`;
+  const bytes = files.reduce((n, f) => n + f.size, 0);
+  if (bytes > LIMITS.attachmentBytes) {
+    return `Those images are ${(bytes / 1048576).toFixed(1)} MB together; a message takes at most ${LIMITS.attachmentBytes / 1048576} MB. Send some in another message.`;
+  }
+  // Text alone can still be large once quotes and control characters are escaped.
+  if (!files.length && JSON.stringify(text).length > LIMITS.plainFrameBytes) {
+    return "That message is too large to send as it is. Shorten it or send it in parts.";
+  }
+  return null;
+}
+
 const act = (a: Json): StateAction => a as unknown as StateAction;
 
 /** A message as the host takes it: text, the user origin, and attachments. */
@@ -126,7 +157,7 @@ export async function attachmentOf(file: File): Promise<Json> {
   for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   return {
     type: "embeddedResource",
-    label: file.name || "image",
+    label: (file.name || "image").slice(0, LIMITS.label),
     contentType: file.type || "application/octet-stream",
     data: btoa(bin),
   };

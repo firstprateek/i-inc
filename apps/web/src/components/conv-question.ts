@@ -124,7 +124,7 @@ export class IncConvQuestion extends LitElement {
         return html`<label class="opt"><input type="checkbox" .checked=${v === true} @change=${(e: Event) => this.set(q.id, (e.target as HTMLInputElement).checked)} /><span>${q.title ?? q.message}</span></label>`;
       default:
         return html`<label><span class="msg">${q.title ?? q.message}</span>
-          <input type=${q.kind === "number" || q.kind === "integer" ? "number" : "text"} .value=${typeof v === "string" ? v : ""} ?required=${q.required}
+          <input type=${q.kind === "number" || q.kind === "integer" ? "number" : "text"} maxlength="4000" .value=${typeof v === "string" ? v : ""} ?required=${q.required}
             @input=${(e: Event) => this.set(q.id, (e.target as HTMLInputElement).value)} @keydown=${(
               e: KeyboardEvent,
             ) => {

@@ -20,7 +20,8 @@ import { createApp } from "../../src/app.ts";
 import { seedDemo } from "../../src/demo.ts";
 import { FakeAcpAgent, FakeSandbox } from "./fake-acp.ts";
 
-type Any = any; // biome-ignore lint/suspicious/noExplicitAny: patching the fake agent
+// biome-ignore lint/suspicious/noExplicitAny: patching the fake agent
+type Any = any;
 
 const home = process.env.I_INC_HOME;
 if (!home || home.includes(".i-inc")) throw new Error("set I_INC_HOME to a scratch folder");
@@ -76,7 +77,9 @@ proto.prompt = async function (this: Any, sessionId: string, blocks: Any[]): Pro
         status: "completed",
         rawInput: { path: `src/file${i}.ts` },
         locations: [{ path: `src/file${i}.ts` }],
-        content: [{ type: "content", content: { type: "text", text: `// file ${i}\nexport const n${i} = ${i};\n` } }],
+        content: [
+          { type: "content", content: { type: "text", text: `// file ${i}\nexport const n${i} = ${i};\n` } },
+        ],
       });
     }
     chunk("Read thirty files.");
@@ -138,7 +141,9 @@ Bun.serve<WsData>({
       if (server.upgrade(req, { data: g.data })) return undefined;
       return new Response("websocket upgrade failed", { status: 400 });
     }
-    return new URL(req.url).pathname.startsWith("/api/") || !existsSync(web) ? app.handle(req) : serveWeb(req);
+    return new URL(req.url).pathname.startsWith("/api/") || !existsSync(web)
+      ? app.handle(req)
+      : serveWeb(req);
   },
   websocket: app.ahp.transport.websocket,
 });

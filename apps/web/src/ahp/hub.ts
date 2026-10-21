@@ -72,3 +72,9 @@ export function resetAhp(): void {
   leases = 0;
   failures = 0;
 }
+
+/** For tests: puts a connection (over a fake transport) where the shared one would be. */
+export function setAhp(c: AhpConnection | undefined): void {
+  resetAhp();
+  conn = c;
+}

@@ -13,6 +13,7 @@ import {
   answerInput,
   attachmentOf,
   cancelTurn,
+  checkOutgoing,
   confirmTool,
   pendingMessage,
   removePending,
@@ -341,8 +342,20 @@ export class IncConvThread extends LitElement {
       );
       return;
     }
-    // A confirmation another device answered first is not an error: the card shows the outcome.
-    if (a.type === ActionType.ChatToolCallConfirmed || a.type === ActionType.ChatInputCompleted) return;
+    // A confirmation or question another device answered first is not an error: the card shows the outcome.
+    if (
+      (a.type === ActionType.ChatToolCallConfirmed || a.type === ActionType.ChatInputCompleted) &&
+      /answered|not waiting|not open/.test(r.reason)
+    )
+      return;
+    // A message the host refused goes back into the box, so nothing typed is lost.
+    if ((a.type === ActionType.ChatTurnStarted || a.type === ActionType.ChatPendingMessageSet) && a.message) {
+      (
+        this.renderRoot.querySelector("inc-conv-composer") as
+          | (HTMLElement & { restore(text: string): void })
+          | null
+      )?.restore(a.message.text);
+    }
     this.fail(`The host didn't accept that: ${r.reason}`);
   };
 
@@ -351,6 +364,8 @@ export class IncConvThread extends LitElement {
     const conv = this.conv;
     const chat = conv ? ahp().chat(conv.ahpChat) : undefined;
     if (!conv || !chat) return "This conversation isn't loaded yet.";
+    const tooBig = checkOutgoing(d.text, d.files);
+    if (tooBig) return tooBig;
     let attachments: Record<string, unknown>[] = [];
     try {
       attachments = await Promise.all(d.files.map(attachmentOf));
