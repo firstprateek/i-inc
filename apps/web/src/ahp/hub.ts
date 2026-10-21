@@ -19,6 +19,7 @@ export const STOP_AFTER_MS = 4000;
 
 function make(): AhpConnection {
   const c = new AhpConnection({
+    log: (m) => console.info(m),
     connect: async () => {
       try {
         const t = await WebSocketTransport.connect(ahpUrl());

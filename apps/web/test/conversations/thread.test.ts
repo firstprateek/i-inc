@@ -328,6 +328,18 @@ describe("the thread", () => {
     expect(root().querySelector(".banner")?.textContent).toMatch(/Connecting|Reconnecting/);
   });
 
+  it("does not move the reader when the list refreshes the conversation's row, only when another is opened", async () => {
+    const { el } = await setup();
+    el.stick = false; // reading further up
+    await el.updateComplete;
+    el.conv = { ...conv, title: "Renamed" }; // the same conversation, a new object (the list reloads on every change)
+    await el.updateComplete;
+    expect(el.stick).toBe(false);
+    el.conv = { ...conv, id: "ffffffff", ahpSession: SESSION, ahpChat: CHAT };
+    await el.updateComplete;
+    expect(el.stick).toBe(true); // another conversation opens at its end
+  });
+
   it("renders only a window of a long chat, and pages the rest in", async () => {
     const h = hosts();
     const turns = Array.from({ length: 70 }, (_, i) => ({

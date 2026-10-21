@@ -78,6 +78,9 @@ export class IncConvThread extends LitElement {
   private resizer: ResizeObserver | undefined;
   private baselined = false;
   private firstSent = false;
+  private openedId = "";
+  /** How many past turns the last render showed. */
+  private shownCount = 0;
   private modeApplied = false;
 
   constructor() {
@@ -214,7 +217,11 @@ export class IncConvThread extends LitElement {
   override updated(changed: Map<string, unknown>): void {
     const sc = this.scroller();
     if (!sc) return;
-    if (changed.has("conv")) {
+    // Opening a different conversation starts at its end. A refreshed row of the same conversation (the list
+    // reloads on every change) must not move the reader.
+    const opened = this.conv?.id ?? "";
+    if (changed.has("conv") && opened !== this.openedId) {
+      this.openedId = opened;
       this.stick = true;
       this.scrollToBottom();
     }
@@ -518,9 +525,13 @@ export class IncConvThread extends LitElement {
 
   private visible(turns: readonly { id: string }[]): number {
     let idx = this.firstId ? turns.findIndex((t) => t.id === this.firstId) : -1;
-    if (idx < 0) idx = Math.max(0, turns.length - WINDOW);
+    // The first turn on screen has slid out of what the host holds (a reconnect's window moved on as new turns
+    // arrived): keep as many turns on screen as before, rather than falling back to the newest few.
+    if (idx < 0)
+      idx = Math.max(0, turns.length - (this.firstId ? Math.max(WINDOW, this.shownCount) : WINDOW));
     if (this.stick && turns.length - idx > WINDOW + 10) idx = turns.length - WINDOW;
     this.firstId = turns[idx]?.id;
+    this.shownCount = turns.length - idx;
     return idx;
   }
 

@@ -154,8 +154,21 @@ export class IncConvList extends LitElement {
   };
 
   override willUpdate(changed: Map<string, unknown>): void {
-    if (changed.has("employees") && !this.pickEmployee && this.employees[0])
-      this.pickEmployee = this.employees[0].id;
+    const preset = this.preset;
+    if (changed.has("preset") && preset) {
+      this.form = true;
+      this.pickProject = preset.project;
+      if (preset.employee) this.pickEmployee = preset.employee;
+    }
+    if (changed.has("employees") && this.employees[0]) {
+      if (!this.pickEmployee) this.pickEmployee = this.employees[0].id;
+      // The address named a project but no employee: the first who works on it.
+      if (preset?.project && !preset.employee) {
+        const p = preset.project;
+        const e = this.employees.find((x) => !x.projects?.length || x.projects.includes(p));
+        if (e) this.pickEmployee = e.id;
+      }
+    }
   }
 
   private projectChoices(): string[] {
