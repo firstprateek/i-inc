@@ -55,7 +55,7 @@ export class IncSetupNotifications extends LitElement {
         background: var(--ink-2); transition: transform 0.15s; }
       .track[aria-checked="true"] { background: var(--ink); border-color: var(--ink); }
       .track[aria-checked="true"]::after { transform: translateX(28px); background: var(--on-ink); }
-      .track:disabled { opacity: 0.5; cursor: default; }
+      .track[aria-disabled="true"] { opacity: 0.5; cursor: default; }
       .track:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 2px; }
       .kind { display: flex; flex-direction: column; gap: 4px; padding-top: 10px; }
       .kind .sub { margin: 0; padding-left: 86px; }
@@ -98,7 +98,7 @@ export class IncSetupNotifications extends LitElement {
     return html`<div class="kind">
       <div class="switch">
         <button class="track" type="button" role="switch" aria-checked=${on ? "true" : "false"}
-          aria-labelledby="kind-${key}" aria-describedby="why-${key}" ?disabled=${this.kindBusy !== ""} @click=${() => this.setKind(key)}></button>
+          aria-labelledby="kind-${key}" aria-describedby="why-${key}" aria-disabled=${this.kindBusy !== "" ? "true" : "false"} @click=${() => this.setKind(key)}></button>
         <span id="kind-${key}">${label}</span>
       </div>
       <p class="sub" id="why-${key}">${why}</p>
@@ -155,7 +155,7 @@ export class IncSetupNotifications extends LitElement {
           canToggle
             ? html`<div class="switch">
               <button class="track" type="button" role="switch" aria-checked=${state === "on" ? "true" : "false"}
-                aria-labelledby="switch-label" ?disabled=${this.busy} @click=${() => this.toggle()}></button>
+                aria-labelledby="switch-label" aria-disabled=${this.busy ? "true" : "false"} @click=${() => this.toggle()}></button>
               <span id="switch-label">${this.busy ? "Working…" : state === "on" ? "Notifications on" : "Notifications off"}</span>
             </div>`
             : this.explain(state)

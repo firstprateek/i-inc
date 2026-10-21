@@ -340,6 +340,33 @@ describe("the Notifications section", () => {
     expect(kind(failing, "conversationsNeedMe").getAttribute("aria-checked")).toBe("true");
   });
 
+  it("keeps keyboard focus on a toggle while it saves: it is aria-disabled, not disabled", async () => {
+    let release: (r: Response) => void = () => {};
+    serve({
+      settings: (m) =>
+        m === "PUT"
+          ? (new Promise<Response>((r) => {
+              release = r;
+            }) as unknown as Response)
+          : json({ settings: { conversationsNeedMe: true, longReplyFinished: false } }),
+    });
+    const root = await mount(browser({ permission: "granted", subscribed: true }));
+    const long = kind(root, "longReplyFinished");
+    long.focus();
+    long.click();
+    await settle(root.host);
+    expect(long.hasAttribute("disabled")).toBe(false);
+    expect(long.getAttribute("aria-disabled")).toBe("true");
+    expect(root.activeElement).toBe(long);
+    // a second press while it saves does nothing
+    long.click();
+    release(json({ settings: { conversationsNeedMe: true, longReplyFinished: true } }));
+    await settle(root.host);
+    expect(long.getAttribute("aria-disabled")).toBe("false");
+    expect(long.getAttribute("aria-checked")).toBe("true");
+    expect(calls.filter((c) => c.method === "PUT")).toHaveLength(1);
+  });
+
   it("shows no such choices when the daemon doesn't have them", async () => {
     serve({ settings: () => json({ error: "not found" }, 404) });
     const root = await mount(browser({ permission: "granted", subscribed: true }));
@@ -491,29 +518,6 @@ describe("the service worker and a conversation's notification (T65)", () => {
     expect(mine.close).toHaveBeenCalled();
     expect(other.close).not.toHaveBeenCalled();
     expect(w.showNotification).not.toHaveBeenCalled();
-  });
-
-  it("on Safari, which revokes a subscription whose pushes show nothing, shows a quiet stand-in and takes it down", async () => {
-    vi.useFakeTimers();
-    try {
-      const w = loadWorker(
-        [],
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1",
-      );
-      const mine = { tag: "conv-ab12cd34", close: vi.fn() };
-      w.shown.push(mine);
-      const done = w.push({ ...needsYou, body: "Answered", resolve: true });
-      await vi.advanceTimersByTimeAsync(2000);
-      await done;
-      expect(mine.close).toHaveBeenCalled();
-      expect(w.showNotification).toHaveBeenCalledWith(
-        "Ada needs you",
-        expect.objectContaining({ tag: "conv-ab12cd34", silent: true, renotify: false }),
-      );
-      expect(w.getNotifications).toHaveBeenCalledTimes(2);
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   it("opens the card: an open window is focused, moved to the address and told it, so iOS (no navigate) gets there too", async () => {

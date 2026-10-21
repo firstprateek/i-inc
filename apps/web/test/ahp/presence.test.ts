@@ -2,7 +2,7 @@
 // heartbeat, and the moment it is not; a tap on a notification is followed only to a same-origin address.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AhpConnection } from "../../src/ahp/connection.ts";
-import { HEARTBEAT_MS, type PageEnv, startPresence } from "../../src/ahp/presence.ts";
+import { browserPage, HEARTBEAT_MS, IDLE_MS, type PageEnv, startPresence } from "../../src/ahp/presence.ts";
 import { notificationTarget } from "../../src/register-sw.ts";
 import { hosts, SESSION, tick, until } from "./fake-host.ts";
 
@@ -85,6 +85,28 @@ describe("startPresence", () => {
     expect(c.sent).toEqual([true]);
     c.set("open");
     expect(c.sent).toEqual([true, true]);
+  });
+
+  it("stops reporting once the page is idle, and starts again with the next touch", () => {
+    // visible and focused, but nobody there: a laptop left open on the conversation
+    vi.setSystemTime(new Date("2026-10-21T10:00:00Z"));
+    const c = fakeConn();
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    const stopIdle = startPresence(c.conn, SESSION, browserPage);
+    expect(c.sent).toEqual([true]);
+    vi.advanceTimersByTime(IDLE_MS - HEARTBEAT_MS);
+    expect(c.sent.every(Boolean)).toBe(true);
+    vi.advanceTimersByTime(HEARTBEAT_MS * 2);
+    expect(c.sent.at(-1)).toBe(false);
+    const quiet = c.sent.length;
+    vi.advanceTimersByTime(HEARTBEAT_MS * 6);
+    expect(c.sent).toHaveLength(quiet);
+    // a touch: reading again
+    window.dispatchEvent(new Event("pointerdown"));
+    expect(c.sent.at(-1)).toBe(true);
+    stopIdle();
+    vi.restoreAllMocks();
   });
 
   it("is a heartbeat well inside the host's 45 seconds", () => {

@@ -78,30 +78,11 @@ async function cacheFirst(request) {
 // ---- Push notifications (contract C2: { title, body, url, tag?, resolve? }) ----
 
 /**
- * Safari (iPhone, iPad, Mac) revokes a push subscription whose pushes show nothing, so a "resolve" push
- * there must still show a notification. Everything else lets a push close one without showing anything.
+ * A "resolve" push: the request the notification was about has been answered, so take it down, and show
+ * nothing in its place. (The daemon never sends one to Apple's push service, which revokes a subscription
+ * whose pushes show nothing; the app closes the notification itself when it is opened. See notifications.ts.)
  */
-function needsVisibleNotification() {
-  const ua = self.navigator?.userAgent || "";
-  return /Safari\//.test(ua) && !/Chrome|Chromium|CriOS|FxiOS|Edg|Android/.test(ua);
-}
-
-/** A "resolve" push: the request the notification was about has been answered, so take it down. */
-async function resolveNotification(payload, tag) {
-  const shown = await self.registration.getNotifications({ tag });
-  for (const n of shown) n.close();
-  if (!needsVisibleNotification()) return;
-  // Show a quiet stand-in and take it down again a moment later.
-  await self.registration.showNotification(typeof payload.title === "string" ? payload.title : "i.inc", {
-    body: typeof payload.body === "string" ? payload.body : "",
-    tag,
-    silent: true,
-    renotify: false,
-    icon: "/icons/icon-192.png",
-    badge: "/icons/icon-192.png",
-    data: { url: typeof payload.url === "string" ? payload.url : "" },
-  });
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+async function resolveNotification(tag) {
   for (const n of await self.registration.getNotifications({ tag })) n.close();
 }
 
@@ -116,7 +97,7 @@ self.addEventListener("push", (event) => {
   const url = typeof payload.url === "string" ? payload.url : "";
   const tag = typeof payload.tag === "string" && payload.tag ? payload.tag : url || "i-inc";
   if (payload.resolve === true) {
-    event.waitUntil(resolveNotification(payload, tag));
+    event.waitUntil(resolveNotification(tag));
     return;
   }
   event.waitUntil(

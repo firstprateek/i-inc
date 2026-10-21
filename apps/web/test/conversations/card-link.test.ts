@@ -179,8 +179,51 @@ describe("a card a notification opened", () => {
     expect(t.el.shadowRoot?.querySelector(".card-note")?.getAttribute("role")).toBe("status");
   });
 
-  it('says "Already answered on another device" for a card of a turn that is over', async () => {
-    const t = await open({ seed: chatState({ turns: [] }), card: "tc9" });
+  it("says a card isn't waiting any more, not that it was answered, when it was never here", async () => {
+    const t = await open({ seed: chatState({ turns: [] }), card: "nope" });
+    await until(() => t.note());
+    expect(t.note()).toContain("That request isn't waiting any more");
+    expect(t.note()).not.toContain("answered");
+  });
+
+  it("says that too when the turn was stopped or the daemon restarted under the card", async () => {
+    const stopped = await open({
+      seed: seeded(started, ...ask("tc1"), { type: "chat/turnCancelled", turnId: "t1", duration: 5 }),
+      card: "tc1",
+    });
+    await until(() => stopped.note());
+    expect(stopped.note()).toContain("That request isn't waiting any more");
+    document.body.innerHTML = "";
+    resetAhp();
+    const restarted = await open({
+      seed: seeded(started, ...ask("tc1"), {
+        type: "chat/error",
+        turnId: "t1",
+        duration: 5,
+        part: {
+          kind: "error",
+          resumable: false,
+          error: { errorType: "host_restarted", message: "The daemon restarted." },
+        },
+      }),
+      card: "tc1",
+    });
+    await until(() => restarted.note());
+    expect(restarted.note()).toContain("That request isn't waiting any more");
+  });
+
+  it("says it was answered when it was denied", async () => {
+    const t = await open({
+      seed: seeded(started, ...ask("tc1"), {
+        type: "chat/toolCallConfirmed",
+        turnId: "t1",
+        toolCallId: "tc1",
+        approved: false,
+        reason: "denied",
+        selectedOptionId: "reject-once",
+      }),
+      card: "tc1",
+    });
     await until(() => t.note());
     expect(t.note()).toContain("Already answered on another device");
   });

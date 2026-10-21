@@ -23,7 +23,14 @@ import {
   setConfig,
   turnStarted,
 } from "../conversations/actions.ts";
-import { firstPending, isPending, modePicker, statusText, visible } from "../conversations/model.ts";
+import {
+  cardOutcome,
+  firstPending,
+  isPending,
+  modePicker,
+  statusText,
+  visible,
+} from "../conversations/model.ts";
 import { cardStyles } from "../conversations/styles.ts";
 import { OPEN_CARD_EVENT } from "../register-sw.ts";
 import { draftHash } from "../routes.ts";
@@ -682,8 +689,14 @@ export class IncConvThread extends LitElement {
     if (!chat || this.info.status !== "open") return;
     if (!isPending(chat, card)) {
       this.cardDone = key;
+      // Only a card that was answered is "answered": one the turn left behind (stopped, restarted, or a link
+      // to something that was never here) is just not waiting.
       const who = ahp().confirmation(conv.ahpChat, card) ?? ahp().inputAnswer(conv.ahpChat, card);
-      this.cardNote = who?.byMe ? "You already answered this." : "Already answered on another device";
+      this.cardNote = who?.byMe
+        ? "You already answered this."
+        : who || cardOutcome(chat, card) === "answered"
+          ? "Already answered on another device"
+          : "That request isn't waiting any more";
       clearTimeout(this.noteTimer);
       this.noteTimer = setTimeout(() => {
         this.cardNote = "";
