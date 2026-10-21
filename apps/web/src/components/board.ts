@@ -1,9 +1,10 @@
 // The board (spec §10): To do → In progress → Review → Done, across projects and Home.
 import { css, html } from "lit";
-import { api, refreshNow, type TicketEvent, type TicketView } from "../api.ts";
+import { api, type ProposalView, refreshNow, type TicketEvent, type TicketView } from "../api.ts";
 import { waitingLine, waitsForAssignee } from "../assign.ts";
 import { Loader } from "./loader.ts";
 import "./new-ticket.ts";
+import "./proposals.ts";
 import { LAYOUT_BREAKPOINTS, layoutStyles } from "./layout.ts";
 import { protectedOk } from "./protected-card.ts";
 import { avatar, base, projectBadge } from "./shared.ts";
@@ -24,6 +25,7 @@ export interface DigestRow {
 interface BoardData {
   tickets: BoardTicket[];
   digest: DigestRow[];
+  proposals: ProposalView[];
 }
 
 const DIGEST_ROWS = 5;
@@ -104,8 +106,11 @@ const columns: [TicketView["column"], string, string][] = [
 
 export class IncBoard extends Loader<BoardData> {
   protected fetch = async () => {
-    const tickets: BoardTicket[] = await api.board();
-    return { tickets, digest: await loadDigest(tickets) };
+    const [tickets, proposals]: [BoardTicket[], ProposalView[]] = await Promise.all([
+      api.board(),
+      api.proposals(),
+    ]);
+    return { tickets, proposals, digest: await loadDigest(tickets) };
   };
 
   static override properties = { ...Loader.properties, actionError: { state: true } };
@@ -194,12 +199,13 @@ export class IncBoard extends Loader<BoardData> {
   override render() {
     if (this.error) return html`<p role="alert">The daemon isn't answering: ${this.error}</p>`;
     if (!this.data) return html`<p class="muted">Loading the board…</p>`;
-    const { tickets, digest } = this.data;
+    const { tickets, digest, proposals } = this.data;
     const oks = tickets.filter((t) => t.needsYou?.kind === "protected-paths");
     return html`<div class="top layout-page-band">
       ${this.actionError ? html`<div class="err" role="alert">${this.actionError}</div>` : ""}
       ${oks.map((t) => this.okCard(t))}
       <inc-new-ticket></inc-new-ticket>
+      <inc-proposals .proposals=${proposals}></inc-proposals>
       ${digest.length ? this.digestList(digest) : ""}
     </div>
     <div class="cols">

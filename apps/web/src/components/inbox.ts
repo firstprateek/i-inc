@@ -1,16 +1,22 @@
 // The phone inbox (spec §10): what needs you and what's ready, each answerable in one tap.
 import { css, html } from "lit";
-import { api, type PolicyProposal, refreshNow, type TicketView } from "../api.ts";
+import { api, type PolicyProposal, type ProposalView, refreshNow, type TicketView } from "../api.ts";
 import { waitingLine, waitsForAssignee } from "../assign.ts";
 import { layoutStyles } from "./layout.ts";
 import { Loader } from "./loader.ts";
+import "./proposals.ts";
 import { protectedOk } from "./protected-card.ts";
 import { avatar, base, projectBadge } from "./shared.ts";
 
-export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyProposal[] }> {
+export class IncInbox extends Loader<{
+  tickets: TicketView[];
+  policies: PolicyProposal[];
+  proposals: ProposalView[];
+}> {
   protected fetch = async () => ({
     tickets: await api.board(),
     policies: (await api.handbook()).awaiting ?? [],
+    proposals: await api.proposals(),
   });
 
   private async act(fn: () => Promise<unknown>) {
@@ -41,6 +47,7 @@ export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyPr
       .actions { display: flex; gap: 8px; flex-wrap: wrap; }
       .actions .btn:first-child { flex-grow: 1; }
       h2 { font-size: 20px; margin-top: 18px; }
+      .proposed { margin-top: 14px; }
       .clear { padding: 28px 20px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; margin-top: 4px; }
       .clear .badge { width: 56px; height: 56px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
         background: var(--working-bg); color: var(--working-fg); margin-bottom: 6px; }
@@ -60,10 +67,12 @@ export class IncInbox extends Loader<{ tickets: TicketView[]; policies: PolicyPr
     const policies = this.data.policies;
     // A ticket nobody can start until the owner picks someone is the owner's to fix.
     const unassigned = this.data.tickets.filter(waitsForAssignee);
-    const n = needs.length + policies.length + unassigned.length;
+    const proposals = this.data.proposals;
+    const n = needs.length + policies.length + unassigned.length + proposals.length;
     return html`
       <p class="summary">${n ? `${n} ${n === 1 ? "thing needs" : "things need"} you` : "Nothing needs you"}</p>
       <div class="list">${needs.map((t) => this.ask(t))}${unassigned.map((t) => this.unassigned(t))}${policies.map((p) => this.policy(p))}</div>
+      ${proposals.length ? html`<inc-proposals class="proposed" .proposals=${proposals}></inc-proposals>` : ""}
       ${ready.length ? html`<h2>Ready for you</h2><div class="list">${ready.map((t) => this.ready(t))}</div>` : ""}
       ${!n && !ready.length ? this.allClear() : ""}
     `;

@@ -79,5 +79,21 @@ export function migrate(db: Db): void {
       created_at INTEGER NOT NULL,
       PRIMARY KEY (ticket_id, seq)
     );
+    CREATE TABLE IF NOT EXISTS proposals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL DEFAULT '',
+      proposed_by TEXT NOT NULL,
+      source_ticket TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'accepted', 'declined')),
+      decided_at INTEGER,
+      ticket_id TEXT,
+      type TEXT NOT NULL DEFAULT 'chore',
+      effort TEXT NOT NULL DEFAULT 'medium',
+      done_when TEXT NOT NULL DEFAULT '[]'
+    );
+    CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status, project);
   `);
 }

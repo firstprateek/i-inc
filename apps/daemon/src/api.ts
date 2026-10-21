@@ -24,8 +24,9 @@ import {
   type ProposedEdit,
   retry,
   type SandboxStatus,
+  type Ticket,
 } from "@i-inc/core";
-import type { Daemon, DaemonDeps } from "./daemon.ts";
+import { ACCEPTED_LABEL, type Daemon, type DaemonDeps } from "./daemon.ts";
 import {
   bootstrapRepo,
   inspectRepo,
@@ -35,6 +36,7 @@ import {
   UpstreamGitHubError,
 } from "./github.ts";
 import type { Change, Repo } from "./knowledge.ts";
+import { type ProposalStatus, RECOVERED_BODY } from "./proposals.ts";
 import type { PushSubscription } from "./push.ts";
 import { defaultTeam } from "./registry.ts";
 import type { NewAttachment, NewTicket } from "./tickets.ts";
@@ -45,6 +47,7 @@ import {
   officeView,
   type PendingRelease,
   type PendingTicket,
+  proposalView,
   type TicketView,
   ticketView,
 } from "./views.ts";
@@ -1249,6 +1252,18 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         const upload = await readTicket(req);
         if ("error" in upload) return json({ error: upload.error }, upload.status);
         const { body, images } = upload;
+        if (body === null || typeof body !== "object" || Array.isArray(body)) {
+          return json({ error: "the ticket must be a JSON object" }, 400);
+        }
+        // `createdBy` marks a ticket an agent filed itself, and the accepted-proposal label keeps a
+        // ticket out of the daily follow-up count. Only the daemon's own paths set them, never a client.
+        delete body.createdBy;
+        if (body.labels !== undefined) {
+          if (!Array.isArray(body.labels) || body.labels.some((l) => typeof l !== "string")) {
+            return json({ error: "labels must be a list of strings" }, 400);
+          }
+          body.labels = body.labels.filter((l) => l !== ACCEPTED_LABEL);
+        }
         if (!body.effort && body.assignee) {
           try {
             const emp = d.registry.employee(body.assignee);
@@ -1260,6 +1275,107 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         const ticket = d.tickets.create(body, d.clock.now(), images);
         await daemon.tick();
         return json({ ticket }, 201);
+      },
+    ],
+
+    // C20: follow-ups that went over the daily budget wait here for the owner.
+    [
+      "GET",
+      "/api/proposals",
+      async (req) => {
+        const status = new URL(req.url).searchParams.get("status");
+        if (status !== null && !["open", "accepted", "declined"].includes(status)) {
+          return json({ error: "status must be open, accepted or declined" }, 400);
+        }
+        const list = d.proposals.list((status as ProposalStatus | null) ?? undefined);
+        return json({ proposals: list.map((p) => proposalView(p, d.registry)) });
+      },
+    ],
+    [
+      "POST",
+      "/api/proposals/:id/accept",
+      async (req, p) => {
+        const body = await readObject(req);
+        if (!body) return json({ error: "the body must be a JSON object" }, 400);
+        if (body.assignee !== undefined && (typeof body.assignee !== "string" || !body.assignee.trim())) {
+          return json({ error: "assignee must be an employee id" }, 400);
+        }
+        const found = proposalFor(p.id);
+        if (!found) return json({ error: "no such proposal" }, 404);
+        if (found.status !== "open")
+          return json({ error: `proposal ${found.id} is already ${found.status}` }, 409);
+        if (!d.registry.project(found.project)) {
+          return json(
+            {
+              error: `${found.project} isn't a project any more, so this can't be filed; decline it instead`,
+            },
+            409,
+          );
+        }
+        let assignee: Id;
+        if (typeof body.assignee === "string") {
+          let employee: Employee;
+          try {
+            employee = d.registry.employee(body.assignee);
+          } catch {
+            return json({ error: `no employee ${body.assignee}` }, 400);
+          }
+          if (employee.projects && !employee.projects.includes(found.project)) {
+            return json({ error: `${employee.name} doesn't work on ${found.project}` }, 409);
+          }
+          assignee = employee.id;
+        } else {
+          assignee = usualAssignee(found.proposedBy, found.project);
+        }
+        // Claim it first, so of two accepts at once only one files a ticket.
+        const now = d.clock.now();
+        if (!d.proposals.decide(found.id, "accepted", now)) {
+          const cur = d.proposals.get(found.id);
+          return json({ error: `proposal ${found.id} is already ${cur?.status ?? "decided"}` }, 409);
+        }
+        let ticket: ReturnType<typeof d.tickets.create>;
+        try {
+          // The label keeps it out of the daily follow-up count: accepting was the owner's call.
+          ticket = d.tickets.create(
+            {
+              title: found.title,
+              project: found.project,
+              type: found.type,
+              effort: found.effort,
+              doneWhen: found.doneWhen,
+              ...(assignee ? { assignee } : {}),
+              createdBy: found.proposedBy,
+              ...(found.body && found.body !== RECOVERED_BODY ? { reason: found.body } : {}),
+              labels: ["follow-up", ACCEPTED_LABEL],
+            },
+            now,
+          );
+        } catch (e) {
+          d.proposals.reopen(found.id);
+          return json({ error: String(e instanceof Error ? e.message : e) }, 500);
+        }
+        d.proposals.setTicket(found.id, ticket.id);
+        d.log?.(`proposal ${found.id} accepted as ticket ${ticket.id}: ${found.title}`);
+        await daemon.tick();
+        const proposal = d.proposals.get(found.id) as NonNullable<ReturnType<typeof d.proposals.get>>;
+        return json({ proposal: proposalView(proposal, d.registry), ticket }, 201);
+      },
+    ],
+    [
+      "POST",
+      "/api/proposals/:id/decline",
+      async (req, p) => {
+        const body = await readObject(req);
+        if (!body) return json({ error: "the body must be a JSON object" }, 400);
+        const found = proposalFor(p.id);
+        if (!found) return json({ error: "no such proposal" }, 404);
+        if (!d.proposals.decide(found.id, "declined", d.clock.now())) {
+          const cur = d.proposals.get(found.id);
+          return json({ error: `proposal ${found.id} is already ${cur?.status ?? "decided"}` }, 409);
+        }
+        d.log?.(`proposal ${found.id} declined: ${found.title}`);
+        const proposal = d.proposals.get(found.id) as NonNullable<ReturnType<typeof d.proposals.get>>;
+        return json({ proposal: proposalView(proposal, d.registry) });
       },
     ],
 
@@ -1613,6 +1729,32 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     return attachments;
   }
 
+  /** A proposal by its URL id (whole numbers only), or undefined. */
+  function proposalFor(id: string | undefined) {
+    return id !== undefined && /^[1-9][0-9]{0,15}$/.test(id) ? d.proposals.get(Number(id)) : undefined;
+  }
+
+  /**
+   * Who does an accepted proposal, by the same rule as assigning a ticket (C17): the agent who
+   * proposed it if they work on the project, else whoever usually builds there. Empty if nobody does.
+   */
+  function usualAssignee(proposer: Id, project: string): Id {
+    try {
+      const e = d.registry.employee(proposer);
+      if (!e.projects || e.projects.includes(project)) return e.id;
+    } catch {}
+    const stub: Ticket = {
+      id: "",
+      title: "",
+      project,
+      type: "chore",
+      effort: "medium",
+      doneWhen: [],
+      assignee: "",
+    };
+    return d.registry.pickEmployee("build", stub, [])?.id ?? "";
+  }
+
   /** Appends the owner's action if the ticket is in the right state, then runs the ticket on. */
   /** Assigns a ticket that has not started (C17) and lets the scheduler start it. */
   async function assignUnstarted(id: Id, to: Id | undefined): Promise<Response> {
@@ -1921,6 +2063,21 @@ async function readTicket(req: Request): Promise<{ body: NewTicket; images: NewA
   const images = await readImages(upload.form);
   if ("error" in images) return images;
   return { body, images };
+}
+
+/** A JSON object body (an empty body counts as `{}`), or null when it's anything else. */
+async function readObject(req: Request): Promise<Record<string, unknown> | null> {
+  const text = await req.text().catch(() => null);
+  if (text === null) return null;
+  if (!text.trim()) return {};
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function validate(t: Partial<NewTicket>): string | null {

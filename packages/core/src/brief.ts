@@ -16,6 +16,7 @@ export function brief(
 ): string {
   const lines = [
     `Ticket #${ticket.id} [${ticket.type}] ${ticket.title} · ${ticket.project} · effort ${ticket.effort}`,
+    ...(ticket.reason ? [`Why: ${ticket.reason}`] : []),
     ...(employee ? [`Assignee: ${employee.name}, ${employee.role}`] : []),
     ...(employee?.prompt ? ["Role instructions:", employee.prompt] : []),
     "Done when:",
@@ -96,6 +97,7 @@ export function brief(
 export function freshBrief(ticket: Ticket, stage: StageId, task: string, machine: string[] = []): string {
   return [
     `Ticket #${ticket.id} [${ticket.type}] ${ticket.title} · ${ticket.project}`,
+    ...(ticket.reason ? [`Why: ${ticket.reason}`] : []),
     "Done when:",
     ...ticket.doneWhen.map((d) => `- ${d}`),
     ...images(ticket),

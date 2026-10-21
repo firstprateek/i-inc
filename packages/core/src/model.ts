@@ -195,6 +195,8 @@ export interface Ticket {
   labels?: string[];
   /** The agent that filed it, for a follow-up; absent when the owner did. */
   createdBy?: Id;
+  /** Why it's worth doing, for a follow-up an agent proposed; the brief carries it. */
+  reason?: string;
   /** Images the owner attached when filing it; the bytes live in the daemon. */
   attachments?: TicketAttachment[];
 }

@@ -16,6 +16,7 @@ import { openDb } from "./db.ts";
 import type { TokenSource } from "./github.ts";
 import { KnowledgeStore } from "./knowledge.ts";
 import { LiveEvents } from "./live.ts";
+import { Proposals } from "./proposals.ts";
 import { type PushService, WebPushSender } from "./push.ts";
 import { Registry } from "./registry.ts";
 import { migrate } from "./schema.ts";
@@ -63,6 +64,9 @@ export async function createApp(o: AppOptions) {
   const tickets = new Tickets(db);
   tickets.onChange = (id) => live.notifyTicket(id);
 
+  const proposals = new Proposals(db);
+  proposals.onChange = () => live.notifyOffice();
+
   const make = <T>(port: FromRegistry<T>): T =>
     typeof port === "function" ? (port as (r: Registry, t: Tickets) => T)(registry, tickets) : port;
 
@@ -75,6 +79,7 @@ export async function createApp(o: AppOptions) {
     sessions: o.sessions ?? new SessionStore(db, o.clock),
     registry,
     tickets,
+    proposals,
     machines: make(o.machines),
     agent: make(o.agent),
     harness: make(o.harness),

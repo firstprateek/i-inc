@@ -9,6 +9,7 @@ import type {
   PendingRelease,
   PendingTicket,
   PolicyProposal,
+  ProposalView,
   TicketView,
 } from "@i-inc/daemon/views";
 import type { Engine } from "./providers.ts";
@@ -25,6 +26,7 @@ export type {
   PendingTicket,
   PolicyProposal,
   ProjectRelease,
+  ProposalView,
   TicketEvent,
   TicketView,
 };
@@ -225,6 +227,18 @@ export const api = {
   decide,
   /** Adds images to a ticket that isn't done; its builder gets them at their next session. */
   attach: (id: string, images: File[]) => upload(`/api/tickets/${id}/attachments`, images),
+  /**
+   * Follow-ups waiting for the owner (C20). A daemon without them, or a failed call, shows none:
+   * the board and inbox work the same without this list.
+   */
+  proposals: (): Promise<ProposalView[]> =>
+    call<{ proposals?: ProposalView[] }>("GET", "/api/proposals?status=open")
+      .then((r) => (Array.isArray(r.proposals) ? r.proposals : []))
+      .catch(() => []),
+  acceptProposal: (id: number) =>
+    call<{ proposal: ProposalView; ticket: { id: string } }>("POST", `/api/proposals/${id}/accept`, {}),
+  declineProposal: (id: number) =>
+    call<{ proposal: ProposalView }>("POST", `/api/proposals/${id}/decline`, {}),
   /** Assigns a ticket that has not started (C17). */
   assign: (id: string, to: string) =>
     call<{ ok: true; ticket: TicketView }>("POST", `/api/tickets/${encodeURIComponent(id)}/assign`, { to }),

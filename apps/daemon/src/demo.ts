@@ -2,6 +2,7 @@
 // ticket to a different state, so every view has something real to show.
 import { defaultSwitchRules, type Employee, type Engine } from "@i-inc/core";
 import { type FakeAgent, type FakeHarness, json } from "@i-inc/core/testing";
+import type { Proposals } from "./proposals.ts";
 import type { Registry } from "./registry.ts";
 import type { Tickets } from "./tickets.ts";
 
@@ -266,4 +267,49 @@ export function seedDemoLater(tickets: Tickets, agent: FakeAgent, now: number): 
     },
     now,
   );
+}
+
+/** Follow-ups that went over the day's budget, waiting for the owner under Proposed. */
+export function seedDemoProposals(proposals: Proposals, now: number): void {
+  const add = (
+    title: string,
+    project: string,
+    by: string,
+    after: string,
+    body: string,
+    doneWhen: string[],
+    ago: number,
+  ) =>
+    proposals.add(
+      {
+        project,
+        title,
+        body,
+        proposedBy: by,
+        sourceTicket: after,
+        type: "fix",
+        effort: "low",
+        doneWhen,
+      },
+      now - ago * 60_000,
+    );
+  add(
+    "Retry a failed sync once before showing the offline banner",
+    "Duet",
+    "ada",
+    "1",
+    "While fixing the refunds total I saw the banner appear after a single timeout on a slow connection. One quiet retry would hide most of them.",
+    ["A single timeout is retried once", "The banner only shows after the retry fails"],
+    25,
+  );
+  add(
+    "Rates cache never expires",
+    "fintrack",
+    "kit",
+    "1",
+    "The exchange-rate cache is keyed by day but never cleared, so it grows without limit.",
+    ["Entries older than 7 days are dropped"],
+    90,
+  );
+  add("Rename the website's deploy script so it matches the others", "website", "ada", "1", "", [], 240);
 }
