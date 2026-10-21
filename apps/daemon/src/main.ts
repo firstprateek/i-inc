@@ -11,7 +11,7 @@ import { join, normalize } from "node:path";
 import { FakeAgent, FakeChat, FakeHarness, FakeHelper, FakeMachines } from "@i-inc/core/testing";
 import { createApp } from "./app.ts";
 import { configDir, readCredentials, webToken } from "./config.ts";
-import { seedDemo, seedDemoLater, seedDemoTickets } from "./demo.ts";
+import { seedDemo, seedDemoLater, seedDemoProposals, seedDemoTickets } from "./demo.ts";
 import { GitHubApp, readGitHubAppConfig } from "./github.ts";
 import { AppleMachines, defaultMachineSettings, wallsUp } from "./machines.ts";
 import { realPorts } from "./real.ts";
@@ -100,6 +100,7 @@ if (demo && app.deps.registry.employees().length === 0) {
   );
   await app.daemon.idle();
   seedDemoLater(app.deps.tickets, agent, Date.now());
+  seedDemoProposals(app.deps.proposals, Date.now());
 }
 await app.daemon.tick();
 setInterval(() => void app.daemon.tick(), 30_000);
