@@ -349,24 +349,101 @@ describe("one instance", () => {
 });
 
 describe("rolling back by hand", () => {
-  it("switches to the previous release and marks the current one bad", async () => {
-    const w = new World();
+  async function deployed(w: World, ...order: number[]) {
     const d = w.deployer();
-    w.head = B;
-    w.ci[B] = { state: "success" };
-    await d.cycle();
-    expect(w.cur).toBe(B);
+    for (const n of order) {
+      w.head = sha(n);
+      w.ci[sha(n)] = { state: "success" };
+      expect((await d.cycle()).action).toBe("deployed");
+    }
+    return d;
+  }
+
+  it("goes back to the previous deployed release and marks the one it leaves as bad, never the target", async () => {
+    const w = new World();
+    const d = await deployed(w, 2);
     await d.rollbackByHand();
     expect(w.cur).toBe(A);
     expect(w.serving).toBe(A);
-    expect(w.store.s.bad[B]?.reason).toBe("rolled back by hand");
+    expect(w.store.s.bad[B]?.reason).toContain("rolled back by hand to 0000001");
+    expect(w.store.s.bad[A]).toBeUndefined();
     expect(w.store.records.at(-1)).toMatchObject({ sha: B, from: B, outcome: "rolled-back" });
+    expect(w.store.records.at(-1)?.reason).toBe("rolled back by hand to 0000001");
     // main still points at B, but it is not deployed again.
     expect((await d.cycle()).action).toBe("known-bad");
   });
 
-  it("refuses when there is nothing to go back to", async () => {
+  it("never picks a candidate that was built but not switched to, even if it is the newest on disk", async () => {
     const w = new World();
-    await expect(w.deployer().rollbackByHand()).rejects.toThrow(/no other release/);
+    const d = await deployed(w, 2);
+    w.built.set(C, 999); // built, smoke-tested, waiting for a drain: newest mtime
+    await d.rollbackByHand();
+    expect(w.cur).toBe(A);
+    expect(w.store.s.bad[C]).toBeUndefined();
+    expect(w.built.has(C)).toBe(true);
+  });
+
+  it("walks back one deployed release at a time, skipping bad ones", async () => {
+    const w = new World();
+    const d = await deployed(w, 2, 3);
+    await d.rollbackByHand();
+    expect(w.cur).toBe(B);
+    await d.rollbackByHand();
+    expect(w.cur).toBe(A);
+    expect(w.store.s.bad[C]).toBeDefined();
+    expect(w.store.s.bad[B]).toBeDefined();
+    expect(w.store.s.bad[A]).toBeUndefined();
+  });
+
+  it("refuses while the daemon is busy or does not answer, unless forced", async () => {
+    const w = new World();
+    const d = await deployed(w, 2);
+    w.busyUntil = Number.POSITIVE_INFINITY;
+    await expect(d.rollbackByHand()).rejects.toThrow(/busy/);
+    expect(w.cur).toBe(B);
+    w.busyUntil = 0;
+    w.unreachable = true;
+    await expect(d.rollbackByHand()).rejects.toThrow(/does not answer/);
+    expect(w.cur).toBe(B);
+    w.unreachable = false;
+    w.busyUntil = Number.POSITIVE_INFINITY;
+    await d.rollbackByHand(undefined, { force: true });
+    expect(w.cur).toBe(A);
+  });
+
+  it("refuses an explicit sha that was never deployed, and when there is nothing to go back to", async () => {
+    const w = new World();
+    const d = w.deployer();
+    await expect(d.rollbackByHand()).rejects.toThrow(/no previous deployed release/);
+    await deployed(w, 2);
+    w.built.set(C, 50);
+    await expect(d.rollbackByHand(C)).rejects.toThrow(/never deployed/);
+    await expect(d.rollbackByHand(B)).rejects.toThrow(/already current/);
+    expect(w.cur).toBe(B);
+  });
+
+  it("goes to a named earlier deployed release", async () => {
+    const w = new World();
+    const d = await deployed(w, 2, 3);
+    await d.rollbackByHand(A);
+    expect(w.cur).toBe(A);
+  });
+});
+
+describe("pruning keeps what a rollback needs", () => {
+  it("never prunes the current or the previous deployed release, however small keep is", async () => {
+    const w = new World();
+    w.settings.keep = 1;
+    const d = w.deployer();
+    for (const n of [2, 3, 4]) {
+      w.head = sha(n);
+      w.ci[sha(n)] = { state: "success" };
+      await d.cycle();
+      expect(w.built.has(sha(n))).toBe(true);
+      expect(w.built.has(sha(n - 1))).toBe(true);
+    }
+    expect(w.built.has(sha(2))).toBe(false);
+    expect(w.built.has(sha(1))).toBe(false);
+    expect(w.cur).toBe(sha(4));
   });
 });

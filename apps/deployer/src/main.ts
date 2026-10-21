@@ -6,7 +6,8 @@
 //   --once              one cycle, then exit
 //   --force-after <min> switch even if the daemon is still busy after this many minutes
 //   --seed              make the checkout's HEAD the first release and point `current` at it
-//   --rollback [sha]    roll back by hand: mark the current release bad and switch to sha (default: the previous one)
+//   --rollback [sha]    roll back by hand to the previous deployed release (or sha, if it was deployed before);
+//                       refuses while the daemon is busy unless --force; marks the release it leaves as bad
 //   --status            print the deployer's state and exit
 //
 // The flags other than the loop take the same lock as the service: pause it first
@@ -106,13 +107,20 @@ if (flag("--seed")) {
     await releases.build(sha, checkout);
   }
   if (!(await releases.current())) await releases.point(sha);
+  deployer.noteSeeded((await releases.current()) ?? sha);
   log(`current is ${(await releases.current())?.slice(0, 7)}`);
   deployer.release();
   process.exit(0);
 }
 
 if (flag("--rollback")) {
-  const r = await deployer.rollbackByHand(value("--rollback"));
+  const r = await deployer
+    .rollbackByHand(value("--rollback"), { force: flag("--force") })
+    .catch((err: unknown) => {
+      log(`not rolled back: ${err instanceof Error ? err.message : String(err)}`);
+      deployer.release();
+      process.exit(1);
+    });
   log(`rolled back: ${JSON.stringify(r)}`);
   deployer.release();
   process.exit(0);

@@ -98,6 +98,8 @@ export interface State {
   attempts: Record<string, number>;
   /** Commits built and smoke-tested, waiting for the daemon to drain. */
   ready: Record<string, { drainSince: number | null }>;
+  /** Releases that were actually switched to, oldest first; the last is the one running (or was). */
+  history: string[];
   inFlight: InFlight | null;
 }
 

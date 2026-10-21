@@ -325,6 +325,8 @@ export class Deployer {
       s.inFlight = null;
       delete s.ready[sha];
       delete s.attempts[sha];
+      if (s.history.length === 0 && from) s.history.push(from);
+      s.history = [...s.history.filter((h) => h !== sha), sha].slice(-20);
     });
     this.event(`${short(sha)}: deployed (from ${short(from)}) in ${Math.round((at - startedAt) / 1000)} s`);
     return this.prune().then(() => ({ action: "deployed" as const, sha }));
@@ -402,7 +404,10 @@ export class Deployer {
     const { releases, settings } = this.d;
     const current = await releases.current();
     const flight = this.d.store.state().inFlight;
-    const protectedShas = new Set([current, flight?.sha, flight?.from].filter((x): x is string => !!x));
+    const previous = current ? await this.previousDeployed(current) : null;
+    const protectedShas = new Set(
+      [current, previous, flight?.sha, flight?.from].filter((x): x is string => !!x),
+    );
     const all = await releases.list();
     const keep = new Set<string>(protectedShas);
     for (const r of all) {
@@ -419,32 +424,67 @@ export class Deployer {
     return removed;
   }
 
+  /** The release deployed before `current` that is still on disk and not marked bad. */
+  async previousDeployed(current: string): Promise<string | null> {
+    const state = this.d.store.state();
+    for (const sha of [...state.history].reverse()) {
+      if (sha === current || state.bad[sha]) continue;
+      if (await this.d.releases.has(sha)) return sha;
+    }
+    return null;
+  }
+
+  /** Records the first release (`--seed`) so a later rollback has somewhere to go back to. */
+  noteSeeded(sha: string): void {
+    this.mutate((s) => {
+      if (!s.history.includes(sha)) s.history.push(sha);
+    });
+  }
+
   /**
-   * Rolls back by hand (`--rollback [sha]`): the current release is marked bad so the next cycle does
-   * not deploy it again, and `target` (default: the newest other release) becomes current.
+   * Rolls back by hand (`--rollback [sha]`). The target is the previous release that was actually
+   * deployed (from the history, never a candidate that was only built), or `target`, which must also be
+   * one of those. The daemon must be idle unless `force`. The release being left is marked bad so main's
+   * tip is not deployed again; the target (now live) never is.
    */
-  async rollbackByHand(target?: string): Promise<CycleResult> {
+  async rollbackByHand(target?: string, opts: { force?: boolean } = {}): Promise<CycleResult> {
     const current = await this.d.releases.current();
-    const all = await this.d.releases.list();
-    const to = target ?? all.find((r) => r.sha !== current)?.sha;
-    if (!to) throw new Error("there is no other release to roll back to");
-    if (!(await this.d.releases.has(to))) throw new Error(`no release ${short(to)}`);
+    if (!current) throw new Error("there is no current release");
+    const state = this.d.store.state();
+    const to = target ?? (await this.previousDeployed(current));
+    if (!to)
+      throw new Error("no previous deployed release is recorded: pass the sha of one in ~/i-inc-releases");
     if (to === current) throw new Error(`${short(to)} is already current`);
+    if (!state.history.includes(to)) {
+      throw new Error(`${short(to)} was never deployed (it may be a candidate that was only built)`);
+    }
+    if (!(await this.d.releases.has(to))) throw new Error(`release ${short(to)} is no longer on disk`);
+    if (!opts.force) {
+      const health = await this.d.daemon.health();
+      if (!health) throw new Error("the daemon does not answer /api/health: use --force to roll back anyway");
+      if (health.busy)
+        throw new Error("the daemon is busy (a ticket or chat turn is running): wait, or use --force");
+    }
     const startedAt = this.d.clock.now();
     this.event(`rolling back by hand from ${short(current)} to ${short(to)}`);
     await this.d.releases.point(to);
     await this.d.daemon.restart();
     const healthy = await this.waitForVersion(to);
     const at = this.d.clock.now();
-    if (current) this.markBad(current, "rolled back by hand", at);
+    this.markBad(current, `rolled back by hand to ${short(to)}`, at);
+    this.mutate((s) => {
+      s.history = [...s.history.filter((h) => h !== to), to].slice(-20);
+    });
     this.record({
       at,
-      sha: current ?? to,
+      sha: current,
       from: current,
       outcome: "rolled-back",
-      reason: healthy ? "rolled back by hand" : "rolled back by hand, but the daemon did not report healthy",
+      reason: healthy
+        ? `rolled back by hand to ${short(to)}`
+        : `rolled back by hand to ${short(to)}, but the daemon did not report healthy`,
       durationMs: at - startedAt,
     });
-    return { action: "rolled-back", ...(current ? { sha: current } : {}) };
+    return { action: "rolled-back", sha: current };
   }
 }

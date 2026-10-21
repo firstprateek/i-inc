@@ -4,7 +4,14 @@ import { appendFileSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeF
 import { dirname } from "node:path";
 import type { DeployRecord, Lock, State, Store } from "./types.ts";
 
-export const emptyState = (): State => ({ bad: {}, ciFailed: [], attempts: {}, ready: {}, inFlight: null });
+export const emptyState = (): State => ({
+  bad: {},
+  ciFailed: [],
+  attempts: {},
+  ready: {},
+  history: [],
+  inFlight: null,
+});
 
 export class FileStore implements Store {
   constructor(
