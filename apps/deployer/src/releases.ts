@@ -106,6 +106,12 @@ export class FsReleases implements Releases {
       this.o.root,
       10 * 60_000,
     );
+    // A release cloned from the owner's checkout (the seed) would keep that checkout as `origin`, and
+    // could then never see a newer GitHub commit: point every release at the real remote.
+    const real = await this.o.originUrl();
+    if (origin !== real) {
+      await this.step("set origin", "git", ["remote", "set-url", "origin", real], dir, 30_000);
+    }
     await this.step("checkout", "git", ["checkout", "--quiet", "--detach", sha], dir, 2 * 60_000);
     for (const s of this.steps) {
       await this.step(`${s.cmd} ${s.args.join(" ")}`, s.cmd, s.args, dir, s.timeoutMs);

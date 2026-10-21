@@ -13,9 +13,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { Deployer } from "../src/deployer.ts";
 import { FsReleases } from "../src/releases.ts";
 import { GitRemote } from "../src/remote.ts";
 import { run } from "../src/shell.ts";
+import { defaultSettings } from "../src/types.ts";
+import { FakeClock, MemLock, MemStore } from "./fakes.ts";
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args], {
@@ -156,6 +159,45 @@ describe("release folders", () => {
     // Unknown commits cannot be compared.
     expect(await remote.descends(first, "f".repeat(40))).toBeNull();
     // The owner's checkout was never fetched into.
+    expect(() => git(checkout, "cat-file", "-e", `${third}^{commit}`)).toThrow();
+  });
+
+  it("a fresh seed points at the real remote, so it can see and deploy a new commit without touching the checkout", async () => {
+    const r = makeReleases();
+    await r.build(second, checkout); // what --seed does: clone the owner's checkout...
+    expect(git(join(root, second), "remote", "get-url", "origin")).toBe(origin); // ...but origin is GitHub
+    await r.point(second);
+
+    // A new commit lands on GitHub (the stand-in origin). Nobody pulls the checkout.
+    writeFileSync(join(origin, "a.txt"), "three");
+    git(origin, "commit", "-q", "-am", "three");
+    const third = git(origin, "rev-parse", "HEAD");
+    const remote = new GitRemote(checkout, run, "main", (sha) => r.dir(sha));
+    expect(await remote.head()).toBe(third);
+    expect(await remote.descends(second, third)).toBe(true); // used to be null: "could not check"
+
+    // The whole cycle, with the real git and release folders and a fake CI, daemon and smoke test.
+    const clock = new FakeClock();
+    const store = new MemStore();
+    const health = async () => ({ ok: true, version: (await r.current()) ?? "", busy: false, startedAt: 1 });
+    const deployer = new Deployer({
+      clock,
+      remote,
+      ci: { check: async () => ({ state: "success" as const }) },
+      releases: r,
+      smoke: { run: async () => ({ ok: true as const }) },
+      daemon: { restart: async () => {}, health },
+      store,
+      lock: new MemLock(),
+      settings: { ...defaultSettings },
+      log: () => {},
+    });
+    expect((await deployer.cycle()).action).toBe("deployed");
+    expect(await r.current()).toBe(third);
+    expect(readFileSync(join(root, "current", "a.txt"), "utf8")).toBe("three");
+    // The owner's checkout was never fetched into or changed.
+    expect(git(checkout, "rev-parse", "HEAD")).toBe(second);
+    expect(git(checkout, "status", "--porcelain")).toBe("");
     expect(() => git(checkout, "cat-file", "-e", `${third}^{commit}`)).toThrow();
   });
 

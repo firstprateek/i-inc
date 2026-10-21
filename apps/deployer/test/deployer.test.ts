@@ -632,6 +632,16 @@ describe("records and state stay tidy", () => {
     expect(w.store.s.inFlight).toBeNull();
   });
 
+  it("clears every leftover retry entry once a deploy succeeds", async () => {
+    const w = new World();
+    w.head = B;
+    w.ci[B] = { state: "success" };
+    w.store.s.retry[B] = { failures: 1, transients: 2, nextAt: 0 };
+    w.store.s.retry[sha(9)] = { failures: 0, transients: 1, nextAt: 0 };
+    expect((await w.deployer().cycle()).action).toBe("deployed");
+    expect(w.store.s.retry).toEqual({});
+  });
+
   it("a restart after the record was written but before the state was cleared does not write it twice", async () => {
     const w = new World();
     w.head = B;

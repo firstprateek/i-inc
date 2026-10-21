@@ -396,7 +396,7 @@ export class Deployer {
       s.inFlight = null;
       delete s.ready[sha];
       delete s.attempts[sha];
-      delete s.retry[sha];
+      s.retry = {}; // a new baseline: nothing is half-way through a retry any more
       if (s.history.length === 0 && from) s.history.push(from);
       s.history = [...s.history.filter((h) => h !== sha), sha].slice(-20);
     });
