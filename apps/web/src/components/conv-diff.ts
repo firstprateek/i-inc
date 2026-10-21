@@ -47,6 +47,7 @@ export class IncConvDiff extends LitElement {
       .sign { text-align: center; user-select: none; -webkit-user-select: none; }
       .row.add { background: var(--diff-add-bg); color: var(--diff-add-fg); }
       .row.del { background: var(--diff-del-bg); color: var(--diff-del-fg); }
+      .rows:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: -3px; }
       .gap { padding: 2px 12px; color: var(--ink-2); font: 12px var(--body); background: var(--sunken); }
       .more { padding: 6px 12px; border-top: 1px solid var(--line); }
       .note { padding: 10px 12px; color: var(--ink-2); font-size: 13px; }

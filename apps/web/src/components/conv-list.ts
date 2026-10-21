@@ -26,6 +26,7 @@ export class IncConvList extends LitElement {
     createError: { type: String },
     form: { state: true },
     menu: { state: true },
+    rove: { state: true },
     renaming: { state: true },
     filter: { state: true },
     pickEmployee: { state: true },
@@ -43,6 +44,8 @@ export class IncConvList extends LitElement {
   declare createError: string;
   declare form: boolean;
   declare menu: string | null;
+  /** The row that is the list's one tab stop; arrow keys move between rows. */
+  declare rove: string;
   declare renaming: string | null;
   declare filter: string;
   declare pickEmployee: string;
@@ -62,6 +65,7 @@ export class IncConvList extends LitElement {
     this.createError = "";
     this.form = false;
     this.menu = null;
+    this.rove = "";
     this.renaming = null;
     this.filter = "";
     this.pickEmployee = "";
@@ -86,7 +90,7 @@ export class IncConvList extends LitElement {
       .groups { flex: 1 1 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 2px 8px; }
       h3 { font: 800 12px var(--body); text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink-2); margin: 12px 4px 6px; display: flex; align-items: center; gap: 8px; }
       h3 .n { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--neutral-bg); color: var(--neutral-fg); }
-      h3.needs { color: var(--needs-fg); } h3.needs .n { background: var(--needs-bg); border: 1px solid var(--needs-edge); color: var(--needs-fg); }
+      h3.g-needs { color: var(--needs-fg); } h3.g-needs .n { background: var(--needs-bg); border: 1px solid var(--needs-edge); color: var(--needs-fg); }
       ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
       li.row { position: relative; display: flex; align-items: stretch; border-radius: 14px; border: 1px solid transparent; }
       li.row:hover { background: var(--sunken); }
@@ -164,6 +168,12 @@ export class IncConvList extends LitElement {
     });
   };
 
+  /** The row a Tab lands on: the one last focused, else the open one, else the first. */
+  private tabStop(): string {
+    const ids = this.items.map((c) => c.id);
+    return ids.includes(this.rove) ? this.rove : ids.includes(this.selected) ? this.selected : (ids[0] ?? "");
+  }
+
   private row(c: Conversation) {
     const e = this.who(c.employeeId);
     const sel = c.id === this.selected;
@@ -183,15 +193,18 @@ export class IncConvList extends LitElement {
       }}><input class="rename" type="text" .value=${c.title} maxlength="200" aria-label="Rename conversation" />
         <span class="sub">Enter to save · Escape to cancel</span></form></li>`;
     }
-    return html`<li class="row ${sel ? "sel" : ""} ${needs ? "needs" : ""}">
-      <button class="open" type="button" aria-current=${sel ? "true" : "false"} @click=${() => this.open(c.id)}>
+    const stop = this.tabStop() === c.id ? 0 : -1;
+    return html`<li class="row ${sel ? "sel" : ""} ${needs ? "needs" : ""}" @focusin=${() => {
+      this.rove = c.id;
+    }}>
+      <button class="open" type="button" tabindex=${stop} aria-current=${sel ? "true" : "false"} @click=${() => this.open(c.id)}>
         ${e ? avatar({ name: e.name, tint: e.tint ?? 0 }, 34) : nothing}
         <span class="main"><span class="title">${c.title}</span>
           <span class="sub"><span>${e?.name ?? c.employeeId}</span>${c.project ? projectBadge(c.project) : html`<span>no project</span>`}</span></span>
         <span class="side"><span>${relativeTime(c.modifiedAt, this.now)}</span>
           <span class="chip ${needs ? "needs" : status === "Running" ? "working" : ""}">${status}</span></span>
       </button>
-      <button class="dots" type="button" aria-label="Actions for ${c.title}" aria-haspopup="menu" aria-expanded=${this.menu === c.id ? "true" : "false"}
+      <button class="dots" type="button" tabindex=${stop} aria-label="Actions for ${c.title}" aria-haspopup="menu" aria-expanded=${this.menu === c.id ? "true" : "false"}
         @click=${(ev: Event) => {
           ev.stopPropagation();
           this.menu = this.menu === c.id ? null : c.id;
@@ -282,7 +295,7 @@ export class IncConvList extends LitElement {
                 : groups.map(
                     (
                       g,
-                    ) => html`<h3 class=${g.group} id="g-${g.group}">${GROUP_LABEL[g.group]} <span class="n">${g.items.length}</span></h3>
+                    ) => html`<h3 class="g-${g.group}" id="g-${g.group}">${GROUP_LABEL[g.group]} <span class="n">${g.items.length}</span></h3>
                       <ul aria-labelledby="g-${g.group}">${g.items.map((c) => this.row(c))}</ul>`,
                   )
         }
