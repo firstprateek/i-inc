@@ -123,7 +123,12 @@ export class IncSetupProjects extends Loader<ListData> {
         };
       }
       const n = list.repos.filter((r) => !r.alreadyRegistered).length;
-      this.refreshNote = { ok: true, text: `Updated: ${n} ${n === 1 ? "repo" : "repos"} to add.` };
+      this.refreshNote = list.throttled
+        ? {
+            ok: true,
+            text: "That list is only a moment old: i.inc asks GitHub at most every few seconds. Try again shortly.",
+          }
+        : { ok: true, text: `Updated: ${n} ${n === 1 ? "repo" : "repos"} to add.` };
     } catch (e) {
       this.refreshNote = { ok: false, text: problemText(e) };
     } finally {

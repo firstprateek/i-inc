@@ -372,6 +372,37 @@ try {
     "the page noticed the new repo, filled it and added the project",
   );
   await shot(page, combos[0], "flow-new-manual-done");
+  // A repo that has a README but that GitHub still reports as 0 KB must never be written over.
+  await page.goto(`${personalUrl}#/company/projects/new`);
+  await page.reload();
+  await page.locator("input[name=name]").fill("my-notes");
+  await page.getByRole("button", { name: "Next: create it on GitHub" }).click();
+  await page.getByText("Waiting for you").first().waitFor();
+  await stubCall(PERSONAL, {
+    op: "addRepo",
+    name: "my-notes",
+    owner: "someone",
+    files: { "README.md": "# mine" },
+    sizeLag: true,
+  });
+  await page.getByRole("button", { name: "Refresh now" }).click();
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector("inc-app")
+        ?.shadowRoot?.querySelector("inc-project-flow")
+        ?.shadowRoot?.textContent?.includes("already has files"),
+    null,
+    { timeout: 15000 },
+  );
+  const notes = (await stubCall(PERSONAL, { op: "calls" })).calls;
+  ok(
+    !notes.some((c) => c.method === "PUT" && c.path.startsWith("/repos/someone/my-notes/")),
+    "a README-only repo (size 0 on GitHub) was not written over",
+  );
+  ok((await page.getByRole("button", { name: "Try again" }).count()) === 0, "and it is not offered a retry");
+  await shot(page, combos[0], "flow-new-repo-has-files");
+
   ok(errors.length === 0, `no console errors${errors.length ? `: ${errors.slice(0, 3).join(" | ")}` : ""}`);
   await ctx.close();
 
@@ -405,6 +436,11 @@ writeFileSync(
   beforeNew,
   `localStorage.setItem("inc.new-project", JSON.stringify({ name: "fresh-start", visibility: "private", template: "web", mode: "owner-merges", description: "", via: "manual" }));\nlocation.hash = "#/company/projects/new";\nawait new Promise((r) => setTimeout(r, 1500));`,
 );
+const beforeForeign = join(outDir, "before-new-foreign.js");
+writeFileSync(
+  beforeForeign,
+  `localStorage.setItem("inc.new-project", JSON.stringify({ name: "recipes", visibility: "private", template: "web", mode: "direct", description: "", via: "manual" }));\nlocation.hash = "#/company/projects/new";\nawait new Promise((r) => setTimeout(r, 1500));`,
+);
 const servers2 = [await start("org", ORG), await start("personal", PERSONAL)];
 try {
   for (const combo of combos) {
@@ -415,6 +451,7 @@ try {
       [`http://127.0.0.1:${ORG.port}/#/company/projects/new`, null],
       [`http://127.0.0.1:${PERSONAL.port}/#/company/projects`, null],
       [`http://127.0.0.1:${PERSONAL.port}/#/company/projects`, beforeNew],
+      [`http://127.0.0.1:${PERSONAL.port}/#/company/projects`, beforeForeign],
     ];
     for (const [url, before] of targets) {
       const argv = [

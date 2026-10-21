@@ -214,28 +214,24 @@ describe("teams", () => {
 });
 
 describe("projects", () => {
-  it("exempts upstream GitHub routes from triggering isGatewayDown offline panel", async () => {
+  it("treats a GitHub problem (424, 429) as an answer, but a 502 from a proxy as the daemon being down", async () => {
     const { send } = await import("../src/api.ts");
-    const { isOffline } = await import("../src/connection.ts");
+    const { isOffline, report } = await import("../src/connection.ts");
 
-    // Stub fetch returning 424 Failed Dependency on github route
-    vi.stubGlobal(
-      "fetch",
-      async () => new Response(JSON.stringify({ error: "Upstream failure" }), { status: 424 }),
-    );
+    for (const status of [424, 429]) {
+      vi.stubGlobal(
+        "fetch",
+        async () => new Response(JSON.stringify({ error: "Upstream failure" }), { status }),
+      );
+      expect((await send("/api/github/repos")).status).toBe(status);
+      expect(isOffline()).toBe(false);
+    }
 
-    const res = await send("/api/github/repos");
-    expect(res.status).toBe(424);
-    expect(isOffline()).toBe(false);
-
-    // Stub fetch returning 502 on upstream github route (exempt from taking app offline)
-    vi.stubGlobal(
-      "fetch",
-      async () => new Response(JSON.stringify({ error: "Upstream 502" }), { status: 502 }),
-    );
-    const res502 = await send("/api/github/repos");
-    expect(res502.status).toBe(502);
-    expect(isOffline()).toBe(false);
+    // The daemon never sends 502-504 for GitHub, so one on a GitHub route is a gateway with nothing behind it.
+    vi.stubGlobal("fetch", async () => new Response("Bad gateway", { status: 502 }));
+    await send("/api/github/repos");
+    expect(isOffline()).toBe(true);
+    report(true);
   });
 });
 

@@ -38,7 +38,9 @@ import {
   isValidBranch,
   isValidRepo,
   markRegistered,
+  NotEmptyError,
   TEMPLATES,
+  UpstreamGitHubError,
 } from "./github.ts";
 import {
   CannotCreate,
@@ -103,6 +105,8 @@ function projectIdProblem(id: string): string | null {
 const validModel = /^[A-Za-z0-9._:/@+ -]{1,100}$/;
 
 const inFlightBootstraps = new Set<string>();
+/** Repos being bootstrapped right now, by lower-cased owner/name: one project per repo, however it is named. */
+const inFlightRepos = new Set<string>();
 
 /** Writes that can run for minutes: the daemon counts them as busy (the chat turn tracks itself). */
 const longRunning = new Set([
@@ -691,6 +695,18 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         if (!checks.length || !checks.every((c) => typeof c === "string" && c.trim())) {
           return json({ error: "checks must be the recipe's commands, in order" }, 400);
         }
+        const repoLower = body.repo.toLowerCase();
+        const usedBy = d.registry.projects().find((p) => p.id !== id && p.repo.toLowerCase() === repoLower);
+        if (usedBy) {
+          return json(
+            {
+              error: `${body.repo} is already the project "${usedBy.id}". A repo can be one project only.`,
+              code: "in-use",
+              project: usedBy.id,
+            },
+            409,
+          );
+        }
         if (body.mode !== undefined && body.mode !== "direct" && body.mode !== "owner-merges") {
           return json({ error: 'mode is "direct" or "owner-merges"' }, 400);
         }
@@ -769,6 +785,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
             repos: markRegistered(list.repos, registered),
             fetchedAt: list.fetchedAt,
             ...(list.warning ? { warning: list.warning } : {}),
+            ...(list.throttled ? { throttled: true } : {}),
           });
         } catch (e) {
           return upstream(e, "failed to list repos", { repos: [] });
@@ -916,6 +933,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         }
 
         inFlightBootstraps.add(normalizedId);
+        let repoKey: string | null = null;
         try {
           const body = (await req.json().catch(() => ({}))) as {
             repo?: unknown;
@@ -934,6 +952,22 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
             return json({ error: "repo must be valid owner/name on GitHub" }, 400);
           }
           const repo = body.repo;
+          // One project per repo, whatever the project is called and however the repo's case is written.
+          const using = d.registry.projects().find((p) => p.repo.toLowerCase() === repo.toLowerCase());
+          if (using || inFlightRepos.has(repo.toLowerCase())) {
+            return json(
+              {
+                error: using
+                  ? `${repo} is already the project "${using.id}". A repo can be one project only.`
+                  : `${repo} is being added right now. Wait for that to finish.`,
+                code: "in-use",
+                ...(using ? { project: using.id } : {}),
+              },
+              409,
+            );
+          }
+          repoKey = repo.toLowerCase();
+          inFlightRepos.add(repoKey);
 
           if (body.mode !== undefined && body.mode !== "direct" && body.mode !== "owner-merges") {
             return json({ error: 'mode must be "direct" or "owner-merges"' }, 400);
@@ -1016,10 +1050,9 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
                 return json(
                   {
                     error:
-                      "This repository already has files (from an earlier or partial start). i.inc won't overwrite them unless you confirm.",
+                      "This repository already has files, so i.inc won't write a starter into it. Add it as an existing repo instead, or pick another name.",
                     code: "not-empty",
                     empty: false,
-                    resumable: true,
                   },
                   409,
                 );
@@ -1036,6 +1069,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
                   template: body.template,
                   ...(typeof body.description === "string" ? { description: body.description } : {}),
                   ...(typeof body.defaultBranch === "string" ? { defaultBranch: body.defaultBranch } : {}),
+                  ...(force ? { force: true } : {}),
                 },
                 gh.fetchDeps,
               );
@@ -1044,10 +1078,20 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
               gh.invalidate();
             } catch (e) {
               gh.invalidate();
-              return upstream(e, "failed to bootstrap", {
-                // Some files may be in already; running it again carries on from them.
-                resumable: true,
-              });
+              if (e instanceof NotEmptyError) {
+                return json(
+                  {
+                    error: e.message,
+                    code: "not-empty",
+                    empty: false,
+                    ...((e.written ?? 0) > 0 ? { resumable: true } : {}),
+                  },
+                  409,
+                );
+              }
+              // Some files may be in already, if this run wrote any: running it again (confirmed) carries on.
+              const wrote = e instanceof UpstreamGitHubError && (e.written ?? 0) > 0;
+              return upstream(e, "failed to bootstrap", wrote ? { resumable: true } : {});
             }
           }
 
@@ -1101,6 +1145,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           return json({ project: d.registry.project(id), bootstrapped, commits }, 201);
         } finally {
           inFlightBootstraps.delete(normalizedId);
+          if (repoKey) inFlightRepos.delete(repoKey);
         }
       },
     ],

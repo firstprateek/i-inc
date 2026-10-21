@@ -90,6 +90,8 @@ interface World {
   status: GitHubStatus | "fail";
   projects: ProjectStatus[];
   repos: Repo[];
+  /** Extra fields on the repo list: a `warning` (GitHub failing) or `throttled` (a Refresh held back). */
+  reposExtra: Record<string, unknown> | null;
   /** Fail the repo list with this problem. */
   reposFail: { status: number; body: Record<string, unknown> } | null;
   inspect: "ok" | "fail" | "empty";
@@ -116,6 +118,7 @@ function serve(w: Partial<World> = {}) {
       repo("blank", { empty: true, pushedAt: null }),
     ],
     reposFail: null,
+    reposExtra: null,
     inspect: "ok",
     bootstrap: null,
     createRepo: null,
@@ -140,6 +143,7 @@ function serve(w: Partial<World> = {}) {
       const registered = new Set(world.projects.map((p) => p.repo.toLowerCase()));
       return json({
         configured: world.status === "fail" || world.status.configured,
+        ...world.reposExtra,
         repos: world.repos.map((r) => ({
           ...r,
           alreadyRegistered: r.alreadyRegistered || registered.has(r.fullName.toLowerCase()),
@@ -370,7 +374,7 @@ describe("Company → Projects", () => {
   it("is not the offline panel when GitHub fails", async () => {
     const { isOffline } = await import("../src/connection.ts");
     serve({
-      reposFail: { status: 502, body: { error: "GitHub is having trouble right now.", code: "unavailable" } },
+      reposFail: { status: 424, body: { error: "GitHub is having trouble right now.", code: "unavailable" } },
     });
     await mount("inc-setup-projects");
     expect(isOffline()).toBe(false);
@@ -854,19 +858,7 @@ describe("start a new project", () => {
     expect(text(root)).toContain("Started fresh");
   });
 
-  it("shows a failed fill in words and can try again", async () => {
-    serve({
-      status: personalStatus(),
-      repos: [repo("fresh", { owner: "someone", fullName: "someone/fresh", empty: true, pushedAt: null })],
-      bootstrap: {
-        status: 424,
-        body: {
-          error: "GitHub is having trouble right now. Try again in a few minutes.",
-          code: "unavailable",
-          resumable: true,
-        },
-      },
-    });
+  const draftFor = (extra: Record<string, unknown> = {}) =>
     localStorage.setItem(
       "inc.new-project",
       JSON.stringify({
@@ -876,17 +868,136 @@ describe("start a new project", () => {
         mode: "direct",
         description: "",
         via: "manual",
+        ...extra,
       }),
     );
+  const emptyFresh = () => [
+    repo("fresh", { owner: "someone", fullName: "someone/fresh", empty: true, pushedAt: null }),
+  ];
+
+  it("shows a failed fill in words and tries again without force when nothing was written", async () => {
+    serve({
+      status: personalStatus(),
+      repos: emptyFresh(),
+      bootstrap: {
+        status: 424,
+        body: {
+          error: "GitHub is having trouble right now. Try again in a few minutes.",
+          code: "unavailable",
+        },
+      },
+    });
+    draftFor();
     const { el, root } = await mount<Flow>("inc-project-flow", { flow: "new", pollMs: 0 });
     await settle(el, 12);
     expect(text(root.querySelector('[role="alert"]'))).toContain("having trouble");
+    expect(draft().fillStarted).toBeUndefined();
     world.bootstrap = null;
     button(root, "Try again").click();
     await settle(el, 12);
-    // After a failure part-way, trying again says the repo may have files: it carries on.
+    const posts = calls.filter((c) => c.url.endsWith("/bootstrap"));
+    expect(posts.at(-1)?.body).not.toHaveProperty("force");
+    expect(text(root)).toContain("Started fresh");
+  });
+
+  it("after a failure part way, asks before carrying on, and only then sends force", async () => {
+    serve({
+      status: personalStatus(),
+      repos: emptyFresh(),
+      bootstrap: {
+        status: 424,
+        body: { error: "GitHub is having trouble right now.", code: "unavailable", resumable: true },
+      },
+    });
+    draftFor();
+    const { el, root } = await mount<Flow>("inc-project-flow", { flow: "new", pollMs: 0 });
+    await settle(el, 12);
+    expect(draft().fillStarted).toBe(true);
+    expect(text(root)).toContain("it doesn't change the ones already there");
+    expect(button(root, "Try again")).toBeUndefined();
+    expect(calls.filter((c) => c.url.endsWith("/bootstrap")).length).toBe(1);
+    world.bootstrap = null;
+    button(root, "Carry on filling it").click();
+    await settle(el, 12);
     expect(calls.filter((c) => c.url.endsWith("/bootstrap")).at(-1)?.body).toMatchObject({ force: true });
     expect(text(root)).toContain("Started fresh");
+  });
+
+  it("never offers to retry, or force, a repo the daemon says has files of its own", async () => {
+    // GitHub's size lags, so the list calls a README-only repo empty: the daemon is the one that knows.
+    serve({
+      status: personalStatus(),
+      repos: emptyFresh(),
+      bootstrap: {
+        status: 409,
+        body: {
+          error: "This repository already has files, so i.inc won't write a starter into it.",
+          code: "not-empty",
+        },
+      },
+    });
+    draftFor();
+    const first = await mount<Flow>("inc-project-flow", { flow: "new", pollMs: 0 });
+    await settle(first.el, 12);
+    expect(text(first.root)).toContain("someone/fresh already has files");
+    expect(button(first.root, "Try again")).toBeUndefined();
+    expect(button(first.root, "Carry on filling it")).toBeUndefined();
+    expect(link(first.root, "Add it as an existing repo")).toBeTruthy();
+    expect(button(first.root, "Choose another name")).toBeTruthy();
+    // It was never marked as this page's own, so a reload says the same thing.
+    expect(draft().fillStarted).toBeFalsy();
+    first.el.remove();
+    const second = await mount<Flow>("inc-project-flow", { flow: "new", pollMs: 0 });
+    await settle(second.el, 12);
+    expect(text(second.root)).toContain("already has files");
+    expect(text(second.root)).not.toContain("earlier try");
+    expect(calls.some((c) => c.url.endsWith("/bootstrap") && (c.body as { force?: boolean }).force)).toBe(
+      false,
+    );
+  });
+
+  it("stops polling when the page is left, even after GitHub asked it to wait", async () => {
+    serve({
+      status: personalStatus(),
+      reposFail: { status: 429, body: { error: "slow down", code: "rate-limited", retryAfter: 1 } },
+    });
+    draftFor();
+    const { el } = await mount<Flow>("inc-project-flow", { flow: "new", pollMs: 30 });
+    await new Promise((r) => setTimeout(r, 120));
+    el.remove();
+    const refreshes = () => calls.filter((c) => c.url.startsWith("/api/github/repos?refresh=1")).length;
+    const seen = refreshes();
+    expect(seen).toBeGreaterThan(0);
+    await new Promise((r) => setTimeout(r, 1300));
+    expect(refreshes()).toBe(seen);
+  });
+
+  it("says GitHub isn't answering, instead of 'Not there yet', when only an old list came back", async () => {
+    serve({
+      status: personalStatus(),
+      reposExtra: {
+        fetchedAt: Date.UTC(2026, 9, 21, 10, 5),
+        warning: { code: "unavailable", error: "GitHub is having trouble right now." },
+      },
+    });
+    draftFor();
+    const { el, root } = await mount<Flow>("inc-project-flow", { flow: "new", pollMs: 0 });
+    button(root, "Refresh now").click();
+    await settle(el, 12);
+    expect(text(root)).toContain("GitHub isn't answering");
+    expect(text(root)).toContain("Showing the list from");
+    expect(text(root)).not.toContain("Not there yet");
+    expect(text(root)).toContain("Waiting for the repo");
+  });
+
+  it("says when a Refresh was held back", async () => {
+    serve({ status: personalStatus(), reposExtra: { throttled: true } });
+    draftFor();
+    const { el, root } = await mount<Flow>("inc-project-flow", { flow: "new", pollMs: 0 });
+    button(root, "Refresh now").click();
+    await settle(el, 12);
+    expect(text(root)).toContain("only a moment old");
+    expect(text(root)).not.toContain("Not there yet");
   });
 
   it("clears the draft when started over", async () => {
@@ -1016,5 +1127,23 @@ describe("the new-ticket form preset", () => {
     await settle(el);
     expect(el.open).toBe(true);
     expect((root.querySelector('select[name="project"]') as HTMLSelectElement).value).toBe("listy");
+  });
+});
+
+describe("a daemon 401 signs the owner out, a GitHub problem doesn't", () => {
+  it("shows the sign-in when the daemon says 401", async () => {
+    vi.stubGlobal("fetch", async () => json({ error: "unauthorized" }, 401));
+    const { projectsApi } = await import("../src/github-projects.ts");
+    await expect(projectsApi.status()).rejects.toThrow("unauthorized");
+    expect(document.querySelector("inc-login")).not.toBeNull();
+  });
+
+  it("does not, for a GitHub problem", async () => {
+    vi.stubGlobal("fetch", async () =>
+      json({ error: "GitHub didn't accept i.inc's sign-in as the bot.", code: "auth" }, 424),
+    );
+    const { projectsApi } = await import("../src/github-projects.ts");
+    await expect(projectsApi.status()).rejects.toThrow("sign-in as the bot");
+    expect(document.querySelector("inc-login")).toBeNull();
   });
 });

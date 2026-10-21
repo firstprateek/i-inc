@@ -70,6 +70,8 @@ export const projectStyles = css`
   .callout.problem { background: var(--surface); border: 1px solid var(--line-strong); border-left: 4px solid var(--alarm); }
   .callout b { font-weight: 700; }
   .callout a { color: inherit; font-weight: 700; }
+  .callout a.btn { color: var(--on-ink); }
+  .callout a.btn.ghost { color: var(--ink); }
   .callout .row { gap: 8px 14px; }
 
   @media (max-width: 560px) {

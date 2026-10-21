@@ -184,15 +184,16 @@ export function redirectFor(hash: string): string | null {
     }
   }
   const target = out ?? homeHash();
-  if (target === hash) return null;
-  // A page that reads its own query (`#/conversations?new=1&project=Duet`, `#/company/projects/add?repo=a/b`)
-  // keeps it when the address is otherwise canonical. Every other address drops its query.
-  if (target === path && queryPages.test(path)) return null;
-  return target;
+  // A page that reads its own query (`#/conversations?new=1&project=Duet`, `#/company/projects/add?repo=a/b`) keeps it
+  // when the address is only tidied (case, a trailing slash). Every other address, and an old address that moves
+  // to a new one, drops its query.
+  const query = hash.includes("?") ? hash.slice(hash.indexOf("?")) : "";
+  const kept = query && queryPages.test(path) && queryPages.test(target) ? `${target}${query}` : target;
+  return kept === hash ? null : kept;
 }
 
 /** The addresses whose query string means something (see redirectFor). */
-const queryPages = /^#\/(?:conversations|company\/projects)(?:\/|$)/;
+const queryPages = /^#\/(?:conversations|company\/projects)(?:\/|$)/i;
 
 /** The query of a hash: `#/conversations?new=1&project=Duet` gives `new=1&project=Duet`. */
 export const hashQuery = (hash: string): URLSearchParams => new URLSearchParams(hash.split("?")[1] ?? "");

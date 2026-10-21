@@ -3,7 +3,7 @@
 // limits and GitHub errors, and that neither the installation token nor GitHub's words reach the client.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApi } from "../src/api.ts";
-import { newRepoUrl } from "../src/github-projects.ts";
+import { CALLS_PER_MINUTE, GitHubProjects, newRepoUrl, REFRESH_FLOOR_MS } from "../src/github-projects.ts";
 import { createGitHubStub, STUB_TOKEN, type StubOptions, stubApp } from "./github-stub.ts";
 import { refunds, testApp } from "./setup.ts";
 
@@ -436,7 +436,9 @@ describe("a bootstrap that goes wrong", () => {
     stub.state.failPath.length = 0;
     const refused = await call("POST", "/api/projects/empty-one/bootstrap", body);
     expect(refused.status).toBe(409);
-    expect(refused.body).toMatchObject({ code: "not-empty", resumable: true });
+    expect(refused.body.code).toBe("not-empty");
+    // Nothing was written by that call, so there is nothing to carry on: no "resumable".
+    expect(refused.body.resumable).toBeUndefined();
 
     const resumed = await call("POST", "/api/projects/empty-one/bootstrap", { ...body, force: true });
     expect(resumed.status).toBe(201);
@@ -530,5 +532,146 @@ describe("project status and detail", () => {
     expect(r.body.tickets[0]).toMatchObject({ title: refunds.title });
     expect(r.body.releases.map((x: { tag: string }) => x.tag)).toEqual(["v1"]);
     expect((await call("GET", "/api/projects/nope")).status).toBe(404);
+  });
+});
+
+describe("a repo's files are never written over (review of #88)", () => {
+  const readme = { owner: "acme", name: "notes", files: { "README.md": "# my own notes" }, sizeLag: true };
+
+  it("reads a README-only repo whose size GitHub still reports as 0 as having files", async () => {
+    const { call, stub } = await setup({ repos: [readme] });
+    const list = await call("GET", "/api/github/repos");
+    // The list can only go by size and push time: a hint.
+    expect(list.body.repos[0].empty).toBe(true);
+    const inspected = await call("GET", "/api/github/repos/acme/notes/inspect");
+    expect(inspected.body.empty).toBe(false);
+
+    for (const force of [undefined, true]) {
+      const r = await call("POST", "/api/projects/notes/bootstrap", {
+        repo: "acme/notes",
+        template: "minimal",
+        ...(force ? { force } : {}),
+      });
+      expect(r.status, `force ${force}`).toBe(409);
+      expect(r.body.code).toBe("not-empty");
+      expect(r.body.resumable).toBeUndefined();
+    }
+    expect(stub.state.repos[0]?.files?.["README.md"]).toBe("# my own notes");
+    expect(stub.state.calls.filter((c) => c.method === "PUT")).toEqual([]);
+  });
+
+  it("stops when a file appears between the check and the write, and writes nothing over it", async () => {
+    const { call, stub } = await setup({ repos: [{ owner: "acme", name: "race", files: {} }] });
+    // GitHub says the repo is empty, then the file is there when i.inc writes it.
+    stub.state.failPath.push({ match: /contents\/README\.md$/, method: "PUT", status: 422 });
+    const r = await call("POST", "/api/projects/race/bootstrap", { repo: "acme/race", template: "minimal" });
+    expect(r.status).toBe(409);
+    expect(r.body.code).toBe("not-empty");
+  });
+
+  it("registers a repo once: concurrent bootstraps under different names write it once", async () => {
+    const { call, stub, app } = await setup({ repos: [{ owner: "acme", name: "fresh", files: {} }] });
+    const body = { repo: "acme/fresh", template: "minimal" };
+    const [a, b] = await Promise.all([
+      call("POST", "/api/projects/p1/bootstrap", body),
+      call("POST", "/api/projects/p2/bootstrap", body),
+    ]);
+    expect([a.status, b.status].sort()).toEqual([201, 409]);
+    const loser = a.status === 409 ? a : b;
+    expect(loser.body.code).toBe("in-use");
+    expect(stub.state.calls.filter((c) => c.method === "PUT" && c.path.endsWith("/README.md")).length).toBe(
+      1,
+    );
+    expect(app.deps.registry.projects().filter((p) => p.repo === "acme/fresh").length).toBe(1);
+  });
+
+  it("refuses a second project on the same repo, however it is named or cased", async () => {
+    const { call, app } = await setup();
+    const first = await call("POST", "/api/projects/dup/bootstrap", {
+      repo: "acme/duet-web",
+      checks: ["make"],
+    });
+    expect(first.status).toBe(201);
+    for (const [id, repo] of [
+      ["dup2", "acme/duet-web"],
+      ["Dup3", "ACME/Duet-Web"],
+    ] as const) {
+      const r = await call("POST", `/api/projects/${id}/bootstrap`, { repo, checks: ["make"] });
+      expect(r.status, id).toBe(409);
+      expect(r.body).toMatchObject({ code: "in-use", project: "dup" });
+      expect(r.body.error).toContain('"dup"');
+    }
+    // Editing one project onto another's repo is refused too; its own repo is fine.
+    app.deps.registry.addProject({ id: "other", repo: "acme/other", checks: ["x"] });
+    const clash = await call("PUT", "/api/projects/other", { repo: "Acme/Duet-Web", checks: ["x"] });
+    expect(clash.status).toBe(409);
+    expect((await call("PUT", "/api/projects/dup", { repo: "acme/duet-web", checks: ["y"] })).status).toBe(
+      200,
+    );
+  });
+
+  it("does not let force replace files of a registered repo", async () => {
+    const { call, stub } = await setup();
+    await call("POST", "/api/projects/dup/bootstrap", { repo: "acme/duet-web", checks: ["make"] });
+    const before = JSON.stringify(stub.state.repos[0]?.files);
+    const r = await call("POST", "/api/projects/dup2/bootstrap", {
+      repo: "acme/duet-web",
+      template: "ts-node",
+      force: true,
+    });
+    expect(r.status).toBe(409);
+    expect(r.body.code).toBe("in-use");
+    expect(JSON.stringify(stub.state.repos[0]?.files)).toBe(before);
+    expect(stub.state.calls.filter((c) => c.method === "PUT")).toEqual([]);
+  });
+
+  it("carries on only from its own commits, adding the missing files", async () => {
+    const { call, stub } = await setup();
+    stub.state.failPath.push({ match: /contents\/src\/index\.ts$/, method: "PUT", status: 500 });
+    const body = { repo: "acme/empty-one", template: "ts-node" };
+    const first = await call("POST", "/api/projects/empty-one/bootstrap", body);
+    expect(first.body.resumable).toBe(true);
+    stub.state.failPath.length = 0;
+    const pkgBefore = stub.state.repos[1]?.files?.["package.json"];
+    const resumed = await call("POST", "/api/projects/empty-one/bootstrap", { ...body, force: true });
+    expect(resumed.status).toBe(201);
+    expect(stub.state.repos[1]?.files?.["package.json"]).toBe(pkgBefore);
+    // package.json was written once, in the first run, and never again.
+    expect(
+      stub.state.calls.filter((c) => c.method === "PUT" && c.path.endsWith("/package.json")).length,
+    ).toBe(1);
+  });
+
+  it("counts every GitHub call against the cap, token minting and the installation included", async () => {
+    let t = 0;
+    const calls: string[] = [];
+    const base = (async (url: RequestInfo | URL) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify({ total_count: 0, repositories: [] }), { status: 200 });
+    }) as unknown as typeof fetch;
+    // A token source that spends 4 calls minting, as the App does through the fetch it is given.
+    const tokens = {
+      token: async (_r: string, _a?: string, f?: typeof fetch) => {
+        for (let i = 0; i < 4; i++) await (f as typeof fetch)("https://stub.github/mint");
+        return "t";
+      },
+    };
+    const gh = new GitHubProjects(tokens, { now: () => t, fetch: base, api: "https://stub.github" });
+    let tripped = false;
+    for (let i = 0; i < 30 && !tripped; i++) {
+      t += REFRESH_FLOOR_MS + 1;
+      // After a good list, a failure comes back as the last list with a warning.
+      const r = await gh.repos(true).catch(() => ({ warning: { code: "rate-limited" } }) as never);
+      tripped = r.warning?.code === "rate-limited";
+    }
+    expect(tripped).toBe(true);
+    expect(calls.length).toBeLessThanOrEqual(CALLS_PER_MINUTE);
+  });
+
+  it("says a refresh was held back", async () => {
+    const { call } = await setup();
+    await call("GET", "/api/github/repos");
+    const r = await call("GET", "/api/github/repos?refresh=1");
+    expect(r.body.throttled).toBe(true);
   });
 });

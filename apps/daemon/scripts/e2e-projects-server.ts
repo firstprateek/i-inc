@@ -72,10 +72,17 @@ Bun.serve({
         name?: string;
         owner?: string;
         files?: Record<string, string>;
+        sizeLag?: boolean;
         fail?: unknown;
       };
-      if (b.op === "addRepo" && b.name)
-        stub.state.repos.push({ owner: b.owner ?? stub.state.account, name: b.name, files: b.files ?? {} });
+      if (b.op === "addRepo" && b.name) {
+        stub.state.repos.push({
+          owner: b.owner ?? stub.state.account,
+          name: b.name,
+          files: b.files ?? {},
+          ...(b.sizeLag ? { sizeLag: true } : {}),
+        });
+      }
       if (b.op === "fail") stub.state.fail = (b.fail as typeof stub.state.fail) ?? null;
       if (b.op === "calls") return Response.json({ calls: stub.state.calls });
       return Response.json({ ok: true });

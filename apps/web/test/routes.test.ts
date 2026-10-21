@@ -431,6 +431,13 @@ describe("project addresses and queries (T62)", () => {
     expect(hashQuery("#/conversations").get("project")).toBeNull();
   });
 
+  it("keeps the query when the address is only tidied (case, trailing slash)", () => {
+    expect(redirectFor("#/Conversations?new=1&project=Duet")).toBe("#/conversations?new=1&project=Duet");
+    expect(redirectFor("#/conversations/?new=1")).toBe("#/conversations?new=1");
+    expect(redirectFor("#/Company/Projects/Add/?repo=a%2Fb")).toBe("#/company/projects/add?repo=a%2Fb");
+    expect(parse("#/Conversations?new=1")).toEqual({ view: "conversations", id: "" });
+  });
+
   it("still drops the query elsewhere", () => {
     expect(redirectFor("#/ticket/12?from=push")).toBe("#/ticket/12");
     expect(redirectFor("#/work/board?x=1")).toBe("#/work/board");

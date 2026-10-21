@@ -102,6 +102,8 @@ export interface RepoList {
   repos: GitHubRepoSummary[];
   fetchedAt?: number;
   warning?: { code: ProblemCode; error: string };
+  /** A Refresh was held back: the list is only a few seconds old. */
+  throttled?: boolean;
 }
 
 export interface ProjectStatus {

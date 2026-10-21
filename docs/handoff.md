@@ -143,8 +143,10 @@ a project yet, each with **Add**.
     unless that is on **All repositories**). The page looks for it every 15 seconds while it is open (or press **Refresh now**), then
     fills it and adds the project.
   - The steps are shown on the page and survive a reload: the draft is kept in this browser and each step is worked out
-    from GitHub, so closing the tab halfway just picks up again. A repo that already has files is never written over
-    unless it is one this page started and you press **Carry on filling it**.
+    from GitHub, so closing the tab halfway just picks up again. A repo that already has any commit is never written
+    over (the daemon checks GitHub's commit list, not its lagging size). Only a start that stopped part way, where every
+    commit is the starter's own, can be carried on: press **Carry on filling it** and it adds the missing files and
+    changes none that are there. A repo can be one project only.
 - **Work on a project:** its page (`#/company/projects/<id>`) has the repo link, mode, checks (editable), recent tickets,
   releases, **Start a conversation** (`#/conversations?new=1&project=<id>`; see C14) and **New ticket** (the new-ticket form
   with this project chosen).

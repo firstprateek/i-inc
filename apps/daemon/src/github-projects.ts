@@ -169,6 +169,8 @@ export interface RepoList {
   fetchedAt: number;
   /** Set when GitHub failed and this is the last good list. */
   warning?: { code: ProblemCode; error: string };
+  /** A refresh was asked for but the list is only a few seconds old, so GitHub wasn't asked again. */
+  throttled?: boolean;
 }
 
 export interface ServiceOptions extends GitHubDeps {
@@ -246,7 +248,9 @@ export class GitHubProjects {
   async repos(refresh = false): Promise<RepoList> {
     const now = this.o.now();
     const fresh = this.list && now - this.list.fetchedAt < REPO_CACHE_MS;
-    if (this.list && fresh && (!refresh || now - this.lastAsk < REFRESH_FLOOR_MS)) return this.list;
+    if (this.list && fresh && (!refresh || now - this.lastAsk < REFRESH_FLOOR_MS)) {
+      return refresh ? { ...this.list, throttled: true } : this.list;
+    }
     if (this.listing) return this.listing;
     this.lastAsk = now;
     this.listing = fetchInstallationRepos(this.source, this.deps())
@@ -280,7 +284,8 @@ export class GitHubProjects {
     if (!this.tokens?.installation) return null;
     const now = this.o.now();
     if (this.info && now - this.info.at < INSTALLATION_CACHE_MS) return this.info.value;
-    const value = await this.tokens.installation();
+    // The installation call counts against the same cap as the rest.
+    const value = await this.tokens.installation(this.limited);
     this.info = { at: now, value };
     return value;
   }

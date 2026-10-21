@@ -13,13 +13,13 @@ export interface TokenSource {
    * "read" for a reviewer or verifier, who checks the branch out but never pushes. `repo` "*" asks
    * for every repo the App is installed on: a team sandbox's shared sign-in.
    */
-  token(repo: string, access?: "write" | "read"): Promise<string>;
+  token(repo: string, access?: "write" | "read", f?: typeof fetch): Promise<string>;
   /**
    * What the App's installation is: whose account it sits on, and what it may do there. Only the GitHub
    * App can say (it signs as itself); a stand-in token can't, and the projects flow then assumes the
    * least (no repo creation).
    */
-  installation?(): Promise<InstallationInfo>;
+  installation?(f?: typeof fetch): Promise<InstallationInfo>;
 }
 
 /** The installation of the GitHub App, as the projects flow needs it. No token is ever in here. */
@@ -105,6 +105,8 @@ export class UpstreamGitHubError extends Error {
   public rateLimited = false;
   /** How long to wait before trying again, when GitHub said. */
   public retryAfterSec?: number;
+  /** For a bootstrap that failed part way: how many files it had written by then. */
+  public written?: number;
 
   constructor(status: number, method: string, endpoint: string, detail = "") {
     super(`GitHub ${method} ${endpoint} failed with HTTP ${status}`);
@@ -277,10 +279,10 @@ export class GitHubApp implements TokenSource {
    * Whose account the App is installed on and what it may do there. It signs as the App itself (the
    * JWT), because an installation token can't read its own account. Nothing secret comes back.
    */
-  async installation(): Promise<InstallationInfo> {
+  async installation(f?: typeof fetch): Promise<InstallationInfo> {
     const jwt = appJwt(this.config.appId, this.readKey(this.config.privateKeyPath), this.now());
     const body = await call(
-      this.f,
+      f ?? this.f,
       `${this.config.api ?? API}/app/installations/${this.config.installationId}`,
       { method: "GET", headers: { authorization: `Bearer ${jwt}` } },
     );
@@ -304,13 +306,13 @@ export class GitHubApp implements TokenSource {
     };
   }
 
-  async token(repo: string, access: "write" | "read" = "write"): Promise<string> {
+  async token(repo: string, access: "write" | "read" = "write", f?: typeof fetch): Promise<string> {
     const key = `${repo} ${access}`;
     const cached = this.cache.get(key);
     if (cached && cached.expiresAt - this.now() > minLeftMs) return cached.token;
     const jwt = appJwt(this.config.appId, this.readKey(this.config.privateKeyPath), this.now());
     const body = await call(
-      this.f,
+      f ?? this.f,
       `${this.config.api ?? API}/app/installations/${this.config.installationId}/access_tokens`,
       {
         method: "POST",
@@ -555,6 +557,11 @@ export interface BootstrapOptions {
   template?: Template;
   description?: string;
   defaultBranch?: string;
+  /**
+   * Carry on a bootstrap that stopped part way. Only allowed in a repo whose every commit is a scaffold
+   * commit; it then adds the files that are missing and never changes one that is there.
+   */
+  force?: boolean;
 }
 
 export interface BootstrapResult {
@@ -572,7 +579,7 @@ export async function fetchInstallationRepos(
 ): Promise<InstallationRepo[]> {
   const f = deps.fetch ?? fetch;
   const api = deps.api ?? API;
-  const token = await tokens.token("*", "read");
+  const token = await tokens.token("*", "read", deps.fetch);
 
   const rawRepos: Record<string, unknown>[] = [];
   let page = 1;
@@ -636,7 +643,7 @@ export async function createOrgRepo(
   deps: GitHubDeps & { api?: string } = {},
 ): Promise<{ fullName: string; defaultBranch: string; private: boolean }> {
   const repo = checkRepo(`${o.owner}/${o.name}`);
-  const token = await tokens.token("*", "write");
+  const token = await tokens.token("*", "write", deps.fetch);
   const body = await call(
     deps.fetch ?? fetch,
     `${deps.api ?? API}/orgs/${encodeURIComponent(o.owner)}/repos`,
@@ -658,6 +665,58 @@ export async function createOrgRepo(
   };
 }
 
+/** A repo already has files that i.inc won't write over. */
+export class NotEmptyError extends Error {
+  /** How many files this run had written before it noticed. */
+  written?: number;
+  constructor(message: string) {
+    super(message);
+    this.name = "NotEmptyError";
+  }
+}
+
+/**
+ * Whether the repo has any commit, asked of GitHub's commit list (a repo with none answers 409). The
+ * repo listing's `size` is in KB and lags, so it can say 0 for a repo that has a README.
+ */
+async function hasCommits(
+  f: typeof fetch,
+  api: string,
+  repo: string,
+  headers: HeadersInit,
+): Promise<boolean> {
+  try {
+    const list = (await call(f, `${api}/repos/${repo}/commits?per_page=1`, {
+      method: "GET",
+      headers,
+    })) as unknown;
+    return Array.isArray(list) && list.length > 0;
+  } catch (err) {
+    if (err instanceof UpstreamGitHubError && err.status === 409) return false;
+    throw err;
+  }
+}
+
+/** The scaffold writes every commit with this message, so a repo made only of them is ours to finish. */
+const scaffoldMessage = /^Initialize .+ \(i\.inc scaffold\)$/;
+
+async function onlyScaffoldCommits(
+  f: typeof fetch,
+  api: string,
+  repo: string,
+  headers: HeadersInit,
+): Promise<boolean> {
+  const list = (await call(f, `${api}/repos/${repo}/commits?per_page=100`, {
+    method: "GET",
+    headers,
+  })) as unknown;
+  if (!Array.isArray(list) || list.length === 0 || list.length >= 100) return false;
+  return list.every((c) => {
+    const message = ((c as { commit?: { message?: unknown } })?.commit?.message ?? "") as string;
+    return typeof message === "string" && scaffoldMessage.test(message);
+  });
+}
+
 /** Inspects a repository to detect language, build tools, check recipes, and default branch. */
 export async function inspectRepo(
   tokens: TokenSource,
@@ -669,7 +728,7 @@ export async function inspectRepo(
   const api = deps.api ?? API;
   const repo = `${owner}/${name}`;
   checkRepo(repo);
-  const token = await tokens.token(repo, "read");
+  const token = await tokens.token(repo, "read", deps.fetch);
   const authHeader = { authorization: `Bearer ${token}` };
 
   const repoMeta = await call(f, `${api}/repos/${repo}`, {
@@ -679,7 +738,8 @@ export async function inspectRepo(
   const defaultBranch = String(repoMeta.default_branch ?? "main");
   const size = typeof repoMeta.size === "number" ? repoMeta.size : 0;
   const pushedAt = typeof repoMeta.pushed_at === "string" ? repoMeta.pushed_at : null;
-  const empty = size === 0 || !pushedAt;
+  // The size and push time are hints (GitHub's lag): only a repo with no commit is empty.
+  const empty = size > 0 && pushedAt ? false : !(await hasCommits(f, api, repo, authHeader));
 
   const id = name
     .toLowerCase()
@@ -851,7 +911,7 @@ export async function bootstrapRepo(
   const f = deps.fetch ?? fetch;
   const api = deps.api ?? API;
   const repo = checkRepo(opts.repo);
-  const token = await tokens.token(repo, "write");
+  const token = await tokens.token(repo, "write", deps.fetch);
   const authHeader = { authorization: `Bearer ${token}` };
 
   const template = opts.template ?? "ts-node";
@@ -972,20 +1032,56 @@ export async function bootstrapRepo(
     files[".gitignore"] = ".DS_Store\n";
   }
 
+  // Right before the first write: a repo with a commit is never written over. A bootstrap that stopped part
+  // way can be carried on, but only when every commit in the repo is its own.
+  const resuming = await hasCommits(f, api, repo, authHeader);
+  if (resuming) {
+    if (!opts.force) {
+      throw new NotEmptyError("This repository already has files, so i.inc won't write a starter into it.");
+    }
+    if (!(await onlyScaffoldCommits(f, api, repo, authHeader))) {
+      throw new NotEmptyError(
+        "This repository has files that i.inc didn't write, so i.inc won't write a starter into it.",
+      );
+    }
+  }
+
+  const ref = defaultBranch ? `?ref=${encodeURIComponent(defaultBranch)}` : "";
   let commits = 0;
-  for (const [path, content] of Object.entries(files)) {
-    const encoded = Buffer.from(content, "utf8").toString("base64");
-    const putFile = async (sha?: string) => {
-      const putRes = await call(f, `${api}/repos/${repo}/contents/${path}`, {
-        method: "PUT",
-        headers: authHeader,
-        body: JSON.stringify({
-          message: `Initialize ${path} (i.inc scaffold)`,
-          content: encoded,
-          ...(defaultBranch ? { branch: defaultBranch } : {}),
-          ...(sha ? { sha } : {}),
-        }),
-      });
+  try {
+    for (const [path, content] of Object.entries(files)) {
+      if (resuming) {
+        // Carrying on: a file that is there is left as it is.
+        const there = await call(f, `${api}/repos/${repo}/contents/${path}${ref}`, {
+          method: "GET",
+          headers: authHeader,
+        }).then(
+          () => true,
+          (err: unknown) => {
+            if (err instanceof UpstreamGitHubError && err.status === 404) return false;
+            throw err;
+          },
+        );
+        if (there) continue;
+      }
+      let putRes: Record<string, unknown>;
+      try {
+        putRes = await call(f, `${api}/repos/${repo}/contents/${path}`, {
+          method: "PUT",
+          headers: authHeader,
+          body: JSON.stringify({
+            message: `Initialize ${path} (i.inc scaffold)`,
+            content: Buffer.from(content, "utf8").toString("base64"),
+            ...(defaultBranch ? { branch: defaultBranch } : {}),
+          }),
+        });
+      } catch (err) {
+        // The file appeared since the check, so someone else is writing here: stop, never overwrite.
+        if (err instanceof UpstreamGitHubError && (err.status === 422 || err.status === 409)) {
+          throw new NotEmptyError(`${path} already exists in this repository, so i.inc stopped.`);
+        }
+        throw err;
+      }
       if (!putRes || typeof putRes !== "object" || (!putRes.commit && !putRes.content)) {
         throw new UpstreamGitHubError(
           502,
@@ -994,37 +1090,11 @@ export async function bootstrapRepo(
           "empty or invalid commit response",
         );
       }
-      return putRes;
-    };
-
-    try {
-      await putFile();
-    } catch (err) {
-      if (err instanceof UpstreamGitHubError && (err.status === 422 || err.status === 409)) {
-        // File already exists (e.g. from previous partial bootstrap); fetch existing SHA and retry PUT with SHA
-        let existingSha: string | undefined;
-        try {
-          const existing = await call(
-            f,
-            `${api}/repos/${repo}/contents/${path}${defaultBranch ? `?ref=${encodeURIComponent(defaultBranch)}` : ""}`,
-            { method: "GET", headers: authHeader },
-          );
-          if (typeof existing.sha === "string") {
-            existingSha = existing.sha;
-          }
-        } catch {
-          // If fetching existing SHA fails, rethrow the original PUT error
-        }
-        if (existingSha) {
-          await putFile(existingSha);
-        } else {
-          throw err;
-        }
-      } else {
-        throw err;
-      }
+      commits++;
     }
-    commits++;
+  } catch (err) {
+    if (err instanceof UpstreamGitHubError || err instanceof NotEmptyError) err.written = commits;
+    throw err;
   }
 
   return { bootstrapped: true, commits };

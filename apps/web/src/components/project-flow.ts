@@ -21,6 +21,7 @@ import {
   projectIdFromRepo,
   projectIdProblem,
   projectsApi,
+  type RepoList,
   repoNameProblem,
   TEMPLATES,
   type TemplateId,
@@ -80,6 +81,7 @@ export class IncProjectFlow extends LitElement {
     busy: { state: true },
     stepProblem: { state: true },
     checkedAt: { state: true },
+    listNote: { state: true },
     checking: { state: true },
     finished: { state: true },
     notice: { state: true },
@@ -111,11 +113,15 @@ export class IncProjectFlow extends LitElement {
   declare busy: string | null;
   declare stepProblem: unknown;
   declare checkedAt: number | null;
+  /** Why the list shown may be old: GitHub isn't answering, or a Refresh was held back. */
+  declare listNote: string | null;
   declare checking: boolean;
   declare finished: { id: string; repo: string } | null;
   declare notice: string | null;
 
   private timer: ReturnType<typeof setInterval> | undefined;
+  /** The wait GitHub asked for before the poll carries on; cleared with the poll. */
+  private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private loadedFor = "";
   private working = false;
   /** Bumped by every load so a slow answer for an old address is ignored. */
@@ -150,6 +156,7 @@ export class IncProjectFlow extends LitElement {
     this.busy = null;
     this.stepProblem = null;
     this.checkedAt = null;
+    this.listNote = null;
     this.checking = false;
     this.finished = null;
     this.notice = null;
@@ -177,7 +184,7 @@ export class IncProjectFlow extends LitElement {
       .step-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-height: 28px; }
       .step-head .n { width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--line-strong); display: inline-flex;
         align-items: center; justify-content: center; font-size: 14px; font-weight: 700; flex: none; }
-      li.done .n { background: var(--ink); color: var(--on-ink); border-color: var(--ink); }
+      li.complete .n { background: var(--ink); color: var(--on-ink); border-color: var(--ink); }
       .step-head b { font-size: 16px; flex: 1 1 160px; min-width: 0; }
       .step-head .state { margin-left: auto; font-size: 13px; font-weight: 700; color: var(--ink-2); }
       ol.how { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 8px; font-size: 15px; line-height: 1.45; }
@@ -222,6 +229,8 @@ export class IncProjectFlow extends LitElement {
   private stopPoll() {
     if (this.timer !== undefined) clearInterval(this.timer);
     this.timer = undefined;
+    if (this.retryTimer !== undefined) clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
   }
 
   private startPoll() {
@@ -255,6 +264,8 @@ export class IncProjectFlow extends LitElement {
     this.status = status;
     this.repos = "r" in repos ? repos.r.repos : null;
     this.reposProblem = "e" in repos ? repos.e : null;
+    this.listNote = null;
+    if ("r" in repos) this.takeList(repos.r, false);
     this.existing = overview.map((p) => ({ id: p.id, repo: p.repo }));
     this.employees = Array.isArray(employees) ? employees : [];
     if (this.flow === "new") return this.loadNew();
@@ -364,16 +375,38 @@ export class IncProjectFlow extends LitElement {
         <a class="link" href=${this.status?.links.manage ?? "https://github.com/settings/installations"} target="_blank" rel="noopener noreferrer">Give i.inc access to more repos<span aria-hidden="true">&nbsp;↗</span></a>
         <button class="btn ghost" type="button" ?disabled=${this.checking} @click=${() => this.refreshList()}>${this.checking ? "Checking GitHub…" : "Refresh"}</button>
       </div>
+      ${this.listNote ? html`<p class="callout needs" role="status">${this.listNote}</p>` : ""}
     </section>`;
+  }
+
+  /**
+   * Takes a repo list from the daemon. Returns true when it is fresh from GitHub; when GitHub isn't answering (the
+   * last good list comes back with a warning) or a Refresh was held back, it says so and returns false.
+   */
+  private takeList(list: RepoList, manual: boolean): boolean {
+    this.repos = list.repos;
+    this.reposProblem = null;
+    if (list.warning) {
+      const at = list.fetchedAt
+        ? ` Showing the list from ${new Date(list.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`
+        : "";
+      this.listNote = `GitHub isn't answering, so this may be out of date.${at}`;
+      return false;
+    }
+    if (manual && list.throttled) {
+      this.listNote =
+        "That list is only a moment old: i.inc asks GitHub at most every few seconds. Try again shortly.";
+      return false;
+    }
+    this.listNote = null;
+    return true;
   }
 
   private async refreshList() {
     this.checking = true;
     try {
-      const list = await projectsApi.repos(true);
-      this.repos = list.repos;
-      this.reposProblem = null;
-      if (this.flow === "add" && this.repo && this.phase === "missing") await this.load();
+      const fresh = this.takeList(await projectsApi.repos(true), true);
+      if (fresh && this.flow === "add" && this.repo && this.phase === "missing") await this.load();
     } catch (e) {
       this.reposProblem = e;
     } finally {
@@ -398,6 +431,7 @@ export class IncProjectFlow extends LitElement {
             <button class="btn ghost" type="button" ?disabled=${this.checking} @click=${() => this.refreshList()}>${this.checking ? "Checking GitHub…" : "Refresh"}</button>
             <a class="link" href=${ADD_PROJECT_HREF}>Pick another repo</a>
           </div>
+          ${this.listNote ? html`<p class="callout needs" role="status">${this.listNote}</p>` : ""}
           ${this.reposProblem ? problemBox(this.reposProblem) : ""}
         </section>`;
       case "already": {
@@ -615,8 +649,7 @@ export class IncProjectFlow extends LitElement {
         visibility: d.visibility,
         ...(d.description ? { description: d.description } : {}),
       });
-      const list = await projectsApi.repos(true);
-      this.repos = list.repos;
+      this.takeList(await projectsApi.repos(true), false);
     } catch (e) {
       if (e instanceof ApiProblem && e.code === "cannot-create") {
         // GitHub won't let the bot create here: the owner does it, and i.inc notices.
@@ -640,7 +673,6 @@ export class IncProjectFlow extends LitElement {
     this.working = true;
     this.busy = "fill";
     this.stepProblem = null;
-    this.persist({ fillStarted: true });
     const template = TEMPLATES.find((t) => t.id === d.template) ?? TEMPLATES[0];
     const id = projectIdFromRepo(d.name);
     try {
@@ -669,6 +701,9 @@ export class IncProjectFlow extends LitElement {
         this.finished = { id, repo: found.fullName };
       } else {
         this.stepProblem = e;
+        // Files are "ours" only once the daemon says it wrote some; a repo with files of its own never is.
+        if (e instanceof ApiProblem && e.extra.resumable) this.persist({ fillStarted: true });
+        else if (e instanceof ApiProblem && e.code === "not-empty") this.persist({ fillStarted: false });
       }
     } finally {
       this.busy = null;
@@ -677,14 +712,12 @@ export class IncProjectFlow extends LitElement {
   }
 
   /** Asks GitHub for the repo list again (Refresh, and the polite poll), then moves on. */
-  private async poll() {
+  private async poll(manual = false) {
     if (this.checking || this.working || !this.draft) return;
     this.checking = true;
     try {
-      const list = await projectsApi.repos(true);
-      this.repos = list.repos;
-      this.reposProblem = null;
-      this.checkedAt = Date.now();
+      // Only a list that really came from GitHub counts as "checked".
+      if (this.takeList(await projectsApi.repos(true), manual)) this.checkedAt = Date.now();
       const again = await projectsApi.overview().catch(() => null);
       if (again) this.existing = again.map((p) => ({ id: p.id, repo: p.repo }));
     } catch (e) {
@@ -693,7 +726,10 @@ export class IncProjectFlow extends LitElement {
       const wait = e instanceof ApiProblem ? e.extra.retryAfter : undefined;
       if (wait && this.timer !== undefined) {
         this.stopPoll();
-        setTimeout(() => this.startPoll(), wait * 1000);
+        this.retryTimer = setTimeout(() => {
+          this.retryTimer = undefined;
+          this.startPoll();
+        }, wait * 1000);
       }
     } finally {
       this.checking = false;
@@ -831,12 +867,15 @@ export class IncProjectFlow extends LitElement {
     const manual = d.via === "manual";
     const fillBusy = this.busy === "fill";
     const createBusy = this.busy === "create";
-    const partial = !!found && !found.empty && !!d.fillStarted;
-    const foreign = !!found && !found.empty && !d.fillStarted;
+    const problem = this.stepProblem as ApiProblem | null;
+    const hasFiles = !!found && !found.empty;
+    // Ours to finish only if this page's own earlier try wrote files; anything else with files is someone's.
+    const partial = !!d.fillStarted && (hasFiles || problem?.extra?.resumable === true);
+    const foreign = !partial && (hasFiles || problem?.code === "not-empty");
     const state = (n: 1 | 2 | 3): { cls: string; label: string } => {
       if (n === 1)
         return found
-          ? { cls: "done", label: "Done" }
+          ? { cls: "complete", label: "Done" }
           : createBusy
             ? { cls: "now", label: "Working…" }
             : manual
@@ -855,7 +894,7 @@ export class IncProjectFlow extends LitElement {
     const li = (n: 1 | 2 | 3, title: unknown, body: unknown) => {
       const s = state(n);
       return html`<li class=${s.cls} aria-label="Step ${n}: ${s.label}">
-        <div class="step-head"><span class="n" aria-hidden="true">${s.cls === "done" ? "✓" : n}</span><b>${title}</b><span class="state">${s.label}</span></div>
+        <div class="step-head"><span class="n" aria-hidden="true">${s.cls === "complete" ? "✓" : n}</span><b>${title}</b><span class="state">${s.label}</span></div>
         ${body}
       </li>`;
     };
@@ -887,9 +926,10 @@ export class IncProjectFlow extends LitElement {
                   <li>Come back here. i.inc looks for it every ${Math.round(this.pollMs / 1000)} seconds while this page is open.</li>
                 </ol>
                 <div class="row">
-                  <button class="btn ghost" type="button" ?disabled=${this.checking} @click=${() => this.poll()}>${this.checking ? "Checking GitHub…" : "Refresh now"}</button>
+                  <button class="btn ghost" type="button" ?disabled=${this.checking} @click=${() => this.poll(true)}>${this.checking ? "Checking GitHub…" : "Refresh now"}</button>
                   <span class="hint" role="status">${this.checkedAt ? `Last checked ${new Date(this.checkedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}. Not there yet.` : "Waiting for the repo."}</span>
                 </div>
+                ${this.listNote ? html`<p class="callout needs" role="status">${this.listNote}</p>` : ""}
                 ${this.reposProblem ? problemBox(this.reposProblem) : ""}`
               : html`<p class="hint">${createBusy ? `i.inc is creating ${fullName}…` : "i.inc creates it through the bot."}</p>
                 ${this.stepProblem ? problemBox(this.stepProblem, html`<div class="row"><button class="btn" type="button" @click=${() => this.createRepo()}>Try again</button></div>`) : ""}`,
@@ -899,16 +939,16 @@ export class IncProjectFlow extends LitElement {
           "Fill it with the starter files",
           foreign
             ? html`<p class="callout needs" role="alert"><span><b>${found?.fullName} already has files.</b> i.inc won't write a starter over them.</span>
-                <span>If it is yours, add it as it is.</span>
+                <span>If it is yours, add it as it is. Otherwise choose another name.</span>
                 <span class="row"><a class="btn" href="${ADD_PROJECT_HREF}?repo=${encodeURIComponent(found?.fullName ?? "")}">Add it as an existing repo</a>
-                <button class="btn ghost" type="button" @click=${() => this.cancel()}>Start over</button></span></p>`
+                <button class="btn ghost" type="button" @click=${() => this.cancel()}>Choose another name</button></span></p>`
             : partial
-              ? html`<p class="callout needs" role="status"><span>Some starter files are in the repo already, from an earlier try. Carrying on writes the rest, and replaces any of those files.</span>
+              ? html`<p class="callout needs" role="status"><span>Some starter files are in the repo already, from an earlier try. Carrying on adds the files that are missing; it doesn't change the ones already there.</span>
                   <span class="row"><button class="btn" type="button" ?disabled=${fillBusy} @click=${() => this.fill(true)}>${fillBusy ? "Writing the starter…" : "Carry on filling it"}</button></span></p>
                   ${this.stepProblem ? problemBox(this.stepProblem) : ""}`
               : found
                 ? html`<p class="hint" role="status">${fillBusy ? "Writing the starter files and adding the project…" : "i.inc is about to write the starter."}</p>
-                    ${this.stepProblem ? problemBox(this.stepProblem, html`<div class="row"><button class="btn" type="button" @click=${() => this.fill((this.stepProblem as ApiProblem)?.extra?.resumable === true)}>Try again</button></div>`) : ""}`
+                    ${this.stepProblem ? problemBox(this.stepProblem, html`<div class="row"><button class="btn" type="button" @click=${() => this.fill(false)}>Try again</button></div>`) : ""}`
                 : html`<p class="hint">Once the repo is there.</p>`,
         )}
         ${li(3, "Add it as a project", html`<p class="hint">${this.mode === "direct" ? "Direct" : "Owner merges"}: checks come from the starter.</p>`)}

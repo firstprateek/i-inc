@@ -14,6 +14,10 @@ export interface StubRepo {
   description?: string | null;
   language?: string | null;
   defaultBranch?: string;
+  /** GitHub's `size` lags: report 0 KB although the repo has files (a fresh README-only repo does this). */
+  sizeLag?: boolean;
+  /** Commit messages, oldest first. Files given up front count as one "Initial commit". */
+  commits?: string[];
 }
 
 export interface StubOptions {
@@ -77,8 +81,8 @@ export function createGitHubStub(o: StubOptions = {}) {
       default_branch: r.defaultBranch ?? "main",
       description: r.description ?? null,
       language: r.language ?? null,
-      size: files.length ? 10 : 0,
-      pushed_at: files.length ? "2026-10-20T10:00:00Z" : null,
+      size: files.length && !r.sizeLag ? 10 : 0,
+      pushed_at: files.length || r.commits?.length ? "2026-10-20T10:00:00Z" : null,
     };
   };
 
@@ -161,6 +165,13 @@ export function createGitHubStub(o: StubOptions = {}) {
       if (!repo) return reply({ message: "Not Found" }, 404);
       const rest = m4[3] ?? "";
       if (req.method === "GET" && rest === "") return reply(meta(repo));
+      if (req.method === "GET" && rest.startsWith("/commits")) {
+        repo.commits ??= Object.keys(repo.files ?? {}).length ? ["Initial commit"] : [];
+        if (!repo.commits.length) return reply({ message: "Git Repository is empty." }, 409);
+        return reply(
+          [...repo.commits].reverse().map((message, i) => ({ sha: `c${i}`, commit: { message } })),
+        );
+      }
       if (req.method === "GET" && rest === "/contents") {
         const names = Object.keys(repo.files ?? {});
         if (!names.length) return reply({ message: "This repository is empty." }, 404);
@@ -179,6 +190,8 @@ export function createGitHubStub(o: StubOptions = {}) {
         if (repo.files[file] !== undefined && !(body as { sha?: string })?.sha) {
           return reply({ message: "Invalid request. sha wasn't supplied." }, 422);
         }
+        repo.commits ??= Object.keys(repo.files).length ? ["Initial commit"] : [];
+        repo.commits.push(String((body as { message?: string }).message ?? ""));
         repo.files[file] = Buffer.from(
           String((body as { content?: string }).content ?? ""),
           "base64",
