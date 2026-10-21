@@ -282,6 +282,11 @@ export class IncGettingStarted extends LitElement {
         .step { grid-template-columns: 24px minmax(0, 1fr); }
         .step .actions { grid-column: 2; justify-content: flex-start; }
       }
+      /* A short phone screen: the next step, its action and Dismiss in one row; the conversation needs the room. */
+      @media (max-width: 900px) and (max-height: 640px) {
+        .bar { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "next primary dismiss"; }
+        .bar .title, .bar .toggle, .next .lbl { display: none; }
+      }
       @media (max-width: 520px) {
         .dismiss { width: 44px; padding: 0; }
         .dismiss svg { display: block; }

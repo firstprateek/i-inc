@@ -346,6 +346,8 @@ describe("the Getting started checklist", () => {
       .map((s) => s.cssText)
       .join("\n");
     expect(css).toMatch(/\.dismiss \{ width: 44px/);
+    // and on a short one, a single row
+    expect(css).toMatch(/\(max-height: 640px\)[^@]*grid-template-areas: "next primary dismiss"[^}]*\}\s*\.bar \.title, \.bar \.toggle/);
   });
 });
 
