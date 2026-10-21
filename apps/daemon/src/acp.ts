@@ -139,6 +139,11 @@ export class AcpAgent implements Agent {
 
   constructor(private readonly o: AcpOptions) {}
 
+  /** Entries in the transient-retry counter: it should be empty once nothing is retrying. */
+  footprint(): { transient: number } {
+    return { transient: this.transient.size };
+  }
+
   async run(r: SessionRequest): Promise<SessionOutcome> {
     const now = this.o.now ?? Date.now;
     const proc = this.o.launch({

@@ -90,6 +90,25 @@ describe("the GitHub App", () => {
     });
   });
 
+  it("drops tokens that have expired, so repos that are gone don't keep one", async () => {
+    let now = Date.parse("2026-09-28T10:00:00Z");
+    let minted = 0;
+    const { f } = recorder(() => ({
+      status: 201,
+      json: { token: `ghs_${++minted}`, expires_at: new Date(now + 60 * 60_000).toISOString() },
+    }));
+    const app = new GitHubApp(
+      { appId: "123", installationId: "456", privateKeyPath: "/unused" },
+      { fetch: f, now: () => now, readKey: () => privateKey },
+    );
+    for (let i = 0; i < 20; i++) await app.token(`firstprateek/repo${i}`);
+    expect(app.footprint()).toEqual({ tokens: 20 });
+    // Two hours on, only the repo still in use is asked for: the old ones are gone.
+    now += 2 * 60 * 60_000;
+    await app.token("firstprateek/repo0");
+    expect(app.footprint()).toEqual({ tokens: 1 });
+  });
+
   it("says what GitHub said when it refuses", async () => {
     const { f } = recorder(() => ({ status: 401, json: { message: "Bad credentials" } }));
     const app = new GitHubApp(

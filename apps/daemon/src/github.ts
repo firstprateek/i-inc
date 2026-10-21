@@ -227,6 +227,11 @@ export class GitHubApp implements TokenSource {
     this.readKey = deps.readKey ?? readPrivateKey;
   }
 
+  /** Tokens held; expired ones are dropped whenever a new one is minted. */
+  footprint(): { tokens: number } {
+    return { tokens: this.cache.size };
+  }
+
   async token(repo: string, access: "write" | "read" = "write"): Promise<string> {
     const key = `${repo} ${access}`;
     const cached = this.cache.get(key);
