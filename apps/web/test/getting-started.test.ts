@@ -65,9 +65,7 @@ const steps = (root: ShadowRoot) =>
     title: titleOf(li),
     done: li.classList.contains("complete"),
     next: li.classList.contains("next"),
-    actions: [...li.querySelectorAll("a.btn")].map((a) =>
-      a.textContent?.trim(),
-    ),
+    actions: [...li.querySelectorAll("a.btn")].map((a) => a.textContent?.trim()),
   }));
 
 beforeEach(() => {
