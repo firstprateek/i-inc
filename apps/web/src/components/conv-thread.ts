@@ -122,7 +122,8 @@ export class IncConvThread extends LitElement {
       .skeleton i { display: block; height: 16px; border-radius: 8px; background: var(--sunken); animation: pulse 1.4s ease-in-out infinite; }
       .skeleton i:nth-child(2) { width: 80%; } .skeleton i:nth-child(3) { width: 60%; }
       @keyframes pulse { 50% { opacity: 0.45; } }
-      .jump { position: absolute; left: 50%; transform: translateX(-50%); bottom: 12px; z-index: 5; min-height: 44px; padding: 0 16px; border-radius: 999px;
+      .jump-row { display: flex; justify-content: center; }
+      .jump { min-height: 44px; padding: 0 16px; border-radius: 999px;
         border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); font: 700 14px var(--body); cursor: pointer; box-shadow: 0 6px 20px rgba(0,0,0,0.18);
         display: inline-flex; align-items: center; gap: 8px; }
       .jump:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 2px; }
@@ -412,7 +413,7 @@ export class IncConvThread extends LitElement {
     try {
       attachments = await Promise.all(d.files.map(attachmentOf));
     } catch {
-      return "Couldn't read one of the images.";
+      return "Couldn't read one of the files.";
     }
     const running = !!ahp().chat(conv.ahpChat)?.activeTurn;
     const action =
@@ -627,20 +628,20 @@ export class IncConvThread extends LitElement {
                   empty
                     ? html`<div class="empty"><h2>Start a conversation with ${name}</h2>
                         <p>${conv.project ? `Ask ${name} about ${conv.project}, or tell them what to change.` : `Ask ${name} anything, or tell them what to do.`} They work on their own copy${conv.branch ? ` (${conv.branch})` : ""}, so nothing changes in your project until you say so.</p>
-                        <p>Type <b>/</b> for ${name}'s commands. Attach a screenshot by pasting or dropping it.</p></div>`
+                        <p>Type <b>/</b> for ${name}'s commands. Attach a screenshot or a text file by pasting or dropping it.</p></div>`
                     : nothing
                 }`
           }
         </div>
       </div>
-      ${
-        !this.stick && chat
-          ? html`<button class="jump" type="button" @click=${this.jump}>Jump to latest
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12l7 7 7-7"/></svg></button>`
-          : nothing
-      }
       </div>
       <div class="dock" @conv-stop=${this.onStop} @conv-config=${this.onConfig} @conv-unqueue=${this.onUnqueue}>
+        ${
+          !this.stick && chat
+            ? html`<div class="jump-row"><button class="jump" type="button" @click=${this.jump}>Jump to latest
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12l7 7 7-7"/></svg></button></div>`
+            : nothing
+        }
         ${pending ? html`<div class="needs-bar"><span>${name} is waiting for you</span><button class="cbtn" type="button" @click=${() => this.focusPending()}>Review</button></div>` : nothing}
         ${
           this.notice

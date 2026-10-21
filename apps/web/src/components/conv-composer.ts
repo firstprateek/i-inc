@@ -4,7 +4,7 @@
 // (runs next, ahead of the queue) or Queue; the queued messages are listed and removable.
 import type { ChatState, SessionState } from "@microsoft/agent-host-protocol";
 import { css, html, LitElement, nothing } from "lit";
-import { checkOutgoing } from "../conversations/actions.ts";
+import { checkOutgoing, judgeTextFile, textMimeOf } from "../conversations/actions.ts";
 import {
   type Command,
   commandsOf,
@@ -53,6 +53,8 @@ export class IncConvComposer extends LitElement {
     slash: { state: true },
     slashIndex: { state: true },
     dragging: { state: true },
+    attached: { state: true },
+    fileProblem: { state: true },
   };
   declare session: SessionState | undefined;
   declare chat: ChatState | undefined;
@@ -67,10 +69,13 @@ export class IncConvComposer extends LitElement {
   declare slash: Command[];
   declare slashIndex: number;
   declare dragging: boolean;
+  /** Text files added to the message (images are in the picker). */
+  declare attached: File[];
+  declare fileProblem: string | null;
 
   private readonly picker = new ImagePicker(this, {
     id: "conv-images",
-    room: () => 6,
+    room: () => 6 - this.attached.length,
     full: () => "A message takes at most 6 images.",
   });
   private composing = false;
@@ -88,6 +93,8 @@ export class IncConvComposer extends LitElement {
     this.slash = [];
     this.slashIndex = 0;
     this.dragging = false;
+    this.attached = [];
+    this.fileProblem = null;
   }
 
   static override styles = [
@@ -118,6 +125,10 @@ export class IncConvComposer extends LitElement {
       .send svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
       .stop { background: var(--alarm); color: #fff; }
       .stop svg { fill: currentColor; stroke: none; width: 16px; height: 16px; }
+      .chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+      .chips li { display: inline-flex; align-items: center; gap: 6px; padding: 0 2px 0 10px; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--sunken); font-size: 13px; }
+      .chips .fname { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+      .chips .fsize { color: var(--ink-2); }
       .hint { margin: 0; font-size: 12.5px; color: var(--ink-2); padding: 0 6px; }
       .problem { margin: 0; font-size: 13.5px; color: var(--alarm-fg); font-weight: 600; padding: 0 6px; }
       .queue { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
@@ -130,9 +141,12 @@ export class IncConvComposer extends LitElement {
       .pop [role="option"][aria-selected="true"], .pop [role="option"]:hover { background: var(--sunken); }
       .pop b { font: 700 14px var(--mono); }
       .pop small { color: var(--ink-2); font-size: 13px; }
+      /* The mode picker sizes to its words ("Bypass permissions" must not be cut), on a line of its own if need be. */
+      .pickers select { field-sizing: content; }
       @media (max-width: 767px) {
         .hint.kbd { display: none; }
-        .pickers select { max-width: 140px; }
+        .pickers { order: -1; flex: 1 1 100%; }
+        .pickers select { max-width: 100%; }
       }
     `,
   ];
@@ -153,12 +167,55 @@ export class IncConvComposer extends LitElement {
 
   /** Puts text back in the box (a message the host refused), unless something new has been typed. */
   restore(text: string, files: File[] = []): void {
-    if (files.length) this.picker.add(files);
+    if (files.length) void this.addFiles(files);
     if (this.text.trim()) return;
     this.text = text;
     draftMemo.set(`conv:${this.conversationId}`, text);
     this.focusInput();
   }
+
+  /** Everything that can go to the agent: the images and the text files. */
+  private allFiles(): File[] {
+    return [...this.picker.files, ...this.attached];
+  }
+
+  /** Takes pasted, dropped or picked files: images to the picker, text files here, anything else refused with a reason. */
+  async addFiles(files: File[]): Promise<void> {
+    const images = files.filter((f) => f.type.startsWith("image/"));
+    const rest = files.filter((f) => !f.type.startsWith("image/"));
+    const problems: string[] = [];
+    if (images.length) this.picker.add(images);
+    const next = [...this.attached];
+    for (const f of rest) {
+      if (this.picker.images.length + next.length >= 6) {
+        problems.push("A message takes at most 6 attachments.");
+        break;
+      }
+      const v = await judgeTextFile(f);
+      if (!v.ok) problems.push(v.why);
+      else next.push(f);
+    }
+    this.attached = next;
+    this.fileProblem = problems.length ? [...new Set(problems)].join(" ") : null;
+  }
+
+  private onPaste = (e: ClipboardEvent) => {
+    const files = [...(e.clipboardData?.files ?? [])];
+    if (!files.length) return; // text pastes as usual
+    e.preventDefault();
+    // A pasted screenshot is often called image.png: number them so each has its own name.
+    void this.addFiles(
+      files.map((f, i) =>
+        f.type.startsWith("image/") && (!f.name || f.name === "image.png")
+          ? new File(
+              [f],
+              `screenshot-${this.picker.images.length + i + 1}.${f.type.split("/")[1] ?? "png"}`,
+              { type: f.type },
+            )
+          : f,
+      ),
+    );
+  };
 
   focusInput(): void {
     this.renderRoot.querySelector<HTMLTextAreaElement>("textarea")?.focus();
@@ -240,7 +297,7 @@ export class IncConvComposer extends LitElement {
 
   async submit(intent: Intent): Promise<void> {
     const text = this.text.trim();
-    const files = this.picker.files;
+    const files = this.allFiles();
     if ((!text && !files.length) || this.sending || this.blocked || !this.onSend) return;
     if (checkOutgoing(text, files)) return; // the box already says why
     this.sending = true;
@@ -255,7 +312,19 @@ export class IncConvComposer extends LitElement {
     this.slash = [];
     draftMemo.set(`conv:${this.conversationId}`, "");
     this.picker.clear();
+    this.attached = [];
+    this.fileProblem = null;
     this.focusInput();
+  }
+
+  /** Tells the shell the composer has focus (a phone's keyboard is up), unless focus only moved within it. */
+  private focusChanged(focused: boolean) {
+    if (focused) return this.emit("conv-focus", { focused: true });
+    // Moving to the Send or Attach button is still "in the composer"; wait for where focus landed.
+    setTimeout(() => {
+      const inside = !!this.renderRoot.querySelector(":focus");
+      this.emit("conv-focus", { focused: inside });
+    }, 0);
   }
 
   private emit<T>(name: string, detail: T) {
@@ -287,10 +356,10 @@ export class IncConvComposer extends LitElement {
 
   override render() {
     const running = this.running;
-    const hasInput = !!this.text.trim() || this.picker.files.length > 0;
+    const hasInput = !!this.text.trim() || this.allFiles().length > 0;
     const mode = modePicker(this.session);
     const others = otherPickers(this.session);
-    const tooBig = checkOutgoing(this.text, this.picker.files);
+    const tooBig = checkOutgoing(this.text, this.allFiles());
     const dis = !!this.blocked || !!tooBig;
     return html`<form class="composer" @submit=${(e: Event) => e.preventDefault()}
       @dragover=${(e: DragEvent) => {
@@ -305,7 +374,7 @@ export class IncConvComposer extends LitElement {
       @drop=${(e: DragEvent) => {
         e.preventDefault();
         this.dragging = false;
-        this.picker.add([...(e.dataTransfer?.files ?? [])]);
+        void this.addFiles([...(e.dataTransfer?.files ?? [])]);
       }}>
       ${this.queue()}
       ${
@@ -323,18 +392,33 @@ export class IncConvComposer extends LitElement {
           : nothing
       }
       ${this.picker.problem ? html`<p class="problem" role="alert">${this.picker.problem}</p>` : nothing}
+      ${this.fileProblem ? html`<p class="problem" role="alert">${this.fileProblem}</p>` : nothing}
       ${this.error ? html`<p class="problem" role="alert">${this.error}</p>` : nothing}
       ${tooBig ? html`<p class="problem" role="alert">${tooBig}</p>` : nothing}
       ${this.blocked ? html`<p class="hint" role="status">${this.blocked}</p>` : nothing}
       <div class="box ${this.dragging ? "drag" : ""}">
         ${this.picker.thumbs({ compact: true })}
+        ${
+          this.attached.length
+            ? html`<ul class="chips" aria-label="Attached files">${this.attached.map(
+                (
+                  f,
+                ) => html`<li><span class="fname" title=${f.name}>${f.name}</span><span class="fsize">${(f.size / 1024).toFixed(f.size < 10240 ? 1 : 0)} KB</span>
+                  <button class="icon" type="button" aria-label="Remove ${f.name}" @click=${() => {
+                    this.attached = this.attached.filter((x) => x !== f);
+                  }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg></button></li>`,
+              )}</ul>`
+            : nothing
+        }
         <textarea rows="1" .value=${this.text} placeholder=${running ? "Type to steer or queue…" : `Message ${this.name || "the agent"}…`}
           aria-label="Message" role="combobox" aria-autocomplete="list" aria-expanded=${this.slash.length ? "true" : "false"}
           aria-controls=${this.slash.length ? "slash-list" : nothing} aria-activedescendant=${this.slash.length ? `slash-${this.slashIndex}` : nothing}
           enterkeyhint="send" autocomplete="off" autocapitalize="sentences"
           @input=${this.onInput} @keydown=${this.onKeydown}
           @click=${(e: Event) => this.updateSlash(e.target as HTMLTextAreaElement)}
-          @paste=${this.picker.paste}
+          @focus=${() => this.focusChanged(true)}
+          @blur=${() => this.focusChanged(false)}
+          @paste=${this.onPaste}
           @compositionstart=${() => {
             this.composing = true;
           }}
@@ -343,8 +427,14 @@ export class IncConvComposer extends LitElement {
             this.composedAt = Date.now();
           }}></textarea>
         <div class="row">
-          ${this.picker.input()}
-          <button class="icon" type="button" aria-label="Attach images" title="Attach images (or paste or drop them)" @click=${() => this.picker.open()}>
+          <input id="conv-files-input" type="file" multiple hidden accept="image/png,image/jpeg,image/webp,image/gif,text/*,.md,.json,.yaml,.yml,.toml,.ts,.tsx,.js,.jsx,.py,.go,.rs,.java,.sh,.sql,.css,.html,.xml,.csv,.log,.diff,.patch"
+            @change=${(e: Event) => {
+              const input = e.target as HTMLInputElement;
+              void this.addFiles([...(input.files ?? [])]);
+              input.value = "";
+            }} />
+          <button class="icon" type="button" aria-label="Attach images or text files" title="Attach images or text files (or paste or drop them)"
+            @click=${() => this.renderRoot.querySelector<HTMLInputElement>("#conv-files-input")?.click()}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l9-9a3.7 3.7 0 0 1 5.2 5.2l-9 9a1.8 1.8 0 0 1-2.6-2.6l8.3-8.3"/></svg>
           </button>
           <div class="pickers">${mode ? this.picked(mode) : nothing}${others.map((p) => this.picked(p))}</div>

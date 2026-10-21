@@ -4,8 +4,10 @@ import {
   cancelTurn,
   checkOutgoing,
   confirmTool,
+  judgeTextFile,
   LIMITS,
   pendingMessage,
+  textMimeOf,
   turnStarted,
 } from "../../src/conversations/actions.ts";
 import {
@@ -411,5 +413,55 @@ describe("what the host would refuse is refused here, with a reason", () => {
   });
   it("catches text that is small in characters but big once escaped", () => {
     expect(checkOutgoing("\u0001".repeat(200_000), [])).toMatch(/too large/);
+  });
+});
+
+describe("text files in a message", () => {
+  const file = (name: string, type: string, bytes: number[] | string) =>
+    new File([typeof bytes === "string" ? bytes : new Uint8Array(bytes)], name, { type });
+  it("takes text, code and config files, however the browser typed them", () => {
+    expect(textMimeOf("notes.md", "text/markdown")).toBe("text/markdown");
+    expect(textMimeOf("app.ts", "")).toBe("text/plain");
+    expect(textMimeOf("app.tsx", "video/mp2t")).toBe("text/plain"); // the browser guesses .ts is a video
+    expect(textMimeOf("data.json", "application/json")).toBe("application/json");
+    expect(textMimeOf("Dockerfile", "")).toBe("text/plain");
+    expect(textMimeOf("photo.png", "image/png")).toBeNull();
+    expect(textMimeOf("report.pdf", "application/pdf")).toBeNull();
+    expect(textMimeOf("archive.zip", "application/zip")).toBeNull();
+  });
+  it("accepts a small text file and refuses a binary, a big one and a PDF, each with its reason", async () => {
+    expect(await judgeTextFile(file("a.ts", "", "export const a = 1;\n"))).toEqual({
+      ok: true,
+      mime: "text/plain",
+    });
+    const bin = await judgeTextFile(file("fake.txt", "text/plain", [104, 105, 0, 1, 2]));
+    expect(bin).toMatchObject({
+      ok: false,
+      why: expect.stringMatching(/fake\.txt looks like a binary file/),
+    });
+    const big = await judgeTextFile(file("big.log", "text/plain", "x".repeat(LIMITS.textFileBytes + 1)));
+    expect(big).toMatchObject({
+      ok: false,
+      why: expect.stringMatching(/big\.log is 256 KB.*at most 256 KB/),
+    });
+    const pdf = await judgeTextFile(file("x.pdf", "application/pdf", "%PDF-1.4"));
+    expect(pdf).toMatchObject({
+      ok: false,
+      why: expect.stringMatching(/x\.pdf can't be attached: only images and text files/),
+    });
+  });
+  it("sends a text file as an embedded resource with a text type", async () => {
+    const a = (await attachmentOf(file("run.ts", "", "let x = 1;"))) as Any;
+    expect(a).toEqual({
+      type: "embeddedResource",
+      label: "run.ts",
+      contentType: "text/plain",
+      data: btoa("let x = 1;"),
+    });
+  });
+  it("counts a too-big text file in the check", () => {
+    expect(
+      checkOutgoing("", [{ size: LIMITS.textFileBytes + 1, type: "text/plain", name: "a.txt" }]),
+    ).toMatch(/a\.txt is over 256 KB/);
   });
 });

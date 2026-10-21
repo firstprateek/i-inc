@@ -202,3 +202,41 @@ describe("slash commands", () => {
     expect(options()).toEqual([]);
   });
 });
+
+describe("files", () => {
+  const drop = async (el: IncConvComposer, files: File[]) => {
+    const form = el.shadowRoot?.querySelector("form") as HTMLFormElement;
+    const dt = { files, types: ["Files"] };
+    const e = new Event("drop", { bubbles: true, cancelable: true }) as Event & { dataTransfer?: unknown };
+    e.dataTransfer = dt;
+    form.dispatchEvent(e);
+    await vi.waitFor(() => expect(el.shadowRoot?.querySelector(".chips, .problem")).not.toBeNull());
+  };
+  it("takes a dropped text file, shows it, and sends it with the message", async () => {
+    const { el, send, type } = await mount();
+    await drop(el, [new File(["const a = 1;\n"], "a.ts", { type: "" })]);
+    expect(
+      [...(el.shadowRoot?.querySelectorAll(".chips li .fname") ?? [])].map((n) => n.textContent),
+    ).toEqual(["a.ts"]);
+    await type("look");
+    await el.submit("turn");
+    expect(send).toHaveBeenCalledTimes(1);
+    const sent = (send.mock.calls[0] as unknown as [{ files: File[] }])[0];
+    expect(sent.files.map((f) => f.name)).toEqual(["a.ts"]);
+    expect(el.shadowRoot?.querySelector(".chips")).toBeNull();
+  });
+  it("refuses a binary or a PDF with a clear message and keeps the rest", async () => {
+    const { el } = await mount();
+    await drop(el, [
+      new File([new Uint8Array([1, 0, 2])], "blob.txt", { type: "text/plain" }),
+      new File(["%PDF"], "doc.pdf", { type: "application/pdf" }),
+      new File(["ok"], "ok.md", { type: "text/markdown" }),
+    ]);
+    const problem = el.shadowRoot?.querySelector(".problem")?.textContent ?? "";
+    expect(problem).toMatch(/blob\.txt looks like a binary file/);
+    expect(problem).toMatch(/doc\.pdf can't be attached: only images and text files/);
+    expect(
+      [...(el.shadowRoot?.querySelectorAll(".chips li .fname") ?? [])].map((n) => n.textContent),
+    ).toEqual(["ok.md"]);
+  });
+});

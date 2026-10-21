@@ -590,6 +590,8 @@ export class IncApp extends LitElement {
         }
       }
       @media (min-width: 901px) { .tabs { display: none; } }
+      /* The keyboard is up over the conversation composer: no tab bar, so no gap above the keyboard. */
+      :host([composing]) .tabs { display: none; }
 
       /* A route that owns its scrolling (the conversations) turns <main> into a plain flex box that clips: the
          route lays its panes out inside it and scrolls them itself. */
@@ -652,6 +654,8 @@ export class IncApp extends LitElement {
     if (r.view === "ticket") {
       return html`<a slot="subtitle" class="back" href="#/work/board">← Back to Work</a>`;
     }
+    // Conversations needs the height: its heading is one short line, with no subtitle.
+    if (r.view === "conversations") return "";
     return html`<p slot="subtitle">${AREA_SUBTITLES[area]}</p>
       ${
         r.view === "team"
@@ -665,6 +669,18 @@ export class IncApp extends LitElement {
                 : ""
       }`;
   }
+
+  /** On a phone, a conversation's thread has its own back button and title, so the page heading steps aside. */
+  private threadOnPhone(): boolean {
+    const r = this.route;
+    return r.view === "conversations" && !r.old && !!(r.id || r.draft) && !!this.phoneQuery?.matches;
+  }
+
+  /** The thread's composer has focus on a phone: the keyboard is up, so the tab bar gives its row back. */
+  private onComposerFocus = (e: Event) => {
+    const open = (e as CustomEvent<{ focused: boolean }>).detail.focused;
+    this.toggleAttribute("composing", open && !!this.phoneQuery?.matches);
+  };
 
   override render() {
     const tabRoute = phoneTabOf(this.route);
@@ -716,8 +732,8 @@ export class IncApp extends LitElement {
           }
         </div>
       </header>
-      <main tabindex="-1">
-        <inc-layout .kind=${layoutForRoute(this.route)}>
+      <main tabindex="-1" @conv-focus=${this.onComposerFocus}>
+        <inc-layout .kind=${layoutForRoute(this.route)} ?dense=${this.route.view === "conversations"} ?hide-heading=${this.threadOnPhone()}>
           <h1 id="view-heading" tabindex="-1" slot="heading">${routeName(this.route).long}</h1>
           ${this.renderHeadExtras()}
           ${this.renderTabs()}
