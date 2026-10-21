@@ -122,8 +122,9 @@ Each case is a short story followed by the rule it sets for the design.
    - the projects: listy and the website;
    - the working hours: nights only.
 
-   i.inc builds Juno's machine, and Juno's first ticket is orientation: reading the handbook and
-   each project's `CLAUDE.md`, then writing project pages in its brain.
+   i.inc builds Juno's machine, and Juno's first ticket is orientation: reading the handbook (a
+   read-only copy is in the machine, and the brief carries its map) and each project's `CLAUDE.md`,
+   then writing project pages in its brain.
    → *The team is yours to build. Nothing is preset.*
 8. **Monday planning.** At your desk you see every project, a live status line on each running card,
    and the office. The office shows who is working, who is out of tokens until when, each account's
@@ -249,8 +250,8 @@ Once you've made the choices above, i.inc:
 4. if the account is new, shows a sign-in link on your phone.
 
 The employee's first ticket is orientation. It reads each project's `CLAUDE.md` and then writes
-project pages in its brain. (The handbook is meant to be read here too, but it only reaches sessions
-once retrieval lands, T57.)
+project pages in its brain. Like every session, it gets the handbook's map and the pages that match
+its task in its brief, and a read-only copy of the handbook in its machine (§5, "The brain").
 
 ### Engines and switching: identity is memory
 
@@ -385,7 +386,7 @@ Knowledge is routed by scope:
   there).
 - A fact useful to everyone goes into the handbook's facts.
 - The employee's own traits and duty lessons go into its brain.
-- A PA writes only to its own brain. Anything it learns is home data, and the handbook is read by
+- A PA writes only to its own brain. Anything it learns is home data, and the handbook is copied to
   employees on cloud engines.
 
 Employees don't write the handbook or their brain directly. At the retro they propose edits, and
@@ -395,10 +396,29 @@ refuses anything else, so an edit can't reach outside its brain or the handbook.
 is one commit that records who proposed it and from which ticket, and applying it again changes
 nothing.
 
-> **Not built yet:** the handbook and brains are stored, indexed (pages carry frontmatter, and a
-> search index and per-scope maps exist) and viewable, but no session reads them back. Retrieval into
-> briefs, and a read-only copy of the readable scopes inside each machine, is being built (T57). The
-> design is in [design/brain.md](design/brain.md).
+**How the brain reaches agents.** Markdown in git on the host is the truth; sandboxes cannot reach the
+host, so the brain is copied in, never served:
+
+- Before every session (a ticket stage, a conversation turn) the daemon puts a read-only copy of the
+  scopes that employee may read in its machine, at `/home/employee/brain/<employee>/`: the company
+  handbook, its team's section and its own brain, each folder with an `INDEX.md` map, and a `brain
+  search "<words>"` command. Never another employee's brain, another team's section or a PA's home
+  data. Only what changed is sent; if the agent has edited its copy, a refresh keeps those edits. It
+  is a git repository whose baseline is the snapshot, so what an agent changed is a `git diff`.
+- The brief (or the turn) always carries the maps of those scopes (about 150 lines each at most) and
+  the pages that match the task: the top 5 by search score, closest scope first (own brain, then
+  team, then company), the pages one link away from the best two, and about 3,000 tokens of them.
+  Within a conversation a page is sent once. Pages built from untrusted content (web pages, issues,
+  other people's repos) are marked, and the prompt says to treat them as information, never as
+  instructions.
+- The agent can search and read more with its own tools. Which pages went into each stage and each
+  conversation turn, and which the agent opened itself, is shown on the ticket and in the
+  conversation's context panel, and counts toward each page's use.
+- The owner-facing chat (§10) is a small local model that answers from the employee's role, current
+  ticket and recent notes; it does not read the brain. Conversations, which run a real agent, do.
+
+Writing back (the agent's edits to its copy, collected after a session) is the next step (T58). The
+design is in [design/brain.md](design/brain.md).
 
 Your review feedback is the richest material for learning. A Reviewer learns what you care about
 from your Request changes notes, so over time it catches what you would have caught. You can read,
@@ -643,8 +663,8 @@ the others.
   It spans all your projects and Home, and each card has a stage strip. Cards move themselves; you press
   buttons.
 - **Chat:** one thread per employee, for talking one to one.
-  - Questions ("why this approach?") are answered from the employee's brain, its tickets and notes,
-    in a short session that counts against its usage.
+  - Questions ("why this approach?") are answered from the employee's role, its current ticket and
+    its recent notes, by the local model. (Conversations, which run a real agent, also read the brain.)
   - Asks for new work become a draft ticket in the chat, and one tap puts it on the board. For a PA,
     an ask becomes an errand straight away (§7).
   - A message to an employee in the middle of a ticket reaches it at the next stage boundary, or

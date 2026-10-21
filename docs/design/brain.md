@@ -1,6 +1,6 @@
 # Brain (V1 design): an indexed LLM wiki
 
-Status: proposal for the owner's review, 2026-10-20. Nothing here is built yet.
+Status: approved 2026-10-20. Built: the page format, index and maps (T56, #78); the snapshot into sandboxes, automatic retrieval into briefs and turns, and pages-used visibility (T57). Not yet: writing by diff harvest, the Brain changes feed and the tidy-up (T58, T58+).
 
 ## Goal
 
@@ -75,9 +75,14 @@ added later for fuzzy matches, combined with BM25.
 The sandboxes cannot reach the mini (the walls), so the brain is **copied in**, never served:
 
 1. **Snapshot.** Before a session starts, the daemon copies the employee's readable scopes into
-   the sandbox as read-only files (`~/brain/<scope>/…` with an `INDEX.md` map per scope) plus a
-   filtered copy of the index and a tiny `brain search "<query>"` command. Long-lived
-   conversations refresh the snapshot when the brain changes.
+   the sandbox as files (`~/brain/<employee>/<folder>/…`, folders `company`, `team-<id>`,
+   `personal`, with an `INDEX.md` map each) plus a tiny `brain search "<query>"` command. *As
+   built:* a team shares one sandbox, so the copy is per employee (`~/brain/<employee>/`), a git
+   repository whose baseline (`refs/inc/baseline`) is the snapshot; the command builds its in-memory
+   index from the files as they are, instead of shipping a filtered copy of the index, so an agent's
+   own edits are searchable and nothing binary travels; the copy is sent as a tar stream, only what
+   changed, and a refresh keeps the agent's local edits. Long-lived conversations refresh the
+   snapshot at each turn boundary.
 2. **Always in the prompt:** the maps of the employee's scopes, about 150 lines each at most
    (beyond that a map splits into sections).
 3. **Retrieved automatically:** the daemon builds a query from the task (the ticket's title and
