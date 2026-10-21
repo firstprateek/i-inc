@@ -579,8 +579,56 @@ describe("rolling back by hand", () => {
     expect(w.serving).toBe(A);
     expect(w.store.s.bad).toEqual({});
     expect(w.store.s.paused).toMatchObject({ sha: B, to: A });
-    expect(w.store.records.at(-1)).toMatchObject({ sha: B, from: B, outcome: "rolled-back" });
     expect(w.store.records.at(-1)?.reason).toBe("rolled back by hand to 0000001");
+  });
+
+  it("records the rollback with the release left in `from` and the release now running in `sha`", async () => {
+    const w = new World();
+    const d = await deployed(w, 2);
+    await d.rollbackByHand();
+    const r = w.store.records.at(-1);
+    expect(r).toMatchObject({ sha: A, from: B, outcome: "rolled-back" });
+    expect(r?.from).not.toBe(r?.sha);
+  });
+
+  it("keeps the pause at the last tip it saw when ls-remote fails during the rollback", async () => {
+    const w = new World();
+    const d = await deployed(w, 2); // the cycle read main's tip: B
+    w.headFails = true;
+    await d.rollbackByHand();
+    expect(w.store.s.paused).toMatchObject({ sha: B, to: A });
+    // Back online, main's tip is still B: it must not come straight back.
+    w.headFails = false;
+    expect((await d.cycle()).action).toBe("paused");
+    expect(w.cur).toBe(A);
+    w.head = C;
+    w.ci[C] = { state: "success" };
+    expect((await d.cycle()).action).toBe("deployed");
+  });
+
+  it("with no tip ever read and ls-remote down, pauses until --resume rather than at a sha that lifts at once", async () => {
+    const w = new World();
+    w.store.s.history = [A, B];
+    w.built.set(B, 5);
+    w.cur = B;
+    w.serving = B;
+    w.headFails = true;
+    const d = w.deployer();
+    expect(w.store.s.lastTip).toBeNull();
+    await d.rollbackByHand();
+    expect(w.cur).toBe(A);
+    expect(w.store.s.paused).toMatchObject({ sha: null, to: A });
+    expect(d.pauseStatus()).toContain("resumes only on --resume");
+    w.headFails = false;
+    w.head = B;
+    expect((await d.cycle()).action).toBe("paused");
+    w.head = C; // even a newer commit does not lift a pause with no known tip
+    w.ci[C] = { state: "success" };
+    expect((await d.cycle()).action).toBe("paused");
+    expect(w.cur).toBe(A);
+    d.resume();
+    expect((await d.cycle()).action).toBe("deployed");
+    expect(w.cur).toBe(C);
   });
 
   it("does not redeploy the tip it just rolled back from, even seconds later and cycle after cycle", async () => {

@@ -57,6 +57,52 @@ describe("<inc-deploys>", () => {
     expect(rows[1]?.classList.contains("bad")).toBe(true);
   });
 
+  it("words the three kinds of rollback so each sha is unambiguous", async () => {
+    const A = "a".repeat(40);
+    const B = "b".repeat(40);
+    const C = "c".repeat(40);
+    const root = await mount(200, {
+      deploys: [
+        // By hand, written by this version: sha = now running, from = the one left.
+        {
+          at: 3,
+          sha: A,
+          from: B,
+          outcome: "rolled-back",
+          reason: "rolled back by hand to aaaaaaa",
+          durationMs: 5000,
+        },
+        // Automatic: sha = the rejected commit, from = the release kept.
+        {
+          at: 2,
+          sha: C,
+          from: A,
+          outcome: "rolled-back",
+          reason: "the new daemon did not report version ccccccc",
+          durationMs: 90_000,
+        },
+        // Written before the change: from = sha.
+        {
+          at: 1,
+          sha: B,
+          from: B,
+          outcome: "rolled-back",
+          reason: "rolled back by hand to aaaaaaa",
+          durationMs: 5000,
+        },
+      ],
+    });
+    const rows = [...root.querySelectorAll(".deploy")];
+    const text = (i: number) => (rows[i]?.textContent ?? "").replace(/\s+/g, " ").trim();
+    expect(text(0)).toContain("Rolled back by hand bbbbbbb → aaaaaaa");
+    expect(text(0)).not.toContain("rolled back by hand to");
+    expect(text(1)).toContain("Rolled back ccccccc → kept aaaaaaa");
+    expect(text(1)).toContain("did not report version");
+    expect(text(2)).toContain("Rolled back bbbbbbb");
+    expect(text(2)).not.toContain("→");
+    expect(text(2)).toContain("rolled back by hand to aaaaaaa");
+  });
+
   it("shows an empty note, not an error, when the daemon is older", async () => {
     const root = await mount(404, { error: "not found" });
     expect(root.querySelectorAll(".deploy").length).toBe(0);

@@ -69,7 +69,7 @@ and never the running one or the one before it. Nothing needs root.
   it, and pauses auto-deploy at main's tip at that moment (nothing is marked bad), so the commit you
   rolled back from is not redeployed. `bun apps/deployer/src/main.ts --status` shows "paused after hand
   rollback at <sha7> — resumes on the next commit"; the next commit on main lifts the pause by itself,
-  or `--resume` does. It refuses while the daemon is busy or not answering unless you add `--force`.
+  or `--resume` does. (If GitHub cannot be reached during the rollback, it pauses at the last tip the deployer saw; if it never saw one, the pause lasts until `--resume`.) The `deploys.jsonl` line has `sha` = the release now running and `from` = the one you left. It refuses while the daemon is busy or not answering unless you add `--force`.
   Then resume the deployer service.
 - **A commit you want retried** after it was marked bad: delete its key from `bad` in
   `~/i-inc-releases/state.json` (with the deployer paused). `bun apps/deployer/src/main.ts --status`

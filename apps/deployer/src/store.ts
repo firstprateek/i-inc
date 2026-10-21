@@ -15,6 +15,7 @@ export const emptyState = (): State => ({
   allowRewrite: [],
   recorded: [],
   paused: null,
+  lastTip: null,
   history: [],
   inFlight: null,
 });

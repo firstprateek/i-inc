@@ -70,6 +70,8 @@ export class World {
 
   /** origin/main */
   head = sha(1);
+  /** ls-remote fails (no network). */
+  headFails = false;
   ci: Record<string, CiResult> = {};
   ciCalls = 0;
   buildFails: Record<string, string> = {};
@@ -95,7 +97,10 @@ export class World {
   /** descends(current, head): true unless a test says the history was rewritten (false) or unknown (null). */
   descendsAnswer: Record<string, boolean | null> = {};
   remote: Remote = {
-    head: async () => this.head,
+    head: async () => {
+      if (this.headFails) throw new Error("git ls-remote failed: Could not resolve host");
+      return this.head;
+    },
     descends: async (_ancestor, descendant) =>
       descendant in this.descendsAnswer ? (this.descendsAnswer[descendant] ?? null) : true,
   };
