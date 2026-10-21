@@ -24,8 +24,12 @@
   </dict>
   <key>RunAtLoad</key>
   <true/>
+  <!-- Restart after a crash, but not after a clean exit (another deployer holds the lock). -->
   <key>KeepAlive</key>
-  <true/>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
   <key>ThrottleInterval</key>
   <integer>30</integer>
   <key>StandardOutPath</key>

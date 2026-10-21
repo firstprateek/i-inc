@@ -31,23 +31,54 @@ All tests pass (`pnpm check && pnpm typecheck && pnpm test` — 408 tests passin
 [docs/coord.md](coord.md) is the single source of truth for who does what between agents (Claude, Antigravity and Codex). All task claiming, PR reviews, deploy locks, and heartbeats are recorded there. Edits to `coord.md` go straight to `main`; all other code changes go through a feature branch and PR.
 
 ### Deploying to the mini
-To deploy updates to the mini:
-1. Pull latest `main`:
-   ```sh
-   cd ~/i-inc && git pull
-   ```
-2. Build web assets:
-   ```sh
-   pnpm --filter @i-inc/web build
-   ```
-3. Restart the daemon:
-   ```sh
-   launchctl kickstart -k gui/$(id -u)/inc.i.daemon
-   ```
-4. Verify auth:
-   ```sh
-   curl -sf https://iinc.<tailnet>.ts.net/api/auth
-   ```
+
+**Once the deployer is installed, deploys are automatic** (T54, [v1-plan §5](design/v1-plan.md)): you do
+nothing. Every 2 minutes the LaunchAgent `inc.i.deployer` looks at `origin/main`. A new commit whose
+CI check (`check`, read from the public GitHub API) concluded `success` is built in
+`~/i-inc-releases/<sha>`, smoke-tested on a spare port in demo mode, held until the running daemon is
+idle (no ticket stage or chat turn; at most 30 minutes, then it retries next cycle), switched in
+(`~/i-inc-releases/current` is repointed and `inc.i.daemon` is kickstarted) and health-checked
+(`GET /api/health` must report the new sha within 90 s). Any failure puts the previous release back,
+records it, sends a push ("Deploy of abc1234 failed: … — rolled back") and never retries that commit;
+newer commits are tried. The last 5 releases are kept. Nothing needs root.
+
+- **See deploys:** My desk → Releases → Deploys (the last 8), `GET /api/deploys` (the last 20),
+  `tail -n 5 ~/.i-inc/deploys.jsonl` (`{at, sha, from, outcome, reason, durationMs}`, outcome is one of
+  `deployed`, `rolled-back`, `failed-build`, `failed-smoke`, `skipped-ci`), and one line per state change
+  in `~/Library/Logs/i-inc-deployer.log`. `curl -s http://127.0.0.1:7420/api/health` says which sha is
+  running and whether it is busy.
+- **Pause:** `launchctl bootout gui/$(id -u)/inc.i.deployer`. Resume:
+  `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/inc.i.deployer.plist`.
+- **Deploy now (force):** the loop already deploys within 2 minutes of green CI. To skip waiting for
+  the daemon to go idle, pause the deployer, then
+  `cd ~/i-inc && bun apps/deployer/src/main.ts --once --force-after 0`
+  (`--force-after <minutes>` switches anyway once the daemon has stayed busy that long; a ticket cut
+  short resumes by itself after the restart).
+- **Roll back by hand:** pause the deployer, then
+  `cd ~/i-inc && bun apps/deployer/src/main.ts --rollback [sha]`. It points `current` at the previous
+  release (or `sha`, which must still be in `~/i-inc-releases`), kickstarts the daemon, records it, and
+  marks the release you left as bad so it is not deployed again. Then resume the deployer. Without the
+  marking, the deployer would redeploy main's tip on its next cycle.
+- **A commit you want retried** after it was marked bad: delete its key from `bad` in
+  `~/i-inc-releases/state.json` (with the deployer paused). `bun apps/deployer/src/main.ts --status`
+  prints that state.
+- **The deployer's own code** runs from `~/i-inc`, not from a release, so a broken release can never
+  stop its own repair. It does not update itself: after changes under `apps/deployer`, run
+  `cd ~/i-inc && git pull && launchctl kickstart -k gui/$(id -u)/inc.i.deployer`. Keep
+  `apps/deployer`, `tools/host` and the login code in the protected paths so a self-change there waits
+  for you.
+- **Install (once, on the mini, as the owner):** `cd ~/i-inc && git pull && sh tools/host/install-deployer.sh`
+  prints the plan and changes nothing; `sh tools/host/install-deployer.sh --apply` does it (seeds
+  `~/i-inc-releases` from `~/i-inc`'s HEAD, points the daemon plist at `~/i-inc-releases/current`
+  keeping its environment, restarts the daemon and checks its health, loads `inc.i.deployer`; the old
+  daemon plist is kept as `inc.i.daemon.plist.pre-deployer`). `sh tools/host/install-deployer.sh --rollback-install`
+  restores it and removes the deployer.
+
+Before the deployer is installed, deploy by hand:
+1. `cd ~/i-inc && git pull`
+2. `pnpm install --frozen-lockfile && pnpm --filter @i-inc/web build`
+3. `launchctl kickstart -k gui/$(id -u)/inc.i.daemon`
+4. `curl -sf https://iinc.<tailnet>.ts.net/api/auth`
 
 ### Sandbox sign-in scripts (`tools/host`)
 Each team's sandbox signs in to harnesses once using host tools:

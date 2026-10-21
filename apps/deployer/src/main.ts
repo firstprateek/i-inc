@@ -72,6 +72,17 @@ const deployer = new Deployer({
   log,
 });
 
+if (flag("--status")) {
+  console.log(
+    JSON.stringify(
+      { current: await releases.current(), releases: await releases.list(), state: store.state() },
+      null,
+      2,
+    ),
+  );
+  process.exit(0);
+}
+
 mkdirSync(root, { recursive: true });
 if (!deployer.acquire()) {
   log(
@@ -84,18 +95,6 @@ for (const sig of ["SIGTERM", "SIGINT"] as const) {
     deployer.release();
     process.exit(0);
   });
-}
-
-if (flag("--status")) {
-  console.log(
-    JSON.stringify(
-      { current: await releases.current(), releases: await releases.list(), state: store.state() },
-      null,
-      2,
-    ),
-  );
-  deployer.release();
-  process.exit(0);
 }
 
 if (flag("--seed")) {
