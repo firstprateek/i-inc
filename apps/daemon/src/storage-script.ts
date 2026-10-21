@@ -4,11 +4,22 @@
 // run` re-splits arguments, so nothing goes on a command line). It is built from fixed text and
 // ticket ids that match [A-Za-z0-9_-], so no outside value is ever run as shell.
 //
+// The whole body is one function, called with its own stdin on /dev/null: bash reads this script
+// from stdin, and a command inside it that read stdin (git, docker, sudo) would eat the script.
+//
 // What it may delete, and nothing else:
 //   - <work>/inc-<id> and <work>/inc-<id>.pre-checkout for the ids it is given: a ticket's worktree,
 //     a reviewer's copy of the branch, and the ticket's images under .inc/attachments (all in that
-//     folder). Never a symlink, never a folder whose real path isn't exactly that path, and a
-//     worktree with unpushed commits or uncommitted changes stays unless the id is on `force`.
+//     folder). Never a symlink, never a folder whose real path isn't exactly that path.
+//   - A checkout stays whenever git can't tell it the copy is safe: any git failure, a missing git,
+//     unpushed commits, or uncommitted changes. Two lists relax that, and only that:
+//       `aged`   the ticket ended past unpushedKeepDays: the owner's policy says it goes (a copy git
+//                can't read still stays);
+//       `merged` the owner approved the ticket: uncommitted noise may go, but only after a fresh
+//                `git fetch` shows HEAD is already in a remote branch. Unpushed commits never go on
+//                this basis, and a failed fetch keeps the copy.
+//     A folder with no .git is the launcher's empty folder with images: it goes only if it holds
+//     nothing but `.inc`.
 //   - rebuildable package caches: whole folders named in a fixed list under ~/.cache (only while
 //     ~/.cache is over the cap), ~/.npm/_cacache (only over the cap), `pnpm store prune`, and, when
 //     asked, Docker's stopped containers, dangling images and week-old build cache.
@@ -26,8 +37,10 @@ export interface CleanupScriptOptions {
   work: string;
   /** Closed tickets whose copies this machine may hold. */
   ids: Id[];
-  /** Of those, the ones that go even with unpushed commits or uncommitted changes. */
-  force?: Id[];
+  /** Of those, the ones past unpushedKeepDays: they go even with unpushed or uncommitted work (git must still work). */
+  aged?: Id[];
+  /** Of those, the ones the owner approved: uncommitted noise may go once a fetch shows HEAD is on a remote. */
+  merged?: Id[];
   dryRun: boolean;
   /** The cap for ~/.cache, ~/.npm's cache and the pnpm store, in KB. */
   cacheCapKb: number;
@@ -41,9 +54,31 @@ export function cleanupScript(o: CleanupScriptOptions): string {
     throw new Error(`not a work folder: ${o.work}`);
   }
   const ids = [...new Set(o.ids)];
-  const force = new Set(o.force ?? []);
-  for (const id of [...ids, ...force]) if (!idPattern.test(id)) throw new Error(`not a ticket id: ${id}`);
+  const aged = new Set(o.aged ?? []);
+  const merged = new Set(o.merged ?? []);
+  for (const id of [...ids, ...aged, ...merged])
+    if (!idPattern.test(id)) throw new Error(`not a ticket id: ${id}`);
   if (!Number.isInteger(o.cacheCapKb) || o.cacheCapKb < 1) throw new Error("the cache cap must be a number");
+  const loop = ids.length
+    ? [
+        `  for id in ${ids.join(" ")}; do`,
+        '    for suffix in "" ".pre-checkout"; do',
+        '      q="$WORK/inc-$id$suffix"',
+        '      if [ -L "$q" ]; then echo "@@refused $id symlink"; continue; fi',
+        '      [ -d "$q" ] || continue',
+        '      if [ "$(cd "$q" 2>/dev/null && pwd -P)" != "$q" ]; then echo "@@refused $id path"; continue; fi',
+        '      if [ -z "$suffix" ]; then',
+        '        reason=""',
+        '        if ! guard "$q" "$id"; then echo "@@kept $id ${reason:-gitfail}"; continue; fi',
+        "      fi",
+        '      size=$(kb "$q")',
+        '      if [ "$DRY" = 0 ]; then chmod -R u+w "$q" 2>/dev/null; rm -rf $RMFLAGS -- "$q"; fi',
+        '      if [ "$DRY" = 0 ] && [ -e "$q" ]; then echo "@@failed $id"; continue; fi',
+        '      echo "@@removed $id ${size:-0}"; removed=1',
+        "    done",
+        "  done",
+      ]
+    : ["  # No closed tickets to clean here."];
   return [
     "set -u",
     `WORK='${o.work}'`,
@@ -51,93 +86,114 @@ export function cleanupScript(o: CleanupScriptOptions): string {
     `CAP=${o.cacheCapKb}`,
     `DOCKER=${o.docker ? 1 : 0}`,
     `TRIM=${o.trim ? 1 : 0}`,
-    `FORCE=' ${[...force].join(" ")} '`,
-    'export PATH="$HOME/.local/bin:$PATH"',
+    `AGED=' ${[...aged].join(" ")} '`,
+    `MERGED=' ${[...merged].join(" ")} '`,
+    "main() {",
+    '  export PATH="$HOME/.local/bin:$PATH"',
     // A work folder that isn't exactly this path (a symlink, or not there) is left alone.
-    'cd "$WORK" 2>/dev/null || { echo @@no-work; echo @@done; exit 0; }',
-    '[ "$(pwd -P)" = "$WORK" ] || { echo @@refused work-folder; echo @@done; exit 0; }',
-    'kb() { du -sk "$1" 2>/dev/null | cut -f1; }',
-    "df_line() { df -Pk \"$WORK\" 2>/dev/null | awk 'NR==2 {print $2, $3}'; }",
-    "df_used() { df_line | cut -d' ' -f2; }",
-    'echo "@@df $(df_line)"',
-    "removed=0",
-    // With no ids the loop names one that can't be a ticket's folder, so the text stays valid.
-    `for id in ${ids.length ? ids.join(" ") : "none"}; do`,
-    '  for suffix in "" ".pre-checkout"; do',
-    '    q="$WORK/inc-$id$suffix"',
-    '    if [ -L "$q" ]; then echo "@@refused $id symlink"; continue; fi',
-    '    [ -d "$q" ] || continue',
-    '    if [ "$(cd "$q" 2>/dev/null && pwd -P)" != "$q" ]; then echo "@@refused $id path"; continue; fi',
-    '    if [ -z "$suffix" ] && git -C "$q" rev-parse --git-dir >/dev/null 2>&1; then',
-    '      case "$FORCE" in *" $id "*) ;; *)',
-    '        if [ "$(git -C "$q" rev-list --count HEAD --not --remotes 2>/dev/null || echo 0)" != 0 ]; then echo "@@kept $id unpushed"; continue; fi',
-    '        if [ -n "$(git -C "$q" status --porcelain 2>/dev/null | head -n 1)" ]; then echo "@@kept $id uncommitted"; continue; fi',
-    "      ;; esac",
+    '  cd "$WORK" 2>/dev/null || { echo @@no-work; echo @@done; exit 0; }',
+    '  [ "$(pwd -P)" = "$WORK" ] || { echo @@refused work-folder; echo @@done; exit 0; }',
+    '  kb() { du -sk "$1" 2>/dev/null | cut -f1; }',
+    "  df_line() { df -Pk \"$WORK\" 2>/dev/null | awk 'NR==2 {print $2, $3}'; }",
+    "  df_used() { df_line | cut -d' ' -f2; }",
+    "  GIT=1; command -v git >/dev/null 2>&1 || GIT=0",
+    "  TIMEOUT=''; command -v timeout >/dev/null 2>&1 && TIMEOUT='timeout 60'",
+    // Stay on one filesystem while removing, where rm can (GNU rm can).
+    "  RMFLAGS=''; rm --help 2>&1 | grep -q -- --one-file-system && RMFLAGS=--one-file-system",
+    // Sets `reason` and returns 1 unless the copy is safe to remove. Any git failure keeps it.
+    "  guard() {",
+    "    gq=$1; gid=$2",
+    '    case "$AGED" in *" $gid "*) gaged=1 ;; *) gaged=0 ;; esac',
+    '    case "$MERGED" in *" $gid "*) gmerged=1 ;; *) gmerged=0 ;; esac',
+    '    if [ ! -e "$gq/.git" ]; then',
+    "      # Not a checkout: the launcher's empty folder, which holds at most the images.",
+    '      extra=$(ls -A "$gq" | grep -v "^[.]inc$" | head -n 1) || { reason=notcheckout; return 1; }',
+    '      [ -z "$extra" ] && return 0',
+    "      reason=notcheckout; return 1",
     "    fi",
-    '    size=$(kb "$q")',
-    '    if [ "$DRY" = 0 ]; then chmod -R u+w "$q" 2>/dev/null; rm -rf -- "$q"; fi',
-    '    if [ "$DRY" = 0 ] && [ -e "$q" ]; then echo "@@failed $id"; continue; fi',
-    '    echo "@@removed $id ${size:-0}"; removed=1',
-    "  done",
-    "done",
+    '    [ "$GIT" = 1 ] || { reason=nogit; return 1; }',
+    '    git -C "$gq" rev-parse --git-dir >/dev/null || { reason=gitfail; return 1; }',
+    '    ahead=$(git -C "$gq" rev-list --count HEAD --not --remotes) || { reason=gitfail; return 1; }',
+    '    case "$ahead" in "" | *[!0-9]*) reason=gitfail; return 1 ;; esac',
+    '    dirty=$(git -C "$gq" status --porcelain) || { reason=gitfail; return 1; }',
+    '    if [ "$gaged" = 1 ]; then return 0; fi',
+    '    if [ "$ahead" != 0 ]; then reason=unpushed; return 1; fi',
+    '    if [ -n "$dirty" ]; then',
+    '      if [ "$gmerged" = 1 ]; then',
+    '        GIT_TERMINAL_PROMPT=0 $TIMEOUT git -C "$gq" fetch --quiet origin || { reason=fetchfail; return 1; }',
+    '        ahead=$(git -C "$gq" rev-list --count HEAD --not --remotes) || { reason=gitfail; return 1; }',
+    '        [ "$ahead" = 0 ] || { reason=unpushed; return 1; }',
+    "        return 0",
+    "      fi",
+    "      reason=uncommitted; return 1",
+    "    fi",
+    "    return 0",
+    "  }",
+    '  echo "@@df $(df_line)"',
+    "  removed=0",
+    ...loop,
     // Branches stay on GitHub. Locally, git forgets the removed worktrees and packs what it can.
-    'if [ "$DRY" = 0 ] && [ "$removed" = 1 ]; then',
-    '  for g in "$WORK"/*/.git; do',
-    '    [ -d "$g" ] || continue',
-    '    git -C "${g%/.git}" worktree prune >/dev/null 2>&1',
-    '    git -C "${g%/.git}" gc --auto --quiet >/dev/null 2>&1',
-    "  done",
-    "fi",
-    // ~/.cache: only the folders tools rebuild, and only while the whole of it is over the cap.
-    'if [ -d "$HOME/.cache" ] && [ ! -L "$HOME/.cache" ]; then',
-    '  total=$(kb "$HOME/.cache"); total=${total:-0}',
-    '  if [ "$total" -gt "$CAP" ]; then',
-    `    for name in ${rebuildableCaches.join(" ")}; do`,
-    '      d="$HOME/.cache/$name"',
-    '      if [ -L "$d" ] || [ ! -d "$d" ]; then continue; fi',
-    '      [ "$total" -gt "$CAP" ] || break',
-    '      s=$(kb "$d"); s=${s:-0}',
-    '      if [ "$DRY" = 0 ]; then rm -rf -- "$d"; fi',
-    '      echo "@@cache $name $s"; total=$((total - s))',
+    '  if [ "$DRY" = 0 ] && [ "$removed" = 1 ] && [ "$GIT" = 1 ]; then',
+    '    for g in "$WORK"/*/.git; do',
+    '      [ -d "$g" ] || continue',
+    '      git -C "${g%/.git}" worktree prune >/dev/null 2>&1',
+    '      git -C "${g%/.git}" gc --auto --quiet >/dev/null 2>&1',
     "    done",
-    '    if [ "$total" -gt "$CAP" ]; then echo "@@cache-over $total"; fi',
     "  fi",
-    "fi",
-    'if [ -d "$HOME/.npm/_cacache" ] && [ ! -L "$HOME/.npm" ] && [ ! -L "$HOME/.npm/_cacache" ]; then',
-    '  s=$(kb "$HOME/.npm/_cacache"); s=${s:-0}',
-    '  if [ "$s" -gt "$CAP" ]; then',
-    '    if [ "$DRY" = 0 ]; then rm -rf -- "$HOME/.npm/_cacache"; fi',
-    '    echo "@@cache npm $s"',
+    // ~/.cache: only the folders tools rebuild, and only while the whole of it is over the cap.
+    '  if [ -d "$HOME/.cache" ] && [ ! -L "$HOME/.cache" ]; then',
+    '    total=$(kb "$HOME/.cache"); total=${total:-0}',
+    '    if [ "$total" -gt "$CAP" ]; then',
+    `      for name in ${rebuildableCaches.join(" ")}; do`,
+    '        d="$HOME/.cache/$name"',
+    '        if [ -L "$d" ] || [ ! -d "$d" ]; then continue; fi',
+    '        [ "$total" -gt "$CAP" ] || break',
+    '        s=$(kb "$d"); s=${s:-0}',
+    '        if [ "$DRY" = 0 ]; then rm -rf $RMFLAGS -- "$d"; fi',
+    '        echo "@@cache $name $s"; total=$((total - s))',
+    "      done",
+    '      if [ "$total" -gt "$CAP" ]; then echo "@@cache-over $total"; fi',
+    "    fi",
     "  fi",
-    "fi",
+    '  if [ -d "$HOME/.npm/_cacache" ] && [ ! -L "$HOME/.npm" ] && [ ! -L "$HOME/.npm/_cacache" ]; then',
+    '    s=$(kb "$HOME/.npm/_cacache"); s=${s:-0}',
+    '    if [ "$s" -gt "$CAP" ]; then',
+    '      if [ "$DRY" = 0 ]; then rm -rf $RMFLAGS -- "$HOME/.npm/_cacache"; fi',
+    '      echo "@@cache npm $s"',
+    "    fi",
+    "  fi",
     // The pnpm store keeps every version any worktree ever installed; prune drops the ones nothing
     // links to. Worth running after worktrees went, or when the store is over the cap.
-    "if command -v pnpm >/dev/null 2>&1; then",
-    "  store=$(pnpm store path 2>/dev/null)",
-    '  if [ -n "$store" ] && [ -d "$store" ]; then',
-    '    before=$(kb "$store"); before=${before:-0}',
-    '    if [ "$removed" = 1 ] || [ "$before" -gt "$CAP" ]; then',
-    '      if [ "$DRY" = 0 ]; then',
-    "        pnpm store prune >/dev/null 2>&1",
-    '        after=$(kb "$store"); after=${after:-0}',
-    '        echo "@@pnpm-store $((before - after))"',
-    '      else echo "@@pnpm-store-would-prune $before"; fi',
-    '      if [ "$(kb "$store")" -gt "$CAP" ] 2>/dev/null; then echo "@@cache-over-store $(kb "$store")"; fi',
+    "  if command -v pnpm >/dev/null 2>&1; then",
+    "    store=$(pnpm store path 2>/dev/null)",
+    '    if [ -n "$store" ] && [ -d "$store" ]; then',
+    '      before=$(kb "$store"); before=${before:-0}',
+    '      if [ "$removed" = 1 ] || [ "$before" -gt "$CAP" ]; then',
+    '        if [ "$DRY" = 0 ]; then',
+    "          pnpm store prune >/dev/null 2>&1",
+    '          after=$(kb "$store"); after=${after:-0}',
+    '          echo "@@pnpm-store $((before - after))"',
+    '        else echo "@@pnpm-store-would-prune $before"; fi',
+    '        if [ "$(kb "$store")" -gt "$CAP" ] 2>/dev/null; then echo "@@cache-over-store $(kb "$store")"; fi',
+    "      fi",
     "    fi",
     "  fi",
-    "fi",
-    'if [ "$DOCKER" = 1 ] && command -v docker >/dev/null 2>&1 && timeout 20 docker info >/dev/null 2>&1; then',
-    '  if [ "$DRY" = 1 ]; then echo "@@docker-present"; else',
-    "    b=$(df_used)",
-    "    docker container prune -f --filter until=72h >/dev/null 2>&1",
-    "    docker image prune -f >/dev/null 2>&1",
-    "    docker builder prune -f --filter until=168h >/dev/null 2>&1",
-    '    a=$(df_used); echo "@@docker $((b - a))"',
+    '  if [ "$DOCKER" = 1 ] && command -v docker >/dev/null 2>&1 && timeout 20 docker info >/dev/null 2>&1; then',
+    '    if [ "$DRY" = 1 ]; then echo "@@docker-present"; else',
+    "      b=$(df_used)",
+    "      docker container prune -f --filter until=72h >/dev/null 2>&1",
+    "      docker image prune -f >/dev/null 2>&1",
+    "      docker builder prune -f --filter until=168h >/dev/null 2>&1",
+    '      a=$(df_used); echo "@@docker $((b - a))"',
+    "    fi",
     "  fi",
-    "fi",
-    'if [ "$TRIM" = 1 ] && [ "$DRY" = 0 ]; then sudo -n fstrim / >/dev/null 2>&1 && echo @@trimmed; fi',
-    'echo "@@df-after $(df_line)"',
-    "echo @@done",
+    '  if [ "$TRIM" = 1 ] && [ "$DRY" = 0 ]; then sudo -n fstrim / >/dev/null 2>&1 && echo @@trimmed; fi',
+    '  echo "@@df-after $(df_line)"',
+    "  echo @@done",
+    "}",
+    // The last line, so there is nothing left in stdin for a command to take.
+    "main </dev/null",
+    "",
   ].join("\n");
 }
 

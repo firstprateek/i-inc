@@ -377,7 +377,8 @@ export class Storage {
       const script = cleanupScript({
         work: this.d.work ?? "/home/employee/work",
         ids: mine.map((t) => t.id),
-        force: mine.filter((t) => t.merged || t.endedAt <= unpushedCutoff).map((t) => t.id),
+        aged: mine.filter((t) => t.endedAt <= unpushedCutoff).map((t) => t.id),
+        merged: mine.filter((t) => t.merged).map((t) => t.id),
         dryRun,
         cacheCapKb: settings.cacheCapGb * 1024 * 1024,
         docker: settings.dockerPrune,

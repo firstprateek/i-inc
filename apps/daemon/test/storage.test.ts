@@ -87,15 +87,16 @@ describe("cleaning a machine", () => {
     // Just closed: nothing is old enough, so the script is given no ticket.
     let r = await storage.cleanMachine("inc-engineering", { manual: true });
     expect(r.status).toBe("cleaned");
-    expect(scripts[0]).toContain("for id in none; do");
+    expect(scripts[0]).not.toContain("for id in");
 
     // Four days on, the ticket's copies are named in the script, with the guard for unpushed work.
     app.clock.advance(4 * DAY_MIN);
     r = await storage.cleanMachine("inc-engineering", { manual: true });
     expect(scripts[1]).toContain("for id in 1; do");
     expect(scripts[1]).toContain("DRY=0");
-    // The ticket merged, so it is on the force list: its work is on main.
-    expect(scripts[1]).toContain("FORCE=' 1 '");
+    // The ticket merged: that may release uncommitted noise after a fresh fetch, never unpushed commits.
+    expect(scripts[1]).toContain("MERGED=' 1 '");
+    expect(scripts[1]).toContain("AGED='  '");
   });
 
   it("never removes anything for a ticket that isn't over, or for a team that never touched it", async () => {
@@ -106,7 +107,7 @@ describe("cleaning a machine", () => {
     const { storage } = storageFor(app, ops);
     app.clock.advance(30 * DAY_MIN);
     await storage.cleanMachine("inc-engineering", { manual: true });
-    expect(scripts[0]).toContain("for id in none; do");
+    expect(scripts[0]).not.toContain("for id in");
 
     const other = fakeOps();
     const { storage: elsewhere } = storageFor(app, {
@@ -118,7 +119,7 @@ describe("cleaning a machine", () => {
     app.clock.advance(30 * DAY_MIN);
     await elsewhere.cleanMachine("inc-engineering", { manual: true });
     // Every employee of the ticket works in inc-design here, so inc-engineering holds no copy.
-    expect(other.scripts[0]).toContain("for id in none; do");
+    expect(other.scripts[0]).not.toContain("for id in");
   });
 
   it("waits for the days in the settings", async () => {
@@ -129,7 +130,7 @@ describe("cleaning a machine", () => {
     expect(storage.update({ sandboxCleanupDays: 7 })).toMatchObject({ settings: { sandboxCleanupDays: 7 } });
     app.clock.advance(5 * DAY_MIN);
     await storage.cleanMachine("inc-engineering", { manual: true });
-    expect(scripts[0]).toContain("for id in none; do");
+    expect(scripts[0]).not.toContain("for id in");
     app.clock.advance(3 * DAY_MIN);
     await storage.cleanMachine("inc-engineering", { manual: true });
     expect(scripts[1]).toContain("for id in 1; do");
@@ -280,7 +281,7 @@ describe("cleaning a machine", () => {
     const { storage } = storageFor(app, ops, { ticketActive: () => true });
     app.clock.advance(10 * DAY_MIN);
     await storage.cleanMachine("inc-engineering", { manual: true });
-    expect(scripts[0]).toContain("for id in none; do");
+    expect(scripts[0]).not.toContain("for id in");
   });
 });
 

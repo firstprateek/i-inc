@@ -2,6 +2,7 @@
 // /home/employee/work. Nothing here touches a machine, a real home folder or the container CLI.
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -132,7 +133,7 @@ describe("cleanupScript", () => {
     expect(existsSync(ahead)).toBe(true);
     expect(existsSync(dirty)).toBe(true);
 
-    const forced = run(cleanupScript({ ...base(), ids: ["1", "2"], force: ["1"] }));
+    const forced = run(cleanupScript({ ...base(), ids: ["1", "2"], aged: ["1"] }));
     expect(forced.removed.map((x) => x.ticket)).toEqual(["1"]);
     expect(existsSync(ahead)).toBe(false);
     expect(existsSync(dirty)).toBe(true);
@@ -173,7 +174,8 @@ describe("cleanupScript", () => {
   it("rejects ids and folders that could carry shell or climb out", () => {
     for (const id of ["1; rm -rf /", "../x", "a b", "", "$(id)", "x/y"]) {
       expect(() => cleanupScript({ ...base(), ids: [id] })).toThrow("not a ticket id");
-      expect(() => cleanupScript({ ...base(), ids: ["1"], force: [id] })).toThrow("not a ticket id");
+      expect(() => cleanupScript({ ...base(), ids: ["1"], aged: [id] })).toThrow("not a ticket id");
+      expect(() => cleanupScript({ ...base(), ids: ["1"], merged: [id] })).toThrow("not a ticket id");
     }
     for (const w of ["work", "/home/e/../etc", "/home/e work", "/home/e/work/", "/x;y", "/$(id)"]) {
       expect(() => cleanupScript({ ...base(), work: w })).toThrow("not a work folder");
@@ -243,6 +245,196 @@ describe("cleanupScript", () => {
     expect(r.disk?.total).toBeGreaterThan(0);
     expect(r.diskAfter?.used).toBeGreaterThan(0);
     expect(r.done).toBe(true);
+  });
+});
+
+/** A PATH with the tools the script needs and no git: symlinks to the real ones in a folder of its own. */
+function pathWithoutGit(): string {
+  const bin = join(root, "bin-nogit");
+  mkdirSync(bin, { recursive: true });
+  for (const tool of [
+    "bash",
+    "sh",
+    "du",
+    "cut",
+    "awk",
+    "df",
+    "grep",
+    "ls",
+    "head",
+    "rm",
+    "chmod",
+    "sed",
+    "cat",
+    "dirname",
+  ]) {
+    const found = execFileSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf8" }).trim();
+    if (found) symlinkSync(found, join(bin, tool));
+  }
+  return bin;
+}
+
+describe("a git failure always keeps the copy", () => {
+  it("keeps a worktree whose .git is garbage", () => {
+    const path = ticketCopy("1");
+    writeFileSync(join(path, ".git"), "this is not a gitdir pointer\n");
+    const r = run(cleanupScript({ ...base(), ids: ["1"] }));
+    expect(r.kept).toEqual([{ ticket: "1", reason: "gitfail" }]);
+    expect(r.removed).toEqual([]);
+    expect(existsSync(join(path, "a.txt"))).toBe(true);
+  });
+
+  it("keeps a worktree with a corrupt index and uncommitted edits, even for an aged or merged ticket", () => {
+    const path = ticketCopy("1");
+    writeFileSync(join(path, "a.txt"), "my only copy of an edit that was never committed");
+    const index = execFileSync(
+      "git",
+      ["-C", path, "rev-parse", "--path-format=absolute", "--git-path", "index"],
+      {
+        encoding: "utf8",
+      },
+    ).trim();
+    writeFileSync(index, "garbage, not an index");
+    for (const lists of [{}, { aged: ["1"] }, { merged: ["1"] }, { aged: ["1"], merged: ["1"] }]) {
+      const r = run(cleanupScript({ ...base(), ids: ["1"], ...lists }));
+      expect(r.kept).toEqual([{ ticket: "1", reason: "gitfail" }]);
+      expect(readFileSync(join(path, "a.txt"), "utf8")).toBe(
+        "my only copy of an edit that was never committed",
+      );
+    }
+  });
+
+  it("keeps every checkout when git isn't on the PATH, and says why", () => {
+    const one = ticketCopy("1");
+    const two = ticketCopy("2", { unpushed: true });
+    const r = run(cleanupScript({ ...base(), ids: ["1", "2"], aged: ["1", "2"], merged: ["1", "2"] }), {
+      PATH: pathWithoutGit(),
+    });
+    expect(r.done).toBe(true);
+    expect(r.kept).toEqual([
+      { ticket: "1", reason: "nogit" },
+      { ticket: "2", reason: "nogit" },
+    ]);
+    expect(existsSync(one)).toBe(true);
+    expect(existsSync(two)).toBe(true);
+  });
+
+  it("keeps a copy when git status or rev-list fails with a non-zero exit", () => {
+    const path = ticketCopy("1");
+    // A git that works for rev-parse and fails for everything else.
+    const bin = join(root, "bin-flaky");
+    mkdirSync(bin);
+    const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+    const shim = join(bin, "git");
+    writeFileSync(
+      shim,
+      `#!/bin/sh\ncase "$*" in *rev-parse*) exec ${real} "$@" ;; *) echo "boom" >&2; exit 128 ;; esac\n`,
+    );
+    chmodSync(shim, 0o755);
+    const r = run(cleanupScript({ ...base(), ids: ["1"], aged: ["1"] }), {
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+    });
+    expect(r.kept).toEqual([{ ticket: "1", reason: "gitfail" }]);
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it("keeps a folder that has no .git but holds anything besides the images", () => {
+    const keepers = join(work, "inc-3");
+    mkdirSync(join(keepers, ".inc"), { recursive: true });
+    writeFileSync(join(keepers, "notes.txt"), "someone's files");
+    const images = join(work, "inc-4");
+    mkdirSync(join(images, ".inc", "attachments"), { recursive: true });
+    writeFileSync(join(images, ".inc", "attachments", "1-a.png"), "png");
+    const r = run(cleanupScript({ ...base(), ids: ["3", "4"] }));
+    expect(r.kept).toEqual([{ ticket: "3", reason: "notcheckout" }]);
+    expect(r.removed.map((x) => x.ticket)).toEqual(["4"]);
+    expect(existsSync(join(keepers, "notes.txt"))).toBe(true);
+    expect(existsSync(images)).toBe(false);
+  });
+});
+
+describe("the merged and aged lists", () => {
+  it("never delete unpushed commits because the owner approved the ticket", () => {
+    const path = ticketCopy("1", { unpushed: true });
+    const r = run(cleanupScript({ ...base(), ids: ["1"], merged: ["1"] }));
+    expect(r.kept).toEqual([{ ticket: "1", reason: "unpushed" }]);
+    expect(existsSync(join(path, "work.txt"))).toBe(true);
+    // Even with uncommitted files on top.
+    writeFileSync(join(path, "scratch.txt"), "x");
+    const again = run(cleanupScript({ ...base(), ids: ["1"], merged: ["1"] }));
+    expect(again.kept).toEqual([{ ticket: "1", reason: "unpushed" }]);
+  });
+
+  it("let a merged ticket's uncommitted noise go only once a fresh fetch shows HEAD is on the remote", () => {
+    const path = ticketCopy("1", { dirty: true });
+    const r = run(cleanupScript({ ...base(), ids: ["1"], merged: ["1"] }));
+    expect(r.removed.map((x) => x.ticket)).toEqual(["1"]);
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it("keep a merged ticket's copy when the fetch fails", () => {
+    const path = ticketCopy("1", { dirty: true });
+    rmSync(join(root, "origin.git"), { recursive: true, force: true });
+    const r = run(cleanupScript({ ...base(), ids: ["1"], merged: ["1"] }));
+    expect(r.kept).toEqual([{ ticket: "1", reason: "fetchfail" }]);
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it("keep a merged ticket's copy when the fetch works but HEAD is not on the remote", () => {
+    // HEAD has a commit nobody pushed, and the tracking refs are stale, as if the push never happened.
+    const path = ticketCopy("1", { dirty: true });
+    writeFileSync(join(path, "extra.txt"), "x");
+    git(path, "add", "extra.txt");
+    git(path, "commit", "-q", "-m", "unpushed");
+    const r = run(cleanupScript({ ...base(), ids: ["1"], merged: ["1"] }));
+    expect(r.kept).toEqual([{ ticket: "1", reason: "unpushed" }]);
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it("remove an aged ticket's unpushed and uncommitted work, as the owner's setting says", () => {
+    const path = ticketCopy("1", { unpushed: true, dirty: true });
+    const r = run(cleanupScript({ ...base(), ids: ["1"], aged: ["1"] }));
+    expect(r.removed.map((x) => x.ticket)).toEqual(["1"]);
+    expect(existsSync(path)).toBe(false);
+  });
+});
+
+describe("how the script reads its input", () => {
+  it("gives every command /dev/null for stdin, so none can take the rest of the script", () => {
+    ticketCopy("1");
+    // A git that would eat whatever it is given on stdin, and report how much it got.
+    const bin = join(root, "bin-greedy");
+    mkdirSync(bin);
+    const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+    const shim = join(bin, "git");
+    const seen = join(root, "stdin-bytes");
+    writeFileSync(shim, `#!/bin/sh\ncat | wc -c >> ${seen}\nexec ${real} "$@"\n`);
+    chmodSync(shim, 0o755);
+    const script = `${cleanupScript({ ...base(), ids: ["1"] })}echo @@after-everything\n`;
+    const r = spawnSync("bash", ["-s"], {
+      input: script,
+      encoding: "utf8",
+      env: { PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: home },
+    });
+    expect(readCleanup(r.stdout).done).toBe(true);
+    expect(r.stdout).toContain("@@after-everything");
+    expect(
+      readFileSync(seen, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .every((n) => Number(n) === 0),
+    ).toBe(true);
+  });
+
+  it("does not name a folder when there are no tickets to clean", () => {
+    const script = cleanupScript({ ...base(), ids: [] });
+    expect(script).not.toContain("inc-none");
+    expect(script).not.toContain("for id in");
+    expect(run(script).done).toBe(true);
+  });
+
+  it("removes with rm's one-file-system flag where rm has it", () => {
+    expect(cleanupScript({ ...base(), ids: ["1"] })).toContain("--one-file-system");
   });
 });
 
