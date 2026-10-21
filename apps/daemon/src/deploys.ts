@@ -118,7 +118,7 @@ export class DeployNotifier {
       } else if (e.outcome === "rolled-back" && byHand) {
         payload = {
           title: "Rolled back by hand",
-          body: `Rolled back by hand to ${byHand[1]} (left ${short(e.sha)})`,
+          body: `Rolled back by hand to ${short(e.sha)} (left ${short(e.from)})`,
         };
       } else if (e.outcome === "skipped-ancestry") {
         payload = {

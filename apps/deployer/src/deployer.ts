@@ -163,6 +163,11 @@ export class Deployer {
       this.status(`could not read origin/main: ${oneLine(String(err))}`);
       return { action: "remote-error" };
     }
+    if (this.d.store.state().lastTip !== head) {
+      this.mutate((s) => {
+        s.lastTip = head;
+      });
+    }
     if (head === current) {
       this.status(`idle: ${short(current)} is current`);
       return { action: "idle", sha: head };
@@ -171,7 +176,8 @@ export class Deployer {
     // After a rollback by hand the tip that was rolled back from is not deployed again; the next
     // commit on main lifts the pause (or `--resume`).
     if (state.paused) {
-      if (head === state.paused.sha) {
+      // A pause with no tip (ls-remote failed during the rollback) lasts until `--resume`.
+      if (state.paused.sha === null || head === state.paused.sha) {
         this.status(this.pausedSummary(state.paused));
         return { action: "paused", sha: head };
       }
@@ -606,7 +612,10 @@ export class Deployer {
     return null;
   }
 
-  pausedSummary(p: { sha: string; to: string }): string {
+  pausedSummary(p: { sha: string | null; to: string }): string {
+    if (p.sha === null) {
+      return `paused after hand rollback (main's tip could not be read) — resumes only on --resume (now on ${short(p.to)})`;
+    }
     return `paused after hand rollback at ${short(p.sha)} — resumes on the next commit (now on ${short(p.to)})`;
   }
 
@@ -664,15 +673,18 @@ export class Deployer {
       if (health.busy)
         throw new Error("the daemon is busy (a ticket or chat turn is running): wait, or use --force");
     }
+    // Main's tip is what is being rolled back from (it is newer than the release left, or the same):
+    // auto-deploy pauses until main moves past it. Read before anything changes. If origin cannot be
+    // read, use the last tip this deployer saw; with none, pause until `--resume`. Never pause at a sha
+    // that would lift at once (the release being left is not main's tip).
+    const tip = await this.d.remote.head().catch(() => this.d.store.state().lastTip);
     const startedAt = this.d.clock.now();
     this.event(`rolling back by hand from ${short(current)} to ${short(to)}`);
     await this.d.releases.point(to);
     await this.d.daemon.restart();
     const healthy = await this.waitForVersion(to);
     const at = this.d.clock.now();
-    // Main's tip is what was just rolled back from (it is newer than the release left, or the same):
-    // pause until main moves past it. No release is marked bad.
-    const tip = await this.d.remote.head().catch(() => current);
+    // No release is marked bad; the pause is what keeps the tip from coming straight back.
     this.mutate((s) => {
       // Going back means the releases after `to` are no longer "previous" ones.
       const idx = s.history.lastIndexOf(to);
@@ -683,7 +695,7 @@ export class Deployer {
     this.record(
       {
         at,
-        sha: current,
+        sha: to, // what is running now; `from` is the release that was left
         from: current,
         outcome: "rolled-back",
         reason: healthy
@@ -691,7 +703,7 @@ export class Deployer {
           : `rolled back by hand to ${short(to)}, but the daemon did not report healthy`,
         durationMs: at - startedAt,
       },
-      `${current}:rolled-back:${startedAt}`,
+      `${to}:rolled-back-by-hand:${startedAt}`,
     );
     return { action: "rolled-back", sha: current };
   }

@@ -284,7 +284,12 @@ describe("push for a failed deploy", () => {
   it("words a rollback by hand as one, not as a failed deploy", async () => {
     const path = join(dir, "deploys.jsonl");
     const { app, push } = await guarded({ deploysPath: path });
-    writeFileSync(path, jsonl(entry({ outcome: "rolled-back", reason: "rolled back by hand to bbbbbbb" })));
+    writeFileSync(
+      path,
+      jsonl(
+        entry({ sha: OTHER, from: SHA, outcome: "rolled-back", reason: "rolled back by hand to bbbbbbb" }),
+      ),
+    );
     await make(path, push, app).check();
     expect(push.sent[0]?.title).toBe("Rolled back by hand");
     expect(push.sent[0]?.body).toBe("Rolled back by hand to bbbbbbb (left aaaaaaa)");
