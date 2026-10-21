@@ -10,6 +10,7 @@ import type { Clock, Employee, Engine, Id } from "@i-inc/core";
 import { type AgentInfo, AhpErrorCodes, JsonRpcErrorCodes } from "@microsoft/agent-host-protocol";
 import type { Db } from "../db.ts";
 import type { Registry } from "../registry.ts";
+import type { ShipBrief } from "../view-types.ts";
 import { type AhpHost, DEFAULT_TITLE, RpcError } from "./host.ts";
 import {
   ActionType,
@@ -35,12 +36,6 @@ export interface Conversation {
   archivedAt: number | null;
   ahpSession: string;
   ahpChat: string;
-}
-
-/** What shipping (src/ship.ts) says about a conversation: the ticket that has its working copy, and its PR. */
-export interface ShipBrief {
-  ticket: { id: Id; held: boolean } | null;
-  pr: { number: number; url: string } | null;
 }
 
 /** A conversation as the REST API shows it: the row plus what the host knows right now. */

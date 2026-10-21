@@ -23,12 +23,7 @@ import {
   type TicketEvent,
 } from "@i-inc/core";
 import type { AgentBackend } from "./ahp/backend.ts";
-import {
-  type ConversationService,
-  type ConversationView,
-  conversationDir,
-  type ShipBrief,
-} from "./ahp/conversations.ts";
+import { type ConversationService, type ConversationView, conversationDir } from "./ahp/conversations.ts";
 import { type AhpHost, DEFAULT_TITLE } from "./ahp/host.ts";
 import { redactText } from "./ahp/sanitize.ts";
 import type { Db } from "./db.ts";
@@ -36,17 +31,11 @@ import { type PrChecks, type PrInfo, UpstreamGitHubError } from "./github.ts";
 import { describeGitHubError } from "./github-projects.ts";
 import type { LiveEvents } from "./live.ts";
 import type { Project, Registry } from "./registry.ts";
-import {
-  type CopyReport,
-  type FileChange,
-  type ShipCopy,
-  type ShipPort,
-  ShipRefusal,
-  secretsSentence,
-} from "./ship-git.ts";
+import { type CopyReport, type ShipCopy, type ShipPort, ShipRefusal, secretsSentence } from "./ship-git.ts";
 import type { SqliteEventStore } from "./store.ts";
 import type { Tickets } from "./tickets.ts";
-import { type TicketView, ticketView } from "./views.ts";
+import type { ShipBrief, ShipMode, ShipView } from "./view-types.ts";
+import { ticketView } from "./views.ts";
 
 /** A refusal the API shows the owner as a sentence. */
 export class ShipError extends Error {
@@ -58,51 +47,6 @@ export class ShipError extends Error {
   ) {
     super(message);
   }
-}
-
-export type ShipMode = "direct" | "owner-merges";
-
-export interface ShipView {
-  project: string | null;
-  mode: ShipMode | null;
-  /** "Make this a ticket" can be pressed. */
-  canTicket: boolean;
-  /** "Open a PR" can be pressed (owner-merges projects only). */
-  canPr: boolean;
-  /** Why neither can, as a sentence. */
-  reason?: string;
-  ticket: {
-    id: Id;
-    title: string;
-    status: TicketView["status"];
-    stage: string | null;
-    live: string;
-    /** The conversation can't change its working copy: the ticket has it. */
-    held: boolean;
-    outcome: TicketView["outcome"];
-  } | null;
-  pr: {
-    number: number;
-    url: string;
-    state: PrInfo["state"] | "unknown";
-    draft: boolean;
-    checks: PrChecks | null;
-    problem?: string;
-  } | null;
-  /** Only with `?preview=1`: what shipping would commit, and where it would go. */
-  copy?: {
-    branch: string;
-    files: FileChange[];
-    uncommitted: number;
-    ahead: number;
-    protectedPaths: string[];
-    pushed: boolean;
-    blockers: string[];
-  };
-  /** Only with `?preview=1` and no copy: why the working copy couldn't be read. */
-  problem?: string;
-  /** Only with `?preview=1`: what the confirm dialog starts with. */
-  suggestion?: { title: string; doneWhen: string[]; description: string };
 }
 
 export interface ShippingDeps {

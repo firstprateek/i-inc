@@ -10,6 +10,8 @@ import type {
   PendingTicket,
   PolicyProposal,
   ProposalView,
+  ShipBrief,
+  ShipView,
   TicketView,
 } from "@i-inc/daemon/views";
 import type { Engine } from "./providers.ts";
@@ -27,6 +29,8 @@ export type {
   PolicyProposal,
   ProjectRelease,
   ProposalView,
+  ShipBrief,
+  ShipView,
   TicketEvent,
   TicketView,
 };
@@ -122,6 +126,8 @@ export interface Conversation {
   needsYou: boolean;
   running: boolean;
   modifiedAt: number;
+  /** Once the work was handed to a ticket or opened as a PR (C22b). */
+  ship?: ShipBrief;
 }
 
 /** What the owner is notified about beyond tickets (C2, T65). One setting for every device. */
@@ -288,6 +294,24 @@ export const api = {
     call<{ settings: NotifySettings }>("GET", "/api/push/settings").then((r) => r.settings),
   setNotifySettings: (patch: Partial<NotifySettings>) =>
     call<{ settings: NotifySettings }>("PUT", "/api/push/settings", patch).then((r) => r.settings),
+  /** Shipping a conversation's work (C22b): the ticket and PR it has, and with `preview` what would be committed. */
+  ship: (id: string, preview = false) =>
+    call<{ ship: ShipView }>(
+      "GET",
+      `/api/conversations/${encodeURIComponent(id)}/ship${preview ? "?preview=1" : ""}`,
+    ).then((r) => r.ship),
+  makeTicket: (id: string, body: { title?: string; description?: string; doneWhen?: string[] }) =>
+    call<{ ticket: { id: string; title: string }; created: boolean }>(
+      "POST",
+      `/api/conversations/${encodeURIComponent(id)}/ticket`,
+      body,
+    ),
+  openPr: (id: string, body: { title?: string } = {}) =>
+    call<{ pr: { number: number; url: string; draft: boolean }; created: boolean }>(
+      "POST",
+      `/api/conversations/${encodeURIComponent(id)}/pr`,
+      body,
+    ),
   patchConversation: (id: string, c: { title?: string; archived?: boolean }) =>
     call<{ conversation: Conversation }>("PATCH", `/api/conversations/${encodeURIComponent(id)}`, c).then(
       (r) => r.conversation,

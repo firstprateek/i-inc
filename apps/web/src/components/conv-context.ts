@@ -6,7 +6,7 @@ import type { Employee } from "@i-inc/core";
 import type { ChatState } from "@microsoft/agent-host-protocol";
 import { css, html, LitElement, nothing } from "lit";
 import { ahp } from "../ahp/hub.ts";
-import type { AccountRateLimit, Conversation } from "../api.ts";
+import type { AccountRateLimit, Conversation, ShipView } from "../api.ts";
 import {
   brainPages,
   type ChangedFile,
@@ -27,6 +27,7 @@ export class IncConvContext extends LitElement {
     limit: { attribute: false },
     accountName: { type: String },
     closable: { type: Boolean },
+    ship: { attribute: false },
     openFile: { state: true },
     tick: { state: true },
   };
@@ -36,6 +37,8 @@ export class IncConvContext extends LitElement {
   declare accountName: string;
   /** Shows a close button (the sheet on a phone, the drawer on a narrow laptop). */
   declare closable: boolean;
+  /** What shipping says about this conversation (C22b), loaded by the screen. */
+  declare ship: ShipView | undefined;
   declare openFile: string | null;
   declare tick: number;
   private off: (() => void) | undefined;
@@ -86,6 +89,13 @@ export class IncConvContext extends LitElement {
       .meter .fill { height: 100%; background: var(--bar-ok); }
       .meter .fill.warn { background: var(--bar-warn); } .meter .fill.crit { background: var(--bar-crit); }
       .muted { color: var(--ink-2); font-size: 13.5px; margin: 0; }
+      .ship-row { display: flex; flex-direction: column; gap: 2px; font-size: 14px; line-height: 1.4; min-width: 0; }
+      .ship-row a { color: var(--reviewing-fg); font-weight: 700; text-underline-offset: 2px; display: inline-flex; align-items: center; min-height: 44px; overflow-wrap: anywhere; }
+      .ship-row .sub { color: var(--ink-2); font-size: 13px; }
+      .pill { display: inline-block; font-size: 12px; font-weight: 800; padding: 1px 9px; border-radius: 999px; background: var(--neutral-bg); color: var(--neutral-fg); white-space: nowrap; }
+      .pill.ok { background: var(--working-bg); color: var(--working-fg); border: 1px solid var(--working-edge); }
+      .pill.bad { background: var(--needs-bg); color: var(--needs-fg); border: 1px solid var(--needs-edge); }
+      .ship-actions { display: flex; flex-wrap: wrap; gap: 8px; }
     `,
   ];
 
@@ -107,6 +117,91 @@ export class IncConvContext extends LitElement {
     const files = changedFiles(chat);
     this.memo = { turns: chat?.turns, active: chat?.activeTurn, files };
     return files;
+  }
+
+  private ask(kind: "ticket" | "pr", e: Event) {
+    // The screen opens the dialog; the opener is remembered there so focus can go back to it.
+    e.currentTarget?.dispatchEvent(
+      new CustomEvent("conv-ship", { detail: { kind, from: "context" }, bubbles: true, composed: true }),
+    );
+  }
+
+  /** The "Ship this work" section: the ticket and PR it has, and the two ways to send it on. */
+  private shipSection(conv: Conversation) {
+    if (!conv.project) return nothing;
+    const s = this.ship;
+    const t =
+      s?.ticket ??
+      (conv.ship?.ticket
+        ? {
+            id: conv.ship.ticket.id,
+            title: "",
+            status: "running" as const,
+            stage: null,
+            live: "",
+            held: conv.ship.ticket.held,
+            outcome: null,
+          }
+        : null);
+    const pr =
+      s?.pr ??
+      (conv.ship?.pr ? { ...conv.ship.pr, state: "unknown" as const, draft: true, checks: null } : null);
+    const direct = s?.mode === "direct";
+    const canTicket = s ? s.canTicket : !t?.held;
+    const canPr = s ? s.canPr : !t?.held;
+    const checks = pr?.checks;
+    return html`<section aria-labelledby="h-ship"><h3 id="h-ship">Ship this work</h3>
+      ${
+        t
+          ? html`<div class="ship-row"><a href="#/ticket/${t.id}">Ticket #${t.id}${t.title ? `: ${t.title}` : ""}</a>
+              <span class="sub"><span class="pill ${t.status === "done" ? "ok" : t.status === "failed" || t.status === "needs-you" ? "bad" : ""}">${this.statusWord(t)}</span>
+                ${t.live ? html` ${t.live}` : nothing}</span>
+              ${t.held ? html`<span class="sub">It has this conversation's files; the conversation is paused until it is done.</span>` : nothing}</div>`
+          : nothing
+      }
+      ${
+        pr
+          ? html`<div class="ship-row"><a href=${pr.url} target="_blank" rel="noopener">Pull request #${pr.number} on GitHub</a>
+              <span class="sub"><span class="pill ${pr.state === "merged" ? "ok" : ""}">${pr.state === "open" ? (pr.draft ? "Draft" : "Open") : pr.state === "unknown" ? "Open" : pr.state === "merged" ? "Merged" : "Closed"}</span></span>
+              ${
+                checks
+                  ? html`<span class="sub" role="status"><span class="pill ${checks.state === "success" ? "ok" : checks.state === "failure" ? "bad" : ""}">Checks: ${this.checksWord(checks)}</span></span>`
+                  : pr.problem
+                    ? html`<span class="sub">${pr.problem}</span>`
+                    : html`<span class="sub">No checks have started yet.</span>`
+              }</div>`
+          : nothing
+      }
+      ${
+        s?.reason && (direct || !canTicket)
+          ? html`<p class="muted">${s.reason}</p>`
+          : !t && !pr
+            ? html`<p class="muted">${direct ? "This project goes to main after a review: make it a ticket." : "Send the work on: a ticket has it checked and reviewed; a PR is the quick way to look at it on GitHub."}</p>`
+            : nothing
+      }
+      <div class="ship-actions">
+        <button class="cbtn primary" type="button" aria-disabled=${canTicket ? "false" : "true"} ?disabled=${!canTicket} @click=${(e: Event) => this.ask("ticket", e)}>Make this a ticket</button>
+        ${direct ? nothing : html`<button class="cbtn" type="button" aria-disabled=${canPr ? "false" : "true"} ?disabled=${!canPr} @click=${(e: Event) => this.ask("pr", e)}>${pr ? "Update the PR" : "Open a PR"}</button>`}
+      </div>
+    </section>`;
+  }
+
+  private statusWord(t: NonNullable<ShipView["ticket"]>): string {
+    if (t.status === "done")
+      return t.outcome === "merged" ? "Merged" : t.outcome === "rejected" ? "Rejected" : "Done";
+    if (t.status === "failed") return "Failed";
+    if (t.status === "needs-you") return "Needs you";
+    if (t.status === "ready") return "Ready for you";
+    if (t.status === "queued") return "Starting";
+    const stage = t.stage ? `${t.stage[0]?.toUpperCase()}${t.stage.slice(1)}` : "";
+    return stage ? `Running · ${stage}` : "Running";
+  }
+
+  private checksWord(c: NonNullable<NonNullable<ShipView["pr"]>["checks"]>): string {
+    if (c.state === "none") return "none yet";
+    if (c.state === "success") return `all ${c.total} passed`;
+    if (c.state === "failure") return `${c.failed} of ${c.total} failed`;
+    return `${c.passed} of ${c.total} passed, ${c.pending} running`;
   }
 
   private meter(label: string, pct: number | undefined) {
@@ -140,6 +235,7 @@ export class IncConvContext extends LitElement {
           </div>
           <p class="muted">${conv.branch ? "A private copy of the project. Nothing here is pushed or merged unless you ask." : "An empty scratch folder."}</p>
         </section>
+        ${this.shipSection(conv)}
         ${
           plan?.length
             ? html`<section class="plan" aria-labelledby="h-plan"><h3 id="h-plan">Plan · ${done} of ${plan.length} done</h3>

@@ -168,3 +168,71 @@ export interface KnowledgeView {
   /** A brain only. */
   employee?: Person & { role: string };
 }
+
+// ── shipping a conversation's work (T62b, contract C22b) ──
+
+export type ShipMode = "direct" | "owner-merges";
+
+/** What a conversation's row says about its ticket and PR. */
+export interface ShipBrief {
+  ticket: { id: Id; held: boolean } | null;
+  pr: { number: number; url: string } | null;
+}
+
+export interface ShipFile {
+  path: string;
+  added: number;
+  removed: number;
+  binary?: true;
+}
+
+export interface ShipChecks {
+  state: "none" | "pending" | "success" | "failure";
+  total: number;
+  passed: number;
+  failed: number;
+  pending: number;
+}
+
+export interface ShipView {
+  project: string | null;
+  mode: ShipMode | null;
+  /** "Make this a ticket" can be pressed. */
+  canTicket: boolean;
+  /** "Open a PR" can be pressed (owner-merges projects only). */
+  canPr: boolean;
+  /** Why neither can, as a sentence. */
+  reason?: string;
+  ticket: {
+    id: Id;
+    title: string;
+    status: TicketView["status"];
+    stage: string | null;
+    live: string;
+    /** The conversation can't change its working copy: the ticket has it. */
+    held: boolean;
+    outcome: TicketView["outcome"];
+  } | null;
+  pr: {
+    number: number;
+    url: string;
+    state: "open" | "closed" | "merged" | "unknown";
+    draft: boolean;
+    checks: ShipChecks | null;
+    problem?: string;
+  } | null;
+  /** Only with `?preview=1`: what shipping would commit, and where it would go. */
+  copy?: {
+    branch: string;
+    files: ShipFile[];
+    uncommitted: number;
+    ahead: number;
+    protectedPaths: string[];
+    pushed: boolean;
+    blockers: string[];
+  };
+  /** Only with `?preview=1` and no copy: why the working copy couldn't be read. */
+  problem?: string;
+  /** Only with `?preview=1`: what the confirm dialog starts with. */
+  suggestion?: { title: string; doneWhen: string[]; description: string };
+}
