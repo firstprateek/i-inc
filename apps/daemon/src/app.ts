@@ -101,7 +101,7 @@ export async function createApp(o: AppOptions) {
   const store = new SqliteEventStore(db);
   store.onAppend = (id) => live.notifyTicket(id);
 
-  const knowledge = new KnowledgeStore(o.knowledgeDir);
+  const knowledge = new KnowledgeStore(o.knowledgeDir, () => o.clock.now());
   // Fails here, at startup, with a clear message, if this SQLite has no FTS5.
   const brain = await BrainIndex.open(o.brainIndexPath ?? ":memory:", knowledge, o.log, {
     ...(o.brainProbe ? { probe: o.brainProbe } : {}),

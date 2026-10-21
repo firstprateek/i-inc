@@ -4,7 +4,17 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { type Employee, type Id, type ProposedEdit, pagePath, repoFor } from "@i-inc/core";
+import {
+  type Employee,
+  firstSentence,
+  type Id,
+  isoDate,
+  type ProposedEdit,
+  pagePath,
+  parsePage,
+  repoFor,
+  serializePage,
+} from "@i-inc/core";
 import type { Change, Page } from "./view-types.ts";
 
 export type { Change, Page };
@@ -23,7 +33,11 @@ export class KnowledgeStore {
   /** Called after every commit to a repo, so the brain index can follow (brain-index.ts). */
   onCommit?: (repo: Repo) => void;
 
-  constructor(private readonly root: string) {}
+  /** `now` stamps `updated` on pages (the daemon's clock; the system clock by default). */
+  constructor(
+    private readonly root: string,
+    private readonly now: () => number = Date.now,
+  ) {}
 
   private dir(repo: Repo): string {
     if (repo.kind === "handbook") return join(this.root, "handbook");
@@ -134,8 +148,24 @@ export class KnowledgeStore {
     const isNew = !existsSync(file);
     mkdirSync(dirname(file), { recursive: true });
     const title = pageTitle(path);
-    const body = isNew ? `# ${title}\n\n${text}\n` : `${readFileSync(file, "utf8").trimEnd()}\n\n${text}\n`;
-    writeFileSync(file, body);
+    const slug = path.replace(/\.md$/, "");
+    const source = `ticket-${p.ticketId}`;
+    // Every applied edit stamps `updated` and records its ticket, adding frontmatter to an old page
+    // that never had any. The page's own text is only ever appended to.
+    const existing = isNew ? null : parsePage(readFileSync(file, "utf8"), slug);
+    const body = existing ? `${existing.body.trimEnd()}\n\n${text}\n` : `# ${title}\n\n${text}\n`;
+    const meta = existing?.meta ?? {
+      title,
+      description: firstSentence(text),
+      tags: slug.includes("/") ? [slug.slice(0, slug.indexOf("/"))] : [],
+      sources: [],
+    };
+    if (existing && !existing.hasFrontmatter)
+      meta.tags = slug.includes("/") ? [slug.slice(0, slug.indexOf("/"))] : [];
+    meta.updated = isoDate(this.now());
+    if (!meta.sources.includes(source)) meta.sources = [...meta.sources, source];
+    if (!meta.description) meta.description = firstSentence(body);
+    writeFileSync(file, serializePage({ meta, body }));
     if (isNew) this.list(repo, path, title);
 
     this.git(repo, "add", "-A");
