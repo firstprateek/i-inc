@@ -1252,6 +1252,18 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         const upload = await readTicket(req);
         if ("error" in upload) return json({ error: upload.error }, upload.status);
         const { body, images } = upload;
+        if (body === null || typeof body !== "object" || Array.isArray(body)) {
+          return json({ error: "the ticket must be a JSON object" }, 400);
+        }
+        // `createdBy` marks a ticket an agent filed itself, and the accepted-proposal label keeps a
+        // ticket out of the daily follow-up count. Only the daemon's own paths set them, never a client.
+        delete body.createdBy;
+        if (body.labels !== undefined) {
+          if (!Array.isArray(body.labels) || body.labels.some((l) => typeof l !== "string")) {
+            return json({ error: "labels must be a list of strings" }, 400);
+          }
+          body.labels = body.labels.filter((l) => l !== ACCEPTED_LABEL);
+        }
         if (!body.effort && body.assignee) {
           try {
             const emp = d.registry.employee(body.assignee);

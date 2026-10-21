@@ -316,3 +316,57 @@ describe("GET and POST /api/proposals", () => {
     await reader.cancel();
   });
 });
+
+describe("POST /api/tickets can't forge an agent's follow-up", () => {
+  const base = {
+    title: "Mine",
+    project: "Duet",
+    type: "fix",
+    effort: "low",
+    doneWhen: ["x"],
+    assignee: "ada",
+  };
+
+  it("drops createdBy and the accepted-proposal label from a client's ticket", async () => {
+    const app = await testApp();
+    const res = await app.call("POST", "/api/tickets", {
+      ...base,
+      createdBy: "ada",
+      labels: ["deps", "accepted-proposal"],
+    });
+    expect(res.status).toBe(201);
+    const t = app.deps.tickets.get(res.body.ticket.id)?.ticket;
+    expect(t?.createdBy).toBeUndefined();
+    expect(t?.labels).toEqual(["deps"]);
+  });
+
+  it("an owner ticket does not use the agents' daily budget", async () => {
+    const app = await testApp();
+    limit(app, "Duet", 1);
+    await app.call("POST", "/api/tickets", { ...base, createdBy: "ada", labels: ["accepted-proposal"] });
+    propose(app, source(app).id, followUp("agent-filed"));
+    expect(app.deps.tickets.all().some((r) => r.ticket.title === "agent-filed")).toBe(true);
+  });
+
+  it("refuses labels that aren't a list of strings, and a body that isn't an object", async () => {
+    const app = await testApp();
+    expect((await app.call("POST", "/api/tickets", { ...base, labels: "x" })).status).toBe(400);
+    expect((await app.call("POST", "/api/tickets", { ...base, labels: [1] })).status).toBe(400);
+    const res = await app.handle(
+      new Request("http://i.inc/api/tickets", {
+        method: "POST",
+        body: "null",
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("still lets the accept path set them", async () => {
+    const app = await testApp();
+    const id = await waiting(app);
+    const res = await app.call("POST", `/api/proposals/${id}/accept`, {});
+    expect(res.body.ticket.labels).toContain("accepted-proposal");
+    expect(res.body.ticket.createdBy).toBe("ada");
+  });
+});
