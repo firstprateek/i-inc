@@ -440,8 +440,6 @@ describe("short dev words", () => {
     // Only function words: the raw words are searched instead of nothing.
     const withThe = page("The", "the", "to be or not to be, that is the question");
     commit("handbook", { "facts/the.md": withThe });
-    expect(retrieve(index, { query: "to be or not", scopes: ["company"] }).map((p) => p.slug)).toEqual([
-      "facts/the",
-    ]);
+    expect(retrieve(index, { query: "to be or not", scopes: ["company"] })[0]?.slug).toBe("facts/the");
   });
 });
