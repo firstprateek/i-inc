@@ -1,6 +1,9 @@
 # Conversations (V1 design)
 
-Status: proposal for the owner's review, 2026-10-20. Nothing here is built yet.
+Status: approved 2026-10-20. Corrected by the AHP spike ([ahp-spike.md](ahp-spike.md)): AHP is 1.0, not pre-1.0, and
+`serverSeq` is one counter for the whole host. The host core, the action store, the `/ahp` transport and the
+conversations table and REST routes are built (T59a, contract C22 in [coord.md](../coord.md)); the session host
+and the ACP mapper follow (T59b). The Conversations screen is T60.
 
 ## Goal
 
@@ -54,11 +57,14 @@ stream later.
 ## Architecture: make the daemon an AHP host
 
 [AHP, the Agent Host Protocol](https://microsoft.github.io/agent-host-protocol/) (Microsoft, MIT
-licence, the protocol behind VS Code's Agent Host) standardises exactly what we need. A **host**
+licence, the protocol behind VS Code's Agent Host) standardises exactly what we need. It is at **1.0**
+(released 2026-10-02) and its root, session and chat channels are marked Stable. A **host**
 owns the authoritative state of agent sessions, talks **ACP to the agents** and **JSON-RPC to any
 number of clients**. Clients subscribe to a channel, get a snapshot, then an ordered stream of
-actions with a `serverSeq`, and replay what they missed after reconnecting. The first tool
-confirmation from any client wins. See [AHP and ACP](https://github.com/microsoft/agent-host-protocol/blob/main/docs/guide/ahp-and-acp.md)
+actions with a `serverSeq` (**one counter for the whole host**, not one per channel), and replay what
+they missed after reconnecting. The first tool confirmation from any client wins. We use the official
+`@microsoft/agent-host-protocol` 1.0.0 (pinned) for the types and reducers (and, in the web app, the
+client); the host, mapper and store are ours, because the package has no host. See [AHP and ACP](https://github.com/microsoft/agent-host-protocol/blob/main/docs/guide/ahp-and-acp.md)
 and [the VS Code write-up](https://code.visualstudio.com/blogs/2026/08/26/agent-host-architecture).
 
 Why it fits:
@@ -78,23 +84,32 @@ Pieces in the daemon:
    `agent_thought_chunk` → `chat/reasoning`; `tool_call` / `tool_call_update` →
    `chat/toolCallStart` / `chat/toolCallReady` / `chat/toolCallComplete` (with content and diffs);
    `session/request_permission` → a pending confirmation answered by `chat/toolCallConfirmed`;
-   `plan` and mode or config updates → chat config and a plan part; token usage → `chat/usage`.
-   Everything agent-specific stays in the mapper.
-3. **State store.** Each chat's actions are appended to SQLite with their `serverSeq`, with
-   periodic snapshots, so any client can replay. Ticket transcripts move onto the same store
-   (replacing `ticket_session_items`), so ticket stages become watchable live.
-4. **Transport.** A WebSocket endpoint (`/ahp`) behind the same login as the rest of the API.
+   token usage → `chat/usage`. Everything agent-specific stays in the mapper. What AHP 1.0 has no place
+   for goes in `_meta` (the full table is in [ahp-spike.md](ahp-spike.md)): the agent's **plan** is a
+   pseudo tool call `x-iinc-plan` with the entries in `_meta["iinc.plan"]`, slash commands are in the
+   session's `_meta["iinc.commands"]` (served by `completions`), tool-call `locations` are in
+   `_meta["iinc.locations"]`, and allow-once versus allow-always is the confirmation option's `group`.
+   **Modes are session config** (`session/configChanged`, the agent's own names as the schema's enum
+   labels); per-chat mode needs spec 1.1. **"Needs you"** is the session's `inputNeeded` list.
+3. **State store.** Every channel's actions are appended to SQLite with their host-wide `serverSeq`
+   (`ahp_actions`), with periodic snapshots (`ahp_snapshots`), so any client can replay and a restart
+   rebuilds the state. The log is pruned behind snapshots (by age and by count), tool output is
+   redacted and capped before it is kept, and big attachments live in content blobs. Ticket transcripts
+   move onto the same store later (replacing `ticket_session_items`), so ticket stages become watchable live.
+4. **Transport.** A WebSocket endpoint (`/ahp`) on the daemon's own port, behind the same login as the
+   rest of the API (cookie or bearer, plus the protocol's `authenticate` when enabled), with the Host and
+   Origin checks, keepalive pings, a frame size limit and a slow-consumer limit.
    Everything that is not a session stays plain REST.
 
-Spike first (about two days), then decide:
-- Can we build on the official TypeScript client (`@microsoft/agent-host-protocol`) and the host
-  SDK (`@ahpd/sdk`) under Bun, or only on the types and reducers?
-- How stable is the spec? It is under active development, around 0.9, on SemVer tracks.
-- Can VS Code's Agents window attach to an i.inc host over the tailnet? That would be the proof
-  that "other surfaces for free" is real.
-
-If the libraries are too immature, we still adopt AHP's model (channels, actions, `serverSeq`,
-snapshot plus replay, first confirmation wins) with our own types, close enough to switch later.
+The spike (T55, [ahp-spike.md](ahp-spike.md)) answered the open questions:
+- The official `@microsoft/agent-host-protocol` 1.0.0 works under Bun and Node (types, reducers, client,
+  WebSocket transport). We pin it exactly and build our own host on its reducers; `@ahpd/sdk` is a
+  reference, not a dependency. (The package's `declare const enum`s trip our `isolatedModules`, so
+  `apps/daemon/src/ahp/wire.ts` holds the values we use as typed string constants.)
+- The spec is 1.0 with Stable chat, session and root channels. Churn is narrow: pin, negotiate the version,
+  keep agent-specific code in the mapper.
+- Whether VS Code's Agents window can attach to an i.inc host over the tailnet is plausible (a
+  `chat.remoteAgentHosts` setting) but unverified; it is an acceptance test for later, not a design driver.
 
 ## The screen (laptop first)
 
@@ -114,23 +129,28 @@ snapshot plus replay, first confirmation wins) with our own types, close enough 
 
 ## Data and API
 
-- New table `conversations(id, employee_id, project, branch, title, mode, engine_id, created_at,
-  archived_at)` and `ahp_actions(channel, server_seq, at, action)` plus `ahp_snapshots`.
-- REST: list, create, rename, archive conversations. WebSocket `/ahp`: everything live.
+- Table `conversations(id, employee_id, project, branch, title, mode, engine_id, created_at,
+  archived_at, ahp_session, ahp_chat)`, and `ahp_actions(server_seq, channel, at, action, origin)` (one
+  `server_seq` for the whole host) plus `ahp_snapshots(channel, server_seq, state)`.
+- REST: list, create, rename, archive conversations (`/api/conversations`, contract C22). WebSocket
+  `/ahp`: everything live.
 - The old chat stays for one release behind "Old chat", then goes. The local helper model stays
   for small classification jobs only.
 
 ## Build order
 
-1. AHP spike and decision (above).
-2. Session host, event mapper and state store, with ticket stages moved onto them.
+1. AHP spike and decision (done, T55).
+2. Host core, state store and transport (T59a); session host and event mapper (T59b); then ticket
+   stages moved onto them.
 3. The Conversations screen.
 4. "Make this a ticket" and "Open the session" between conversations and tickets.
 5. Push notifications for "Needs you" cards; then the phone layout.
 
 ## Risks
 
-- **Spec churn.** AHP is pre-1.0. Pin versions and keep agent-specific code in the mapper.
+- **Spec churn.** AHP 1.0 is new (2026-10-02) and VS Code's own host is already ahead of it on the wire.
+  Pin the package, negotiate the version, depend only on the Stable channels and keep agent-specific
+  code in the mapper.
 - **Sandbox capacity.** Long-lived agent processes compete with tickets. Idle suspend plus a
   per-team limit.
 - **Subscription usage.** Conversations spend the same quota as tickets. The composer shows the
