@@ -152,7 +152,7 @@ export class IncKnowledge extends Loader<KnowledgeData> {
   ];
 
   private onCompanyLinkClick = () => {
-    location.hash = "#/handbook";
+    location.hash = "#/company/brain";
   };
 
   override render() {
@@ -174,10 +174,10 @@ export class IncKnowledge extends Loader<KnowledgeData> {
             ? html`<span class="spacer"></span>
               <a
                 class="btn ghost company-link"
-                href="#/handbook"
+                href="#/company/brain"
                 style="display:inline-flex;align-items:center;text-decoration:none"
                 @click=${this.onCompanyLinkClick}
-                >Company brain / Handbook →</a
+                >Company brain →</a
               >`
             : ""
         }
@@ -206,7 +206,7 @@ export class IncKnowledge extends Loader<KnowledgeData> {
               ? html`<article class="card">
                   ${
                     !isHandbook && page.path === "INDEX.md"
-                      ? html`<div class="company-callout">Part of the organisation. See <a href="#/handbook" @click=${this.onCompanyLinkClick}>Company brain / Handbook</a> for shared policies and facts.</div>`
+                      ? html`<div class="company-callout">Part of the organisation. See <a href="#/company/brain" @click=${this.onCompanyLinkClick}>Company brain</a> for shared policies and facts.</div>`
                       : ""
                   }
                   ${page.path === "INDEX.md" ? "" : html`<span class="path">${page.path}</span>`}
@@ -214,7 +214,7 @@ export class IncKnowledge extends Loader<KnowledgeData> {
                 </article>`
               : !isHandbook
                 ? html`<article class="card">
-                    <div class="company-callout">Part of the organisation. See <a href="#/handbook" @click=${this.onCompanyLinkClick}>Company brain / Handbook</a> for shared policies and facts.</div>
+                    <div class="company-callout">Part of the organisation. See <a href="#/company/brain" @click=${this.onCompanyLinkClick}>Company brain</a> for shared policies and facts.</div>
                   </article>`
                 : ""
           }
@@ -234,7 +234,7 @@ export class IncKnowledge extends Loader<KnowledgeData> {
                                 ? html`<ul class="team-members">
                                   ${members.map(
                                     (m) =>
-                                      html`<li><a class="member-brain-link" href="#/brain/${m.id}">${m.name}</a></li>`,
+                                      html`<li><a class="member-brain-link" href="#/company/brain/${m.id}">${m.name}</a></li>`,
                                   )}
                                 </ul>`
                                 : html`<p class="muted">No members</p>`
@@ -304,7 +304,7 @@ export class IncKnowledge extends Loader<KnowledgeData> {
     const m = t.match(/^\[([^\]]+)\]\(([^)]+\.md)\)$/);
     if (!m) return t;
     const [, label, path] = m;
-    return html`<a href=${`#/${this.repo === "handbook" ? "handbook" : `brain/${this.repo}`}`} @click=${(
+    return html`<a href=${`#/company/brain${this.repo === "handbook" ? "" : `/${this.repo}`}`} @click=${(
       e: Event,
     ) => {
       e.preventDefault();

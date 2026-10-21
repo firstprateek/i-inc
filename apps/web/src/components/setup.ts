@@ -1,24 +1,15 @@
-// Setup: where the owner manages teams, projects, engines and accounts, and checks the sandboxes.
+// Company → Settings: where the owner manages teams, engines and accounts, notifications, and checks the sandboxes.
+// (Projects have their own tab.)
 import { css, html, LitElement } from "lit";
+import { type Section, sections } from "../routes.ts";
 import { LAYOUT_BREAKPOINTS, layoutStyles } from "./layout.ts";
 import { base } from "./shared.ts";
 import "./setup-teams.ts";
-import "./setup-projects.ts";
 import "./setup-engines.ts";
 import "./setup-sandboxes.ts";
 import "./setup-notifications.ts";
 
-export const sections = [
-  ["teams", "Teams"],
-  ["projects", "Projects"],
-  ["engines", "Engines and accounts"],
-  ["sandboxes", "Sandboxes"],
-  ["notifications", "Notifications"],
-] as const;
-
-export type Section = (typeof sections)[number][0];
-
-export const isSection = (s: string | undefined): s is Section => sections.some(([id]) => id === s);
+export { isSection, type Section, sections } from "../routes.ts";
 
 export class IncSetup extends LitElement {
   static override properties = { section: { type: String } };
@@ -51,10 +42,10 @@ export class IncSetup extends LitElement {
 
   override render() {
     return html`<div class="layout-split">
-      <nav class="sections-nav layout-split-sidebar" aria-label="Setup sections">
-        ${sections.map(([id, name]) => html`<a href="#/setup/${id}" aria-current=${this.section === id ? "page" : "false"}>${name}</a>`)}
+      <nav class="sections-nav layout-split-sidebar" aria-label="Settings sections">
+        ${sections.map(([id, name]) => html`<a href="#/company/settings/${id}" aria-current=${this.section === id ? "page" : "false"}>${name}</a>`)}
       </nav>
-      <div class="work layout-split-work" aria-label="Setup section">
+      <div class="work layout-split-work" aria-label="Settings section">
         ${this.body()}
       </div>
     </div>`;
@@ -64,8 +55,6 @@ export class IncSetup extends LitElement {
     switch (this.section) {
       case "teams":
         return html`<inc-setup-teams></inc-setup-teams>`;
-      case "projects":
-        return html`<inc-setup-projects></inc-setup-projects>`;
       case "engines":
         return html`<inc-setup-engines></inc-setup-engines>`;
       case "sandboxes":

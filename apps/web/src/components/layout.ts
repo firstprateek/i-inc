@@ -46,12 +46,15 @@ export const layoutStyles = css`
     padding: 0 0 var(--layout-header-gap, 12px);
     border-bottom: 1px solid var(--line);
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: 16px;
+    gap: 0 16px;
     box-sizing: border-box;
   }
-  .heading-copy { min-width: 0; }
+  .heading-copy { min-width: 0; flex: 1 1 auto; }
+  /* The area's tab row (one per area): its own full-width line under the heading and actions. */
+  .page-tabs { flex: 1 0 100%; min-width: 0; order: 3; }
   .page-header h1 { margin: 0; font: 700 30px/1.15 var(--display); letter-spacing: -0.5px; overflow-wrap: anywhere; }
   .page-header .subtitle { margin: 6px 0 0; color: var(--ink-2); font-size: 15px; line-height: 1.4; }
   .page-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 0 0 auto; }
@@ -127,6 +130,7 @@ export class IncLayout extends LitElement {
       <header class="page-header">
         <div class="heading-copy"><slot name="heading"></slot><slot name="subtitle"></slot></div>
         <div class="page-actions"><slot name="actions"></slot></div>
+        <div class="page-tabs"><slot name="tabs"></slot></div>
       </header>
       <div class="content"><slot></slot></div>
     </section>`;

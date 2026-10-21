@@ -245,7 +245,7 @@ export class IncNewTicket extends LitElement {
           <label>
             <div style="display: flex; justify-content: space-between; align-items: center;">
               <span>Project</span>
-              <a href="#/setup/projects" style="font-size: 12px; font-weight: 600; text-decoration: none; color: var(--reviewing-fg);">+ Add project</a>
+              <a href="#/company/projects" style="font-size: 12px; font-weight: 600; text-decoration: none; color: var(--reviewing-fg);">+ Add project</a>
             </div>
             <select name="project" .value=${this.project} @change=${(e: Event) => {
               this.project = (e.target as HTMLSelectElement).value;
