@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>inc.i.deployer</string>
+  <!-- The deployer runs from the owner's checkout, never from a release it deploys, so a broken
+       release can never stop its own repair. Its releases are in @RELEASES@. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>@BUN@</string>
+    <string>@REPO@/apps/deployer/src/main.ts</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>@REPO@</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>@PATH@</string>
+    <key>I_INC_CHECKOUT</key>
+    <string>@REPO@</string>
+    <key>I_INC_RELEASES</key>
+    <string>@RELEASES@</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>StandardOutPath</key>
+  <string>@LOG@</string>
+  <key>StandardErrorPath</key>
+  <string>@LOG@</string>
+</dict>
+</plist>
