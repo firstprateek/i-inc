@@ -104,6 +104,26 @@ async function decide(
   return images.length ? upload(path, images, { decision: body }) : call("POST", path, body);
 }
 
+/** One conversation, as `/api/conversations` lists it (contract C22). */
+export interface Conversation {
+  id: string;
+  employeeId: string;
+  project: string | null;
+  branch: string | null;
+  title: string;
+  mode: string | null;
+  engineId: string;
+  createdAt: number;
+  archivedAt: number | null;
+  ahpSession: string;
+  ahpChat: string;
+  /** AHP `SessionStatus` bits: 1 idle, 2 error, 8 in progress, 24 input needed, 32 read, 64 archived. */
+  status: number;
+  needsYou: boolean;
+  running: boolean;
+  modifiedAt: number;
+}
+
 export interface OfficeResponse {
   employees: DeskEntry[];
   accounts?: AccountCost[];
@@ -245,6 +265,22 @@ export const api = {
     call<{ ok: true; ticket: TicketView }>("POST", `/api/tickets/${encodeURIComponent(id)}/assign`, { to }),
   retry: (id: string): Promise<void> => call("POST", `/api/tickets/${id}/retry`, {}),
   retryTicket: (id: string): Promise<void> => call("POST", `/api/tickets/${id}/retry`, {}),
+  /** Conversations (C22): live ones by default, newest activity first; `archived` asks for the archived or all. */
+  conversations: (archived?: "true" | "all"): Promise<Conversation[]> =>
+    call<{ conversations: Conversation[] }>(
+      "GET",
+      `/api/conversations${archived ? `?archived=${archived}` : ""}`,
+    ).then((r) => r.conversations),
+  conversation: (id: string) =>
+    call<{ conversation: Conversation }>("GET", `/api/conversations/${encodeURIComponent(id)}`).then(
+      (r) => r.conversation,
+    ),
+  createConversation: (c: { employeeId: string; project?: string | null; title?: string; mode?: string }) =>
+    call<{ conversation: Conversation }>("POST", "/api/conversations", c).then((r) => r.conversation),
+  patchConversation: (id: string, c: { title?: string; archived?: boolean }) =>
+    call<{ conversation: Conversation }>("PATCH", `/api/conversations/${encodeURIComponent(id)}`, c).then(
+      (r) => r.conversation,
+    ),
 };
 
 /** What changed, when a refresh comes from the live event stream. A refresh without one is for everything. */

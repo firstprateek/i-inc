@@ -42,6 +42,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@microsoft/agent-host-protocol':
+        specifier: 1.0.0
+        version: 1.0.0
       lit:
         specifier: ^3.3.3
         version: 3.3.3
