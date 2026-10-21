@@ -112,6 +112,22 @@ As built (T59b):
   Idle conversations suspend after 15 minutes; a daemon restart suspends them all. A crashed or killed agent
   ends the turn with an error and starts again on the next message.
 
+Shipping a conversation's work (T62b, contract C22b in [coord.md](../coord.md)), the build order's step 4:
+- **Make this a ticket** hands the conversation's branch and working copy to the pipeline. The ticket's branch is
+  `conv/<id>` and it works in `conv-<id>`, assigned to the conversation's employee in the same team machine. It
+  starts at the checks (pick-up, plan and build are marked done by the conversation), then prove, review and the gates.
+  owner-merges ends in a draft PR taken out of draft for the owner; direct ends in a push to main after the review.
+  Protected paths still wait for the owner. Uncommitted work is committed first (`--no-verify`, the pipeline's checks
+  are the gate), after a scan for credentials: a finding refuses the whole thing and names the files, never the values.
+- **Open a PR** (owner-merges only) skips the pipeline: commit, push as the bot, a draft PR with a generated title and
+  body, and its checks in the context panel. Direct-mode projects have no such button: their way to main is always a
+  ticket, so it is always reviewed.
+- **One agent in a copy.** While a ticket has the copy, the conversation's agent is stopped and the host refuses
+  its turns ("This work is now ticket #N"). A ticket that is waiting for the owner still holds it. When the ticket is
+  done or failed, the conversation continues on the updated branch, and its agent is told what happened to it.
+- Both are idempotent (a double click finds the first one's ticket or PR), and both are refused, in a sentence, for a
+  conversation with no project, while the agent is mid-turn, or with nothing changed.
+
 The spike (T55, [ahp-spike.md](ahp-spike.md)) answered the open questions:
 - The official `@microsoft/agent-host-protocol` 1.0.0 works under Bun and Node (types, reducers, client,
   WebSocket transport). We pin it exactly and build our own host on its reducers; `@ahpd/sdk` is a
