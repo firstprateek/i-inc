@@ -224,8 +224,11 @@ It mints one token to look at the repo, never prints it, and revokes it at the e
   (i.inc)" with `<id>+i-inc-bot[bot]@users.noreply.github.com`, so GitHub shows them as the App's.
 - `PullRequests` opens the draft at stage 1. At stage 9 it writes the report into the body and marks
   the PR ready, which only GraphQL can do.
-- The merge is yours. For now, approve and squash-merge the PR on GitHub, then Approve in i.inc.
-  Approve doing both with your account (spec §5) is still to come.
+- The merge is yours. Squash-merge the PR on GitHub: the ticket shows "Merge on GitHub" (a link to the PR) and
+  "Close without merging", and no Approve while the PR is open. The daemon looks at the open PRs of ready
+  owner-merges tickets about every 5 minutes (longer when GitHub rate limits it) and records `merged` by itself
+  once it sees the PR merged (so auto-release and cleanup follow), or a rejection if the PR was closed without
+  merging. Approve doing the merge with your account (spec §5) is still to come.
 
 Until the App exists, a fine-grained token can stand in, as in M1 step 6 (`FineGrainedToken`).
 Limit it to the repos employees work on, with Contents and Pull requests read and write. It acts

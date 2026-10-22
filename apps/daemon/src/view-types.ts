@@ -69,6 +69,11 @@ export interface TicketView {
   /** When an account or usage cap resets, when `waiting` is about that (epoch ms). */
   waitingUntil?: number;
   report: Report | null;
+  /**
+   * An owner-merges ticket that is ready: the owner merges its PR on GitHub (there is no Approve), and i.inc
+   * marks the ticket merged by itself once it sees the PR merged.
+   */
+  mergeOnGitHub?: { number: number; url: string };
   failure: TicketState["failure"];
   outcome: TicketState["outcome"];
   createdBy?: Person | null;

@@ -90,6 +90,16 @@ describe("make this a ticket, in owner-merges mode", () => {
     expect(s.status).toBe("ready");
     expect(s.pr).toMatchObject({ branch: `conv/${c.conv.id}`, number: 1 });
     // The report replaced the PR's text and took it out of draft; main is the owner's to merge.
+    // The ticket points at the PR and has no Approve; merging on GitHub is what closes it.
+    const view = await rig.call("GET", `/api/tickets/${r.body.ticket.id}`);
+    expect(view.body.ticket.mergeOnGitHub).toEqual({
+      number: 1,
+      url: "https://github.com/acme/duet/pull/1",
+    });
+    const approve = await rig.call("POST", `/api/tickets/${r.body.ticket.id}/decide`, {
+      decision: "approve",
+    });
+    expect(approve.status).toBe(409);
     expect(rig.prs.prs).toHaveLength(1);
     expect(rig.prs.prs[0]?.draft).toBe(false);
     expect(rig.prs.calls).toContain("markReady PR_1");
@@ -380,10 +390,15 @@ describe("the handover", () => {
       (await rig.call("GET", `/api/conversations/${c.conv.id}`)).body.conversation.ship.ticket.held,
     ).toBe(true);
 
-    // The owner merges the PR on GitHub, then approves: the ticket closes and the conversation has its copy back.
+    // Approving while the PR is open is refused: the owner merges it on GitHub, and i.inc notices.
+    expect((await rig.call("POST", `/api/tickets/${id}/decide`, { decision: "approve" })).status).toBe(409);
+    expect((await rig.app.daemon.state(id)).status).toBe("ready");
+    // The owner merges the PR on GitHub: within a few minutes the ticket closes by itself and the conversation
+    // has its copy back.
     const pr = rig.prs.prs[0];
     if (pr) pr.state = "merged";
-    expect((await rig.call("POST", `/api/tickets/${id}/decide`, { decision: "approve" })).status).toBe(200);
+    rig.clock.advance(6);
+    await rig.app.daemon.tick();
     await rig.settle();
     await until(
       async () =>

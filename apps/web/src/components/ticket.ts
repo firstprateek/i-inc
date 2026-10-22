@@ -372,10 +372,18 @@ export class IncTicket extends Loader<Data> {
         <div class="row"><span class="chip">${check} ${r.checks}</span><span class="muted" style="font-size:14px">${r.byline} · ${r.minutes} min</span></div>
         ${r.engines ? html`<div class="muted" style="font-size:14px">${r.engines}</div>` : ""}
         <dl><dt>What changed</dt><dd>${r.judgment || "The builder's draft is empty."}</dd></dl>
-        <div class="actions">
+        ${
+          t.mergeOnGitHub
+            ? html`<div class="actions">
+          <a class="btn" href=${t.mergeOnGitHub.url} target="_blank" rel="noopener noreferrer">Merge on GitHub</a>
+          <button type="button" class="btn ghost" ?disabled=${this.busy} @click=${() => this.act(() => api.decide(id, "reject"))}>Close without merging</button>
+        </div>
+        <p class="muted" style="font-size:14px">i.inc marks it merged by itself once you merge the PR</p>`
+            : html`<div class="actions">
           <button type="button" class="btn" ?disabled=${this.busy} @click=${() => this.act(() => api.decide(id, "approve"))}>Approve and merge</button>
           <button type="button" class="btn ghost" ?disabled=${this.busy} @click=${() => this.act(() => api.decide(id, "reject"))}>Reject</button>
-        </div>
+        </div>`
+        }
         <div class="reply" @paste=${this.reply.paste}>
           <textarea aria-label="What to change" placeholder="What should change?" .value=${this.note}
             @input=${(e: InputEvent) => {

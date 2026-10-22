@@ -167,10 +167,19 @@ export class IncInbox extends Loader<{
   private ready(t: TicketView) {
     return html`<div class="card item">${this.header(t, "report")}
       <div class="q">${t.title}</div>
-      <div class="actions">
+      ${
+        t.mergeOnGitHub
+          ? html`<div class="actions">
+        <a class="btn" href=${t.mergeOnGitHub.url} target="_blank" rel="noopener noreferrer" style="display:inline-flex;align-items:center;text-decoration:none">Merge on GitHub</a>
+        <button type="button" class="btn ghost" ?disabled=${this.pressing} @click=${() => this.press(() => api.decide(t.id, "reject"))}>Close without merging</button>
+        <a class="btn ghost" href="#/ticket/${t.id}" style="display:inline-flex;align-items:center;text-decoration:none">Report</a>
+      </div>
+      <p class="muted" style="font-size:14px">i.inc marks it merged by itself once you merge the PR</p>`
+          : html`<div class="actions">
         <button type="button" class="btn" ?disabled=${this.pressing} @click=${() => this.press(() => api.decide(t.id, "approve"))}>Approve</button>
         <a class="btn ghost" href="#/ticket/${t.id}" style="display:inline-flex;align-items:center;text-decoration:none">Report</a>
-      </div></div>`;
+      </div>`
+      }</div>`;
   }
 }
 

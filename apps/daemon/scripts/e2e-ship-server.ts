@@ -8,7 +8,7 @@
 // for GitHub, folders under $HOME/world/work for the machine), the conversations' agent is the scripted ACP
 // fake, tickets' agents are the core's FakeAgent (reviews wait at a gate the run opens), and GitHub's pull
 // request API is an in-memory fake. Two projects: Duet (owner-merges) and Notes (direct).
-// Control, for the run only: POST /__e2e {"op": "write"|"checks"|"gate"|"prs"|"git", ...}
+// Control, for the run only: POST /__e2e {"op": "write"|"checks"|"gate"|"prs"|"merge"|"git", ...}
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -138,6 +138,8 @@ const app = await createApp({
   helper: new FakeHelper(),
   chat: new FakeChat(),
 });
+// The open PRs of ready tickets are looked at every second here, not every 5 minutes.
+app.deps.prCheckMs = 1000;
 seedDemo(app.deps.registry);
 for (const p of app.deps.registry.projects()) app.deps.registry.removeProject(p.id);
 app.deps.registry.addProject({
@@ -163,6 +165,15 @@ async function control(req: Request): Promise<Response> {
   }
   if (b.op === "checks") {
     prs.checkState = b.checks;
+    return Response.json({ ok: true });
+  }
+  if (b.op === "merge") {
+    // The owner merges the PR on GitHub; the daemon notices on its next look.
+    const pr = prs.prs.find((p) => p.number === b.number);
+    if (!pr) return Response.json({ error: "no such PR" }, { status: 404 });
+    pr.state = "merged";
+    await new Promise((r) => setTimeout(r, 1100));
+    await app.daemon.tick();
     return Response.json({ ok: true });
   }
   if (b.op === "gate") {

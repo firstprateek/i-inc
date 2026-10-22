@@ -2347,6 +2347,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         return act(p.id, "ready", async () => {
           // The images come first, so the Build session that follows the decision has them.
           if (images.length) await attachImages(p.id ?? "", images);
+          if (body.decision === "approve") await mustBeMerged(p.id ?? "");
           await decide(ports, p.id ?? "", body.decision, body.note);
         });
       },
@@ -2759,6 +2760,28 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         daemon.waitingUntil[id] ?? null,
       ),
     });
+  }
+
+  /**
+   * In owner-merges, Approve means "I merged the PR": while the PR is open on GitHub there is nothing to approve,
+   * and the ticket closes by itself once it is merged.
+   */
+  async function mustBeMerged(id: string): Promise<void> {
+    const r = d.tickets.get(id);
+    const ws = d.workspace;
+    if (!r || !ws?.prState) return;
+    if (d.registry.projectPolicy(r.ticket.project).mode !== "owner-merges") return;
+    const pr = (await daemon.state(id)).pr;
+    if (!pr || pr.number === undefined) return;
+    let seen: "open" | "closed" | "merged";
+    try {
+      seen = await ws.prState(r.ticket, pr);
+    } catch {
+      throw new Error("couldn't ask GitHub whether the PR is merged; try again in a moment");
+    }
+    if (seen === "open") {
+      throw new Error("merge the PR on GitHub first: i.inc marks the ticket merged by itself once you do");
+    }
   }
 
   async function act(id: string | undefined, needs: "needs-you" | "ready" | null, fn: () => Promise<void>) {

@@ -189,7 +189,9 @@ export class FakeWorkspace implements Workspace {
     return this.prStates.get(ticket.id) ?? "open";
   }
   async closePr(ticket: Ticket): Promise<void> {
-    if ((this.prStates.get(ticket.id) ?? "open") === "open") this.prStates.set(ticket.id, "closed");
+    // Like the real one: only an open PR is closed.
+    if ((this.prStates.get(ticket.id) ?? "open") !== "open") return;
+    this.prStates.set(ticket.id, "closed");
     this.closedPrs.push(ticket.id);
   }
 }

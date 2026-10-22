@@ -10,6 +10,7 @@ import {
   type Clock,
   type Company,
   type Duty,
+  decide,
   type Employee,
   findEngine,
   fold,
@@ -72,6 +73,8 @@ export interface DaemonDeps {
   harness: Harness;
   workspace?: Workspace;
   tokens?: TokenSource;
+  /** How often one open PR waiting to be merged is looked at (ms); default `Daemon.prCheckMs`. For tests and the end-to-end run. */
+  prCheckMs?: number;
   /** Where GitHub's API is, when it isn't api.github.com: a test's or the end-to-end run's stand-in. */
   githubApi?: string;
   /** The fetch the projects flow uses for GitHub, when it isn't the global one (tests). */
@@ -624,6 +627,17 @@ export class Daemon {
     }
     this.dirtyTickets.clear();
 
+    // Owner-merges tickets that wait for the owner: has the PR been merged (or closed) on GitHub? Not awaited,
+    // so a slow GitHub never holds the tick; one look at a time.
+    if (!this.prWatch) {
+      this.prWatch = this.watchPrs(records, states)
+        .catch((err) =>
+          this.logOnce(`prs:${errorLine(err)}`, `watching pull requests failed: ${errorLine(err)}`),
+        )
+        .finally(() => {
+          this.prWatch = null;
+        });
+    }
     try {
       this.checkAutoReleases(records, states, now);
     } catch (err) {
@@ -1351,11 +1365,81 @@ export class Daemon {
     return true;
   }
 
+  /** How often one open PR is looked at while its ticket waits for the owner to merge it. */
+  static readonly prCheckMs = 5 * 60_000;
+  /** The most a rate-limited or failing PR check waits before it tries again. */
+  static readonly prCheckMaxMs = 30 * 60_000;
+  /** The look at the open PRs that is going on now, if any. */
+  private prWatch: Promise<void> | null = null;
+  /** When each ready ticket's PR is next looked at (monotonic ms), and how many looks failed in a row. */
+  private readonly prChecks = new Map<Id, { next: number; failed: number }>();
+
+  /**
+   * An owner-merges ticket that is ready waits for the owner to merge the PR on GitHub (there is no Approve
+   * button for it). Each such PR is looked at every few minutes: merged records `merged` (auto-release and
+   * cleanup follow from that), closed without merging records a rejection. GitHub's rate limit and failures
+   * only make the next look later. The ticket's own run is untouched: this is only the owner's decision, made
+   * for them by what they did on GitHub.
+   */
+  private async watchPrs(records: TicketRecord[], states: Map<Id, TicketState>): Promise<void> {
+    const ws = this.d.workspace;
+    for (const id of [...this.prChecks.keys()])
+      if (states.get(id)?.status !== "ready") this.prChecks.delete(id);
+    if (!ws?.prState) return;
+    for (const r of records) {
+      const id = r.ticket.id;
+      const s = states.get(id);
+      if (s?.status !== "ready" || !s.pr || s.pr.number === undefined) continue;
+      if (this.d.registry.projectPolicy(r.ticket.project).mode !== "owner-merges") continue;
+      const mono = monotonicNow(this.d.clock);
+      const prev = this.prChecks.get(id);
+      if (prev && mono < prev.next) continue;
+      let seen: "open" | "closed" | "merged";
+      try {
+        seen = await ws.prState(r.ticket, s.pr);
+      } catch (err) {
+        const failed = (prev?.failed ?? 0) + 1;
+        const asked = (err as { retryAfterSec?: unknown })?.retryAfterSec;
+        const wait = Math.min(
+          Math.max(
+            (this.d.prCheckMs ?? Daemon.prCheckMs) * 2 ** (failed - 1),
+            typeof asked === "number" ? asked * 1000 : 0,
+          ),
+          Daemon.prCheckMaxMs,
+        );
+        this.prChecks.set(id, { next: mono + wait, failed });
+        this.logOnce(
+          `pr:${id}:${errorLine(err)}`,
+          `ticket ${id}: couldn't look at its PR: ${errorLine(err)}`,
+        );
+        continue;
+      }
+      this.prChecks.set(id, { next: mono + (this.d.prCheckMs ?? Daemon.prCheckMs), failed: 0 });
+      if (seen === "open") continue;
+      // Decide from the log, not the snapshot: the owner may have acted meanwhile.
+      if ((await this.state(id)).status !== "ready") continue;
+      this.prChecks.delete(id);
+      this.d.log?.(
+        `ticket ${id}: its PR was ${seen === "merged" ? "merged" : "closed without merging"} on GitHub`,
+      );
+      await decide(this.ports, id, seen === "merged" ? "approve" : "reject");
+      try {
+        this.run(id, { force: true });
+      } catch (err) {
+        this.logOnce(`run:${id}:${errorLine(err)}`, `ticket ${id} didn't run: ${errorLine(err)}`);
+      }
+    }
+  }
+
   /** Resolves when nothing is running. For tests and a clean shutdown. */
   async idle(): Promise<void> {
     // A ticket that finishes asks for a tick before it leaves `running`, so the chain covers it.
     for (;;) {
       await this.chain;
+      if (this.prWatch) {
+        await this.prWatch;
+        continue;
+      }
       if (!this.running.size) return;
       await Promise.all(this.running.values());
     }
