@@ -531,9 +531,21 @@ export async function waitForCi(
     call(f, url, { method: "GET", headers: { authorization: `Bearer ${await tokens.token(repo)}` } });
 
   const targetBranch = encodeURIComponent(o.branch ?? "main");
-  const rules = (await get(`${api}/repos/${checkRepo(repo)}/rules/branches/${targetBranch}`).catch(
-    () => [],
-  )) as unknown;
+  let rules: unknown = [];
+  const rulesUrl = `${api}/repos/${checkRepo(repo)}/rules/branches/${targetBranch}`;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      rules = await get(rulesUrl);
+      break;
+    } catch (err) {
+      if (err instanceof UpstreamGitHubError && err.status === 404) {
+        rules = [];
+        break;
+      }
+      if (attempt === 2) throw err;
+      await sleep(o.pollMs ? Math.min(o.pollMs, 1000 * 2 ** attempt) : 1000 * 2 ** attempt);
+    }
+  }
   const required = (Array.isArray(rules) ? (rules as Record<string, unknown>[]) : [])
     .filter((r) => r.type === "required_status_checks")
     .flatMap(
@@ -551,11 +563,25 @@ export async function waitForCi(
   const start = now();
   for (;;) {
     const runs: Record<string, unknown>[] = [];
-    for (let page = 1; ; page++) {
-      const body = await get(`${api}/repos/${repo}/commits/${sha}/check-runs?per_page=100&page=${page}`);
-      const batch = (Array.isArray(body.check_runs) ? body.check_runs : []) as Record<string, unknown>[];
-      runs.push(...batch);
-      if (batch.length < 100) break;
+    let pollError: unknown = null;
+    try {
+      for (let page = 1; ; page++) {
+        const body = await get(`${api}/repos/${repo}/commits/${sha}/check-runs?per_page=100&page=${page}`);
+        const batch = (Array.isArray(body.check_runs) ? body.check_runs : []) as Record<string, unknown>[];
+        runs.push(...batch);
+        if (batch.length < 100) break;
+      }
+    } catch (err) {
+      pollError = err;
+    }
+
+    if (pollError) {
+      const waited = now() - start;
+      if (waited >= (o.timeoutMs ?? 45 * 60_000)) {
+        throw pollError;
+      }
+      await sleep(o.pollMs ?? 20_000);
+      continue;
     }
     const failed = runs.filter((r) => finished(r) && !passed(r));
     if (failed.length) {

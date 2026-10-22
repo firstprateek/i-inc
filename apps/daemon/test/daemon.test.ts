@@ -2,6 +2,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { FakeWorkspace } from "@i-inc/core/testing";
 import { describe, expect, it } from "vitest";
 import { liveLine } from "../src/views.ts";
 import { refunds, testApp } from "./setup.ts";
@@ -621,6 +622,23 @@ describe("chat", () => {
         "EXPLAIN QUERY PLAN SELECT * FROM tickets ORDER BY created_at, CAST(id AS INTEGER)",
       );
       expect(ticketPlan.some((p) => p.detail.includes("idx_tickets_created_at_id"))).toBe(true);
+    });
+
+    it("sets waitingUntil when runTicket throws an error with retryAfterSec (Group 3.1)", async () => {
+      const app = await testApp();
+      const ws = new FakeWorkspace();
+      const err = Object.assign(new Error("GitHub 429 rate limit"), {
+        status: 429,
+        rateLimited: true,
+        retryAfterSec: 60,
+      });
+      ws.open = async () => {
+        throw err;
+      };
+      app.deps.workspace = ws;
+      await app.call("POST", "/api/tickets", refunds);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(app.daemon.waitingUntil["1"]).toBe(app.clock.now() + 60_000);
     });
   });
 });

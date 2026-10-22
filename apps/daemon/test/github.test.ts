@@ -309,4 +309,101 @@ describe("CI at the gates", () => {
     expect(await run()).toEqual({ ok: true });
     expect(slept).toEqual([]);
   });
+
+  describe("handling network and upstream errors in waitForCi (Group 3.2)", () => {
+    it("swallows 404 when querying branch rules and treats required checks as empty", async () => {
+      let clock = 0;
+      const { f } = recorder((call) => {
+        if (call.url.includes("/rules/branches/main")) {
+          return { status: 404, json: { message: "Branch not found or no rules" } };
+        }
+        return { json: { check_runs: [done("test", "success")] } };
+      });
+      const res = await waitForCi(new FineGrainedToken("t"), "firstprateek/duet", sha, {
+        fetch: f,
+        now: () => clock,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+      });
+      expect(res).toEqual({ ok: true });
+    });
+
+    it("retries transient 502 errors on branch rules and succeeds when retry returns rules", async () => {
+      let clock = 0;
+      let rulesCalls = 0;
+      const { f } = recorder((call) => {
+        if (call.url.includes("/rules/branches/main")) {
+          rulesCalls++;
+          if (rulesCalls === 1) {
+            return { status: 502, json: { message: "Bad Gateway" } };
+          }
+          return {
+            json: [
+              {
+                type: "required_status_checks",
+                parameters: { required_status_checks: [{ context: "required-check" }] },
+              },
+            ],
+          };
+        }
+        return { json: { check_runs: [done("required-check", "success")] } };
+      });
+      const res = await waitForCi(new FineGrainedToken("t"), "firstprateek/duet", sha, {
+        fetch: f,
+        now: () => clock,
+        pollMs: 10,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+      });
+      expect(res).toEqual({ ok: true });
+      expect(rulesCalls).toBe(2);
+    });
+
+    it("throws when branch rules lookup persistently fails with 502 rather than assuming no required checks", async () => {
+      let clock = 0;
+      const { f } = recorder((call) => {
+        if (call.url.includes("/rules/branches/main")) {
+          return { status: 502, json: { message: "Bad Gateway" } };
+        }
+        return { json: { check_runs: [done("test", "success")] } };
+      });
+      await expect(
+        waitForCi(new FineGrainedToken("t"), "firstprateek/duet", sha, {
+          fetch: f,
+          now: () => clock,
+          pollMs: 10,
+          sleep: async (ms) => {
+            clock += ms;
+          },
+        }),
+      ).rejects.toThrow(/HTTP 502/);
+    });
+
+    it("retries transient errors during check-runs polling instead of failing immediately", async () => {
+      let clock = 0;
+      let checkRunPolls = 0;
+      const { f } = recorder((call) => {
+        if (call.url.includes("/rules/branches/main")) {
+          return { status: 404, json: { message: "Not Found" } };
+        }
+        checkRunPolls++;
+        if (checkRunPolls === 1) {
+          return { status: 502, json: { message: "Bad Gateway" } };
+        }
+        return { json: { check_runs: [done("test", "success")] } };
+      });
+      const res = await waitForCi(new FineGrainedToken("t"), "firstprateek/duet", sha, {
+        fetch: f,
+        now: () => clock,
+        pollMs: 100,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+      });
+      expect(res).toEqual({ ok: true });
+      expect(checkRunPolls).toBe(2);
+    });
+  });
 });
