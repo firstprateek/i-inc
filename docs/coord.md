@@ -547,3 +547,40 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-21 20:40 claude → all: DONE T62 — #92 merged after an independent review, three re-reviews and a lead check: a conversation's work becomes a ticket (checks → review → prove → PR or main) or a draft PR (owner-merges); nothing leaves the sandbox unless it is exactly the scanned commit, pushed from a clean repo. First merge through the new ruleset with --auto.
 2026-10-21 21:50 claude → all: OPEN T67 — a team sandbox runs every employee as one Unix user, so an agent can read and edit a teammate's brain copy and working copies (found reviewing #95; #95 flags harvests that overlapped a teammate's session as untrusted in the meantime).
 2026-10-21 22:30 claude → all: SECURITY — every sandbox is signed in to GitHub as the bot with write access to all the App's repos (real.ts signIn, token("*")); the bot may push to main, and the deployer auto-deploys green main onto the host, so a prompt-injected agent could put code on the mini around review. Automatic deploys PAUSED on the mini (launchctl bootout inc.i.deployer; resume with launchctl bootstrap gui/501 ~/Library/LaunchAgents/inc.i.deployer.plist) until T68 lands; merges are deployed by hand after review meanwhile. New walls installed by the owner; walls-test 14/14 in inc-engineering. Mini at 490f14f.
+
+## HANDOFF from claude (2026-10-21 late) — for codex and antigravity
+
+Claude is out of tokens for ~1 hour and will resume after. Until then, do ONLY the tasks below, in order. Rules that always apply:
+- Work in your own fresh clone (`git clone git@github.com:firstprateek/i-inc.git <your-scratch>/x`); never edit someone else's checkout, never touch `~/.i-inc` or `~/.config/i-inc` on any machine.
+- Commit trailer exactly `Co-Authored-By: <your agent name> <noreply@…>` — NO model names anywhere in commits or PRs.
+- Merge only with `gh pr merge <n> --squash --auto --delete-branch` (the ruleset requires the `check` CI job; `--auto` waits for it). Never merge a PR whose CI is red. Never force-push main.
+- Start servers with `nohup … > file 2>&1 < /dev/null &`, record `$!`, kill only those PIDs. This Mac has no `timeout`: use `perl -e 'alarm shift; exec @ARGV' 600 <cmd>`.
+- Before every push: `pnpm check && pnpm typecheck && pnpm test` green.
+- Write a one-line log entry below for each thing you finish.
+
+**IMPORTANT — automatic deploys are PAUSED on the mini** (security: sandboxes hold a GitHub write token until T68 lands). Do NOT run `launchctl bootstrap … inc.i.deployer.plist`. After a PR merges and its main CI is green, deploy by hand from the dev Mac:
+`ssh prateek@Prateeks-Mac-mini.local 'export PATH=/opt/homebrew/bin:$PATH; cd ~/i-inc && git pull --ff-only && pnpm install --frozen-lockfile && bun apps/deployer/src/main.ts --once --force-after 0'`
+then check `curl -s http://127.0.0.1:7420/api/health` on the mini shows the new sha.
+
+### Task H1 (codex) — review and merge the open PRs, one at a time
+Claude's background builders may still push to these; wait until each PR's latest push is ≥15 min old and CI is green.
+1. **#95 (T58 brain writes)** — last round should fix: (a) `teammateWorked` in `apps/daemon/src/brain-harvest.ts` must use only the last HARVEST time as `since` (test: teammate edit → delivery → owner harvest ⇒ change marked untrusted); (b) Stripe pattern narrowed to `sk_live_|rk_live_|whsec_` (ship scan must NOT refuse `pk_test_`/`pk_live_`/`sk_test_`). Verify both by reading the diff and running the named tests; then merge.
+2. **T68 PR ("no write credentials in sandboxes", branch `t68-no-write-tokens`)** — SECURITY. Verify: (a) grep the daemon for every `run(`/launch env and stdin — no write-capable GitHub token is ever passed into a sandbox; `signIn` in `real.ts` uses a read-only, repo-scoped token; (b) every `git push` happens on the host from a verified bundle at exactly the scanned sha (tests exist for tampered bundles and a ref flipped after the scan); (c) host git runs with hooks disabled, no system/global config, `transfer.fsckObjects=true`; (d) the deployer refuses any commit in `current..candidate` that is not in `~/.i-inc/pushed-main.jsonl`, not an owner-merged PR, and not docs-only. Report any gap as a PR comment instead of merging. If all four hold and CI is green: merge, deploy by hand (above), then RESUME automatic deploys: `ssh prateek@Prateeks-Mac-mini.local 'launchctl bootstrap gui/501 ~/Library/LaunchAgents/inc.i.deployer.plist'` and confirm `tail ~/Library/Logs/i-inc-deployer.log` says "deployer started".
+3. **T63 daemon resilience PR (branch `t63-daemon-resilience`)** — verify each poison-pill case from the PR body has a test that fails without the fix (revert the fix line locally, run the test, restore). Merge if all do.
+4. **T63 web PRs (branches `t63-auth-sessions`, `t63-web-resilience`, `t63-web-dead-ends`)** — for `t63-auth-sessions` check: logout revokes the session server-side; a first-run signup needs the setup code; the old cookie migration is described in the PR. Merge each when green.
+
+### Task H2 (antigravity) — T63 audit fixes, mechanical groups (one PR per group)
+Audit reports (read them first, they list file:line, evidence and the fix):
+`/private/tmp/claude-501/-Users-padi-Documents-projects-ai-projects-design-system-mcp/832c5a0f-9b4c-4b3f-9a8f-a91fdc28f2f3/scratchpad/audit/A-daemon.md` and `…/audit/B-web.md`.
+Do NOT do daemon Groups 1 and 4 or web Groups 1–3 (already in PRs). Do these, each as its own PR off fresh main, each fix with a test that fails without it:
+1. **A-daemon Group 5 (performance)** first: the knowledge `LIKE` lookup in `apps/daemon/src/daemon.ts` (~L764) makes the tick quadratic (15 s at 10k tickets). Replace with an indexed/keyed lookup; add a test that counts queries (no timing asserts). Then the rest of Group 5.
+2. **A-daemon Group 3 (GitHub and network errors)**: `UpstreamGitHubError` messages ("failed with HTTP 502") must be retried — fix the retry matcher in `runner.ts` to use the error type/status, not regex on text.
+3. **A-daemon Group 7 (smaller correctness)** and **Group 8 (add the missing tests listed there)**.
+4. **B-web Group 4 (performance)**: gzip/brotli + long cache headers for hashed assets in the daemon's static serving; self-host or drop render-blocking Google Fonts; board fetches (16 requests / 2.6 MB at 1k tickets) → one summary endpoint or pagination.
+5. **B-web Groups 5 (accessibility), 6 (layout rule), 7 (PWA), 8 (client hardening).**
+Leave A-daemon **Group 2 (restart recovery)** and **Group 6 (security)** for Claude.
+
+### Do NOT start (Claude will do these — they need design judgment)
+- T67 (a Unix user per employee) — on hold: agents in team sandboxes have sudo, so per-user isolation needs a design decision (per-employee machines vs. no root). Don't implement.
+- T64 (UX review of the whole product).
+- The rest of the security review.
