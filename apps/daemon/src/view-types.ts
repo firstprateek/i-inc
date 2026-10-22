@@ -239,6 +239,7 @@ export interface ShipView {
   problem?: string;
   /** Only with `?preview=1`: what the confirm dialog starts with. */
   suggestion?: { title: string; doneWhen: string[]; description: string };
+}
 
 /** One entry of the Brain changes feed (contract C19): a change an agent made to its brain copy, committed or refused. */
 export interface BrainChangeView {
