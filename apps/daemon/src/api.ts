@@ -22,6 +22,7 @@ import {
   homeSandbox,
   type Id,
   isHomeEmployee,
+  isLocalEngine,
   knowledgeLog,
   type ProjectRelease,
   type ProposedEdit,
@@ -470,6 +471,29 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
             return json({ error: "Codex runs in the cloud and cannot be local; turn off Local first" }, 400);
           }
           return json({ error: "Codex is a cloud harness and cannot be marked local" }, 400);
+        }
+        // A PA's sandbox has no internet, so every engine it uses must stay a local one: this can't turn one
+        // into a cloud engine under it (hiringProblems checks the same when the PA is hired or edited).
+        if (!isLocalEngine({ local, harness })) {
+          const users = d.registry
+            .employees()
+            .filter(
+              (e) =>
+                isHomeEmployee(e) &&
+                [
+                  e.engines.default,
+                  ...Object.values(e.engines.perDuty ?? {}),
+                  ...e.engines.fallbacks,
+                ].includes(id),
+            );
+          if (users.length) {
+            return json(
+              {
+                error: `${users.map((e) => e.name).join(", ")} works on home data and its sandbox has no internet, so ${id} has to stay a local engine: give ${users.length > 1 ? "them" : "it"} another engine first`,
+              },
+              409,
+            );
+          }
         }
         d.registry.addEngine({
           id,

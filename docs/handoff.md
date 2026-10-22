@@ -104,70 +104,107 @@ Each team's sandbox signs in to harnesses once using host tools:
 
 ### Home machines' egress wall (T66)
 
-A PA's sandbox (the machine of the team `home-<id>`, or any team with a PA in it) now reaches **only Ollama on the
-gateway**: no internet, no DNS, no LAN, no tailnet, no other machines (spec §5 and §7). Engineers' machines are
-unchanged. The design and why:
+The walls are now **closed unless opened**. A machine gets the internet and DNS only if the daemon has declared
+its address; every other address (a PA's sandbox, a machine nobody declared, an address a machine made up for
+itself) gets only DHCP and Ollama on the gateway. A PA's sandbox, the machine of the team `home-<id>` or any team
+with a PA in it, therefore has no internet, no DNS, no LAN, no tailnet and no host (spec §5 and §7). Engineers'
+machines keep their internet. The design, and why:
 
 - **Not a separate network.** Apple container 1.4.1 has `container network create`, but `machine create` has no
-  `--network` option and the machine service attaches every machine to the built-in `default` network (read in
-  `Sources/Services/MachineAPIService/Server/MachinesService.swift`, tag 1.4.1). So there is nothing to create at
-  user level. The wall is a pf table `<home_machines>` of the PA sandboxes' addresses instead.
-- **How the table is filled.** The daemon reads the sandbox's address from `container machine ls` (its IP column) and
-  writes the addresses of the running PA sandboxes to `/var/run/i-inc/home-machines` (a folder `walls.sh` makes for
-  the owner). `walls.sh` (root, every minute and at once when that file changes) keeps only lines that are plain
-  addresses of 192.168.64.0/24, writes them to `/var/run/i-inc-home-machines.table`, loads the rules (which read that
-  file), reads the table back from pf and writes it to `/var/run/i-inc-walls.home`. It takes the walls marker away
-  (so the daemon stops everything) if the rules lack the home block, the table pf holds differs from what was
-  declared, pf is off, or the gateway isn't on `bridge100`. It does not use DHCP leases: container allocates the
-  addresses itself (`AttachmentAllocator`), and a stale lease would wall the wrong machine.
-- **The daemon fails closed.** For a PA sandbox it makes and boots nothing unless `/var/run/i-inc-walls.home` is fresh
-  (under 2 minutes), then declares the address and waits (up to 90 s) for it to appear in that file. It runs nothing in
-  the machine (agent, script, brain copy, callback, sign-in probe) until it has, checking the file again before every
-  launch. If the address doesn't appear the machine is stopped and the ticket waits with the reason. A running sandbox
-  that stays outside the file for 90 s (it restarted with another address, or the job stopped) is stopped by the
-  daemon's 30-second watch. The only unwalled moment is the seconds between a PA sandbox getting its address and the
-  walls job loading it; nothing of the PA's is in the machine then.
-- **Engines.** Only local engines (`local: true`, not Codex): hiring or editing a PA refuses any duty's engine or
-  fallback that isn't, and says "none is set up yet" when there is no local engine. The one local engine today is
-  OpenCode on Ollama (`tools/m1/install-harnesses.sh` points it at `http://192.168.64.1:11434/v1`, the relay); add it
-  in Setup as an engine with harness OpenCode and "local" ticked. No engine was invented.
-- **A decision to check:** home machines get **no DNS** either (the lead's plan allowed it). A lookup through the host's
-  resolver can carry data out, and the sandbox reaches the gateway by address. If a PA's engine needs a name, add
-  `pass in quick on $machines_if inet proto { udp, tcp } from <home_machines> to $gateway port 53` after the Ollama rule
-  in `tools/m1/pf/i-inc-machines.pf` (one line) and say so here.
+  `--network` option and the machine service attaches every machine to the built-in `default` network
+  (`Sources/Services/MachineAPIService/Server/MachinesService.swift`, tag 1.4.1). Nothing to create at user level.
+- **Why the table names the machines let out, not the one shut in.** The sandbox user has passwordless sudo, so a
+  rule naming the PA's address could be dodged with `ip addr add`. With the table of open machines an unknown
+  address is shut in. And the PA's user loses root anyway (below).
+- **How the table is filled.** The daemon reads each machine's address from `container machine ls` (its IP column)
+  and writes the running machines that may reach the internet to `/var/run/i-inc/open-machines` (a folder
+  `walls.sh` makes for the owner). `walls.sh` (root, every minute and at once when that file changes) keeps only
+  lines that are plain addresses of 192.168.64.0/24, writes `/var/run/i-inc-open-machines.table`, loads the rules
+  (which read it), reads the table back from pf, runs `pfctl -k` for every address that left the table (pf keeps
+  the state of a connection a rule once passed), and writes what pf holds to `/var/run/i-inc-walls.open`. It takes
+  the walls marker away (so the daemon stops everything) if the rules lack the open-machines rule, the table
+  differs from the declared list, pf is off or the gateway isn't on `bridge100`. No DHCP leases are used:
+  container allocates addresses itself, so they would not list the machines.
+- **The daemon checks the live address before every launch.** It runs `container machine ls`, finds the machine's
+  current address and checks it against that file: in it for an engineers' machine, not in it for a PA's sandbox.
+  This covers agents, scripts (brain copies, checks), callbacks and the sign-in probe, and refuses a machine that
+  isn't running (`machine run` would boot it). A machine that woke at a new address waits, up to 90 s, until the
+  walls let it out (declared at once, taken up when the file changes or within a minute); a ticket then shows why
+  and Setup > Sandboxes shows the reason. A 30-second watch also declares machines that woke on their own.
+- **A PA's sandbox has no root.** When the daemon creates or boots one it first runs a fixed script as root
+  (`machine run -u root`) that deletes the sudoers entry, removes the user from the groups that are root in all but
+  name (sudo, admin, wheel, docker, lxd, adm, disk) and leaves an empty immutable `/etc/sudoers.d/employee`; then
+  as the user it checks `sudo -n true` fails, and checks that again before every launch and in the watch (root
+  back means the machine is stopped). Nothing in a PA's workflow needs sudo: the launchers, the brain apply script
+  and the daemon's scripts don't use it; `update-machine.sh` and `provision-codex.sh` now write as `-u root`
+  instead of `sudo tee`; the storage trim (`sudo -n fstrim`) is best effort and is skipped.
+  The brief still says the machine has sudo for engineers; a PA is told it does not. Docker is not available to
+  a PA either. The weak point left is the guest kernel and whatever is setuid in the image.
+- **Rolling out.** `main` deploys itself, the new rules arrive only when you run `install-walls.sh`. Until
+  `/var/run/i-inc-walls.open` exists the daemon treats the walls as the old ones: engineers' machines run exactly
+  as today (no extra checks), and a PA's sandbox is refused with "the walls need updating: run `sudo sh
+  tools/host/install-walls.sh`" in the log, in Setup > Sandboxes and in any PA ticket. Once the file appears the
+  new rules are assumed to be loaded and every machine is checked.
+- **Ollama.** The relay `tools/m1/ollama-forward.mjs` is no longer a TCP pipe: it is an HTTP proxy that allows
+  `/api/chat`, `/api/generate`, `/api/embed`, `/api/embeddings`, `/api/tags`, `/api/show`, `/api/ps`,
+  `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings` and `/v1/models` with the method each needs, on the
+  exact path, and only for a model that `/api/tags` lists as installed (cached 30 s), is not a cloud model and
+  has no registry host in its name. Pull, push, create, copy, delete and blobs never reach Ollama. It serves every
+  machine. A model you add with `ollama pull` on the mini shows up within 30 s. Re-install it:
+  `sh tools/host/install-relay.sh`.
+- **Engines.** A PA can use only local engines (`local: true`, not Codex), for every duty and fallback; hiring or
+  editing refuses anything else and says "none is set up yet" when there is no local engine. `PUT /api/engines/:id`
+  now refuses (409) to make an engine a PA uses non-local. The one local engine today is OpenCode on Ollama
+  (`tools/m1/install-harnesses.sh`, relay at `http://192.168.64.1:11434/v1`); add it in Setup as an engine with harness
+  OpenCode and "local" ticked.
+- **No DNS for a PA, on purpose** (a lookup through the host's resolver can carry data out). A PA reaches the gateway
+  by address. If an engine ever needs a name, that is a decision to make here first, not a rule to add.
+- **Not verified, so not claimed: one machine reaching another.** L2-switched traffic between two machines on the
+  bridge may never meet pf. `tools/m1/walls-test.sh` with `OTHER_MACHINE=<ip>` tests TCP and ping to another
+  machine and sends a broadcast to `255.255.255.255:67` (to see whether the DHCP rule's broadcast reaches other
+  machines: run `nc -ul 67` as root in the other machine first). Until that has passed on the mini, treat a PA's
+  sandbox as able to reach other machines on the bridge, and through them the internet.
 
-**Owner steps (once, on the mini).** Nothing needs creating at user level.
+**Owner steps (once, on the mini).** Nothing needs creating at user level. Do it when no ticket is running: right
+after the walls reload, each engineers' machine is shut in until the daemon declares it (up to half a minute).
 
-1. `cd ~/i-inc && git pull` (the daemon deploys itself; the host scripts come from this checkout). Until step 2, a
-   PA's sandbox does not start: the ticket waits with "the home machines' wall isn't up … run sudo sh
-   tools/host/install-walls.sh". Other machines are not affected.
-2. `sudo sh tools/host/install-walls.sh` loads the new rules, `walls.sh` and its plist (now with a watch on the
-   daemon's list), and records your account as the owner of `/var/run/i-inc`. It ends with
-   `the walls are up` and `home machines the walls hold now: 0`. (Run it with `sudo` from your own account, not from
-   a root shell: it needs `SUDO_USER`.) The reload of each LaunchDaemon now waits for launchd to drop it and retries.
-3. Verify. (a) The rules are in: `sudo pfctl -a com.apple/010.i-inc-machines -s rules | grep home_machines` shows two
-   lines (a pass to the gateway on 11434 and a `block return` for everything else). (b) Start the PA's sandbox (give
-   the PA a task). Within a few seconds,
-   `cat /var/run/i-inc/home-machines /var/run/i-inc-walls.home` shows its address (the IP column of
-   `container machine ls`), and `sudo pfctl -a com.apple/010.i-inc-machines -t home_machines -T show` lists it too.
-   (c) From inside it, `container machine run -i -n inc-home-<id> -- env HOME_MACHINE=1 ROUTER=<ip> HOST_LAN=<ip>
-   HOST_TAILNET=<ip> LAN_DEVICE=<ip:port> TAILNET_DEVICE=<ip:port> bash -s < tools/m1/walls-test.sh` must end
-   `13 as wanted, 0 not` (internet and DNS blocked, only Ollama open); the same script without `HOME_MACHINE=1`, in an
-   engineer's machine, still ends `13 as wanted, 0 not`. (d) `tail /var/log/i-inc-walls.log` shows `walls up` and no
-   `walls down`.
-4. An existing PA sandbox from before this (already `inc-home-<id>` on `default`) needs no recreating: it is walled
-   once the daemon declares its address.
+1. `cd ~/i-inc && git pull` (the daemon deploys itself; the host scripts come from this checkout).
+2. `sh tools/host/install-relay.sh` (as yourself) installs the allowlisting relay and restarts it.
+3. `sudo sh tools/host/install-walls.sh` (from your own account, not a root shell: it needs `SUDO_USER`) loads the new
+   rules, `walls.sh` and its plist (with a watch on the daemon's list), and records you as the owner of
+   `/var/run/i-inc`. It ends with `the walls are up` and `open machines the walls hold now: 0`; within half a minute
+   the daemon declares the running machines and the count follows.
+4. Verify.
+   (a) `sudo pfctl -a com.apple/010.i-inc-machines -s rules | grep open_machines` shows two rules (DNS and internet),
+   and `sudo pfctl -a com.apple/010.i-inc-machines -t open_machines -T show` lists the running engineers' machines
+   and no PA sandbox. `tail /var/log/i-inc-walls.log` shows `walls up` and no `walls down`.
+   (b) In an engineers' machine: `container machine run -i -n inc-<team> -- env ROUTER=<ip> HOST_LAN=<ip>
+   HOST_TAILNET=<ip> LAN_DEVICE=<ip:port> TAILNET_DEVICE=<ip:port> bash -s < tools/m1/walls-test.sh` ends
+   `14 as wanted, 0 not`.
+   (c) Start a PA's sandbox (give the PA a task). In it, the same command with `HOME_MACHINE=1` added ends
+   `14 as wanted, 0 not` (internet, by name and by address, and DNS blocked; only Ollama open). As the user,
+   `sudo -n true` must fail there: `container machine run -u employee -n inc-home-<id> -- sudo -n true` prints
+   "a password is required".
+   (d) With a second machine running, add `OTHER_MACHINE=<its address>` to (c); it ends `17 as wanted, 0 not` if
+   machines can't reach each other (and prints what happened to the broadcast). Report the result here.
+   (e) From a machine, `curl -s -X POST http://192.168.64.1:11434/api/pull -d '{"name":"evil.example/x/y"}'` answers
+   403 `that call is not allowed`, and `curl -s http://192.168.64.1:11434/api/tags` still lists the models.
 
-**If it goes wrong.** A PA ticket that waits with "the walls didn't cover inc-home-… within 90 s" means the walls job
-did not load the address: `tail /var/log/i-inc-walls.log` and `ls -l /var/run/i-inc /var/run/i-inc-walls.home`. If the
-launchd watch does not fire, the job still runs once a minute, so the wait is at most a minute. To take the whole wall
-down, `sudo sh tools/m1/pf/remove.sh` (the daemon then stops every machine).
+An existing PA sandbox from before this (`inc-home-<id>`, with sudo) needs no recreating: the daemon takes its
+root away the next time it is used.
+
+**If it goes wrong.** A PA ticket waiting with "the walls didn't settle for inc-… within 90 s" means the walls job
+did not load the address: `tail /var/log/i-inc-walls.log`, `ls -l /var/run/i-inc /var/run/i-inc-walls.open`. If the
+launchd watch does not fire the job still runs once a minute. An engineers' machine stuck on "isn't let out by the
+walls yet" is the same. To take the new walls down, install the previous `tools/m1/pf/i-inc-machines.pf` and
+`walls.sh` from git, run `sudo sh tools/host/install-walls.sh`, then `sudo rm -f /var/run/i-inc-walls.open`: with no
+acknowledgement file the daemon treats the walls as the old ones again (a stale one stops everything).
 
 **Reinstalling a LaunchAgent no longer leaves a service down.** `tools/host/launchd.sh` (used by `install-daemon.sh`,
 `install-deployer.sh`, `install-relay.sh` and `install-walls.sh`) waits up to about 10 s for `launchctl print` to say a
-service is gone after `bootout`, retries a `bootstrap` that fails with error 5, and if it still fails puts the previous
-plist back and loads it. The deployer's own restart path (`launchctl kickstart -k`) never boots out, so it needed no
-change.
+service is gone after `bootout`, retries a `bootstrap` that fails with error 5, and if it still fails puts the plist
+that was running back and loads it. The deployer installer restores the plist it replaced, not the older
+pre-deployer backup. The deployer's own restart (`launchctl kickstart -k`) never boots out, so it needed no change.
 
 ### End-to-end checks and the test suite (`tools/e2e`, `pnpm test`)
 - **End to end:** each `tools/e2e/<name>/run.mjs` drives the real web app in Chromium against a local daemon in a scratch

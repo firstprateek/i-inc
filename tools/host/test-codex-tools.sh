@@ -15,7 +15,7 @@ if [ "$1" = machine ] && [ "$2" = inspect ]; then
   exit $?
 fi
 case " $* " in
-  *" sudo tee "*) cat >/dev/null ;;
+  *" -u root "*" tee "*) cat >/dev/null ;;
   *"/home/employee/.local/bin/codex login status "*) printf '%s\n' "${I_INC_TEST_LOGIN_STATUS:-Not logged in}" ;;
   *" codex-acp --version "*) echo '@agentclientprotocol/codex-acp 2.2.2' ;;
   *" codex --version "*) echo 'codex-cli 0.160.1' ;;
@@ -38,6 +38,12 @@ grep -Fq '<machine><run><-u><employee><-n><inc-demo-team>' "$tmp/calls" || {
 }
 if grep -Fq '<-n><inc-other-team>' "$tmp/calls"; then
   echo "provision reached another machine" >&2; exit 1
+fi
+grep -Fq '<machine><run><-i><-u><root><-n><inc-demo-team><--><tee></usr/local/bin/acp-codex>' "$tmp/calls" || {
+  echo "provision did not write the launcher as root (a PA's sandbox has no sudo)" >&2; exit 1;
+}
+if grep -Fq '<sudo>' "$tmp/calls"; then
+  echo "provision used sudo, which a PA's sandbox does not have" >&2; exit 1
 fi
 grep -Fq '@agentclientprotocol/codex-acp@2.2.2' "$tmp/calls" || {
   echo "provision did not pin the ACP adapter" >&2; exit 1;

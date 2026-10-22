@@ -336,20 +336,43 @@ interface with a scripted fake in tests, like the ACP agent.
   - Nothing can connect in from outside.
   - The host firewall (`pf` on the Mac mini) enforces this, and the domains each employee contacts
     are logged.
-  - **A PA's sandbox is walled tighter, and this is now enforced.** It reaches only Ollama on the
-    gateway (through the relay) and gets DHCP: no internet, no DNS (a lookup through the host's
-    resolver is a way out for what the PA has read), nothing on the LAN, the tailnet, the host or
-    other machines. Apple container 1.4.1 can't put a machine on a network of its own
-    (`machine create` has no `--network` option), so the rules name a PA's sandbox by its address,
-    in a pf table `<home_machines>` (`tools/m1/pf/i-inc-machines.pf`). The daemon reads the address
-    of each sandbox that holds a PA from `container machine ls` and writes the list to
-    `/var/run/i-inc/home-machines`. The walls job (`tools/host/walls.sh`, root) takes only plain
+  - **A PA's sandbox is walled tighter, and this is now enforced** (once the owner has installed the
+    new walls: docs/handoff.md, T66). The walls are closed unless opened: a machine reaches the
+    internet and DNS only if its address is in a pf table `<open_machines>` (`tools/m1/pf/i-inc-machines.pf`),
+    and every other address gets only DHCP and Ollama on the gateway. So a PA's sandbox has no
+    internet, no DNS (a lookup through the host's resolver is a way out for what the PA has read), and
+    nothing on the LAN, the tailnet or the host; a new, unknown or made-up address is shut in until
+    declared. Apple container 1.4.1 can't put a machine on a network of its own (`machine create`
+    has no `--network` option), which is why the walls name the machines they let out rather than
+    the one they shut in.
+  - **How the table is kept.** The daemon reads each machine's address from `container machine ls`
+    and writes the running machines that may reach the internet (all but a PA's sandbox) to
+    `/var/run/i-inc/open-machines`. The walls job (`tools/host/walls.sh`, root) takes only plain
     addresses of the machines' network from it, loads them with the rules, reads the table back from
-    pf, and writes what pf holds to `/var/run/i-inc-walls.home` every minute. The daemon fails
-    closed: it creates and boots a home machine only if that file is fresh, and starts nothing in it
-    (no agent, script, brain copy or callback) until its address is in the file. A sandbox that
-    stays out of it for a minute and a half is stopped. Until the owner installs the new walls
-    (docs/handoff.md, T66), a PA's sandbox doesn't start.
+    pf, kills the connections of an address that left it, and writes what pf holds to
+    `/var/run/i-inc-walls.open` every minute.
+  - **The daemon fails closed.** Before anything runs in a machine (agent, script, brain copy,
+    callback, sign-in probe) it reads the machine's live address and checks it against that file: in
+    it for an engineers' machine, not in it for a PA's sandbox; a PA's sandbox that is not running is
+    refused. A machine that woke at a new address waits (up to 90 s) until the walls let it out. A
+    PA's sandbox is created only if the walls are up to date, and a running one whose address is let
+    out is stopped.
+  - **A PA's sandbox has no root.** The image gives the employee passwordless sudo, with which a PA
+    could give its machine an address that is in the table. When the daemon makes or boots a PA's
+    sandbox it first runs a fixed script as root that removes the user's sudoers entry and its
+    groups that are root in all but name (sudo, admin, docker), and checks as the user that `sudo -n`
+    fails, before every launch. Updates to a PA's sandbox are written as root (`-u root`).
+  - **Ollama is not a free pipe.** The relay on the gateway (`tools/m1/ollama-forward.mjs`) is an HTTP
+    proxy with an allowlist: chat, generate, embed, embeddings, tags, show, ps and the OpenAI-style
+    chat, completions, embeddings and models calls, only on exact paths, and only for models already
+    installed on the host. A pull, push, create, copy, delete or blob call, a cloud model and a name
+    with a registry host are refused, so a sandbox can't make the host fetch from, or send a prompt to,
+    a server of its choosing.
+  - **Not verified: one machine reaching another.** Traffic between two machines on the bridge may be
+    switched at layer 2 and never meet pf, and a broadcast to `255.255.255.255:67` (the DHCP rule) may
+    reach other machines. `tools/m1/walls-test.sh` with `OTHER_MACHINE=<ip>` tests both; until it has
+    passed on the mini, this document does not claim that a PA's sandbox can't talk to another
+    machine, which would be a way out through an engineers' machine.
 - **GitHub** uses a bot identity: one GitHub App, "i.inc bot", installed on the repos you choose.
   - For each session it mints a 1-hour token. The token can push branches, open and update PRs,
     read CI, and manage issues; a reviewer's or verifier's can only read. Editing CI/CD workflows,
@@ -545,8 +568,8 @@ shorter loop:
   read free/busy, and file a web errand. Every call is logged.
 - **No open internet.** Unlike an engineer's machine, a PA's machine reaches only i.inc's API and
   Ollama. Whatever it prepares can only leave through a proposal you see. Today that is Ollama
-  only (i.inc's API port joins it when the daemon serves one to machines), enforced by the pf table
-  of PA sandboxes described in §5. Because the sandbox has no internet, only a local engine can
+  only (i.inc's API port joins it when the daemon serves one to machines), enforced by the walls
+  described in §5, apart from the unverified machine-to-machine path noted there. Because the sandbox has no internet, only a local engine can
   run in it: hiring or editing a PA refuses any duty's engine, fallbacks included, that isn't a
   local one. If none is set up, it says so ("none is set up yet: add one in Setup"), and the hiring
   form says the same; the local engine is OpenCode on Ollama (`tools/m1/install-harnesses.sh`), added

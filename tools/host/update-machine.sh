@@ -14,10 +14,12 @@ img="$(cd "$(dirname "$0")/../../images/employee" && pwd)"
   exit 1
 }
 
+# As root with `-u root`, not as the employee with sudo: a personal assistant's sandbox has its user's sudo
+# taken away (apps/daemon/src/machines.ts), and this works the same in every machine.
 # Through cat: `machine run -i` takes a pipe, but not every kind of stdin (images/employee/README.md).
 put() { # put <file> <path in the machine> <mode>
-  cat "$1" | $c machine run -i -u employee -n "$machine" -- sudo tee "$2" >/dev/null
-  $c machine run -u employee -n "$machine" -- sudo chmod "$3" "$2" </dev/null
+  cat "$1" | $c machine run -i -u root -n "$machine" -- tee "$2" >/dev/null
+  $c machine run -u root -n "$machine" -- chmod "$3" "$2" </dev/null
   echo "$machine: $2"
 }
 put "$img/acp-env.sh" /usr/local/lib/i-inc/acp-env.sh 644

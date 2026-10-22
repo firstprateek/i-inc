@@ -42,6 +42,6 @@ sleep 2
 tail -n 3 /var/log/i-inc-walls.log
 if [ -f /var/run/i-inc-walls.ok ]; then
   echo "the walls are up, and come back at boot"
-  held=$(grep -c . /var/run/i-inc-walls.home 2>/dev/null || true)
-  echo "home machines the walls hold now: ${held:-0} (a home machine is walled once the daemon has declared it: docs/handoff.md)"
+  held=$(grep -c . /var/run/i-inc-walls.open 2>/dev/null || true)
+  echo "open machines the walls hold now: ${held:-0} (a machine is let out once the daemon has declared it: docs/handoff.md)"
 else echo "the walls are NOT up" >&2; exit 1; fi
