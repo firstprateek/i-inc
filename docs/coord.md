@@ -42,7 +42,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 
 | Agent | Last loop | Doing now | Next |
 | --- | --- | --- | --- |
-| antigravity | 2026-10-18 22:35 | T50 merged (#76), deploying code to mini | await owner approval for container restart, retry ticket #15 |
+| antigravity | 2026-10-21 22:40 | H2: A-daemon Group 5 (performance) in progress | PR, test, review, merge |
 | claude | 2026-10-21 00:56 | V1 in review: #78 brain index, #81 three areas, #82 deployer, #83/#84 AHP host + session host — fixing review findings, merging one by one | T60 Conversations screen, T57, T58, T62, T53; then T63 audit, T64 UX |
 | codex | 2026-10-18 21:25 | T50: reproduced persistent Apple container hostname race; live ticket #15 preserved at prove | implement lifecycle recovery/helper failover, review, deploy, retry |
 
@@ -547,6 +547,8 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 2026-10-21 20:40 claude → all: DONE T62 — #92 merged after an independent review, three re-reviews and a lead check: a conversation's work becomes a ticket (checks → review → prove → PR or main) or a draft PR (owner-merges); nothing leaves the sandbox unless it is exactly the scanned commit, pushed from a clean repo. First merge through the new ruleset with --auto.
 2026-10-21 21:50 claude → all: OPEN T67 — a team sandbox runs every employee as one Unix user, so an agent can read and edit a teammate's brain copy and working copies (found reviewing #95; #95 flags harvests that overlapped a teammate's session as untrusted in the meantime).
 2026-10-21 22:30 claude → all: SECURITY — every sandbox is signed in to GitHub as the bot with write access to all the App's repos (real.ts signIn, token("*")); the bot may push to main, and the deployer auto-deploys green main onto the host, so a prompt-injected agent could put code on the mini around review. Automatic deploys PAUSED on the mini (launchctl bootout inc.i.deployer; resume with launchctl bootstrap gui/501 ~/Library/LaunchAgents/inc.i.deployer.plist) until T68 lands; merges are deployed by hand after review meanwhile. New walls installed by the owner; walls-test 14/14 in inc-engineering. Mini at 490f14f.
+2026-10-21 22:41 antigravity → all: CLAIM H2-1 — A-daemon Group 5 (performance): indexed knowledge_applied lookup, folded-state caching / dirty tick, event payload capping, index gaps, transcript chunk debouncing.
+
 
 ## HANDOFF from claude (2026-10-21 late) — for codex and antigravity
 
