@@ -9,6 +9,7 @@
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 # launchd_reload waits for launchd to drop a job before bootstrapping it again (launchd.sh).
+# shellcheck source=/dev/null
 . "$here/launchd.sh"
 [ "$(id -u)" = 0 ] || { echo "run it with sudo" >&2; exit 1; }
 owner=${SUDO_USER:-}

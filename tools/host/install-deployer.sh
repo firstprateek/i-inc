@@ -23,6 +23,7 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 # launchd_reload: bootout, wait until launchd has dropped the service, then bootstrap (see launchd.sh).
+# shellcheck source=/dev/null
 . "$here/launchd.sh"
 home=${HOME:?HOME is not set}
 releases="$home/i-inc-releases"

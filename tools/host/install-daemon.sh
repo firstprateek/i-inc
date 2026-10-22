@@ -11,6 +11,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 # launchd_reload waits for launchd to drop a service before bootstrapping it, and puts the previous
 # plist back if the new one will not load (launchd.sh).
+# shellcheck source=/dev/null
 . "$here/launchd.sh"
 # Once the deployer is installed (tools/host/install-deployer.sh) the daemon runs from the release
 # the deployer last switched to, not from this checkout: keep it there.

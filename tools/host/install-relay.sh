@@ -4,6 +4,7 @@
 # Undo it: launchctl bootout gui/$(id -u)/inc.i.ollama-relay, and delete the plist.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=/dev/null
 . "$here/launchd.sh"
 [ "$(id -u)" != 0 ] || { echo "run it as the owner, not root" >&2; exit 1; }
 node=$(command -v node || echo /opt/homebrew/bin/node)
