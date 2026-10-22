@@ -137,8 +137,18 @@ export async function handOff(p: Ports, ticketId: Id, to: Id): Promise<void> {
 }
 
 /** Records the reviewer or verifier the scheduler picked for a waiting ticket. Run the ticket again afterwards. */
-export async function assignHelper(p: Ports, ticketId: Id, duty: HelperDuty, employeeId: Id): Promise<void> {
+export async function assignHelper(
+  p: Ports,
+  ticketId: Id,
+  duty: HelperDuty,
+  employeeId: Id,
+): Promise<boolean> {
+  // The scheduler decided from a snapshot that may be seconds old (a machine stopping in between, an
+  // owner's action): the ticket must still be waiting for this duty, or the assignment is dropped.
+  const s = fold(await p.store.read(ticketId));
+  if (s.waitingFor?.duty !== duty) return false;
   await p.store.append(ticketId, [{ type: "helper-assigned", at: p.clock.now(), duty, employeeId }]);
+  return true;
 }
 
 /** The owner's decision on a ready ticket: approve (merge), request changes, or reject. */
@@ -546,7 +556,18 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
       });
       return;
     }
-    const outcome = c.s.decision === "approve" ? "merged" : c.s.decision === "reject" ? "rejected" : "done";
+    let outcome: "merged" | "rejected" | "done" =
+      c.s.decision === "approve" ? "merged" : c.s.decision === "reject" ? "rejected" : "done";
+    // In owner-merges, Approve means the owner merged the PR on GitHub; "merged" is recorded only when GitHub agrees (auto-release
+    // and cleanup trust it). A failed look throws, and the run is tried again, so nothing is recorded unchecked.
+    // Reject closes the PR, so it doesn't stay open on GitHub after the work was declined.
+    const ws = c.p.workspace;
+    const pr = c.s.pr;
+    if (ws && pr && pr.number !== undefined && c.policy.mode === "owner-merges") {
+      if (outcome === "merged" && ws.prState && (await ws.prState(c.ticket, pr)) !== "merged")
+        outcome = "done";
+      if (outcome === "rejected" && ws.closePr) await ws.closePr(c.ticket, pr);
+    }
     await c.emit(finished(c, "retro"), { type: "closed", at: c.p.clock.now(), outcome });
   },
 };
@@ -623,7 +644,9 @@ function ownSeat(
 async function directGates(c: Step): Promise<void> {
   const at = c.p.clock.now();
   const red = c.s.mainRed;
-  if (red && at - red.since > redMainLimitMs) {
+  // The limit is wall time since the red, so a stopped daemon or a long pause counts too: the revert waits
+  // until a fix of the builder's has been pushed since the red, however long ago it was.
+  if (red && red.fixes >= 1 && at - red.since > redMainLimitMs) {
     if (c.p.harness.revert) await c.p.harness.revert(c.ticket, red.sha);
     await c.emit(
       { type: "reverted", at, sha: red.sha },

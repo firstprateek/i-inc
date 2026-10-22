@@ -483,4 +483,17 @@ export class GitHubWorkspace implements Workspace {
     await this.o.prs.setBody(repo, pr.number, report);
     if (await this.o.prs.isDraft(repo, pr.number)) await this.o.prs.markReady(repo, pr.nodeId);
   }
+
+  async prState(ticket: Ticket, pr: PullRequestRef): Promise<"open" | "closed" | "merged"> {
+    const { repo } = this.project(ticket);
+    if (pr.number === undefined) return "merged"; // direct mode: no PR, the push to main was the merge
+    return (await this.o.prs.get(repo, pr.number)).state;
+  }
+
+  async closePr(ticket: Ticket, pr: PullRequestRef): Promise<void> {
+    const { repo } = this.project(ticket);
+    if (pr.number === undefined) return;
+    // Only an open PR is closed: a merged one is history, and a closed one is already what the owner wants.
+    if ((await this.o.prs.get(repo, pr.number)).state === "open") await this.o.prs.close(repo, pr.number);
+  }
 }

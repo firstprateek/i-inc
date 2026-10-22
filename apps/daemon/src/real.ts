@@ -217,7 +217,15 @@ export function realPorts(o: RealOptions): Pick<
 
   return {
     machines: (registry) => {
-      machines = new AppleMachines(teams(registry), o.exec, undefined, now, o.log);
+      machines = new AppleMachines(
+        teams(registry),
+        o.exec,
+        undefined,
+        now,
+        o.log,
+        // An injected `now` (a test's) drives the backoff too; the real one waits on a clock that never steps.
+        o.now ? now : () => performance.now(),
+      );
       return machines;
     },
     agent: (registry, tickets, brain) => {

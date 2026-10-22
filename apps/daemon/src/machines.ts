@@ -351,6 +351,11 @@ export class AppleMachines implements MachineProvider {
     { claude: boolean; antigravity: boolean; codex: boolean; github: boolean }
   >();
   private readonly faults = new Map<string, SandboxFault>();
+  /**
+   * When each fault's backoff ends on the monotonic clock. `retryAt` (wall time) is what Setup shows; this is
+   * what decides, so a clock stepped back doesn't stretch the wait and one stepped forward doesn't skip it.
+   */
+  private readonly retryMono = new Map<string, number>();
   private readonly attempts = new Map<string, number>();
   private readonly lastLogged = new Map<string, string>();
   /** The tail of each machine's queue: boots and stops of one machine run one at a time (`locked`). */
@@ -364,6 +369,8 @@ export class AppleMachines implements MachineProvider {
     private readonly sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
     private readonly now: () => number = Date.now,
     private readonly log?: (msg: string) => void,
+    /** A clock that never steps (for the backoff). Absent: `now`. */
+    private readonly mono: () => number = now,
   ) {
     // Every `container` command has a limit (timeouts.ts): a frozen container service must not hold a
     // ticket, and with it a deploy, for ever. A call that names its own limit keeps it.
@@ -414,9 +421,8 @@ export class AppleMachines implements MachineProvider {
       this.claim(name, employeeId);
       return;
     }
-    const currentTime = this.now();
     const fault = this.faults.get(name);
-    if (fault && currentTime < fault.retryAt) {
+    if (fault && this.backingOff(name, fault)) {
       throw new StartupError(fault.waiting, fault.retryAt);
     }
     const size = this.s.sizeFor?.(name) ?? { cpus: this.s.cpus, memory: this.s.memory };
@@ -508,6 +514,7 @@ export class AppleMachines implements MachineProvider {
       retryAt: t + 60_000,
       attempts: (before?.attempts ?? 0) + 1,
     });
+    this.retryMono.set(name, this.mono() + 60_000);
     this.wallFaults.set(name, kind);
     this.logStateChange(name, `fault:wall:${why}`, why);
     throw new StartupError(why, t + 60_000);
@@ -519,6 +526,7 @@ export class AppleMachines implements MachineProvider {
   private clearWallFault(name: string): void {
     if (!this.wallFaults.delete(name)) return;
     this.faults.delete(name);
+    this.retryMono.delete(name);
     this.attempts.delete(name);
     this.logStateChange(name, "running", "the walls settled");
   }
@@ -601,6 +609,7 @@ export class AppleMachines implements MachineProvider {
       await this.boot(name);
       if (this.faults.has(name) || this.attempts.has(name)) {
         this.faults.delete(name);
+        this.retryMono.delete(name);
         this.attempts.delete(name);
         this.lastLogged.delete(name);
         this.logStateChange(name, "running", "recovered and running");
@@ -619,6 +628,7 @@ export class AppleMachines implements MachineProvider {
         await this.boot(name);
         if (this.faults.has(name) || this.attempts.has(name)) {
           this.faults.delete(name);
+          this.retryMono.delete(name);
           this.attempts.delete(name);
           this.lastLogged.delete(name);
           this.logStateChange(name, "running", "recovered after safe machine stop");
@@ -652,6 +662,7 @@ export class AppleMachines implements MachineProvider {
           attempts,
         };
         this.faults.set(name, fault);
+        this.retryMono.set(name, this.mono() + backoffMs);
         this.logStateChange(
           name,
           `fault:${failure.kind}`,
@@ -668,9 +679,17 @@ export class AppleMachines implements MachineProvider {
     this.log?.(`[sandbox:${machine}] ${stateDescription}`);
   }
 
+  /** Whether a fault's backoff is still running: on the monotonic clock, or on wall time for a fault without one. */
+  private backingOff(name: string, fault: SandboxFault): boolean {
+    const until = this.retryMono.get(name);
+    return until !== undefined ? this.mono() < until : this.now() < fault.retryAt;
+  }
+
+  /** The fault holding an employee's sandbox, while its backoff runs; once it is over the next start tries again. */
   sandboxFault(employeeId: Id): SandboxFault | undefined {
     const name = machineOf(this.s, employeeId);
-    return this.faults.get(name);
+    const fault = this.faults.get(name);
+    return fault && this.backingOff(name, fault) ? fault : undefined;
   }
 
   signedIn(employeeId: Id, harness: AgentHarness): boolean | undefined {
@@ -686,6 +705,7 @@ export class AppleMachines implements MachineProvider {
   async retrySandbox(team: Id, size: { cpus: number; memory: string }): Promise<SandboxStatus> {
     const machine = machineName(team);
     this.faults.delete(machine);
+    this.retryMono.delete(machine);
     this.attempts.delete(machine);
     this.lastLogged.delete(machine);
     try {
@@ -855,7 +875,7 @@ export class AppleMachines implements MachineProvider {
       };
     }
 
-    const inFault = Boolean(fault && this.now() < fault.retryAt);
+    const inFault = Boolean(fault && this.backingOff(machine, fault));
     const state: "running" | "stopped" | "error" = inFault
       ? "error"
       : entry.includes("running")

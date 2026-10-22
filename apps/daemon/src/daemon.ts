@@ -19,6 +19,7 @@ import {
   isHomeEmployee,
   knowledgeLog,
   type MachineProvider,
+  monotonicNow,
   occupancy,
   type PendingDuty,
   type Ports,
@@ -141,12 +142,16 @@ export class Daemon {
   /**
    * Tickets whose run threw, with how many times in a row and when they may run again. A ticket that
    * keeps failing backs off (30 s, doubling, up to 10 min) and is failed with the reason after
-   * `maxErrors` in a row; a `StartupError` only waits, as its `retryAt` says.
+   * `maxErrors` in a row; a `StartupError` only waits, as its `retryAt` says. `retryAt` (wall time) is
+   * what the board shows; whether the wait is over is read on the monotonic clock (`retryMono`, `sinceMono`),
+   * so a clock stepped back or forward neither stretches nor skips it.
    */
   private readonly failures = new Map<
     Id,
-    { count: number; since: number; retryAt: number; reason: string }
+    { count: number; since: number; sinceMono: number; retryAt: number; retryMono: number; reason: string }
   >();
+  /** Tickets whose owner acted while a run was still finishing: they run again as soon as it ends. */
+  private readonly rerun = new Set<Id>();
   /** Tickets whose events or fold broke in a pass, with why: skipped, logged once, shown on the board. */
   private readonly broken = new Map<Id, string>();
   /** Things already logged, so a standing problem is logged once and not at every tick. */
@@ -302,8 +307,9 @@ export class Daemon {
       ...(projectPolicy ? { projectPolicy: (project) => projectPolicy.call(reg, project) } : {}),
       engines: () => reg.engines(),
       engineBlock: (employeeId: Id, engineId: Id, duty: Duty) => {
+        // `sandboxFault` is the fault only while its backoff runs (measured on the machines' monotonic clock).
         const fault = this.d.machines.sandboxFault?.(employeeId);
-        if (fault && this.d.clock.now() < fault.retryAt) {
+        if (fault) {
           return { reason: fault.waiting, until: fault.retryAt };
         }
         const eng = findEngine(reg, engineId);
@@ -600,7 +606,7 @@ export class Daemon {
       if (s?.created && (s.status === "paused" || (s.status === "running" && !s.waitingFor))) {
         const builder = s.assignee ?? r.ticket.assignee;
         const fault = this.d.machines.sandboxFault?.(builder);
-        if (fault && now < fault.retryAt) {
+        if (fault) {
           sandboxWaiting.push({ ticketId: r.ticket.id, reason: fault.waiting });
           sandboxWaitingUntil[r.ticket.id] = fault.retryAt;
           continue;
@@ -702,7 +708,7 @@ export class Daemon {
     this.waiting = [...plan.waiting, ...sandboxWaiting];
     // A ticket that is backing off after an error says so, until it runs again.
     for (const [id, f] of this.failures) {
-      if (f.retryAt > now && !this.waiting.some((w) => w.ticketId === id)) {
+      if (f.retryMono > monotonicNow(this.d.clock) && !this.waiting.some((w) => w.ticketId === id)) {
         this.waiting.push({ ticketId: id, reason: f.reason });
         sandboxWaitingUntil[id] ??= f.retryAt;
       }
@@ -725,8 +731,12 @@ export class Daemon {
         continue;
       }
       try {
-        if (start.as !== "build") await assignHelper(this.ports, start.ticketId, start.as, start.employeeId);
-        else if (start.by === "standing-order") this.d.tickets.assign(start.ticketId, start.employeeId, now);
+        // The plan was made from a snapshot taken before the machines were put to sleep: an assignment is
+        // dropped when the ticket no longer waits for that duty.
+        if (start.as !== "build") {
+          if (!(await assignHelper(this.ports, start.ticketId, start.as, start.employeeId))) continue;
+        } else if (start.by === "standing-order")
+          this.d.tickets.assign(start.ticketId, start.employeeId, now);
       } catch (err) {
         this.logOnce(
           `start:${start.ticketId}:${errorLine(err)}`,
@@ -755,10 +765,15 @@ export class Daemon {
    * lately waits out its back-off first, unless the owner has just acted on it (`force`).
    */
   run(id: Id, opts: { force?: boolean } = {}): void {
-    if (this.running.has(id)) return;
+    if (this.running.has(id)) {
+      // The owner acted on a ticket whose last run is still finishing its after-run steps: it must not wait
+      // for the next tick, so it runs again the moment that run is over.
+      if (opts.force) this.rerun.add(id);
+      return;
+    }
     const held = this.failures.get(id);
     if (opts.force) this.failures.delete(id);
-    else if (held && this.d.clock.now() < held.retryAt) return;
+    else if (held && monotonicNow(this.d.clock) < held.retryMono) return;
     const record = this.d.tickets.get(id);
     if (!record) throw new Error(`no ticket ${id}`);
     const signal = (employeeId: Id) => {
@@ -790,6 +805,7 @@ export class Daemon {
         if (e instanceof ShuttingDown) {
           // The daemon is stopping, not the ticket: no events, no back-off, so it stays running and resumes.
           this.d.log?.(`ticket ${id}: paused for the daemon's stop, resumes when it is back`);
+          this.rerun.delete(id);
           return;
         }
         return this.runFailed(id, e);
@@ -797,6 +813,13 @@ export class Daemon {
       .finally(() => {
         this.running.delete(id);
         this.sessions.delete(id);
+        if (this.rerun.delete(id)) {
+          try {
+            this.run(id, { force: true });
+          } catch (err) {
+            this.logOnce(`run:${id}:${errorLine(err)}`, `ticket ${id} didn't run: ${errorLine(err)}`);
+          }
+        }
       });
     this.running.set(id, done);
   }
@@ -804,9 +827,11 @@ export class Daemon {
   /** A ticket's run threw: wait (a startup problem), back off (anything else), or give up after a few in a row. */
   private async runFailed(id: Id, e: unknown): Promise<void> {
     const now = this.d.clock.now();
+    const mono = monotonicNow(this.d.clock);
     const prev = this.failures.get(id);
     const count = (prev?.count ?? 0) + 1;
     const since = prev?.since ?? now;
+    const sinceMono = prev?.sinceMono ?? mono;
     const startup = e instanceof StartupError;
     const reason = errorLine(e);
     let backoff = Math.min(30_000 * 2 ** (count - 1), 10 * 60_000);
@@ -816,6 +841,7 @@ export class Daemon {
       backoff = Math.max(backoff, retryAfterSec * 1000);
     if (startup && e.retryAt) backoff = Math.max(backoff, e.retryAt - now);
     const retryAt = now + backoff;
+    const retryMono = mono + backoff;
     this.waitingUntil[id] = retryAt;
     if (startup) {
       // Not the ticket's fault, so it waits and shows why, but not for ever: after a long stretch it
@@ -824,12 +850,12 @@ export class Daemon {
       if (existing) existing.reason = reason;
       else this.waiting.push({ ticketId: id, reason });
       this.d.log?.(`ticket ${id} waiting (${count} in a row): ${reason}`);
-      if (count >= Daemon.maxStartAttempts || now - since >= Daemon.maxStartWindowMs) {
+      if (count >= Daemon.maxStartAttempts || mono - sinceMono >= Daemon.maxStartWindowMs) {
         this.failures.delete(id);
         await this.escalate(id, `can't start: ${reason}`);
         return;
       }
-      this.failures.set(id, { count, since, retryAt, reason });
+      this.failures.set(id, { count, since, sinceMono, retryAt, retryMono, reason });
       return;
     }
     this.d.log?.(`ticket ${id} stopped (${count} in a row): ${reason}`);
@@ -841,7 +867,9 @@ export class Daemon {
     this.failures.set(id, {
       count,
       since,
+      sinceMono,
       retryAt,
+      retryMono,
       reason: `hit an error and tries again shortly: ${reason}`,
     });
   }
@@ -933,7 +961,7 @@ export class Daemon {
       note(`ticket ${open.ticket.id} is still open`);
       return;
     }
-    const dayStart = now - (now % 86_400_000);
+    const dayStart = localDayStart(now);
     if (tidy.some((r) => r.createdAt >= dayStart)) return;
     const pick = this.pickLibrarian(now);
     if (!pick) {
@@ -1127,7 +1155,7 @@ export class Daemon {
     const from = this.d.tickets.get(ticketId)?.ticket;
     if (!from) return;
     const now = this.d.clock.now();
-    const dayStart = now - (now % 86_400_000);
+    const dayStart = localDayStart(now);
     events.forEach((e, i) => {
       if (e.type !== "follow-ups" || !Array.isArray(e.tickets)) return;
       e.tickets.forEach((raw, j) => {
@@ -1293,7 +1321,7 @@ export class Daemon {
   }
 
   private pickedUpToday(now: number): Record<Id, number> {
-    const dayStart = now - (now % 86_400_000);
+    const dayStart = localDayStart(now);
     const out: Record<Id, number> = {};
     for (const r of this.d.tickets.all()) {
       if (r.pickedAt !== null && r.pickedAt >= dayStart)
@@ -1317,7 +1345,8 @@ export class Daemon {
         if (releasedTicketIds.has(r.ticket.id)) return false;
         const state = states.get(r.ticket.id);
         if (state?.outcome !== "merged") return false;
-        if (latestReleaseAt !== null && (state.closedAt ?? 0) <= latestReleaseAt) return false;
+        if (latestReleaseAt !== null && latestReleaseAt <= now && (state.closedAt ?? 0) <= latestReleaseAt)
+          return false;
         return true;
       });
 
@@ -1343,6 +1372,16 @@ export class Daemon {
       this.d.log?.(`auto-release ${tag} recorded for project ${project.id} (${ticketIds.length} tickets)`);
     }
   }
+}
+
+/**
+ * When the owner's day began at `now` (epoch ms): midnight in the daemon host's time zone, where the owner is,
+ * so "today's" budgets reset at the owner's midnight and not at UTC's. A day with a clock change is 23 or 25 hours.
+ */
+export function localDayStart(now: number): number {
+  const d = new Date(now);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
 }
 
 /** An error as one short line for the log and for a ticket's reason: no control characters, cut at 300. */

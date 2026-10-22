@@ -156,4 +156,22 @@ describe("the scheduler", () => {
     expect(withinHours({ from: 22, to: 7 }, 12)).toBe(false);
     expect(withinHours({ from: 9, to: 17 }, 12)).toBe(true);
   });
+
+  it("does not pick a builder waiting on a review as a reviewer for another ticket in the same pass (Group 8.9)", () => {
+    const plan = schedule(
+      snap({
+        pending: [
+          { ticketId: "1", duty: "review", builder: "ada", exclude: ["ada"], since: 0 },
+          { ticketId: "2", duty: "review", builder: "quinn", exclude: ["quinn"], since: 0 },
+        ],
+        employees: [{ ...ada, duties: ["build", "review"] }, { ...kit, duties: ["build", "review"] }, quinn],
+      }),
+      company,
+    );
+    expect(plan.starts).toEqual([{ employeeId: "kit", ticketId: "1", as: "review" }]);
+    expect(plan.waiting).toContainEqual({
+      ticketId: "2",
+      reason: expect.stringContaining("waits for a reviewer"),
+    });
+  });
 });

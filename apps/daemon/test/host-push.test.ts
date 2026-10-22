@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { MAX_BUNDLE_BYTES } from "../src/bundle.ts";
-import { HostPushError } from "../src/host-push.ts";
+import { gitDefault, HostPushError, HostPusher } from "../src/host-push.ts";
 import { WRITE_TOKEN } from "./fake-tokens.ts";
 import { pushRig } from "./push-rig.ts";
 
@@ -96,6 +96,46 @@ describe("the host's push of a sandbox's bundle", () => {
       "refused",
     );
     expect(r.originGit("rev-parse", "refs/heads/main")).not.toBe(a);
+  });
+
+  it("a lease protects a concurrent push: GitHub's branch moving after the lease check refuses the push (T63 mutation 7)", async () => {
+    const r = pushRig();
+    const a = r.commit("a.txt", "a\n");
+    await r.host.push({ ...base, branch: "inc/1-x", sha: a, bundle: await r.bundle(a) });
+    r.git(r.wt, "reset", "-q", "--hard", "HEAD~1");
+    const a2 = r.commit("a.txt", "a2\n");
+
+    // A human's commit, made in another clone, lands on the branch after the host has compared the lease
+    // with its view of GitHub (`req.lease !== remoteTip`) and before the host's own push goes out.
+    const other = join(r.root, "other");
+    r.git(r.root, "clone", "-q", r.origin, other);
+    r.git(other, "checkout", "-q", "-B", "inc/1-x", "origin/inc/1-x");
+    writeFileSync(join(other, "human.txt"), "a human's work\n");
+    r.git(other, "add", "-A");
+    r.git(other, "-c", "user.name=h", "-c", "user.email=h@example.invalid", "commit", "-q", "-m", "human");
+    const human = r.git(other, "rev-parse", "HEAD");
+    let raced = false;
+    const racing = new HostPusher({
+      tokens: r.tokens,
+      mirrors: r.mirrors,
+      remote: () => r.origin,
+      now: () => 1_700_000_000_000,
+      git: (args, opts) => {
+        if (!raced && args.includes("push") && args.includes("--porcelain")) {
+          raced = true;
+          r.git(other, "push", "-q", "origin", "HEAD:refs/heads/inc/1-x");
+        }
+        return gitDefault(args, opts);
+      },
+    });
+
+    const outcome = await kindOf(
+      racing.push({ ...base, branch: "inc/1-x", sha: a2, bundle: await r.bundle(a2), lease: a }),
+    );
+    expect(raced).toBe(true);
+    // Refused, and the human's commit is still there: a plain --force would have replaced it with a2.
+    expect(outcome).toBe("behind");
+    expect(r.originGit("rev-parse", "refs/heads/inc/1-x")).toBe(human);
   });
 
   it("pushes exactly the sha it was given, even if the sandbox's branch is moved to a child after the scan", async () => {

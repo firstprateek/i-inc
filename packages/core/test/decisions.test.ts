@@ -1,10 +1,16 @@
 // The owner's decision, follow-ups and the retro (spec §6 stages 10-11; §3 case 5, "Not quite").
 import { describe, expect, it } from "vitest";
 import { decide, fold, runTicket } from "../src/index.ts";
-import { json } from "../src/testing/index.ts";
+import { FakeWorkspace, json } from "../src/testing/index.ts";
 import { ports, refundsTicket } from "./fixtures.ts";
 
 const ticket = refundsTicket();
+
+/** Ports with a workspace, so the ticket has a PR on a fake GitHub. */
+const withPr = () => {
+  const p = ports();
+  return Object.assign(p, { workspace: new FakeWorkspace() });
+};
 
 describe("the owner's decision", () => {
   it("merges on approve, after a retro by builder and reviewer", async () => {
@@ -37,6 +43,51 @@ describe("the owner's decision", () => {
     await runTicket(p, ticket);
     await decide(p, "42", "reject");
     expect(await runTicket(p, ticket)).toEqual({ status: "done", outcome: "rejected" });
+  });
+
+  // T63 7.1: Approve is the owner saying they merged the PR on GitHub; "merged" feeds auto-release and cleanup.
+  it("records merged on approve only when GitHub says the PR is merged", async () => {
+    const open = withPr();
+    await runTicket(open, ticket);
+    await decide(open, "42", "approve");
+    // The owner clicked Approve in i.inc, but the PR is still open on GitHub.
+    expect(await runTicket(open, ticket)).toEqual({ status: "done", outcome: "done" });
+
+    const merged = withPr();
+    await runTicket(merged, ticket);
+    merged.workspace.prStates.set("42", "merged");
+    await decide(merged, "42", "approve");
+    expect(await runTicket(merged, ticket)).toEqual({ status: "done", outcome: "merged" });
+  });
+
+  it("does not record anything when GitHub can't be asked, and tries again", async () => {
+    const p = withPr();
+    await runTicket(p, ticket);
+    await decide(p, "42", "approve");
+    p.workspace.prState = async () => {
+      throw new Error("GitHub 502");
+    };
+    await expect(runTicket(p, ticket)).rejects.toThrow("GitHub 502");
+    expect((await p.store.read("42")).some((e) => e.type === "closed")).toBe(false);
+    p.workspace.prStates.set("42", "merged");
+    p.workspace.prState = FakeWorkspace.prototype.prState;
+    expect(await runTicket(p, ticket)).toEqual({ status: "done", outcome: "merged" });
+  });
+
+  it("closes the PR on GitHub when the owner rejects, and leaves a merged one alone", async () => {
+    const p = withPr();
+    await runTicket(p, ticket);
+    await decide(p, "42", "reject");
+    await runTicket(p, ticket);
+    expect(p.workspace.closedPrs).toEqual(["42"]);
+    expect(p.workspace.prStates.get("42")).toBe("closed");
+
+    const merged = withPr();
+    await runTicket(merged, ticket);
+    merged.workspace.prStates.set("42", "merged");
+    await decide(merged, "42", "reject");
+    await runTicket(merged, ticket);
+    expect(merged.workspace.prStates.get("42")).toBe("merged");
   });
 });
 
