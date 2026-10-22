@@ -380,8 +380,8 @@ export class IncConvShip extends LitElement {
           : r.kind === "ticket"
             ? html`<p><b>Done.</b> This work is now ticket #${r.ticketId}. ${this.name()} is paused on this conversation's files while it runs; you can follow it here or on the ticket.</p>
             <a href="#/ticket/${r.ticketId}" data-main>Open ticket #${r.ticketId}</a>`
-            : html`<p><b>Done.</b> Pull request #$r.pr?.numberis open as a draft. Its checks show in the context panel.</p>
-            <a href=$r.pr?.url ?? "#"target="_blank" rel="noopener" data-main>Open it on GitHub</a>`
+            : html`<p><b>Done.</b> Pull request #${r.pr?.number} is open as a draft. Its checks show in the context panel.</p>
+            <a href=${r.pr?.url ?? "#"} target="_blank" rel="noopener" data-main>Open it on GitHub</a>`
       }
     </div>`;
   }
