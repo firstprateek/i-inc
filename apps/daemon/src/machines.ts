@@ -122,14 +122,43 @@ export function isHome(s: MachineSettings, machine: string): boolean {
   return isHomeMachine(machine) || s.homeMachine?.(machine) === true;
 }
 
-/** The machines in `machine ls`, with whether each is a home machine. */
-export async function wallRows(s: MachineSettings, exec: Exec): Promise<WallRow[]> {
-  return parseMachineListing(await exec(s.bin, ["machine", "ls"])).map((r) => ({
+/**
+ * The running containers in `container ls` (it leaves machines out), as rows named `container:<id>`:
+ * the image builder (`container build` runs in a container called buildkit on the same bridge) and any
+ * `container run`. They are the owner's, started from the host, and have the internet as they did before the
+ * walls were closed. A row named inc-… is left out in case a later version lists machines here too.
+ */
+export function parseContainerListing(listing: string): WallRow[] {
+  const rows: WallRow[] = [];
+  for (const line of listing.split("\n").slice(1)) {
+    const cols = line.trim().split(/\s+/);
+    const id = cols[0];
+    if (!id || id.startsWith("inc-") || !cols.includes("running")) continue;
+    const ip = cols.map((c) => /^(\d{1,3}(?:\.\d{1,3}){3})(?:\/\d+)?$/.exec(c)?.[1]).find(Boolean);
+    if (ip) rows.push({ name: `container:${id}`, state: "running", ip, home: false });
+  }
+  return rows;
+}
+
+/**
+ * The machines in `machine ls`, with whether each is a home machine. With `containers`, also the running
+ * containers of the host's `container ls` (for the list of addresses to let out, not for a launch's check).
+ */
+export async function wallRows(s: MachineSettings, exec: Exec, containers = false): Promise<WallRow[]> {
+  const rows: WallRow[] = parseMachineListing(await exec(s.bin, ["machine", "ls"])).map((r) => ({
     name: r.name,
     state: r.state,
     ...(r.ip ? { ip: r.ip } : {}),
     home: isHome(s, r.name),
   }));
+  if (!containers) return rows;
+  try {
+    const known = new Set(rows.map((r) => r.ip));
+    for (const c of parseContainerListing(await exec(s.bin, ["ls"]))) if (!known.has(c.ip)) rows.push(c);
+  } catch {
+    // The builder isn't there, or the service answered badly: nothing to add.
+  }
+  return rows;
 }
 
 /**
@@ -383,7 +412,7 @@ export class AppleMachines implements MachineProvider {
           throw new WallError(`${name}'s user can still get root after it was taken away`);
         }
       }
-      if (wall) await wall.verify(name, home, () => wallRows(this.s, this.exec), this.sleep);
+      if (wall) await wall.verify(name, home, () => wallRows(this.s, this.exec, true), this.sleep);
     } catch (err) {
       const why = err instanceof Error ? err.message : String(err);
       this.up.delete(name);
@@ -408,8 +437,7 @@ export class AppleMachines implements MachineProvider {
   async watchHome(graceMs = 90_000): Promise<string[]> {
     const wall = this.s.wall;
     if (!wall || wall.state().kind === "old") return [];
-    const rows = await wallRows(this.s, this.exec);
-    const stop = wall.watch(rows, graceMs);
+    const { stop, rows } = await wall.watch(() => wallRows(this.s, this.exec, true), graceMs);
     for (const r of rows) {
       if (!r.home || r.state !== "running" || stop.includes(r.name)) continue;
       try {

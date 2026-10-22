@@ -148,8 +148,8 @@ machines keep their internet. The design, and why:
 - **Ollama.** The relay `tools/m1/ollama-forward.mjs` is no longer a TCP pipe: it is an HTTP proxy that allows
   `/api/chat`, `/api/generate`, `/api/embed`, `/api/embeddings`, `/api/tags`, `/api/show`, `/api/ps`,
   `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings` and `/v1/models` with the method each needs, on the
-  exact path, and only for a model that `/api/tags` lists as installed (cached 30 s), is not a cloud model and
-  has no registry host in its name. Pull, push, create, copy, delete and blobs never reach Ollama. It serves every
+  exact path, and only for a model that `/api/tags` lists as installed (cached 30 s) and is not a cloud model.
+  Pull, push, create, copy, delete and blobs never reach Ollama. It serves every
   machine. A model you add with `ollama pull` on the mini shows up within 30 s. Re-install it:
   `sh tools/host/install-relay.sh`.
 - **Engines.** A PA can use only local engines (`local: true`, not Codex), for every duty and fallback; hiring or
@@ -159,6 +159,15 @@ machines keep their internet. The design, and why:
   OpenCode and "local" ticked.
 - **No DNS for a PA, on purpose** (a lookup through the host's resolver can carry data out). A PA reaches the gateway
   by address. If an engine ever needs a name, that is a decision to make here first, not a rule to add.
+- **The image builder and `container run` containers.** `container build` runs in a container (`buildkit`) on the
+  same bridge, and it isn't in `machine ls`. The daemon therefore also declares every running container in
+  `container ls` (which leaves machines out; an `inc-…` row is ignored in any case), so builds and throwaway
+  containers keep their internet while the daemon runs (within about half a minute of the builder starting). A
+  build while the daemon is down has no network. Start the daemon first. See `images/employee/README.md`.
+- **Ollama relay limits.** At most 32 connections, 4 from one address, headers and body within 15 s, a body of 4 MB
+  at most, 10 minutes without a byte once a call is in. A request with `model`/`name` keys spelt any other way, or
+  with a non-plain key, is refused, and what is forwarded is the parsed object written out again. A model installed
+  locally with a registry host in its name (`hf.co/…`) is served; anything not installed is not.
 - **Not verified, so not claimed: one machine reaching another.** L2-switched traffic between two machines on the
   bridge may never meet pf. `tools/m1/walls-test.sh` with `OTHER_MACHINE=<ip>` tests TCP and ping to another
   machine and sends a broadcast to `255.255.255.255:67` (to see whether the DHCP rule's broadcast reaches other
@@ -175,7 +184,7 @@ after the walls reload, each engineers' machine is shut in until the daemon decl
    `/var/run/i-inc`. It ends with `the walls are up` and `open machines the walls hold now: 0`; within half a minute
    the daemon declares the running machines and the count follows.
 4. Verify.
-   (a) `sudo pfctl -a com.apple/010.i-inc-machines -s rules | grep open_machines` shows two rules (DNS and internet),
+   (a) `sudo pfctl -a com.apple/010.i-inc-machines -s rules | grep open_machines` shows three rules (DNS over udp, DNS over tcp, and the internet),
    and `sudo pfctl -a com.apple/010.i-inc-machines -t open_machines -T show` lists the running engineers' machines
    and no PA sandbox. `tail /var/log/i-inc-walls.log` shows `walls up` and no `walls down`.
    (b) In an engineers' machine: `container machine run -i -n inc-<team> -- env ROUTER=<ip> HOST_LAN=<ip>
@@ -190,8 +199,17 @@ after the walls reload, each engineers' machine is shut in until the daemon decl
    (e) From a machine, `curl -s -X POST http://192.168.64.1:11434/api/pull -d '{"name":"evil.example/x/y"}'` answers
    403 `that call is not allowed`, and `curl -s http://192.168.64.1:11434/api/tags` still lists the models.
 
-An existing PA sandbox from before this (`inc-home-<id>`, with sudo) needs no recreating: the daemon takes its
-root away the next time it is used.
+**Recreate any PA sandbox that has ever run with sudo; do not reuse it.** The daemon takes root away from an existing
+one the next time it is used, but a sandbox with open internet and sudo may already have had anything put in it, or
+a persistence of its own. The brain and the handbook live on the host, so nothing is lost:
+`container machine stop inc-home-<id>; container machine delete inc-home-<id>`, then give the PA a task and the daemon
+makes a fresh one (the brain copy is sent again).
+
+**At cutover, running tickets lose DNS and new connections for up to about 90 s.** When `install-walls.sh` loads the
+closed rules, each engineers' machine is shut in until the daemon declares its address and the walls job takes it
+(the watch runs every 30 s; the walls job at once when the list changes, else within a minute). Open connections
+survive on their state; DNS and anything new fails until then. Do it when nothing is running, or expect a few
+retried commands.
 
 **If it goes wrong.** A PA ticket waiting with "the walls didn't settle for inc-… within 90 s" means the walls job
 did not load the address: `tail /var/log/i-inc-walls.log`, `ls -l /var/run/i-inc /var/run/i-inc-walls.open`. If the

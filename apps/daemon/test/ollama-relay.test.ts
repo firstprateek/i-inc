@@ -13,6 +13,7 @@ const relayModule = (await import(relayPath)) as {
     ollama: { host: string; port: number };
     now?: () => number;
     log?: (l: string) => void;
+    limits?: Record<string, number>;
   }) => http.Server;
   modelProblem: (n: unknown) => string | null;
   registryHost: (n: string) => boolean;

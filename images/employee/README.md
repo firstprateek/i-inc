@@ -13,6 +13,16 @@ cat images/employee/check.sh | container machine run -i -u employee -n inc-image
 container machine delete inc-imagecheck
 ```
 
+**The walls and the build.** Once the new walls are installed (docs/handoff.md, T66) they are closed
+unless opened: an address gets the internet only if the daemon has declared it. The daemon declares every
+running machine except a personal assistant's, and every running container in `container ls`, which leaves
+machines out. So `container build` (its builder is the container `buildkit`) and any `container run` keep
+their internet while the daemon runs, within about half a minute of starting; so does a machine you make by
+hand, such as `inc-imagecheck`. If the daemon is stopped nothing new is declared and a build has no network:
+start the daemon first. Check with `container ls` and, on the mini, `cat /var/run/i-inc-walls.open`.
+A personal assistant's sandbox is made by the daemon, not by hand, and has its user's sudo removed (so
+`check.sh`'s "sudo needs no password" line fails there on purpose).
+
 The image includes the pinned Codex ACP adapter and its matching Codex CLI, but no Codex sign-in.
 For an existing team sandbox, the owner can install those pins with
 `sh tools/host/provision-codex.sh <team-id>`; it checks the host walls and updates only that

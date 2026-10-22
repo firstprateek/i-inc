@@ -6,8 +6,10 @@
 // the table <open_machines>; every other address, including a personal assistant's sandbox, gets only
 // DHCP and Ollama. The table is kept by tools/host/walls.sh as root:
 //
-//   1. the daemon reads each machine's address from `container machine ls` and writes the addresses of
-//      the running machines that may reach the internet (every machine but a PA's sandbox) to
+//   1. the daemon reads each machine's address from `container machine ls`, and the running containers' from
+//      `container ls` (which leaves machines out: the image builder, `container run`), and writes the addresses
+//      of the running machines that may reach the internet (every machine but a PA's sandbox) and of those
+//      containers to
 //      `declared` (/var/run/i-inc/open-machines);
 //   2. walls.sh, at once (launchd watches the file) or within a minute, validates them, loads them
 //      into the table, reads the table back from pf and writes it to `ack` (/var/run/i-inc-walls.open),
@@ -181,9 +183,8 @@ export class EgressWall {
     sleep: (ms: number) => Promise<void>,
   ): Promise<void> {
     const deadline = this.now() + this.s.waitMs;
-    let declared = "";
     for (;;) {
-      const all = await rows();
+      const all = await this.sync(rows, true);
       const mine = all.find((r) => r.name === machine);
       const st = this.state();
       if (st.kind === "old") {
@@ -194,11 +195,6 @@ export class EgressWall {
       if (st.kind === "stale") throw new WallError(`nothing runs in ${machine}: ${STALE_WALLS}`);
       if (mine?.state !== "running" || !mine.ip) {
         throw new WallError(`${machine} has no address on the machines' network, so it can't be walled`);
-      }
-      const addresses = EgressWall.open(all);
-      if (addresses.join() !== declared) {
-        this.declare(addresses);
-        declared = addresses.join();
       }
       const why = this.problem(machine, home, mine);
       if (!why) return;
@@ -211,19 +207,45 @@ export class EgressWall {
     }
   }
 
+  /** The last look and declaration, so the next one waits for it. */
+  private chain: Promise<unknown> = Promise.resolve();
+
+  /**
+   * Looks at the machines and declares the open ones, one such look at a time. The look is taken inside the
+   * queue, right before it is declared, so a slow look that began before a machine booted can't be written
+   * over a newer one (which would drop the new machine and kill its connections). With the old walls nothing
+   * is declared. `strict`: a list that can't be written is an error (the daemon's watch ignores it).
+   */
+  sync(rows: () => Promise<WallRow[]>, strict: boolean): Promise<WallRow[]> {
+    const run = async () => {
+      const all = await rows();
+      if (this.state().kind !== "old") {
+        try {
+          this.declare(EgressWall.open(all));
+        } catch (err) {
+          if (strict) throw err;
+        }
+      }
+      return all;
+    };
+    const turn = this.chain.then(run, run);
+    this.chain = turn.catch(() => undefined);
+    return turn;
+  }
+
   /**
    * One look at the machines, for the daemon's watch: declares the open machines and returns the running home
-   * machines whose address the walls have let out for longer than `graceMs` (the caller stops them).
+   * machines whose address the walls have let out for longer than `graceMs` (the caller stops them), with the
+   * rows it saw.
    */
-  watch(rows: WallRow[], graceMs: number): string[] {
-    const leaking = this.leaking;
+  async watch(
+    rowsOf: () => Promise<WallRow[]>,
+    graceMs: number,
+  ): Promise<{ stop: string[]; rows: WallRow[] }> {
+    const rows = await this.sync(rowsOf, false);
     const st = this.state();
-    if (st.kind === "old") return [];
-    try {
-      this.declare(EgressWall.open(rows));
-    } catch {
-      // The walls job isn't there to tell: nothing is let out, and the daemon's checks refuse launches.
-    }
+    if (st.kind === "old") return { stop: [], rows };
+    const leaking = this.leaking;
     const stop: string[] = [];
     const seen = new Set<string>();
     for (const r of rows) {
@@ -238,7 +260,7 @@ export class EgressWall {
       }
     }
     for (const name of [...leaking.keys()]) if (!seen.has(name)) leaking.delete(name);
-    return stop;
+    return { stop, rows };
   }
 
   /** When a running home machine was first seen with its address let out. */

@@ -24,6 +24,7 @@ import {
   type Exec,
   type MachineSettings,
   machineLaunch,
+  parseContainerListing,
   parseMachineListing,
   removeRootScript,
   rootProbeScript,
@@ -66,12 +67,26 @@ function wallsJob() {
   utimesSync(wall.ack, at, at);
 }
 
+/** `container ls`: the builder and a throwaway container are the owner's; an inc-… row must never count. */
+let containers: string[];
+const containerListing = () =>
+  ["ID            IMAGE                          OS     ARCH   STATE    ADDR", ...containers].join("\n");
+/** When set, the next `machine ls` answers with what it saw, then waits for this to resolve. */
+let hold: { gate: Promise<void> } | undefined;
+
 const exec: Exec = async (_bin, args, opts) => {
   calls.push({ args, input: opts?.input });
+  if (args[0] === "ls") return containerListing();
   const sub = args[1];
   if (sub === "ls") {
     wallsJob(); // each look at the machines is a moment the walls job may run
-    return listing();
+    const seen = listing();
+    if (hold) {
+      const { gate } = hold;
+      hold = undefined;
+      await gate;
+    }
+    return seen;
   }
   if (sub === "create") {
     const name = args[args.indexOf("--name") + 1] as string;
@@ -143,6 +158,8 @@ beforeEach(() => {
   calls = [];
   machines = new Map();
   rooted = new Set();
+  containers = [];
+  hold = undefined;
   walls = "new";
   removeRootWorks = true;
   wall = {
@@ -414,6 +431,66 @@ describe("the watch (every thirty seconds)", () => {
     rooted.add("inc-home-pip");
     removeRootWorks = false;
     expect(await m.watchHome(grace)).toEqual(["inc-home-pip"]);
+  });
+});
+
+describe("containers that are not machines (the image builder, container run)", () => {
+  beforeEach(() => {
+    containers = [
+      "buildkit      ghcr.io/apple/container-builder-shim/builder:0.9.0  linux  arm64  running  192.168.64.3/24",
+      "scratch       alpine:3.22                    linux  arm64  running  192.168.64.4/24",
+      "stopped-one   alpine:3.22                    linux  arm64  stopped  -",
+      "inc-home-pip  img                            linux  arm64  running  192.168.64.5/24",
+    ];
+  });
+
+  it("are declared with the machines, so `container build` keeps its internet, and a PA's sandbox never is", async () => {
+    const m = make();
+    await m.ensureUp(pa); // the PA's sandbox is at .5, and so is an inc-… row in the container listing
+    expect(readDeclared()).toBe("192.168.64.3\n192.168.64.4\n192.168.64.8\n");
+    expect(readDeclared()).not.toContain("192.168.64.5");
+    // The watch declares them again as they come and go
+    containers = containers.filter((c) => !c.startsWith("scratch"));
+    await m.watchHome();
+    expect(readDeclared()).toBe("192.168.64.3\n192.168.64.8\n");
+  });
+
+  it("are not looked at for a launch's check, which only needs the machine's own address", async () => {
+    await make().ensureUp("ada");
+    calls.length = 0;
+    await assertRunnable(settings, exec, "inc-ada");
+    expect(calls.some((c) => c.args[0] === "ls")).toBe(false);
+  });
+
+  it("are read from the listing with or without a prefix length, and only while running", () => {
+    expect(parseContainerListing(containerListing()).map((r) => [r.name, r.ip])).toEqual([
+      ["container:buildkit", "192.168.64.3"],
+      ["container:scratch", "192.168.64.4"],
+    ]);
+    expect(parseContainerListing("ID IMAGE\nbuilder is not running")).toEqual([]);
+  });
+});
+
+describe("declaring is one look at a time", () => {
+  it("a slow look taken before a machine booted can't be written over the look that has it", async () => {
+    const m = make();
+    await m.ensureUp(pa);
+    // The watch starts looking; its snapshot is taken before the new machine exists and is held.
+    let release: () => void = () => {};
+    hold = { gate: new Promise<void>((r) => (release = r)) };
+    const watching = m.watchHome();
+    while (hold) await new Promise((r) => setTimeout(r, 0)); // its look has been taken and is parked
+    // Meanwhile a machine boots and its address is declared (this waits its turn behind the watch).
+    machines.set("inc-new", { ip: "192.168.64.40", state: "running" });
+    const waking = settings.wall?.sync(
+      async () => (await import("../src/machines.ts")).wallRows(settings, exec, true),
+      true,
+    );
+    // Without a queue the new look would finish and be written before the held one is let go.
+    await new Promise((r) => setTimeout(r, 30));
+    release();
+    await Promise.all([watching, waking]);
+    expect(readDeclared()).toContain("192.168.64.40");
   });
 });
 

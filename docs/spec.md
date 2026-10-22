@@ -365,8 +365,9 @@ interface with a scripted fake in tests, like the ACP agent.
   - **Ollama is not a free pipe.** The relay on the gateway (`tools/m1/ollama-forward.mjs`) is an HTTP
     proxy with an allowlist: chat, generate, embed, embeddings, tags, show, ps and the OpenAI-style
     chat, completions, embeddings and models calls, only on exact paths, and only for models already
-    installed on the host. A pull, push, create, copy, delete or blob call, a cloud model and a name
-    with a registry host are refused, so a sandbox can't make the host fetch from, or send a prompt to,
+    installed on the host. A pull, push, create, copy, delete or blob call, a cloud model and a model
+    that isn't installed (which includes any name with a registry host) are refused, and the request body is
+    parsed and re-written so what is checked is what Ollama reads, so a sandbox can't make the host fetch from, or send a prompt to,
     a server of its choosing.
   - **Not verified: one machine reaching another.** Traffic between two machines on the bridge may be
     switched at layer 2 and never meet pf, and a broadcast to `255.255.255.255:67` (the DHCP rule) may
