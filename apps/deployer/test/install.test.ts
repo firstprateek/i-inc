@@ -28,6 +28,7 @@ let head: string;
 let home: string;
 let bin: string;
 let log: string;
+let lc: string; // the fake launchctl's state
 
 const daemonPlist = () => `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
@@ -52,7 +53,7 @@ beforeEach(() => {
   script = join(repo, "tools/host/install-deployer.sh");
   mkdirSync(join(repo, "tools/host"), { recursive: true });
   mkdirSync(join(repo, "apps/deployer/src"), { recursive: true });
-  for (const f of ["install-deployer.sh", "inc.i.deployer.plist"]) {
+  for (const f of ["install-deployer.sh", "inc.i.deployer.plist", "launchd.sh"]) {
     copyFileSync(join(source, "tools/host", f), join(repo, "tools/host", f));
   }
   writeFileSync(join(repo, "apps/deployer/src/main.ts"), "// stub\n");
@@ -69,7 +70,13 @@ beforeEach(() => {
   mkdirSync(bin);
   mkdirSync(join(home, "Library/LaunchAgents"), { recursive: true });
   writeFileSync(join(home, "Library/LaunchAgents/inc.i.daemon.plist"), daemonPlist());
-  fake("launchctl", `echo "launchctl $*" >>"${log}"`);
+  // The stateful fake: bootout returns before the service is gone, and a bootstrap before then fails
+  // with error 5, as on the mini. The daemon is loaded to begin with.
+  lc = join(home, "launchctl-state");
+  copyFileSync(join(source, "tools/host/test-fakes/launchctl"), join(bin, "launchctl"));
+  chmodSync(join(bin, "launchctl"), 0o755);
+  mkdirSync(join(lc, "loaded"), { recursive: true });
+  writeFileSync(join(lc, "loaded/inc.i.daemon"), daemonPlist());
   fake("sleep", "exit 0");
   fake("pnpm", "exit 0");
   fake("node", "exit 0");
@@ -92,7 +99,16 @@ afterEach(() => rmSync(home, { recursive: true, force: true }));
 function install(args: string[], env: Record<string, string> = {}) {
   const r = spawnSync("sh", [script, ...args], {
     encoding: "utf8",
-    env: { HOME: home, PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`, FAKE_VERSION: head, ...env },
+    env: {
+      HOME: home,
+      PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`,
+      FAKE_VERSION: head,
+      FAKE_LAUNCHCTL_DIR: lc,
+      FAKE_LAUNCHCTL_LOG: log,
+      I_INC_LAUNCHD_POLL: "0",
+      I_INC_LAUNCHD_BACKOFF: "0",
+      ...env,
+    },
   });
   return { code: r.status, out: r.stdout, err: r.stderr, all: r.stdout + r.stderr };
 }
@@ -207,6 +223,54 @@ describe("install-deployer.sh --apply", () => {
   });
 });
 
+describe("install-deployer.sh and launchd's slow bootout (T66)", () => {
+  const uid = () => execFileSync("id", ["-u"], { encoding: "utf8" }).trim();
+  const loadedPlist = (label: string) => join(lc, "loaded", label);
+
+  it("waits until launchd has dropped the daemon before it bootstraps (the 'Input/output error' on the mini)", () => {
+    const r = install(["--apply"], { FAKE_UNLOAD_POLLS: "6" });
+    expect(r.code, r.all).toBe(0);
+    const c = calls();
+    const out = c.findIndex((l) => l === `launchctl bootout gui/${uid()}/inc.i.daemon`);
+    const boot = c.findIndex(
+      (l) => l.startsWith(`launchctl bootstrap gui/${uid()} `) && l.includes("inc.i.daemon.plist"),
+    );
+    expect(out).toBeGreaterThan(-1);
+    expect(boot).toBeGreaterThan(out);
+    // It looked at `launchctl print` in between, and bootstrapped exactly once: no error to retry.
+    expect(c.slice(out, boot).filter((l) => l.startsWith("launchctl print"))).not.toHaveLength(0);
+    expect(c.filter((l) => l.includes("bootstrap") && l.includes("inc.i.daemon.plist"))).toHaveLength(1);
+    expect(readFileSync(loadedPlist("inc.i.daemon"), "utf8")).toContain("i-inc-releases/current");
+    expect(existsSync(loadedPlist("inc.i.deployer"))).toBe(true);
+  });
+
+  it("retries a bootstrap that fails with error 5", () => {
+    const r = install(["--apply"], { FAKE_BOOTSTRAP_FAIL: "2" });
+    expect(r.code, r.all).toBe(0);
+    expect(r.err).toContain("Input/output error");
+    expect(existsSync(loadedPlist("inc.i.daemon"))).toBe(true);
+    expect(existsSync(loadedPlist("inc.i.deployer"))).toBe(true);
+  });
+
+  it("puts the old plist back and loads it when the new one never loads, so the daemon is not left down", () => {
+    // A bootstrap that always fails for the new plist: the first 20 failures cover every retry of it.
+    const r = install(["--apply"], { FAKE_BOOTSTRAP_FAIL: "5" });
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("putting the previous plist back");
+    expect(r.err).toContain("the previous inc.i.daemon is loaded again");
+    expect(readFileSync(join(agents(), "inc.i.daemon.plist"), "utf8")).toBe(daemonPlist());
+    expect(readFileSync(loadedPlist("inc.i.daemon"), "utf8")).toBe(daemonPlist());
+    expect(existsSync(join(agents(), "inc.i.deployer.plist"))).toBe(false);
+  });
+
+  it("--rollback-install waits too", () => {
+    expect(install(["--apply"]).code).toBe(0);
+    const r = install(["--rollback-install"], { FAKE_UNLOAD_POLLS: "5" });
+    expect(r.code, r.all).toBe(0);
+    expect(readFileSync(loadedPlist("inc.i.daemon"), "utf8")).toBe(daemonPlist());
+  });
+});
+
 describe("install-deployer.sh --rollback-install", () => {
   it("restores the old daemon plist and removes the deployer", () => {
     expect(install(["--apply"]).code).toBe(0);
@@ -247,7 +311,13 @@ describe("install-daemon.sh after the deployer is installed", () => {
     }
     const r = spawnSync("sh", [join(repo, "tools/host/install-daemon.sh")], {
       encoding: "utf8",
-      env: { HOME: home, PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin` },
+      env: {
+        HOME: home,
+        PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`,
+        FAKE_LAUNCHCTL_DIR: lc,
+        FAKE_LAUNCHCTL_LOG: log,
+        I_INC_LAUNCHD_POLL: "0",
+      },
     });
     expect(r.stdout).toContain("the deployer is installed");
     const plist = readFileSync(join(agents(), "inc.i.daemon.plist"), "utf8");

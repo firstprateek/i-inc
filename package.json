@@ -11,7 +11,7 @@
     "fix": "biome check --write .",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test && pnpm test:host",
-    "test:host": "sh tools/host/test-codex-tools.sh",
+    "test:host": "sh tools/host/test-codex-tools.sh && sh tools/host/test-launchd.sh",
     "bench": "pnpm --filter @i-inc/daemon bench",
     "e2e": "node tools/e2e/run-all.mjs",
     "e2e:install": "playwright install chromium"
