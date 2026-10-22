@@ -336,6 +336,20 @@ interface with a scripted fake in tests, like the ACP agent.
   - Nothing can connect in from outside.
   - The host firewall (`pf` on the Mac mini) enforces this, and the domains each employee contacts
     are logged.
+  - **A PA's sandbox is walled tighter, and this is now enforced.** It reaches only Ollama on the
+    gateway (through the relay) and gets DHCP: no internet, no DNS (a lookup through the host's
+    resolver is a way out for what the PA has read), nothing on the LAN, the tailnet, the host or
+    other machines. Apple container 1.4.1 can't put a machine on a network of its own
+    (`machine create` has no `--network` option), so the rules name a PA's sandbox by its address,
+    in a pf table `<home_machines>` (`tools/m1/pf/i-inc-machines.pf`). The daemon reads the address
+    of each sandbox that holds a PA from `container machine ls` and writes the list to
+    `/var/run/i-inc/home-machines`. The walls job (`tools/host/walls.sh`, root) takes only plain
+    addresses of the machines' network from it, loads them with the rules, reads the table back from
+    pf, and writes what pf holds to `/var/run/i-inc-walls.home` every minute. The daemon fails
+    closed: it creates and boots a home machine only if that file is fresh, and starts nothing in it
+    (no agent, script, brain copy or callback) until its address is in the file. A sandbox that
+    stays out of it for a minute and a half is stopped. Until the owner installs the new walls
+    (docs/handoff.md, T66), a PA's sandbox doesn't start.
 - **GitHub** uses a bot identity: one GitHub App, "i.inc bot", installed on the repos you choose.
   - For each session it mints a 1-hour token. The token can push branches, open and update PRs,
     read CI, and manage issues; a reviewer's or verifier's can only read. Editing CI/CD workflows,
@@ -530,7 +544,13 @@ shorter loop:
   the PA a small set of **home tools**: search mail, read a thread, create a draft, propose an event,
   read free/busy, and file a web errand. Every call is logged.
 - **No open internet.** Unlike an engineer's machine, a PA's machine reaches only i.inc's API and
-  Ollama. Whatever it prepares can only leave through a proposal you see.
+  Ollama. Whatever it prepares can only leave through a proposal you see. Today that is Ollama
+  only (i.inc's API port joins it when the daemon serves one to machines), enforced by the pf table
+  of PA sandboxes described in §5. Because the sandbox has no internet, only a local engine can
+  run in it: hiring or editing a PA refuses any duty's engine, fallbacks included, that isn't a
+  local one. If none is set up, it says so ("none is set up yet: add one in Setup"), and the hiring
+  form says the same; the local engine is OpenCode on Ollama (`tools/m1/install-harnesses.sh`), added
+  as an engine in Setup.
 - **Web work is split off.** A flight search needs the internet but not your mail. The PA files a
   **web errand** with a structured brief (for example: from, to, dates, cabin, preferences). A fresh,
   throwaway session with open internet and no home data runs it, on any engine, and returns the
