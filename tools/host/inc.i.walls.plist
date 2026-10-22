@@ -13,6 +13,11 @@
   <true/>
   <key>StartInterval</key>
   <integer>60</integer>
+  <!-- The daemon writes its home machines' addresses here (walls.sh); the walls cover a new one at once. -->
+  <key>WatchPaths</key>
+  <array>
+    <string>/var/run/i-inc/home-machines</string>
+  </array>
   <key>StandardOutPath</key>
   <string>/var/log/i-inc-walls.log</string>
   <key>StandardErrorPath</key>

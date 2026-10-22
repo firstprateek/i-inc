@@ -13,7 +13,18 @@
 #   - no IPv6 beyond neighbour discovery, since the LAN's IPv6 prefix changes and can't be
 #     walled off by address;
 #   - no connections opened to them.
+# Home machines (a personal assistant's sandbox) are the exception, with no internet and no DNS: see
+# the end of this comment and <home_machines> below.
 # i.inc's API port joins Ollama's once the daemon exists (M3).
+#
+# Home machines (a personal assistant's sandbox, inc-home-<id>; spec §7) get less: no internet, no
+# DNS, nothing but DHCP and Ollama on the gateway. Apple container 1.4.1 puts every machine on the
+# one `default` network (`machine create` has no --network option), so they can't have a subnet of
+# their own. Their addresses are in <home_machines> instead, which walls.sh fills every minute, and
+# at once when the daemon changes the list, from /var/run/i-inc/home-machines (tools/host/walls.sh).
+# The rules for them come before the others and are `quick`, so nothing below can open more for
+# them. Fail closed: a home machine whose address isn't in the table is not walled, so the daemon
+# runs nothing in one until walls.sh has acknowledged its address (apps/daemon/src/home-wall.ts).
 
 machines_if = "bridge100"
 machines    = "192.168.64.0/24"
@@ -25,9 +36,18 @@ ollama_port = "11434"
 table <not_internet> const { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, \
   172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 }
 
+# The home machines' addresses (one IPv4 address a line), written by walls.sh before it loads this
+# file. `persist` keeps the table when no rule uses it.
+table <home_machines> persist file "/var/run/i-inc-home-machines.table"
+
 # From the machines. DHCP, DNS and Ollama on the host come first, since the host is in
 # <not_internet>.
 pass in quick on $machines_if inet proto udp from any port 68 to { 255.255.255.255, $gateway } port 67
+# A home machine: Ollama through the relay, and nothing else. No DNS either, because a lookup through
+# the host's resolver is a way out for what it has read (a name can carry data). It reaches the
+# gateway by address.
+pass in log quick on $machines_if inet proto tcp from <home_machines> to $gateway port $ollama_port
+block return in log quick on $machines_if inet from <home_machines> to any
 pass in quick on $machines_if inet proto { udp, tcp } from $machines to $gateway port 53
 pass in log quick on $machines_if inet proto tcp from $machines to $gateway port $ollama_port
 block return in log quick on $machines_if inet from any to { <not_internet>, self }

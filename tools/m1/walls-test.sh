@@ -6,9 +6,16 @@
 #     LAN_DEVICE=<ip:port> TAILNET_DEVICE=<ip:port> bash -s < tools/m1/walls-test.sh
 #
 # Each line shows what happened ("open" or "blocked") and what the walls should give.
+#
+# In a home machine (a personal assistant's sandbox, inc-home-<id>), add HOME_MACHINE=1 to the env:
+# the internet and DNS are then expected to be blocked, and only Ollama open. (curl -4 -sf https://example.com
+# must fail there; on any other machine it must work.)
 
 GATEWAY=${GATEWAY:-192.168.64.1}
 : "${ROUTER:?}" "${HOST_LAN:?}" "${HOST_TAILNET:?}" "${LAN_DEVICE:?}" "${TAILNET_DEVICE:?}"
+
+net=open
+[ "${HOME_MACHINE:-}" != 1 ] || net=blocked
 
 as_wanted=0
 not=0
@@ -27,8 +34,8 @@ tcp() { nc -z -w 3 "${1%:*}" "${1##*:}"; }
 dns() { dig +short +time=2 +tries=1 "$1" @"$GATEWAY" | grep -q '^[0-9]'; }
 ping1() { ping -c 1 -W 2 "$1"; }
 
-check open "internet over IPv4 (https://example.com)" curl -4 -sf --max-time 8 -o /dev/null https://example.com
-check open "DNS through the gateway" dns example.com
+check "$net" "internet over IPv4 (https://example.com)" curl -4 -sf --max-time 8 -o /dev/null https://example.com
+check "$net" "DNS through the gateway" dns example.com
 check open "Ollama through the gateway" curl -sf --max-time 5 "http://$GATEWAY:11434/api/tags"
 check blocked "internet over IPv6" curl -6 -sf --max-time 8 -o /dev/null https://example.com
 check blocked "the host: SSH on the gateway" tcp "$GATEWAY:22"
