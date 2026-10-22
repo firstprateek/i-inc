@@ -148,14 +148,25 @@ pushes it with `tools/host/push-for-owner.sh` and then OKs the ticket.
 - **The handbook:** the company's shared knowledge, with a section per team for its conventions.
 - **Each employee's brain:** what it learned itself.
 
-Both live on the mini, outside the sandboxes, as markdown git repos. **They do not reach agents
-yet.** No brief, prompt or sandbox carries the handbook or a brain, so what the employees write is
-stored, viewable and revertible but never read back. The foundation is in place: every page has
-frontmatter, a disposable SQLite FTS5 index (`<home>/brain-index.db`, rebuilt from git) and a map per
-scope, with search and map routes (contract C19). Retrieval into briefs, with a copy of the readable
-scopes inside the sandbox, is the next step (T57). The design is in
-[design/brain.md](design/brain.md). Timings for the index (1,000-page rebuild, query latency,
-hostile input, 10,000-page maps) are an opt-in benchmark, `pnpm bench`, not part of `pnpm test`.
+Both live on the mini, outside the sandboxes, as markdown git repos. Every page has frontmatter; a
+disposable SQLite FTS5 index (`<home>/brain-index.db`, rebuilt from git, healing by itself when a
+repo changes behind the daemon's back) and a map per scope serve search and retrieval (contract C19).
+
+**They reach agents by copy, never by serving** (the sandboxes cannot reach the mini). Before a
+session the daemon (`brain-feed.ts`) puts the employee's readable scopes in its sandbox at
+`/home/employee/brain/<employee>/`: the handbook, its team's section and its own brain, each with an
+`INDEX.md`, plus a `brain` search command that needs only the image's Node. The copy goes over
+`machine run -i` as one script carrying a tar stream, only what changed since the last copy, into a
+git repository whose baseline commit is the snapshot (so T58 can harvest an agent's edits as a diff;
+a refresh keeps those edits). Never another employee's brain, another team's section or a PA's home
+data. The same daemon code then builds the query from the task, ranks pages (BM25 with a boost for the
+closest scope, one link away from the best two, about 3,000 tokens), and appends the maps and the
+matching pages to every ticket stage's brief and to every conversation turn, marking pages built
+from untrusted content. Which pages were used per stage and per turn is recorded and shown on the
+ticket page and in the Conversations context panel. The design is in [design/brain.md](design/brain.md).
+Timings for the index (1,000-page rebuild, query latency, hostile input, 10,000-page maps) are an
+opt-in benchmark, `pnpm bench`, and a 1,000-page copy and retrieval run prints its timings with
+`I_INC_BENCH=1` (`test/brain-bench.test.ts`); neither is part of the default assertions.
 
 ## Safety that stays
 

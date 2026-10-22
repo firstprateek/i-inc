@@ -1,4 +1,4 @@
-import type { Clock, Id, SessionTranscriptItem, TicketSessionTranscript } from "@i-inc/core";
+import type { BrainUse, Clock, Id, SessionTranscriptItem, TicketSessionTranscript } from "@i-inc/core";
 import type { Db } from "./db.ts";
 
 export const MAX_SESSION_ITEMS = 500;
@@ -271,14 +271,31 @@ export class SessionStore {
       list.push(item);
     }
 
-    return sessions.map((s) => ({
-      stage: s.stage,
-      employeeId: s.employee_id,
-      engineId: s.engine_id,
-      startedAt: s.started_at,
-      endedAt: s.ended_at !== null ? s.ended_at : null,
-      items: itemsBySession.get(s.id) ?? [],
-    }));
+    // The brain pages each session was given or opened (T57, contract C19).
+    const brain = new Map<number, BrainUse[]>();
+    for (const r of this.db.all<{ ref: string; body: string }>(
+      `SELECT ref, body FROM brain_used WHERE kind = 'session' AND ref IN (${placeholders})`,
+      ...sessionIds.map(String),
+    )) {
+      try {
+        const pages = (JSON.parse(r.body) as { pages?: BrainUse[] }).pages ?? [];
+        if (pages.length) brain.set(Number(r.ref), pages);
+      } catch {
+        // an unreadable record is just not shown
+      }
+    }
+
+    return sessions.map(
+      (s): TicketSessionTranscript => ({
+        stage: s.stage,
+        employeeId: s.employee_id,
+        engineId: s.engine_id,
+        startedAt: s.started_at,
+        endedAt: s.ended_at !== null ? s.ended_at : null,
+        items: itemsBySession.get(s.id) ?? [],
+        ...(brain.has(s.id) ? { brain: brain.get(s.id) as BrainUse[] } : {}),
+      }),
+    );
   }
 
   private pruneOldSessions(ticketId: Id, keepLimit = MAX_SESSIONS_PER_TICKET): void {
@@ -288,6 +305,7 @@ export class SessionStore {
       keepLimit,
     );
     for (const s of oldSessions) {
+      this.db.run("DELETE FROM brain_used WHERE kind = 'session' AND ref = ?", String(s.id));
       this.db.run("DELETE FROM ticket_session_items WHERE session_id = ?", s.id);
       this.db.run("DELETE FROM ticket_sessions WHERE id = ?", s.id);
     }

@@ -19,7 +19,9 @@ import {
   handleMessage,
   handOff,
   hiringProblems,
+  homeSandbox,
   type Id,
+  isHomeEmployee,
   knowledgeLog,
   type ProjectRelease,
   type ProposedEdit,
@@ -27,6 +29,7 @@ import {
   retry,
   type SandboxStatus,
   type Scope,
+  sharedHomeProblems,
   type Ticket,
   type TicketState,
 } from "@i-inc/core";
@@ -124,6 +127,32 @@ const longRunning = new Set([
 
 export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) {
   const lastSandboxRetry = new Map<string, number>();
+  /** Does this team have a PA in it? */
+  const holdsHome = (t: { members: string[] }): boolean =>
+    d.registry.employees().some((e) => t.members.includes(e.id) && isHomeEmployee(e));
+  /**
+   * A team (and so a sandbox) for a PA alone: the one it already works in if nobody else does, else
+   * `home-<id>`, made now with the small home size. `made` says whether this call made it, for undoing.
+   */
+  const homeTeamFor = (e: Employee): { id: string; made: boolean } => {
+    const teams = d.registry.teams();
+    const mine = teams.find((t) => t.members.includes(e.id));
+    if (mine?.members.every((m) => m === e.id)) return { id: mine.id, made: false };
+    const base = `home-${e.id}`.slice(0, 32);
+    const sole = teams.find((t) => t.id === base);
+    if (sole?.members.every((m) => m === e.id)) return { id: sole.id, made: false };
+    let n = 0;
+    let id = base;
+    const taken = new Set(teams.map((t) => t.id));
+    while (taken.has(id)) id = `${base.slice(0, 29)}-${++n}`;
+    d.registry.addTeam({ id, name: `${e.name}'s home`, members: [], sandbox: { ...homeSandbox } });
+    return { id, made: true };
+  };
+  /** The employees who work in a team's sandbox. */
+  const membersOf = (teamId: string): Employee[] => {
+    const team = d.registry.teams().find((t) => t.id === teamId);
+    return d.registry.employees().filter((e) => team?.members.includes(e.id));
+  };
   const startedAt = d.clock.now();
   const gh = new GitHubProjects(d.tokens, {
     now: () => d.clock.now(),
@@ -639,6 +668,28 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         ) {
           return json({ error: 'sandbox is {"cpus": 6, "memory": "12G"}' }, 400);
         }
+        // Taking a PA out of its team would land it in the shared sandbox (emptying a home team does).
+        const before = d.registry.teams().find((t) => t.id === id);
+        const left = d.registry
+          .employees()
+          .filter(
+            (e) =>
+              isHomeEmployee(e) && before?.members.includes(e.id) && !(members as string[]).includes(e.id),
+          );
+        if (left.length) {
+          return json(
+            {
+              error: `${left.map((e) => e.name).join(", ")} works on home data and needs a sandbox of its own, so it can't be taken out of ${before?.name ?? id} this way`,
+            },
+            409,
+          );
+        }
+        // A PA's home data must not share a sandbox (and a Unix user) with anyone else.
+        const crowd = sharedHomeProblems(
+          b.name,
+          d.registry.employees().filter((e) => (members as string[]).includes(e.id)),
+        );
+        if (crowd.length) return json({ error: crowd.join("; "), problems: crowd }, 400);
         d.registry.setTeam({
           id,
           name: b.name,
@@ -653,6 +704,20 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       "DELETE",
       "/api/teams/:id",
       async (_req, { id = "" }) => {
+        // Deleting a team puts its people in the company's shared sandbox: not for a PA's home data.
+        const team = d.registry.teams().find((t) => t.id === id);
+        if (team && holdsHome(team)) {
+          const who = d.registry
+            .employees()
+            .filter((e) => team.members.includes(e.id) && isHomeEmployee(e))
+            .map((e) => e.name);
+          return json(
+            {
+              error: `${team.name} holds ${who.join(", ")}, who works on home data and needs a sandbox of its own, so it can't be deleted`,
+            },
+            409,
+          );
+        }
         const ok = d.registry.removeTeam(id);
         if (!ok) return json({ error: "no such team" }, 404);
         return json({ ok: true });
@@ -1621,15 +1686,23 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         const body = (await req.json()) as Partial<Employee> & { teamId?: unknown };
         const teams = d.registry.teams();
         let teamId: string | undefined;
+        // A PA (home data) always works in a team of its own: the web form sends none, and a team that
+        // is named but has other members is not an error the form could avoid, so it is replaced by a
+        // home team (an empty named team is used as it is).
+        let ownTeam = false;
+        const wantsHome = isHomeEmployee({ role: body.role ?? "" });
         if (body.teamId !== undefined) {
           if (typeof body.teamId !== "string" || !teams.some((team) => team.id === body.teamId)) {
             return json({ error: "teamId must name an existing team" }, 400);
           }
           teamId = body.teamId;
-        } else if (teams.length === 1) {
-          teamId = teams[0]?.id;
-        } else if (teams.length > 1) {
-          return json({ error: "choose a team before hiring" }, 400);
+        } else if (wantsHome) {
+          ownTeam = true;
+        } else {
+          // A PA's home team is nobody else's: it is not "the only team" to be hired into.
+          const open = teams.filter((t) => !holdsHome(t));
+          if (open.length === 1) teamId = open[0]?.id;
+          else if (open.length > 1) return json({ error: "choose a team before hiring" }, 400);
         }
         const hire: Employee = {
           id:
@@ -1652,8 +1725,29 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         };
         const problems = hiringProblems(hire, d.registry.engines(), d.registry.employees());
         if (problems.length) return json({ error: problems.join("; "), problems }, 400);
-        if (teamId) d.registry.saveEmployeeInTeam(hire, teamId);
-        else d.registry.hire(hire);
+        if (teamId && isHomeEmployee(hire) && membersOf(teamId).length > 0) {
+          teamId = undefined;
+          ownTeam = true;
+        }
+        if (teamId) {
+          const team = d.registry.teams().find((t) => t.id === teamId);
+          const crowd = sharedHomeProblems(team?.name ?? teamId, [...membersOf(teamId), hire]);
+          if (crowd.length) return json({ error: crowd.join("; "), problems: crowd }, 400);
+        }
+        let madeTeam: string | undefined;
+        if (ownTeam) {
+          const home = homeTeamFor(hire);
+          teamId = home.id;
+          if (home.made) madeTeam = home.id;
+        }
+        try {
+          if (teamId) d.registry.saveEmployeeInTeam(hire, teamId);
+          else d.registry.hire(hire);
+        } catch (err) {
+          // A hire that failed leaves no empty home team behind.
+          if (madeTeam) d.registry.removeTeam(madeTeam);
+          throw err;
+        }
         // A brain from the template, and orientation as the first ticket (spec §5, "Hiring").
         d.knowledge.ensureBrain(hire);
         const pa = hire.role === "Personal Assistant";
@@ -1711,7 +1805,31 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           d.registry.employees().filter((e) => e.id !== id),
         );
         if (problems.length) return json({ error: problems.join("; "), problems }, 400);
-        if (typeof b.teamId === "string") d.registry.saveEmployeeInTeam(updated, b.teamId);
+        // Where the employee will work: the team named, or (for a change of role into a home-data role)
+        // the one it is in now. A PA never shares a sandbox with anyone: a PA whose team is, or would
+        // be, shared is moved to a team of its own rather than refused (the web form can't avoid that);
+        // anyone else put into a PA's team is refused.
+        const target =
+          typeof b.teamId === "string"
+            ? b.teamId
+            : b.role !== undefined && isHomeEmployee(updated) && !isHomeEmployee(existing)
+              ? d.registry.teamOf(id).id
+              : undefined;
+        let moveTo: string | undefined;
+        if (target !== undefined) {
+          const named = d.registry.teams().find((t) => t.id === target);
+          const others = (
+            named ? membersOf(target) : d.registry.machineMates(id).map((m) => d.registry.employee(m))
+          ).filter((m) => m.id !== id);
+          if (isHomeEmployee(updated) && others.length > 0) {
+            moveTo = homeTeamFor(updated).id;
+          } else {
+            const crowd = sharedHomeProblems(named?.name ?? "The company's sandbox", [...others, updated]);
+            if (crowd.length) return json({ error: crowd.join("; "), problems: crowd }, 400);
+          }
+        }
+        if (moveTo) d.registry.saveEmployeeInTeam(updated, moveTo);
+        else if (typeof b.teamId === "string") d.registry.saveEmployeeInTeam(updated, b.teamId);
         else d.registry.hire(updated);
         if (b.prompt !== undefined || b.role !== undefined || b.name !== undefined) {
           d.knowledge.updatePersonality(id, updated.name, updated.role, updated.prompt);
@@ -2112,6 +2230,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       "GET",
       "/api/brain/search",
       async (req) => {
+        d.brain.refresh(); // a repo changed behind the daemon's back (the migration) shows at once
         const url = new URL(req.url);
         const q = (url.searchParams.get("q") ?? "").trim();
         if (!q) return json({ error: "q is required" }, 400);
@@ -2133,6 +2252,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       "GET",
       "/api/brain/map",
       async (req) => {
+        d.brain.refresh();
         const url = new URL(req.url);
         const scope = url.searchParams.get("scope");
         if (!scope || scope === "all") return json({ error: "scope is required" }, 400);

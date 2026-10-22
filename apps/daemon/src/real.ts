@@ -10,6 +10,7 @@ import type { AgentBackend } from "./ahp/backend.ts";
 import { agentsFromRegistry } from "./ahp/conversations.ts";
 import { SessionHost } from "./ahp/session-host.ts";
 import type { AppOptions } from "./app.ts";
+import type { BrainFeed } from "./brain-feed.ts";
 import { type Credentials, credentialsFor } from "./config.ts";
 import { commitIdentity, PullRequests, type TokenSource, waitForCi } from "./github.ts";
 import { MachineHarness, machineScript, type RunScript } from "./harness.ts";
@@ -41,6 +42,8 @@ export interface RealOptions {
   exec?: Exec;
   launch?: Launch;
   runScript?: RunScript;
+  /** Whether a machine is running; default: ask `container machine ls`. For tests. */
+  isUp?: (machine: string) => Promise<boolean>;
   ollama?: OllamaOptions;
   /** Stand-ins for GitHub, for tests and the end-to-end run: the bot's commit address, and CI on a pushed commit. */
   identity?: (employee: Employee) => Promise<{ name: string; email: string }>;
@@ -112,6 +115,16 @@ export function realPorts(o: RealOptions): Pick<
     runner ??= o.runScript ?? machineScript(teams(registry));
     return runner;
   };
+  // The brain's copy goes into a sandbox through the same script runner as everything else (a tar
+  // stream on stdin of `machine run -i`); the feed adds the brain to briefs only once it has one.
+  const withBrain = (registry: Registry, brain: BrainFeed): BrainFeed => {
+    brain.deliver ??= run(registry);
+    // A copy never starts a stopped machine: `machine ls` says what is running.
+    brain.isUp ??=
+      o.isUp ??
+      (async (name) => (await machines?.listMachines())?.find((m) => m.name === name)?.state === "running");
+    return brain;
+  };
   let machines: AppleMachines | undefined;
   // Agents a dead daemon left running in a sandbox are stopped before a new one starts for the same
   // work (reaper.ts), and the sandboxes are swept once at startup.
@@ -146,8 +159,9 @@ export function realPorts(o: RealOptions): Pick<
       machines = new AppleMachines(teams(registry), o.exec, undefined, now, o.log);
       return machines;
     },
-    agent: (registry, tickets) =>
-      new AcpAgent({
+    agent: (registry, tickets, brain) => {
+      withBrain(registry, brain);
+      return new AcpAgent({
         launch: o.launch ?? machineLaunch(teams(registry)),
         reap: reap(registry),
         // The account's credential if it has one (machines sign in themselves by default), and the
@@ -160,7 +174,8 @@ export function realPorts(o: RealOptions): Pick<
         onUsage: (u) => registry.recordUsage(u),
         onRateLimit: (accountId, limit) => registry.setAccountRateLimit(accountId, limit),
         ...(o.log ? { log: o.log } : {}),
-      }),
+      });
+    },
     harness: (registry, tickets) =>
       new MachineHarness(
         {
@@ -212,8 +227,9 @@ export function realPorts(o: RealOptions): Pick<
         }
       : {}),
     // Conversations: long-lived agent sessions in the same team sandboxes, behind the AHP host.
-    ahpBackend: (registry): AgentBackend =>
+    ahpBackend: (registry, _tickets, brain): AgentBackend =>
       new SessionHost({
+        brain: withBrain(registry, brain),
         launch: o.launch ?? machineLaunch(teams(registry)),
         reap: reap(registry),
         agents: () => agentsFromRegistry(registry),

@@ -12,6 +12,8 @@ import {
   turnStarted,
 } from "../../src/conversations/actions.ts";
 import {
+  brainHref,
+  brainPages,
   bypassMode,
   changedFiles,
   commandsOf,
@@ -482,5 +484,39 @@ describe("the daemon's refusals, as sentences", () => {
       friendlyError("the GitHub App isn't set up yet, so a conversation can't work on a project"),
     ).toMatch(/^Couldn't start the conversation:/);
     expect(friendlyError("")).toBe("Couldn't start the conversation.");
+  });
+});
+
+describe('brain pages used (contract C19, _meta["iinc.brain"])', () => {
+  const session = (raw: unknown): Any => ({ _meta: { "iinc.brain": raw } });
+  it("reads the host's list, with where each page lives, what the agent opened and what is untrusted", () => {
+    const pages = brainPages(
+      session([
+        {
+          id: "company:projects/duet",
+          title: "Duet",
+          scope: "company",
+          slug: "projects/duet",
+          via: "search",
+        },
+        { id: "brain:ada:tools/x", title: "X", scope: "brain:ada", slug: "tools/x", via: "read" },
+        { title: "Web", scope: "team:eng", slug: "w", untrusted: true },
+        "A bare title",
+        { nope: 1 },
+      ]),
+      undefined,
+    );
+    expect(pages).toEqual([
+      { title: "Duet", scope: "company", slug: "projects/duet", href: "#/company/brain" },
+      { title: "X", scope: "brain:ada", slug: "tools/x", href: "#/company/brain/ada", read: true },
+      { title: "Web", scope: "team:eng", slug: "w", href: "#/company/brain", untrusted: true },
+      { title: "A bare title" },
+    ]);
+  });
+  it("is empty when the host says nothing, and links a brain to its owner", () => {
+    expect(brainPages(undefined, undefined)).toEqual([]);
+    expect(brainPages(session("nope"), undefined)).toEqual([]);
+    expect(brainHref("brain:kit")).toBe("#/company/brain/kit");
+    expect(brainHref("company")).toBe("#/company/brain");
   });
 });

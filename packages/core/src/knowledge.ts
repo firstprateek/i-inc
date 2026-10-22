@@ -160,6 +160,9 @@ export function repoOfScope(scope: Scope): RepoRef | null {
  */
 export function scopeOfPath(repo: RepoRef, path: string): { scope: Scope; slug: string } | null {
   if (!path.endsWith(".md") || path.split("/").some((p) => !p || p.startsWith("."))) return null;
+  // A name with a control character in it (a newline, say) can't be a page: it would break the map,
+  // the line-based tools around it, and the snapshot.
+  if (/\p{Cc}/u.test(path)) return null;
   const rel = path.slice(0, -3);
   if (rel === "INDEX") return null;
   if (repo.kind === "brain") return { scope: brainScope(repo.id), slug: rel };

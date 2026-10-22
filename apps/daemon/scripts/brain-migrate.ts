@@ -8,6 +8,10 @@
 // where. `--home <dir>` is required (the daemon's home; the repos are in <dir>/knowledge), and
 // writing needs both `--apply` and `--yes`.
 //
+// A running daemon does not need a restart afterwards: the index remembers the HEAD of each repo it has
+// read, sees that these commits do not follow it, and brings in the changed pages the next time it is
+// asked (a search, a map, a brief or a turn).
+//
 //   bun apps/daemon/scripts/brain-migrate.ts --home <dir>                  # dry run: print what would change
 //   bun apps/daemon/scripts/brain-migrate.ts --home <dir> --apply --yes    # write it, one commit per repo
 import { execFileSync } from "node:child_process";

@@ -71,6 +71,56 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("<inc-transcript> brain pages", () => {
+  const withBrain: TicketSession[] = [
+    {
+      ...(sessions[0] as TicketSession),
+      brain: [
+        { scope: "company", slug: "projects/duet", title: "Duet", updated: "2026-10-20", via: "search" },
+        { scope: "brain:ada", slug: "tools/vitest", title: "Vitest", updated: null, via: "link" },
+        {
+          scope: "company",
+          slug: "facts/web",
+          title: "Web notes",
+          updated: null,
+          via: "search",
+          untrusted: true,
+        },
+        { scope: "team:eng", slug: "release", title: "Release", updated: null, via: "read" },
+      ],
+    },
+    sessions[1] as TicketSession,
+  ];
+
+  it("counts the pages on the stage's row and lists them, each with its scope, when opened", async () => {
+    serve(200, { sessions: withBrain });
+    const root = await mount();
+    expect(heads(root)[0]?.textContent).toContain("4 brain pages");
+    expect(heads(root)[1]?.textContent).not.toContain("brain page");
+    await click(heads(root)[0] as Element);
+    const items = [...root.querySelectorAll<HTMLElement>(".brain li")];
+    expect(items.map((li) => li.querySelector("a")?.textContent)).toEqual([
+      "Duet",
+      "Vitest",
+      "Web notes",
+      "Release",
+    ]);
+    expect(items[0]?.querySelector("a")?.getAttribute("href")).toBe("#/company/brain");
+    expect(items[1]?.querySelector("a")?.getAttribute("href")).toBe("#/company/brain/ada");
+    expect(items[1]?.textContent).toContain("Own brain");
+    expect(items[2]?.textContent).toContain("untrusted");
+    expect(items[3]?.textContent).toContain("opened");
+    expect(root.querySelector(".brain b")?.textContent).toBe("Brain pages used");
+  });
+
+  it("shows nothing about the brain on a session that used none", async () => {
+    serve();
+    const root = await mount();
+    await click(heads(root)[0] as Element);
+    expect(root.querySelector(".brain")).toBeNull();
+  });
+});
+
 describe("<inc-transcript>", () => {
   it("lists the sessions from C4 with stage, employee, engine, times and state", async () => {
     const urls = serve();

@@ -3,6 +3,7 @@
 // hides itself when the daemon has no transcripts to give (404, empty, or unreachable).
 import { css, html, LitElement, nothing } from "lit";
 import { api, refresh, type TicketSession, type TranscriptItem } from "../api.ts";
+import { brainHref, brainScopeLabel } from "../conversations/model.ts";
 import { base } from "./shared.ts";
 
 /** Output past this many lines or characters is cut, with a "Show all" button. */
@@ -143,6 +144,11 @@ export class IncTranscript extends LitElement {
       .more { min-height: 44px; align-self: flex-start; padding: 0 14px; font: 600 14px var(--body); color: var(--ink);
         background: transparent; border: 1px solid var(--line-strong); border-radius: 999px; cursor: pointer; }
       .empty { color: var(--ink-2); font-size: 14px; margin: 0; }
+      .brain { display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
+      .brain ul { gap: 2px; }
+      .brain a { color: var(--ink); overflow-wrap: anywhere; }
+      .tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--line); color: var(--ink-2); font-size: 11.5px; font-weight: 600; }
+      .tag.warn { border-color: var(--alarm); color: var(--alarm-fg); }
     `,
   ];
 
@@ -163,7 +169,7 @@ export class IncTranscript extends LitElement {
       <button class="head" aria-expanded=${open} aria-controls="s${i}" @click=${() => this.flip("openSessions", i)}>
         <span class="what">
           <b>${s.stage} · ${s.employeeId}</b>
-          <small>${s.engineId} · ${span(s)}</small>
+          <small>${s.engineId} · ${span(s)}${s.brain?.length ? ` · ${s.brain.length} brain page${s.brain.length === 1 ? "" : "s"}` : ""}</small>
         </span>
         <span class="chips">
           <span class="chip ${running ? "working" : "done"}">${running ? "Running" : "Finished"}</span>
@@ -174,6 +180,17 @@ export class IncTranscript extends LitElement {
       ${
         open
           ? html`<div class="items" id="s${i}">
+            ${
+              s.brain?.length
+                ? html`<div class="brain"><b>Brain pages used</b>
+              <ul>${s.brain.map(
+                (p) => html`<li><a href=${brainHref(p.scope)} title=${p.slug}>${p.title}</a>
+                <span class="tag">${brainScopeLabel(p.scope)}</span>
+                ${p.via === "read" ? html`<span class="tag">opened</span>` : nothing}
+                ${p.untrusted ? html`<span class="tag warn" title="Built from web pages, issues or other people's repos">untrusted</span>` : nothing}</li>`,
+              )}</ul></div>`
+                : nothing
+            }
             ${s.items.length === 0 ? html`<p class="empty">Nothing recorded for this session.</p>` : nothing}
             ${s.items.map((it, j) => this.item(it, `${i}:${j}`))}
           </div>`

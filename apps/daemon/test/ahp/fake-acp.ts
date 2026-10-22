@@ -169,6 +169,26 @@ export class FakeAcpAgent {
       .filter((b) => b.type === "text")
       .map((b) => String(b.text))
       .join(" ");
+    // "@@read <path>" anywhere in a prompt makes the agent open that file first (a tool call that
+    // names it in its locations), then carry on as usual: how the brain's reads are seen.
+    // "@@readb64 <base64 of the path>" does the same without the path showing in the text.
+    const reads = [
+      ...[...text.matchAll(/@@read (\S+)/g)].map((m) => m[1] as string),
+      ...[...text.matchAll(/@@readb64 (\S+)/g)].map((m) => Buffer.from(m[1] as string, "base64").toString()),
+    ];
+    for (const [n, path] of reads.entries()) {
+      const toolCallId = `tc-readfile-${n}`;
+      this.update(sessionId, {
+        sessionUpdate: "tool_call",
+        toolCallId,
+        title: `Read ${path}`,
+        kind: "read",
+        status: "pending",
+        rawInput: { path },
+        locations: [{ path }],
+      });
+      this.update(sessionId, { sessionUpdate: "tool_call_update", toolCallId, status: "completed" });
+    }
     const said = text.split("The owner's new message:").pop()?.trim() ?? text;
     const images = blocks.filter((b) => b.type === "image").length;
     if (said.startsWith("slow")) {

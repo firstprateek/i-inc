@@ -215,7 +215,8 @@ answer it when it asks. The screen is the web app's AHP client (`apps/web/src/ah
   allow, Deny). The first answer from any device wins; the other devices show "Allowed on another device". A pending
   card counts in the Needs you badge and is listed in Work > Needs you, which opens the conversation at the card.
 - **Right panel** (the button in the thread header; remembered): project and branch, the plan, files changed (open one
-  for its diff), brain pages used (hidden until the host reports them: `_meta["iinc.brain"]`, T57), usage and the
+  for its diff), brain pages used (from the session's `_meta["iinc.brain"]`: each page with its scope, marked "opened"
+  when the agent read it itself and "untrusted" when it was built from outside content), usage and the
   account's 5-hour and 7-day meters. On a phone it is a bottom sheet.
 - **Files:** paste, drop or pick images and text files (code, notes, logs, up to 256 KB each; they go to the agent as
   embedded resources). Binaries, PDFs and anything else are refused with a reason.
@@ -268,6 +269,102 @@ at that conversation, your phone gets a notification that opens the card. The de
   fakes and in desktop Chromium. Check on a device: a tap from the lock screen lands on the card on iOS (the worker cannot
   navigate a window there, so it messages the app), that the app closes a stale notification when opened on iOS and Android, and that
   the visibility signal quiets the phone while the app is open.
+
+### How the brain reaches agents (T57)
+
+The brain is markdown in git on the mini; sandboxes cannot reach the mini, so it is **copied in**. All of it is in
+`apps/daemon/src/brain-feed.ts` (the orchestration), `brain-snapshot.ts` and `brain-apply.sh` (the copy and the script
+that applies it in the sandbox), `brain-tar.ts`, `brain-cli.cjs` (the `brain` command) and, in the core,
+`packages/core/src/brain-prompt.ts` (paths, queries, prompt text). The contract is C19 in [coord.md](coord.md).
+
+- **The copy.** Before every ticket stage and every conversation turn, the daemon makes sure
+  `/home/employee/brain/<employee>/` in the employee's team sandbox is current: `company/`, `team-<teamId>/` and
+  `personal/` (their own brain), a map `INDEX.md` in each, and `.bin/brain`. A team shares one sandbox and one Unix
+  user, so each employee has a folder of their own; each copy holds only the scopes `readableScopes` gives that
+  employee (never another employee's brain, another team's section, or a PA's home data). It needs nothing new in the
+  image (Node 24, git, tar, bash are there), so **no image rebuild and no host step**.
+- **Incremental.** The daemon remembers what it last sent to each machine and employee (`brain_synced`) and sends only
+  changed files, as one `bash -s` script whose stdin carries a tar stream in base64. A delta is applied only if the
+  sandbox holds exactly the snapshot it was made against; otherwise (a wiped sandbox, a restored backup) the whole
+  copy is sent. An unchanged brain costs no script; the copy is re-checked at most every 5 minutes. A 1,000-page copy
+  takes a few seconds the first time, a one-page change well under a second
+  (`I_INC_BENCH=1 pnpm --filter @i-inc/daemon exec vitest run test/brain-bench.test.ts --reporter=verbose` prints them).
+- **For T58 (writing).** The copy is a git repository whose baseline is the ref `refs/inc/baseline` (HEAD follows it
+  until the agent commits something itself). What an agent changed is
+  `git -C <copy> diff --name-status refs/inc/baseline` plus `git ls-files --others --exclude-standard`; folder to scope:
+  `scopeOfDir` in `brain-prompt.ts`, and `.snapshot.json` lists them. A refresh **keeps the agent's local edits**: a
+  file with local changes (or one the agent made) is left alone and the baseline keeps its old text, so the diff stays
+  exactly the agent's work; it is logged as `brain: kept <employee>'s own edits to N page(s)…`. T58 should reset the
+  baseline after harvesting. Symlinks in a copy are removed, and what they hid is restored from the baseline.
+- **Limits and safety.** Names must be plain (`isSafeSnapshotPath`: relative, no `..`, no dot-files, no quotes,
+  `$`, backticks, backslashes or control characters); a page over 256 KB is left out, and a copy is capped at 16 MB
+  (what was left out is logged). The sandbox side refuses an archive that holds anything but plain files with plain
+  names. Nothing about the walls changed: the copy goes in through `machine run -i`, like every other script.
+- **If the copy fails** (a stopped machine, a timeout of 3 minutes), the session goes on and its prompt says the copy
+  isn't available; the maps and the matching pages are still in the prompt.
+- **The prompt.** Every ticket stage's brief ends with a `<brain>` section, and every conversation turn gets it as an
+  extra text block after your message. It has the maps (at most about 150 lines each), and the pages retrieved for the
+  task (top 5 by BM25 times the scope boost, one link away from the best two, about 3,000 tokens). In a conversation a
+  page is sent once, and the maps again only when they changed or the agent lost its memory. Untrusted pages
+  (`source: external`) are marked. The employee's `personality` page is never retrieved (the brief carries it).
+  Demo mode has no sandboxes and adds nothing.
+- **Home data and shared sandboxes.** Inside a team sandbox all employees are the same Unix user, with the internet
+  open, so a PA's brain (home data, spec §7) must never be copied into a sandbox anyone else works in. **Chosen: a PA
+  always has a team, and so a sandbox, of its own, and the API makes it so rather than refusing.** Hiring a PA (role
+  "Personal Assistant") makes a team `home-<id>` ("<Name>'s home") with only the PA, sized 2 CPUs and 4G (change it
+  with `PUT /api/teams/home-<id>` like any team's); the web form sends no team for a PA. A hire or an edit that names
+  a team with other people, or a PA left in a shared team by an older version, moves the PA to its own team (the one
+  it is alone in, or `home-<id>`). Refused (400, `needs a sandbox of its own`): putting anyone else into a PA's team,
+  or a PA and others in `PUT /api/teams/:id`; `DELETE /api/teams/:id` of a team holding a PA is 409. A PA that still
+  shares a sandbox gets **no copy** (its prompts still get its own pages) and the daemon removes any copy of it there.
+  A PA's own brain is part of a session only for errands and orientation and for conversations with no project; code
+  work gets a second copy of the PA's brain without its personal folder (`~/brain/<id>.code/`), so the two never share
+  a folder. A copy is removed from the machine an employee moved away from (also when they leave), but never by
+  starting a stopped machine: the removal stays recorded and is done when the machine is up. Ordinary employees of one
+  team still share a Unix user, so an agent could read a colleague's folder under `/home/employee/brain/` with its
+  own tools; the daemon never puts one employee's brain in another's folder or prompt, and making it impossible needs
+  a user per employee in the image (an owner decision, not done). Not changed here: spec §7 says a PA's machine
+  reaches only i.inc's API and Ollama, but the walls give every machine open internet; that is a host change.
+- **What the sandbox image must have.** Nothing is installed by the daemon, so these must be in the image (the current
+  one has them, checked by reading the Dockerfile, not on a live machine): `bash`, `git` 2.28 or later, GNU `tar`,
+  coreutils (`base64 -d`, `comm`, `sort`, `cp`, `mv`, `rm`, `cut`, `wc`, `tr`, `mkdir`, `dirname`, `chmod`, `mktemp`,
+  `cat`), `find`, `sed`, `awk`, `grep`, and for `brain search` Node 22.13+ whose `node:sqlite` has FTS5, as `node` on
+  PATH. The apply script checks them first and, if one is missing, copies nothing and the log says so
+  (`couldn't copy <employee>'s brain into <machine>: the sandbox has no comm, which copying the brain needs`); the
+  session goes on, and its prompt says the copy isn't available. A Node without SQLite FTS5 only loses `brain search`
+  (log: `no usable Node with SQLite FTS5`).
+- **How big a brief gets.** The maps are cut to about 150 lines in all (closest scope first, the rest summarised with a
+  pointer to `brain search`), and the pages to about 3,000 tokens. Measured with `I_INC_BENCH=1` (test
+  `brain-bench.test.ts`): a brief on a brain of 1,000 pages is about 6.2 KB (about 1,550 tokens with the pages that
+  matched) and at 10,000 pages about 6.3 KB, 149 map lines; a conversation sends each scope's map again only when that
+  map changed.
+- **Seeing it.** `GET /api/tickets/:id/sessions` has `brain` per session (the ticket page lists them under each
+  stage); the conversation's `_meta["iinc.brain"]` feeds the context panel. A page put in a prompt or opened by the
+  agent (a tool call whose file location is in its copy) counts toward `use_count` and `last_used_at`.
+
+#### Deploy steps for the owner (T57)
+
+No image change, no `pf` change and no host script. Merge, let the deployer switch the release, then:
+
+1. **The first start rebuilds the search index once** (the index schema moved to version 2, which also shrinks
+   `~/.i-inc/brain-index.db` to its real size). Nothing to do; it logs nothing unless it fails.
+2. **Run the page migration (T56, #78) on the mini.** It rewrites existing pages to the V1 format in one commit per
+   repo and has not been run there yet. It needs an explicit home; look first, then apply:
+
+   ```sh
+   cd ~/i-inc-releases/current
+   bun apps/daemon/scripts/brain-migrate.ts --home "$HOME/.i-inc"                  # dry run: prints what would change
+   bun apps/daemon/scripts/brain-migrate.ts --home "$HOME/.i-inc" --apply --yes    # writes it
+   ```
+
+   The daemon can stay up: it notices the new commits by itself, no restart. (`--apply` skips a repo with
+   uncommitted changes and says so.)
+3. **Check it worked.** `curl -s -H "Authorization: Bearer $(cat ~/.config/i-inc/web-token)" "http://127.0.0.1:7420/api/brain/map?scope=company"`
+   shows the map. Start a conversation or a ticket, then
+   `container machine run -u employee -n inc-<team> -- ls /home/employee/brain/<employee>` lists `company`, `personal`
+   (and `team-<team>`), and the conversation's context panel lists "Brain pages used".
+4. If a copy looks wrong, deleting `/home/employee/brain/<employee>` in the sandbox is safe: the next session sends the
+   whole copy again. Agent edits in it are lost when you do that.
 
 ## Storage and cleanup
 
@@ -358,7 +455,8 @@ events each 30 seconds, so its cost grows with the number of tickets (for T63).
     Plain "i.inc" is refused: Apps share names with accounts, and an account `i-inc` exists. Its private key lives on the mini at `~/.config/i-inc/github-app.pem`, mode
     0600 in a 0700 folder, and never in the repo.
 - **Brains:**
-  - They live on the mini and are never pushed.
+  - They live on the mini and are never pushed. Sandboxes get a read-only-by-convention copy of what each employee may
+    read (T57), never the other way yet.
   - Shared facts go in the handbook; personality and duty lessons stay in each employee's brain.
 - **Proof, My desk and goals:**
   - Proof images are copied into the PR, unless something in them is private; then the PR gets a

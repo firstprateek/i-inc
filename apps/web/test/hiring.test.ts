@@ -228,6 +228,72 @@ describe("hiring", () => {
     expect(ids).toEqual(["", "qwen"]);
   });
 
+  const pip: Employee = {
+    ...ada,
+    id: "pip",
+    name: "Pip",
+    role: "Personal Assistant",
+    engines: { default: "qwen", fallbacks: [] },
+  };
+  const pickPa = async (root: ShadowRoot) => {
+    const pa = [...root.querySelectorAll(".pill")].find((b) => b.textContent === "Personal Assistant");
+    (pa as HTMLElement).click();
+    await settle(root.host);
+  };
+
+  it("hires a personal assistant without a team: no picker, no teamId, whatever teams there are", async () => {
+    for (const teams of [
+      [{ id: "engineering", name: "Engineering", members: ["ada"] }],
+      [
+        { id: "engineering", name: "Engineering", members: ["ada"] },
+        { id: "design", name: "Design", members: [] },
+      ],
+    ]) {
+      document.body.innerHTML = "";
+      serve([ada], false, teams);
+      const root = await mount();
+      expect(root.querySelector('select[aria-label="Team"]')).not.toBeNull();
+      await pickPa(root);
+      expect(root.querySelector('select[aria-label="Team"]')).toBeNull();
+      expect(root.textContent).toContain("sandbox of its own");
+      const name = root.querySelector('input[type="text"]') as HTMLInputElement;
+      name.value = "Pip";
+      name.dispatchEvent(new Event("input"));
+      await pick(root, selects(root)[0] as HTMLSelectElement, "qwen");
+      // Several teams and none chosen: a normal hire is blocked, a PA's is not.
+      expect((root.querySelector('.submit button[type="submit"]') as HTMLButtonElement).disabled).toBe(false);
+      await submit(root);
+      const post = calls.find((c) => c.method === "POST" && c.url === "/api/employees")?.body as Record<
+        string,
+        unknown
+      >;
+      expect(post).toMatchObject({ name: "Pip", role: "Personal Assistant" });
+      expect(post).not.toHaveProperty("teamId");
+    }
+  });
+
+  it("saves a personal assistant that still shares a team without sending the team", async () => {
+    serve([ada, pip], false, [{ id: "engineering", name: "Engineering", members: ["ada", "pip"] }]);
+    const root = await mount("pip");
+    expect(root.querySelector('select[aria-label="Team"]')).toBeNull();
+    await submit(root);
+    const put = calls.find((c) => c.method === "PUT" && c.url === "/api/employees/pip");
+    expect(put).toBeDefined();
+    expect(put?.body).not.toHaveProperty("teamId");
+  });
+
+  it("doesn't offer a personal assistant's home team to anyone else, nor count it as the only team", async () => {
+    serve([ada, pip], false, [
+      { id: "engineering", name: "Engineering", members: ["ada"] },
+      { id: "home-pip", name: "Pip's home", members: ["pip"] },
+    ]);
+    const root = await mount();
+    const team = root.querySelector('select[aria-label="Team"]') as HTMLSelectElement;
+    expect([...team.querySelectorAll("option")].map((o) => o.value)).toEqual(["engineering"]);
+    expect(team.value).toBe("engineering");
+    expect(team.disabled).toBe(true);
+  });
+
   it("defaults to the only team and sends its id with the hire", async () => {
     serve([ada], false, [{ id: "engineering", name: "Engineering", members: ["ada"] }]);
     const root = await mount();

@@ -113,6 +113,8 @@ export interface SessionTranscriptItem {
   title?: string;
   status?: string;
   at: number;
+  /** Files a tool call names (ACP `locations`), as the agent saw them. Not stored with the transcript. */
+  locations?: string[];
   /** Internal ID for matching tool call updates or streaming chunks */
   id?: string;
 }
@@ -124,6 +126,20 @@ export interface TicketSessionTranscript {
   startedAt: number;
   endedAt: number | null;
   items: SessionTranscriptItem[];
+  /** The brain pages this session was given or read (contract C19). Absent when there were none. */
+  brain?: BrainUse[];
+}
+
+/** A brain page that went into a session or turn, or that the agent opened. */
+export interface BrainUse {
+  scope: string;
+  slug: string;
+  title: string;
+  updated: string | null;
+  /** `search` and `link`: put in the prompt by retrieval. `read`: the agent opened it itself. */
+  via: "search" | "link" | "read";
+  /** The page was built from untrusted content. */
+  untrusted?: true;
 }
 
 export type SessionOutcome =
