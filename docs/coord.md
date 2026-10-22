@@ -127,7 +127,7 @@ Heartbeat comment every 25 s.
 the request came over https (`X-Forwarded-Proto: https`, an `https://` `Origin`, or a TLS request). The daemon keeps only the
 sha-256 of the token in `web_sessions` (`id_hash`, `created_at`, `expires_at`); a session lasts 30 days and each use renews
 it, at most once a day, by sending the cookie again. `Authorization: Bearer <daemon token>` is unchanged (scripts, the
-deployer) and never gets a cookie. The AHP upgrade accepts the same session cookie.
+deployer) and never gets a cookie. The AHP upgrade accepts the same session cookie, and that socket is bound to the session: it is closed (1008) when the session is revoked or expires (swept every keepalive tick), and no frame is read after.
 `GET /api/auth` → `{ "initialized": boolean, "setupCodeRequired": boolean }` (`setupCodeRequired` is true while there is no
 owner and the daemon has a token; older daemons omit it);
 `POST /api/signup` `{ "username", "password", "setupCode" }` → `201 { "ok": true, "username" }` (sets a session cookie; `409`

@@ -93,6 +93,80 @@ describe.skipIf(!hasBun)("AHP on Bun.serve", () => {
     ws.close();
   });
 
+  describe("a socket opened with a browser session", () => {
+    const control = (path: string) => fetch(`http://127.0.0.1:${base.port}${path}`);
+    const session = async () => ((await (await control("/__session")).json()) as { token: string }).token;
+    const init = (ws: WebSocket, id: number) =>
+      ws.send(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          method: "initialize",
+          params: {
+            channel: "ahp-root://",
+            protocolVersions: ["1.0.0"],
+            clientId: `s${id}`,
+            initialSubscriptions: ["ahp-root://", base.chat],
+          },
+        }),
+      );
+    const closing = (ws: WebSocket) => {
+      const out = { code: 0, closed: false };
+      ws.onclose = (e) => {
+        out.code = e.code;
+        out.closed = true;
+      };
+      return out;
+    };
+
+    it("is closed when the session is signed out, and answers nothing after", async () => {
+      const token = await session();
+      const ws = await open({ cookie: `i_inc=${token}` });
+      const got = frames(ws);
+      const state = closing(ws);
+      init(ws, 1);
+      await until(() => got.some((f) => f.id === 1));
+      ws.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "listSessions", params: {} }));
+      await until(() => got.some((f) => f.id === 2));
+      await control(`/__revoke?token=${token}`);
+      await until(() => state.closed);
+      expect(state.code).toBe(1008);
+      // nothing reaches the host from a closed socket: no more frames come back
+      const n = got.length;
+      await new Promise((r) => setTimeout(r, 300));
+      expect(got.length).toBe(n);
+      // and the revoked cookie can't open another
+      await expect(open({ cookie: `i_inc=${token}` })).rejects.toThrow(/refused/);
+    });
+
+    it("is closed when the session expires", async () => {
+      const token = await session();
+      const ws = await open({ cookie: `i_inc=${token}` });
+      const state = closing(ws);
+      init(ws, 1);
+      await new Promise((r) => setTimeout(r, 100));
+      await control(`/__advance?ms=${31 * 24 * 3600_000}`);
+      await until(() => state.closed, 4000); // the keepalive tick (0.3 s) sweeps
+      expect(state.code).toBe(1008);
+    });
+
+    it("leaves other sessions and bearer-token sockets alone", async () => {
+      const a = await session();
+      const b = await session();
+      const wsA = await open({ cookie: `i_inc=${a}` });
+      const wsB = await open({ cookie: `i_inc=${b}` });
+      const wsTok = await open({ authorization: "Bearer tok" });
+      const stateB = closing(wsB);
+      const stateTok = closing(wsTok);
+      await control(`/__revoke?token=${a}`);
+      await new Promise((r) => setTimeout(r, 400));
+      expect(stateB.closed).toBe(false);
+      expect(stateTok.closed).toBe(false);
+      wsB.close();
+      wsTok.close();
+    });
+  });
+
   it("closes a connection that sends a frame over the limit", async () => {
     const ws = await open();
     const closed = new Promise<number>((r) => {

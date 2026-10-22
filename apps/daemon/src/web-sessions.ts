@@ -15,6 +15,8 @@ const MAX_LIVE = 200;
 const hash = (raw: string) => createHash("sha256").update(raw).digest("hex");
 
 export class WebSessions {
+  private revokeListeners: (() => void)[] = [];
+
   constructor(
     private db: Db,
     private now: () => number,
@@ -60,8 +62,14 @@ export class WebSessions {
     return (changed ?? 0) > 0;
   }
 
-  /** Signs a session out. */
+  /** Signs a session out, and tells whoever holds something open on it (the AHP sockets) to let go. */
   revoke(raw: string): void {
     this.db.run("DELETE FROM web_sessions WHERE id_hash = ?", hash(raw));
+    for (const f of this.revokeListeners) f();
+  }
+
+  /** Called after any session is revoked. */
+  onRevoke(f: () => void): void {
+    this.revokeListeners.push(f);
   }
 }
