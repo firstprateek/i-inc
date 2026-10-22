@@ -380,7 +380,9 @@ describe("the handover", () => {
       (await rig.call("GET", `/api/conversations/${c.conv.id}`)).body.conversation.ship.ticket.held,
     ).toBe(true);
 
-    // The owner merges: the ticket closes and the conversation has its copy back.
+    // The owner merges the PR on GitHub, then approves: the ticket closes and the conversation has its copy back.
+    const pr = rig.prs.prs[0];
+    if (pr) pr.state = "merged";
     expect((await rig.call("POST", `/api/tickets/${id}/decide`, { decision: "approve" })).status).toBe(200);
     await rig.settle();
     await until(
