@@ -2,6 +2,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { TicketEvent } from "@i-inc/core";
 import { FakeWorkspace } from "@i-inc/core/testing";
 import { describe, expect, it } from "vitest";
 import { liveInfo, liveLine } from "../src/views.ts";
@@ -670,6 +671,101 @@ describe("chat", () => {
       await app.call("POST", "/api/tickets", refunds);
       await new Promise((r) => setTimeout(r, 50));
       expect(app.daemon.waitingUntil["1"]).toBe(app.clock.now() + 60_000);
+    });
+
+    it("does not suppress auto-releases when a previous release timestamp is in the future (Group 7.2)", async () => {
+      const app = await testApp();
+      // Enable autoRelease on Duet
+      app.deps.registry.addProject({ id: "Duet", repo: "firstprateek/duet", checks: [], autoRelease: true });
+
+      // Record an existing release with timestamp far in the future
+      const futureTime = app.clock.now() + 10_000_000;
+      app.deps.registry.recordRelease({
+        project: "Duet",
+        tag: "v-future",
+        at: futureTime,
+        ticketIds: [],
+        commits: [],
+      });
+
+      // Complete a ticket so it is merged
+      await app.call("POST", "/api/tickets", refunds);
+      await app.daemon.idle();
+      await app.call("POST", "/api/tickets/1/decide", { decision: "approve" });
+      await app.daemon.idle();
+
+      // Trigger a tick to check auto-releases
+      await app.daemon.tick();
+
+      const releases = app.deps.registry.releases().filter((r) => r.project === "Duet");
+      // The future release must not suppress releasing ticket 1
+      expect(releases.some((r) => r.ticketIds.includes("1"))).toBe(true);
+    });
+
+    it("is idempotent: does not re-apply knowledge edits already in knowledge_applied (Group 8.6)", async () => {
+      const app = await testApp();
+      let applyCalls = 0;
+      const origApply = app.deps.knowledge.apply.bind(app.deps.knowledge);
+      app.deps.knowledge.apply = (edit, getEmployee) => {
+        applyCalls++;
+        return origApply(edit, getEmployee);
+      };
+
+      const event: TicketEvent = {
+        type: "knowledge-proposed",
+        at: app.clock.now(),
+        employeeId: "ada",
+        apply: [{ layer: "brain", page: "tools/test-page", text: "some knowledge" }],
+        awaitOwner: [],
+      };
+
+      // First call applies knowledge
+      app.daemon.applyKnowledge("1", [event]);
+      expect(applyCalls).toBe(1);
+
+      // Second call does nothing because edit is already recorded in knowledge_applied
+      app.daemon.applyKnowledge("1", [event]);
+      expect(applyCalls).toBe(1);
+    });
+
+    it("coalesces concurrent ticks into a single running pass (Group 8.8)", async () => {
+      const app = await testApp();
+      let passCalls = 0;
+      // @ts-expect-error accessing private pass
+      const origPass = app.daemon.pass.bind(app.daemon);
+      // @ts-expect-error accessing private pass
+      app.daemon.pass = async () => {
+        passCalls++;
+        await new Promise((r) => setTimeout(r, 20));
+        return origPass();
+      };
+      // Fire 5 ticks concurrently
+      const ticks = [
+        app.daemon.tick(),
+        app.daemon.tick(),
+        app.daemon.tick(),
+        app.daemon.tick(),
+        app.daemon.tick(),
+      ];
+      await Promise.all(ticks);
+      // Concurrent ticks coalesce so pass is only run at most twice
+      expect(passCalls).toBeLessThanOrEqual(2);
+    });
+
+    it("does not stop the machine of an employee who is busy (Group 8.10)", async () => {
+      const app = await testApp();
+      const machines = app.deps.machines as unknown as { started: string[]; stopped: string[] };
+      // @ts-expect-error accessing private awake
+      app.daemon.awake.add("ada");
+      // @ts-expect-error accessing private awake
+      app.daemon.awake.add("kit");
+
+      // @ts-expect-error accessing private sleepIdle
+      await app.daemon.sleepIdle(new Set(["ada"]));
+
+      // Ada is busy, so Ada's machine must NOT be stopped! Kit is not busy, so Kit is stopped.
+      expect(machines.stopped).not.toContain("ada");
+      expect(machines.stopped).toContain("kit");
     });
   });
 });

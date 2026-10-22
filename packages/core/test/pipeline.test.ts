@@ -1,5 +1,6 @@
 // The M2 cases from the spec (§9, "Tests"), run end to end against the fakes.
 import { describe, expect, it } from "vitest";
+import type { TicketEvent } from "../src/events.ts";
 import { answer, type Engine, fold, runTicket } from "../src/index.ts";
 import { Crash, fakePorts, json } from "../src/testing/index.ts";
 import { ada, engines as fixtureEngines, grace, kit, pip, ports, refundsTicket, team } from "./fixtures.ts";
@@ -328,5 +329,16 @@ describe("engines", () => {
     expect(stageFinished).toBeDefined();
     expect(stageFinished?.output?.length).toBeLessThan(20_000);
     expect(stageFinished?.output?.endsWith("\n...[truncated]")).toBe(true);
+  });
+
+  it("does not decrease workedMs if clock steps backwards (Group 7.2)", () => {
+    const events: TicketEvent[] = [
+      { type: "ticket-created", at: 1000, ticketId: "42" },
+      { type: "stage-started", at: 1000, stage: "build" },
+      { type: "stage-finished", at: 900, stage: "build" }, // clock stepped back 100ms
+    ];
+    const s = fold(events);
+    expect(s.workedMs).toBe(0);
+    expect(s.workedMs).toBeGreaterThanOrEqual(0);
   });
 });

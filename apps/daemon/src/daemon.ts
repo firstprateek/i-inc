@@ -1317,7 +1317,8 @@ export class Daemon {
         if (releasedTicketIds.has(r.ticket.id)) return false;
         const state = states.get(r.ticket.id);
         if (state?.outcome !== "merged") return false;
-        if (latestReleaseAt !== null && (state.closedAt ?? 0) <= latestReleaseAt) return false;
+        if (latestReleaseAt !== null && latestReleaseAt <= now && (state.closedAt ?? 0) <= latestReleaseAt)
+          return false;
         return true;
       });
 

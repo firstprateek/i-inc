@@ -453,7 +453,7 @@ export function fold(events: TicketEvent[], onSkip?: (event: unknown, why: strin
     }
     try {
       const next = apply(s, e);
-      const worked = s.status === "running" && s.lastAt !== null ? e.at - s.lastAt : 0;
+      const worked = s.status === "running" && s.lastAt !== null ? Math.max(0, e.at - s.lastAt) : 0;
       return { ...next, workedMs: s.workedMs + worked, lastAt: e.at };
     } catch (err) {
       onSkip?.(e, err instanceof Error ? err.message : String(err));
