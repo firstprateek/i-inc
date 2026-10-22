@@ -1,5 +1,5 @@
 // The backlog: ticket definitions, priority and holds. What happened to a ticket lives in the events.
-import { efforts, type Id, isRecord, type Ticket, type TicketAttachment } from "@i-inc/core";
+import { efforts, type Id, isRecord, type Ticket, type TicketAttachment, ticketTypes } from "@i-inc/core";
 import type { Db } from "./db.ts";
 
 export interface NewTicket {
@@ -74,8 +74,6 @@ export interface TicketRecord {
   pickedAt: number | null;
 }
 
-const ticketTypes: readonly Ticket["type"][] = ["fix", "feat", "chore", "errand", "orientation"];
-
 /**
  * A stored ticket as the rest of the daemon can rely on it. A ticket whose body isn't JSON, or isn't
  * a ticket, can't be read at all (null). One with an effort or type this version doesn't know (an
@@ -95,7 +93,9 @@ function readTicket(id: string, body: string): Ticket | null {
     id: str(v.id, id),
     title: str(v.title, `Ticket ${id}`),
     project: str(v.project),
-    type: ticketTypes.includes(v.type as Ticket["type"]) ? (v.type as Ticket["type"]) : "chore",
+    type: (ticketTypes as readonly string[]).includes(v.type as string)
+      ? (v.type as Ticket["type"])
+      : "chore",
     effort: efforts.includes(v.effort as Ticket["effort"]) ? (v.effort as Ticket["effort"]) : "medium",
     doneWhen: Array.isArray(v.doneWhen) ? v.doneWhen.filter((d): d is string => typeof d === "string") : [],
     assignee: str(v.assignee),

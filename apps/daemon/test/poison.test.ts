@@ -124,6 +124,17 @@ describe("a malformed agent reply", () => {
     await theAppStillAnswers(app);
   });
 
+  it("reads every ticket type this version knows as it was stored, and an unknown one as a chore", async () => {
+    const app = await testApp();
+    const t = app.deps.tickets.create(
+      { title: "Tend", project: "Duet", type: "tidy", effort: "low", doneWhen: [], assignee: "ada", hold: true },
+      app.clock.now(),
+    );
+    expect(app.deps.tickets.get(t.id)?.ticket.type).toBe("tidy");
+    app.db.run("UPDATE tickets SET body = ? WHERE id = ?", JSON.stringify({ ...t, type: "mystery" }), t.id);
+    expect(app.deps.tickets.get(t.id)?.ticket.type).toBe("chore");
+  });
+
   it("a stored ticket with an effort this version does not know is planned as Medium, not thrown at", async () => {
     const app = await testApp();
     const t = kitsTicket(app);

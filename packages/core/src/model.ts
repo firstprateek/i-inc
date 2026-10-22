@@ -134,7 +134,8 @@ export interface KnowledgeEdit {
  * An orientation is a new hire's first ticket: read the handbook and projects, write brain pages. A
  * `tidy` ticket is the daily "Tend the brain" pass: it edits the brain copy and nothing else.
  */
-export type TicketType = "fix" | "feat" | "chore" | "errand" | "orientation" | "tidy";
+export const ticketTypes = ["fix", "feat", "chore", "errand", "orientation", "tidy"] as const;
+export type TicketType = (typeof ticketTypes)[number];
 
 /**
  * A code ticket's branch, as pick-up made it (spec §6, stage 1). In owner-merges mode it also has a
