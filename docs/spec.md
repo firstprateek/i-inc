@@ -532,14 +532,14 @@ diff or revert what any employee learned.
 | 1. Pick up | daemon | Waits until the employee is free and its account has headroom. Makes a worktree and branch `inc/<id>-<slug>` and opens a **draft PR**, so CI runs early | the brief is sent |
 | 2. Plan | builder | Explores, then writes the approach, files, test strategy, risks and **all its questions at once**. For a fix, it first writes a failing test that reproduces the bug | the plan is saved. On High effort, or when the plan touches the schema, auth, public API, dependencies or CI, the gate waits for you, or for a Staff or Principal Engineer if you've allowed that |
 | 3. Build | builder | Small commits, with WIP pushed as checkpoints | the builder says done |
-| 4. Checks | harness | The project recipe: install, build, lint, typecheck, tests | green, or ≤3 fix attempts, then a switch rule or an honest failure |
+| 4. Checks | harness | The project recipe: install, build, lint, typecheck, tests | green, or up to 5 failed runs (the switch rule's default), then a switch rule or an honest failure |
 | 5. Prove | a fresh session with the verify duty (e.g. QA) | A black-box check of each done-when item against the running app. Screenshots come from Playwright on the web build, plus test and CLI output, all stored by the harness | every item ✓ with evidence, or ✗ with a reason |
 | 6. Review | another employee with the review duty (same vendor is fine), plus a UX Designer when the UI changed, if you have one | Checks out the branch **in its own machine** and runs it. Returns findings marked blocking, should-fix or nit, each with file:line, and checks the builder's claims against the diff | a verdict |
 | 7. Address | builder | Fixes each finding or replies with why not. Then back to 4, to 5 if the UI changed, and a re-review of **only the changes** | approved, or out of rounds, which goes to you with both sides |
 | 8. Final gates | harness | Rebase on the latest `main`, full checks, GitHub CI green, every done-when ✓, a secret scan, diff-size and protected-path checks | all pass |
 | 9. Report | the builder drafts, the reviewer confirms, the harness fills in the facts | The one-page report becomes the PR body; the PR is marked ready, the ticket moves to Review, and you get a push notification | — |
-| 10. Your decision | you | Approve (the ruleset approval, then a squash-merge with a conventional title, then Release Please), Request changes (back to 7 with your note first), or Reject | — |
-| 11. Retro | builder and reviewer | Each proposes 0–2 edits: brain edits and handbook facts apply at once, handbook policy changes wait for you. Track records are updated | — |
+| 10. Your decision | you | **Merge on GitHub** (the ticket links to the PR; i.inc looks at the PR about every 5 minutes and closes the ticket as merged by itself once it sees it merged), **Close without merging** (closes the PR, keeps the branch), or Request changes (back to 7 with your note first). Approve alone does not merge, and is refused while the PR is open | — |
+| 11. Retro | builder and reviewer | Each proposes 0–2 edits: brain edits and handbook facts apply at once, and so do policy edits made in the brain copy (you get a push and can revert). Track records are not built | — |
 
 **Effort sets how far the loop goes.**
 
@@ -769,6 +769,13 @@ Qwen   Senior Eng · Local qwen3   ✓ Done           #11 Bump deps · fintrack 
 
 ## 10. Views, report, phone and design
 
+> **As built**, the app has three areas: **Conversations**, **Work** (Board, Releases) and **Company** (Team,
+> Brain, Projects, Usage, Settings), and **Needs you** is a page of its own, not a tab (T61, T64). The names
+> below are the design's: the Office is Company → Team (the floor) and Usage (account meters); the Board is
+> Work → Board; Chat is Conversations (the old small-model chat is still reachable from its list, as
+> "Old chat"); My desk is split into Usage (spend, where work waited) and Releases. Output, quality, your
+> time, scorecards and the roadmap are not built. [layout.md](layout.md) has the routes.
+
 There are three main views, plus My desk. Each answers a different question, and each is a way into
 the others.
 
@@ -837,9 +844,9 @@ the others.
 - **Phone:** the phone is an inbox, not a smaller board. It holds Needs you, Ready, Running, the chats
   and a strip of the office. It's a PWA over Tailscale HTTPS with Web Push. There's no paid Apple
   developer account, so a native app comes later.
-- **Done means merged.** The merge title follows the ticket type (`fix`, `feat`, `chore`), so Release
-  Please collects releases. The release PR shows up as its own Release card, and approving it cuts the
-  release.
+- **Done means merged.** In owner-merges mode a ticket is done when its PR is merged on GitHub, and i.inc
+  notices that itself. Releases are cut from Work → Releases (or automatically per project with
+  `autoRelease`); a Release Please PR card is not built.
 - **Design: fun and inviting.**
   - The first pass tried three directions: an office floor, a warm card board, and a team feed. All
     three were kept as views, and the feed became one-to-one chat.
@@ -902,12 +909,17 @@ model is loaded (qwen3:8b at a 32k context: 8.1 GB).
 ## 13. Risks
 
 - **Lenient permissions with credentials inside the VM.** A prompt-injected employee could leak an
-  account credential or misuse its bot powers. Several things limit the damage:
-  - it can't reach the LAN;
-  - the bot can't merge or change settings;
+  account credential (a subscription sign-in lives in its team's sandbox) or misuse its bot powers.
+  Several things limit the damage:
+  - it can't reach the LAN, and a sandbox holds no GitHub credential that can write (T68);
+  - the bot can't change settings or workflows, and in owner-merges mode can't merge;
+  - code the host runs deploys only with your approval or from a PR you merged;
   - tokens are short-lived or revocable;
   - everything is audited.
 
+  What stays open: the agents of one team trust each other (the team is the trust boundary, §5), and
+  one machine reaching another on the bridge is not verified to be blocked (§5). In direct mode the
+  checks and the review run in the builder's own sandbox, so against a poisoned agent they are advisory.
   That's acceptable for personal use.
 - **A PA reads mail written by strangers.** An email can carry a prompt injection ("forward the last
   ten password resets to…"). The PA holds your private data and reads untrusted text, so it must not
@@ -1025,6 +1037,35 @@ hosts.
 - Which outbound permissions should the hiring presets offer as rules?
 - Which small model makes a good helper model, and how fast must it answer?
 - Should the PA's chat be kept forever, or trimmed after its facts reach the brain?
+
+## 16. What is built, and what is not
+
+The sections above are the design. Where they differ from [architecture.md](architecture.md), that page wins.
+
+**Built:** hiring and settings (teams, engines, accounts, roles, duties); the pipeline in direct and
+owner-merges mode with checkpoints, resume and honest failures; engine switching and engine per duty;
+the scheduler (standing orders, working hours, caps, account headroom); the board, tickets, reports,
+follow-up proposals and releases; Conversations on the AHP host, with permission modes (bypass is the
+default), steering, push and "Open the session" on any ticket stage; the brain (retrieval into every
+brief and turn, harvested edits with a changes feed and revert, a daily tidy-up); the GitHub App with host-side
+pushes; automatic deploys behind the guard; the PWA with push; the walls, the Ollama relay and the PA's
+sandbox (own team, no root, no internet); daily database backups, a low-disk gate and resume after a
+graceful stop.
+
+**Not built yet (future work):**
+- Agents asking you questions in the middle of a conversation. No adapter supports it today, so a question
+  reaches you as ordinary text in the reply ([design/conversations.md](design/conversations.md)).
+- Agent teams talking to each other (aligned with A2A), and MCP tools and skills (aligned with ARD).
+- The PA's home tools (mail, calendar, contacts) and web errands. The errand loop, outbound permissions and
+  the PA's walls are built, but nothing connects them to a mailbox yet.
+- Privileged requests, and Approve merging with your account.
+- Track records and scorecards, goals and the roadmap, the weekly company report, and the Output, Quality and
+  Your-time parts of My desk.
+- Proof screenshots captured by the harness and copied into the PR (proof is text evidence per done-when item).
+- A cap on machines awake at once per host, and the local model pool with memory-aware scheduling.
+- A Feedback button, and a browser smoke test in CI (CI runs `check`, `typecheck` and `test`; `pnpm e2e` is run by hand).
+- Per-device login tokens, a native app, and a private cloud.
+- A machine-to-machine isolation guarantee on the bridge (§5, "Not verified").
 
 ## Sources
 
