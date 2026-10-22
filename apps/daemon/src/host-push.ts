@@ -325,7 +325,9 @@ export class HostPusher implements HostPush {
         return r.code === 0 ? true : r.code === 1 ? false : null;
       });
     } catch (err) {
-      this.o.log?.(`couldn't tell whether ${req.sha.slice(0, 7)} reached ${req.repo} ${req.branch}: ${String(err)}`);
+      this.o.log?.(
+        `couldn't tell whether ${req.sha.slice(0, 7)} reached ${req.repo} ${req.branch}: ${String(err)}`,
+      );
       return null;
     }
   }
@@ -446,6 +448,7 @@ export class HostPusher implements HostPush {
       | "ticket"
       | "protect"
       | "ownerApproved"
+      | "approvedPaths"
       | "overrideSecrets"
     > & { hostRevert?: string },
     remote: string,
@@ -490,7 +493,11 @@ export class HostPusher implements HostPush {
       const listed = req.approvedPaths ? new Set(req.approvedPaths) : undefined;
       const unapproved = touched.filter((f) => (listed ? !listed.has(f) : req.ownerApproved !== true));
       if (unapproved.length) {
-        throw new HostPushError(`it changes protected paths: ${unapproved.join(", ")}`, "protected", unapproved);
+        throw new HostPushError(
+          `it changes protected paths: ${unapproved.join(", ")}`,
+          "protected",
+          unapproved,
+        );
       }
       approvedPaths = touched;
     }

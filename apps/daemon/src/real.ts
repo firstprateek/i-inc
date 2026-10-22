@@ -69,8 +69,6 @@ export interface RealOptions {
 const machine =
   "Your machine runs Ubuntu 24.04. You're the user employee, with passwordless sudo (except in a personal assistant's sandbox, which has no sudo and no internet). It has Node 24, pnpm 10, git, gh and Docker; install anything else you need. Other agents on your team share it: run servers only on the ports in $I_INC_PORTS.";
 
-const quoteArg = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
-
 /** A ticket's own range of 100 ports, so agents sharing a sandbox don't take each other's. */
 export function portsFor(ticketId: Id): string {
   let h = 0;

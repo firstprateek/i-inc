@@ -39,9 +39,10 @@ describe("the host-executed rule", () => {
 });
 
 describe("a project's protected paths", () => {
-  it("a prefix with a slash is the folder; an entry without one is that file and its folder", () => {
+  it("an entry with or without a trailing slash is that path and everything under it", () => {
     expect(isProtected(".github/workflows/ci.yml", [".github/"])).toBe(true);
-    expect(isProtected(".github", [".github/"])).toBe(false);
+    expect(isProtected(".github", [".github/"])).toBe(true);
+    expect(isProtected(".github-old/x", [".github/"])).toBe(false);
     expect(isProtected("release-please-config.json", ["release-please-config.json"])).toBe(true);
     expect(isProtected("tools/host/x.sh", ["tools"])).toBe(true);
     expect(isProtected("tools", ["tools"])).toBe(true);

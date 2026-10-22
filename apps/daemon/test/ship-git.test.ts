@@ -295,7 +295,6 @@ describe("what reaches a shell", () => {
     const release = copy({ base: "release/1.0" });
     expect(() => inspectScript(release, REMOTE, NONCE)).not.toThrow();
     expect(() => commitScript(release, REMOTE, "m")).not.toThrow();
-    expect(() => pushScript(release, REMOTE, "a".repeat(40))).not.toThrow();
     expect(inspectScript(release, REMOTE, NONCE)).toContain("+refs/heads/release/1.0:refs/heads/base");
   });
 

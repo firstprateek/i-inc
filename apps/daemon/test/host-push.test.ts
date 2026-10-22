@@ -364,4 +364,40 @@ describe("what needs the owner, and what the ledger says about it", () => {
     await r.host.push({ ...base, branch: "x", sha: a, bundle: await r.bundle(a) });
     for (const c of r.gitCalls) expect(c.env.GIT_NO_REPLACE_OBJECTS).toBe("1");
   });
+
+  it("tells whether a commit is on GitHub's branch from its own mirror, and holds only the paths not on the card", async () => {
+    const r = pushRig();
+    const a = r.commit("apps/a.ts", "1\n");
+    const b = r.commit("tools/b.sh", "2\n");
+    const req = { repo: "acme/duet", branch: "main" };
+    expect(await r.host.landed({ ...req, sha: a })).toBe(false); // the mirror has never seen it
+    // The owner OKed apps/a.ts only: tools/b.sh is still held.
+    const held = await r.host
+      .push({
+        ...main,
+        sha: b,
+        bundle: await r.bundle(b),
+        protect: { paths: ["tools/"], hostExecuted: true },
+        ownerApproved: true,
+        approvedPaths: ["apps/a.ts"],
+      })
+      .catch((e) => e);
+    expect(held).toMatchObject({ kind: "protected", findings: ["tools/b.sh"] });
+    expect(await r.host.landed({ ...req, sha: a })).toBe(false);
+    await r.host.push({
+      ...main,
+      sha: b,
+      bundle: await r.bundle(b),
+      protect: { paths: ["tools/"], hostExecuted: true },
+      approvedPaths: ["apps/a.ts", "tools/b.sh"],
+    });
+    expect(await r.host.landed({ ...req, sha: a })).toBe(true);
+    expect(await r.host.landed({ ...req, sha: b })).toBe(true);
+    expect(await r.host.landed({ ...req, sha: "f".repeat(40) })).toBe(false);
+    expect(await r.host.landed({ repo: "acme/duet", branch: "main", sha: "nope" })).toBeNull();
+    expect(r.ledgerLines()[0]).toMatchObject({
+      ownerApproved: true,
+      approvedPaths: ["apps/a.ts", "tools/b.sh"],
+    });
+  });
 });

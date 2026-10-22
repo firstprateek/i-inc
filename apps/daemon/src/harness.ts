@@ -3,6 +3,7 @@
 // because `machine run` re-splits its arguments (M1).
 import { spawn } from "node:child_process";
 import type { ChecksResult, GatesOptions, GatesResult, Harness, ProjectPolicy, Ticket } from "@i-inc/core";
+import { type HostPush, HostPushError } from "./host-push.ts";
 import {
   assertRunnable,
   defaultMachineSettings,
@@ -12,7 +13,6 @@ import {
   machineOf,
   withDefaultTimeout,
 } from "./machines.ts";
-import { type HostPush, HostPushError } from "./host-push.ts";
 import { isHostExecuted, isProtected } from "./paths.ts";
 import { describeMs, guardStdin, stopGroup, trackGroup } from "./proc.ts";
 import { pushFromSandbox } from "./sandbox-push.ts";
@@ -303,7 +303,8 @@ export class MachineHarness implements Harness {
       });
       return { ok: true };
     } catch (e) {
-      if (e instanceof HostPushError) return { ok: false, kind: e.kind, reason: e.message, findings: e.findings };
+      if (e instanceof HostPushError)
+        return { ok: false, kind: e.kind, reason: e.message, findings: e.findings };
       throw e;
     }
   }
@@ -401,7 +402,9 @@ export class MachineHarness implements Harness {
       const there =
         this.s.host && repo ? await this.s.host.landed({ repo, branch, sha: opts.pushIntended }) : null;
       if (there === null) {
-        return no(`couldn't tell whether ${opts.pushIntended.slice(0, 7)} reached ${branch}: GitHub could not be read`);
+        return no(
+          `couldn't tell whether ${opts.pushIntended.slice(0, 7)} reached ${branch}: GitHub could not be read`,
+        );
       }
       return there ? { ok: true, pushed: opts.pushIntended } : null;
     };
@@ -430,7 +433,11 @@ export class MachineHarness implements Harness {
     }
 
     for (let attempt = 1; attempt <= 3; attempt++) {
-      const rebased = await this.run(ticket.assignee, rebaseScript(worktree, branch, branchName(ticket)), env);
+      const rebased = await this.run(
+        ticket.assignee,
+        rebaseScript(worktree, branch, branchName(ticket)),
+        env,
+      );
       const lines = (tag: string) =>
         [...rebased.output.matchAll(new RegExp(`^@@${tag} ?(.*)$`, "gm"))].map((m) => m[1]);
       if (rebased.code === 2) {

@@ -489,10 +489,10 @@ describe("2.5 looking for a ticket's worktree", () => {
   it("says whether it is a git worktree, and a bare folder (what cleanup leaves) is not", async () => {
     const { root, origin } = setup();
     const work = join(root, "machine-a");
-    expect((await localScript("ada", script(origin, work))).output).toContain("@@pushed");
+    expect((await localScript("ada", script(origin, work))).output).toContain("@@ready");
     const ws = new GitHubWorkspace({
       project: () => ({ id: "Duet", repo: "o/duet", checks: ["true"] }),
-      tokens: new FineGrainedToken("ghs_x"),
+      tokens: fakeTokens(),
       prs: {} as unknown as PullRequests,
       identity: async () => ({ name: "Ada (i.inc)", email: "1+i-inc-bot[bot]@users.noreply.github.com" }),
       worktree: () => join(work, "inc-7"),
