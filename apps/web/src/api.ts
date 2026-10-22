@@ -1,6 +1,8 @@
 import type { AccountCost, Employee, ProjectRelease, TicketEvent } from "@i-inc/core";
 import type {
   AccountRateLimit,
+  BrainChangesView,
+  BrainChangeView,
   DeskEntry,
   DeskView,
   KnowledgeView,
@@ -19,6 +21,8 @@ import type { Engine } from "./providers.ts";
 export type {
   AccountCost,
   AccountRateLimit,
+  BrainChangesView,
+  BrainChangeView,
   DeskEntry,
   DeskView,
   KnowledgeView,
@@ -265,6 +269,15 @@ export const api = {
     ).then((r) => r.teams),
   handbook: () => call<KnowledgeView>("GET", "/api/knowledge/handbook"),
   brain: (id: string) => call<KnowledgeView>("GET", `/api/knowledge/brains/${id}`),
+  /** The Brain changes feed (C19, T58): newest first, filtered by scope, employee or status. */
+  brainChanges: (q: { scope?: string; employee?: string; status?: string; before?: number } = {}) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== "") p.set(k, String(v));
+    return call<BrainChangesView>("GET", `/api/brain/changes${p.size ? `?${p}` : ""}`);
+  },
+  /** Undoes one committed change with a new commit, "reverted by owner". */
+  revertBrainChange: (id: number) =>
+    call<{ change: BrainChangeView }>("POST", `/api/brain/changes/${id}/revert`, {}),
   learned: () => call<{ changes: NamedChange[] }>("GET", "/api/knowledge/recent").then((r) => r.changes),
   revert: (repo: string, commit: string) => call("POST", `/api/knowledge/${repo}/revert`, { commit }),
   decidePolicy: (id: string, approved: boolean) =>

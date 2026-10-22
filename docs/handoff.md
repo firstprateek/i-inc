@@ -416,8 +416,8 @@ that applies it in the sandbox), `brain-tar.ts`, `brain-cli.cjs` (the `brain` co
   `git -C <copy> diff --name-status refs/inc/baseline` plus `git ls-files --others --exclude-standard`; folder to scope:
   `scopeOfDir` in `brain-prompt.ts`, and `.snapshot.json` lists them. A refresh **keeps the agent's local edits**: a
   file with local changes (or one the agent made) is left alone and the baseline keeps its old text, so the diff stays
-  exactly the agent's work; it is logged as `brain: kept <employee>'s own edits to N page(s)…`. T58 should reset the
-  baseline after harvesting. Symlinks in a copy are removed, and what they hid is restored from the baseline.
+  exactly the agent's work; it is logged as `brain: kept <employee>'s own edits to N page(s)…`. T58's harvest moves
+  the baseline once it has dealt with a change (below). Symlinks in a copy are removed, and what they hid is restored from the baseline.
 - **Limits and safety.** Names must be plain (`isSafeSnapshotPath`: relative, no `..`, no dot-files, no quotes,
   `$`, backticks, backslashes or control characters); a page over 256 KB is left out, and a copy is capped at 16 MB
   (what was left out is logged). The sandbox side refuses an archive that holds anything but plain files with plain
@@ -487,6 +487,55 @@ No image change, no `pf` change and no host script. Merge, let the deployer swit
    (and `team-<team>`), and the conversation's context panel lists "Brain pages used".
 4. If a copy looks wrong, deleting `/home/employee/brain/<employee>` in the sandbox is safe: the next session sends the
    whole copy again. Agent edits in it are lost when you do that.
+
+### How the brain learns, and how to revert (T58)
+
+Agents write to the brain by editing their copy, like a person editing a wiki. Nothing waits for the owner; the safety
+net is the **Brain changes** feed (Company → Brain → Changes, `#/company/brain/changes`). Code: `apps/daemon/src/`
+`brain-harvest.ts` (orchestration, merge, commit, the feed's rows), `brain-check.ts` (every check, pure),
+`brain-harvest-script.ts` (the two sandbox scripts), `brain-tidy.ts` (the tidy-up report); API in C19.
+
+- **When.** A ticket ends (after its retro, or it failed): everyone who had a session on it. A conversation goes idle (15
+  minutes, or archived, or its slot is needed) or ends. The owner says "remember this": the bookmark button in the
+  conversation's header, or typing `/remember [note]`, asks the agent to write what is worth keeping, and the copy is
+  collected as soon as that turn ends. With a copy, the retro asks for lessons as edits to the copy instead of JSON.
+- **How.** `machine run` a script that prints `git diff refs/inc/baseline` plus the files the agent made (plain files
+  only; a symlink, a link anywhere on the way, a special file or a file over 256 KB is reported and never read). A
+  stopped machine is never started: the copy is collected when it is next up (`brain_harvest_due`, tried on every tick).
+  The diff stays in the copy, so a harvest missed for any reason is only late (its provenance is then the later trigger).
+- **Checks** (all input is untrusted; `brain-check.ts`): own personal brain, own team's section, the company handbook
+  only (never another employee's brain, another team, `teams/` under company, `personality.md`, or the generated
+  `INDEX.md`); a PA's home copy writes only its own brain, never a shared scope (its code copy the reverse); plain
+  paths; 64 KB a page, 512 KB, 40 changes and 5 deletions a harvest (25 for the tidy-up); credentials redacted with the
+  shared patterns (`redactTokens`), a page that is mostly secret refused; frontmatter repaired, never refused (title,
+  description, `updated`, `sources` + the ticket or conversation); the write bar (nothing in it, only appended noise, a
+  wipe of a long page); a NEW page that closely matches an existing page of the same scope (title, name, description,
+  full-text hits) is **not created**: it stays in the copy, is recorded as refused with the page to merge into, and the
+  agent is told at its next brief or turn ("About your earlier brain edits"). Pages built from the web, issues or other
+  people's repos carry `source: external` (the agent marks it; a URL in `sources` does; a session that read untrusted
+  pages and wrote a link does); it is sticky.
+- **Commit.** One commit a change in the host repo, with `Author:`, `Ticket:` or `Conversation:`, `Harvest:` and `Scope:`
+  trailers. A concurrent edit is merged through git (`git merge-file` on the bodies); when both changed the same lines the
+  page keeps the shared version and the other under `## Conflict` with `needs-tidy: true`, for the tidy-up. A delete of a
+  page edited since is refused. The index follows by itself. A company `policies/` page change sends a push (C2) to
+  `#/company/brain/changes`.
+- **No double harvest.** After the commits an advance script moves `refs/inc/baseline` to the text that was read (so an
+  edit made meanwhile is still a diff), undoes refused changes in the copy (not duplicates), and the next copy sends the
+  shared brain's version (merged, repaired) over the agent's file.
+- **Revert.** One click on an entry (or `POST /api/brain/changes/:id/revert`) makes a new commit that undoes it, with
+  `Reverted-By: owner`; the next copy carries it to the agents. If later edits overlap, nothing changes and the app says
+  so (409): then edit the page by hand in the repo, or revert the later change first.
+- **Tending.** A daily "Tend the brain" ticket (type `tidy`, label `brain-tidy`, project `General`) goes to an employee
+  with the new **librarian** duty (hiring form; engine per duty like the others; several take turns by the day). With no
+  one, it falls back to the first non-PA employee with the plan duty, else review, else any, and the ticket's reason says
+  so. It is filed at most once a UTC day, never while the previous one is open (done or failed ends it), within the
+  project's daily budget for agent-filed tickets (skipped, not proposed, when used up), and only when the report finds
+  something. Its brief ends with the report; its edits go through the same harvest (more deletions allowed). It tends
+  the scopes its employee may write; another employee's personal brain and other teams' sections are tended by them.
+  Pages are called unused only after use has been counted for 60 days (`brain-tracking-since` in `storage_state`).
+- **Limits to know.** A team shares one Unix user in its sandbox, so an agent could edit a colleague's copy; that copy is
+  then harvested as the colleague's, with the checks above still applying. The retro no longer proposes policies for the
+  owner to approve when agents have a copy (old pending proposals can still be decided).
 
 ## Storage and cleanup
 
@@ -577,8 +626,8 @@ events each 30 seconds, so its cost grows with the number of tickets (for T63).
     Plain "i.inc" is refused: Apps share names with accounts, and an account `i-inc` exists. Its private key lives on the mini at `~/.config/i-inc/github-app.pem`, mode
     0600 in a 0700 folder, and never in the repo.
 - **Brains:**
-  - They live on the mini and are never pushed. Sandboxes get a read-only-by-convention copy of what each employee may
-    read (T57), never the other way yet.
+  - They live on the mini and are never pushed. Sandboxes get a copy of what each employee may read (T57); what the
+    agent edits in it is collected, checked and committed with no approval (T58), and the owner can revert any change.
   - Shared facts go in the handbook; personality and duty lessons stay in each employee's brain.
 - **Proof, My desk and goals:**
   - Proof images are copied into the PR, unless something in them is private; then the PR gets a

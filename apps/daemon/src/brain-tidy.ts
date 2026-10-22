@@ -108,7 +108,7 @@ export function tidyReport(
   };
 }
 
-const escape = (s: string) =>
+const clean = (s: string) =>
   s.replace(/<\s*(\/?)\s*(brain-page|brain|tidy)\b/gi, "<\\$1$2").replace(/\s+/g, " ");
 
 /** The report as the text at the end of the tidy-up's brief. Page names are the files of the agent's copy. */
@@ -119,7 +119,7 @@ export function renderTidyReport(r: TidyReport, employeeId: string, home?: strin
       ? `${home ?? "/home/employee/brain"}/${employeeId}/${rel}`
       : `${scopeDir(p.scope) ?? p.scope}/${p.slug}.md`;
   };
-  const line = (p: PageRef) => `${file(p)} ("${escape(p.title)}")`;
+  const line = (p: PageRef) => `${file(p)} ("${clean(p.title)}")`;
   const out: string[] = [
     "<tidy>",
     "Tidy-up report: where to look in your brain copy. Pages are listed by file.",
@@ -140,7 +140,7 @@ export function renderTidyReport(r: TidyReport, employeeId: string, home?: strin
   );
   section(
     "Broken [[links]] (they name no page): fix the name, or remove the link.",
-    r.broken.map((b) => `${line(b.from)} links to [[${escape(b.link)}]]`),
+    r.broken.map((b) => `${line(b.from)} links to [[${clean(b.link)}]]`),
     "none.",
   );
   section(

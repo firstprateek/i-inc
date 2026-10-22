@@ -66,7 +66,7 @@ export async function brainRig(o: { delivered?: boolean; real?: boolean } = {}) 
         launch: fake.launch,
         isUp: async () => machineUp.value,
         runScript: async (employeeId, script, _env, opts) =>
-          /__INC_TAR__|\.snapshot\.id|@@removed/.test(script)
+          /__INC_TAR__|\.snapshot\.id|@@removed|refs\/inc\/baseline/.test(script)
             ? local(employeeId, script, {}, opts)
             : { code: 0, output: "@@ready\n" },
         log: (m) => logs.push(m),

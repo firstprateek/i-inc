@@ -1,6 +1,6 @@
 # Brain (V1 design): an indexed LLM wiki
 
-Status: approved 2026-10-20. Built: the page format, index and maps (T56, #78); the snapshot into sandboxes, automatic retrieval into briefs and turns, and pages-used visibility (T57). Not yet: writing by diff harvest, the Brain changes feed and the tidy-up (T58, T58+).
+Status: approved 2026-10-20. Built: the page format, index and maps (T56, #78); the snapshot into sandboxes, automatic retrieval into briefs and turns, and pages-used visibility (T57). Writing by diff harvest, the Brain changes feed with revert and the daily tidy-up (T58, see handoff.md).
 
 ## Goal
 

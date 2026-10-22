@@ -366,6 +366,16 @@ function locate(path: string, employeeId: string): { scope: Scope; slug: string 
   return scope && slug ? { scope, slug } : null;
 }
 
+/**
+ * A page as the feed's diff shows it: its title and description, then its body. The rest of the frontmatter
+ * (`updated`, `sources`, tags) changes with every edit and says nothing about what was written.
+ */
+export function forDiff(text: string | null, slug = ""): string | null {
+  if (text === null) return null;
+  const p = parsePage(text, slug);
+  return `title: ${p.meta.title}\ndescription: ${p.meta.description}\n${p.body.replace(/^\n+/, "")}`;
+}
+
 /** A few lines of what changed, for the feed: removed lines with `-`, added with `+`, with a little context. */
 export function lineDiff(before: string | null, after: string | null, maxLines = 24): string {
   const lines = (t: string | null) => (t === null || t === "" ? [] : t.replace(/\n$/, "").split("\n"));

@@ -663,11 +663,17 @@ export class Daemon {
       const s = states.get(r.ticket.id);
       return !s?.created || (s.status !== "done" && s.status !== "failed");
     });
-    if (open) return note(`ticket ${open.ticket.id} is still open`);
+    if (open) {
+      note(`ticket ${open.ticket.id} is still open`);
+      return;
+    }
     const dayStart = now - (now % 86_400_000);
     if (tidy.some((r) => r.createdAt >= dayStart)) return;
     const pick = this.pickLibrarian(now);
-    if (!pick) return note("nobody to ask");
+    if (!pick) {
+      note("nobody to ask");
+      return;
+    }
     const filedToday = records.filter(
       (r) =>
         r.ticket.project === TIDY_PROJECT &&
@@ -676,7 +682,8 @@ export class Daemon {
         r.createdAt >= dayStart,
     ).length;
     if (filedToday >= this.d.registry.projectPolicy(TIDY_PROJECT).followUpsPerDay) {
-      return note(`today's budget for tickets agents file in ${TIDY_PROJECT} is used`);
+      note(`today's budget for tickets agents file in ${TIDY_PROJECT} is used`);
+      return;
     }
     const r = feed.tidyData(pick.employee.id);
     const work =
@@ -685,7 +692,10 @@ export class Daemon {
       r.broken.length +
       r.unused.length +
       r.maps.filter((m) => m.lines > m.limit).length;
-    if (!work) return note("the brain has nothing to tend");
+    if (!work) {
+      note("the brain has nothing to tend");
+      return;
+    }
     this.tidyNoted = "";
     const reason = pick.fallback
       ? `Nobody has the librarian duty, so ${pick.employee.name} (${pick.fallback}) was asked. Give someone the Librarian duty in Company → Team to choose who tends the brain.`

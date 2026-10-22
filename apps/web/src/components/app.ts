@@ -34,6 +34,7 @@ import "./hiring.ts";
 import "./chat.ts";
 import "./conversations.ts";
 import "./getting-started.ts";
+import "./brain-changes.ts";
 import "./knowledge.ts";
 import "./offline.ts";
 import "./setup.ts";
@@ -766,6 +767,8 @@ export class IncApp extends LitElement {
       case "hiring":
         return html`<inc-hiring .employeeId=${r.id} role="tabpanel" aria-labelledby="tab-team"></inc-hiring>`;
       case "brain":
+        if (r.changes)
+          return html`<inc-brain-changes role="tabpanel" aria-labelledby="tab-brain"></inc-brain-changes>`;
         return r.id
           ? html`<inc-knowledge .repo=${r.id} role="tabpanel" aria-labelledby="tab-brain"></inc-knowledge>`
           : html`<inc-knowledge repo="handbook" role="tabpanel" aria-labelledby="tab-brain"></inc-knowledge>`;

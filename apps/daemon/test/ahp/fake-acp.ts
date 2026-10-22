@@ -5,11 +5,14 @@
 //   "hang ..."   starts a tool call and waits for session/cancel
 //   "crash ..."  says a few words, then the process dies
 //   "limit ..."  fails the prompt with Claude's session-limit message
+//   "@@write <b64 path> <b64 text>"  writes that file first (an edit, as an agent editing its brain copy would)
 //   "plain ..."  one reply, no tools
 //   anything else: thoughts, text, a read tool, a plan, commands, an edit that asks for permission
 //                  unless the mode skips that, usage, and the end.
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { PassThrough } from "node:stream";
 import type { Engine, Id } from "@i-inc/core";
 import type { AgentProcess, Launch, LaunchRequest } from "../../src/acp.ts";
@@ -183,6 +186,28 @@ export class FakeAcpAgent {
         toolCallId,
         title: `Read ${path}`,
         kind: "read",
+        status: "pending",
+        rawInput: { path },
+        locations: [{ path }],
+      });
+      this.update(sessionId, { sessionUpdate: "tool_call_update", toolCallId, status: "completed" });
+    }
+    // "@@write <base64 of an absolute path> <base64 of the text>" anywhere in a prompt makes the agent write that
+    // file first (an edit tool call that names it), as an agent editing its brain copy would.
+    for (const [n, m] of [...text.matchAll(/@@write (\S+) (\S+)/g)].entries()) {
+      const path = Buffer.from(m[1] as string, "base64").toString();
+      const content = Buffer.from(m[2] as string, "base64").toString();
+      if (content === "@@delete") rmSync(path, { force: true });
+      else {
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, content);
+      }
+      const toolCallId = `tc-write-${n}`;
+      this.update(sessionId, {
+        sessionUpdate: "tool_call",
+        toolCallId,
+        title: `Edit ${path}`,
+        kind: "edit",
         status: "pending",
         rawInput: { path },
         locations: [{ path }],

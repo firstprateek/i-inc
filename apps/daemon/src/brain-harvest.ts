@@ -31,6 +31,7 @@ import {
   checkHarvest,
   defaultLimits,
   type Existing,
+  forDiff,
   type Limits,
   lineDiff,
   normalizePage,
@@ -364,7 +365,7 @@ export class BrainHarvest {
           a,
           commit: done.commit,
           repoKey: repoKey(repoOfScope(a.scope) as RepoRef),
-          diff: lineDiff(done.before, done.text),
+          diff: lineDiff(forDiff(done.before, a.slug), forDiff(done.text, a.slug)),
           conflict: done.conflict,
           notes: [...a.notes, ...done.notes],
         });
@@ -598,7 +599,7 @@ export class BrainHarvest {
       r.code,
       r.reason,
       r.sha,
-      lineDiff(r.base, r.text).slice(0, 4000),
+      lineDiff(forDiff(r.base, r.slug ?? ""), forDiff(r.text, r.slug ?? "")).slice(0, 4000),
     );
   }
 
