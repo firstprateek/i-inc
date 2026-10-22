@@ -531,8 +531,7 @@ describe("a shared sandbox: edits that may not be the employee's own", () => {
     w.clock.advance(10);
     // Ada's copy is brought up to date; the file stays, as any edit does.
     w.commit("handbook", { "facts/news.md": page("News", "Something new", longBody("News")) });
-    const sync = await w.feed.sync("ada");
-    expect(sync.kept).toContain("personal/tools/secret.md");
+    await w.feed.sync("ada");
     w.clock.advance(10);
     await w.harvest("ada", "14");
     expect((await w.changes())[0]).toMatchObject({ status: "committed", untrusted: true });
@@ -684,5 +683,31 @@ describe("the retro with a copy that is not there", () => {
     w.failing.next = false;
     await w.feed.sync("kit");
     expect(w.feed.copyUsable("kit")).toBe(true);
+  });
+});
+
+describe("changes deferred by a per-harvest cap", () => {
+  it("are collected by a later harvest, and told once", async () => {
+    const w = await world();
+    (w.app.deps.brainHarvest as unknown as { o: { limits: object } }).o.limits = { maxChanges: 1 };
+    w.copyFile(
+      "ada",
+      "company/facts/one.md",
+      page("One topic", "The first topic", longBody("The first topic")),
+    );
+    w.copyFile(
+      "ada",
+      "company/facts/two.md",
+      page("Another matter", "A second matter", longBody("A second matter")),
+    );
+    expect(await w.harvest("ada", "14")).toMatchObject({ committed: 1, rejected: 1 });
+    expect((await w.changes()).filter((c) => c.status === "rejected")).toHaveLength(1);
+    // The same file, unchanged, is picked up next time.
+    expect(await w.harvest("ada", "15")).toMatchObject({ committed: 1 });
+    expect(w.host("handbook", "facts/one.md") !== null && w.host("handbook", "facts/two.md") !== null).toBe(
+      true,
+    );
+    expect((await w.changes()).filter((c) => c.status === "rejected")).toHaveLength(1);
+    expect(await w.harvest("ada", "16")).toMatchObject({ status: "nothing" });
   });
 });

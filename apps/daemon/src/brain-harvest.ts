@@ -243,11 +243,15 @@ export class BrainHarvest {
     );
   }
 
-  /** Whether this exact change was refused before and left in the copy. */
+  /**
+   * Whether this exact change was refused before as a duplicate and left in the copy for the agent to merge:
+   * it is not told again. (A change deferred by a per-harvest cap is collected on a later harvest; it is
+   * recorded once, `recordRejected`.)
+   */
   private seen(employeeId: string, c: RawChange): boolean {
     if (c.sha === null) return false;
     const [row] = this.o.db.all<{ n: number }>(
-      "SELECT COUNT(*) AS n FROM brain_changes WHERE employee_id = ? AND path = ? AND sha = ? AND status = 'rejected' AND code IN ('duplicate', 'too-many', 'oversize')",
+      "SELECT COUNT(*) AS n FROM brain_changes WHERE employee_id = ? AND path = ? AND sha = ? AND status = 'rejected' AND code = 'duplicate'",
       employeeId,
       c.path,
       c.sha,
@@ -763,6 +767,17 @@ export class BrainHarvest {
   }
 
   private recordRejected(hid: string, at: number, req: HarvestRequest, r: Rejected): void {
+    // A change left in the copy (a duplicate, or one deferred by a cap) that was told before is not told again.
+    if (r.keep && r.sha !== null) {
+      const [old] = this.o.db.all<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM brain_changes WHERE employee_id = ? AND path = ? AND sha = ? AND status = 'rejected' AND code = ?",
+        req.employeeId,
+        r.path,
+        r.sha,
+        r.code,
+      );
+      if ((old?.n ?? 0) > 0) return;
+    }
     this.o.db.run(
       `INSERT INTO brain_changes (harvest, at, status, employee_id, ref_kind, ref_id, scope, slug, path, op, code, reason, sha, diff)
        VALUES (?, ?, 'rejected', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,

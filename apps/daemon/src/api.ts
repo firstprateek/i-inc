@@ -36,7 +36,7 @@ import {
 } from "@i-inc/core";
 import { ConversationError } from "./ahp/conversations.ts";
 import { authorized, hostAllowed, originAllowed, same } from "./auth.ts";
-import { RevertError } from "./brain-harvest.ts";
+import { type BrainChange, RevertError } from "./brain-harvest.ts";
 import { ACCEPTED_LABEL, type Daemon, type DaemonDeps } from "./daemon.ts";
 import { readDeploys } from "./deploys.ts";
 import {
@@ -2326,14 +2326,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         const names = new Map(d.registry.employees().map((e) => [e.id, e.name]));
         const who = (id: string) => ({ id, name: names.get(id) ?? id });
         return json({
-          changes: page.changes.map((c) => ({
-            ...c,
-            employee: who(c.employee),
-            source: {
-              ...c.source,
-              url: c.source.kind === "ticket" ? `#/ticket/${c.source.id}` : `#/conversations/${c.source.id}`,
-            },
-          })),
+          changes: page.changes.map((c) => changeView(c, who)),
           next: page.next,
           facets: { scopes: page.facets.scopes, employees: page.facets.employees.map(who) },
         });
@@ -2348,9 +2341,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         try {
           const change = d.brainHarvest.revert(Number(id));
           d.brain.refresh();
-          return json({
-            change: { ...change, employee: { id: change.employee, name: nameOf(change.employee) } },
-          });
+          return json({ change: changeView(change, (id) => ({ id, name: nameOf(id) })) });
         } catch (e) {
           if (e instanceof RevertError) return json({ error: e.message }, e.status);
           throw e;
@@ -2946,6 +2937,18 @@ function shipBodyProblem(body: Record<string, unknown>, allowed: string[]): stri
 function shipFailure(e: unknown): Response {
   if (e instanceof ShipError) return json({ error: e.message, code: e.code, ...e.extra }, e.status);
   throw e;
+}
+
+/** A Brain changes feed entry as the API shows it: the same from the list and from a revert. */
+function changeView(c: BrainChange, who: (id: string) => { id: string; name: string }) {
+  return {
+    ...c,
+    employee: who(c.employee),
+    source: {
+      ...c.source,
+      url: c.source.kind === "ticket" ? `#/ticket/${c.source.id}` : `#/conversations/${c.source.id}`,
+    },
+  };
 }
 
 function json(body: unknown, status = 200): Response {

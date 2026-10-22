@@ -166,6 +166,12 @@ describe("POST /api/brain/changes/:id/revert", () => {
     const r = await w.call("POST", `/api/brain/changes/${id}/revert`);
     expect(r.status).toBe(200);
     expect(r.body.change).toMatchObject({ id, reverted: true, revertible: false });
+    // The same shape as the list, so the entry can be swapped in place: the source still links.
+    const listed = (await w.call("GET", "/api/brain/changes")).body.changes.find(
+      (c: { id: number }) => c.id === id,
+    );
+    expect(r.body.change.source).toEqual({ kind: "ticket", id: "14", url: "#/ticket/14" });
+    expect(r.body.change).toEqual(listed);
     expect(w.host("handbook", "facts/lesson.md")).toBeNull();
     const msg = w.git("handbook", "log", "-1", "--format=%s%n%b");
     expect(msg).toContain('Revert "Add facts/lesson.md"');
