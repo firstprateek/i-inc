@@ -1,5 +1,7 @@
 import { css, html, type TemplateResult } from "lit";
-import { api, type KnowledgeView, type NamedChange, type Page, refreshNow } from "../api.ts";
+import { ApiError, api, type KnowledgeView, type NamedChange, type Page, refreshNow } from "../api.ts";
+import { safeHref } from "../conversations/markdown.ts";
+import { brainHash } from "../routes.ts";
 import { setupApi } from "../setup-api.ts";
 import { LAYOUT_BREAKPOINTS, layoutStyles } from "./layout.ts";
 import { Loader } from "./loader.ts";
@@ -22,15 +24,19 @@ export interface KnowledgeData extends KnowledgeView {
 }
 
 export class IncKnowledge extends Loader<KnowledgeData> {
-  static override properties = { ...Loader.properties, repo: {}, page: { state: true } };
+  static override properties = { ...Loader.properties, repo: {}, page: {}, missing: { state: true } };
   /** "handbook", or an employee id for their brain. */
   declare repo: string;
+  /** The page open, as the address says (`?page=`); empty is the map (INDEX.md). */
   declare page: string;
+  /** The daemon says there is no such brain (an employee who isn't here). */
+  declare missing: boolean;
 
   constructor() {
     super();
     this.repo = "handbook";
-    this.page = "INDEX.md";
+    this.page = "";
+    this.missing = false;
   }
 
   protected fetch = async (): Promise<KnowledgeData> => {
@@ -53,12 +59,19 @@ export class IncKnowledge extends Loader<KnowledgeData> {
         employeeNames,
       };
     }
-    return api.brain(this.repo);
+    try {
+      const brain = await api.brain(this.repo);
+      this.missing = false;
+      return brain;
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) this.missing = true;
+      throw e;
+    }
   };
 
   override updated(changed: Map<string, unknown>): void {
     if (changed.has("repo") && changed.get("repo") !== undefined) {
-      this.page = "INDEX.md";
+      this.missing = false;
       this.data = null;
       void this.reload();
     }
@@ -156,12 +169,18 @@ export class IncKnowledge extends Loader<KnowledgeData> {
   };
 
   override render() {
+    if (this.missing) {
+      return html`<div class="wrap layout-split"><div class="work-state card" role="alert" style="padding:20px 22px">
+        <h2>There is no ${this.repo === "handbook" ? "handbook" : `brain for ${this.repo}`}</h2>
+        <p class="muted">${this.repo === "handbook" ? "The handbook isn't here." : "Nobody called that works here, or they were let go."}</p>
+        <div><a class="btn" href="#/company/team">See the team</a></div></div></div>`;
+    }
     if (this.error)
       return html`<div class="wrap layout-split"><div class="work-state" role="alert">${this.error}</div></div>`;
     if (!this.data)
       return html`<div class="wrap layout-split"><div class="work-state muted" role="status">Opening ${this.repo === "handbook" ? "the handbook" : "the brain"}…</div></div>`;
     const d = this.data;
-    const page = d.pages.find((p) => p.path === this.page) ?? d.pages[0];
+    const page = d.pages.find((p) => p.path === (this.page || "INDEX.md")) ?? d.pages[0];
     const isHandbook = this.repo === "handbook";
     return html`<div class="wrap layout-split">
       <div class="head">
@@ -187,9 +206,7 @@ export class IncKnowledge extends Loader<KnowledgeData> {
         <nav class="card layout-split-sidebar" aria-label="Pages">
           ${d.pages.map(
             (p) => html`<button type="button" aria-current=${p.path === page?.path ? "true" : "false"}
-              @click=${() => {
-                this.page = p.path;
-              }}>${title(p)}</button>`,
+              @click=${() => this.open(p.path)}>${title(p)}</button>`,
           )}
         </nav>
         <div class="col layout-split-work">
@@ -212,7 +229,7 @@ export class IncKnowledge extends Loader<KnowledgeData> {
                       : ""
                   }
                   ${page.path === "INDEX.md" ? "" : html`<span class="path">${page.path}</span>`}
-                  ${this.markdown(page.text)}
+                  ${this.markdown(page.text, page.path)}
                 </article>`
               : !isHandbook
                 ? html`<article class="card">
@@ -271,7 +288,7 @@ export class IncKnowledge extends Loader<KnowledgeData> {
   }
 
   /** Just enough markdown for brains: headings, lists, links between pages, and paragraphs. */
-  private markdown(text: string): TemplateResult[] {
+  private markdown(text: string, from: string): TemplateResult[] {
     const out: TemplateResult[] = [];
     let list: TemplateResult[] = [];
     const flush = () => {
@@ -291,27 +308,65 @@ export class IncKnowledge extends Loader<KnowledgeData> {
         flush();
         out.push(html`<h3>${t.slice(3)}</h3>`);
       } else if (t.startsWith("- ")) {
-        list.push(html`<li>${this.inline(t.slice(2))}</li>`);
+        list.push(html`<li>${this.inline(t.slice(2), from)}</li>`);
       } else {
         flush();
-        out.push(html`<p>${this.inline(t)}</p>`);
+        out.push(html`<p>${this.inline(t, from)}</p>`);
       }
     }
     flush();
     return out;
   }
 
-  /** A `[label](page.md)` link opens that page; anything else is text. */
-  private inline(t: string) {
-    const m = t.match(/^\[([^\]]+)\]\(([^)]+\.md)\)$/);
-    if (!m) return t;
-    const [, label, path] = m;
-    return html`<a href=${`#/company/brain${this.repo === "handbook" ? "" : `/${this.repo}`}`} @click=${(
-      e: Event,
-    ) => {
-      e.preventDefault();
-      this.page = path ?? "INDEX.md";
-    }}>${label}</a>`;
+  /** Opens a page: it is in the address, so Back returns to the one before and a page can be linked to. */
+  private open(path: string) {
+    this.page = path;
+    const hash = brainHash(this.repo, path);
+    if (location.hash !== hash) location.hash = hash;
+  }
+
+  /** The page a link on the page being read points at, or null when it isn't one of this brain's pages. */
+  private pageFor(target: string, from: string): string | null {
+    if (/^[a-z][a-z0-9+.-]*:/i.test(target) || !/\.md$/.test(target)) return null;
+    const pages = this.data?.pages ?? [];
+    const dir = from.includes("/") ? from.slice(0, from.lastIndexOf("/")) : "";
+    const resolve = (base: string) => {
+      const out: string[] = [];
+      for (const part of `${base ? `${base}/` : ""}${target}`.split("/")) {
+        if (part === "..") out.pop();
+        else if (part && part !== ".") out.push(part);
+      }
+      return out.join("/");
+    };
+    // Relative to the page it is on first, then to the brain's root.
+    for (const path of [resolve(dir), resolve("")]) if (pages.some((p) => p.path === path)) return path;
+    return null;
+  }
+
+  /** `[label](page.md)` links open that page, `[label](https://…)` links open in a new tab; the rest is text. */
+  private inline(t: string, from = "INDEX.md") {
+    const out: (string | ReturnType<typeof html>)[] = [];
+    let last = 0;
+    for (const m of t.matchAll(/\[([^\]]+)\]\(([^)\s]+)\)/g)) {
+      const [whole, label = "", target = ""] = m;
+      const at = m.index ?? 0;
+      const path = this.pageFor(target, from);
+      const href = path ? null : safeHref(target);
+      if (!path && !href) continue;
+      out.push(t.slice(last, at));
+      out.push(
+        path
+          ? html`<a href=${brainHash(this.repo, path)} @click=${(e: Event) => {
+              e.preventDefault();
+              this.open(path);
+            }}>${label}</a>`
+          : html`<a href=${href as string} target="_blank" rel="noopener noreferrer">${label}</a>`,
+      );
+      last = at + whole.length;
+    }
+    if (!out.length) return t;
+    out.push(t.slice(last));
+    return out;
   }
 }
 

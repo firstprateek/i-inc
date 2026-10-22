@@ -6,6 +6,8 @@ import "../src/components/setup.ts";
 import { defaultSandbox, type Project, policyDefaults, type Sandbox, type Team } from "../src/setup-api.ts";
 
 let calls: { method: string; url: string; body: unknown }[] = [];
+/** The headers of each PUT, in order. */
+let putHeaders: Record<string, string>[] = [];
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -67,14 +69,25 @@ function serve(
   } = {},
 ) {
   calls = [];
+  putHeaders = [];
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
+    if (method === "PUT") putHeaders.push((init?.headers ?? {}) as Record<string, string>);
     calls.push({ method, url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
     if (method === "PUT" && opts.putFails) return json({ error: opts.putFails }, 400);
     if (url === "/api/teams") return json({ teams });
     if (url === "/api/projects") return json({ projects });
     if (url === "/api/engines") return json({ engines });
     if (url === "/api/accounts") return json({ accounts, rateLimits: {} });
+    if (url === "/api/employees")
+      return json({
+        employees: [
+          { id: "ada", name: "Ada", role: "Senior Engineer" },
+          { id: "juno", name: "Juno", role: "Staff Engineer" },
+          { id: "nell", name: "Nell", role: "Product Manager" },
+          { id: "pat", name: "Pat", role: "Personal Assistant" },
+        ],
+      });
     if (url === "/api/office")
       return json({
         employees: [
@@ -188,9 +201,10 @@ describe("teams", () => {
     serve();
     const root = await mount("inc-setup-teams");
     const cards = [...root.querySelectorAll("section.card")];
-    expect(cards.map((c) => c.getAttribute("aria-label"))).toEqual(["Engineering", "Home"]);
+    expect(cards.map((c) => c.getAttribute("aria-label"))).toEqual(["Engineering", "Home", "Make a team"]);
     expect(cards[0]?.textContent).toContain("Ada, Juno");
-    const sizes = (c: Element | undefined) => [...(c?.querySelectorAll("input") ?? [])].map((i) => i.value);
+    const sizes = (c: Element | undefined) =>
+      [...(c?.querySelectorAll('input[type="number"]') ?? [])].map((i) => (i as HTMLInputElement).value);
     expect(sizes(cards[0])).toEqual(["4", "8"]);
     expect(sizes(cards[1])).toEqual([String(defaultSandbox.cpus), "12"]);
     expect(cards[1]?.textContent).toContain("No members yet");
@@ -201,8 +215,8 @@ describe("teams", () => {
     const root = await mount("inc-setup-teams");
     const card = root.querySelector("section.card") as HTMLElement;
     expect(button(card, "Save size").disabled).toBe(true);
-    await type(root, card.querySelectorAll("input")[0] as Element, "8");
-    await type(root, card.querySelectorAll("input")[1] as Element, "16");
+    await type(root, card.querySelectorAll('input[type="number"]')[0] as Element, "8");
+    await type(root, card.querySelectorAll('input[type="number"]')[1] as Element, "16");
     button(card, "Save size").click();
     await settle(root.host);
     const put = calls.find((c) => c.method === "PUT");
@@ -213,6 +227,57 @@ describe("teams", () => {
       sandbox: { cpus: 8, memory: "16G" },
     });
     expect(root.textContent).toContain("Saved");
+  });
+
+  it("makes a team from a name, with the people picked, create-only", async () => {
+    serve();
+    const root = await mount("inc-setup-teams");
+    const form = root.querySelector('section[aria-label="Make a team"]') as HTMLElement;
+    // a personal assistant works on home data and has a sandbox of its own: never offered
+    const offered = [...form.querySelectorAll('input[name="team-member"]')].map(
+      (i) => (i as HTMLInputElement).value,
+    );
+    expect(offered).toEqual(["ada", "juno", "nell"]);
+    await type(root, form.querySelector('[name="team-name"]') as Element, "Design Crew");
+    const nell = form.querySelector('input[name="team-member"][value="nell"]') as HTMLInputElement;
+    nell.click();
+    await settle(root.host);
+    button(form, "Make team").click();
+    await settle(root.host);
+    const put = calls.find((c) => c.method === "PUT");
+    expect(put?.url).toBe("/api/teams/design-crew");
+    expect(put?.body).toEqual({ name: "Design Crew", members: ["nell"] });
+    expect(putHeaders[0]).toMatchObject({ "if-none-match": "*" });
+    expect(root.textContent).toContain("Made Design Crew");
+  });
+
+  it("refuses a name that is a team already, without asking the daemon", async () => {
+    serve();
+    const root = await mount("inc-setup-teams");
+    const form = root.querySelector('section[aria-label="Make a team"]') as HTMLElement;
+    await type(root, form.querySelector('[name="team-name"]') as Element, "engineering");
+    button(form, "Make team").click();
+    await settle(root.host);
+    expect(calls.some((c) => c.method === "PUT")).toBe(false);
+    expect(form.textContent).toContain("There is already a team called Engineering");
+  });
+
+  it("changes who works in a team, keeping a home employee it holds", async () => {
+    serve();
+    const root = await mount("inc-setup-teams");
+    const card = root.querySelector('section[aria-label="Engineering"]') as HTMLElement;
+    expect(button(card, "Save people").disabled).toBe(true);
+    const nell = [...card.querySelectorAll('input[type="checkbox"]')].find((i) =>
+      i.parentElement?.textContent?.includes("Nell"),
+    ) as HTMLInputElement;
+    nell.click();
+    await settle(root.host);
+    button(card, "Save people").click();
+    await settle(root.host);
+    const put = calls.find((c) => c.method === "PUT");
+    expect(put?.url).toBe("/api/teams/engineering");
+    expect(put?.body).toMatchObject({ name: "Engineering", members: ["ada", "juno", "nell"] });
+    expect(putHeaders[0]?.["if-none-match"]).toBeUndefined();
   });
 });
 
@@ -286,7 +351,7 @@ describe("engines and accounts", () => {
     serve();
     const root = await mount("inc-setup-engines");
     const form = root.querySelector('section[aria-label="Add an engine"]') as HTMLElement;
-    await type(root, form.querySelector('[name="engine-id"]') as Element, "codex-main");
+    await type(root, form.querySelector('[name="engine-id"]') as Element, "codex-new");
     await type(root, form.querySelector('[name="engine-model"]') as Element, "owner-entered-model");
     const harness = form.querySelector('[name="engine-harness"]') as HTMLSelectElement;
     harness.value = "opencode";
@@ -308,9 +373,63 @@ describe("engines and accounts", () => {
     button(form, "Add engine").click();
     await settle(root.host);
     expect(calls.find((c) => c.method === "PUT")).toMatchObject({
-      url: "/api/engines/codex-main",
+      url: "/api/engines/codex-new",
       body: { harness: "codex", model: "owner-entered-model", accountId: "codex-pro", local: false },
     });
+  });
+
+  it("refuses to add an engine whose id is taken, and says what is there", async () => {
+    serve();
+    const root = await mount("inc-setup-engines");
+    const form = root.querySelector('section[aria-label="Add an engine"]') as HTMLElement;
+    await type(root, form.querySelector('[name="engine-id"]') as Element, "opus");
+    await type(root, form.querySelector('[name="engine-model"]') as Element, "oops-overwritten");
+    button(form, "Add engine").click();
+    await settle(root.host);
+    expect(calls.some((c) => c.method === "PUT")).toBe(false);
+    const text = form.textContent ?? "";
+    expect(text).toContain("There is already an engine called opus (Claude Opus on claude-code)");
+    expect(text).not.toContain("Added");
+    // what was typed stays
+    expect((form.querySelector('[name="engine-model"]') as HTMLInputElement).value).toBe("oops-overwritten");
+  });
+
+  it("adds an engine create-only, so a race can't replace one either, and shows the daemon's refusal", async () => {
+    serve();
+    const root = await mount("inc-setup-engines");
+    const form = root.querySelector('section[aria-label="Add an engine"]') as HTMLElement;
+    await type(root, form.querySelector('[name="engine-id"]') as Element, "fresh");
+    await type(root, form.querySelector('[name="engine-model"]') as Element, "Some Model");
+    button(form, "Add engine").click();
+    await settle(root.host);
+    expect(putHeaders[0]).toMatchObject({ "if-none-match": "*" });
+    // the daemon says it exists (added by someone else a moment ago): 412, and nothing says "Added"
+    vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) =>
+      init?.method === "PUT"
+        ? json(
+            { error: "an engine called fresh already exists (Some Model on claude-code): pick another id" },
+            412,
+          )
+        : json({ engines, accounts, rateLimits: {} }),
+    );
+    await type(root, form.querySelector('[name="engine-id"]') as Element, "fresher");
+    await type(root, form.querySelector('[name="engine-model"]') as Element, "Another");
+    button(form, "Add engine").click();
+    await settle(root.host);
+    expect(form.textContent).toContain("already exists");
+    expect(form.textContent).not.toContain("Added Another");
+  });
+
+  it("refuses to add an account whose id is taken", async () => {
+    serve();
+    const root = await mount("inc-setup-engines");
+    const form = root.querySelector('section[aria-label="Add an account"]') as HTMLElement;
+    await type(root, form.querySelector('[name="account-id"]') as Element, "claude-pro");
+    await type(root, form.querySelector('[name="account-name"]') as Element, "Different");
+    button(form, "Add account").click();
+    await settle(root.host);
+    expect(calls.some((c) => c.method === "PUT")).toBe(false);
+    expect(form.textContent).toContain("There is already an account called claude-pro (Claude Pro)");
   });
 
   it("adds an account, and saves a cap without losing the fee", async () => {
@@ -326,8 +445,11 @@ describe("engines and accounts", () => {
       url: "/api/accounts/google-ai-pro",
       body: { name: "Google AI Pro", monthlyFee: 20 },
     });
+    // adding is create-only; saving a cap below is an update
+    expect(putHeaders[0]).toMatchObject({ "if-none-match": "*" });
 
     calls = [];
+    putHeaders = [];
     const cap = root.querySelector('input[aria-label="Monthly cap for Claude Pro"]') as Element;
     await type(root, cap, "75");
     button(root, "Save cap").click();
@@ -336,6 +458,7 @@ describe("engines and accounts", () => {
       url: "/api/accounts/claude-pro",
       body: { name: "Claude Pro", monthlyFee: 20, monthlyCap: 75 },
     });
+    expect(putHeaders[0]?.["if-none-match"]).toBeUndefined();
   });
 
   it("adds a Codex subscription account without asking for credentials", async () => {

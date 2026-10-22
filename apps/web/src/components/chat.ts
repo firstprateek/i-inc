@@ -726,7 +726,13 @@ export class IncChat extends LitElement {
                 </div>`
               : ""
           }
-          ${this.error ? html`<p class="error-msg" role="alert">${this.error}</p>` : ""}
+          ${
+            this.noSuchEmployee()
+              ? html`<p class="error-msg" role="alert">There is no employee called ${this.employeeId}. <a href="#/conversations">Back to conversations</a></p>`
+              : this.error
+                ? html`<p class="error-msg" role="alert">${this.error}</p>`
+                : ""
+          }
         </div>
         <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">${this.announcement}</div>
         ${
@@ -763,6 +769,11 @@ export class IncChat extends LitElement {
         </div>
       </section>
     </div>`;
+  }
+
+  /** The address names an employee who isn't here (a mistyped or old link): say so in words. */
+  private noSuchEmployee(): boolean {
+    return !!this.employeeId && /no such employee/i.test(this.error ?? "");
   }
 
   /** The images picked for the current ticket, and why any weren't taken. */

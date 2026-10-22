@@ -82,7 +82,16 @@ export function checklist(progress: Progress, employeeId = ""): Step[] {
       "Start a conversation",
       "Say hello to an employee, or ask for something new.",
       "You have talked with your team.",
-      [{ label: "Start a conversation", short: "Start", href: `#/conversations/${employeeId}` }],
+      [
+        {
+          label: "Start a conversation",
+          short: "Start",
+          // The new conversation form (a first message makes the conversation), not the old chat.
+          href: employeeId
+            ? `#/conversations/new/${encodeURIComponent(employeeId)}`
+            : "#/conversations?new=1",
+        },
+      ],
     ),
   ];
 }
@@ -97,6 +106,17 @@ async function ownerHasSpoken(): Promise<boolean> {
   try {
     if (localStorage.getItem(STARTED_KEY) === "1") return true;
   } catch {}
+  // A conversation exists only once its first message was sent (nothing is made before that), archived or not.
+  const started = await api
+    .conversations("all")
+    .then((list) => Array.isArray(list) && list.length > 0)
+    .catch(() => false);
+  if (started) {
+    try {
+      localStorage.setItem(STARTED_KEY, "1");
+    } catch {}
+    return true;
+  }
   const { threads } = await call<{ threads: Thread[] }>("GET", "/api/chat");
   let spoke = threads.some((t) => t.last?.from === "owner");
   if (!spoke) {
@@ -231,16 +251,6 @@ export class IncGettingStarted extends LitElement {
     if (this.open) void this.check();
   };
 
-  /** "Start a conversation" on the conversations screen itself: go straight to the message field. */
-  private startHere = (e: Event) => {
-    const composer = this.parentElement
-      ?.querySelector("inc-chat")
-      ?.shadowRoot?.querySelector<HTMLTextAreaElement>("textarea");
-    if (!composer) return;
-    e.preventDefault();
-    composer.focus();
-  };
-
   static override styles = [
     base,
     css`
@@ -302,17 +312,16 @@ export class IncGettingStarted extends LitElement {
     const remaining = steps.filter((s) => !s.done);
     const next = remaining[0];
     const go = next?.actions[0];
-    const link = (a: StepAction, ghost: boolean, id: StepId, short = false) =>
+    const link = (a: StepAction, ghost: boolean, short = false) =>
       html`<a class="btn ${ghost ? "ghost" : ""} ${short ? "primary" : ""}" href=${a.href}
         target=${a.external ? "_blank" : nothing} rel=${a.external ? "noopener noreferrer" : nothing}
-        aria-label=${a.external ? `${a.label} (opens GitHub)` : short && a.short ? a.label : nothing}
-        @click=${id === "conversation" ? this.startHere : null}>${short ? (a.short ?? a.label) : a.label}</a>`;
+        aria-label=${a.external ? `${a.label} (opens GitHub)` : short && a.short ? a.label : nothing}>${short ? (a.short ?? a.label) : a.label}</a>`;
     return html`<section class="card gs" aria-labelledby="gs-title">
       <div class="bar">
         <div class="title"><h2 id="gs-title">Getting started</h2>
           <span class="count" role="status" aria-label="${done} of ${steps.length} done">${done}/${steps.length}</span></div>
         <p class="next"><span class="lbl">Next:</span> <b>${next?.title}</b>${next?.error ? html` <span class="err">· Couldn't check</span>` : ""}</p>
-        ${next && go ? link(go, false, next.id, true) : ""}
+        ${next && go ? link(go, false, true) : ""}
         <button class="btn ghost toggle" type="button" aria-expanded=${this.open ? "true" : "false"} aria-controls="gs-more"
           @click=${this.toggle}>${this.open ? "Hide steps" : "Steps"}</button>
         <button class="btn ghost dismiss" type="button" aria-label="Dismiss getting started" @click=${this.dismiss}>
@@ -327,7 +336,7 @@ export class IncGettingStarted extends LitElement {
                 (s) => html`<li class="step ${s === next ? "next-step" : ""}">
                   <span class="num" aria-hidden="true">${steps.indexOf(s) + 1}</span>
                   <div class="copy"><b>${s.title}</b><p>${s.text}</p></div>
-                  <div class="actions">${s.actions.map((a, j) => link(a, !(s === next && j === 0), s.id))}</div>
+                  <div class="actions">${s.actions.map((a, j) => link(a, !(s === next && j === 0)))}</div>
                 </li>`,
               )}
             </ol>`

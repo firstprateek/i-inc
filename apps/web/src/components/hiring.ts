@@ -330,12 +330,20 @@ export class IncHiring extends LitElement {
     const harness = this.newHarness;
     const accountId = this.newAccountId || (this.accounts[0]?.id ?? "local");
     const local = engineIsLocal(harness, accountId);
-    const id = model
+    const slug = model
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-|-$/g, "");
+    // The id is the owner's model name, made plain. An engine already there for the same thing is used
+    // as it is; for something else it is never replaced: the new one gets the next free id.
+    const same = this.engines.find(
+      (e) => e.harness === harness && e.model === model && e.accountId === accountId && e.local === local,
+    );
+    const taken = new Set(this.engines.map((e) => e.id));
+    let id = same?.id ?? slug;
+    for (let n = 2; !same && taken.has(id); n++) id = `${slug}-${n}`.slice(0, 40);
     try {
-      await setupApi.saveEngine({ id, harness, model, accountId, local });
+      if (!same) await setupApi.saveEngine({ id, harness, model, accountId, local }, { create: true });
       const updatedEngines = await api.engines().catch(() => [] as Engine[]);
       this.engines = updatedEngines;
       this.engine = id;

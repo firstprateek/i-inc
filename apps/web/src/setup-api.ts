@@ -108,15 +108,23 @@ export const GITHUB_INSTALL_URL = "https://github.com/apps/i-inc-bot/installatio
 export const GITHUB_MANAGE_URL = "https://github.com/settings/installations";
 
 const enc = encodeURIComponent;
+/** `If-None-Match: *` on a PUT: create it, and fail rather than replace one that exists. */
+const createOnly = { "if-none-match": "*" };
 
 export const setupApi = {
   teams: () => call<{ teams: Team[] }>("GET", "/api/teams").then((r) => r.teams),
-  saveTeam: (t: Team) =>
-    call<{ team: Team }>("PUT", `/api/teams/${enc(t.id)}`, {
-      name: t.name,
-      members: t.members,
-      ...(t.sandbox ? { sandbox: t.sandbox } : {}),
-    }),
+  /** `create: true` makes a new team and refuses (412) when the id is taken; without it, the team is updated. */
+  saveTeam: (t: Team, opts: { create?: boolean } = {}) =>
+    call<{ team: Team }>(
+      "PUT",
+      `/api/teams/${enc(t.id)}`,
+      {
+        name: t.name,
+        members: t.members,
+        ...(t.sandbox ? { sandbox: t.sandbox } : {}),
+      },
+      opts.create ? createOnly : {},
+    ),
   projects: () => call<{ projects: Project[] }>("GET", "/api/projects").then((r) => r.projects),
   saveProject: (id: string, body: ProjectBody) => call("PUT", `/api/projects/${enc(id)}`, body),
   deleteProject: (id: string) => call<{ ok: boolean }>("DELETE", `/api/projects/${enc(id)}`),
@@ -131,20 +139,32 @@ export const setupApi = {
     ),
   engines: () => call<{ engines: Engine[] }>("GET", "/api/engines").then((r) => r.engines),
   accounts: () => call<{ accounts: AccountCost[] }>("GET", "/api/accounts").then((r) => r.accounts),
-  saveAccount: (a: AccountCost) =>
-    call<{ account: AccountCost }>("PUT", `/api/accounts/${enc(a.id)}`, {
-      name: a.name,
-      ...(a.monthlyFee !== undefined ? { monthlyFee: a.monthlyFee } : {}),
-      ...(a.pricePerMillionTokens !== undefined ? { pricePerMillionTokens: a.pricePerMillionTokens } : {}),
-      ...(a.monthlyCap !== undefined ? { monthlyCap: a.monthlyCap } : {}),
-    }),
-  saveEngine: (e: Engine) =>
-    call<{ engine: Engine }>("PUT", `/api/engines/${enc(e.id)}`, {
-      harness: e.harness,
-      model: e.model,
-      accountId: e.accountId,
-      local: e.harness === "codex" ? false : e.local,
-    }),
+  /** `create: true` adds a new account and refuses (412) when the id is taken; without it, the account is updated. */
+  saveAccount: (a: AccountCost, opts: { create?: boolean } = {}) =>
+    call<{ account: AccountCost }>(
+      "PUT",
+      `/api/accounts/${enc(a.id)}`,
+      {
+        name: a.name,
+        ...(a.monthlyFee !== undefined ? { monthlyFee: a.monthlyFee } : {}),
+        ...(a.pricePerMillionTokens !== undefined ? { pricePerMillionTokens: a.pricePerMillionTokens } : {}),
+        ...(a.monthlyCap !== undefined ? { monthlyCap: a.monthlyCap } : {}),
+      },
+      opts.create ? createOnly : {},
+    ),
+  /** `create: true` adds a new engine and refuses (412) when the id is taken, so an existing one is never replaced. */
+  saveEngine: (e: Engine, opts: { create?: boolean } = {}) =>
+    call<{ engine: Engine }>(
+      "PUT",
+      `/api/engines/${enc(e.id)}`,
+      {
+        harness: e.harness,
+        model: e.model,
+        accountId: e.accountId,
+        local: e.harness === "codex" ? false : e.local,
+      },
+      opts.create ? createOnly : {},
+    ),
   /** null when the daemon has no such endpoint yet (PR #36), or it fails. */
   sandboxes: (): Promise<Sandbox[] | null> =>
     call<{ sandboxes: Sandbox[] }>("GET", "/api/sandboxes").then(

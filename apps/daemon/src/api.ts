@@ -445,6 +445,16 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         if (!/^[a-z0-9-]{1,40}$/.test(id))
           return json({ error: "an engine id is lowercase letters, digits and dashes" }, 400);
         const existing = d.registry.engines().find((e) => e.id === id);
+        // Create-only (`If-None-Match: *`, as HTTP means it): adding must never replace an engine that is there.
+        if (existing && req.headers.get("if-none-match") === "*") {
+          return json(
+            {
+              error: `an engine called ${id} already exists (${existing.model} on ${existing.harness}): pick another id`,
+              code: "exists",
+            },
+            412,
+          );
+        }
         const harness = b.harness ?? existing?.harness;
         if (!harness || !harnesses.includes(harness)) {
           return json({ error: `harness must be one of ${harnesses.join(", ")}` }, 400);
@@ -537,6 +547,16 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           return json({ error: "an account id is lowercase letters, digits and dashes" }, 400);
         if (typeof b.name !== "string" || !b.name.trim())
           return json({ error: "name names the account" }, 400);
+        const taken = d.registry.accounts().find((a) => a.id === id);
+        if (taken && req.headers.get("if-none-match") === "*") {
+          return json(
+            {
+              error: `an account called ${id} already exists (${taken.name}): pick another id`,
+              code: "exists",
+            },
+            412,
+          );
+        }
         const money = (v: unknown) => typeof v === "number" && v >= 0;
         d.registry.addAccount({
           id,
@@ -675,6 +695,17 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         const b = (await req.json()) as { name?: unknown; members?: unknown; sandbox?: unknown };
         if (!/^[a-z0-9-]{1,32}$/.test(id))
           return json({ error: "a team id is lowercase letters, digits and dashes" }, 400);
+        // Create-only (`If-None-Match: *`): the owner is adding a team, not rewriting one that is there.
+        const present = d.registry.teams().find((t) => t.id === id);
+        if (present && req.headers.get("if-none-match") === "*") {
+          return json(
+            {
+              error: `a team called ${id} already exists (${present.name}): pick another name`,
+              code: "exists",
+            },
+            412,
+          );
+        }
         if (typeof b.name !== "string" || !b.name.trim()) return json({ error: "name names the team" }, 400);
         const members = Array.isArray(b.members) ? b.members : [];
         const known = new Set(d.registry.employees().map((e) => e.id));

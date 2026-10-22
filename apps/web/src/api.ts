@@ -177,17 +177,32 @@ export async function send(path: string, init?: RequestInit): Promise<Response> 
   return res;
 }
 
-export async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+/** The daemon refused a request: its sentence, and the HTTP status (404: no such thing). */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+export async function call<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  headers: Record<string, string> = {},
+): Promise<T> {
   // Every write is JSON, even an empty one: the daemon refuses anything else (api.ts).
   const write = method !== "GET";
   const res = await send(path, {
     method,
-    headers: write ? { "content-type": "application/json" } : {},
+    headers: write ? { "content-type": "application/json", ...headers } : headers,
     ...(write ? { body: JSON.stringify(body ?? {}) } : {}),
   });
   if (res.status === 401) showLogin();
   const data = (await res.json()) as T & { error?: string };
-  if (!res.ok) throw new Error(data.error ?? `${method} ${path}: ${res.status}`);
+  if (!res.ok) throw new ApiError(data.error ?? `${method} ${path}: ${res.status}`, res.status);
   return data;
 }
 

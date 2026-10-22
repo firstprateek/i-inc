@@ -2,6 +2,7 @@
 // tickets and releases, and the two ways to start work: a conversation, or a ticket.
 import { css, html } from "lit";
 import { refreshNow } from "../api.ts";
+import { draftMemo } from "../drafts.ts";
 import { ago, conversationHref, type ProjectDetail, problemText, projectsApi } from "../github-projects.ts";
 import { type MergeMode, policyDefaults, setupApi } from "../setup-api.ts";
 import { listEditor } from "../setup-shared.ts";
@@ -27,6 +28,30 @@ const fromDetail = (d: ProjectDetail): Draft => ({
   followUpsPerDay: String(d.policy.followUpsPerDay ?? policyDefaults.followUpsPerDay),
   autoRelease: d.policy.autoRelease,
 });
+
+/** The edits not yet saved, kept per project like an unsent chat message (and forgotten at sign-out). */
+const draftKey = (id: string) => `project:${id}`;
+
+function readDraft(id: string): Draft | null {
+  try {
+    const raw = draftMemo.get(draftKey(id));
+    const d = raw ? (JSON.parse(raw) as Partial<Draft>) : null;
+    const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === "string");
+    if (
+      !d ||
+      typeof d.repo !== "string" ||
+      !strings(d.checks) ||
+      !strings(d.protectedPaths) ||
+      typeof d.followUpsPerDay !== "string" ||
+      typeof d.autoRelease !== "boolean" ||
+      (d.mode !== "owner-merges" && d.mode !== "direct")
+    )
+      return null;
+    return d as Draft;
+  } catch {
+    return null;
+  }
+}
 
 export class IncProjectPage extends Loader<ProjectDetail> {
   static override properties = {
@@ -61,6 +86,12 @@ export class IncProjectPage extends Loader<ProjectDetail> {
     try {
       const d = await projectsApi.detail(this.projectId);
       this.missing = false;
+      // Edits left unsaved (a reload, another page) come back, unless they are what is saved anyway.
+      if (this.draft === null) {
+        const kept = readDraft(this.projectId);
+        if (kept && JSON.stringify(kept) !== JSON.stringify(fromDetail(d))) this.draft = kept;
+        else draftMemo.set(draftKey(this.projectId), "");
+      }
       return d;
     } catch (e) {
       if ((e as { status?: number }).status === 404) this.missing = true;
@@ -108,6 +139,13 @@ export class IncProjectPage extends Loader<ProjectDetail> {
 
   private edit(d: ProjectDetail, patch: Partial<Draft>) {
     this.draft = { ...this.current(d), ...patch };
+    draftMemo.set(draftKey(d.project.id), JSON.stringify(this.draft));
+    this.note = null;
+  }
+
+  private discard(d: ProjectDetail) {
+    this.draft = null;
+    draftMemo.set(draftKey(d.project.id), "");
     this.note = null;
   }
 
@@ -134,6 +172,7 @@ export class IncProjectPage extends Loader<ProjectDetail> {
         ...(d.project.defaultBranch ? { defaultBranch: d.project.defaultBranch } : {}),
       });
       this.draft = null;
+      draftMemo.set(draftKey(d.project.id), "");
       this.note = { ok: true, text: "Saved" };
       await this.reload();
       refreshNow();
@@ -241,7 +280,12 @@ export class IncProjectPage extends Loader<ProjectDetail> {
           <div class="actions">
             <button class="btn" type="button" ?disabled=${!this.dirty(d) || this.busy === "save"} @click=${() => this.save(d)}>
               ${this.busy === "save" ? "Saving…" : "Save"}</button>
-            ${this.dirty(d) ? html`<span class="hint">Unsaved changes</span>` : ""}
+            ${
+              this.dirty(d)
+                ? html`<span class="hint">Unsaved changes</span>
+                  <button class="btn ghost" type="button" ?disabled=${this.busy === "save"} @click=${() => this.discard(d)}>Discard changes</button>`
+                : ""
+            }
             ${this.note ? html`<span class=${this.note.ok ? "hint" : "error-line"} role=${this.note.ok ? "status" : "alert"}>${this.note.text}</span>` : ""}
           </div>
         </div>

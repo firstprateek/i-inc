@@ -21,6 +21,8 @@ interface Daemon {
   chat?: Record<string, { from: string }[]>;
   /** The latest entry per thread, as /api/chat lists it. */
   last?: Record<string, { from: string } | null>;
+  /** The conversations (the new ones, over AHP: /api/conversations). */
+  conversations?: unknown[];
 }
 
 let requests: string[] = [];
@@ -35,6 +37,7 @@ function serve(d: Daemon = {}) {
     if (url === "/api/github/repos")
       return d.repos === "fail" ? ok({ error: "no github", repos: [] }, 502) : ok({ repos: d.repos ?? [] });
     if (url === "/api/projects") return ok({ projects: d.projects ?? [] });
+    if (url.startsWith("/api/conversations")) return ok({ conversations: d.conversations ?? [] });
     if (url === "/api/employees") return ok({ employees });
     if (url === "/api/chat")
       return ok({
@@ -120,7 +123,13 @@ describe("checklist()", () => {
     expect(github?.actions.slice(0, 2).every((a) => a.external)).toBe(true);
     expect(project?.actions.map((a) => a.href)).toEqual(["#/company/projects"]);
     expect(team?.actions.map((a) => a.href)).toEqual(["#/company/team", "#/company/team/hiring"]);
-    expect(conversation?.actions.map((a) => a.href)).toEqual(["#/conversations/ada"]);
+    expect(conversation?.actions.map((a) => a.href)).toEqual(["#/conversations/new/ada"]);
+    // with no employee known yet, the new-conversation form without one
+    expect(
+      checklist(none)
+        .at(3)
+        ?.actions.map((a) => a.href),
+    ).toEqual(["#/conversations?new=1"]);
     expect(GITHUB_INSTALL_URL).not.toBe(GITHUB_MANAGE_URL);
   });
 
@@ -267,23 +276,35 @@ describe("the Getting started checklist", () => {
     expect(localStorage.getItem(STARTED_KEY)).toBe("1");
   });
 
-  it("sends the Start action to the message field when the conversations are on screen", async () => {
+  it("sends the Start action to the new conversation form, not to the old chat", async () => {
     serve({ repos: [{ fullName: "a/b" }], projects: [{ id: "Duet" }] });
-    const host = document.createElement("div");
-    const chat = document.createElement("inc-chat");
-    chat.attachShadow({ mode: "open" }).innerHTML = "<textarea></textarea>";
-    const el = document.createElement("inc-getting-started") as IncGettingStarted;
-    host.append(el, chat);
-    document.body.append(host);
-    for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0));
-    await el.updateComplete;
-    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    const { el } = await mountList();
     const start = bar(el.shadowRoot as ShadowRoot).action as HTMLAnchorElement;
     expect(text(start)).toBe("Start");
-    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
-    start.dispatchEvent(click);
-    expect(focus).toHaveBeenCalled();
-    expect(click.defaultPrevented).toBe(true);
+    expect(start.getAttribute("href")).toBe("#/conversations/new/ada");
+    // and that address is the new form, where the old chat's addresses are redirected to #/conversations/old/...
+    const { parse } = await import("../src/routes.ts");
+    expect(parse(start.getAttribute("href") ?? "")).toMatchObject({
+      view: "conversations",
+      draft: { employee: "ada" },
+    });
+  });
+
+  it("marks Start a conversation done when a conversation exists, though the old chat is empty", async () => {
+    serve({ conversations: [{ id: "ab12cd34", employeeId: "ada", title: "Hello" }] });
+    const { el } = await mountList();
+    expect((await steps(el)).map((s) => s.title)).not.toContain("Start a conversation");
+    expect(localStorage.getItem(STARTED_KEY)).toBe("1");
+  });
+
+  it("reaches 4/4 and hides itself once a conversation exists", async () => {
+    serve({
+      repos: [{ fullName: "a/b" }],
+      projects: [{ id: "Duet" }],
+      conversations: [{ id: "ab12cd34", employeeId: "ada", title: "Hello" }],
+    });
+    const { el } = await mountList();
+    expect(el.hidden).toBe(true);
   });
 
   it("goes away once all four are done", async () => {

@@ -2,7 +2,7 @@
 // timeline from its event log (spec §6, §10).
 import type { Employee } from "@i-inc/core";
 import { css, html } from "lit";
-import { api, imageRules, refreshNow, type TicketEvent, type TicketView } from "../api.ts";
+import { ApiError, api, imageRules, refreshNow, type TicketEvent, type TicketView } from "../api.ts";
 import { assignees, notStarted, optionLabel, waitingLine } from "../assign.ts";
 import { ImagePicker, imagePickerStyles } from "./image-picker.ts";
 import { Loader } from "./loader.ts";
@@ -25,8 +25,11 @@ export class IncTicket extends Loader<Data> {
     busy: { state: true },
     note: { state: true },
     pick: { state: true },
+    missing: { state: true },
   };
   declare ticketId: string;
+  /** The daemon says there is no such ticket. */
+  declare missing: boolean;
   declare busy: boolean;
   declare note: string;
   /** The employee chosen in "Who should do this?"; empty until the owner picks, then the default shows. */
@@ -50,10 +53,18 @@ export class IncTicket extends Loader<Data> {
     this.busy = false;
     this.note = "";
     this.pick = "";
+    this.missing = false;
   }
 
   protected fetch = async (): Promise<Data> => {
-    const r = await api.ticket(this.ticketId);
+    let r: Awaited<ReturnType<typeof api.ticket>>;
+    try {
+      r = await api.ticket(this.ticketId);
+      this.missing = false;
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) this.missing = true;
+      throw e;
+    }
     if (!notStarted(r.ticket)) return r;
     // The assign card needs the team and the board; the ticket still shows if they don't load.
     const [employees, recent] = await Promise.all([
@@ -81,6 +92,7 @@ export class IncTicket extends Loader<Data> {
     if (changed.has("ticketId") && changed.get("ticketId") !== undefined) {
       this.pick = "";
       this.anchored = false;
+      this.missing = false;
       void this.reload();
     }
     // "Assign…" on a board card opens #/ticket/<id>/assign: bring the card into view and focus it.
@@ -175,6 +187,11 @@ export class IncTicket extends Loader<Data> {
   ];
 
   override render() {
+    if (this.missing) {
+      return html`<section class="card main" role="alert"><h2>There is no ticket #${this.ticketId}</h2>
+        <p class="muted">It may have been removed, or the address is wrong.</p>
+        <div><a class="btn" href="#/work/board">Back to the board</a></div></section>`;
+    }
     if (this.error && !this.data) return html`<p role="alert">${this.error}</p>`;
     if (!this.data) return html`<p class="muted">Loading the ticket…</p>`;
     const { ticket: t, events } = this.data;
