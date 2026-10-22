@@ -50,6 +50,10 @@ export interface TranscriptItem {
 
 /** One agent session on a ticket (contract C4, GET /api/tickets/:id/sessions). */
 export interface TicketSession {
+  /** The session's id: `#/ticket/<ticket>/session/<id>` opens it (T69). Absent from an older daemon. */
+  id?: number;
+  /** Where its live view is (a read-only AHP chat), or null once it was let go of; the transcript below stays. */
+  channel?: { session: string; chat: string } | null;
   stage: string;
   employeeId: string;
   engineId: string;

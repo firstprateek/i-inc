@@ -2287,7 +2287,13 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       async (_, p) => {
         const r = d.tickets.get(p.id ?? "");
         if (!r) return json({ error: "no such ticket" }, 404);
-        return json({ sessions: d.sessions.list(p.id ?? "") });
+        // Each session also says where its live view is (T69, "Open the session"), while it still has one.
+        return json({
+          sessions: d.sessions.list(p.id ?? "").map((s) => {
+            const channel = s.id === undefined ? undefined : d.ticketChannels?.channelFor(p.id ?? "", s.id);
+            return { ...s, channel: channel ?? null };
+          }),
+        });
       },
     ],
 

@@ -314,6 +314,7 @@ export class SessionStore {
 
     return sessions.map(
       (s): TicketSessionTranscript => ({
+        id: s.id,
         stage: s.stage,
         employeeId: s.employee_id,
         engineId: s.engine_id,

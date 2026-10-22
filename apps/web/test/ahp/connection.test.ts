@@ -467,6 +467,31 @@ describe("AhpConnection", () => {
     await until(() => n > before);
   });
 
+  it("keeps a ticket stage's session out of the roster: it is not a conversation (T69)", async () => {
+    const { h, conn } = setup();
+    let n = 0;
+    conn.onRoster(() => n++);
+    conn.start();
+    await until(() => conn.info.status === "open");
+    await tick(20);
+    const host = h.made[0] as NonNullable<(typeof h.made)[number]>;
+    const before = n;
+    host.notify("root/sessionSummaryChanged", {
+      channel: ROOT,
+      session: "ahp-session:/ticket:12",
+      changes: { status: 8 },
+    });
+    host.notify("root/sessionAdded", {
+      channel: ROOT,
+      summary: { resource: "ahp-session:/ticket:13", title: "x" },
+    });
+    host.notify("root/sessionRemoved", { channel: ROOT, session: "ahp-session:/ticket:12" });
+    // a conversation's change right after still gets through, so the ticket ones were not merely late
+    host.notify("root/sessionSummaryChanged", { channel: ROOT, session: SESSION, changes: {} });
+    await until(() => n > before);
+    expect(n).toBe(before + 1);
+  });
+
   it("applies, in order, actions that arrive ahead of the reply to a reconnect", async () => {
     const { h, conn } = setup();
     conn.start();

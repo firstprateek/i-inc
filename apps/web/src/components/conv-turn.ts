@@ -22,12 +22,15 @@ export class IncConvTurn extends LitElement {
     active: { type: Boolean },
     employee: { type: String },
     chat: { type: String },
+    readOnly: { type: Boolean, attribute: "read-only" },
     images: { state: true },
   };
   declare turn: AnyTurn | undefined;
   declare active: boolean;
   declare employee: string;
   declare chat: string;
+  /** A ticket stage being watched (T69): the first message is the stage's brief, and nothing can be retried. */
+  declare readOnly: boolean;
   declare images: Record<string, string>;
   private readonly caches = new Map<string, MarkdownCache>();
 
@@ -36,6 +39,7 @@ export class IncConvTurn extends LitElement {
     this.active = false;
     this.employee = "";
     this.chat = "";
+    this.readOnly = false;
     this.images = {};
   }
 
@@ -48,6 +52,13 @@ export class IncConvTurn extends LitElement {
       .turn { display: flex; flex-direction: column; gap: 12px; padding: 14px 0; min-width: 0; }
       .user { align-self: flex-end; max-width: min(88%, 640px); background: var(--sunken); border: 1px solid var(--line); border-radius: 16px 16px 4px 16px;
         padding: 10px 14px; font-size: 15.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+      details.brief { align-self: stretch; border: 1px solid var(--line); border-radius: 12px; background: var(--sunken); padding: 0 14px; }
+      details.brief summary { cursor: pointer; font: 600 13.5px var(--body); min-height: 44px; display: flex; align-items: center; gap: 8px; list-style: none; color: var(--ink-2); }
+      details.brief summary::-webkit-details-marker { display: none; }
+      details.brief summary::before { content: ""; width: 7px; height: 7px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(-45deg); transition: transform 0.12s; }
+      details.brief[open] summary::before { transform: rotate(45deg); }
+      details.brief summary:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 2px; border-radius: 8px; }
+      details.brief .text { margin: 0 0 12px; font-size: 14px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; }
       .atts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
       .atts img { max-width: 160px; max-height: 120px; border-radius: 8px; border: 1px solid var(--line); object-fit: cover; }
       .atts .file { font: 12px var(--mono); padding: 4px 8px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line); }
@@ -151,7 +162,7 @@ export class IncConvTurn extends LitElement {
         return html`<p class="sys">${visible(typeof p.content === "string" ? p.content : p.content.markdown, true)}</p>`;
       case ResponsePartKind.Error:
         return html`<div class="error" role="alert"><p>${visible(p.error.message, true)}${this.resets(p.error)}</p>
-          ${!this.active ? html`<div><button class="cbtn" type="button" @click=${() => this.retry(turn.message.text)}>Retry</button></div>` : nothing}</div>`;
+          ${!this.active && !this.readOnly ? html`<div><button class="cbtn" type="button" @click=${() => this.retry(turn.message.text)}>Retry</button></div>` : nothing}</div>`;
       default:
         return nothing;
     }
@@ -171,7 +182,11 @@ export class IncConvTurn extends LitElement {
       (p) => p.kind === ResponsePartKind.ToolCall && p.toolCall.status === ("pending-confirmation" as never),
     );
     return html`<article class="turn" aria-label="Turn">
-      <div class="user">${visible(turn.message.text, true)}${this.attachments(turn.message)}</div>
+      ${
+        this.readOnly
+          ? html`<details class="brief"><summary>The brief this stage was given</summary><p class="text">${visible(turn.message.text, true)}</p></details>`
+          : html`<div class="user">${visible(turn.message.text, true)}${this.attachments(turn.message)}</div>`
+      }
       <div class="agent">
         ${parts.map((p, i) => this.renderPart(p, i === parts.length - 1, turn))}
         ${

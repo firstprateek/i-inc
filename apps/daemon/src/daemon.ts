@@ -42,6 +42,7 @@ import {
 } from "@i-inc/core";
 import type { ConversationService } from "./ahp/conversations.ts";
 import { externalTool } from "./ahp/session-host.ts";
+import type { StageFeed, TicketChannels } from "./ahp/ticket-channels.ts";
 import type { BrainFeed } from "./brain-feed.ts";
 import type { BrainHarvest } from "./brain-harvest.ts";
 import type { BrainIndex } from "./brain-index.ts";
@@ -95,6 +96,8 @@ export interface DaemonDeps {
   conversations?: ConversationService;
   /** Shipping a conversation's work as a ticket or a PR (T62b); absent without GitHub. */
   shipping?: Shipping;
+  /** Every stage session as a read-only AHP chat, for "Open the session" (T69); absent in the few places that build deps by hand. */
+  ticketChannels?: TicketChannels;
 }
 
 /** What the daemon asks of storage when it decides to stop a machine (storage.ts, T52). */
@@ -426,8 +429,40 @@ export class Daemon {
         if (harvest && ticketFromOutside(req.ticket))
           harvest.noteExternal(ticketSource, "the ticket comes from a GitHub issue");
         let textCount = 0;
+        // The stage as a read-only AHP chat (T69), watchable live. It never fails a stage: whatever it hits, it stops.
+        let view: StageFeed | undefined;
+        if (sessionId !== null) {
+          try {
+            view = this.d.ticketChannels?.begin({
+              ticketId: req.ticket.id,
+              ticketTitle: req.ticket.title,
+              stage: req.stage,
+              sessionId,
+              employeeId: req.employee.id,
+              engineId: req.engine.id,
+              model: req.engine.model,
+              brief: req.brief,
+              startedAt: clock.now(),
+            });
+          } catch (err) {
+            this.d.log?.(`ticket session ${sessionId}: no live view: ${err}`);
+          }
+        }
+        const origOnAgentUpdate = req.onAgentUpdate;
+        const origOnAgentUsage = req.onAgentUsage;
+        if (view) {
+          req.onAgentUpdate = (u) => {
+            view.update(u);
+            origOnAgentUpdate?.(u);
+          };
+          req.onAgentUsage = (u) => {
+            view.usage(u);
+            origOnAgentUsage?.(u);
+          };
+        }
         const origOnTranscriptItem = req.onTranscriptItem;
         req.onTranscriptItem = (item) => {
+          view?.item(item);
           if (item.kind === "text") textCount++;
           if (harvest && item.kind === "tool" && item.title && externalTool.test(item.title)) {
             harvest.noteExternal(ticketSource, "a web fetch");
@@ -474,7 +509,13 @@ export class Daemon {
               console.error("[sessions] recordItem failed:", err);
             }
           }
+          view?.end(outcome);
           return outcome;
+        } catch (err) {
+          view?.end(
+            err instanceof ShuttingDown ? { kind: "stopping" } : { kind: "crashed", reason: String(err) },
+          );
+          throw err;
         } finally {
           if (sessionId !== null) {
             try {

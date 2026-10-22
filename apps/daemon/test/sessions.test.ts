@@ -118,6 +118,7 @@ describe("SessionStore (Contract C4)", () => {
 
     // Order is newest last
     expect(list[0]).toEqual({
+      id: expect.any(Number),
       stage: "plan",
       employeeId: "ada",
       engineId: "opus",

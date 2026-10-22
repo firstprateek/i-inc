@@ -14,6 +14,7 @@ import { type AgentBackend, NoAgentBackend } from "./ahp/backend.ts";
 import { ConversationPush, type ConversationPushOptions } from "./ahp/conversation-push.ts";
 import { agentsFromRegistry, ConversationService } from "./ahp/conversations.ts";
 import { AhpHost, type TransportLimits } from "./ahp/host.ts";
+import { TicketChannels } from "./ahp/ticket-channels.ts";
 import { AhpTransport } from "./ahp/transport.ts";
 import { type ApiOptions, createApi } from "./api.ts";
 import { same } from "./auth.ts";
@@ -219,6 +220,14 @@ export async function createApp(o: AppOptions) {
   };
   const conversations = new ConversationService(db, host, registry, o.clock);
   deps.conversations = conversations;
+  // Every ticket stage's session as a read-only chat of the same host, for "Open the session" (T69).
+  const ticketChannels = new TicketChannels({
+    host,
+    db,
+    now: () => o.clock.now(),
+    ...(o.log ? { log: o.log } : {}),
+  });
+  deps.ticketChannels = ticketChannels;
   // A permission or a question nobody is looking at becomes a push that opens the card (T65).
   const conversationPush = new ConversationPush({
     host,
@@ -285,8 +294,10 @@ export async function createApp(o: AppOptions) {
     // A copy a ticket is working in is not cleaned away, archived or not.
     archivedConversations: () => conversations.forCleanup().filter((c) => !deps.shipping?.holds(c.id)),
     copiesGone: (ids) => conversations.copiesGone(ids),
+    sweepTicketSessions: (endedBefore) => ticketChannels.sweep({ endedBefore }),
     footprint: () => ({
       ...daemon.footprint(),
+      ticketFeeds: ticketChannels.footprint().feeds,
       ...(ops.footprint ? ops.footprint() : {}),
     }),
   });
@@ -342,6 +353,6 @@ export async function createApp(o: AppOptions) {
     live,
     storage,
     deploys,
-    ahp: { host, transport, conversations, backend, push: conversationPush },
+    ahp: { host, transport, conversations, backend, push: conversationPush, tickets: ticketChannels },
   };
 }

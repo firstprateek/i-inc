@@ -416,6 +416,31 @@ answer it when it asks. The screen is the web app's AHP client (`apps/web/src/ah
   agent and a fake Exec (`I_INC_HOME=<scratch dir> PORT=7611 bun apps/daemon/test/ahp/e2e-server.ts`, after building
   `apps/web`). Prompts starting `slow`, `hang`, `markdown`, `burst N` and `longtools` pick what it does.
 
+### Open the session (T69)
+
+On a ticket, each stage under **Sessions** has **Open the session**. It opens `#/ticket/<id>/session/<id>`: the same
+thread view as Conversations, read-only. A running stage shows a live mark and its parts as the agent works; a finished
+one replays from the daemon's store (also after a restart). It has no composer; the context panel (the button in the
+header) lists the plan, the files changed and the usage; Back returns to the ticket; on a phone it is one column.
+
+- **Where it comes from:** `apps/daemon/src/ahp/ticket-channels.ts`. The runner's wrapper in `daemon.ts` makes a feed per
+  stage session; `AcpAgent` passes every ACP update and the prompt's usage through `SessionRequest.onAgentUpdate` and
+  `onAgentUsage`, and the same `acp-mapper` that conversations use makes the chat's parts. A session whose agent doesn't
+  speak ACP is mapped from its transcript items. A feed never fails a stage: if it breaks it stops and the chat is
+  cancelled. `ticket_session_items` is unchanged (the ticket page's transcript still reads it).
+- **Read-only:** the host refuses every client action on these channels (`READ_ONLY_WHY` in `host.ts`), and
+  `createChat`, `disposeChat` and `disposeSession`. Contract C22 ("Ticket sessions") has the channel names, `_meta` and bounds.
+- **Not in the Conversations list:** that list reads `/api/conversations`; the web also ignores the host's roster
+  notifications for `ahp-session:/ticket:` sessions. `listSessions` over AHP does list them (title `#12 Refunds · build`,
+  `_meta.readOnly`).
+- **Retention:** the hourly host maintenance lets go of the chat of a stage session that ended before the transcript
+  `stageViewDays` setting (30 by default, always on, separate from `transcriptCompactDays`) or whose transcript row is gone, and the
+  ticket's session once it has no chat; the transcript stays and the ticket page then says "Only the transcript is kept".
+  A stage's chat is capped at 592 steps (the end, with a count of what was left out and the answer, always shows) and a tool's output at 8 KB.
+- **Trying it:** `node tools/e2e/ticket-session/run.mjs` (`pnpm e2e ticket-session`) runs a ticket's plan stage in three
+  scripted steps, opens its session, watches the parts arrive, reloads, restarts the daemon and replays, then does it on a
+  phone. The server is `apps/daemon/scripts/e2e-session-server.ts`.
+
 ### Push for conversations (T65)
 
 When an agent in a conversation asks for permission (or, once adapters send them, a question) and you are not looking

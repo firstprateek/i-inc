@@ -505,3 +505,40 @@ describe("the agent's modes as config", () => {
     });
   });
 });
+
+describe("locations", () => {
+  const TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+
+  it("keeps a tool call's paths and lines, redacts credentials in them, and bounds them", () => {
+    const { m, out } = mapper();
+    m.update({
+      sessionUpdate: "tool_call",
+      toolCallId: "r1",
+      title: "Read",
+      kind: "read",
+      status: "pending",
+      locations: [
+        { path: "src/a.ts", line: 3, extra: "dropped" },
+        { path: `https://user:${TOKEN}@host/x/${TOKEN}/file.ts` },
+        { path: "x".repeat(2000) },
+        { nope: 1 },
+        ...Array.from({ length: 40 }, (_, i) => ({ path: `f${i}` })),
+      ],
+    });
+    const start = out.find((a) => a.type === "chat/toolCallStart");
+    const locs = start._meta["iinc.locations"] as { path: string; line?: number }[];
+    expect(locs).toHaveLength(20);
+    expect(locs[0]).toEqual({ path: "src/a.ts", line: 3 });
+    expect(JSON.stringify(locs)).not.toContain(TOKEN);
+    expect(locs[1]?.path).toContain("[redacted]");
+    expect(locs[2]?.path.length).toBe(500);
+    m.update({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "r1",
+      status: "completed",
+      locations: [{ path: `/work/${TOKEN}` }],
+    });
+    const done = out.find((a) => a.type === "chat/toolCallComplete");
+    expect(JSON.stringify(done._meta)).not.toContain(TOKEN);
+  });
+});

@@ -57,7 +57,8 @@ export type Route =
   | { view: "work"; tab: WorkTab }
   /** What needs the owner: one top-level page, in no area and with no tab row. */
   | { view: "needs-you" }
-  | { view: "ticket"; id: string }
+  /** `#/ticket/<id>`; with `session`, `#/ticket/<id>/session/<stage session id>`: that stage's session, watched or replayed (T69). */
+  | { view: "ticket"; id: string; session?: string }
   | { view: "team" }
   | { view: "hiring"; id?: string }
   /**
@@ -108,6 +109,9 @@ export function layoutForRoute(route: Route): LayoutKind {
     case "conversations":
     case "settings":
       return "split";
+    case "ticket":
+      // A ticket's session is a thread that owns its scrolling, like a conversation.
+      return route.session ? "split" : "page";
     case "brain":
       return route.changes ? "page" : "split";
     case "team":
@@ -204,7 +208,11 @@ export function redirectFor(hash: string): string | null {
                 : "#/work/board";
         break;
       case "ticket":
-        out = rest[0] ? `#/${tail(v, rest[0], lower(rest[1]) === "assign" ? "assign" : undefined)}` : null;
+        out = rest[0]
+          ? lower(rest[1]) === "session" && rest[2] && STAGE_SESSION.test(rest[2])
+            ? `#/${tail(v, rest[0], "session", rest[2])}`
+            : `#/${tail(v, rest[0], lower(rest[1]) === "assign" ? "assign" : undefined)}`
+          : null;
         break;
       case "company": {
         const a = lower(rest[0]);
@@ -270,6 +278,9 @@ export const draftHash = (employee: string, project: string | null): string =>
 /** A card's id in an address: a tool call's or a question's, which the agent names. Short and plain, or nothing. */
 export const cardParam = (v: string | null): string => (v && /^[\w.:@/+=#~-]{1,200}$/.test(v) ? v : "");
 
+/** A stage session's id in an address (`#/ticket/<id>/session/<id>`): the daemon's row number. */
+export const STAGE_SESSION = /^\d{1,9}$/;
+
 /** A conversation's id in an address. */
 export const CONVERSATION_ID = /^[0-9a-f]{8}$/i;
 
@@ -310,7 +321,10 @@ function parseHash(hash: string): Route {
     case "work":
       return { view: "work", tab: isWorkTab(a) ? a : "board" };
     case "ticket":
-      if (a) return { view: "ticket", id: a };
+      if (a)
+        return b === "session" && c && STAGE_SESSION.test(c)
+          ? { view: "ticket", id: a, session: c }
+          : { view: "ticket", id: a };
       break;
     case "company":
       switch (a) {
@@ -346,8 +360,11 @@ const safeDecode = (s: string) => {
 
 const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
 
-/** The page heading: the area, or the ticket. `short` is for very narrow screens. */
-export function routeName(r: Route): { long: string; short: string } {
+/**
+ * The page heading: the area, or the ticket. `short` is for very narrow screens. A ticket's session is named
+ * "#<ticket> · <stage>" once the view has said which stage it is (`stage`), and "#<ticket>" until then.
+ */
+export function routeName(r: Route, stage?: string): { long: string; short: string } {
   const same = (t: string) => ({ long: t, short: t });
   switch (r.view) {
     case "conversations":
@@ -357,7 +374,11 @@ export function routeName(r: Route): { long: string; short: string } {
     case "needs-you":
       return same("Needs you");
     case "ticket":
-      return r.id ? { long: `Ticket #${r.id}`, short: `#${r.id}` } : same("Ticket");
+      return r.id
+        ? r.session
+          ? { long: `Session of ticket #${r.id}`, short: stage ? `#${r.id} · ${stage}` : `#${r.id}` }
+          : { long: `Ticket #${r.id}`, short: `#${r.id}` }
+        : same("Ticket");
     default:
       return same("Company");
   }
@@ -379,7 +400,7 @@ function titleParts(r: Route): string[] {
     case "needs-you":
       return ["Needs you"];
     case "ticket":
-      return [r.id ? `Ticket #${r.id}` : "Ticket", "Work"];
+      return [...(r.session ? ["Session"] : []), r.id ? `Ticket #${r.id}` : "Ticket", "Work"];
     case "team":
       return ["Team", "Company"];
     case "hiring":

@@ -307,6 +307,13 @@ export class AcpAgent implements Agent {
     rpc.onNotice = (method, params) => {
       if (method !== "session/update") return;
       const u = (params.update ?? {}) as Json;
+      // The read-only live view of the session (T69) hears every update, before the transcript does. A failure
+      // there never reaches the session.
+      try {
+        r.onAgentUpdate?.(u);
+      } catch (err) {
+        this.o.log?.(`session view: couldn't take an update: ${upstreamReason(err)}`);
+      }
       if (u.sessionUpdate === "config_option_update" && Array.isArray(u.configOptions)) {
         liveConfigOptions = u.configOptions as Json[];
       }
@@ -478,6 +485,14 @@ export class AcpAgent implements Agent {
         { timeoutMs: limits.agentIdleMs, idle: true },
       );
       r.signal?.removeEventListener("abort", onAbort);
+      const promptUsage = ((done.result as Json | undefined)?._meta as Json | undefined)?.usage;
+      if (promptUsage && typeof promptUsage === "object") {
+        try {
+          r.onAgentUsage?.(promptUsage as Json);
+        } catch (err) {
+          this.o.log?.(`session view: couldn't take the usage: ${upstreamReason(err)}`);
+        }
+      }
       if (timedOut(done) && !cancelled) {
         // A frozen agent: stop it, and let the switch rules treat the session as stuck.
         rpc.notify("session/cancel", { sessionId });

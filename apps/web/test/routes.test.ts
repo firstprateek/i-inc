@@ -64,6 +64,8 @@ describe("parse", () => {
     ["#/work/nonsense", { view: "work", tab: "board" }],
     ["#/ticket/12", { view: "ticket", id: "12" }],
     ["#/ticket/12/assign", { view: "ticket", id: "12" }],
+    ["#/ticket/12/session/7", { view: "ticket", id: "12", session: "7" }],
+    ["#/ticket/12/session/x", { view: "ticket", id: "12" }],
     ["#/company", { view: "team" }],
     ["#/company/team", { view: "team" }],
     ["#/company/team/hiring", { view: "hiring" }],
@@ -192,6 +194,9 @@ describe("redirectFor: tidying, mistyped and unknown hashes", () => {
     ["#/company/Brain/Changes", "#/company/brain/changes"],
     ["#/company/whatever", "#/company/team"],
     ["#/Ticket/12/Assign", "#/ticket/12/assign"],
+    ["#/Ticket/12/Session/7", "#/ticket/12/session/7"],
+    ["#/ticket/12/session/7?from=push", "#/ticket/12/session/7"],
+    ["#/ticket/12/session/nope", "#/ticket/12"],
     ["#/ticket/12?from=push", "#/ticket/12"],
     ["#/Conversations/ada/", "#/conversations/old/ada"],
     ["#/Conversations/AB12CD34", "#/conversations/ab12cd34"],
@@ -314,6 +319,7 @@ describe("the route layout language", () => {
     ["needs-you", "page"],
     ["work/releases", "page"],
     ["ticket/12", "page"],
+    ["ticket/12/session/7", "split"],
     ["company/team/hiring", "page"],
     ["company/team/hiring/ada", "page"],
     ["company/projects", "page"],
@@ -366,6 +372,9 @@ describe("the route layout language", () => {
     expect(layoutForRoute(parse("#/needs-you"))).toBe("page");
     expect(layoutForRoute(parse("#/board"))).toBe("wide");
     expect(routeName(parse("#/chat/ada")).long).toBe("Conversations");
+    const session = parse("#/ticket/12/session/7");
+    expect(routeName(session).short).toBe("#12");
+    expect(routeName(session, "build").short).toBe("#12 · build");
   });
 
   it("keeps the selected frame around offline, loading, and error content", async () => {

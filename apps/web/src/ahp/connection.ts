@@ -115,6 +115,10 @@ const frame = (fn: () => void): (() => void) => {
 const MAX_CONFIRMATIONS = 500;
 const MAX_CONTENT = 120;
 
+/** A ticket stage's session ("Open the session", T69): read-only, and kept out of the conversations' roster. */
+export const isTicketSession = (uri: string | undefined): boolean =>
+  typeof uri === "string" && uri.startsWith("ahp-session:/ticket:");
+
 export class AhpConnection {
   readonly clientId: string;
   private readonly o: ConnectionOptions;
@@ -528,10 +532,15 @@ export class AhpConnection {
             break;
           case "sessionAdded":
           case "sessionRemoved":
-          case "sessionSummaryChanged":
+          case "sessionSummaryChanged": {
+            // A ticket stage's session (T69) is not a conversation: it starts, ends and is let go of without the
+            // lists of conversations or the Needs you count having anything to learn from it.
+            const p = event.params as unknown as { session?: string; summary?: { resource?: string } };
+            if (isTicketSession(p.session ?? p.summary?.resource)) break;
             this.rosterChanged = true;
             this.scheduleFlush();
             break;
+          }
           default:
             break;
         }

@@ -97,6 +97,11 @@ export interface StorageDeps {
     /** The machine the copy was made in, when recorded: it outlives a team change or an employee leaving. */
     machine?: string | null;
   }[];
+  /**
+   * Lets go of the live views (read-only AHP chats, T69) of stage sessions that ended before this time (`stageViewDays`),
+   * and of those whose transcript is gone. The transcripts stay. Absent in tests that have no host.
+   */
+  sweepTicketSessions?: (endedBefore: number) => Promise<{ chats: number; sessions: number }>;
   /** Told which archived conversations' copies a real pass found gone (removed now, or not there): their tombstones can go in time. */
   copiesGone?: (ids: Id[]) => void;
   /** Ask a machine to hand freed blocks back to the host. */
@@ -169,6 +174,8 @@ export interface HostMaintenance {
   at: number;
   skipped?: string;
   transcripts: { tickets: number; sessions: number; itemsRemoved: number };
+  /** Live views of stage sessions let go of (T69): the read-only chats behind "Open the session". */
+  ticketViews?: { chats: number; sessions: number };
   vacuum: { ran: boolean; reason?: string; freeBytes: number; freePct: number };
   /** The daily copy of the database (`VACUUM INTO`): its name when one was made today, else why not. */
   backup?: { made: string } | { skipped: string };
@@ -734,6 +741,11 @@ export class Storage {
         const r = compactTranscripts(this.d.db, old, settings.transcriptKeepItems, now, dryRun);
         out.transcripts = { tickets: old.length, sessions: r.sessions, itemsRemoved: r.itemsRemoved };
       });
+      await step("ticket sessions", async () => {
+        if (dryRun || !this.d.sweepTicketSessions) return;
+        // Its own window, always on: the transcript's compaction may be off, and the views would then never go.
+        out.ticketViews = await this.d.sweepTicketSessions(now - settings.stageViewDays * DAY);
+      });
       await step("vacuum", () => {
         const r = vacuumIfNeeded(this.d.db, {
           freePct: settings.vacuumFreePct,
@@ -795,6 +807,7 @@ export class Storage {
       this.write("host", { at: now, gcAt: this.lastGcAt, result: out });
       const bits = [
         out.transcripts.itemsRemoved ? `compacted ${out.transcripts.itemsRemoved} transcript items` : "",
+        out.ticketViews?.chats ? `let go of ${out.ticketViews.chats} stage session views` : "",
         out.backup && "made" in out.backup ? `copied the database to ${out.backup.made}` : "",
         out.vacuum.ran ? "vacuumed the database" : "",
         out.logs.length ? `rotated ${out.logs.map((l) => l.file).join(", ")}` : "",

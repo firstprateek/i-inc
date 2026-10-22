@@ -3,8 +3,8 @@
 Status: approved 2026-10-20. Corrected by the AHP spike ([ahp-spike.md](ahp-spike.md)): AHP is 1.0, not pre-1.0, and
 `serverSeq` is one counter for the whole host. The host core, the action store, the `/ahp` transport and the
 conversations table and REST routes are built (T59a, contract C22 in [coord.md](../coord.md)), and so are the
-session host and the ACP mapper (T59b: `apps/daemon/src/ahp/session-host.ts`, `acp-mapper.ts`). Tickets still run
-on their own path, with their transcripts as before; moving their stages onto the host is a follow-up. The
+session host and the ACP mapper (T59b: `apps/daemon/src/ahp/session-host.ts`, `acp-mapper.ts`). Ticket stages are on the
+host too (T69, below): each stage's session is a read-only chat, and `ticket_session_items` stays the record. The
 Conversations screen is T60.
 
 ## Goal
@@ -96,8 +96,9 @@ Pieces in the daemon:
 3. **State store.** Every channel's actions are appended to SQLite with their host-wide `serverSeq`
    (`ahp_actions`), with periodic snapshots (`ahp_snapshots`), so any client can replay and a restart
    rebuilds the state. The log is pruned behind snapshots (by age and by count), tool output is
-   redacted and capped before it is kept, and big attachments live in content blobs. Ticket transcripts
-   move onto the same store later (replacing `ticket_session_items`), so ticket stages become watchable live.
+   redacted and capped before it is kept, and big attachments live in content blobs. Ticket stages are on the
+   same store (T69): each stage session is a read-only chat, watchable live and replayable. `ticket_session_items`
+   stays the historical record the ticket page reads; it is not replaced.
 4. **Transport.** A WebSocket endpoint (`/ahp`) on the daemon's own port, behind the same login as the
    rest of the API (cookie or bearer, plus the protocol's `authenticate` when enabled), with the Host and
    Origin checks, keepalive pings, a frame size limit and a slow-consumer limit.
@@ -137,6 +138,19 @@ The spike (T55, [ahp-spike.md](ahp-spike.md)) answered the open questions:
   keep agent-specific code in the mapper.
 - Whether VS Code's Agents window can attach to an i.inc host over the tailnet is plausible (a
   `chat.remoteAgentHosts` setting) but unverified; it is an acceptance test for later, not a design driver.
+
+Open the session (T69, contract C22 "Ticket sessions"):
+- **One read-only chat per stage session.** `AcpAgent.run` feeds every ACP update, through the same mapper, into a chat
+  `ahp-chat:/stage:<session id>` of a read-only session `ahp-session:/ticket:<ticket id>`. The turn is the stage: the
+  brief (cut) is the user message and the agent's work streams in as parts. Clients cannot act on these channels; the
+  stage keeps its own permission handling. Agents that do not speak ACP are mapped from their transcript items.
+- **On the ticket page,** each stage in Sessions has **Open the session**, which opens `#/ticket/<id>/session/<id>`: the
+  conversation thread, read-only ("Watching #12 · build", a live mark while it runs, no composer), with the context
+  panel (plan, files changed, usage). Back returns to the ticket; on a phone it is one column and the panel a sheet. A
+  live stage updates as it works; a finished one replays from the store, also after a restart.
+- **Limits.** The live view of a stage that ended before `stageViewDays` (30 by default) is let
+  go of with the hourly maintenance; the transcript stays. Everything else is the host's existing eviction, caps and
+  redaction.
 
 ## Agents and the daemon's end
 
@@ -222,7 +236,7 @@ shapes against a real adapter on the mini first.
 2. Host core, state store and transport (T59a); session host and event mapper (T59b); then ticket
    stages moved onto them.
 3. The Conversations screen.
-4. "Make this a ticket" and "Open the session" between conversations and tickets.
+4. "Make this a ticket" (done, T62b) and "Open the session" (done, T69) between conversations and tickets.
 5. Push notifications for "Needs you" cards; then the phone layout.
 
 ## Risks
