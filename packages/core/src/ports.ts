@@ -90,6 +90,11 @@ export interface MachineProvider {
   ensureUp(employeeId: Id): Promise<void>;
   /** Stops a machine whose employee has nothing running (spec §12: memory returns only on restart). */
   stop?(employeeId: Id): Promise<void>;
+  /**
+   * At startup: of these employees, those whose machine an earlier daemon left running. They are
+   * recorded as up, so `stop` can stop them once nothing uses them (a restart forgets what it started).
+   */
+  adopt?(employeeIds: Id[]): Promise<Id[]>;
   /** Delivers an OAuth callback URL into a team's sandbox (e.g. Antigravity sign-in). */
   deliverCallback?(teamId: Id, url: string): Promise<void>;
   /** Checks sandbox VM state and sign-ins for a team. */

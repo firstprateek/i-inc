@@ -71,6 +71,11 @@ export class FakeMachines implements MachineProvider {
   async stop(employeeId: Id): Promise<void> {
     this.stopped.push(employeeId);
   }
+  /** Employees whose machine an earlier daemon left running: what `adopt` reports at startup. */
+  readonly leftRunning: Id[] = [];
+  async adopt(employeeIds: Id[]): Promise<Id[]> {
+    return employeeIds.filter((id) => this.leftRunning.includes(id));
+  }
   async deliverCallback(teamId: Id, url: string): Promise<void> {
     this.callbacks.push({ teamId, url });
   }

@@ -194,6 +194,23 @@ export class Daemon {
   /** Employees whose machines are up, as far as this daemon knows. */
   private readonly awake = new Set<Id>();
 
+  /** `ensureUp` calls in flight, by employee: their machine must not be stopped under them. */
+  private readonly starting = new Map<Id, number>();
+
+  /**
+   * At startup: employees whose machines an earlier daemon left running are recorded as awake (and in
+   * the machine provider), so the idle sweep stops them once nothing uses them. Without this a machine
+   * stays up until work happens to use it, because a new daemon knows nothing about what it didn't start.
+   */
+  async adoptRunning(): Promise<Id[]> {
+    const adopt = this.d.machines.adopt;
+    if (!adopt) return [];
+    const ids = this.d.registry.employees().map((e) => e.id);
+    const adopted = await adopt.call(this.d.machines, ids);
+    for (const id of adopted) this.awake.add(id);
+    return adopted;
+  }
+
   /** Set by createApp once storage exists: cleaning runs while a machine is up and idle. */
   storage?: StorageHooks;
 
@@ -309,29 +326,40 @@ export class Daemon {
     const sandboxFault = m.sandboxFault;
     const signedIn = m.signedIn;
     const retrySandbox = m.retrySandbox;
+    const startMachine = async (id: Id) => {
+      // A sandbox being cleaned takes no new work until it is done (storage.ts); this waits a few
+      // minutes, shows why on the employee's tickets, and only then gives up with a reason.
+      const storage = this.storage;
+      const machine = storage?.machineOf(id);
+      if (storage && machine && storage.holding(machine)) {
+        this.holds.set(id, "its sandbox is being cleaned up and starts again in a moment");
+        try {
+          if (!(await storage.untilFree(machine, 5 * 60_000))) {
+            throw new StartupError(
+              "its sandbox is still being cleaned up, trying again shortly",
+              clock.now() + 60_000,
+            );
+          }
+        } finally {
+          this.holds.delete(id);
+        }
+      }
+      await m.ensureUp(id);
+      this.awake.add(id);
+      // A stage that starts right now must not find a stale "the machine is down" in the brain feed.
+      this.d.brainFeed?.noteMachineUp(id);
+    };
     const machines: MachineProvider = {
       ensureUp: async (id: Id) => {
-        // A sandbox being cleaned takes no new work until it is done (storage.ts); this waits a few
-        // minutes, shows why on the employee's tickets, and only then gives up with a reason.
-        const storage = this.storage;
-        const machine = storage?.machineOf(id);
-        if (storage && machine && storage.holding(machine)) {
-          this.holds.set(id, "its sandbox is being cleaned up and starts again in a moment");
-          try {
-            if (!(await storage.untilFree(machine, 5 * 60_000))) {
-              throw new StartupError(
-                "its sandbox is still being cleaned up, trying again shortly",
-                clock.now() + 60_000,
-              );
-            }
-          } finally {
-            this.holds.delete(id);
-          }
+        // Counted from the first moment, so the idle sweep never stops the machine under a start.
+        this.starting.set(id, (this.starting.get(id) ?? 0) + 1);
+        try {
+          await startMachine(id);
+        } finally {
+          const left = (this.starting.get(id) ?? 1) - 1;
+          if (left > 0) this.starting.set(id, left);
+          else this.starting.delete(id);
         }
-        await m.ensureUp(id);
-        this.awake.add(id);
-        // A stage that starts right now must not find a stale "the machine is down" in the brain feed.
-        this.d.brainFeed?.noteMachineUp(id);
       },
       ...(stop ? { stop: (id) => stop.call(m, id) } : {}),
       ...(deliverCallback ? { deliverCallback: (team, url) => deliverCallback.call(m, team, url) } : {}),
@@ -989,6 +1017,8 @@ export class Daemon {
       if (busy.has(id) || inSession.has(id)) continue;
       const machine = storage?.machineOf(id);
       if (machine && this.machineHooks.some((h) => h(machine))) continue;
+      // `busy` is from the start of the pass, and earlier iterations awaited stops: look again.
+      if (await this.inUseNow(id)) continue;
       if (storage && machine && !inUse.has(machine)) {
         if (storage.holding(machine)) continue;
         if (storage.due(machine)) {
@@ -996,6 +1026,9 @@ export class Daemon {
           continue;
         }
       }
+      // Nothing between this look and the stop call waits (the machine provider queues the stop behind
+      // any boot already under way, and a start that comes later queues behind the stop).
+      if (await this.inUseNow(id)) continue;
       this.awake.delete(id);
       try {
         await this.d.machines.stop(id);
@@ -1003,6 +1036,21 @@ export class Daemon {
         this.d.log?.(`machine for ${id} didn't stop: ${String(e)}`);
       }
     }
+  }
+
+  /**
+   * Whether an employee is using their machine right now, from live state rather than the pass's
+   * snapshot: a machine start in flight, a session, or a running ticket they build or help with.
+   */
+  private async inUseNow(id: Id): Promise<boolean> {
+    for (const ticketId of this.running.keys()) {
+      const record = this.d.tickets.get(ticketId);
+      const state = await this.state(ticketId);
+      if (record && (state.assignee ?? record.ticket.assignee) === id) return true;
+      if (Object.values(state.helpers).some((h) => h === id)) return true;
+    }
+    // Last, and with nothing awaited after it: the caller stops the machine straight away.
+    return this.starting.has(id) || [...this.sessions.values()].some((x) => x.employeeId === id);
   }
 
   /** The handbook, and a brain for everyone who works here (hiring makes one; this covers the rest). */
