@@ -453,6 +453,10 @@ describe("host maintenance", () => {
     const report = await storage.report();
     expect(report.host.lastMaintenance?.logs).toHaveLength(1);
     expect(report.host.logs.files).toBe(2);
-    expect(report.host.backups.count).toBe(1);
+    // The one left over from before, and the daily copy this run made.
+    expect(real.backup).toMatchObject({
+      made: expect.stringMatching(/^i-inc\.db\.autobak-\d{4}-\d{2}-\d{2}$/),
+    });
+    expect(report.host.backups.count).toBe(2);
   });
 });

@@ -23,7 +23,7 @@ import { StartupError } from "@i-inc/core";
 import { describeMs, guardStdin } from "./proc.ts";
 import type { Reap } from "./reaper.ts";
 import type { AccountRateLimit } from "./registry.ts";
-import { capText } from "./sessions.ts";
+import { capText, safeReason } from "./sessions.ts";
 import { defaultTimeoutsMs, type TimeoutsMs } from "./timeouts.ts";
 
 type Json = Record<string, unknown>;
@@ -557,7 +557,8 @@ export function locationPaths(locations: unknown): string[] {
 const timedOut = (m: Json): boolean => (m.error as Json | undefined)?.code === ACP_TIMED_OUT;
 
 function stuck(reason: string, startup?: boolean): SessionOutcome {
-  return { kind: "stuck", reason, ...(startup ? { startup: true } : {}) };
+  // What the server or the agent said goes into the ticket's log and the API: redacted and cut.
+  return { kind: "stuck", reason: safeReason(reason), ...(startup ? { startup: true } : {}) };
 }
 
 function message(e: unknown): string {
@@ -636,7 +637,7 @@ class Rpc {
     createInterface({ input: p.stdout }).on("line", (line) => this.receive(line));
     createInterface({ input: p.stderr }).on("line", (line) => {
       // Sign-in links and crashes show here; tokens don't (credentials go in by environment).
-      if (/error|https:\/\//i.test(line)) this.log?.(`acp stderr: ${line.slice(0, 300)}`);
+      if (/error|https:\/\//i.test(line)) this.log?.(`acp stderr: ${safeReason(line, 300)}`);
     });
     // A write after the agent has exited is EPIPE, which with no listener ends the daemon.
     guardStdin(p.stdin, (err) => {

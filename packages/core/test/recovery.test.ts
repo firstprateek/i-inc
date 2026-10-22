@@ -168,3 +168,66 @@ describe("2.5 a retried ticket does not build in a folder cleanup emptied", () =
     expect(workspace.looked).toEqual([]);
   });
 });
+
+describe("2.8 paired events are one append", () => {
+  /** What each append to the log held, by event types. */
+  function batches(p: ReturnType<typeof ports>) {
+    const out: string[][] = [];
+    const append = p.store.append.bind(p.store);
+    p.store.append = async (id, events) => {
+      out.push(events.map((e) => e.type));
+      return append(id, events);
+    };
+    return out;
+  }
+  const together = (out: string[][], a: string, b: string) =>
+    out.some((batch) => batch.includes(a) && batch.includes(b));
+
+  it("a green check run, a passing proof and an approving review end their stage in the same append", async () => {
+    const p = ports();
+    const out = batches(p);
+    expect((await runTicket(p, refundsTicket())).status).toBe("ready");
+    expect(together(out, "checks-ran", "stage-finished")).toBe(true);
+    expect(together(out, "proof", "stage-finished")).toBe(true);
+    expect(together(out, "review-verdict", "stage-finished")).toBe(true);
+  });
+
+  it("green CI on a pushed commit ends the gates stage in the same append", async () => {
+    const p = direct(ports());
+    p.harness.gates.push({ ok: true, pushed: sha(1) });
+    const out = batches(p);
+    expect((await runTicket(p, low())).status).toBe("done");
+    expect(together(out, "ci-green", "stage-finished")).toBe(true);
+  });
+
+  it("the owner siding with the reviewer: the fix and the end of the review are one append", async () => {
+    const p = ports();
+    p.agent.on(
+      { duty: "review" },
+      {
+        kind: "done",
+        output: JSON.stringify({
+          approved: false,
+          findings: [{ severity: "blocking", where: "a", text: "b" }],
+        }),
+      },
+      {
+        kind: "done",
+        output: JSON.stringify({
+          approved: false,
+          findings: [{ severity: "blocking", where: "a", text: "b" }],
+        }),
+      },
+    );
+    p.agent.on(
+      { stage: "review", duty: "build" },
+      { kind: "done", output: JSON.stringify({ disputed: "no" }) },
+      { kind: "done", output: JSON.stringify({ disputed: "no" }) },
+    );
+    expect((await runTicket(p, refundsTicket())).status).toBe("needs-you");
+    const out = batches(p);
+    await answer(p, "42", "reviewer");
+    await runTicket(p, refundsTicket());
+    expect(together(out, "addressed", "stage-finished")).toBe(true);
+  });
+});

@@ -117,6 +117,19 @@ export function redactSecrets(text: string): string {
 
 export { redactSecrets as redact };
 
+/**
+ * Text an agent or its server wrote, made fit for a reason the owner reads, the API serves and a log
+ * keeps (`failed` and `stuck` reasons, stderr lines): control characters become spaces, anything that
+ * looks like a credential is redacted, and it stops at `max` characters. Redacting comes before the cut,
+ * so a token can't survive by being split at the limit.
+ */
+export function safeReason(text: string, max = 500): string {
+  const clean = redactSecrets(text.slice(0, 8192).replace(/\p{Cc}/gu, " "))
+    .replace(/\s+/g, " ")
+    .trim();
+  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
+}
+
 interface ActiveSession {
   seq: number;
   count: number;

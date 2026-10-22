@@ -291,8 +291,11 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
       return;
     }
     const result = await c.p.harness.runChecks(c.ticket);
-    await c.emit({ type: "checks-ran", at: c.p.clock.now(), green: result.green, failures: result.failures });
-    if (result.green) await c.emit(finished(c, "checks"));
+    // One append, so a stop between the result and the stage's end can't leave a green run unrecorded as done.
+    await c.emit(
+      { type: "checks-ran", at: c.p.clock.now(), green: result.green, failures: result.failures },
+      ...(result.green ? [finished(c, "checks")] : []),
+    );
   },
 
   async prove(c) {
@@ -327,8 +330,10 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
       await c.emit(failed(c, "prove", `the verifier's proof could not be read${quoteOf(out)}`));
       return;
     }
-    await c.emit({ type: "proof", at: c.p.clock.now(), items });
-    if (items.every((i) => i.pass)) await c.emit(finished(c, "prove"));
+    await c.emit(
+      { type: "proof", at: c.p.clock.now(), items },
+      ...(items.every((i) => i.pass) ? [finished(c, "prove")] : []),
+    );
   },
 
   async review(c) {
@@ -344,7 +349,11 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
           "The owner sided with the reviewer. Fix the findings.",
         );
         if (out === null) return;
-        await c.emit({ type: "addressed", at: c.p.clock.now(), round: r.round, disputed: null });
+        await c.emit(
+          { type: "addressed", at: c.p.clock.now(), round: r.round, disputed: null },
+          finished(c, "review", `settled by the owner: ${c.s.lastAnswer.answer}`),
+        );
+        return;
       }
       await c.emit(finished(c, "review", `settled by the owner: ${c.s.lastAnswer.answer}`));
       return;
@@ -387,15 +396,17 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
         await c.emit(failed(c, "review", `the review could not be read${quoteOf(out)}`));
         return;
       }
-      await c.emit({
-        type: "review-verdict",
-        at: c.p.clock.now(),
-        reviewerId: reviewer.id,
-        round: r.round + 1,
-        approved: verdict.approved,
-        findings: verdict.findings,
-      });
-      if (verdict.approved) await c.emit(finished(c, "review"));
+      await c.emit(
+        {
+          type: "review-verdict",
+          at: c.p.clock.now(),
+          reviewerId: reviewer.id,
+          round: r.round + 1,
+          approved: verdict.approved,
+          findings: verdict.findings,
+        },
+        ...(verdict.approved ? [finished(c, "review")] : []),
+      );
       return;
     }
 
@@ -677,7 +688,8 @@ async function directGates(c: Step): Promise<void> {
       await c.emit({ type: "main-red", at: now, sha, reason: ci.reason });
       return;
     }
-    await c.emit({ type: "ci-green", at: now, sha });
+    await c.emit({ type: "ci-green", at: now, sha }, finished(c, "gates"));
+    return;
   }
   await c.emit(finished(c, "gates"));
 }

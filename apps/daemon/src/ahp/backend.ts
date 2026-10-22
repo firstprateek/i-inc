@@ -19,6 +19,8 @@ export interface AppGate {
     machineOf(employeeId: string): string | undefined;
     holding(machine: string): boolean;
     untilFree(machine: string, maxMs: number): Promise<boolean>;
+    /** Why no new turn should start (the host's disk is nearly full), or null. */
+    lowDisk?(): string | null;
   };
   /** The employee's machine was started for a conversation. */
   awake(employeeId: string): void;

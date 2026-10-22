@@ -52,7 +52,7 @@ import type { LiveEvents } from "./live.ts";
 import type { Proposals } from "./proposals.ts";
 import type { NotificationPayload, PushService } from "./push.ts";
 import type { Registry } from "./registry.ts";
-import { capText, type SessionStore } from "./sessions.ts";
+import { capText, type SessionStore, safeReason } from "./sessions.ts";
 import type { Shipping } from "./ship.ts";
 import type { Storage } from "./storage.ts";
 import type { SqliteEventStore } from "./store.ts";
@@ -105,6 +105,8 @@ export interface StorageHooks {
   /** Resolves true when no cleanup holds the machine, false after `maxMs`. */
   untilFree(machine: string, maxMs: number): Promise<boolean>;
   startClean(machine: string, done: () => void): void;
+  /** Why new work shouldn't start (the host's disk is nearly full), or null. */
+  lowDisk(): string | null;
 }
 
 /** On a ticket the owner accepted from a proposal, so the daily follow-up budget doesn't count it. */
@@ -442,7 +444,11 @@ export class Daemon {
           origOnTranscriptItem?.(item);
         };
         try {
-          const outcome = await this.d.agent.run(req);
+          let outcome = await this.d.agent.run(req);
+          // Whatever agent it was, its words reach the log and the API only redacted and cut.
+          if (outcome.kind === "stuck" || outcome.kind === "interrupted") {
+            outcome = { ...outcome, reason: safeReason(outcome.reason) };
+          }
           if (textCount === 0 && sessionId !== null) {
             try {
               if (outcome.kind === "done" && outcome.output) {
@@ -710,7 +716,14 @@ export class Daemon {
     }
     this.waitingUntil = { ...(plan.resets ?? {}), ...sandboxWaitingUntil };
 
+    // A nearly full disk loses the event log's writes: new tickets wait, with the reason on them. Work
+    // already under way, and the reviews and proofs it needs, carry on.
+    const lowDisk = this.storage?.lowDisk();
     for (const start of plan.starts) {
+      if (lowDisk && start.as === "build") {
+        this.waiting.push({ ticketId: start.ticketId, reason: lowDisk });
+        continue;
+      }
       try {
         if (start.as !== "build") await assignHelper(this.ports, start.ticketId, start.as, start.employeeId);
         else if (start.by === "standing-order") this.d.tickets.assign(start.ticketId, start.employeeId, now);

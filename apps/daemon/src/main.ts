@@ -104,6 +104,9 @@ const app = demo
       ...(real as NonNullable<typeof real>),
     });
 
+// SQLite's quick integrity check. A failure is logged and pushed to the owner, and the daemon serves on.
+await app.storage.checkIntegrity();
+
 if (!demo) {
   if (!appConfig) log("no GitHub App yet (docs/github-app.md): tickets get no branch or PR");
   if (app.deps.registry.projects().length === 0) {

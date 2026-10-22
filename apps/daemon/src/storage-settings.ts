@@ -28,6 +28,11 @@ export interface StorageSettings {
   vacuumFreePct: number;
   /** Push a warning when a machine's disk is this full (percent). */
   diskWarnPct: number;
+  /**
+   * New tickets and conversation turns don't start while the host has less than this many GB free
+   * (a full disk loses the event log's writes). 0 turns the gate off.
+   */
+  minFreeGb: number;
 }
 
 export const defaultStorageSettings: StorageSettings = {
@@ -42,6 +47,7 @@ export const defaultStorageSettings: StorageSettings = {
   logKeep: 5,
   vacuumFreePct: 20,
   diskWarnPct: 80,
+  minFreeGb: 5,
 };
 
 type Bounds = { min: number; max: number };
@@ -57,6 +63,7 @@ const bounds: Record<Exclude<keyof StorageSettings, "dockerPrune">, Bounds> = {
   logKeep: { min: 1, max: 50 },
   vacuumFreePct: { min: 5, max: 90 },
   diskWarnPct: { min: 50, max: 99 },
+  minFreeGb: { min: 0, max: 1000 },
 };
 
 /** The settings as the owner has them: the defaults with the saved values over them. */

@@ -6,8 +6,9 @@
 // transcripts are compacted, the database is vacuumed when it is mostly free pages, logs rotate and
 // the daemon's own stale backups go (retention.ts). Everything is logged as one line per run, kept
 // as a summary in SQLite, and shown by `GET /api/storage`.
-import { statfsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, statfsSync } from "node:fs";
+import { rename, rm } from "node:fs/promises";
+import { basename, join } from "node:path";
 import { type Clock, type EventStore, fold, type Id } from "@i-inc/core";
 import { imageLimits } from "./api.ts";
 import type { Db } from "./db.ts";
@@ -79,6 +80,8 @@ export interface StorageDeps {
   machineBusy: (machine: string) => Promise<boolean>;
   /** Whether the daemon has work going (a ticket, a conversation turn). */
   hostBusy: () => boolean;
+  /** Free bytes on the disk the database is on, when it isn't `statfs` of the home folder (tests). */
+  freeBytes?: () => number | null;
   /** Whether a ticket is being worked on now. */
   ticketActive: (id: Id) => boolean;
   /** Entry counts of the long-lived structures, and memory, for the report. */
@@ -167,6 +170,8 @@ export interface HostMaintenance {
   skipped?: string;
   transcripts: { tickets: number; sessions: number; itemsRemoved: number };
   vacuum: { ran: boolean; reason?: string; freeBytes: number; freePct: number };
+  /** The daily copy of the database (`VACUUM INTO`): its name when one was made today, else why not. */
+  backup?: { made: string } | { skipped: string };
   logs: RotateResult[];
   backups: { name: string; bytes: number }[];
   gc: string[];
@@ -272,8 +277,100 @@ export class Storage {
     return m;
   }
 
+  /** Remembers a machine's state. A failed write (a full disk) is logged, not thrown: nothing waits on it. */
   private save(machine: string): void {
-    this.write(`machine:${machine}`, this.memoOf(machine));
+    try {
+      this.write(`machine:${machine}`, this.memoOf(machine));
+    } catch (err) {
+      this.log(`couldn't save ${machine}'s state: ${String(err instanceof Error ? err.message : err)}`);
+    }
+  }
+
+  // --- disk space and the database's health ---------------------------------------------------
+
+  /** Free bytes on the disk the database is on, or null when unknown. */
+  hostFreeBytes(): number | null {
+    if (this.d.freeBytes) return this.d.freeBytes();
+    // An in-memory database (tests, a scratch run) has no disk to fill.
+    if (this.d.paths.dbPath === ":memory:") return null;
+    try {
+      const st = statfsSync(this.d.paths.home);
+      return Number(st.bavail) * Number(st.bsize);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Why new tickets and conversation turns shouldn't start now, or null: the host has less free disk
+   * than `minFreeGb`. A full disk makes the event log's writes fail, and a session that just ended loses
+   * its result. Work already under way carries on.
+   */
+  lowDisk(): string | null {
+    const minGb = this.settings().minFreeGb;
+    if (minGb <= 0) return null;
+    const free = this.hostFreeBytes();
+    if (free === null || free >= minGb * GB) return null;
+    return `the Mac mini's disk is nearly full (${sizeText(free)} free, ${minGb} GB needed), so new work waits until there is room`;
+  }
+
+  /**
+   * SQLite's quick integrity check, at startup. A database that fails it is logged loudly and the owner
+   * is pushed, and the daemon keeps serving: the owner decides (there is a daily copy to go back to).
+   * Returns what the check found wrong, empty when it is fine.
+   */
+  async checkIntegrity(): Promise<string[]> {
+    let found: string[];
+    try {
+      found = this.d.db
+        .all<Record<string, unknown>>("PRAGMA quick_check")
+        .map((r) => String(Object.values(r)[0]))
+        .filter((line) => line !== "ok");
+    } catch (err) {
+      found = [`the check itself failed: ${String(err instanceof Error ? err.message : err)}`];
+    }
+    if (found.length === 0) return found;
+    const shown = found.slice(0, 5).join("; ");
+    this.log(`DATABASE INTEGRITY CHECK FAILED (${found.length} problems): ${shown}`);
+    console.error(`[storage] DATABASE INTEGRITY CHECK FAILED: ${shown}`);
+    try {
+      await this.d.push?.send({
+        title: "The database failed its integrity check",
+        body: `${shown.slice(0, 200)}. The daemon is still running; the newest copy is i-inc.db.autobak-<date> in the home folder.`,
+        url: "#/setup/sandboxes",
+        tag: "database-integrity",
+      });
+    } catch (err) {
+      this.log(`couldn't send the integrity push: ${String(err)}`);
+    }
+    return found;
+  }
+
+  /**
+   * A copy of the database once a day (`VACUUM INTO`, which is a consistent snapshot even with the
+   * write-ahead log), at a moment when nothing is running, named i-inc.db.autobak-<YYYY-MM-DD> so the
+   * prune below keeps 30 days of them. Written under another name and renamed, so a copy cut short by a full disk
+   * is never taken for today's.
+   */
+  private async backupDb(now: number): Promise<{ made: string } | { skipped: string }> {
+    const { dbPath, home } = this.d.paths;
+    const name = `${basename(dbPath)}.autobak-${new Date(now).toISOString().slice(0, 10)}`;
+    const target = join(home, name);
+    if (existsSync(target)) return { skipped: "today's copy is there" };
+    if (this.d.hostBusy()) return { skipped: "busy" };
+    const size = (await fileBytes(dbPath)) || dbSpace(this.d.db).totalBytes;
+    const free = this.hostFreeBytes();
+    if (free !== null && free < size * 2) return { skipped: "not enough free disk for a copy" };
+    const tmp = `${target}.partial`;
+    await rm(tmp, { force: true });
+    try {
+      this.d.db.exec(`VACUUM INTO '${tmp.replaceAll("'", "''")}'`);
+      await rename(tmp, target);
+    } catch (err) {
+      await rm(tmp, { force: true }).catch(() => {});
+      throw err;
+    }
+    return { made: name };
   }
 
   private log(msg: string): void {
@@ -668,6 +765,10 @@ export class Storage {
           );
         }
       });
+      await step("backup", async () => {
+        if (dryRun || !this.d.paths.dbPath || this.d.paths.dbPath === ":memory:") return;
+        out.backup = await this.backupDb(now);
+      });
       await step("backups", async () => {
         if (settings.backupMaxAgeDays <= 0) return;
         const r = await pruneBackups(this.d.paths.home, {
@@ -694,6 +795,7 @@ export class Storage {
       this.write("host", { at: now, gcAt: this.lastGcAt, result: out });
       const bits = [
         out.transcripts.itemsRemoved ? `compacted ${out.transcripts.itemsRemoved} transcript items` : "",
+        out.backup && "made" in out.backup ? `copied the database to ${out.backup.made}` : "",
         out.vacuum.ran ? "vacuumed the database" : "",
         out.logs.length ? `rotated ${out.logs.map((l) => l.file).join(", ")}` : "",
         out.backups.length ? `deleted ${out.backups.length} old backups` : "",
