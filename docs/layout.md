@@ -3,7 +3,7 @@
 The web app has three areas, each with its own tabs, plus one top-level page of its own (Needs you), and three route
 templates from `apps/web/src/components/layout.ts`. They are a shared
 layout vocabulary, not per-screen width guesses. The route-to-template map is `layoutForRoute()` in
-`components/app.ts`; authenticated route headings, including loading and offline states, stay in the
+`routes.ts`; authenticated route headings, including loading and offline states, stay in the
 same frame. A failed request never takes a view away: the frame has a `notice` slot above the
 content, where the shell puts the "Can't reach i.inc" banner (`components/offline.ts`) or a "Couldn't
 refresh" notice with a retry, and the view stays mounted with its data and anything typed into it
@@ -170,7 +170,7 @@ constrains its available width without changing hiring-specific markup or behavi
 
 ## Choosing a layout
 
-Centre forms, lists, and readers to keep line lengths and scan paths calm. Keep the board and office
+Centre forms, lists, and readers to keep line lengths and scan paths calm. Keep the board and the Team floor
 Wide: centring their headers while giving columns and the floor up to 1400px solves the competing
 needs better than forcing every view into one width. Do not make a child component's max-width
 silently align its content to the left inside a wider route frame; use `layout-page-band` or
@@ -187,6 +187,6 @@ are exempt from the no-sideways-scroll check.
 The route layout test checks the actual routed frame for every route and separately checks login.
 For visual changes, review 1440x900, 1280x720, 1000x800, 390x844, 320x568, and 844x390 in both themes.
 Also exercise phone tab taps. At wide sizes,
-check Page routes for centred content, check board and office for usable breadth, and check inner
+check Page routes for centred content, check the board and the Team floor for usable breadth, and check inner
 forms (including project protected paths) for clipped controls. At Split sizes, check independently
 scrolling panes, responsive navigation, short-height chat, and the phone tab bar.

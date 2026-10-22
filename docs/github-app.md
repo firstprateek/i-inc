@@ -1,9 +1,11 @@
 # The GitHub App: i.inc's bot identity
 
-Employees push branches and open PRs as a bot, never as you (spec §5). The bot is a GitHub App
-called **i.inc bot**, on your personal account. For each session the daemon uses the App's private key
-to mint a 1-hour token that only works on the ticket's repo (`apps/daemon/src/github.ts`). A
-ruleset on each repo's `main` makes GitHub itself enforce that only you merge.
+Employees' branches and PRs are made by a bot, never as you (spec §5). The bot is a GitHub App
+called **i.inc bot**, on your personal account. The daemon uses the App's private key to mint tokens
+(`apps/daemon/src/github.ts`): a **write** token that exists only in the daemon's memory on the host and makes
+every push, PR and CI read, and a **read-only** token limited to the repos a session works on, which is the
+only GitHub credential a sandbox ever holds (T68, below). A ruleset on each repo's `main` makes GitHub itself
+enforce who may update it.
 
 Setting it up takes about ten minutes in a browser signed in to GitHub. The key goes straight to
 the mini. It never goes into the repo, and neither do the App's ids. `<mini>` below is how you
@@ -39,8 +41,8 @@ Under **Repository permissions**, set these and leave everything else at No acce
 
 | Permission | Access | What the bot does with it |
 | --- | --- | --- |
-| Contents | Read and write | pushes its `inc/…` branches |
-| Pull requests | Read and write | opens draft PRs, writes the report into them, and marks them ready |
+| Contents | Read and write | the daemon, on the host, pushes `inc/…` branches (and `main` in direct mode); sandboxes get a read-only token |
+| Pull requests | Read and write | the daemon opens draft PRs, writes the report into them, and marks them ready |
 | Checks | Read-only | watches CI (stage 8) |
 | Metadata | Read-only | GitHub requires it |
 | Actions | Read-only | reads CI logs |
@@ -179,7 +181,7 @@ It mints one token to look at the repo, never prints it, and revokes it at the e
 
 ## What the daemon does with it
 
-`apps/daemon/src/github.ts` holds the pieces. Real mode (the handoff's next steps) wires them in.
+`apps/daemon/src/github.ts` holds the pieces, and real mode wires them in.
 
 - `readGitHubAppConfig` reads `~/.config/i-inc/github-app.json`, and `readPrivateKey` refuses a key
   that anyone else can read.
@@ -224,11 +226,11 @@ It mints one token to look at the repo, never prints it, and revokes it at the e
   (i.inc)" with `<id>+i-inc-bot[bot]@users.noreply.github.com`, so GitHub shows them as the App's.
 - `PullRequests` opens the draft at stage 1. At stage 9 it writes the report into the body and marks
   the PR ready, which only GraphQL can do.
-- The merge is yours. Squash-merge the PR on GitHub: the ticket shows "Merge on GitHub" (a link to the PR) and
-  "Close without merging", and no Approve while the PR is open. The daemon looks at the open PRs of ready
-  owner-merges tickets about every 5 minutes (longer when GitHub rate limits it) and records `merged` by itself
-  once it sees the PR merged (so auto-release and cleanup follow), or a rejection if the PR was closed without
-  merging. Approve doing the merge with your account (spec §5) is still to come.
+- The merge is yours, and happens on GitHub. A ready owner-merges ticket shows **Merge on GitHub** (a link to
+  the PR) and **Close without merging** (closes the PR, keeps the branch), and no Approve while the PR is open.
+  The daemon looks at the open PRs of such tickets about every 5 minutes (longer when GitHub rate limits it) and
+  records the ticket as merged by itself once it sees the PR merged (so auto-release and clean-up follow), or a
+  rejection if the PR was closed without merging. Approve doing the merge with your account is not built.
 
 Until the App exists, a fine-grained token can stand in, as in M1 step 6 (`FineGrainedToken`).
 Limit it to the repos employees work on, with Contents and Pull requests read and write. It acts

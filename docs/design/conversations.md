@@ -1,6 +1,6 @@
 # Conversations (V1 design)
 
-Status: approved 2026-10-20. Corrected by the AHP spike ([ahp-spike.md](ahp-spike.md)): AHP is 1.0, not pre-1.0, and
+Status: approved 2026-10-20, and built (the host, the screen, push, shipping a conversation's work, and Open the session). Corrected by the AHP spike ([ahp-spike.md](ahp-spike.md)): AHP is 1.0, not pre-1.0, and
 `serverSeq` is one counter for the whole host. The host core, the action store, the `/ahp` transport and the
 conversations table and REST routes are built (T59a, contract C22 in [coord.md](../coord.md)), and so are the
 session host and the ACP mapper (T59b: `apps/daemon/src/ahp/session-host.ts`, `acp-mapper.ts`). Ticket stages are on the
@@ -54,7 +54,8 @@ stream later.
   diff) and the agent's options (Allow once, Always allow, Deny). The first answer from any device
   wins. If you are away, a push notification opens the card on your phone.
 - What stays fixed whatever the mode: the sandbox walls (no home network, no tailnet, no mini),
-  pushes go through the bot, and protected paths (`.github/`, release config) still wait for you.
+  no write credential in the sandbox (every push is made by the daemon on the host, T68), and protected
+  paths (`.github/`, release config, and in the repo the mini runs any host-executed code) still wait for you.
 
 ## Architecture: make the daemon an AHP host
 
@@ -120,8 +121,8 @@ Shipping a conversation's work (T62b, contract C22b in [coord.md](../coord.md)),
   owner-merges ends in a draft PR taken out of draft for the owner; direct ends in a push to main after the review.
   Protected paths still wait for the owner. Uncommitted work is committed first (`--no-verify`, the pipeline's checks
   are the gate), after a scan for credentials: a finding refuses the whole thing and names the files, never the values.
-- **Open a PR** (owner-merges only) skips the pipeline: commit, push as the bot, a draft PR with a generated title and
-  body, and its checks in the context panel. Direct-mode projects have no such button: their way to main is always a
+- **Open a PR** (owner-merges only) skips the pipeline: commit, then the daemon pushes from a verified bundle on the
+  host (the sandbox cannot push), a draft PR with a generated title and body, and its checks in the context panel. Direct-mode projects have no such button: their way to main is always a
   ticket, so it is always reviewed.
 - **One agent in a copy.** While a ticket has the copy, the conversation's agent is stopped and the host refuses
   its turns ("This work is now ticket #N"). A ticket that is waiting for the owner still holds it. When the ticket is
@@ -183,7 +184,7 @@ does. It is worth one look on the mini, in a scratch machine, to see whether clo
 reaches the process (`container machine run -i -n <scratch> -- sleep 1000 < /dev/null`, then
 `ps` in the machine) and whether killing the client does.
 
-## Questions from the agent: a known gap
+## Questions from the agent: a known gap (future work)
 
 The conversation daemon never raises an AHP input request (`session/inputNeeded` only ever lists
 tool confirmations). Checked against the adapters' public documentation, not run: ACP defines
@@ -227,7 +228,7 @@ shapes against a real adapter on the mini first.
   `server_seq` for the whole host) plus `ahp_snapshots(channel, server_seq, state)`.
 - REST: list, create, rename, archive conversations (`/api/conversations`, contract C22). WebSocket
   `/ahp`: everything live.
-- The old chat stays for one release behind "Old chat", then goes. The local helper model stays
+- The old chat is still there, behind "Old chat" in the list, and is meant to go. The local helper model stays
   for small classification jobs only.
 
 ## Build order
@@ -250,5 +251,5 @@ shapes against a real adapter on the mini first.
   account's 5-hour and 7-day meters and warns near the cap.
 - **Bypass mode.** Safe only because of the walls. Keep the walls and redaction; never mount the
   owner's home into a sandbox.
-- **One shared login token.** Fine for one owner on the tailnet. Per-device tokens come with the
-  first non-browser surface.
+- **One owner login.** Fine for one owner on the tailnet. Each login is its own revocable session (T63), and
+  an open AHP socket closes with its session. Per-device tokens come with the first non-browser surface.

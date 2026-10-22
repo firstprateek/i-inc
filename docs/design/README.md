@@ -1,5 +1,10 @@
 # Design
 
+These mockups are the first direction (2026-10), from before the three-area app (Conversations, Work,
+Company). The built screens follow [../layout.md](../layout.md); where a mockup differs, the app wins.
+The design docs here are [conversations.md](conversations.md), [brain.md](brain.md), [v1-plan.md](v1-plan.md)
+and [ahp-spike.md](ahp-spike.md).
+
 The chosen direction, one screen per file. Each is a static HTML mockup at its real size: open it in
 a browser, or run `node tools/ui-check/check.mjs docs/design/<file>.html`. The live canvas with all
 of them (and the first pass's three directions) is the design artifact linked from the PRs.

@@ -1,13 +1,14 @@
 # V1 plan: clarity, conversations, brain, GitHub, automatic deploys
 
-Status: proposal for the owner's review, 2026-10-20. Companion docs:
+Status: approved 2026-10-20 and built through phase 1 (the order in section 8; phase 2 and 3 are not). What is not
+built is listed in the spec's section 16. The text below is the plan as written. Companion docs:
 [conversations.md](conversations.md) and [brain.md](brain.md).
 
 ## The owner's direction (2026-10-20)
 
 The product works but is confusing. V1 is: a clear, consistent app on the laptop browser;
 **Conversations** as an excellent agentic surface; a **Brain** that is an indexed wiki; GitHub
-projects end to end. Then: views for operating agents remotely and the phone, a robust
+projects end to end. Later (future work, not built): views for operating agents remotely and the phone, a robust
 self-improvement loop, agent teams, MCP tools and skills, and other surfaces via AHP.
 
 Decisions: conversations can do anything, including code changes, with permission modes; the
@@ -117,7 +118,7 @@ implementation and independent reviews); the other agents take separate tasks th
 | 1e | GitHub projects flow |
 | 1f | Automatic deploys (the LaunchAgent install waits for the owner's OK on the exact command) |
 | 2 | Remote operation views, phone layout, Feedback button, CI smoke test |
-| 3 | Agent teams (aligned with A2A), MCP tools and skills (discovered via Google's [Agentic Resource Discovery](https://www.heise.de/en/news/Agentic-Resource-Discovery-Search-engine-for-AI-agents-11338833.html), ARD), more AHP surfaces |
+| 3 (future work, not built) | Agent teams (aligned with A2A), MCP tools and skills (discovered via Google's [Agentic Resource Discovery](https://www.heise.de/en/news/Agentic-Resource-Discovery-Search-engine-for-AI-agents-11338833.html), ARD), more AHP surfaces |
 
 ## Glossary of the protocols
 
