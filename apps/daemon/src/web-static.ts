@@ -61,6 +61,32 @@ export function chooseEncoding(header: string | null): Encoding | null {
   return null;
 }
 
+/**
+ * The app shell's Content-Security-Policy (T63). Scripts, workers, fonts and the manifest come from this origin
+ * only; styles may be inline (Lit's fallback and the templates' style attributes); images may be data: or blob:
+ * (a picked or tool-made image); the page may talk to this origin, including the AHP WebSocket (`host` is the
+ * Host the request came to, which the daemon has already checked). Nothing may frame it or submit a form
+ * elsewhere, and no plugin runs.
+ */
+export function contentSecurityPolicy(host: string | null): string {
+  // The Host header is only a hostname and port; anything else would be a way to widen the policy.
+  const sockets = host && /^[A-Za-z0-9.-]+(:\d{1,5})?$/.test(host) ? ` ws://${host} wss://${host}` : "";
+  return [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self'",
+    `connect-src 'self'${sockets}`,
+    "worker-src 'self'",
+    "manifest-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+  ].join("; ");
+}
+
 export const IMMUTABLE = "public, max-age=31536000, immutable";
 export const REVALIDATE = "no-cache";
 
@@ -111,6 +137,13 @@ export function serveWebFrom(root: string): WebServer {
       "cache-control": hashed ? IMMUTABLE : REVALIDATE,
     });
     if (COMPRESSIBLE.has(ext)) headers.set("vary", "Accept-Encoding");
+    // A file is what it says it is (no sniffing a stylesheet into a script), and the document says what it may do.
+    headers.set("x-content-type-options", "nosniff");
+    if (ext === ".html") {
+      headers.set("content-security-policy", contentSecurityPolicy(req.headers.get("host")));
+      headers.set("referrer-policy", "no-referrer");
+      headers.set("x-frame-options", "DENY");
+    }
     // One ETag per file and encoding, so a 304 is never taken for the wrong representation.
     const etag = `"${file.size.toString(36)}-${Math.round(file.mtimeMs).toString(36)}${encoding ? `-${encoding}` : ""}"`;
     headers.set("etag", etag);

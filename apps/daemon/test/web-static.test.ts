@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync } from "node:zlib";
 import { beforeAll, describe, expect, it } from "vitest";
-import { chooseEncoding, serveWebFrom } from "../src/web-static.ts";
+import { chooseEncoding, contentSecurityPolicy, serveWebFrom } from "../src/web-static.ts";
 
 const JS = "export const answer = 42; // padding so it compresses well\n".repeat(200);
 const INDEX = `<!doctype html><html><head><title>i.inc</title></head><body>${"<p>shell</p>".repeat(120)}</body></html>`;
@@ -141,5 +141,61 @@ describe("the shell and everything else", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-encoding")).toBe("br");
     expect(await res.text()).toBe("");
+  });
+});
+
+describe("what the shell may do (T63)", () => {
+  it("sends the app shell a Content-Security-Policy that keeps it to its own origin", async () => {
+    const res = await get("/", { host: "iinc.tail.ts.net" });
+    const csp = res.headers.get("content-security-policy") ?? "";
+    for (const d of [
+      "default-src 'self'",
+      "script-src 'self'",
+      "object-src 'none'",
+      "base-uri 'self'",
+      "form-action 'self'",
+      "frame-ancestors 'none'",
+      "worker-src 'self'",
+      "font-src 'self'",
+    ]) {
+      expect(csp, d).toContain(d);
+    }
+    // No remote script, style or frame; inline script is not allowed (only styles are).
+    expect(csp).not.toMatch(/script-src[^;]*('unsafe-inline'|'unsafe-eval'|https?:|\*)/);
+    expect(csp).not.toMatch(/default-src[^;]*(https?:|\*)/);
+    expect(csp).toContain("style-src 'self' 'unsafe-inline'");
+    expect(csp).toContain("img-src 'self' data: blob:");
+    // The AHP WebSocket is this host, and only this host.
+    expect(csp).toContain("connect-src 'self' ws://iinc.tail.ts.net wss://iinc.tail.ts.net");
+    expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(res.headers.get("x-frame-options")).toBe("DENY");
+  });
+
+  it("gives every file nosniff, and the policy only to documents", async () => {
+    for (const path of [
+      "/",
+      "/sw.js",
+      "/assets/app-abc123.js",
+      "/assets/font-aaa111.woff2",
+      "/manifest.webmanifest",
+    ]) {
+      const res = await get(path);
+      expect(res.headers.get("x-content-type-options"), path).toBe("nosniff");
+    }
+    expect((await get("/assets/app-abc123.js")).headers.get("content-security-policy")).toBeNull();
+    expect((await get("/conversations/deep/link")).headers.get("content-security-policy")).toContain(
+      "default-src 'self'",
+    );
+  });
+
+  it("never lets a Host header widen the policy", () => {
+    for (const evil of ["evil.test; script-src *", "a b", "x:abc", "", "host/../x", "h\nx"]) {
+      const csp = contentSecurityPolicy(evil);
+      expect(csp, evil).toContain("connect-src 'self'");
+      expect(csp, evil).not.toContain("ws://");
+      expect(csp, evil).not.toMatch(/script-src[^;]*(\*|evil)/);
+    }
+    expect(contentSecurityPolicy(null)).not.toContain("ws://");
+    expect(contentSecurityPolicy("127.0.0.1:7420")).toContain("ws://127.0.0.1:7420 wss://127.0.0.1:7420");
   });
 });
