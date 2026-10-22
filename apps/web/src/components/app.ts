@@ -30,6 +30,7 @@ import { base } from "./shared.ts";
 import "./office.ts";
 import "./board.ts";
 import "./ticket.ts";
+import "./ticket-session.ts";
 import "./desk.ts";
 import "./inbox.ts";
 import "./hiring.ts";
@@ -683,7 +684,8 @@ export class IncApp extends LitElement {
     const r = this.route;
     const area = areaOf(r) ?? "needs-you";
     if (r.view === "ticket") {
-      return html`<a slot="subtitle" class="back" href="#/work/board">← Back to Work</a>`;
+      // A session is a thread with its own Back button, and needs the height: no subtitle.
+      return r.session ? "" : html`<a slot="subtitle" class="back" href="#/work/board">← Back to Work</a>`;
     }
     // Conversations needs the height: its heading is one short line, with no subtitle.
     if (r.view === "conversations") return "";
@@ -706,7 +708,9 @@ export class IncApp extends LitElement {
   /** On a phone, a conversation's thread has its own back button and title, so the page heading steps aside. */
   private threadOnPhone(): boolean {
     const r = this.route;
-    return r.view === "conversations" && !r.old && !!(r.id || r.draft) && !!this.phoneQuery?.matches;
+    const thread =
+      (r.view === "conversations" && !r.old && !!(r.id || r.draft)) || (r.view === "ticket" && !!r.session);
+    return thread && !!this.phoneQuery?.matches;
   }
 
   /** The thread's composer has focus on a phone: the keyboard is up, so the tab bar gives its row back. */
@@ -765,7 +769,7 @@ export class IncApp extends LitElement {
         </div>
       </header>
       <main tabindex="-1" @conv-focus=${this.onComposerFocus} @load-state=${this.onLoadState}>
-        <inc-layout .kind=${layoutForRoute(this.route)} ?dense=${this.route.view === "conversations"} ?hide-heading=${this.threadOnPhone()}>
+        <inc-layout .kind=${layoutForRoute(this.route)} ?dense=${this.route.view === "conversations" || (this.route.view === "ticket" && !!this.route.session)} ?hide-heading=${this.threadOnPhone()}>
           <h1 id="view-heading" tabindex="-1" slot="heading">${routeName(this.route).long}</h1>
           ${this.renderHeadExtras()}
           ${this.renderTabs()}
@@ -793,7 +797,9 @@ export class IncApp extends LitElement {
           ? html`<inc-board role="tabpanel" aria-labelledby="tab-board"></inc-board>`
           : html`<inc-desk show="releases" role="tabpanel" aria-labelledby="tab-releases"></inc-desk>`;
       case "ticket":
-        return html`<inc-ticket .ticketId=${r.id}></inc-ticket>`;
+        return r.session
+          ? html`<inc-ticket-session .ticketId=${r.id} .sessionId=${r.session}></inc-ticket-session>`
+          : html`<inc-ticket .ticketId=${r.id}></inc-ticket>`;
       case "team":
         return html`<inc-office show="floor" role="tabpanel" aria-labelledby="tab-team"></inc-office>`;
       case "hiring":

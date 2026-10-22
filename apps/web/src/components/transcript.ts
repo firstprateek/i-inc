@@ -144,6 +144,12 @@ export class IncTranscript extends LitElement {
       .brain { display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
       .brain ul { gap: 2px; }
       .brain a { color: var(--ink); overflow-wrap: anywhere; }
+      .open-session { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 4px; margin-top: 2px; font: 700 14px var(--body); color: var(--ink); text-underline-offset: 3px; }
+      .open-session:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 2px; border-radius: 6px; }
+      .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--working-fg); animation: live-dot 1.6s ease-in-out infinite; }
+      @keyframes live-dot { 50% { opacity: 0.3; } }
+      @media (prefers-reduced-motion: reduce) { .live-dot { animation: none; } }
+      .gone { margin: 4px 4px 0; color: var(--ink-2); font-size: 13px; }
       .tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--line); color: var(--ink-2); font-size: 11.5px; font-weight: 600; }
       .tag.warn { border-color: var(--alarm); color: var(--alarm-fg); }
     `,
@@ -174,6 +180,13 @@ export class IncTranscript extends LitElement {
         </span>
         <span class="caret" aria-hidden="true"></span>
       </button>
+      ${
+        s.id !== undefined && s.channel
+          ? html`<a class="open-session" href="#/ticket/${this.ticketId}/session/${s.id}" aria-label="Open the session: ${s.stage} by ${s.employeeId}">Open the session${running ? html` <span class="live-dot" aria-hidden="true"></span>` : nothing}</a>`
+          : s.channel === null
+            ? html`<p class="gone">Only the transcript is kept for this session.</p>`
+            : nothing
+      }
       ${
         open
           ? html`<div class="items" id="s${i}">

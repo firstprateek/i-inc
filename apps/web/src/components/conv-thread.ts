@@ -59,6 +59,7 @@ interface Sent {
 export class IncConvThread extends LitElement {
   static override properties = {
     conv: { attribute: false },
+    watch: { attribute: false },
     first: { attribute: false },
     employee: { attribute: false },
     phone: { type: Boolean },
@@ -74,6 +75,11 @@ export class IncConvThread extends LitElement {
     loadingOlder: { state: true },
   };
   declare conv: Conversation | undefined;
+  /**
+   * A ticket stage being watched (T69, "Open the session"): the thread is read-only, with no composer, no
+   * shipping and no remembering, and the header says what is being watched. `back` is where Back goes.
+   */
+  declare watch: { ticket: string; stage: string; back: string } | undefined;
   /** The message that made this conversation, sent once its chat is loaded. */
   declare first: SendDetail | undefined;
   declare employee: Employee | undefined;
@@ -150,6 +156,12 @@ export class IncConvThread extends LitElement {
       .status { font-size: 12px; font-weight: 800; padding: 2px 10px; border-radius: 999px; background: var(--neutral-bg); color: var(--neutral-fg); white-space: nowrap; }
       .status.needs { background: var(--needs-bg); color: var(--needs-fg); border: 1px solid var(--needs-edge); }
       .status.run { background: var(--working-bg); color: var(--working-fg); border: 1px solid var(--working-edge); }
+      .status.live { display: inline-flex; align-items: center; gap: 6px; }
+      .status.live i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; animation: live 1.6s ease-in-out infinite; }
+      @keyframes live { 50% { opacity: 0.3; } }
+      @media (prefers-reduced-motion: reduce) { .status.live i { animation: none; } }
+      .ro-note { margin: 0; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--sunken); color: var(--ink-2); font-size: 14px; line-height: 1.45; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
+      .ro-note a { color: var(--ink); font-weight: 700; text-underline-offset: 2px; display: inline-flex; align-items: center; min-height: 44px; }
       .ship-wrap { position: relative; flex: none; }
       .ship-menu { position: absolute; right: 0; top: 50px; z-index: 30; width: min(300px, calc(100vw - 32px)); padding: 6px; border-radius: 14px; background: var(--surface);
         border: 1px solid var(--line); box-shadow: 0 12px 32px rgba(0,0,0,0.18); display: flex; flex-direction: column; }
@@ -373,7 +385,8 @@ export class IncConvThread extends LitElement {
           c.watch(conv.ahpSession),
           c.watch(conv.ahpChat, { turns: WINDOW }),
           // While this page is visible and focused on the conversation, no push notification is sent for it.
-          startPresence(c, conv.ahpSession),
+          // (A ticket stage being watched sends none: there is nothing to be notified of.)
+          ...(this.watch ? [] : [startPresence(c, conv.ahpSession)]),
         ];
         this.cardDone = "";
         this.cardTries = 0;
@@ -904,11 +917,23 @@ export class IncConvThread extends LitElement {
     const live = chat
       ? { running: !!chat.activeTurn, needs: !!firstPending(chat) }
       : { running: conv.running, needs: conv.needsYou };
-    const status = live.needs
-      ? "Needs you"
-      : live.running
-        ? "Running"
-        : statusText({ ...conv, running: false, needsYou: false });
+    const watch = this.watch;
+    const lastTurn = chat?.turns.at(-1);
+    const status = watch
+      ? live.running
+        ? "Live"
+        : lastTurn
+          ? lastTurn.state === ("error" as never)
+            ? "Failed"
+            : lastTurn.state === ("cancelled" as never)
+              ? "Stopped"
+              : "Finished"
+          : "Not started"
+      : live.needs
+        ? "Needs you"
+        : live.running
+          ? "Running"
+          : statusText({ ...conv, running: false, needsYou: false });
     const idx = chat ? this.visible(chat.turns) : 0;
     const turns = chat ? chat.turns.slice(idx) : [];
     const more = chat && (idx > 0 || !!chat.turnsNextCursor);
@@ -928,26 +953,42 @@ export class IncConvThread extends LitElement {
     return html`
       <div class="head">
         ${
-          this.phone
-            ? html`<button class="back" type="button" aria-label="Back to conversations" @click=${() => {
-                location.hash = "#/conversations";
+          watch
+            ? html`<button class="back" type="button" aria-label="Back to ticket #${watch.ticket}" @click=${() => {
+                location.hash = watch.back;
               }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></button>`
-            : nothing
+            : this.phone
+              ? html`<button class="back" type="button" aria-label="Back to conversations" @click=${() => {
+                  location.hash = "#/conversations";
+                }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></button>`
+              : nothing
         }
         ${this.employee ? avatar({ name: this.employee.name, tint: this.employee.tint ?? 0 }, 36) : nothing}
         <div class="who">
-          <h2 class="title" title=${visible(conv.title, true)}>${visible(chat?.title && chat.title !== "New conversation" ? chat.title : conv.title, true)}</h2>
+          ${
+            watch
+              ? html`<h2 class="title" title=${visible(conv.title, true)}>Watching #${watch.ticket} · ${watch.stage}</h2>`
+              : html`<h2 class="title" title=${visible(conv.title, true)}>${visible(chat?.title && chat.title !== "New conversation" ? chat.title : conv.title, true)}</h2>`
+          }
           <div class="meta"><span>${name}</span>${conv.project ? projectBadge(conv.project) : html`<span>No project</span>`}
             ${conv.branch ? html`<code>${conv.branch}</code>` : nothing}
-            <span class="status ${live.needs ? "needs" : live.running ? "run" : ""}">${status}</span></div>
+            ${
+              watch
+                ? html`<span class="status ${live.running ? "run live" : ""}" role="status">${live.running ? html`<i aria-hidden="true"></i>` : nothing}${status}</span>`
+                : html`<span class="status ${live.needs ? "needs" : live.running ? "run" : ""}">${status}</span>`
+            }</div>
         </div>
-        ${this.shipControl(conv)}
+        ${watch ? nothing : this.shipControl(conv)}
         <button class="tool-btn" type="button" aria-label="Context panel" aria-pressed=${this.contextOpen ? "true" : "false"} title="Context: plan, files, usage"
           @click=${() => this.dispatchEvent(new CustomEvent("conv-toggle-context", { bubbles: true, composed: true }))}>
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg></button>
-        <button class="tool-btn" type="button" aria-label="Remember this" title="Remember this: the agent writes what is worth keeping into its brain"
+        ${
+          watch
+            ? nothing
+            : html`<button class="tool-btn" type="button" aria-label="Remember this" title="Remember this: the agent writes what is worth keeping into its brain"
           ?disabled=${!chat} @click=${this.onRemember}>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10a1 1 0 0 1 1 1v15l-6-4-6 4V5a1 1 0 0 1 1-1z"/></svg></button>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10a1 1 0 0 1 1 1v15l-6-4-6 4V5a1 1 0 0 1 1-1z"/></svg></button>`
+        }
       </div>
       ${
         held
@@ -976,7 +1017,9 @@ export class IncConvThread extends LitElement {
           ${
             !chat
               ? gone
-                ? html`<div class="empty"><h2>This conversation is gone</h2><p>It was removed from the host. Pick another from the list.</p></div>`
+                ? watch
+                  ? html`<div class="empty"><h2>This session's live view is gone</h2><p>It was let go of to save space. The ticket page still has its transcript.</p><p><a href=${watch.back}>Back to the ticket</a></p></div>`
+                  : html`<div class="empty"><h2>This conversation is gone</h2><p>It was removed from the host. Pick another from the list.</p></div>`
                 : html`<div class="skeleton" aria-busy="true" aria-label="Loading the conversation"><i></i><i></i><i></i></div>`
               : html`
                 ${more ? html`<div class="older"><button class="cbtn" type="button" ?disabled=${this.loadingOlder} @click=${() => void this.loadEarlier()}>${this.loadingOlder ? "Loading…" : "Show earlier messages"}</button></div>` : nothing}
@@ -984,15 +1027,17 @@ export class IncConvThread extends LitElement {
                   turns,
                   (t) => t.id,
                   (t) =>
-                    html`<inc-conv-turn .turn=${t} .employee=${name} .chat=${conv.ahpChat}></inc-conv-turn>`,
+                    html`<inc-conv-turn .turn=${t} .employee=${name} .chat=${conv.ahpChat} .readOnly=${!!watch}></inc-conv-turn>`,
                 )}
-                ${chat.activeTurn ? html`<inc-conv-turn .turn=${chat.activeTurn} active .employee=${name} .chat=${conv.ahpChat}></inc-conv-turn>` : nothing}
+                ${chat.activeTurn ? html`<inc-conv-turn .turn=${chat.activeTurn} active .employee=${name} .chat=${conv.ahpChat} .readOnly=${!!watch}></inc-conv-turn>` : nothing}
                 ${
-                  empty
-                    ? html`<div class="empty"><h2>Start a conversation with ${name}</h2>
+                  empty && watch
+                    ? html`<div class="empty"><h2>Nothing here yet</h2><p>${name} hasn't started this stage. It shows here as it happens.</p></div>`
+                    : empty
+                      ? html`<div class="empty"><h2>Start a conversation with ${name}</h2>
                         <p>${conv.project ? `Ask ${name} about ${conv.project}, or tell them what to change.` : `Ask ${name} anything, or tell them what to do.`} They work on their own copy${conv.branch ? ` (${conv.branch})` : ""}, so nothing changes in your project until you say so.</p>
                         <p>Type <b>/</b> for ${name}'s commands. Attach a screenshot or a text file by pasting or dropping it.</p></div>`
-                    : nothing
+                      : nothing
                 }`
           }
         </div>
@@ -1013,7 +1058,12 @@ export class IncConvThread extends LitElement {
               }}>Dismiss</button></div>`
             : nothing
         }
-        <inc-conv-composer .session=${session} .chat=${chat} .conversationId=${conv.id} .name=${name} .blocked=${blocked} .onSend=${this.send}></inc-conv-composer>
+        ${
+          watch
+            ? html`<p class="ro-note" role="note"><span>Read-only: you are watching ${name}'s ${watch.stage} stage of ticket #${watch.ticket}. It runs on its own, so there is nothing to send here.</span>
+                <a href=${watch.back}>Back to the ticket</a></p>`
+            : html`<inc-conv-composer .session=${session} .chat=${chat} .conversationId=${conv.id} .name=${name} .blocked=${blocked} .onSend=${this.send}></inc-conv-composer>`
+        }
       </div>`;
   }
 }

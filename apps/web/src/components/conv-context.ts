@@ -24,6 +24,7 @@ import "./conv-diff.ts";
 export class IncConvContext extends LitElement {
   static override properties = {
     conv: { attribute: false },
+    watch: { attribute: false },
     employee: { attribute: false },
     limit: { attribute: false },
     accountName: { type: String },
@@ -33,6 +34,8 @@ export class IncConvContext extends LitElement {
     tick: { state: true },
   };
   declare conv: Conversation | undefined;
+  /** A ticket stage being watched (T69): the panel shows the stage and what it did, and nothing to ship. */
+  declare watch: { ticket: string; stage: string; back: string } | undefined;
   declare employee: Employee | undefined;
   declare limit: AccountRateLimit | undefined;
   declare accountName: string;
@@ -69,6 +72,7 @@ export class IncConvContext extends LitElement {
       .kv { display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
       .kv div { display: flex; justify-content: space-between; gap: 10px; align-items: center; min-width: 0; }
       .kv span:first-child { color: var(--ink-2); flex: none; }
+      .kv a { color: var(--reviewing-fg); font-weight: 700; text-underline-offset: 2px; display: inline-flex; align-items: center; min-height: 44px; }
       code { font: 12.5px var(--mono); background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
       ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
       .plan li { display: flex; gap: 8px; font-size: 14px; line-height: 1.4; }
@@ -232,16 +236,17 @@ export class IncConvContext extends LitElement {
     return html`
       <div class="bar"><h2>Context</h2>${this.closable ? html`<button class="x" type="button" aria-label="Close context" @click=${() => this.dispatchEvent(new CustomEvent("conv-toggle-context", { bubbles: true, composed: true }))}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>` : nothing}</div>
       <div class="scroll">
-        <section aria-labelledby="h-where"><h3 id="h-where">Where it works</h3>
+        <section aria-labelledby="h-where"><h3 id="h-where">${this.watch ? "This session" : "Where it works"}</h3>
           <div class="kv">
             <div><span>Employee</span><span>${this.employee?.name ?? conv.employeeId}</span></div>
             <div><span>Project</span>${conv.project ? projectBadge(conv.project) : html`<span>None</span>`}</div>
-            ${conv.branch ? html`<div><span>Branch</span><code title=${conv.branch}>${conv.branch}</code></div>` : nothing}
+            ${this.watch ? html`<div><span>Ticket</span><a href=${this.watch.back}>#${this.watch.ticket}</a></div><div><span>Stage</span><span>${this.watch.stage}</span></div>` : nothing}
+            ${conv.branch && !this.watch ? html`<div><span>Branch</span><code title=${conv.branch}>${conv.branch}</code></div>` : nothing}
             <div><span>Engine</span><span>${conv.engineId}</span></div>
           </div>
-          <p class="muted">${conv.branch ? "A private copy of the project. Nothing here is pushed or merged unless you ask." : "An empty scratch folder."}</p>
+          <p class="muted">${this.watch ? "Read-only. This is what the stage did, as it happens; the ticket's own page has the record." : conv.branch ? "A private copy of the project. Nothing here is pushed or merged unless you ask." : "An empty scratch folder."}</p>
         </section>
-        ${this.shipSection(conv)}
+        ${this.watch ? nothing : this.shipSection(conv)}
         ${
           plan?.length
             ? html`<section class="plan" aria-labelledby="h-plan"><h3 id="h-plan">Plan · ${done} of ${plan.length} done</h3>
@@ -283,11 +288,11 @@ export class IncConvContext extends LitElement {
           ${
             usage.turns
               ? html`<div class="kv">
-                  <div><span>This conversation</span><span>${tokens(usage.input)} in · ${tokens(usage.output)} out</span></div>
+                  <div><span>${this.watch ? "This session" : "This conversation"}</span><span>${tokens(usage.input)} in · ${tokens(usage.output)} out</span></div>
                   ${last ? html`<div><span>Latest turn</span><span>${usageLine(last)}</span></div>` : nothing}
                   ${usage.model ? html`<div><span>Model</span><span>${usage.model}</span></div>` : nothing}
                 </div>`
-              : html`<p class="muted">Token use shows here after the first reply.</p>`
+              : html`<p class="muted">${this.watch ? "Token use shows here when the session reports it." : "Token use shows here after the first reply."}</p>`
           }
           ${this.limit ? html`${this.meter(`${this.accountName || "Account"} · 5 hours`, this.limit.fiveHourUtilization)}${this.meter(`${this.accountName || "Account"} · 7 days`, this.limit.sevenDayUtilization)}` : nothing}
         </section>
