@@ -13,13 +13,18 @@ export type RunScript = (
   employeeId: string,
   script: string,
   env?: Record<string, string>,
+  /** A machine other than the employee's own, such as the one they used to work in. */
+  opts?: { machine?: string },
 ) => Promise<{ code: number; output: string }>;
 
 export function machineScript(s: MachineSettings = defaultMachineSettings): RunScript {
-  return (employeeId, script, env = {}) =>
+  return (employeeId, script, env = {}, opts = {}) =>
     new Promise((resolve, reject) => {
       try {
         assertWalls(s);
+        if (opts.machine !== undefined && !/^inc-[a-z0-9-]{1,32}$/.test(opts.machine)) {
+          throw new Error(`not a machine name: ${opts.machine}`);
+        }
       } catch (err) {
         return reject(err);
       }
@@ -34,7 +39,7 @@ export function machineScript(s: MachineSettings = defaultMachineSettings): RunS
         "-u",
         s.user,
         "-n",
-        machineOf(s, employeeId),
+        opts.machine ?? machineOf(s, employeeId),
         ...flags,
         "--",
         "bash",

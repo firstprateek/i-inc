@@ -10,7 +10,7 @@
 // Everything the sandbox walls decide stays where it was: the launch is `machineLaunch`, which checks
 // the walls and passes credentials by environment only.
 
-import type { Engine, Id } from "@i-inc/core";
+import type { BrainUse, Engine, Id } from "@i-inc/core";
 import type { AgentInfo, Message } from "@microsoft/agent-host-protocol";
 import {
   bypassMode,
@@ -18,11 +18,13 @@ import {
   extractRateLimit,
   type Launch,
   limitError,
+  locationPaths,
   resetFromText,
   type UsageReport,
   upstreamReason,
   usageReport,
 } from "../acp.ts";
+import type { BrainFeed } from "../brain-feed.ts";
 import type { Reap } from "../reaper.ts";
 import type { AccountRateLimit } from "../registry.ts";
 import { type CopyState, isSafeRefName, isSafeWorkDir } from "../workspace.ts";
@@ -82,6 +84,11 @@ export interface SessionHostOptions {
    * launch, with the folder, so a restart never ends up with two agents for one conversation.
    */
   reap?: Reap;
+  /**
+   * The brain (T57): before each turn the employee's copy in the sandbox is refreshed and the pages
+   * that match the message go in as extra prompt content; reads the agent makes feed the page counters.
+   */
+  brain?: Pick<BrainFeed, "enabled" | "forTurn" | "noteRead" | "conversationPages">;
   /** Live conversations per team. Default 3. */
   perTeamCap?: number;
   /** A conversation with nothing happening for this long is suspended. Default 15 minutes. */
@@ -135,6 +142,8 @@ interface Live {
   opening: boolean;
   /** Created while the sandbox was being cleaned: no copy and no agent yet; the first message makes them. */
   deferred: boolean;
+  /** Brain pages put in the prompt of the turn in flight: shown now, recorded once the agent has accepted it. */
+  brainPending: BrainUse[];
 }
 
 interface Waiter {
@@ -304,6 +313,10 @@ export class SessionHost implements AgentBackend {
     const sessionId = live.acpSessionId;
     if (!conn || !sessionId)
       return { kind: "error", errorType: "agent_exited", message: "The agent is not running." };
+    // A blank agent (its memory of the conversation is lost) gets the continuation brief below.
+    const blank = live.needsBrief && (this.h.chatState(live.chat)?.turns.length ?? 0) > 0;
+    const brain = await this.brainFor(live, run, blank);
+    if (run.signal.aborted) return { kind: "cancelled" };
 
     const mapper = new TurnMapper({
       turnId: run.turnId,
@@ -326,12 +339,20 @@ export class SessionHost implements AgentBackend {
       return { kind: "cancelled" };
     }
     let blocks = promptBlocks(run.message, live.caps);
-    if (live.needsBrief && (this.h.chatState(live.chat)?.turns.length ?? 0) > 0) {
+    if (blank) {
       blocks = [{ type: "text", text: this.continuationBrief(live, run.message) }, ...blocks.slice(1)];
     }
+    // The brain goes in after the owner's message, as its own block.
+    if (brain.text) blocks = [blocks[0] as Json, { type: "text", text: brain.text }, ...blocks.slice(1)];
     try {
       const done = await conn.request("session/prompt", { sessionId, prompt: blocks });
-      if (!done.error) live.needsBrief = false;
+      if (!done.error) {
+        live.needsBrief = false;
+        // The agent has the pages now: only then do they count as sent in this conversation.
+        brain.commit();
+        live.brainPending = [];
+        this.publishBrain(live);
+      }
       return this.outcome(live, active, done);
     } finally {
       if (active.killTimer) clearTimeout(active.killTimer);
@@ -342,6 +363,64 @@ export class SessionHost implements AgentBackend {
       const team = live.info.team;
       setTimeout(() => this.wake(team), 0).unref?.();
     }
+  }
+
+  /**
+   * The brain section for this turn, or "" (no brain, nothing new, or a failure: a turn never waits
+   * on or fails for the brain). Also publishes what the conversation has used so far.
+   */
+  private async brainFor(
+    live: Live,
+    run: TurnRun,
+    blank: boolean,
+  ): Promise<{ text: string; commit: () => void }> {
+    const brain = this.o.brain;
+    if (!brain?.enabled) return { text: "", commit: () => {} };
+    try {
+      const title = this.h.sessionState(live.session)?.title;
+      const ctx = await brain.forTurn({
+        employeeId: live.info.employeeId,
+        conversation: live.info.id,
+        turn: run.turnId,
+        message: run.message.text,
+        title: title && title !== DEFAULT_TITLE ? title : undefined,
+        project: live.info.project,
+        fresh: blank,
+        // A conversation on a project can push to a repository; a PA's home data stays out of it.
+        allowHome: live.info.project === null,
+      });
+      live.brainPending = ctx.pages;
+      this.publishBrain(live);
+      return { text: ctx.text, commit: ctx.commit };
+    } catch (e) {
+      this.log(`the brain was left out of a turn of ${live.session}: ${e instanceof Error ? e.message : e}`);
+      return { text: "", commit: () => {} };
+    }
+  }
+
+  /** The pages a conversation has used, in the session's `_meta["iinc.brain"]` (contract C19/C22). */
+  private publishBrain(live: Live): void {
+    const session = this.h.sessionState(live.session);
+    if (!session || !live.created || !this.o.brain) return;
+    const seen = new Map<string, BrainUse>();
+    for (const p of [...this.o.brain.conversationPages(live.info.id), ...live.brainPending]) {
+      if (!seen.has(`${p.scope}:${p.slug}`)) seen.set(`${p.scope}:${p.slug}`, p);
+    }
+    const pages = [...seen.values()].slice(-100);
+    const entries = pages.map((p) => ({
+      id: `${p.scope}:${p.slug}`,
+      title: p.title,
+      scope: p.scope,
+      slug: p.slug,
+      updated: p.updated,
+      via: p.via,
+      ...(p.untrusted ? { untrusted: true } : {}),
+    }));
+    if (JSON.stringify(session._meta?.["iinc.brain"] ?? []) === JSON.stringify(entries)) return;
+    this.h.emit(live.session, {
+      type: ActionType.SessionMetaChanged,
+      _meta: { ...(session._meta ?? {}), "iinc.brain": entries },
+    });
   }
 
   cancelTurn(run: TurnRun): void {
@@ -392,6 +471,7 @@ export class SessionHost implements AgentBackend {
       starting: undefined,
       opening: false,
       deferred: false,
+      brainPending: [],
     };
   }
 
@@ -894,6 +974,26 @@ export class SessionHost implements AgentBackend {
     // Claude's usage windows ride along on any update.
     const rl = ((u._meta ?? {}) as Json)["_claude/rateLimit"] as Json | undefined;
     if (rl) this.recordLimit(live, rl);
+    // A tool call that names a file in this employee's brain copy is a read of that page.
+    if (
+      live.run &&
+      this.o.brain?.enabled &&
+      (u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update")
+    ) {
+      const paths = locationPaths(u.locations);
+      if (paths.length) {
+        try {
+          const added = this.o.brain.noteRead(live.info.employeeId, paths, {
+            kind: "turn",
+            conversation: live.info.id,
+            turn: live.run.turn.turnId,
+          });
+          if (added.length) this.publishBrain(live);
+        } catch (e) {
+          this.log(`couldn't note a brain read: ${e instanceof Error ? e.message : e}`);
+        }
+      }
+    }
     if (live.run) live.run.mapper.update(u);
     else if (
       [

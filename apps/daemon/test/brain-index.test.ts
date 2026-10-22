@@ -8,6 +8,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -341,7 +342,7 @@ describe("maps", () => {
     expect(m.sections).toEqual({});
     expect(m.root).toContain("- [[tools/vitest]] — Reset mocks between tests");
     expect(m.root).toContain("## duties");
-    expect(m.root).toContain("- [[personality]] — Ada is a Engineer at i.inc.");
+    expect(m.root).toContain("- [[personality]] — Who Ada is (Engineer) and the instructions Ada works by");
   });
 
   it("splits a big scope into sections of at most 150 lines", async () => {
@@ -543,12 +544,11 @@ describe("incremental sync is cheap", () => {
     commit("handbook", { "notes.txt": "still not a page", "INDEX.md": "# map\n" });
     expect(calls).toEqual(["changedPaths"]);
 
-    // With the paths already known (the store's own writes), not even the diff-tree.
+    // Announcing a head that is already indexed costs nothing (the next test has the store's own writes).
     calls.length = 0;
     index.follow({ kind: "handbook" }, ["facts/b.md"]);
-    expect(calls).toEqual(["readAtHead"]);
-    index.follow({ kind: "handbook" }, ["INDEX.md"]);
-    expect(calls).toEqual(["readAtHead"]);
+    index.follow({ kind: "handbook" });
+    expect(calls).toEqual([]);
 
     // Deleting is seen through the same path.
     calls.length = 0;
@@ -618,5 +618,201 @@ describe("incremental sync is cheap", () => {
     store.ensureBrain({ id: "ada", name: "Ada", role: "Engineer" });
     expect(index.pages().map((p) => `${p.scope}/${p.slug}`)).toEqual(["brain:ada/personality"]);
     expect(store.changedPaths({ kind: "brain", id: "ada" }).sort()).toEqual(["INDEX.md", "personality.md"]);
+  });
+});
+
+// ---- T57, step 0: follow-ups from the review of the index (#78) -----------------------------------
+
+const sh = (dir: string, ...a: string[]) =>
+  execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...a], {
+    cwd: dir,
+    stdio: "pipe",
+  });
+
+describe("a rebuild is always fresh-size", () => {
+  it("does not grow the index file over repeated rebuilds", async () => {
+    const root = mkdtempSync(join(tmpdir(), "i-inc-brain-"));
+    roots.push(root);
+    const store = new KnowledgeStore(root);
+    store.ensureHandbook();
+    const dir = join(root, "handbook");
+    mkdirSync(join(dir, "facts"), { recursive: true });
+    for (let i = 0; i < 300; i++) {
+      writeFileSync(
+        join(dir, "facts", `p${i}.md`),
+        page(`Page ${i}`, `about thing ${i}`, `${"lorem ipsum dolor sit amet ".repeat(60)} unique${i}`),
+      );
+    }
+    sh(dir, "add", "-A");
+    sh(dir, "commit", "-q", "-m", "pages");
+    const path = join(root, "index.db");
+    const index = await BrainIndex.open(path, store);
+    const size = () => [path, `${path}-wal`].reduce((n, f) => n + (existsSync(f) ? statSync(f).size : 0), 0);
+    index.rebuild();
+    const first = size();
+    for (let i = 0; i < 6; i++) index.rebuild();
+    // The same pages, rebuilt six more times: the file is the same size (a little slack for page fill).
+    expect(size()).toBeLessThanOrEqual(first * 1.05);
+    expect(index.pages(["company"]).length).toBe(300);
+    index.close();
+  });
+
+  it("starts without a rebuild when every repo was just made, and when nothing changed", async () => {
+    let rebuilds = 0;
+    const orig = BrainIndex.prototype.rebuild;
+    BrainIndex.prototype.rebuild = function (this: BrainIndex) {
+      rebuilds++;
+      return orig.call(this);
+    };
+    try {
+      const knowledgeDir = mkdtempSync(join(tmpdir(), "i-inc-knowledge-"));
+      roots.push(knowledgeDir);
+      const { testApp } = await import("./setup.ts");
+      const app = await testApp(":memory:", knowledgeDir);
+      expect(rebuilds).toBe(0);
+      expect(app.deps.brain.pages(["company"]).length).toBe(0);
+      expect(app.deps.brain.pages().some((p) => p.slug === "personality")).toBe(true);
+    } finally {
+      BrainIndex.prototype.rebuild = orig;
+    }
+  });
+});
+
+describe("the index heals without a restart", () => {
+  it("catches up after a commit made behind its back (the migration, run while the daemon is up)", async () => {
+    const { index, root } = await setup();
+    const dir = join(root, "handbook");
+    mkdirSync(join(dir, "facts"), { recursive: true });
+    writeFileSync(join(dir, "facts", "a.md"), page("Alpha", "alpha", "alpha squash"));
+    sh(dir, "add", "-A");
+    sh(dir, "commit", "-q", "-m", "external one");
+    // No onCommit fired. A look at the repos' heads brings it in.
+    expect(index.search(buildQuery("squash"), ["company"], 5)).toEqual([]);
+    expect(index.refresh()).toBe(1);
+    expect(index.search(buildQuery("squash"), ["company"], 5).map((h) => h.slug)).toEqual(["facts/a"]);
+    // And nothing is behind any more.
+    expect(index.refresh()).toBe(0);
+  });
+
+  it("does a full compare when a follow's commit does not follow the indexed head", async () => {
+    const { index, root, commit } = await setup();
+    const dir = join(root, "handbook");
+    commit("handbook", { "facts/a.md": page("Alpha", "alpha", "alpha") });
+    // An external commit that nobody told the index about…
+    writeFileSync(join(dir, "facts", "missed.md"), page("Missed", "missed", "missed page"));
+    sh(dir, "add", "-A");
+    sh(dir, "commit", "-q", "-m", "external");
+    // …then a normal commit, announced with its own paths only. The skipped commit comes in too.
+    commit("handbook", { "facts/b.md": page("Beta", "beta", "beta") });
+    expect(index.pages(["company"]).map((p) => p.slug)).toEqual(["facts/a", "facts/b", "facts/missed"]);
+  });
+
+  it("recovers from a follow that failed, at the next commit and at the next look", async () => {
+    const { index, store, root, commit } = await setup();
+    const logs: string[] = [];
+    const quiet = await BrainIndex.open(":memory:", store, (m) => logs.push(m));
+    quiet.refresh();
+    const dir = join(root, "handbook");
+    const real = store.readAtHead.bind(store);
+    let fail = true;
+    store.readAtHead = (...a) => {
+      if (fail) throw new Error("disk hiccup");
+      return real(...a);
+    };
+    writeFileSync(join(dir, "one.md"), page("One", "one", "first"));
+    sh(dir, "add", "-A");
+    sh(dir, "commit", "-q", "-m", "one");
+    quiet.follow({ kind: "handbook" });
+    expect(logs.join("\n")).toContain("disk hiccup");
+    expect(quiet.pages(["company"]).map((p) => p.slug)).not.toContain("one");
+
+    // Failure over: a look heals it with no new commit…
+    fail = false;
+    expect(quiet.refresh()).toBe(1);
+    expect(quiet.pages(["company"]).map((p) => p.slug)).toContain("one");
+    // …and so does the next commit, had there been no look.
+    fail = true;
+    writeFileSync(join(dir, "two.md"), page("Two", "two", "second"));
+    sh(dir, "add", "-A");
+    sh(dir, "commit", "-q", "-m", "two");
+    quiet.follow({ kind: "handbook" });
+    fail = false;
+    writeFileSync(join(dir, "three.md"), page("Three", "three", "third"));
+    sh(dir, "add", "-A");
+    sh(dir, "commit", "-q", "-m", "three");
+    quiet.follow({ kind: "handbook" }, ["three.md"]);
+    expect(quiet.pages(["company"]).map((p) => p.slug)).toEqual(
+      expect.arrayContaining(["one", "two", "three"]),
+    );
+    index.close();
+    quiet.close();
+    void commit;
+  });
+
+  it("forgets the pages of a repo that is gone", async () => {
+    const { index, root } = await setup();
+    expect(index.pages(["brain:pia"]).length).toBe(1);
+    rmSync(join(root, "brains", "pia"), { recursive: true, force: true });
+    index.refresh();
+    expect(index.pages(["brain:pia"]).length).toBe(0);
+  });
+
+  it("serves the brain routes fresh after an external commit, with no restart", async () => {
+    const knowledgeDir = mkdtempSync(join(tmpdir(), "i-inc-knowledge-"));
+    roots.push(knowledgeDir);
+    const { testApp } = await import("./setup.ts");
+    const app = await testApp(":memory:", knowledgeDir);
+    const dir = join(knowledgeDir, "handbook");
+    mkdirSync(join(dir, "facts"), { recursive: true });
+    writeFileSync(join(dir, "facts", "migrated.md"), page("Migrated", "added while up", "zebracrossing"));
+    sh(dir, "add", "-A");
+    sh(dir, "commit", "-q", "-m", "migration");
+    const r = await app.call("GET", "/api/brain/search?q=zebracrossing");
+    expect(r.body.results.map((x: { slug: string }) => x.slug)).toEqual(["facts/migrated"]);
+  });
+});
+
+describe("odd file names", () => {
+  it("fills `updated` for a name with a quote in it, in a full rebuild", async () => {
+    const { index, root } = await setup();
+    const dir = join(root, "handbook");
+    mkdirSync(join(dir, "facts"), { recursive: true });
+    writeFileSync(join(dir, "facts", 'say "hi".md'), "# Say hi\n\nundated page with a quote in its name.\n");
+    for (let i = 0; i < 5; i++) writeFileSync(join(dir, "facts", `u${i}.md`), `# U${i}\n\nundated ${i}.\n`);
+    sh(dir, "add", "-A");
+    sh(dir, "commit", "-q", "-m", "x");
+    index.rebuild(); // five or more undated pages: the whole-history walk
+    expect(index.pages(["company"]).find((p) => p.slug === 'facts/say "hi"')?.updated).toMatch(
+      /^\d{4}-\d{2}-\d{2}$/,
+    );
+  });
+
+  it("reads a neighbour's text right when a name has a newline in it", async () => {
+    const { store, root } = await setup();
+    const dir = join(root, "handbook");
+    writeFileSync(join(dir, "a\nb.md"), "weird\n");
+    writeFileSync(join(dir, "c.md"), "plain\n");
+    sh(dir, "add", "-A");
+    sh(dir, "commit", "-q", "-m", "x");
+    const got = store.readAtHead({ kind: "handbook" }, ["a\nb.md", "gone.md", "c.md"]);
+    expect(got.get("a\nb.md")?.text).toBe("weird\n");
+    expect(got.get("gone.md")).toBeNull();
+    expect(got.get("c.md")?.text).toBe("plain\n");
+    // Such a name is no page, so it can't break a map line.
+  });
+});
+
+describe("personality.md", () => {
+  it("has frontmatter when it is made and when it is rewritten", async () => {
+    const { store, index, root } = await setup();
+    const read = () => readFileSync(join(root, "brains", "ada", "personality.md"), "utf8");
+    expect(read()).toMatch(/^---\ntitle: Personality\ndescription: .+\ntags: \[\]\n/);
+    store.updatePersonality("ada", "Ada", "Staff engineer", "Review hard.");
+    const text = read();
+    expect(text).toMatch(/^---\ntitle: Personality\n/);
+    expect(text).toContain("Ada is a Staff engineer at i.inc.");
+    expect(text).toContain("Review hard.");
+    const p = index.pages(["brain:ada"]).find((x) => x.slug === "personality");
+    expect(p?.description).toContain("Staff engineer");
   });
 });

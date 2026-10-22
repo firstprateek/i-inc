@@ -21,8 +21,11 @@ import {
 import { type Db, openDb, type Param, type Row } from "./db.ts";
 import type { KnowledgeStore, Repo } from "./knowledge.ts";
 
-/** Bump when the tables change. A different version rebuilds the file from scratch. */
-const schemaVersion = 1;
+/**
+ * Bump when the tables change, or when the page parser changes what it indexes. A different version
+ * rebuilds the file from scratch (the tables are dropped and made again).
+ */
+const schemaVersion = 2;
 
 /** BM25 column weights, in the FTS table's column order: title, description, tags, body. */
 export const bm25Weights = [5, 3, 2, 1] as const;
@@ -107,12 +110,13 @@ const scopeFilter = (r: Repo): { sql: string; params: Param[] } =>
 
 export class BrainIndex implements RetrievalSource {
   /** Built maps by scope. Pages only change through `sync` and `rebuild`, which clear it. */
-  private readonly maps = new Map<Scope, BuiltMap>();
+  private readonly maps = new Map<string, BuiltMap>();
 
   private constructor(
     private readonly db: Db,
     private readonly store: KnowledgeStore,
     private readonly log: (msg: string) => void,
+    private readonly path: string,
   ) {}
 
   /**
@@ -130,7 +134,7 @@ export class BrainIndex implements RetrievalSource {
     const attempt = async () => {
       const db = await openDb(path);
       try {
-        const index = new BrainIndex(db, store, log);
+        const index = new BrainIndex(db, store, log, path);
         index.init(o.probe ?? probeFts5);
         return index;
       } catch (e) {
@@ -159,8 +163,21 @@ export class BrainIndex implements RetrievalSource {
     this.db.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     const [row] = this.db.all<{ value: string }>("SELECT value FROM meta WHERE key = 'schema'");
     if (row?.value !== String(schemaVersion)) {
-      this.db.exec("DROP TABLE IF EXISTS pages; DROP TABLE IF EXISTS pages_fts; DROP TABLE IF EXISTS links");
+      // An older file's tables go, and the file shrinks to what is left before they are made again.
+      this.dropTables();
+      this.compact();
     }
+    this.createTables();
+    this.db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema', ?)", String(schemaVersion));
+  }
+
+  private dropTables(): void {
+    this.db.exec(
+      "DROP TABLE IF EXISTS pages; DROP TABLE IF EXISTS pages_fts; DROP TABLE IF EXISTS links; DELETE FROM meta WHERE key LIKE 'head:%';",
+    );
+  }
+
+  private createTables(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS pages (
         id INTEGER PRIMARY KEY,
@@ -190,7 +207,6 @@ export class BrainIndex implements RetrievalSource {
       );
       CREATE INDEX IF NOT EXISTS links_to ON links (to_slug);
     `);
-    this.db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema', ?)", String(schemaVersion));
   }
 
   close(): void {
@@ -200,8 +216,9 @@ export class BrainIndex implements RetrievalSource {
   // ---- Building ------------------------------------------------------------------------------------
 
   /**
-   * Rebuilds everything from the git repos. Usage counters survive (they aren't in git); pages whose
-   * repo is gone don't.
+   * Rebuilds everything from the git repos, into tables made new (dropped and created again, then the
+   * file compacted), so a rebuild is always the size of the pages and never of the rebuilds before it.
+   * Usage counters survive (they aren't in git); pages whose repo is gone don't.
    */
   rebuild(): void {
     this.maps.clear();
@@ -211,8 +228,12 @@ export class BrainIndex implements RetrievalSource {
         .map((r) => [`${r.scope}\0${r.slug}`, { n: r.use_count, at: r.last_used_at }] as const),
     );
     this.db.transaction(() => {
-      this.db.exec("DELETE FROM pages; DELETE FROM pages_fts; DELETE FROM links;");
-      for (const repo of this.store.repos()) this.syncRepo(repo);
+      this.dropTables();
+      this.createTables();
+      for (const repo of this.store.repos()) {
+        this.syncRepo(repo);
+        this.setHead(repo);
+      }
       for (const [key, s] of stats) {
         const [scope, slug] = key.split("\0");
         this.db.run(
@@ -224,28 +245,123 @@ export class BrainIndex implements RetrievalSource {
         );
       }
     });
+    this.compact();
+  }
+
+  /** Hands the freed pages back to the file system: VACUUM, then empty the write-ahead log. */
+  private compact(): void {
+    if (this.path === ":memory:") return;
+    try {
+      this.db.exec("VACUUM");
+      this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    } catch (e) {
+      this.log(`brain index: couldn't compact ${this.path}: ${String(e)}`);
+    }
+  }
+
+  // ---- Keeping up ----------------------------------------------------------------------------------
+  //
+  // The index remembers the HEAD of each repo it has read (`meta`, key `head:<repo>`). An update that
+  // names the paths a commit touched is trusted only when that commit's parent IS the remembered HEAD;
+  // in every other case (an external commit such as the migration run while the daemon is up, a
+  // follow that failed, a force-push, anything unexpected) the whole tree is compared by blob id,
+  // which re-reads only the pages that changed. So the index heals by itself and needs no restart.
+
+  private headKey = (repo: Repo): string =>
+    `head:${repo.kind === "handbook" ? "handbook" : `brain:${repo.id}`}`;
+
+  private indexedHead(repo: Repo): string | null {
+    const [r] = this.db.all<{ value: string }>("SELECT value FROM meta WHERE key = ?", this.headKey(repo));
+    return r ? r.value : null;
+  }
+
+  private setHead(repo: Repo, sha?: string): void {
+    this.db.run(
+      "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+      this.headKey(repo),
+      sha ?? this.store.head(repo)?.sha ?? "",
+    );
   }
 
   /**
    * Brings one repo's pages up to date with its HEAD. Given the paths a commit touched, only those are
-   * read (one `git cat-file` for all of them, nothing at all when none is a page); without paths, the
-   * whole tree is compared by blob id and only changed pages are re-read.
+   * read (one `git cat-file` for all of them, nothing at all when none is a page), but only when that
+   * commit follows the HEAD already indexed; otherwise, or without paths, the whole tree is compared by
+   * blob id and only changed pages are re-read.
    */
   sync(repo: Repo, paths?: string[], stampMs?: number): void {
-    if (paths && !paths.some((p) => scopeOfPath(repoRef(repo), p))) return;
+    const indexed = this.indexedHead(repo);
+    // The cheap look first: HEAD read from the repo's files. Nothing new, nothing to do.
+    const quick = this.store.headSha(repo);
+    if (quick !== null && quick === indexed) return;
+    const head = this.store.head(repo);
+    if (head && indexed === head.sha) return; // already there
+    const next = head !== null && indexed !== null && head.parent === indexed;
     this.maps.clear();
-    this.db.transaction(() => (paths ? this.syncPaths(repo, paths, stampMs) : this.syncRepo(repo)));
+    this.db.transaction(() => {
+      if (next) {
+        const touched = paths ?? this.store.changedPaths(repo);
+        // A commit with no page in it (a map, a dotfile) changes nothing here.
+        if (touched.some((p) => scopeOfPath(repoRef(repo), p)))
+          this.syncPaths(repo, touched, paths ? stampMs : undefined);
+      } else {
+        this.syncRepo(repo);
+      }
+      this.setHead(repo, head?.sha);
+    });
   }
 
   /** The hook for `KnowledgeStore.onCommit`: a failure here must never break a commit. */
   follow(repo: Repo, paths?: string[]): void {
     try {
       // Pages with no date of their own take the commit's: our own write just now, or HEAD's time.
-      const known = paths !== undefined;
-      this.sync(repo, paths ?? this.store.changedPaths(repo), known ? this.store.clock() : undefined);
+      this.sync(repo, paths, paths !== undefined ? this.store.clock() : undefined);
     } catch (e) {
       this.log(`brain index: couldn't update after a commit to ${repo.kind}: ${String(e)}`);
     }
+  }
+
+  /**
+   * Looks at every repo's HEAD and brings the index up to date where it differs; drops the pages of
+   * repos that are gone. This is what makes a restart unnecessary after anything changes a repo
+   * behind the daemon's back. It costs a couple of small file reads a repo when nothing changed, so
+   * it can run at every brief and every API read, with no clock to get wrong. Returns the repos that
+   * were behind.
+   */
+  refresh(): number {
+    let behind = 0;
+    const repos = this.store.repos();
+    for (const repo of repos) {
+      const before = this.indexedHead(repo);
+      try {
+        this.sync(repo);
+      } catch (e) {
+        this.log(`brain index: couldn't update ${repo.kind}: ${String(e)}`);
+        continue;
+      }
+      if (before !== this.indexedHead(repo)) behind++;
+    }
+    // Pages of a repo that was deleted from the disk.
+    const here = new Set(repos.map((r) => this.headKey(r)));
+    const gone = this.db
+      .all<{ scope: string }>("SELECT DISTINCT scope FROM pages")
+      .map((r) => r.scope)
+      .filter((scope) => !here.has(scope.startsWith("brain:") ? `head:${scope}` : "head:handbook"));
+    if (gone.length) {
+      this.maps.clear();
+      this.db.transaction(() => {
+        for (const scope of gone) {
+          for (const r of this.db.all<{ id: number; slug: string }>(
+            "SELECT id, slug FROM pages WHERE scope = ?",
+            scope,
+          )) {
+            this.remove(r.id, scope, r.slug);
+          }
+        }
+      });
+      behind++;
+    }
+    return behind;
   }
 
   private syncPaths(repo: Repo, paths: string[], stampMs?: number): void {
@@ -404,8 +520,21 @@ export class BrainIndex implements RetrievalSource {
       slug,
     );
     return r
-      ? { scope, slug, title: r.title, description: r.description, updated: r.updated, body: r.body }
+      ? {
+          scope,
+          slug,
+          title: r.title,
+          description: r.description,
+          updated: r.updated,
+          body: r.body,
+          external: r.external === 1,
+        }
       : null;
+  }
+
+  /** How many pages a scope has. */
+  count(scope: Scope): number {
+    return this.db.all<{ n: number }>("SELECT COUNT(*) AS n FROM pages WHERE scope = ?", scope)[0]?.n ?? 0;
   }
 
   /**
@@ -483,20 +612,32 @@ export class BrainIndex implements RetrievalSource {
     return null;
   }
 
-  /** A scope's map: one line per page by folder; split into named sections when it passes 150 lines. */
-  mapFor(scope: Scope): BuiltMap {
-    const cached = this.maps.get(scope);
+  /**
+   * A scope's map: one line per page by folder; split into named sections when it passes 150 lines.
+   * With `mark`, the line of a page built from untrusted content starts with "(untrusted)", so an
+   * agent reading the map can't take such a description for the company's own words.
+   */
+  mapFor(scope: Scope, mark = false): BuiltMap {
+    const key = (mark ? "!" : "") + scope;
+    const cached = this.maps.get(key);
     if (cached) return cached;
     const pages: MapPage[] = this.db
-      .all<PageRow>("SELECT slug, title, description FROM pages WHERE scope = ? ORDER BY slug", scope)
-      .map((r) => ({ slug: r.slug, title: r.title, description: r.description }));
+      .all<PageRow>(
+        "SELECT slug, title, description, external FROM pages WHERE scope = ? ORDER BY slug",
+        scope,
+      )
+      .map((r) => ({
+        slug: r.slug,
+        title: r.title,
+        description: mark && r.external === 1 ? `(untrusted) ${r.description}` : r.description,
+      }));
     const built = buildMap(pages);
     // Shared between callers, so read-only.
     for (const lines of Object.values(built.sections)) Object.freeze(lines);
     Object.freeze(built.root);
     Object.freeze(built.sections);
     Object.freeze(built);
-    this.maps.set(scope, built);
+    this.maps.set(key, built);
     return built;
   }
 

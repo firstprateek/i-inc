@@ -244,11 +244,13 @@ export class AcpAgent implements Agent {
         const toolCallId = u.toolCallId ? String(u.toolCallId) : `tool-${Date.now()}-${Math.random()}`;
         const title = typeof u.title === "string" ? capText(u.title, 4096) : undefined;
         const status = typeof u.status === "string" ? capText(u.status, 4096) : undefined;
+        const locations = locationPaths(u.locations);
         emit({
           id: toolCallId,
           kind: "tool",
           ...(title !== undefined ? { title } : {}),
           ...(status !== undefined ? { status } : {}),
+          ...(locations.length ? { locations } : {}),
           at: now(),
         });
       }
@@ -257,11 +259,13 @@ export class AcpAgent implements Agent {
         const title = typeof u.title === "string" ? capText(u.title, 4096) : undefined;
         const status = typeof u.status === "string" ? capText(u.status, 4096) : undefined;
         if (toolCallId) {
+          const locations = locationPaths(u.locations);
           emit({
             id: toolCallId,
             kind: "tool",
             ...(title !== undefined ? { title } : {}),
             ...(status !== undefined ? { status } : {}),
+            ...(locations.length ? { locations } : {}),
             at: now(),
           });
         }
@@ -436,6 +440,16 @@ export class AcpAgent implements Agent {
       rpc.close();
     }
   }
+}
+
+/** The file paths in a tool call's ACP `locations` (at most 20, each cut to 500 characters). */
+export function locationPaths(locations: unknown): string[] {
+  if (!Array.isArray(locations)) return [];
+  return locations
+    .map((l) => (l && typeof l === "object" ? (l as Json).path : undefined))
+    .filter((p): p is string => typeof p === "string" && p.length > 0)
+    .slice(0, 20)
+    .map((p) => p.slice(0, 500));
 }
 
 function stuck(reason: string, startup?: boolean): SessionOutcome {

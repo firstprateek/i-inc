@@ -316,12 +316,14 @@ describe("PUT /api/employees/:id", () => {
     expect(paCloud.status).toBe(400);
     expect(paCloud.body.error).toContain("Personal Assistant works on home data");
 
-    // Personal Assistant on local engine succeeds
+    // Personal Assistant on a local engine in a sandbox the others share: moved to a team of its own (home data)
     const paLocal = await app.call("PUT", "/api/employees/ada", {
       role: "Personal Assistant",
       engines: { default: "qwen", fallbacks: [] }, // qwen is local: true
     });
     expect(paLocal.status).toBe(200);
+    expect(app.deps.registry.teamOf("ada").id).toBe("home-ada");
+    expect(app.deps.registry.machineMates("ada")).toEqual([]);
     expect(paLocal.body.employee.role).toBe("Personal Assistant");
   });
 });

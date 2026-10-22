@@ -77,6 +77,8 @@ export interface StoredPage {
   description: string;
   updated: string | null;
   body: string;
+  /** Built from untrusted content (frontmatter `source: external`). */
+  external?: boolean;
 }
 
 /** What retrieval needs from the index. */
@@ -107,6 +109,10 @@ export interface RetrievedPage {
   updated: string | null;
   /** The page body, cut to fit when it alone is over the budget. */
   text: string;
+  /** The text was cut: the page is longer than the whole budget. */
+  cut: boolean;
+  /** Built from untrusted content; the prompt must say so. */
+  external: boolean;
   tokens: number;
   via: "search" | "link";
   score: number;
@@ -174,10 +180,12 @@ export function retrieve(source: RetrievalSource, o: RetrieveOptions): Retrieved
     if (!page) continue;
     const overhead = page.title.length + page.slug.length + 24;
     let text = page.body.trim();
+    let cut = false;
     let tokens = estimateTokens(text.length + overhead);
     if (used + tokens > budget) {
       if (out.length) break; // stop at the budget
       text = `${text.slice(0, Math.max(0, budget * 4 - overhead))}…`;
+      cut = true;
       tokens = Math.min(budget, estimateTokens(text.length + overhead));
     }
     used += tokens;
@@ -188,6 +196,8 @@ export function retrieve(source: RetrievalSource, o: RetrieveOptions): Retrieved
       description: page.description,
       updated: page.updated,
       text,
+      cut,
+      external: page.external === true,
       tokens,
       via: p.via,
       score: p.score,

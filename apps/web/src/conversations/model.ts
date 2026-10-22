@@ -552,22 +552,53 @@ export function matchCommands(commands: Command[], word: string): Command[] {
     .slice(0, 8);
 }
 
-/** Brain pages used for this conversation, when the host says (T57 adds the key; absent: the section hides). */
-export function brainPages(
-  session: SessionState | undefined,
-  chat: ChatState | undefined,
-): { title: string; id?: string }[] {
+/** A brain page shown as "used": what the host said, with where the owner can read its scope. */
+export interface BrainPage {
+  title: string;
+  scope?: string;
+  slug?: string;
+  /** The page was built from untrusted content. */
+  untrusted?: boolean;
+  /** Opened by the agent itself rather than put in its prompt. */
+  read?: boolean;
+  href?: string;
+}
+
+/** Where the owner reads a scope: the handbook (company and team sections), or one employee's brain. */
+export function brainHref(scope: string): string {
+  const m = scope.match(/^brain:(.+)$/);
+  return m ? `#/company/brain/${encodeURIComponent(m[1] ?? "")}` : "#/company/brain";
+}
+
+/** "Company handbook", "Team engineering", "Own brain": the short name of a scope. */
+export function brainScopeLabel(scope: string): string {
+  if (scope === "company") return "Company";
+  if (scope.startsWith("team:")) return `Team ${scope.slice(5)}`;
+  return "Own brain";
+}
+
+/**
+ * Brain pages used by this conversation, from `_meta["iinc.brain"]` (contract C19): a list of
+ * `{ id: "scope:slug", title, scope, slug, updated, via: "search" | "link" | "read", untrusted? }`.
+ * A bare string, or an object with just a title, still shows. Absent: the section hides.
+ */
+export function brainPages(session: SessionState | undefined, chat: ChatState | undefined): BrainPage[] {
   const raw = chat?._meta?.["iinc.brain"] ?? session?._meta?.["iinc.brain"];
   if (!Array.isArray(raw)) return [];
   return raw
-    .map((p) =>
-      typeof p === "string"
-        ? { title: p }
-        : isObj(p) && (typeof p.title === "string" || typeof p.id === "string")
-          ? { title: String(p.title ?? p.id), ...(typeof p.id === "string" ? { id: p.id } : {}) }
-          : undefined,
-    )
-    .filter((p): p is { title: string; id?: string } => !!p);
+    .map((p): BrainPage | undefined => {
+      if (typeof p === "string") return { title: p };
+      if (!isObj(p) || (typeof p.title !== "string" && typeof p.id !== "string")) return undefined;
+      const scope = typeof p.scope === "string" ? p.scope : undefined;
+      return {
+        title: String(p.title ?? p.id),
+        ...(scope ? { scope, href: brainHref(scope) } : {}),
+        ...(typeof p.slug === "string" ? { slug: p.slug } : {}),
+        ...(p.untrusted === true ? { untrusted: true } : {}),
+        ...(p.via === "read" ? { read: true } : {}),
+      };
+    })
+    .filter((p): p is BrainPage => !!p);
 }
 
 /** True while the chat has a turn running. */
