@@ -231,7 +231,7 @@ describe("install-deployer.sh and launchd's slow bootout (T66)", () => {
     const r = install(["--apply"], { FAKE_UNLOAD_POLLS: "6" });
     expect(r.code, r.all).toBe(0);
     const c = calls();
-    const out = c.findIndex((l) => l === `launchctl bootout gui/${uid()}/inc.i.daemon`);
+    const out = c.indexOf(`launchctl bootout gui/${uid()}/inc.i.daemon`);
     const boot = c.findIndex(
       (l) => l.startsWith(`launchctl bootstrap gui/${uid()} `) && l.includes("inc.i.daemon.plist"),
     );

@@ -4,7 +4,7 @@
 // goes straight to main; owner-merges projects get a draft PR. The daemon keeps each sandbox signed in
 // to GitHub as the bot, so sessions of any length can push. Claude's usage reports land in the
 // registry. The helper model and chat use Ollama on the host.
-import type { Employee, Id } from "@i-inc/core";
+import { type Employee, type Id, isHomeEmployee } from "@i-inc/core";
 import { AcpAgent, type Launch } from "./acp.ts";
 import type { AgentBackend } from "./ahp/backend.ts";
 import { agentsFromRegistry } from "./ahp/conversations.ts";
@@ -107,6 +107,15 @@ export function realPorts(o: RealOptions): Pick<
       ...base,
       machineFor: (employeeId) => `inc-${registry.teamOf(employeeId).id}`,
       sizeFor: (name) => registry.teams().find((t) => `inc-${t.id}` === name)?.sandbox,
+      // A sandbox with a PA in it gets the home wall, whatever its team is called (home-wall.ts).
+      homeMachine: (machine) =>
+        registry
+          .teams()
+          .some(
+            (t) =>
+              `inc-${t.id}` === machine &&
+              registry.employees().some((e) => t.members.includes(e.id) && isHomeEmployee(e)),
+          ),
     };
     return settings;
   };

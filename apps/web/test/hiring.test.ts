@@ -33,6 +33,7 @@ function serve(
   team: Employee[] = [ada],
   failEmployees = false,
   configuredTeams: { id: string; name: string; members: string[] }[] = [],
+  available: Engine[] = engines,
 ) {
   calls = [];
   const createdEngines: Engine[] = [];
@@ -45,7 +46,7 @@ function serve(
     const json = (b: unknown, status = 200) =>
       new Response(JSON.stringify(b), { status, headers: { "content-type": "application/json" } });
     if (url === "/api/engines" && (init?.method ?? "GET") === "GET")
-      return json({ engines: [...engines, ...createdEngines] });
+      return json({ engines: [...available, ...createdEngines] });
     if (url.startsWith("/api/engines/") && init?.method === "PUT") {
       const id = decodeURIComponent(url.slice("/api/engines/".length));
       const saved = { id, ...(JSON.parse(String(init.body)) as Omit<Engine, "id">) } as Engine;
@@ -226,6 +227,24 @@ describe("hiring", () => {
     await settle(root.host);
     const ids = [...(selects(root)[0]?.querySelectorAll("option") ?? [])].map((o) => o.value);
     expect(ids).toEqual(["", "qwen"]);
+  });
+
+  it("says no local engine is set up yet when a personal assistant has none to pick", async () => {
+    serve(
+      [ada],
+      false,
+      [],
+      engines.filter((e) => !e.local),
+    );
+    const root = await mount();
+    const pa = [...root.querySelectorAll(".pill")].find((b) => b.textContent === "Personal Assistant");
+    (pa as HTMLElement).click();
+    await settle(root.host);
+    const ids = [...(selects(root)[0]?.querySelectorAll("option") ?? [])].map((o) => o.value);
+    expect(ids).toEqual([""]);
+    const notes = [...root.querySelectorAll(".note")].map((n) => n.textContent ?? "").join(" ");
+    expect(notes).toContain("sandbox has no internet");
+    expect(notes).toContain("No local engine is set up yet");
   });
 
   const pip: Employee = {

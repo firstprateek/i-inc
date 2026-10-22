@@ -20,6 +20,7 @@ import {
   StartupError,
 } from "@i-inc/core";
 import type { AgentProcess, Launch } from "./acp.ts";
+import { HomeWall, HomeWallError, isHomeMachine } from "./home-wall.ts";
 import { launcherNeedsUpdate, newAgentId, noteLauncher, trackAgent } from "./reaper.ts";
 
 export const BOOT_FAILURES: Record<SandboxFaultKind, { reason: string; fix: string; waiting: string }> = {
@@ -76,6 +77,16 @@ export interface MachineSettings {
   machineFor?: (employeeId: Id) => string;
   /** A machine's size, when its team sets one. Absent: `cpus` and `memory`. */
   sizeFor?: (machine: string) => { cpus: number; memory: string } | undefined;
+  /**
+   * Whether a machine is a home machine: a team's sandbox with a personal assistant in it, whatever the
+   * team is called. (A machine named inc-home-… is one in any case.)
+   */
+  homeMachine?: (machine: string) => boolean;
+  /**
+   * The home machines' egress wall (home-wall.ts). A home machine is created and run only while the
+   * walls job has acknowledged its address; without one, no home machine runs.
+   */
+  homeWall?: HomeWall;
 }
 
 export const defaultMachineSettings: MachineSettings = {
@@ -85,6 +96,7 @@ export const defaultMachineSettings: MachineSettings = {
   cpus: 6,
   memory: "12G",
   wallsMarker: "/var/run/i-inc-walls.ok",
+  homeWall: new HomeWall(),
 };
 
 /** Whether the walls job has confirmed the walls in the last two minutes (it runs every minute). */
@@ -104,6 +116,32 @@ export function assertWalls(s: MachineSettings): void {
       `the walls aren't up (${s.wallsMarker} is missing or stale), so no machine runs: see tools/host`,
     );
   }
+}
+
+/** Whether this machine is a home machine (a PA's sandbox): it gets the home wall. */
+export function isHome(s: MachineSettings, machine: string): boolean {
+  return isHomeMachine(machine) || s.homeMachine?.(machine) === true;
+}
+
+/**
+ * Fails closed for a home machine (a personal assistant's sandbox, spec §7): it runs only while the
+ * walls job has confirmed that its address is walled off from the internet (home-wall.ts). Any other
+ * machine passes. Used before every launch, so it is synchronous.
+ */
+export function assertHomeWall(s: MachineSettings, machine: string): void {
+  if (!isHome(s, machine)) return;
+  if (!s.homeWall) {
+    throw new HomeWallError(
+      `${machine} is a home machine, and no home wall is set up, so nothing runs in it`,
+    );
+  }
+  s.homeWall.assertCovered(machine);
+}
+
+/** The checks before anything runs in a machine: the walls are up and, for a home machine, so is its own. */
+export function assertRunnable(s: MachineSettings, machine: string): void {
+  assertWalls(s);
+  assertHomeWall(s, machine);
 }
 
 /** Where a ticket's worktree is in its machine, and so where its ACP sessions work. */
@@ -184,8 +222,11 @@ export class AppleMachines implements MachineProvider {
   async ensureUp(employeeId: Id): Promise<void> {
     assertWalls(this.s);
     const name = machineOf(this.s, employeeId);
+    this.homePreflight(name);
     const working = this.up.get(name);
     if (working) {
+      // Already up: its address is checked again, since the machine may have been restarted since.
+      await this.verifyHome(name);
       working.add(employeeId);
       return;
     }
@@ -216,7 +257,76 @@ export class AppleMachines implements MachineProvider {
       // Boot it here rather than in its first job.
       await this.bootWithRecovery(name);
     }
+    // A home machine is left alone until the walls job has confirmed its address is walled off.
+    await this.verifyHome(name);
     this.up.set(name, new Set([employeeId]));
+  }
+
+  /**
+   * A home machine (a personal assistant's sandbox) is made and booted only if the home wall can be
+   * told about it: the walls job has to have run lately, with the home rules. Nothing is created
+   * otherwise. (Apple container 1.4.1 has no network option for machines, so the wall is a table of
+   * addresses: home-wall.ts.)
+   */
+  private homePreflight(name: string): void {
+    if (!isHome(this.s, name)) return;
+    const wall = this.s.homeWall;
+    const fix = "run `sudo sh tools/host/install-walls.sh` on the Mac mini (docs/handoff.md, T66)";
+    if (!wall) throw new StartupError(`${name} needs the home wall, and none is set up`, this.now() + 60_000);
+    if (!wall.acknowledged()) {
+      throw new StartupError(
+        `the home machines' wall isn't up (the walls job hasn't confirmed it lately), so ${name} doesn't start: ${fix}`,
+        this.now() + 60_000,
+      );
+    }
+  }
+
+  /** The home machines in `machine ls`, with their addresses. */
+  private async homeRows(): Promise<MachineRow[]> {
+    return (await this.listMachines()).filter((r) => isHome(this.s, r.name));
+  }
+
+  /** Waits until the walls job covers a home machine's address; stops the machine if it doesn't. */
+  private async verifyHome(name: string): Promise<void> {
+    if (!isHome(this.s, name)) return;
+    const wall = this.s.homeWall;
+    if (!wall) throw new StartupError(`${name} needs the home wall, and none is set up`, this.now() + 60_000);
+    try {
+      await wall.verify(name, () => this.homeRows(), this.sleep);
+    } catch (err) {
+      const why = err instanceof Error ? err.message : String(err);
+      this.log?.(`[sandbox:${name}] ${why}`);
+      wall.forget(name);
+      this.up.delete(name);
+      try {
+        await this.exec(this.s.bin, ["machine", "stop", name]);
+      } catch {
+        // already stopped
+      }
+      throw new StartupError(why, this.now() + 60_000);
+    }
+  }
+
+  /**
+   * One look at the home machines, every thirty seconds or so: records those the walls cover, tells the
+   * walls job about the running ones, and stops a running home machine that has been outside the walls
+   * for `graceMs`, such as one whose address changed when it restarted. Returns the machines stopped.
+   */
+  async watchHome(graceMs = 90_000): Promise<string[]> {
+    const wall = this.s.homeWall;
+    if (!wall) return [];
+    const stop = wall.watch(await this.homeRows(), graceMs);
+    for (const name of stop) {
+      this.log?.(`[sandbox:${name}] the walls don't cover it, so it is stopped (docs/handoff.md, T66)`);
+      wall.forget(name);
+      this.up.delete(name);
+      try {
+        await this.exec(this.s.bin, ["machine", "stop", name]);
+      } catch (err) {
+        this.log?.(`[sandbox:${name}] couldn't stop it: ${err}`);
+      }
+    }
+    return stop;
   }
 
   /**
@@ -348,6 +458,7 @@ export class AppleMachines implements MachineProvider {
     const working = this.up.get(name);
     if (!working?.delete(employeeId) || working.size > 0) return;
     this.up.delete(name);
+    this.s.homeWall?.forget(name);
     await this.exec(this.s.bin, ["machine", "stop", name]);
   }
 
@@ -364,6 +475,7 @@ export class AppleMachines implements MachineProvider {
       .filter((cols) => cols[0]?.startsWith("inc-") && cols.includes("running"))
       .map((cols) => cols[0] as string);
     for (const name of names) await this.exec(this.s.bin, ["machine", "stop", name]);
+    for (const name of names) this.s.homeWall?.forget(name);
     this.up.clear();
     return names;
   }
@@ -392,8 +504,8 @@ export class AppleMachines implements MachineProvider {
    * (T52: cleaning must not wake a machine).
    */
   async runIn(machine: string, script: string, timeoutMs = 15 * 60_000): Promise<string> {
-    assertWalls(this.s);
     if (!/^inc-[a-z0-9-]{1,32}$/.test(machine)) throw new Error(`not a machine name: ${machine}`);
+    assertRunnable(this.s, machine);
     const row = (await this.listMachines()).find((m) => m.name === machine);
     if (row?.state !== "running") throw new Error(`${machine} isn't running, so nothing is run in it`);
     return this.exec(
@@ -418,8 +530,8 @@ export class AppleMachines implements MachineProvider {
   }
 
   async deliverCallback(teamId: Id, url: string): Promise<void> {
-    assertWalls(this.s);
     const machine = machineName(teamId);
+    assertRunnable(this.s, machine);
     await this.exec(
       this.s.bin,
       ["machine", "run", "-i", "-u", this.s.user, "-n", machine, "-e", "CALLBACK_URL", "--", "bash", "-s"],
@@ -476,7 +588,7 @@ export class AppleMachines implements MachineProvider {
         : "stopped";
 
     let signedIn = this.signedInCache.get(machine) ?? defaultSignedIn;
-    if (wallsUp(this.s) && state === "running") {
+    if (wallsUp(this.s) && state === "running" && this.homeCovered(machine)) {
       try {
         signedIn = await this.probeSignIn(machine);
       } catch {
@@ -494,6 +606,16 @@ export class AppleMachines implements MachineProvider {
       ...(launcherNeedsUpdate(machine) ? { launcher: "needs-update" as const } : {}),
       ...(fault && inFault ? { reason: fault.reason, kind: fault.kind, retryAt: fault.retryAt } : {}),
     };
+  }
+
+  /** Whether a probe may run in the machine: any machine but a home one whose wall is not confirmed. */
+  private homeCovered(machine: string): boolean {
+    try {
+      assertHomeWall(this.s, machine);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async probeSignIn(
@@ -530,6 +652,8 @@ export interface MachineRow {
   state: "running" | "stopped" | string;
   /** The machine's disk on the host, in bytes, when the listing has one. */
   diskBytes?: number;
+  /** Its address on the machines' network, when it has one (the listing's IP column; "-" while stopped). */
+  ip?: string;
 }
 
 const units: Record<string, number> = { K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 };
@@ -546,10 +670,13 @@ export function parseMachineListing(listing: string): MachineRow[] {
     const at = cols.indexOf(state);
     const m = /^(\d+(?:\.\d+)?)([KMGT])B?$/i.exec(cols[at - 1] ?? "");
     const unit = units[(m?.[2] ?? "").toUpperCase()];
+    // The IP column sits between the creation time and the CPUs.
+    const ip = cols.find((c) => /^\d{1,3}(?:\.\d{1,3}){3}$/.test(c));
     rows.push({
       name,
       state,
       ...(m && unit ? { diskBytes: Math.round(Number(m[1]) * unit) } : {}),
+      ...(ip ? { ip } : {}),
     });
   }
   return rows;
@@ -583,7 +710,7 @@ export function machineLaunch(
   run: Spawn = spawnDefault,
 ): Launch {
   return ({ employeeId, engine, cwd, env }) => {
-    assertWalls(s);
+    assertRunnable(s, machineOf(s, employeeId));
     const launcher = launchers[engine.harness];
     if (!launcher) throw new Error(`no ACP launcher for ${engine.harness}`);
     // The launcher notes this token, the pid and the start time in the sandbox (reaper.ts), so an

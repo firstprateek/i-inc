@@ -4,9 +4,18 @@ import type { Duty, Employee, Engine, Id, Ticket } from "./model.ts";
 import type { Company } from "./ports.ts";
 import type { TicketState } from "./state.ts";
 
+/**
+ * Whether an engine can work on home data: a local one (spec §7). Codex is always a cloud service,
+ * whatever its `local` flag says. A PA's sandbox has no internet, so a local engine is also the only
+ * kind it can run: its model is reached on the host through the Ollama relay.
+ */
+export function isLocalEngine(engine: Pick<Engine, "local" | "harness">): boolean {
+  return engine.local === true && engine.harness !== "codex";
+}
+
 /** Home data goes only to local engines (spec §7). Errands are the tickets that carry it. */
 export function engineAllowed(ticket: Ticket, engine: Engine): boolean {
-  return ticket.type !== "errand" || (engine.local && engine.harness !== "codex");
+  return ticket.type !== "errand" || isLocalEngine(engine);
 }
 
 /** The engine for this duty right now: a switch rule's override wins, then the duty's engine, then the default. */

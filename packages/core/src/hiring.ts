@@ -1,5 +1,6 @@
 // What makes a hire valid (spec §5, "What you set when hiring"). Pure: the daemon checks these
 // before it builds the machine and the brain.
+import { isLocalEngine } from "./engines.ts";
 import type { Employee, Engine } from "./model.ts";
 
 /** How many identity tints avatars can wear. The colours themselves belong to the web app. */
@@ -55,11 +56,22 @@ export function hiringProblems(e: Employee, engines: Engine[], existing: Employe
   for (const id of chosen) if (!byId.has(id)) problems.push(`there is no engine ${id}`);
 
   if (homeRoles.includes(e.role)) {
-    const cloud = chosen.filter((id) => byId.get(id)?.local === false);
-    if (cloud.length) {
+    // Its sandbox has no internet (the walls, spec §7), so every duty, fallbacks included, needs a
+    // local engine: the model runs on the host and the sandbox reaches it through the Ollama relay.
+    if (!engines.some(isLocalEngine)) {
       problems.push(
-        `a ${e.role} works on home data, so it may only use local engines, not ${cloud.join(", ")}`,
+        `a ${e.role} works on home data and its sandbox has no internet, so it needs a local engine (OpenCode on Ollama), and none is set up yet: add one in Setup, then hire the ${e.role}`,
       );
+    } else {
+      const cloud = [...new Set(chosen)].filter((id) => {
+        const engine = byId.get(id);
+        return engine !== undefined && !isLocalEngine(engine);
+      });
+      if (cloud.length) {
+        problems.push(
+          `a ${e.role} works on home data and its sandbox has no internet, so it may only use local engines, not ${cloud.join(", ")}`,
+        );
+      }
     }
   }
   if (e.workingHours) {

@@ -3,7 +3,7 @@
 // because `machine run` re-splits its arguments (M1).
 import { spawn } from "node:child_process";
 import type { ChecksResult, GatesResult, Harness, ProjectPolicy, Ticket } from "@i-inc/core";
-import { assertWalls, defaultMachineSettings, type MachineSettings, machineOf } from "./machines.ts";
+import { assertRunnable, defaultMachineSettings, type MachineSettings, machineOf } from "./machines.ts";
 
 /**
  * Runs a script in an employee's machine and resolves with its exit code and output. Variables in
@@ -21,10 +21,10 @@ export function machineScript(s: MachineSettings = defaultMachineSettings): RunS
   return (employeeId, script, env = {}, opts = {}) =>
     new Promise((resolve, reject) => {
       try {
-        assertWalls(s);
         if (opts.machine !== undefined && !/^inc-[a-z0-9-]{1,32}$/.test(opts.machine)) {
           throw new Error(`not a machine name: ${opts.machine}`);
         }
+        assertRunnable(s, opts.machine ?? machineOf(s, employeeId));
       } catch (err) {
         return reject(err);
       }
