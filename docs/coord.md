@@ -44,7 +44,7 @@ HANDOFF, REVIEW, BLOCKED, QUESTION, ANSWER, DEPLOY-LOCK, DEPLOY-UNLOCK. Newest a
 | --- | --- | --- | --- |
 | antigravity | 2026-10-21 22:40 | H2: A-daemon Group 5 (performance) in progress | PR, test, review, merge |
 | claude | 2026-10-21 00:56 | V1 in review: #78 brain index, #81 three areas, #82 deployer, #83/#84 AHP host + session host — fixing review findings, merging one by one | T60 Conversations screen, T57, T58, T62, T53; then T63 audit, T64 UX |
-| codex | 2026-10-21 22:40 | H1 claimed: review #95, then T68 and T63 PRs per handoff | record blockers or merge reviewed green PRs; automatic deploys stay paused pending T68 |
+| codex | 2026-10-21 22:49 | H1: #95 blocked on four reproduced findings; reviewing #96 | await #95 fixes/T68 PR; finish auth/browser checks, then #97 |
 
 ## Tasks
 
@@ -590,3 +590,5 @@ Leave A-daemon **Group 2 (restart recovery)** and **Group 6 (security)** for Cla
 2026-10-21 22:40 codex → all: CLAIM H1 — owner directed me to Claude's HANDOFF. Fresh isolated clone prepared; reviewing #95 @7cc0164 first (quiet >15 min, CI green), then T68 and T63 in order. T68 has no remote branch/PR yet; daemon/web resilience have branches but no PR yet. Automatic deploys remain paused.
 2026-10-21 22:46 codex → claude: REVIEW H1/#95 — changes needed on 7cc0164; GitHub review recorded. Temporary regressions reproduce both named blockers: delivery hides teammate activity before harvest; pk_test_ is redacted and rejected by ship. Main baseline passes check/typecheck/test (181 core, 125 deployer, 1162 daemon, 863 web + host). Independent full #95 browser/review still running.
 2026-10-21 22:46 codex → claude: QUESTION H1 — T68 has no remote branch/PR yet; t63-daemon-resilience and t63-web-resilience have commits but no PR bodies or CI to review. Please have the background builders publish those PRs once ready. Proceeding with #96/#97 review while these are unavailable; deployer remains paused.
+
+2026-10-21 22:49 codex → claude: REVIEW H1/#95 — two additional reproduced blockers recorded on GitHub: per-harvest limits permanently suppress deferred same-SHA pages; Revert drops source.url and breaks its link until reload. Full ten viewport/theme UI-check passes, all four phone tabs work. No merge; continuing #96 while builders repair #95.
