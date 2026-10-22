@@ -10,19 +10,15 @@
 // conversation a ticket (owner-merges), watch it hold the conversation and run, follow the links both ways,
 // open a PR, make a direct project's conversation a ticket, and meet a credential. Screenshots go to --out
 // (never committed). Exit code 1 when anything fails.
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { chromium } from "playwright";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "../../..");
-const { chromium } = await import("playwright").catch(() => {
-  const dir = process.env.NODE_PATH || execFileSync("npm", ["root", "-g"]).toString().trim();
-  return import(pathToFileURL(`${dir}/playwright/index.mjs`).href);
-});
-
 const args = process.argv.slice(2);
 const outDir = resolve(args[args.indexOf("--out") + 1] ?? "e2e-out");
 mkdirSync(outDir, { recursive: true });
@@ -523,9 +519,7 @@ async function flow(browser, combo) {
 }
 
 let server;
-const browser = await chromium.launch(
-  process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {},
-);
+const browser = await chromium.launch();
 try {
   server = await start();
   for (const combo of combos) await flow(browser, combo);
