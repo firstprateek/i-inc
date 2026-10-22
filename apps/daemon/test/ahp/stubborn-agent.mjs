@@ -1,9 +1,16 @@
 // A stand-in ACP agent that is a real process, for the tests of agents that outlive the daemon.
 // It answers just enough ACP to hold a conversation, and does NOT treat the end of its stdin as the
 // end of its work. With STUBBORN=term it also ignores SIGTERM, so only SIGKILL stops it.
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 
-if (process.env.STUBBORN === "term") process.on("SIGTERM", () => {});
+// With STUBBORN_NOTE_DIR set it leaves a file for each SIGTERM it ignores, so a test can tell who was asked to stop.
+if (process.env.STUBBORN === "term")
+  process.on("SIGTERM", () => {
+    if (process.env.STUBBORN_NOTE_DIR)
+      writeFileSync(join(process.env.STUBBORN_NOTE_DIR, `term-${process.pid}`), "");
+  });
 setInterval(() => {}, 1000);
 
 const send = (m) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...m })}\n`);

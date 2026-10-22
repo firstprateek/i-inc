@@ -102,6 +102,35 @@ Each team's sandbox signs in to harnesses once using host tools:
 
 - **Codex:** follow [Codex setup](codex.md) to provision the pinned harness in new or existing team machines, then run `sh tools/host/sign-in-codex.sh <team id>` when the owner is ready. The device-code flow stays in the sandbox; Setup → Sandboxes reports only sign-in status. No login is performed as part of deployment.
 
+### End-to-end checks and the test suite (`tools/e2e`, `pnpm test`)
+- **End to end:** each `tools/e2e/<name>/run.mjs` drives the real web app in Chromium against a local daemon in a scratch
+  HOME, with stand-ins for GitHub and the agents (no real credentials; screenshots at 1440x900 and 390x844, light and
+  dark). Playwright is a pinned root devDependency, so a clean clone needs only:
+  1. `pnpm install`
+  2. `pnpm e2e:install` once, which downloads the Chromium that Playwright version drives (into Playwright's own
+     cache, `~/Library/Caches/ms-playwright` on a Mac; nothing is added to the repo). CI does not do this: it runs `check`, `typecheck`
+     and `test` only.
+  3. `pnpm e2e` builds the web app and runs every script one after another (`pnpm e2e projects conversation-push` runs
+     just those, `--no-build` skips the build, `--out dir` moves the screenshots, default `e2e-out/<name>`). Exit code 1
+     if one fails. The scripts start the daemon and a stand-in GitHub with **`bun`**, so it must be on PATH.
+  Before it runs anything, `tools/e2e/run-all.mjs` reads each script and refuses one that is not self-contained. This is a
+  scan of the script's text, not a sandbox: a script may import only node built-ins, `playwright` by its bare name and
+  files inside the repo, and may not name an absolute path (`/Users`, `/opt`, `/usr`, `~/`, `file:`), a `../` path that
+  leaves the repo, the home folder, `NODE_PATH` or the global npm folder. It uses the repo's `node_modules`, the repo's
+  files and temporary folders it makes. `PW_CHROMIUM=<path>` points at another Chromium. Bump Playwright to a version
+  at least two weeks old, then `pnpm e2e:install` again (the browser build changes with it).
+- **No clocks in the default suite.** A test never asserts that code was fast: busy machines and CI make that fail at
+  random. What a test checks instead:
+  - *Super-linear behaviour (ReDoS and rescans):* the scanners in `apps/web/src/conversations` report the characters each
+    search looked at to a test-only probe (`probe.ts`, unset outside tests, so a call is one undefined read), and the test asserts
+    that four times the text costs at most five times the count. Backtracking inside a regular expression cannot be counted,
+    so those inputs (redaction in `apps/daemon/src/ahp/sanitize.ts`, markdown, the project matcher) run once under a
+    budget of seconds that only a blow-up reaches (a quiet machine needs milliseconds).
+  - *"Does not wait for X":* the order of events or the calls made (X was never asked for, the first agent was killed only
+    after all were asked to stop), or a fake clock.
+  - *Precise timings* (50 ms for 64 KB, 100 ms for a match, growth ratios between sizes) run only with `I_INC_BENCH=1`, on a
+    quiet machine: `I_INC_BENCH=1 pnpm test` (or `pnpm bench` for the brain index).
+
 ### Sandbox won't boot: hostname already exists
 When macOS or Apple's container framework terminates abruptly or gets out of sync, `container-apiserver` can retain a stale registration (`hostname(s) already exist: ["inc-<team>.machine."]`). The daemon automatically recovers from transient machine failures using safe `container machine stop <name>` retries and exponential backoff (30s → 1m → 2m … up to 10m) without churning tickets.
 

@@ -1,6 +1,7 @@
 // A small syntax highlighter for the code in a conversation: it cuts source into tokens (keyword, string,
 // comment, number, ...) and nothing more, so the view can render them as spans without ever building HTML
 // from the source. Not a parser: it gets the common shapes of a dozen languages right and leaves the rest plain.
+import { probe } from "./probe.ts";
 
 export type TokenType =
   | "kw"
@@ -172,12 +173,14 @@ function scan(code: string, l: Lang, json: boolean): Token[] {
     if (starter && !(starter === "#" && code.charAt(i - 1) === "$")) {
       let end = code.indexOf("\n", i);
       if (end < 0) end = code.length;
+      probe.work?.(end - i);
       push("com", code.slice(i, end));
       i = end;
       continue;
     }
     if (l.block && code.startsWith(l.block[0], i)) {
       const close = code.indexOf(l.block[1], i + l.block[0].length);
+      probe.work?.((close < 0 ? code.length : close) - i); // what the search looked at
       const end = close < 0 ? code.length : close + l.block[1].length;
       push("com", code.slice(i, end));
       i = end;
@@ -191,6 +194,7 @@ function scan(code: string, l: Lang, json: boolean): Token[] {
         j++;
       }
       const end = Math.min(code.length, j + 1);
+      probe.work?.(end - i);
       const text = code.slice(i, end);
       // A JSON key is a string followed by a colon.
       push(json && /^\s*:/.test(code.slice(end, end + 8)) ? "attr" : "str", text);
@@ -264,6 +268,7 @@ function markupTokens(code: string): Token[] {
     if (code.startsWith("<!--", i)) {
       // A comment ends at the first `-->`, or runs to the end of the text; either way the scan moves on.
       const close = code.indexOf("-->", i + 4);
+      probe.work?.((close < 0 ? code.length : close) - i); // what the search looked at
       const end = close < 0 ? code.length : close + 3;
       out.push({ t: "com", s: code.slice(i, end) });
       i = end;

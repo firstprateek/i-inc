@@ -21,3 +21,6 @@ coverage/
 
 # UI checker screenshots
 ui-check-out/
+
+# End-to-end screenshots (pnpm e2e)
+e2e-out/

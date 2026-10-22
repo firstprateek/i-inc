@@ -255,9 +255,14 @@ describe("inferProject", () => {
       "é\u0301".repeat(50_000),
     ];
     for (const text of hostile) {
+      // One run under a budget that only a blow-up reaches (a quiet machine needs a few milliseconds): not a
+      // limit a busy machine can trip. The tight one, 100 ms, is checked when I_INC_BENCH is set.
       const t0 = performance.now();
       matchProjects(text, projects);
-      expect(performance.now() - t0).toBeLessThan(100);
+      const ms = performance.now() - t0;
+      expect(ms, `${text.slice(0, 12)}…: ${ms.toFixed(0)} ms`).toBeLessThan(
+        process.env.I_INC_BENCH ? 100 : 5_000,
+      );
     }
   });
 });

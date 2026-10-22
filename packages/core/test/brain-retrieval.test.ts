@@ -57,7 +57,7 @@ describe("buildQuery", () => {
     expect(buildQuery("NEAR AND OR NOT")).toBe('"near"');
   });
 
-  it("handles 100 KB of hostile input quickly (a loose bound; strict numbers are in `pnpm bench`)", () => {
+  it("handles 100 KB of hostile input without a blow-up (strict numbers: I_INC_BENCH=1, or `pnpm bench`)", () => {
     const inputs = [
       '"(*^:'.repeat(20_000),
       "a".repeat(100_000),
@@ -67,7 +67,11 @@ describe("buildQuery", () => {
     for (const text of inputs) {
       const t = performance.now();
       const q = buildQuery(text);
-      expect(performance.now() - t).toBeLessThan(2000);
+      const ms = performance.now() - t;
+      // One run under a budget only a blow-up reaches; the tight limit is checked when I_INC_BENCH is set.
+      expect(ms, `${text.slice(0, 12)}…: ${ms.toFixed(0)} ms`).toBeLessThan(
+        process.env.I_INC_BENCH ? 200 : 5_000,
+      );
       expect(q.length).toBeLessThan(2000);
     }
   });

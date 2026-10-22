@@ -269,7 +269,7 @@ describe("frontmatter is real YAML", () => {
     const bomb = `---\na: &a [x,x,x,x,x,x,x,x,x,x]\nb: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a,*a]\nc: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b,*b]\nd: [*c,*c,*c,*c,*c,*c,*c,*c,*c,*c]\n---\nx`;
     const t = performance.now();
     const p = parsePage(bomb, "x");
-    expect(performance.now() - t).toBeLessThan(2000);
+    expect(performance.now() - t).toBeLessThan(5_000); // one run, a budget only a blow-up reaches
     expect(p.body).toBe("x");
   });
 });

@@ -54,7 +54,7 @@ function sandbox(stubborn: "eof" | "term" = "eof") {
   const stdins: ChildProcess["stdin"][] = [];
   const spawnAgent = (_bin: string, _args: string[], env: NodeJS.ProcessEnv) => {
     const child = spawn("sh", ["-c", `. "${acpEnv}"; exec "${process.execPath}" "${agentJs}"`], {
-      env: { ...env, HOME: home, STUBBORN: stubborn },
+      env: { ...env, HOME: home, STUBBORN: stubborn, STUBBORN_NOTE_DIR: home },
       stdio: ["pipe", "pipe", "pipe"],
     });
     spawned.push(child);
@@ -270,11 +270,14 @@ describe("what the sweep will and will not touch", () => {
         return (await sb.run("x", script)).output;
       },
     };
-    const t0 = Date.now();
-    expect(await reapMachines(machines, undefined, { all: true })).toBe(3);
-    const took = Date.now() - t0;
-    // three agents that ignore SIGTERM, one after another, would be nine seconds of waiting
-    expect(took).toBeLessThan(7000);
+    const reaping = reapMachines(machines, undefined, { all: true });
+    // Three agents that ignore SIGTERM, taken one after another, would each wait out the grace period before
+    // the next was asked to stop. So when the first one is gone, all three must have been asked already: an order
+    // of events, which no busy machine can change.
+    await until(() => pids.some((pid) => !alive(pid)), 30_000, "an agent to be stopped");
+    for (const pid of pids)
+      expect(existsSync(join(home, `term-${pid}`)), `agent ${pid} asked to stop`).toBe(true);
+    expect(await reaping).toBe(3);
     for (const pid of pids) await until(() => !alive(pid), 4000, `agent ${pid} to be stopped`);
     expect(asked).toEqual(["inc-engineering"]); // a stopped machine is never started to be looked at
   }, 20_000);

@@ -4,18 +4,13 @@
 //
 //   node apps/web/scripts/make-icons.mjs
 //
-// Needs `playwright` to resolve: from the workspace, or NODE_PATH pointing at a node_modules with it.
+// Uses the repo's pinned Playwright (`pnpm install`, then `pnpm e2e:install` for its Chromium).
 // Set PW_CHROMIUM to use another Chromium executable.
 
-import { execSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-
-const { chromium } = await import("playwright").catch(() => {
-  const root = process.env.NODE_PATH || execSync("npm root -g").toString().trim();
-  return import(pathToFileURL(`${root}/playwright/index.mjs`).href);
-});
+import { fileURLToPath } from "node:url";
+import { chromium } from "playwright";
 
 const out = join(dirname(fileURLToPath(import.meta.url)), "../public/icons");
 mkdirSync(out, { recursive: true });

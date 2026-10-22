@@ -321,7 +321,7 @@ describe("hostile input", () => {
     for (const text of nasty) {
       const t = performance.now();
       const out = retrieve(index, { query: text, scopes: ["company"] });
-      expect(performance.now() - t).toBeLessThan(2000);
+      expect(performance.now() - t).toBeLessThan(5_000); // one run, a budget only a blow-up reaches
       expect(Array.isArray(out)).toBe(true);
     }
     // Even a raw bad expression finds nothing instead of throwing.

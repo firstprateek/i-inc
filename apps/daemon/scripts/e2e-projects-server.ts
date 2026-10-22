@@ -12,6 +12,7 @@ import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, normalize } from "node:path";
 import { FakeAgent, FakeChat, FakeHarness, FakeHelper, FakeMachines } from "@i-inc/core/testing";
+import type { WsData } from "../src/ahp/transport.ts";
 import { createApp } from "../src/app.ts";
 import { seedDemo } from "../src/demo.ts";
 import { createGitHubStub, type StubOptions, stubApp } from "../test/github-stub.ts";
@@ -147,10 +148,18 @@ app.deps.registry.recordRelease({
   commits: [],
 });
 
-Bun.serve({
+Bun.serve<WsData>({
   port,
   hostname: "127.0.0.1",
-  fetch: async (req) => {
+  idleTimeout: 60,
+  fetch: async (req, server) => {
+    // The conversations socket: the web app opens it on every page, so without this it logs a console error.
+    if (app.ahp.transport.matches(req)) {
+      const g = app.ahp.transport.guard(req);
+      if ("refusal" in g) return g.refusal;
+      if (server.upgrade(req, { data: g.data })) return undefined;
+      return new Response("websocket upgrade failed", { status: 400 });
+    }
     const path = new URL(req.url).pathname;
     if (path.startsWith("/api/") || !existsSync(web)) return app.handle(req);
     const file = Bun.file(
@@ -158,5 +167,6 @@ Bun.serve({
     );
     return new Response((await file.exists()) ? file : Bun.file(join(web, "index.html")));
   },
+  websocket: app.ahp.transport.websocket,
 });
 console.log(`ready http://127.0.0.1:${port} (${scenario}); stub GitHub on ${api}`);

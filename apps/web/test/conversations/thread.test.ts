@@ -330,7 +330,7 @@ describe("the thread", () => {
         turns: [
           {
             id: "host-made",
-            startedAt: new Date(Date.now() + 500).toISOString(),
+            startedAt: new Date(Date.now() + 3_600_000).toISOString(),
             duration: 5,
             message: { text: "later one", origin: USER_ORIGIN },
             responseParts: [],
