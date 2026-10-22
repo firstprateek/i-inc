@@ -17,6 +17,7 @@ import {
 import type { UsageReport } from "./acp.ts";
 import type { Db } from "./db.ts";
 import type { NotifySettings, PushSubscription } from "./push.ts";
+import type { TimeoutSettings } from "./timeouts.ts";
 
 /** A repo employees work on, and the checks its tickets must pass (spec §6, stages 4 and 8). */
 export interface Project extends Partial<ProjectPolicy> {
@@ -56,6 +57,8 @@ export interface Settings {
   storage?: Partial<StorageSettings>;
   /** What the owner chose to be notified about (T65); the rest keep their defaults. */
   notify?: Partial<NotifySettings>;
+  /** How long the daemon waits on a script, a command or an agent before giving up (T63); the rest keep their defaults. */
+  timeouts?: Partial<TimeoutSettings>;
 }
 
 const defaultSettings: Settings = { utcOffsetMinutes: 0, pricePerKWh: 0, currency: "USD" };
@@ -83,8 +86,27 @@ type Kind = RegistryKind;
 
 export class Registry implements Company {
   onChange?: (kind: RegistryKind) => void;
+  /** Rows already reported as unreadable, so each is logged once, not at every read. */
+  private readonly reported = new Set<string>();
 
-  constructor(private readonly db: Db) {}
+  constructor(
+    private readonly db: Db,
+    private readonly log?: (msg: string) => void,
+  ) {}
+
+  /** A row's body, or undefined when it can't be read (logged once): one bad row never stops a read. */
+  private parse<T>(kind: string, id: string, body: string): T | undefined {
+    try {
+      const v = JSON.parse(body) as T;
+      if (v !== null && v !== undefined) return v;
+    } catch {}
+    const key = `${kind}:${id}`;
+    if (!this.reported.has(key)) {
+      this.reported.add(key);
+      this.log?.(`company: the ${kind} "${id}" can't be read and is ignored`);
+    }
+    return undefined;
+  }
 
   private put(kind: Kind, id: Id, body: unknown): void {
     this.db.run(
@@ -98,8 +120,11 @@ export class Registry implements Company {
 
   private list<T>(kind: Kind): T[] {
     return this.db
-      .all<{ body: string }>("SELECT body FROM company WHERE kind = ? ORDER BY rowid", kind)
-      .map((r) => JSON.parse(r.body) as T);
+      .all<{ id: string; body: string }>("SELECT id, body FROM company WHERE kind = ? ORDER BY rowid", kind)
+      .flatMap((r) => {
+        const v = this.parse<T>(kind, r.id, r.body);
+        return v === undefined ? [] : [v];
+      });
   }
 
   private get<T>(kind: Kind, id: Id): T | undefined {
@@ -108,7 +133,7 @@ export class Registry implements Company {
       kind,
       id,
     );
-    return row ? (JSON.parse(row.body) as T) : undefined;
+    return row ? this.parse<T>(kind, id, row.body) : undefined;
   }
 
   /** Hires someone, or updates them. A new hire gets the least-worn avatar tint; an update keeps theirs. */
@@ -237,7 +262,8 @@ export class Registry implements Company {
     );
     const out: Record<Id, AccountRateLimit> = {};
     for (const r of rows) {
-      out[r.id] = JSON.parse(r.body) as AccountRateLimit;
+      const v = this.parse<AccountRateLimit>("rate_limit", r.id, r.body);
+      if (v) out[r.id] = v;
     }
     return out;
   }

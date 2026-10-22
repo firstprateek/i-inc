@@ -763,7 +763,8 @@ describe("a claim that nothing is working on", () => {
     store.write = () => {
       throw new Error("disk full");
     };
-    await expect(rig.call("POST", `/api/conversations/${c.conv.id}/ticket`, {})).rejects.toThrow("disk full");
+    // A route that throws answers 500 (T63).
+    expect((await rig.call("POST", `/api/conversations/${c.conv.id}/ticket`, {})).status).toBe(500);
     store.write = write;
     // The ticket row went with it (one transaction), the claim too, and nothing is held.
     expect(rig.app.deps.tickets.all()).toHaveLength(0);

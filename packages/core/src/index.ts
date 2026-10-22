@@ -17,3 +17,4 @@ export * from "./runner.ts";
 export * from "./scheduler.ts";
 export * from "./stages.ts";
 export * from "./state.ts";
+export * from "./validate.ts";

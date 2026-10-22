@@ -10,7 +10,10 @@ import {
   execDefault,
   type MachineSettings,
   machineOf,
+  withDefaultTimeout,
 } from "./machines.ts";
+import { describeMs, guardStdin, stopGroup, trackGroup } from "./proc.ts";
+import { defaultTimeoutsMs, type TimeoutsMs } from "./timeouts.ts";
 
 /**
  * Runs a script in an employee's machine and resolves with its exit code and output. Variables in
@@ -20,36 +23,76 @@ export type RunScript = (
   employeeId: string,
   script: string,
   env?: Record<string, string>,
-  /** A machine other than the employee's own, such as the one they used to work in. */
-  opts?: { machine?: string },
+  /**
+   * `machine`: a machine other than the employee's own, such as the one they used to work in.
+   * `timeoutMs`: how long it may run before it is stopped (default: the script limit in timeouts.ts).
+   */
+  opts?: { machine?: string; timeoutMs?: number },
 ) => Promise<{ code: number; output: string }>;
+
+/** The exit code of a script that was stopped for running too long (the one GNU `timeout` uses). */
+export const TIMED_OUT = 124;
 
 export function machineScript(
   s: MachineSettings = defaultMachineSettings,
   exec: Exec = execDefault,
 ): RunScript {
+  // The walls' look at `machine ls` has a limit too.
+  const look = withDefaultTimeout(s, exec);
   return async (employeeId, script, env = {}, opts = {}) => {
     if (opts.machine !== undefined && !/^inc-[a-z0-9-]{1,32}$/.test(opts.machine)) {
       throw new Error(`not a machine name: ${opts.machine}`);
     }
     const machine = opts.machine ?? machineOf(s, employeeId);
-    await assertRunnable(s, exec, machine);
+    await assertRunnable(s, look, machine);
     const names = Object.keys(env);
     const bad = names.find((name) => !/^[A-Z_][A-Z0-9_]*$/.test(name));
     if (bad) throw new Error(`can't pass ${bad} into a machine`);
     const flags = names.flatMap((name) => ["-e", name]);
     const args = ["machine", "run", "-i", "-u", s.user, "-n", machine, ...flags, "--", "bash", "-s"];
+    const limit = opts.timeoutMs ?? s.timeouts?.().scriptMs ?? defaultTimeoutsMs.scriptMs;
     return new Promise((resolve, reject) => {
-      const child = spawn(s.bin, args, { env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "pipe"] });
+      // Detached, so the child leads a process group that a timeout can stop as a whole.
+      const child = spawn(s.bin, args, {
+        env: { ...process.env, ...env },
+        stdio: ["pipe", "pipe", "pipe"],
+        detached: true,
+      });
+      trackGroup(child);
       let output = "";
+      let settled = false;
+      const settle = (result: { code: number; output: string }) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(result);
+      };
+      // The deadline settles the call itself: a killed child whose grandchildren still hold its pipes
+      // would never emit 'close', and the busy signal (and a deploy) would wait for it.
+      const timer = setTimeout(() => {
+        stopGroup(child, 2000);
+        settle({
+          code: TIMED_OUT,
+          output: `${output}\nthe script timed out after ${describeMs(limit)} and was stopped`,
+        });
+      }, limit);
+      timer.unref?.();
       child.stdout.on("data", (chunk) => {
         output += chunk;
       });
       child.stderr.on("data", (chunk) => {
         output += chunk;
       });
-      child.on("error", reject);
-      child.on("exit", (code) => resolve({ code: code ?? 1, output }));
+      // A write to a child that has already exited is EPIPE: its exit is the answer, not a crash.
+      guardStdin(child.stdin);
+      child.on("error", (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      });
+      // 'close', not 'exit': 'exit' can come before the last output has been read.
+      child.on("close", (code) => settle({ code: code ?? 1, output }));
       child.stdin.end(script);
     });
   };
@@ -75,6 +118,8 @@ export interface HarnessSettings {
   policy?: (project: string) => ProjectPolicy;
   /** The project's default branch (main, master, etc.). Default: main. */
   defaultBranch?: (project: string) => string | undefined;
+  /** The limits in timeouts.ts, as the owner has them now (milliseconds). */
+  timeouts?: () => Partial<TimeoutsMs>;
 }
 
 /** Direct mode: the files this ticket's work changes, against where it left main. */
@@ -238,7 +283,12 @@ export class MachineHarness implements Harness {
 
   async runChecks(ticket: Ticket): Promise<ChecksResult> {
     const script = checksScript(this.worktree(ticket), this.recipe(ticket), this.s.tailLines ?? 40);
-    const { code, output } = await this.run(ticket.assignee, script);
+    const { code, output } = await this.run(
+      ticket.assignee,
+      script,
+      {},
+      { timeoutMs: this.s.timeouts?.().checksMs ?? defaultTimeoutsMs.checksMs },
+    );
     return readChecks(code, output);
   }
 

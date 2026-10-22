@@ -2,6 +2,7 @@
 import type { Decision, Finding, HelperDuty, NeedsYou, TicketEvent } from "./events.ts";
 import type { Id, Proposal, PullRequestRef, TicketAttachment } from "./model.ts";
 import type { StageId } from "./stages.ts";
+import { isRecord, readFindings, text } from "./validate.ts";
 
 export interface SessionRecord {
   stage: StageId;
@@ -167,7 +168,7 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
         ],
       };
     case "checkpoint":
-      return { ...s, interrupted: false, fixDue: false, outputs: { ...s.outputs, [e.stage]: e.note } };
+      return { ...s, interrupted: false, fixDue: false, outputs: { ...s.outputs, [e.stage]: text(e.note) } };
     case "stage-finished":
       return {
         ...s,
@@ -175,7 +176,7 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
         engineOverride: null,
         interrupted: false,
         finished: [...s.finished, e.stage],
-        outputs: e.output === undefined ? s.outputs : { ...s.outputs, [e.stage]: e.output },
+        outputs: e.output === undefined ? s.outputs : { ...s.outputs, [e.stage]: text(e.output) },
       };
     case "out-of-tokens":
       return { ...s, status: "paused", paused: { engineId: e.engineId, since: e.at, until: e.resetsAt } };
@@ -191,17 +192,25 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
     case "checks-ran":
       return {
         ...s,
-        lastChecks: { green: e.green, failures: e.failures },
+        lastChecks: { green: e.green === true, failures: Array.isArray(e.failures) ? e.failures : [] },
         checkFailures: e.green ? s.checkFailures : s.checkFailures + 1,
         fixDue: !e.green,
       };
     case "proof": {
-      const pass = e.items.every((i) => i.pass);
+      // An old event may hold a reply that was stored unchecked: anything but a list of items that
+      // all pass counts as a failed proof, so the builder gets a fix session instead of a crash.
+      const items = Array.isArray(e.items) ? e.items.filter(isRecord) : [];
+      const pass =
+        Array.isArray(e.items) && items.length === e.items.length && items.every((i) => i.pass === true);
       return {
         ...s,
         interrupted: false,
         fixDue: !pass,
-        lastProof: e.items,
+        lastProof: items.map((i) => ({
+          doneWhen: text(i.doneWhen),
+          pass: i.pass === true,
+          evidence: text(i.evidence),
+        })),
         proofFailures: pass ? s.proofFailures : s.proofFailures + 1,
       };
     }
@@ -210,15 +219,23 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
         ...s,
         interrupted: false,
         review: {
-          round: e.round,
-          approved: e.approved,
-          findings: e.findings,
+          round: typeof e.round === "number" && Number.isFinite(e.round) ? e.round : s.review.round + 1,
+          approved: e.approved === true,
+          findings: readFindings(e.findings),
           disputed: null,
           addressed: false,
         },
       };
     case "addressed":
-      return { ...s, interrupted: false, review: { ...s.review, disputed: e.disputed, addressed: true } };
+      return {
+        ...s,
+        interrupted: false,
+        review: {
+          ...s.review,
+          disputed: typeof e.disputed === "string" ? e.disputed : null,
+          addressed: true,
+        },
+      };
     case "gates-ran":
       return { ...s, fixDue: e.conflict, gateConflicts: e.conflict ? s.gateConflicts + 1 : s.gateConflicts };
     case "needs-you":
@@ -262,7 +279,7 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
         status: "ready",
         readyAt: e.at,
         ownerNote: null,
-        outputs: { ...s.outputs, report: e.summary },
+        outputs: { ...s.outputs, report: text(e.summary) },
       };
     case "owner-decided":
       if (e.decision === "changes") {
@@ -288,6 +305,9 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
       return { ...s, status: "running", decision: e.decision };
     case "knowledge-proposed":
       return { ...s, interrupted: false, retroBy: [...s.retroBy, e.employeeId] };
+    case "reply-flagged":
+    case "unreadable":
+      return s;
     case "reassigned":
       return {
         ...s,
@@ -340,7 +360,7 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
         ...s,
         attachments: [
           ...s.attachments,
-          ...e.attachments
+          ...(Array.isArray(e.attachments) ? e.attachments : [])
             .filter((a) => !s.attachments.some((x) => x.n === a.n))
             .map((a) => ({ ...a, at: e.at })),
         ],
@@ -355,14 +375,34 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
     case "closed":
       return { ...s, status: "done", outcome: e.outcome, closedAt: e.at };
     case "failed":
-      return { ...s, status: "failed", failure: { stage: e.stage, reason: e.reason, tried: e.tried } };
+      return {
+        ...s,
+        status: "failed",
+        failure: { stage: e.stage, reason: text(e.reason), tried: Array.isArray(e.tried) ? e.tried : [] },
+      };
+    default:
+      // An event this version doesn't know (written by a newer release, then rolled back): ignored.
+      return s;
   }
 }
 
-export function fold(events: TicketEvent[]): TicketState {
+/**
+ * Folds a ticket's events into its state. One bad event can't break it: a row that isn't an event, or
+ * one that throws when applied, is skipped (and handed to `onSkip`), so a ticket always has a state.
+ */
+export function fold(events: TicketEvent[], onSkip?: (event: unknown, why: string) => void): TicketState {
   return events.reduce((s, e) => {
-    const next = apply(s, e);
-    const worked = s.status === "running" && s.lastAt !== null ? e.at - s.lastAt : 0;
-    return { ...next, workedMs: s.workedMs + worked, lastAt: e.at };
+    if (!isRecord(e) || typeof e.type !== "string" || typeof e.at !== "number" || !Number.isFinite(e.at)) {
+      onSkip?.(e, "not an event");
+      return s;
+    }
+    try {
+      const next = apply(s, e);
+      const worked = s.status === "running" && s.lastAt !== null ? e.at - s.lastAt : 0;
+      return { ...next, workedMs: s.workedMs + worked, lastAt: e.at };
+    } catch (err) {
+      onSkip?.(e, err instanceof Error ? err.message : String(err));
+      return s;
+    }
   }, emptyState());
 }

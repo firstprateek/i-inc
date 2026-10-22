@@ -25,6 +25,8 @@ const teamId = /^[a-z0-9][a-z0-9-]{0,31}$/;
  * paths, nothing outside the brain or the handbook.
  */
 export function pagePath(edit: KnowledgeEdit): string | null {
+  // An edit stored from an agent's reply may not be what the type says (old events were unchecked).
+  if (typeof edit?.page !== "string") return null;
   const parts = edit.page
     .trim()
     .toLowerCase()
@@ -83,11 +85,11 @@ export function knowledgeLog(ticketId: Id, events: TicketEvent[]): KnowledgeLog 
       at: e.at,
       edit,
     });
-    e.apply.forEach((edit, i) => {
+    (Array.isArray(e.apply) ? e.apply : []).forEach((edit, i) => {
       const p = make(edit, i, "a");
       (pagePath(edit) ? out.due : out.refused).push(p);
     });
-    e.awaitOwner.forEach((edit, i) => {
+    (Array.isArray(e.awaitOwner) ? e.awaitOwner : []).forEach((edit, i) => {
       const p = make(edit, i, "p");
       if (!pagePath(edit)) out.refused.push(p);
       else if (!decided.has(p.id)) out.awaiting.push(p);

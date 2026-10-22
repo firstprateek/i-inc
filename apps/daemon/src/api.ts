@@ -15,6 +15,7 @@ import {
   defaultSwitchRules,
   type Employee,
   type Engine,
+  findEngine,
   fold,
   handleMessage,
   handOff,
@@ -66,6 +67,7 @@ import { type NotifySettings, notifyKeys, notifySettings, type PushSubscription 
 import { defaultTeam, type Project } from "./registry.ts";
 import { ShipError } from "./ship.ts";
 import type { NewAttachment, NewTicket } from "./tickets.ts";
+import { defaultTimeoutSettings, readTimeoutSettings, timeoutSettings } from "./timeouts.ts";
 import {
   allRateLimits,
   deskView,
@@ -190,23 +192,36 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     ...(d.workspace ? { workspace: d.workspace } : {}),
   };
 
+  /** Tickets whose card couldn't be built in this request, with why: the board lists them. */
+  let unbuilt: { id: Id; reason: string }[] = [];
   const views = async (): Promise<TicketView[]> => {
     const waiting = new Map(daemon.waiting.map((w) => [w.ticketId, w.reason]));
     const out: TicketView[] = [];
+    unbuilt = [];
     for (const r of d.tickets.all()) {
-      const events = await d.store.read(r.ticket.id);
-      out.push(
-        ticketView(
-          r,
-          await daemon.state(r.ticket.id),
-          events,
-          d.registry,
-          waiting.get(r.ticket.id) ?? null,
-          daemon.waitingUntil[r.ticket.id] ?? null,
-        ),
-      );
+      // One ticket that can't be shown never takes the board down: it is listed as unreadable.
+      try {
+        const events = await d.store.read(r.ticket.id);
+        out.push(
+          ticketView(
+            r,
+            await daemon.state(r.ticket.id),
+            events,
+            d.registry,
+            waiting.get(r.ticket.id) ?? null,
+            daemon.waitingUntil[r.ticket.id] ?? null,
+          ),
+        );
+      } catch (err) {
+        console.error(`[board] ticket ${r.ticket.id}: ${logLine(err)}`);
+        unbuilt.push({ id: r.ticket.id, reason: "it can't be shown; its events could not be read" });
+      }
     }
     return out;
+  };
+  const unreadableTickets = () => {
+    const seen = new Set<string>();
+    return [...daemon.unreadable(), ...unbuilt].filter((u) => !seen.has(u.id) && seen.add(u.id));
   };
 
   /** GitHub's numeric id of a repo the bot can see (from the cached list), or undefined when it can't be told. */
@@ -332,7 +347,15 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
   };
 
   const routes: [string, string, Handler][] = [
-    ["GET", "/api/board", async () => json({ tickets: await views() })],
+    [
+      "GET",
+      "/api/board",
+      async () => {
+        const tickets = await views();
+        const unreadable = unreadableTickets();
+        return json({ tickets, ...(unreadable.length ? { unreadable } : {}) });
+      },
+    ],
 
     [
       "GET",
@@ -521,8 +544,25 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       "DELETE",
       "/api/engines/:id",
       async (_req, { id = "" }) => {
-        const ok = d.registry.removeEngine(id);
-        if (!ok) return json({ error: "no such engine" }, 404);
+        if (!d.registry.engines().some((e) => e.id === id)) return json({ error: "no such engine" }, 404);
+        // An engine an employee still uses can't go: their next ticket would have nothing to run on.
+        const users = d.registry
+          .employees()
+          .filter(
+            (e) =>
+              e.engines.default === id ||
+              e.engines.fallbacks.includes(id) ||
+              Object.values(e.engines.perDuty ?? {}).includes(id),
+          );
+        if (users.length) {
+          return json(
+            {
+              error: `${users.map((e) => e.name).join(", ")} still use${users.length === 1 ? "s" : ""} this engine; change theirs first`,
+            },
+            409,
+          );
+        }
+        d.registry.removeEngine(id);
         return json({ ok: true });
       },
     ],
@@ -853,6 +893,28 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         }
         d.registry.setSettings({ notify: { ...d.registry.settings().notify, ...patch } });
         return json({ settings: notifySettings(d.registry.settings().notify) });
+      },
+    ],
+
+    // T63: how long the daemon waits on a script, a command or an agent before it gives up.
+    [
+      "GET",
+      "/api/timeouts",
+      async () =>
+        json({ settings: timeoutSettings(d.registry.settings().timeouts), defaults: defaultTimeoutSettings }),
+    ],
+
+    [
+      "PUT",
+      "/api/timeouts",
+      async (req) => {
+        const r = readTimeoutSettings(await readObject(req));
+        if ("error" in r) return json(r, 400);
+        d.registry.setSettings({ timeouts: { ...d.registry.settings().timeouts, ...r.ok } });
+        return json({
+          settings: timeoutSettings(d.registry.settings().timeouts),
+          defaults: defaultTimeoutSettings,
+        });
       },
     ],
 
@@ -1444,13 +1506,15 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           .map(({ r }) => r.ticket.project)
           .reverse()
           .find((pr) => !e.projects || e.projects.includes(pr));
+        const engine = findEngine(d.registry, e.engines.default);
+        if (!engine) return json({ error: `${e.name}'s engine was removed in Setup` }, 409);
         // A chat turn is work a VACUUM or a restart would cut short.
         const out = await daemon.track(
           handleMessage(
             said,
             {
               employee: e,
-              engine: d.registry.engine(e.engines.default),
+              engine,
               current: current ? { ...current.r.ticket, assignee: e.id } : null,
               notes,
               defaultProject: recentProject ?? e.projects?.[0] ?? "General",
@@ -2197,11 +2261,13 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       "POST",
       "/api/tickets/:id/answer",
       async (req, p) => {
-        const { answer: a, note } = (await req.json()) as {
-          answer: "approve" | "reject" | "builder" | "reviewer";
-          note?: string;
-        };
-        return act(p.id, "needs-you", () => answer(ports, p.id ?? "", a, note));
+        const body = await readObject(req);
+        const a = body?.answer;
+        if (typeof a !== "string" || !(answers as readonly string[]).includes(a)) {
+          return json({ error: `answer must be one of ${answers.join(", ")}` }, 400);
+        }
+        const note = typeof body?.note === "string" ? body.note : undefined;
+        return act(p.id, "needs-you", () => answer(ports, p.id ?? "", a as (typeof answers)[number], note));
       },
     ],
 
@@ -2209,7 +2275,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       "POST",
       "/api/tickets/:id/decide",
       async (req, p) => {
-        type Body = { decision: "approve" | "changes" | "reject"; note?: string };
+        type Body = { decision: (typeof decisions)[number]; note?: string };
         // "Not quite" may come with images, as a `decision` JSON field and `image` files.
         let body: Body;
         let images: NewAttachment[] = [];
@@ -2222,6 +2288,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           } catch {
             return json({ error: "the decision field must be JSON" }, 400);
           }
+          if (!isDecision(body))
+            return json({ error: `decision must be one of ${decisions.join(", ")}` }, 400);
           const read = await readImages(upload.form);
           if ("error" in read) return json({ error: read.error }, read.status);
           images = read;
@@ -2231,7 +2299,10 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           const problem = d.tickets.get(p.id ?? "") ? roomFor(p.id ?? "", images.length) : null;
           if (problem) return json({ error: problem }, 400);
         } else {
-          body = (await req.json()) as Body;
+          const parsed = await readObject(req);
+          if (!isDecision(parsed))
+            return json({ error: `decision must be one of ${decisions.join(", ")}` }, 400);
+          body = parsed;
         }
         return act(p.id, "ready", async () => {
           // The images come first, so the Build session that follows the decision has them.
@@ -2659,7 +2730,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     } catch (e) {
       return json({ error: String(e instanceof Error ? e.message : e) }, 409);
     }
-    daemon.run(id);
+    // The owner acted: whatever back-off the ticket was in is over.
+    daemon.run(id, { force: true });
     return json({ ok: true });
   }
 
@@ -2761,10 +2833,17 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       if (req.method !== method) continue;
       const params = match(pattern, url.pathname);
       // A restart would cut these short, so the deployer waits for them (GET /api/health, busy).
-      if (params)
-        return longRunning.has(`${method} ${pattern}`)
-          ? daemon.track(handler(req, params))
-          : handler(req, params);
+      if (params) {
+        try {
+          return await (longRunning.has(`${method} ${pattern}`)
+            ? daemon.track(handler(req, params))
+            : handler(req, params));
+        } catch (err) {
+          // A route that throws answers 500 with a plain error; the details go to the log, not the client.
+          console.error(`[api] ${method} ${pattern}: ${logLine(err)}`);
+          return json({ error: "something went wrong on our side" }, 500);
+        }
+      }
     }
     return json({ error: "not found" }, 404);
   };
@@ -2929,6 +3008,20 @@ async function readObject(req: Request): Promise<Record<string, unknown> | null>
   } catch {
     return null;
   }
+}
+
+const answers = ["approve", "reject", "builder", "reviewer"] as const;
+const decisions = ["approve", "changes", "reject"] as const;
+
+/** A decide body whose `decision` is one of the three the owner can make (and whose note, if any, is text). */
+function isDecision(b: unknown): b is { decision: (typeof decisions)[number]; note?: string } {
+  if (typeof b !== "object" || b === null) return false;
+  const x = b as { decision?: unknown; note?: unknown };
+  return (
+    typeof x.decision === "string" &&
+    (decisions as readonly string[]).includes(x.decision) &&
+    (x.note === undefined || typeof x.note === "string")
+  );
 }
 
 function validate(t: Partial<NewTicket>): string | null {

@@ -1,5 +1,6 @@
 // The one-page report (spec §10). The harness supplies the facts from the event log; the builder's
 // draft supplies the judgment.
+import { findEngine } from "./engines.ts";
 import type { Ticket } from "./model.ts";
 import type { Company } from "./ports.ts";
 import type { TicketState } from "./state.ts";
@@ -20,7 +21,7 @@ export interface Report {
 
 export function assembleReport(ticket: Ticket, s: TicketState, company: Company): Report {
   const builder = company.employee(ticket.assignee);
-  const model = (engineId: string) => company.engine(engineId).model;
+  const model = (engineId: string) => findEngine(company, engineId)?.model ?? engineId;
   const own = s.sessions.filter((x) => x.employeeId === builder.id);
   const first = own[0] && model(own[0].engineId);
   const last = own.at(-1) && model(own.at(-1)?.engineId ?? "");

@@ -16,7 +16,9 @@ import { configDir, readCredentials, webToken } from "./config.ts";
 import { seedDemo, seedDemoLater, seedDemoProposals, seedDemoTickets } from "./demo.ts";
 import { resolveVersion } from "./deploys.ts";
 import { GitHubApp, readGitHubAppConfig } from "./github.ts";
+import { installGuards, serverError } from "./guards.ts";
 import { AppleMachines, defaultMachineSettings, wallsUp } from "./machines.ts";
+import { killTracked, stopTracked } from "./proc.ts";
 import { realPorts } from "./real.ts";
 import { checkpoint } from "./retention.ts";
 
@@ -29,6 +31,8 @@ const demo = process.env.I_INC_DEMO === "1";
 // The release this process runs, for /api/health: the deployer's checkouts know their own sha.
 const version = resolveVersion(process.env, import.meta.dir);
 const log = (m: string) => console.log(new Date().toISOString(), m);
+// Before anything else can fail: a rejection or exception nobody handled is logged, not fatal.
+installGuards({ log, exit: (code) => process.exit(code) });
 const common = {
   knowledgeDir: join(home, "knowledge"),
   brainIndexPath: join(home, "brain-index.db"),
@@ -141,12 +145,16 @@ const watchHome = async () => {
     .then((stopped) => stopped.length && log(`the home wall doesn't cover ${stopped.join(", ")}: stopped`))
     .catch((err) => log(`home wall check failed: ${err}`));
 };
-if (real)
+if (real) {
   void watchHome()
     .then(() => real.sweepAgents())
-    .then((n) => n && log(`stopped ${n} agent(s) an earlier daemon left running`));
-await app.daemon.tick();
-setInterval(() => void app.daemon.tick(), 30_000);
+    .then((n) => n && log(`stopped ${n} agent(s) an earlier daemon left running`))
+    .catch((err) => log(`sweeping for leftover agents failed: ${err}`));
+}
+// A first tick that fails is logged (tick() never rejects) and the daemon serves anyway; the next tick
+// tries again. Nothing in the database may keep it from coming up.
+await app.daemon.tick().catch((err) => log(`first tick failed: ${err}`));
+setInterval(() => void app.daemon.tick().catch((err) => log(`tick failed: ${err}`)), 30_000);
 
 // A failed deploy (rolled back, or never switched) becomes a push, once.
 const watchDeploys = () => void app.deploys.check().catch((err) => log(`deploy notifications: ${err}`));
@@ -155,8 +163,9 @@ setInterval(watchDeploys, 30_000);
 
 // Bounded growth (T52): trim the host and clean any machine that is up, idle and due, every ten
 // minutes. A machine about to be stopped is cleaned by the daemon's own pass (daemon.ts, sleepIdle).
-setTimeout(() => void app.storage.maintain(), 2 * 60_000).unref();
-setInterval(() => void app.storage.maintain(), 10 * 60_000);
+const maintain = () => void app.storage.maintain().catch((err) => log(`storage maintenance failed: ${err}`));
+setTimeout(maintain, 2 * 60_000).unref();
+setInterval(maintain, 10 * 60_000);
 
 // Brain copies in machines their employee has left (or that were stopped when it was tried) are removed.
 setInterval(
@@ -165,7 +174,12 @@ setInterval(
 );
 
 // Each team sandbox in use stays signed in to GitHub as the bot.
-if (real) setInterval(() => void real.keepLoginsFresh(), 5 * 60_000);
+if (real) {
+  setInterval(
+    () => void real.keepLoginsFresh().catch((err) => log(`GitHub sign-in renewal failed: ${err}`)),
+    5 * 60_000,
+  );
+}
 
 // If the walls go down, nothing new starts (assertWalls), and the machines already running stop.
 if (!demo && app.deps.machines instanceof AppleMachines) {
@@ -198,6 +212,10 @@ const server = Bun.serve<WsData>({
   port,
   hostname: host,
   idleTimeout: 60,
+  // Never Bun's development error page: it prints source excerpts and absolute paths. A route that
+  // throws answers with a plain JSON error, and the log has the details.
+  development: false,
+  error: serverError(log),
   fetch: (req, server) => {
     // Conversations speak AHP over a WebSocket on this same port (src/ahp/transport.ts).
     if (app.ahp.transport.matches(req)) {
@@ -235,6 +253,8 @@ async function shutdown(signal: string): Promise<void> {
       app.ahp.backend instanceof SessionHost ? app.ahp.backend.shutdown() : undefined,
       agent.shutdown?.(),
     ]);
+    // Scripts and commands run detached, so launchd's kill of the daemon's group would miss them.
+    stopTracked();
     // Whatever ignored both the end of its stdin and the kill of its client, in every machine that is
     // up (a stopped one is not started to look), all at once, within a few seconds.
     if (real) await real.sweepAgents({ all: true, timeoutMs: 8000 });
@@ -245,6 +265,8 @@ async function shutdown(signal: string): Promise<void> {
   } catch (err) {
     log(`shutdown: ${err instanceof Error ? err.message : err}`);
   }
+  // Nothing detached outlives the daemon: launchd's kill of its group would not reach it.
+  killTracked();
   clearTimeout(hard);
   process.exit(0);
 }

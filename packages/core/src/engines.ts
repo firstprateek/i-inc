@@ -24,6 +24,15 @@ export function engineFor(employee: Employee, duty: Duty, state: TicketState, is
   return employee.engines.perDuty?.[duty] ?? employee.engines.default;
 }
 
+/** The engine with this id, or undefined when it was removed from Setup while something still names it. */
+export function findEngine(company: Pick<Company, "engine">, id: Id): Engine | undefined {
+  try {
+    return company.engine(id);
+  } catch {
+    return undefined;
+  }
+}
+
 /** The next fallback engine not yet used in the active stage, or undefined when none is left. */
 export function nextFallback(
   employee: Employee,
@@ -36,5 +45,8 @@ export function nextFallback(
     current,
     ...state.switches.filter((s) => s.stage === state.active).map((s) => s.from),
   ]);
-  return employee.engines.fallbacks.find((id) => !used.has(id) && engineAllowed(ticket, company.engine(id)));
+  return employee.engines.fallbacks.find((id) => {
+    const engine = findEngine(company, id);
+    return !used.has(id) && engine !== undefined && engineAllowed(ticket, engine);
+  });
 }

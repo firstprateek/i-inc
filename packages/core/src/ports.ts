@@ -103,6 +103,11 @@ export interface SessionRequest {
   brief: string;
   /** Aborted when the owner sends an urgent message: stop at once and return "interrupted". */
   signal?: AbortSignal;
+  /**
+   * For an agent with `reportsLaunch`: called once the agent process is running. The runner records the
+   * session as started then, so a launch that fails again and again adds nothing to the ticket's log.
+   */
+  onLaunched?: () => Promise<void>;
   /** Emits transcript items (streamed from ACP notifications) for recording. */
   onTranscriptItem?: (item: SessionTranscriptItem) => void;
 }
@@ -151,6 +156,8 @@ export type SessionOutcome =
 
 /** Runs one ACP session to the end of its step. */
 export interface Agent {
+  /** The agent calls `onLaunched` once its process is up; the runner then waits for that to record the session. */
+  readonly reportsLaunch?: boolean;
   run(request: SessionRequest): Promise<SessionOutcome>;
 }
 

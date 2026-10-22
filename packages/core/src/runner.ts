@@ -4,24 +4,31 @@
 // what happened, repeat. Nothing lives in memory between steps, so after a crash, a quota pause or
 // an owner's answer, calling runTicket again carries on from the last event.
 import { brief, freshBrief } from "./brief.ts";
-import { engineAllowed, engineFor, nextFallback } from "./engines.ts";
-import type { Decision, Finding, HelperDuty, NeedsYou, TicketEvent } from "./events.ts";
+import { engineAllowed, engineFor, findEngine, nextFallback } from "./engines.ts";
+import type { Decision, HelperDuty, NeedsYou, TicketEvent } from "./events.ts";
 import {
   type Duty,
   defaultProjectPolicy,
   type Employee,
-  type FollowUp,
   type Id,
   type KnowledgeEdit,
   type ProjectPolicy,
-  type Proposal,
   type Ticket,
 } from "./model.ts";
 import { decideOutbound } from "./outbound.ts";
-import { type Ports, StartupError } from "./ports.ts";
+import { type Ports, type SessionOutcome, StartupError } from "./ports.ts";
 import { assembleReport, type Report, reportMarkdown } from "./report.ts";
 import { planFor, type StageId, type StagePlan } from "./stages.ts";
 import { fold, type TicketState } from "./state.ts";
+import {
+  isRecord,
+  readDisputed,
+  readEdits,
+  readFollowUps,
+  readProof,
+  readProposals,
+  readVerdict,
+} from "./validate.ts";
 
 export type RunResult =
   | { status: "ready"; report: Report }
@@ -171,7 +178,7 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
 
   async proposals(c) {
     if (!c.s.proposals) {
-      const items = parseJson<{ proposals: Proposal[] }>(c.s.outputs.work ?? "")?.proposals;
+      const items = readProposals(parseJson(c.s.outputs.work ?? ""));
       if (!items) {
         await c.emit(failed(c, "proposals", "the errand's proposals could not be read"));
         return;
@@ -211,11 +218,11 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
       `Read the handbook and each project's CLAUDE.md. Write what you will need as pages in your brain: one page per project under projects/, plus anything about the tools. ${pageRules} Reply as JSON: {"edits":[{"page","text"}]}.`,
     );
     if (out === null) return;
-    const edits = (parseJson<{ edits: Omit<KnowledgeEdit, "layer">[] }>(out)?.edits ?? []).map(
-      (e): KnowledgeEdit => ({ layer: "brain", page: e.page, text: e.text }),
-    );
+    const read = readEdits(replyField(out, "edits"), { layer: "brain" });
+    const edits = read.kept;
     const at = c.p.clock.now();
     await c.emit(
+      ...flagged(c, "orient", "edits", read.dropped),
       { type: "knowledge-proposed", at, employeeId: c.builder.id, apply: edits, awaitOwner: [] },
       finished(c, "orient"),
       { type: "closed", at, outcome: "done" },
@@ -315,7 +322,7 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
         : { helperFor: "verify" },
     );
     if (out === null) return;
-    const items = parseJson<{ items: { doneWhen: string; pass: boolean; evidence: string }[] }>(out)?.items;
+    const items = readProof(parseJson(out));
     if (!items) {
       await c.emit(failed(c, "prove", `the verifier's proof could not be read${quoteOf(out)}`));
       return;
@@ -375,7 +382,7 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
           : { fresh: direct, helperFor: "review" },
       );
       if (out === null) return;
-      const verdict = parseJson<{ approved: boolean; findings: Finding[] }>(out);
+      const verdict = readVerdict(parseJson(out));
       if (!verdict) {
         await c.emit(failed(c, "review", `the review could not be read${quoteOf(out)}`));
         return;
@@ -400,12 +407,11 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
         'Address each review finding: fix it, or say why not. Reply as JSON: {"disputed": null or "what you disagree with and why"}.',
       );
       if (out === null) return;
-      const reply = parseJson<{ disputed: string | null }>(out);
       await c.emit({
         type: "addressed",
         at: c.p.clock.now(),
         round: r.round,
-        disputed: reply?.disputed ?? null,
+        disputed: readDisputed(parseJson(out)),
       });
       return;
     }
@@ -518,10 +524,9 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
       if (out === null) return;
       // With a brain copy the lessons are edits to its files, collected after the ticket. A reply that still
       // carries lessons as JSON (the copy wasn't available this time, and the brief said to) is taken as before.
-      const edits = (parseJson<{ edits: KnowledgeEdit[] }>(out)?.edits ?? [])
-        .slice(0, 2)
-        .map((e) => routed(c.ticket, e));
-      await c.emit({
+      const read = readEdits(replyField(out, "edits"), { limit: 2 });
+      const edits = read.kept.map((e) => routed(c.ticket, e));
+      await c.emit(...flagged(c, "retro", "edits", read.dropped), {
         type: "knowledge-proposed",
         at: c.p.clock.now(),
         employeeId: next.id,
@@ -582,14 +587,14 @@ function ownSeat(
   needDifferent = false,
 ): { employee: Employee; engineId?: Id } | null {
   const own = engineFor(c.builder, "build", c.s, true);
-  const ownEngine = c.p.company.engine(own);
+  const ownEngine = findEngine(c.p.company, own);
   const ruledOut = (c.s.unavailable[duty] ?? [])
     .filter((u) => u.employeeId === c.builder.id && u.engineId)
     .map((u) => u.engineId);
   const different = (c.p.company.engines?.() ?? []).find(
     (e) =>
       e.id !== own &&
-      (e.harness !== ownEngine.harness || e.accountId !== ownEngine.accountId) &&
+      (!ownEngine || e.harness !== ownEngine.harness || e.accountId !== ownEngine.accountId) &&
       engineAllowed(c.ticket, e) &&
       !c.s.paused &&
       !ruledOut.includes(e.id) &&
@@ -682,13 +687,14 @@ async function directReport(c: Step): Promise<void> {
     `i.inc pushed your work to main${c.s.pushed ? ` as ${c.s.pushed.slice(0, 7)}` : ""}, and CI passed there. Write the report: what changed, why this way, risk, and the calls the owner might overrule. Then list up to 3 follow-up tickets you noticed but didn't do, only ones worth doing. Reply as JSON: {"report": "...", "followUps":[{"title","doneWhen":["..."],"type":"fix"|"feat"|"chore","effort":"low"|"medium"|"high","reason"}]}.`,
   );
   if (out === null) return;
-  const parsed = parseJson<{ report?: string; followUps?: FollowUp[] }>(out);
-  const report = parsed?.report?.trim() || out;
-  const followUps = (parsed?.followUps ?? [])
-    .filter((f) => f?.title && Array.isArray(f.doneWhen))
-    .slice(0, 3);
+  const parsed = parseJson<unknown>(out);
+  const said = isRecord(parsed) && typeof parsed.report === "string" ? parsed.report.trim() : "";
+  const report = said || out;
+  const read = readFollowUps(isRecord(parsed) ? parsed.followUps : undefined);
+  const followUps = read.kept;
   const at = c.p.clock.now();
   await c.emit(
+    ...flagged(c, "report", "follow-ups", read.dropped),
     finished(c, "report", report),
     { type: "report-ready", at, summary: report },
     ...(followUps.length
@@ -747,12 +753,6 @@ async function session(
   const stage = c.s.active as StageId;
   const isAssignee = employee.id === c.ticket.assignee;
   const engineId = o.engineId ?? engineFor(employee, duty, c.s, isAssignee);
-  const engine = c.p.company.engine(engineId);
-  if (!engineAllowed(c.ticket, engine)) {
-    await c.emit(failed(c, stage, `${engine.model} is not a local engine, and errands carry home data`));
-    return null;
-  }
-
   // A reviewer or verifier that can't start never fails the builder's ticket: it is skipped, and
   // another seat is picked. The builder's own default engine is the exception (switch rules apply).
   const helperDuty =
@@ -769,6 +769,18 @@ async function session(
     });
     return null;
   };
+  // An engine taken out of Setup while an employee or a ticket still names it never stops the loop.
+  const engine = findEngine(c.p.company, engineId);
+  if (!engine) {
+    const gone = `${employee.name}'s engine "${engineId}" was removed in Setup; choose another and retry`;
+    if (helperDuty) return unavailable(gone);
+    await c.emit(failed(c, stage, gone));
+    return null;
+  }
+  if (!engineAllowed(c.ticket, engine)) {
+    await c.emit(failed(c, stage, `${engine.model} is not a local engine, and errands carry home data`));
+    return null;
+  }
   try {
     await c.p.machines.ensureUp(employee.id);
   } catch (err) {
@@ -798,24 +810,43 @@ async function session(
         isAssignee && duty !== "review",
         employee,
       );
-  await c.emit({
-    type: "session-started",
-    at: c.p.clock.now(),
-    stage,
-    employeeId: employee.id,
-    engineId,
-    resume: c.s.interrupted || c.s.paused !== null,
-  });
+  // The session is recorded as started when it is. An agent that says when its process is up
+  // (`reportsLaunch`) is waited for, so a launch that fails again and again (the walls are down, GitHub
+  // gives no token) leaves nothing in the ticket's log; any other agent is recorded up front.
+  const resume = c.s.interrupted || c.s.paused !== null;
+  let recorded: Promise<void> | undefined;
+  const recordStart = (): Promise<void> => {
+    recorded ??= c.emit({
+      type: "session-started",
+      at: c.p.clock.now(),
+      stage,
+      employeeId: employee.id,
+      engineId,
+      resume,
+    });
+    return recorded;
+  };
+  if (!c.p.agent.reportsLaunch) await recordStart();
   const signal = c.opts.signal?.(employee.id);
-  const out = await c.p.agent.run({
-    ticket: c.ticket,
-    stage,
-    duty,
-    employee,
-    engine,
-    brief: text,
-    ...(signal ? { signal } : {}),
-  });
+  let out: SessionOutcome;
+  try {
+    out = await c.p.agent.run({
+      ticket: c.ticket,
+      stage,
+      duty,
+      employee,
+      engine,
+      brief: text,
+      ...(signal ? { signal } : {}),
+      ...(c.p.agent.reportsLaunch ? { onLaunched: recordStart } : {}),
+    });
+    // An agent that never said it had launched still ran: the session is recorded before its outcome.
+    await recordStart();
+  } catch (err) {
+    // A helper whose session couldn't even launch is skipped, like one whose sandbox won't boot.
+    if (helperDuty && err instanceof StartupError) return unavailable(err.message);
+    throw err;
+  }
 
   if (out.kind === "done") return out.output;
   if (out.kind === "interrupted") {
@@ -858,7 +889,7 @@ async function fallBackFromEmptyAccount(c: Step): Promise<boolean> {
   if (c.p.clock.now() - paused.since < rule.afterMinutes * 60_000) return false;
   const next = nextFallback(c.builder, paused.engineId, c.s, c.ticket, c.p.company);
   if (!next) return false;
-  const model = c.p.company.engine(paused.engineId).model;
+  const model = findEngine(c.p.company, paused.engineId)?.model ?? paused.engineId;
   await c.emit({
     type: "engine-switched",
     at: c.p.clock.now(),
@@ -873,6 +904,27 @@ async function fallBackFromEmptyAccount(c: Step): Promise<boolean> {
 const MAX_PAYLOAD_CHARS = 16 * 1024;
 export const capPayload = (text: string, max = MAX_PAYLOAD_CHARS): string =>
   text.length <= max ? text : `${text.slice(0, max)}\n...[truncated]`;
+
+/** One field of an agent's JSON reply, or undefined when the reply isn't a JSON object. */
+function replyField(out: string, name: string): unknown {
+  const v = parseJson<unknown>(out);
+  return isRecord(v) ? v[name] : undefined;
+}
+
+/** A note on the ticket that part of an agent's reply was left out because it wasn't usable. */
+function flagged(c: Step, stage: StageId, what: string, dropped: number): TicketEvent[] {
+  return dropped > 0
+    ? [
+        {
+          type: "reply-flagged",
+          at: c.p.clock.now(),
+          stage,
+          what,
+          detail: `${dropped} of the ${what} in the reply could not be used and were left out`,
+        },
+      ]
+    : [];
+}
 
 function finished(c: Step, stage: StageId, output?: string): TicketEvent {
   return output === undefined
@@ -998,7 +1050,9 @@ function withAttachments(ticket: Ticket, s: TicketState): Ticket {
 function failed(c: Step, stage: StageId, reason: string): TicketEvent {
   const tried = [
     ...new Set(
-      c.s.sessions.filter((x) => x.stage === stage).map((x) => c.p.company.engine(x.engineId).model),
+      c.s.sessions
+        .filter((x) => x.stage === stage)
+        .map((x) => findEngine(c.p.company, x.engineId)?.model ?? x.engineId),
     ),
   ];
   return { type: "failed", at: c.p.clock.now(), stage, reason, tried };
