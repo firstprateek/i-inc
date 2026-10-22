@@ -21,7 +21,7 @@ entry is the finding, the decision, and where it was fixed. PR 1 is `t64-needs-y
 3. **Demo mode had no conversation backend** ("No agent is connected to conversations yet").
    - Decision: a small scripted agent in the daemon's own process.
    - Fixed in: PR 1 (`apps/daemon/src/demo-agent.ts`, wired in `main.ts`). It streams a reply with a read, a plan, and an
-     edit that asks for permission (it starts in "Ask before edits").
+     command that asks for permission (it starts in bypass, like the draft says, and always asks before running its test command, so the permission card shows).
 4. **Getting started appeared after load and pushed the page down** under the pointer.
    - Decision: move it into the centre empty state as a compact card, below the composer, so nothing above it can move. Chosen
      over reserving its height because its state (done, dismissed) is only known after load, and reserving would leave a gap

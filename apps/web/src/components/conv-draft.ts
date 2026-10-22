@@ -125,8 +125,10 @@ export class IncConvDraft extends LitElement {
       /* Top-aligned at a fixed place: what loads later (the checklist) goes below the composer and moves nothing. */
       .draft { width: min(720px, 100%); margin: 0 auto; box-sizing: border-box; padding: clamp(12px, 11vh, 110px) 2px 24px;
         display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-      .back { align-self: flex-start; min-height: 44px; display: inline-flex; align-items: center; gap: 4px; padding: 0 12px 0 6px; border: 0;
-        background: transparent; color: var(--ink); font: 600 15px var(--body); border-radius: 12px; cursor: pointer; margin-bottom: -8px; }
+      /* A phone's row for Back is always there (empty until the list has loaded), so it appearing moves nothing. */
+      .back-row { min-height: 44px; margin-bottom: -8px; }
+      .back { min-height: 44px; display: inline-flex; align-items: center; gap: 4px; padding: 0 12px 0 6px; border: 0;
+        background: transparent; color: var(--ink); font: 600 15px var(--body); border-radius: 12px; cursor: pointer; }
       .back svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
       .back:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 1px; }
       h2 { font-size: 28px; line-height: 1.2; }
@@ -209,10 +211,14 @@ export class IncConvDraft extends LitElement {
       : `Ask ${name || "an employee"} anything, or tell them what to do.`;
     return html`<div class="draft">
       ${
-        this.back
-          ? html`<button class="back" type="button" @click=${() => {
-              location.hash = "#/conversations";
-            }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>Conversations</button>`
+        this.phone
+          ? html`<div class="back-row">${
+              this.back
+                ? html`<button class="back" type="button" @click=${() => {
+                    location.hash = "#/conversations";
+                  }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>Conversations</button>`
+                : nothing
+            }</div>`
           : nothing
       }
       <h2>Start a conversation</h2>

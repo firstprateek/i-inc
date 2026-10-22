@@ -226,6 +226,23 @@ try {
       hasTouch: mobile,
     });
     const page = await ctx.newPage();
+    if (mobile) {
+      // The Back button appears once the list has loaded: its row is reserved, so nothing moves.
+      await page.route("**/api/conversations*", async (route) => {
+        await sleep(1200);
+        await route.continue();
+      });
+      await page.goto(`${base}/#/conversations?new=1`);
+      await page.locator("inc-conv-composer textarea").waitFor();
+      const early = await page.locator("inc-conv-composer textarea").boundingBox();
+      const earlyH = await page.locator("inc-conv-draft .draft > h2").boundingBox();
+      await page.locator("inc-conv-draft button.back").waitFor({ timeout: 10_000 });
+      const late = await page.locator("inc-conv-composer textarea").boundingBox();
+      const lateH = await page.locator("inc-conv-draft .draft > h2").boundingBox();
+      const shift = Math.max(Math.abs(early.y - late.y), Math.abs(earlyH.y - lateH.y));
+      ok(shift < 0.5, `the Back button appearing moves nothing (${shift}px)`);
+      await page.unroute("**/api/conversations*");
+    }
     await page.goto(`${base}/#/conversations?new=1`);
     await page.locator("inc-conv-composer textarea").waitFor();
     const url0 = page.url();

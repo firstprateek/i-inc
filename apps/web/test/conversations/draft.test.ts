@@ -166,6 +166,23 @@ describe("the centred composer", () => {
     document.body.innerHTML = "";
     const b = await mount();
     expect(b.root.querySelector("button.back")).toBeNull();
+    expect(b.root.querySelector(".back-row")).toBeNull(); // a laptop has no Back row
+  });
+
+  it("reserves the phone's Back row before the list has loaded, so it appearing moves nothing", async () => {
+    const early = await mount({ phone: true, back: false });
+    const row = early.root.querySelector(".back-row");
+    expect(row).not.toBeNull();
+    expect(row?.querySelector("button")).toBeNull();
+    const css = (customElements.get("inc-conv-draft") as unknown as { styles: { cssText: string }[] }).styles
+      .map((c) => c.cssText)
+      .join("\n");
+    expect(css).toMatch(/\.back-row \{[^}]*min-height: 44px/);
+    early.el.back = true;
+    await early.el.updateComplete;
+    // the same row, now with the button in it
+    expect(early.root.querySelector(".back-row")).toBe(row);
+    expect(row?.querySelector("button.back")).not.toBeNull();
   });
 });
 

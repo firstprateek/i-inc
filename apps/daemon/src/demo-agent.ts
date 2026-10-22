@@ -7,13 +7,18 @@ import type { AgentProcess, Launch } from "./acp.ts";
 
 type Json = Record<string, unknown>;
 
-/** The modes the demo agent offers. It starts in "Ask before edits", so the permission card shows. */
+/**
+ * The modes the demo agent offers. The host starts a conversation in the agent's bypass mode (like a real
+ * agent's), which is also what the New conversation screen says it will do. Edits ask in "Ask before edits"; and
+ * so that the permission card can be seen in any mode, the demo agent always asks before running its test command.
+ */
 const MODES = {
   currentModeId: "default",
   availableModes: [
     { id: "default", name: "Ask before edits", description: "Ask before every edit" },
     { id: "acceptEdits", name: "Accept edits", description: "Edit files without asking" },
     { id: "plan", name: "Plan only", description: "Read and plan; change nothing" },
+    { id: "bypassPermissions", name: "Bypass permissions", description: "Never ask" },
   ],
 };
 
@@ -156,7 +161,7 @@ export class DemoAgent {
         'export function money(cents: number): string {\n  const sign = cents < 0 ? "-" : "";\n  return sign + "$" + (Math.abs(cents) / 100).toFixed(2);\n}\n',
     };
     const mode = this.modes.get(sessionId);
-    let allowed = mode === "acceptEdits";
+    let allowed = mode === "acceptEdits" || mode === "bypassPermissions";
     if (mode === "plan") {
       this.update(sessionId, {
         sessionUpdate: "tool_call_update",
@@ -201,11 +206,64 @@ export class DemoAgent {
         title: "Edited src/format.ts",
         content: [diff],
       });
-      await this.say(
+      await this.say(sessionId, "agent_message_chunk", "Edited. Now I'll run the tests. ");
+      this.update(sessionId, {
+        sessionUpdate: "tool_call",
+        toolCallId: "demo-run",
+        title: "Run pnpm test",
+        kind: "execute",
+        status: "pending",
+        rawInput: { command: "pnpm test" },
+      });
+      // Demo only: asked in every mode, so there is always a permission card to see.
+      const res = await this.ask("session/request_permission", {
         sessionId,
-        "agent_message_chunk",
-        "Done. `money(-1250)` now gives `-$12.50`. This is the demo agent, so nothing was really changed.",
-      );
+        toolCall: {
+          toolCallId: "demo-run",
+          title: "Run pnpm test",
+          kind: "execute",
+          rawInput: { command: "pnpm test" },
+        },
+        options: [
+          { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
+          { optionId: "allow-always", name: "Always allow", kind: "allow_always" },
+          { optionId: "reject-once", name: "Deny", kind: "reject_once" },
+        ],
+      });
+      const outcome = (res.result as Json | undefined)?.outcome as Json | undefined;
+      if (!outcome || outcome.outcome === "cancelled" || this.cancelled.has(sessionId))
+        return { stopReason: "cancelled" };
+      if (String(outcome.optionId).startsWith("allow")) {
+        this.update(sessionId, {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "demo-run",
+          status: "in_progress",
+        });
+        await sleep(300);
+        this.update(sessionId, {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "demo-run",
+          status: "completed",
+          content: [
+            {
+              type: "content",
+              content: { type: "text", text: "Test Files  3 passed\n     Tests  41 passed\n" },
+            },
+          ],
+        });
+        await this.say(
+          sessionId,
+          "agent_message_chunk",
+          "Done. `money(-1250)` now gives `-$12.50` and the tests pass. This is the demo agent, so nothing was really changed.",
+        );
+      } else {
+        this.update(sessionId, {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "demo-run",
+          status: "failed",
+        });
+        await this.say(sessionId, "agent_message_chunk", "Understood, I did not run the tests.");
+      }
     } else {
       this.update(sessionId, {
         sessionUpdate: "tool_call_update",
