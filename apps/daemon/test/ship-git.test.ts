@@ -33,6 +33,8 @@ const copy = (over: Partial<ShipCopy> = {}): ShipCopy => ({
   ...over,
 });
 const REMOTE = "https://github.com/acme/duet.git";
+const NONCE = "0123456789abcdef";
+const TOKEN = "gh\u0070_abcdefghijklmnopqrstuvwxyz0123456789";
 
 const patchOf = (files: Record<string, string>) =>
   Object.entries(files)
@@ -44,8 +46,6 @@ const patchOf = (files: Record<string, string>) =>
           .join("\n")}`,
     )
     .join("\n");
-
-const b64 = (s: string) => Buffer.from(s).toString("base64");
 
 describe("the scan for credentials", () => {
   it("finds tokens, keys, passwords in URLs, live payment keys, npm auth and .netrc logins", () => {
@@ -130,47 +130,55 @@ describe("the scan for credentials", () => {
 });
 
 describe("reading the inspect script's output", () => {
-  const out = (net: string[], hist: string[] = ["@@commits-total 0"]) =>
-    [
+  const N = "0123456789abcdef";
+  const sec = (name: string, body: string) => `@@${N}-${name}-begin\n${body}\n@@${N}-${name}-end`;
+  interface F {
+    path: string;
+    a?: number | "-";
+    d?: number | "-";
+    patch?: string;
+    size?: number;
+    mode?: string;
+  }
+  const sha = "1".repeat(40);
+  const out = (
+    o: { files?: F[]; hist?: string[]; dirty?: string[]; abs?: number[]; patchBlocks?: string[] } = {},
+  ) => {
+    const files = o.files ?? [];
+    return [
       "@@head 0123456789abcdef0123456789abcdef01234567",
       "@@ahead 2",
       "@@remote ",
-      `@@dirty ${b64("src/a.ts")}`,
-      `@@dirty ${b64("new file.txt")}`,
-      "@@net-begin",
-      ...net,
-      "",
-      "@@net-end",
-      "@@hist-begin",
-      ...hist,
-      "",
-      "@@hist-end",
+      sec("dirty", (o.dirty ?? ["src/a.ts", "new file.txt"]).map((p) => `${p}\0`).join("")),
+      sec("numstat", files.map((f) => `${f.a ?? 1}\t${f.d ?? 0}\t${f.path}\0`).join("")),
+      sec("raw", files.map((f) => `:100644 ${f.mode ?? "100644"} ${sha} ${sha} M\0${f.path}\0`).join("")),
+      sec("sizes", files.map((f) => String(f.size ?? 10)).join("\n")),
+      sec("abs", (o.abs ?? []).join("\n")),
+      sec(
+        "patch",
+        o.patchBlocks?.join("\n") ??
+          files
+            .map((f) => patchOf({ [f.path.replaceAll("\n", " ")]: f.patch ?? "export const a = 1;" }))
+            .join("\n"),
+      ),
+      sec("hist", (o.hist ?? ["@@total 0"]).join("\n")),
     ].join("\n");
-  const file = (path: string, a: number | "-" = 1, d: number | "-" = 0) => `@@file ${a} ${d} ${b64(path)}`;
-  const scan = (path: string, text: string) => `@@scan ${b64(path)}\n${patchOf({ [path]: text })}`;
+  };
+  const read = (o: Parameters<typeof out>[0] = {}, c = copy()) => readInspect(c, out(o), N);
 
   it("lists the files with their counts, the uncommitted paths, and the protected and secret-bearing ones", () => {
-    const r = readInspect(
-      copy(),
-      out([
-        file("src/a.ts", 12, 3),
-        scan("src/a.ts", "export const a = 1;"),
-        file("logo.png", "-", "-"),
-        `@@binary ${b64("logo.png")} 20000`,
-        file(".github/workflows/ci.yml"),
-        scan(".github/workflows/ci.yml", "name: ci"),
-        file(".env"),
-        scan(".env", "A=1"),
-        file(".env.example"),
-        scan(".env.example", "A="),
-        file("keys/server.pem"),
-        scan("keys/server.pem", "x"),
-        file("deploy/.netrc"),
-        scan("deploy/.netrc", "x"),
-        file("tiny.ico", "-", "-"),
-        `@@binary ${b64("tiny.ico")} 300`,
-      ]),
-    );
+    const r = read({
+      files: [
+        { path: "src/a.ts", a: 12, d: 3 },
+        { path: "logo.png", a: "-", d: "-", size: 20000 },
+        { path: ".github/workflows/ci.yml" },
+        { path: ".env" },
+        { path: ".env.example" },
+        { path: "keys/server.pem" },
+        { path: "deploy/.netrc" },
+        { path: "tiny.ico", a: "-", d: "-", size: 300 },
+      ],
+    });
     expect(r.head).toBe("0123456789abcdef0123456789abcdef01234567");
     expect(r.ahead).toBe(2);
     expect(r.uncommitted).toEqual(["src/a.ts", "new file.txt"]);
@@ -183,58 +191,75 @@ describe("reading the inspect script's output", () => {
     expect(r.tooBig).toBe(false);
   });
 
-  it("fails closed: a changed file with no scan, an unreadable name, or a missing section is a reason to stop", () => {
-    const missing = readInspect(copy(), out([file("src/a.ts", 3, 0)]));
-    expect(missing.unscanned).toEqual(["src/a.ts"]);
-    expect(blockers(missing)[0]).toContain("could not be read to check for credentials");
-    const badName = readInspect(copy(), out(["@@file 1 0 ***not-base64***", "@@scan ***"]));
-    expect(badName.unscanned.length).toBeGreaterThan(0);
-    const noSections = readInspect(copy(), "@@head abc\n@@ahead 1\n");
+  it("fails closed: files that don't line up with the patch, a missing section, or a forged marker", () => {
+    const missingPatch = read({ files: [{ path: "src/a.ts" }], patchBlocks: [] });
+    expect(missingPatch.unscanned.length).toBe(1);
+    expect(blockers(missingPatch)[0]).toContain("could not be read to check for credentials");
+    const noSections = readInspect(copy(), "@@head abc\n@@ahead 1\n", N);
     expect(noSections.tooBig).toBe(true);
     expect(blockers(noSections)).toHaveLength(1);
-    // A pure deletion or a mode change has nothing to scan.
-    expect(readInspect(copy(), out([file("gone.ts", 0, 9), file("run.sh", 0, 0)])).unscanned).toEqual([]);
+    // A pure deletion or a mode change has nothing to scan, and still lines up.
+    expect(
+      read({
+        files: [
+          { path: "gone.ts", a: 0, d: 9, patch: "" },
+          { path: "run.sh", a: 0, d: 0, patch: "" },
+        ],
+      }).unscanned,
+    ).toEqual([]);
+    // Markers from another run (a name or message that tries to close a section) mean nothing here.
+    const forged = out({ files: [{ path: "src/a.ts" }] }).replace(
+      "@@head",
+      `@@aaaaaaaaaaaaaaaa-numstat-end\n@@head`,
+    );
+    expect(readInspect(copy(), forged, N).files).toHaveLength(1);
+    const spoof = readInspect(
+      copy(),
+      out({
+        files: [
+          {
+            path: "x\n@@aaaaaaaaaaaaaaaa-numstat-end\n@@aaaaaaaaaaaaaaaa-patch-begin",
+            patch: `const t = "${TOKEN}";`,
+          },
+        ],
+      }),
+      N,
+    );
+    expect(spoof.secrets.map((s) => s.kind)).toEqual(["a token, key or password"]);
   });
 
   it("flags an absolute link, and reads names with quotes, tabs and newlines exactly", () => {
     const odd = 'a"b\tc\nd.txt';
-    const r = readInspect(
-      copy(),
-      out([
-        file(odd),
-        scan(odd, 'const t = "gh\u0070_abcdefghijklmnopqrstuvwxyz0123456789";'),
-        `@@abslink ${b64("link")}`,
-      ]),
-    );
+    const r = read({
+      files: [
+        { path: odd, patch: `const t = "${TOKEN}";` },
+        { path: "link", mode: "120000" },
+      ],
+      abs: [1],
+    });
     expect(r.files[0]?.path).toBe(odd);
     expect(r.secrets).toEqual([{ path: odd, kind: "a token, key or password" }]);
     expect(r.unsafe).toEqual([{ path: "link", why: "is a link to an absolute path outside the project" }]);
   });
 
   it("finds a credential in a commit's message or patch, by commit and never by value", () => {
-    const sha = "0123456789abcdef0123456789abcdef01234567";
-    const r = readInspect(
-      copy(),
-      out(
-        [],
-        [
-          "@@commits-total 2",
-          `@@commit ${sha}`,
-          `@@msg ${b64("feat: add it\n\nthe key is gh\u0070_abcdefghijklmnopqrstuvwxyz0123456789")}`,
-          `@@commit ${"f".repeat(40)}`,
-          `@@msg ${b64("fine")}`,
-          patchOf({ "x.ts": 'const t = "s\u006b-ant-api03-abcdefghijklmnop";' }),
-        ],
-      ),
-    );
+    const h = "0123456789abcdef0123456789abcdef01234567";
+    const commit = (sha: string, msg: string, patch = "") =>
+      `@@${N}-commit ${sha}\n@@${N}-msg-begin\n${msg}\n@@${N}-msg-end\n${patch}`;
+    const r = read({
+      hist: [
+        "@@total 2",
+        commit(h, `feat: add it\n\nthe key is ${TOKEN}`),
+        commit("f".repeat(40), "fine", patchOf({ "x.ts": 'const t = "sk-ant-api03-abcdefghijklmnop";' })),
+      ],
+    });
     expect(r.secrets.map((s) => s.path)).toEqual(["commit 0123456", "commit fffffff"]);
-    expect(JSON.stringify(r)).not.toContain("gh\u0070_abc");
-    expect(readInspect(copy(), out([], ["@@commits-total 501"])).tooBig).toBe(true);
+    expect(JSON.stringify(r)).not.toContain("ghp_abc");
+    expect(read({ hist: ["@@total 501"] }).tooBig).toBe(true);
   });
 
   it("calls a change too big to read, too big", () => {
-    const big = out([`@@scan ${b64("x")}`, "x".repeat(SCAN_LIMIT + 5)]);
-    expect(readInspect(copy(), big).tooBig).toBe(true);
+    expect(read({ files: [{ path: "x", patch: "x".repeat(SCAN_LIMIT + 5) }] }).tooBig).toBe(true);
   });
 });
 
@@ -249,7 +274,7 @@ describe("what reaches a shell", () => {
       [copy(), "https://evil.example/x.git"],
       [copy(), "https://github.com/a/b.git; id"],
     ] as const) {
-      expect(() => inspectScript(bad, remote)).toThrow();
+      expect(() => inspectScript(bad, remote, NONCE)).toThrow();
       expect(() => commitScript(bad, remote, "m")).toThrow();
       expect(() => pushScript(bad, remote, "a".repeat(40))).toThrow();
     }
@@ -266,7 +291,7 @@ describe("what reaches a shell", () => {
 
   it("takes the token out of the environment first, and uses it only in the network function", () => {
     for (const script of [
-      inspectScript(copy(), REMOTE),
+      inspectScript(copy(), REMOTE, NONCE),
       commitScript(copy(), REMOTE, "m"),
       pushScript(copy(), REMOTE, "a".repeat(40)),
     ]) {
@@ -278,8 +303,12 @@ describe("what reaches a shell", () => {
     expect(
       commitScript(copy(), REMOTE, "m")
         .split("\n")
-        .filter((l) => /(^|\s)N /.test(l) && !l.startsWith("N()")),
+        .filter((l) => /(^|\s)NC /.test(l) || l.includes("$URL")),
     ).toEqual([]);
+    // Nothing in the inspect is done once per file: no fork per path to encode it, size it or scan it.
+    const inspect = inspectScript(copy(), REMOTE, NONCE);
+    expect(inspect).not.toContain('printf %s "$f"');
+    expect(inspect).not.toMatch(/diff[^\n]*-- ":\(literal\)/);
   });
 });
 
@@ -347,7 +376,6 @@ function world() {
   };
   return { dir, origin, cwd, ship, seen, commit };
 }
-const TOKEN = "gh\u0070_abcdefghijklmnopqrstuvwxyz0123456789";
 
 describe("real git", () => {
   it("never overwrites a branch GitHub has moved on, and says so", async () => {
@@ -481,5 +509,119 @@ describe("real git", () => {
     expect(r.unsafe.map((u) => u.path)).toEqual(["pw"]);
     expect(r.binaries).toEqual([{ path: "big.bin", size: 20000 }]);
     await expect(w.ship.verify(copy())).rejects.toMatchObject({ code: "secrets" });
+  });
+
+  describe("the copy's own .git can't reach the network or the scan", () => {
+    /** A second bare repo the copy's config tries to send the push to. */
+    const evilOf = (w: ReturnType<typeof world>) => {
+      const evil = join(w.dir, "evil.git");
+      git(w.dir, "init", "-q", "--bare", evil);
+      return evil;
+    };
+    const refsOf = (repo: string) => git(repo, "for-each-ref", "--format=%(refname)");
+
+    it("ignores url.<x>.insteadOf: the push goes to the repo, not to wherever the copy's config says", async () => {
+      const w = world();
+      const evil = evilOf(w);
+      git(w.cwd, "config", `url.${evil}.insteadOf`, w.origin);
+      git(w.cwd, "config", `url.${evil}.pushInsteadOf`, w.origin);
+      writeFileSync(join(w.cwd, "x.txt"), "x\n");
+      await w.ship.commit(copy(), "feat: x");
+      await w.ship.push(copy());
+      expect(refsOf(w.origin)).toContain("refs/heads/conv/ab12cd34");
+      expect(refsOf(evil)).toBe("");
+    });
+
+    it("ignores core.sshCommand and an ssh rewrite, and the token is nowhere near them", async () => {
+      const w = world();
+      const marker = join(w.dir, "ssh-ran");
+      git(w.cwd, "config", "core.sshCommand", `sh -c 'env >> ${marker}' #`);
+      git(w.cwd, "config", `url.ssh://attacker.invalid/x.insteadOf`, w.origin);
+      writeFileSync(join(w.cwd, "x.txt"), "x\n");
+      await w.ship.commit(copy(), "feat: x");
+      await w.ship.push(copy());
+      expect(existsSync(marker)).toBe(false);
+      expect(refsOf(w.origin)).toContain("refs/heads/conv/ab12cd34");
+    });
+
+    it("scans the real history when a replace ref shows another one", async () => {
+      const w = world();
+      w.commit("add config", { "config.ts": `export const token = "${TOKEN}";\n` });
+      const secret = git(w.cwd, "rev-parse", "HEAD");
+      w.commit("remove the token", { "config.ts": "export const token = process.env.TOKEN;\n" });
+      // An innocent commit with the same parent, put in the secret one's place for anything that reads replaces.
+      git(w.cwd, "checkout", "-q", "--detach", `${secret}~1`);
+      writeFileSync(join(w.cwd, "config.ts"), "export const token = 'none';\n");
+      git(w.cwd, "add", "-A");
+      git(w.cwd, "commit", "-q", "-m", "add config");
+      const decoy = git(w.cwd, "rev-parse", "HEAD");
+      git(w.cwd, "checkout", "-q", "conv/ab12cd34");
+      git(w.cwd, "replace", secret, decoy);
+      // With replaces on, the copy's own log is clean...
+      expect(git(w.cwd, "log", "-p", "--format=%s")).not.toContain("ghp_");
+      // ...and the scan still finds the real commit, and nothing is pushed.
+      const report = await w.ship.inspect(copy());
+      expect(report.secrets.map((s) => s.path)).toEqual([expect.stringMatching(/^commit [0-9a-f]{7}$/)]);
+      await expect(w.ship.push(copy())).rejects.toMatchObject({ code: "secrets" });
+      expect(refsOf(w.origin)).not.toContain("conv/ab12cd34");
+    });
+
+    it("never sends tags, even with push.followTags and an annotated tag that carries a token", async () => {
+      const w = world();
+      git(w.cwd, "config", "push.followTags", "true");
+      writeFileSync(join(w.cwd, "x.txt"), "x\n");
+      await w.ship.commit(copy(), "feat: x");
+      git(
+        w.cwd,
+        "-c",
+        "user.name=a",
+        "-c",
+        "user.email=a@x.invalid",
+        "tag",
+        "-a",
+        "v1",
+        "-m",
+        `note: ${TOKEN}`,
+      );
+      await w.ship.push(copy());
+      expect(refsOf(w.origin)).toBe("refs/heads/conv/ab12cd34\nrefs/heads/main");
+      expect(git(w.origin, "tag", "--list")).toBe("");
+    });
+
+    it("never recurses into submodules, even with push.recurseSubmodules, so their remotes get nothing", async () => {
+      const w = world();
+      const evil = evilOf(w);
+      git(w.cwd, "config", "push.recurseSubmodules", "on-demand");
+      git(w.cwd, "config", "submodule.recurse", "true");
+      // A nested repository registered as a submodule, with a commit its remote (the evil repo) doesn't have.
+      const sub = join(w.cwd, "sub");
+      mkdirSync(sub);
+      git(sub, "init", "-q", "-b", "main");
+      writeFileSync(join(sub, "s.txt"), "s\n");
+      git(sub, "add", "-A");
+      git(sub, "-c", "user.name=a", "-c", "user.email=a@x.invalid", "commit", "-q", "-m", "sub");
+      git(sub, "remote", "add", "origin", evil);
+      writeFileSync(join(w.cwd, ".gitmodules"), `[submodule "sub"]\n\tpath = sub\n\turl = ${evil}\n`);
+      git(w.cwd, "add", ".gitmodules", "sub");
+      git(w.cwd, "commit", "-q", "-m", "add a submodule");
+      await w.ship.push(copy());
+      expect(refsOf(w.origin)).toContain("refs/heads/conv/ab12cd34");
+      expect(refsOf(evil)).toBe("");
+    });
+
+    it("ships 500 changed files in a few seconds, with a fixed number of git commands", async () => {
+      const w = world();
+      for (let i = 0; i < 500; i++) {
+        mkdirSync(join(w.cwd, `d${i % 25}`), { recursive: true });
+        writeFileSync(join(w.cwd, `d${i % 25}`, `f${i}.txt`), `line ${i}\n`);
+      }
+      const t0 = Date.now();
+      const report = await w.ship.inspect(copy());
+      const took = Date.now() - t0;
+      expect(report.files).toHaveLength(500);
+      expect(blockers(report)).toEqual([]);
+      // Generous: the machine running the tests may be busy. It was 22 s before (five git processes per file).
+      expect(took).toBeLessThan(5000);
+    });
   });
 });

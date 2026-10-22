@@ -4,6 +4,7 @@
 // Nothing leaves the sandbox before the daemon has read the change and found no credential in it: the
 // scan reuses the patterns that redact transcripts (`redactTokens`, ahp/sanitize.ts), and a file that
 // usually holds secrets (.env, a private key) stops it by name. Findings name the file, never the value.
+import { randomBytes } from "node:crypto";
 import type { Employee } from "@i-inc/core";
 import { redactTokens } from "./ahp/sanitize.ts";
 import type { DraftPr, PullRequests, TokenSource } from "./github.ts";
@@ -75,7 +76,7 @@ export class ShipRefusal extends Error {
 }
 
 /** The pull requests shipping uses: the bot's, with a few more reads than pick-up needs. */
-export type ShipPrs = Pick<PullRequests, "find" | "openDraft" | "get" | "checks" | "setBody">;
+export type ShipPrs = Pick<PullRequests, "find" | "openDraft" | "get" | "checks" | "setBody" | "close">;
 
 export interface ShipPort {
   /** Reads the copy: the change, the uncommitted files, the protected paths, and the scans (the change and the history). */
@@ -88,9 +89,15 @@ export interface ShipPort {
   verify(copy: ShipCopy): Promise<CopyReport>;
   /**
    * Commits what is uncommitted with `message`, after the scan: a copy with a credential in it is refused and
-   * nothing is committed. Returns the commit the copy is on.
+   * nothing is committed. `scanned`: the caller has just inspected the copy and found it clean, so the scan is not
+   * done again (the push, or `verify`, still scans everything that is sent on, the new commit included).
+   * Returns the commit the copy is on.
    */
-  commit(copy: ShipCopy, message: string): Promise<{ committed: boolean; head: string }>;
+  commit(
+    copy: ShipCopy,
+    message: string,
+    opts?: { scanned?: boolean },
+  ): Promise<{ committed: boolean; head: string }>;
   /** Scans exactly what will be pushed, then pushes that commit as the bot, never forcing. */
   push(copy: ShipCopy): Promise<{ head: string }>;
   prs: ShipPrs;
@@ -109,24 +116,43 @@ function check(copy: ShipCopy, remote?: string): void {
 
 /**
  * What every script starts with: into the copy, on the branch it should be on; then git made safe to run in a
- * folder an agent has been working in. Every git call goes through `G`: no hooks (`--no-verify` doesn't stop
- * prepare-commit-msg, post-commit or pre-push), no fsmonitor, no signing program, and each `filter.*` driver
- * in the config (an agent's clean or smudge command would run on `git add`) set to nothing. `N` is `G` for the
- * network, and the only place the bot's token goes: it is taken out of the environment first, handed to git for
- * that one command through `GIT_CONFIG_*` (an Authorization header, no credential helper, no proxy) and used with
- * the repo's address, never the `origin` an agent could have repointed.
+ * folder an agent has been working in. Every git call in the copy goes through `G`: no hooks (`--no-verify`
+ * doesn't stop prepare-commit-msg, post-commit or pre-push), no fsmonitor, no signing program, no replace
+ * objects (`git replace` can show the scan a different history from the one a push sends), and each `filter.*`
+ * driver in the config (an agent's clean or smudge command would run on `git add`) set to nothing. The bot's
+ * token is taken out of the environment first and goes to one place only, `NC`: see `cleanRepo`.
  */
 const enter = (copy: ShipCopy, remote: string) => [
   'TOK="${GH_TOKEN:-}"; unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GH_HOST',
+  "unset GIT_SSH GIT_SSH_COMMAND GIT_ASKPASS SSH_ASKPASS GIT_PROXY_COMMAND GIT_EXTERNAL_DIFF GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT",
   `cd ${quote(copy.cwd)} || { echo '@@fail the working copy is not there'; exit 1; }`,
   "git -c core.hooksPath=/dev/null rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo '@@fail the working copy is not a git folder'; exit 1; }",
-  "export GIT_ATTR_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0",
+  "export GIT_ATTR_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_NO_REPLACE_OBJECTS=1",
   "FA=()",
   'while IFS= read -r key; do name=${key#filter.}; name=${name%.*}; FA+=(-c "filter.$name.clean=" -c "filter.$name.smudge=" -c "filter.$name.process=" -c "filter.$name.required=false"); done < <(git -c core.hooksPath=/dev/null config --name-only --get-regexp \'^filter[.].*[.](clean|smudge|process)$\' 2>/dev/null | sort -u)',
   'G() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c commit.gpgsign=false -c core.pager=cat ${FA[@]+"${FA[@]}"} "$@"; }',
-  'N() { GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="Authorization: Basic $(printf \'x-access-token:%s\' "$TOK" | base64 | tr -d \'\\n\')" GIT_CONFIG_KEY_1=credential.helper GIT_CONFIG_VALUE_1= G -c http.proxy= "$@"; }',
   `URL=${quote(remote)}`,
   `[ "$(G branch --show-current)" = ${quote(copy.branch)} ] || { echo "@@fail the working copy is on $(G branch --show-current), not ${copy.branch}"; exit 1; }`,
+];
+
+/**
+ * A clean repository for everything that reads history or touches the network, so nothing in the copy's own
+ * `.git` can reach either: a fresh bare repo with no template and a config this script writes (nothing from the
+ * system or the user, `HOME` pointed at it), whose only objects are the copy's, through `objects/info/alternates`,
+ * and whose only ref (`refs/heads/ship`) is the commit that is scanned and pushed. The copy's config (`url.*.
+ * insteadOf`, `core.sshCommand`, `push.followTags`, `push.recurseSubmodules`, credential helpers, proxies), refs
+ * (tags), replace objects, grafts and shallow file are not in it. `C` runs git there; `NC` is `C` with the bot's
+ * token for one command, as an Authorization header for `$URL`, with no credential helper, no proxy and no ssh.
+ */
+const cleanRepo = [
+  "CLEAN=$(mktemp -d); trap 'rm -rf \"$CLEAN\"' EXIT",
+  'env HOME="$CLEAN" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null XDG_CONFIG_HOME=/dev/null git init --bare -q --template= "$CLEAN/repo" || { echo \'@@fail could not make a scratch repository\'; exit 1; }',
+  'CE=(env HOME="$CLEAN" GIT_DIR="$CLEAN/repo" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null XDG_CONFIG_HOME=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_TERMINAL_PROMPT=0)',
+  'C() { "${CE[@]}" git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.pager=cat "$@"; }',
+  'NC() { "${CE[@]}" GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="Authorization: Basic $(printf \'x-access-token:%s\' "$TOK" | base64 | tr -d \'\\n\')" GIT_CONFIG_KEY_1=credential.helper GIT_CONFIG_VALUE_1= git -c http.proxy= -c core.hooksPath=/dev/null -c push.followTags=false -c push.recurseSubmodules=no "$@"; }',
+  'printf "%s\\n" "$(G rev-parse --path-format=absolute --git-common-dir)/objects" > "$CLEAN/repo/objects/info/alternates"',
+  "C config push.followTags false; C config push.recurseSubmodules no; C config core.fsmonitor false",
+  "SHA=$(G rev-parse HEAD) && C update-ref refs/heads/ship \"$SHA\" || { echo '@@fail could not read the working copy commit'; exit 1; }",
 ];
 
 /** The most scan text read per section; a bigger change or history is refused, as it cannot be checked. */
@@ -136,66 +162,63 @@ export const MAX_COMMITS = 500;
 /** A binary file this small is not worth a confirmation (an icon, a font subset). */
 export const BINARY_SCAN_FREE = 4096;
 
-const B64 = String.raw`$(printf %s "$f" | base64 | tr -d '\n')`;
+/** A marker only this run knows: what an agent can put in a file name, a commit message or a patch can't pass for one. */
+export const marker = (nonce: string, name: string) => `@@${nonce}-${name}`;
 
 /**
- * Reads the copy without changing it: the change against main in a scratch index (so the copy's own staging area
- * is untouched), how far ahead it is, and the text for two scans: the change (per file, with paths as base64, so a
- * name with a quote, a tab or a newline is exact) and every commit that would be pushed (messages and patches).
+ * Reads the copy without changing it, in a fixed number of git commands however many files changed: the change
+ * against main in a scratch index (so the copy's own staging area is untouched), how far ahead it is, and the
+ * text for two scans: the change (one `numstat`, one `raw`, one patch, one batch of object sizes) and every
+ * commit that would be pushed (one `log -p` in the clean repository, messages and patches). Sections are fenced
+ * by markers that carry `nonce`, so no name, message or patch can forge one.
  */
-export function inspectScript(copy: ShipCopy, remote: string): string {
+export function inspectScript(copy: ShipCopy, remote: string, nonce: string): string {
   check(copy, remote);
+  if (!/^[0-9a-f]{16,64}$/.test(nonce)) throw new Error("not a nonce");
+  const m = (name: string) => marker(nonce, name);
+  const section = (name: string, body: string) => [
+    `echo ${m(`${name}-begin`)}`,
+    body,
+    "echo",
+    `echo ${m(`${name}-end`)}`,
+  ];
+  const diffOpts = "--no-color --no-renames --no-ext-diff --no-textconv --text";
   return [
     "set -u",
     ...enter(copy, remote),
-    `N fetch --quiet "$URL" ${quote(`+refs/heads/${copy.base}:refs/remotes/origin/${copy.base}`)} 2>/dev/null || echo '@@warn could not fetch ${copy.base}'`,
-    `base=origin/${copy.base}`,
-    'G rev-parse --verify --quiet "$base" >/dev/null || base=$(G rev-list --max-parents=0 HEAD | tail -n 1)',
-    'mb=$(G merge-base "$base" HEAD 2>/dev/null || echo "$base")',
-    'echo "@@head $(G rev-parse HEAD)"',
-    'echo "@@ahead $(G rev-list --count "$base"..HEAD 2>/dev/null || echo 0)"',
-    `echo "@@remote $(N ls-remote "$URL" ${quote(`refs/heads/${copy.branch}`)} 2>/dev/null | cut -f1)"`,
-    "idx=$(mktemp); trap 'rm -f \"$idx\"' EXIT",
-    'export GIT_INDEX_FILE="$idx"',
+    ...cleanRepo,
+    `NC fetch --quiet "$URL" ${quote(`+refs/heads/${copy.base}:refs/heads/base`)} 2>/dev/null || echo '@@warn could not fetch ${copy.base}'`,
+    "if C rev-parse --verify --quiet refs/heads/base >/dev/null; then base=refs/heads/base; else base=$(C rev-list --max-parents=0 refs/heads/ship | tail -n 1); fi",
+    'mb=$(C merge-base "$base" refs/heads/ship 2>/dev/null || echo "$base")',
+    // The base's objects are in the clean repo: let the copy read them too, without changing the copy.
+    'export GIT_ALTERNATE_OBJECT_DIRECTORIES="$CLEAN/repo/objects"',
+    'echo "@@head $SHA"',
+    'echo "@@ahead $(C rev-list --count "$base"..refs/heads/ship 2>/dev/null || echo 0)"',
+    `echo "@@remote $(NC ls-remote "$URL" ${quote(`refs/heads/${copy.branch}`)} 2>/dev/null | cut -f1)"`,
+    'export GIT_INDEX_FILE="$CLEAN/index"',
     "G read-tree HEAD",
     "G add -A -- . ':(exclude).inc'",
-    // What is not committed yet: the scratch index against HEAD.
-    `G diff --cached --name-only -z --no-renames --no-ext-diff HEAD | while IFS= read -r -d '' f; do printf '@@dirty %s\\n' "${B64}"; done`,
-    "echo @@net-begin",
-    "{",
-    "  while IFS= read -r -d '' rec; do",
-    "    a=${rec%%$'\\t'*}; rest=${rec#*$'\\t'}; d=${rest%%$'\\t'*}; f=${rest#*$'\\t'}",
-    `    printf '@@file %s %s %s\\n' "$a" "$d" "${B64}"`,
-    '    if [ "$a" = "-" ]; then',
-    '      size=$(G cat-file -s ":0:$f" 2>/dev/null || echo 0)',
-    `      printf '@@binary %s %s\\n' "${B64}" "$size"`,
-    "    fi",
-    '    mode=$(G ls-files -s -- ":(literal)$f" | cut -c1-6)',
-    '    if [ "$mode" = 120000 ]; then',
-    '      t=$(G cat-file -p ":0:$f" 2>/dev/null)',
-    `      case "$t" in /*) printf '@@abslink %s\\n' "${B64}" ;; esac`,
-    "    fi",
-    '    if [ "$a" != "-" ] && [ "$a" != 0 ]; then',
-    `      printf '@@scan %s\\n' "${B64}"`,
-    '      G diff --cached -U0 --no-color --no-renames --no-ext-diff --no-textconv "$mb" -- ":(literal)$f"',
-    "      echo",
-    "    fi",
-    '  done < <(G diff --cached --numstat -z --no-renames --no-ext-diff "$mb")',
-    `} | head -c ${SCAN_LIMIT + 1}`,
-    "echo",
-    "echo @@net-end",
+    ...section("dirty", "G diff --cached --name-only -z --no-renames --no-ext-diff HEAD"),
+    ...section("numstat", 'G diff --cached --numstat -z --no-renames --no-ext-diff "$mb"'),
+    'G diff --cached --raw -z --abbrev=40 --no-renames --no-ext-diff "$mb" > "$CLEAN/raw"',
+    ...section("raw", 'cat "$CLEAN/raw"'),
+    // New object of each changed file, in the same order: its size, in one command; and which are links to an absolute path.
+    ': > "$CLEAN/shas"; : > "$CLEAN/abs"; i=0',
+    "while IFS= read -r -d '' meta && IFS= read -r -d '' _path; do",
+    "  set -- $meta",
+    '  echo "$4" >> "$CLEAN/shas"',
+    '  if [ "$2" = 120000 ]; then t=$(G cat-file -p "$4" 2>/dev/null | head -c 1); [ "$t" = "/" ] && echo "$i" >> "$CLEAN/abs"; fi',
+    "  i=$((i+1))",
+    'done < "$CLEAN/raw"',
+    ...section("sizes", "G cat-file --batch-check='%(objectsize)' < \"$CLEAN/shas\""),
+    ...section("abs", 'cat "$CLEAN/abs"'),
+    ...section("patch", `G diff --cached -U0 ${diffOpts} "$mb" | head -c ${SCAN_LIMIT + 1}`),
     // Everything a push would publish: each commit's message and patch, not only where the branch ends up.
-    "echo @@hist-begin",
-    'echo "@@commits-total $(G rev-list --count "$base"..HEAD 2>/dev/null || echo 0)"',
-    "{",
-    `  G rev-list "$base"..HEAD 2>/dev/null | head -n ${MAX_COMMITS} | while IFS= read -r sha; do`,
-    "    printf '@@commit %s\\n' \"$sha\"",
-    "    printf '@@msg %s\\n' \"$(G log -1 --format=%B \"$sha\" | base64 | tr -d '\\n')\"",
-    '    G show -m -U0 --no-color --no-renames --no-ext-diff --no-textconv --format= "$sha" --',
-    "  done",
-    `} | head -c ${SCAN_LIMIT + 1}`,
+    `echo ${m("hist-begin")}`,
+    'echo "@@total $(C rev-list --count "$base"..refs/heads/ship 2>/dev/null || echo 0)"',
+    `C log -m -U0 ${diffOpts} --max-count=${MAX_COMMITS + 1} --format=${quote(`${m("commit")} %H%n${m("msg-begin")}%n%B%n${m("msg-end")}`)} "$base"..refs/heads/ship 2>/dev/null | head -c ${SCAN_LIMIT + 1}`,
     "echo",
-    "echo @@hist-end",
+    `echo ${m("hist-end")}`,
   ].join("\n");
 }
 
@@ -229,7 +252,9 @@ export function pushScript(copy: ShipCopy, remote: string, sha: string): string 
     "set -u",
     ...enter(copy, remote),
     `[ "$(G rev-parse HEAD)" = ${quote(sha)} ] || { echo '@@fail the working copy changed after it was checked, so nothing was pushed'; exit 1; }`,
-    `if out=$(N push --quiet "$URL" ${quote(`${sha}:refs/heads/${copy.branch}`)} 2>&1); then`,
+    ...cleanRepo,
+    // Only the clean repo's one ref goes, to the repo's own address; nothing of the copy's config or refs is in play.
+    `if out=$(NC push --quiet "$URL" ${quote(`refs/heads/ship:refs/heads/${copy.branch}`)} 2>&1); then`,
     `  echo ${quote(`@@pushed ${sha}`)}`,
     "else",
     '  echo "$out" | tail -n 5',
@@ -302,100 +327,116 @@ export function addedLines(patch: string): string {
 /** Does this patch add a credential? */
 export const scanPatch = (patch: string): boolean => holdsCredential(addedLines(patch));
 
-const decode = (b64: string): string | undefined =>
-  /^[A-Za-z0-9+/]*={0,2}$/.test(b64) ? Buffer.from(b64, "base64").toString("utf8") : undefined;
-
-/** The text between two markers, or undefined. */
-function section(output: string, name: string): string | undefined {
-  const begin = new RegExp(`(^|\\n)@@${name}-begin\\n`).exec(output);
-  if (!begin) return undefined;
-  const from = begin.index + begin[0].length;
-  const end = output.indexOf(`\n@@${name}-end`, from);
+/** The text between two of this run's markers, or undefined. */
+function section(output: string, nonce: string, name: string): string | undefined {
+  const begin = `\n${marker(nonce, `${name}-begin`)}\n`;
+  const at = `\n${output}`.indexOf(begin);
+  if (at < 0) return undefined;
+  const from = at + begin.length - 1;
+  const end = output.indexOf(`\n${marker(nonce, `${name}-end`)}`, from);
   return end < 0 ? undefined : output.slice(from, end);
 }
 
-/** Reads `inspectScript`'s output. Anything it can't read is a reason to stop, never a reason to go on. */
-export function readInspect(copy: ShipCopy, output: string): CopyReport {
+/** Splits a patch into one block per file, at each `diff --git` header (a content line never starts with one). */
+function patchBlocks(patch: string): string[] {
+  const blocks: string[] = [];
+  for (const line of patch.split("\n")) {
+    if (line.startsWith("diff --git ")) blocks.push(line);
+    else if (blocks.length) blocks[blocks.length - 1] += `\n${line}`;
+  }
+  return blocks;
+}
+
+/**
+ * Reads `inspectScript`'s output. Anything it can't read is a reason to stop, never a reason to go on. The
+ * files come from `numstat` and `raw` (NUL-separated, so a name is exact), and the patch's blocks are matched
+ * to them by position, never by reading a name out of a patch header: the two lists must agree.
+ */
+export function readInspect(copy: ShipCopy, output: string, nonce: string): CopyReport {
   const head = (tag: string) =>
-    new RegExp(`^@@${tag} (.*)$`, "m").exec(output.split("\n@@net-begin")[0] ?? "")?.[1] ?? "";
-  const net = section(output, "net");
-  const hist = section(output, "hist");
+    new RegExp(`^@@${tag} (.*)$`, "m").exec(
+      output.split(`\n${marker(nonce, "dirty-begin")}`)[0] ?? "",
+    )?.[1] ?? "";
+  const sec = (name: string) => section(output, nonce, name);
   const files: FileChange[] = [];
   const unscanned: string[] = [];
   const unsafe: { path: string; why: string }[] = [];
   const binaries: { path: string; size: number }[] = [];
   const secrets: { path: string; kind: string }[] = [];
-  let tooBig = net === undefined || hist === undefined || net.length > SCAN_LIMIT || hist.length > SCAN_LIMIT;
+  const hist = sec("hist");
+  const patch = sec("patch");
+  const numstat = sec("numstat");
+  const raw = sec("raw");
+  const sizes = sec("sizes");
+  const abs = sec("abs");
+  let tooBig =
+    [numstat, raw, sizes, abs, patch, hist].some((x) => x === undefined) ||
+    (patch?.length ?? 0) > SCAN_LIMIT ||
+    (hist?.length ?? 0) > SCAN_LIMIT;
 
-  // The change, file by file.
-  const scanned = new Map<string, string[]>();
-  let current: string[] | undefined;
-  const wanted = new Set<string>();
-  for (const line of (net ?? "").split("\n")) {
-    const m = /^@@(file|binary|abslink|scan) (.*)$/.exec(line);
-    if (!m) {
-      current?.push(line);
-      continue;
+  // numstat -z: `added TAB removed TAB path NUL`. raw -z: `:modes shas status NUL path NUL`.
+  const stat = (numstat ?? "")
+    .split("\0")
+    .filter((r) => r !== "")
+    .map((r) => {
+      const t1 = r.indexOf("\t");
+      const t2 = r.indexOf("\t", t1 + 1);
+      return { a: r.slice(0, t1), d: r.slice(t1 + 1, t2), path: r.slice(t2 + 1) };
+    });
+  const rawTokens = (raw ?? "").split("\0");
+  const entries: { path: string }[] = [];
+  for (let i = 0; i + 1 < rawTokens.length; i += 2) {
+    if (!(rawTokens[i] ?? "").startsWith(":")) break;
+    entries.push({ path: rawTokens[i + 1] ?? "" });
+  }
+  const blocks = patchBlocks(patch ?? "");
+  const agree =
+    stat.length === entries.length &&
+    stat.every((s, i) => s.path === entries[i]?.path && s.path !== "") &&
+    blocks.length === stat.length;
+  if (!agree && numstat !== undefined) unscanned.push("the change (its files could not be matched up)");
+  const sizeLines = (sizes ?? "").split("\n").filter((l) => l !== "");
+  const absAt = new Set((abs ?? "").split("\n").filter(Boolean).map(Number));
+
+  stat.forEach((r, i) => {
+    const path = r.path;
+    const binary = r.a === "-" || r.d === "-";
+    files.push(
+      binary
+        ? { path, added: 0, removed: 0, binary: true }
+        : { path, added: Number(r.a) || 0, removed: Number(r.d) || 0 },
+    );
+    if (absAt.has(i)) unsafe.push({ path, why: "is a link to an absolute path outside the project" });
+    if (binary) {
+      const size = Number(sizeLines[i]);
+      if (!(size <= BINARY_SCAN_FREE)) binaries.push({ path, size: Number.isFinite(size) ? size : 0 });
     }
-    current = undefined;
-    const rest = (m[2] ?? "").split(" ");
-    if (m[1] === "file") {
-      const [a = "", d = "", b64 = ""] = rest;
-      const path = decode(b64);
-      if (path === undefined || path === "") {
-        unscanned.push("a file whose name could not be read");
-        continue;
-      }
-      const added = Number(a);
-      files.push(
-        a === "-" || d === "-"
-          ? { path, added: 0, removed: 0, binary: true }
-          : { path, added: added || 0, removed: Number(d) || 0 },
-      );
-      if (a !== "-" && added > 0) wanted.add(path);
-    } else if (m[1] === "binary") {
-      const path = decode(rest[0] ?? "");
-      const size = Number(rest[1]);
-      if (path === undefined) unscanned.push("a binary file whose name could not be read");
-      else if (!(size <= BINARY_SCAN_FREE)) binaries.push({ path, size: Number.isFinite(size) ? size : 0 });
-    } else if (m[1] === "abslink") {
-      const path = decode(rest[0] ?? "");
-      unsafe.push({ path: path ?? "a link", why: "is a link to an absolute path outside the project" });
-    } else {
-      const path = decode(rest[0] ?? "");
-      if (path === undefined) {
-        unscanned.push("a file whose name could not be read");
-        continue;
-      }
-      current = [];
-      scanned.set(path, current);
+    if (secretFile.some((re) => re.test(path))) {
+      secrets.push({ path, kind: "a file that usually holds secrets" });
+    } else if (agree && (binary || Number(r.a) > 0) && scanPatch(blocks[i] ?? "")) {
+      secrets.push({ path, kind: "a token, key or password" });
     }
-  }
-  for (const path of wanted) if (!scanned.has(path)) unscanned.push(path);
-  for (const f of files) {
-    if (secretFile.some((re) => re.test(f.path)))
-      secrets.push({ path: f.path, kind: "a file that usually holds secrets" });
-  }
-  for (const [path, lines] of scanned) {
-    if (secrets.some((s) => s.path === path)) continue;
-    if (scanPatch(lines.join("\n"))) secrets.push({ path, kind: "a token, key or password" });
-  }
+  });
 
   // The history, commit by commit.
-  const total = Number(/^@@commits-total (\d+)/m.exec(hist ?? "")?.[1] ?? 0);
+  const total = Number(/^@@total (\d+)/m.exec(hist ?? "")?.[1] ?? 0);
   if (total > MAX_COMMITS) tooBig = true;
-  for (const block of (hist ?? "").split(/^@@commit /m).slice(1)) {
+  const commitMark = marker(nonce, "commit");
+  for (const block of (hist ?? "").split(new RegExp(`^${commitMark} `, "m")).slice(1)) {
     const nl = block.indexOf("\n");
     const sha = block.slice(0, nl < 0 ? undefined : nl).trim();
-    const body = nl < 0 ? "" : block.slice(nl + 1);
-    const msgLine = /^@@msg (.*)$/m.exec(body);
-    const message = msgLine ? decode(msgLine[1] ?? "") : undefined;
-    const patch = body.replace(/^@@msg .*\n?/m, "");
-    if (!/^[0-9a-f]{7,40}$/.test(sha) || message === undefined) {
+    const rest = nl < 0 ? "" : block.slice(nl + 1);
+    const mb = `${marker(nonce, "msg-begin")}\n`;
+    const me = `\n${marker(nonce, "msg-end")}`;
+    const from = rest.indexOf(mb);
+    const to = rest.indexOf(me, from);
+    if (!/^[0-9a-f]{7,40}$/.test(sha) || from < 0 || to < 0) {
       unscanned.push("a commit that could not be read");
       continue;
     }
-    if (holdsCredential(message) || scanPatch(patch)) {
+    const message = rest.slice(from + mb.length, to);
+    const patchText = rest.slice(to + me.length);
+    if (holdsCredential(message) || scanPatch(patchText)) {
       secrets.push({ path: `commit ${sha.slice(0, 7)}`, kind: "a commit in the branch's history" });
     }
   }
@@ -403,10 +444,7 @@ export function readInspect(copy: ShipCopy, output: string): CopyReport {
   return {
     head: head("head").trim(),
     files,
-    uncommitted: [...output.matchAll(/^@@dirty (\S*)$/gm)].flatMap((m) => {
-      const p = decode(m[1] ?? "");
-      return p ? [p] : [];
-    }),
+    uncommitted: (sec("dirty") ?? "").split("\0").filter((p) => p !== ""),
     ahead: Number(head("ahead")) || 0,
     remote: head("remote").trim(),
     protectedPaths: files.map((f) => f.path).filter((p) => isProtected(p, copy.protectedPaths)),
@@ -470,11 +508,12 @@ export function conversationShip(kit: ShipKit): ShipPort {
     return `Couldn't ${doing}: ${fail ?? tail(r.output)}`;
   };
   const inspect = async (copy: ShipCopy): Promise<CopyReport> => {
-    const r = await exec(copy, inspectScript(copy, remoteOf(copy)), true);
-    if (r.code !== 0 || !r.output.includes("@@hist-end")) {
+    const nonce = randomBytes(16).toString("hex");
+    const r = await exec(copy, inspectScript(copy, remoteOf(copy), nonce), true);
+    if (r.code !== 0 || !r.output.includes(marker(nonce, "hist-end"))) {
       throw new ShipRefusal(why(r, "look at the working copy"), "git");
     }
-    return readInspect(copy, r.output);
+    return readInspect(copy, r.output, nonce);
   };
   const verify = async (copy: ShipCopy, did = "committed"): Promise<CopyReport> => {
     const report = await inspect(copy);
@@ -485,8 +524,8 @@ export function conversationShip(kit: ShipKit): ShipPort {
     inspect,
     verify: (copy) => verify(copy, "shipped"),
     prs: kit.prs,
-    async commit(copy, message) {
-      await verify(copy, "committed");
+    async commit(copy, message, opts) {
+      if (opts?.scanned !== true) await verify(copy, "committed");
       const r = await exec(copy, commitScript(copy, remoteOf(copy), message), false);
       const head = /^@@head ([0-9a-f]{7,40})$/m.exec(r.output)?.[1];
       if (r.code !== 0 || !head) throw new ShipRefusal(why(r, "commit the changes"), "git");

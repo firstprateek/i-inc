@@ -302,7 +302,7 @@ export const api = {
     ).then((r) => r.ship),
   /** Ends a ticket that waits for the owner as rejected, and gives the conversation its working copy back. */
   takeBack: (id: string) =>
-    call<{ ok: true; released: boolean }>(
+    call<{ ok: true; released: boolean; pr: "closed" | "open" | "merged" | "none"; prProblem?: string }>(
       "POST",
       `/api/conversations/${encodeURIComponent(id)}/take-back`,
       {},

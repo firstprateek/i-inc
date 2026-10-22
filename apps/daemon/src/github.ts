@@ -460,6 +460,15 @@ export class PullRequests {
     return pr.draft === true;
   }
 
+  /** The owner took the work back: the PR is closed (it can be reopened on GitHub). */
+  async close(repo: string, number: number): Promise<void> {
+    await call(this.f, `${this.api}/repos/${checkRepo(repo)}/pulls/${number}`, {
+      method: "PATCH",
+      headers: await this.auth(repo),
+      body: JSON.stringify({ state: "closed" }),
+    });
+  }
+
   /** Stage 9: the report becomes the PR body. */
   async setBody(repo: string, number: number, body: string): Promise<void> {
     await call(this.f, `${this.api}/repos/${checkRepo(repo)}/pulls/${number}`, {

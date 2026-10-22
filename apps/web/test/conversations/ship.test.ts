@@ -666,7 +666,8 @@ describe("binary files, many files, and taking the work back", () => {
   });
 
   it("takes the work back after a confirm dialog that says what happens", async () => {
-    answers["/api/conversations/ab12cd34/take-back"] = () => reply({ ok: true, released: true });
+    answers["/api/conversations/ab12cd34/take-back"] = () =>
+      reply({ ok: true, released: true, pr: "closed" });
     const el = document.createElement("inc-conv-ship") as IncConvShip;
     el.conv = conv;
     el.employee = ada;
@@ -690,13 +691,15 @@ describe("binary files, many files, and taking the work back", () => {
     const root = el.shadowRoot as ShadowRoot;
     expect(root.querySelector("h2")?.textContent).toBe("Take the work back");
     expect(root.textContent).toContain("Ticket #4 ends as rejected");
-    expect(root.textContent).toContain("A pull request already open on GitHub stays open");
+    expect(root.textContent).toContain("Its pull request on GitHub, if it has one, is closed too");
     must<HTMLButtonElement>(
       [...root.querySelectorAll("button")].find((b) => /Take it back/.test(b.textContent ?? "")),
     ).click();
     await until(() => done.length);
     expect(posts).toEqual([{ url: "/api/conversations/ab12cd34/take-back", body: {} }]);
-    expect(done).toEqual([{ kind: "takeback" }]);
+    expect(done).toEqual([{ kind: "takeback", prState: "closed" }]);
+    await el.updateComplete;
+    expect(root.textContent).toContain("Its pull request on GitHub is closed. You can reopen it there.");
   });
 
   it("offers it in the panel and the menu only for a ticket that waits for the owner", async () => {

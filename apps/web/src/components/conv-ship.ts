@@ -15,6 +15,9 @@ export interface ShipDone {
   kind: ShipKind;
   ticketId?: string;
   pr?: { number: number; url: string };
+  /** For taking the work back: what became of the ticket's pull request. */
+  prState?: "closed" | "open" | "merged" | "none";
+  prProblem?: string;
 }
 
 const MAX_ITEMS = 10;
@@ -225,8 +228,8 @@ export class IncConvShip extends LitElement {
     try {
       const confirm = this.confirmBinary ? { confirmBinary: true } : {};
       if (this.kind === "takeback") {
-        await api.takeBack(conv.id);
-        this.result = { kind: "takeback" };
+        const r = await api.takeBack(conv.id);
+        this.result = { kind: "takeback", prState: r.pr, ...(r.prProblem ? { prProblem: r.prProblem } : {}) };
       } else if (this.kind === "ticket") {
         const r = await api.makeTicket(conv.id, {
           title: this.title.trim(),
@@ -366,12 +369,19 @@ export class IncConvShip extends LitElement {
     return html`<div class="finished" role="status">
       ${
         r.kind === "takeback"
-          ? html`<p><b>Done.</b> The ticket is ended and the work is yours again. ${this.name()} can change the files, and will be told what happened.</p>`
+          ? html`<p><b>Done.</b> The ticket is ended and the work is yours again. ${this.name()} can change the files, and will be told what happened.</p>
+            ${
+              r.prState === "closed"
+                ? html`<p class="muted">Its pull request on GitHub is closed. You can reopen it there.</p>`
+                : r.prState === "open"
+                  ? html`<p class="notice" role="status">Its pull request is still open on GitHub${r.prProblem ? `: ${r.prProblem}` : ""} Close it there if you don't want it.</p>`
+                  : nothing
+            }`
           : r.kind === "ticket"
             ? html`<p><b>Done.</b> This work is now ticket #${r.ticketId}. ${this.name()} is paused on this conversation's files while it runs; you can follow it here or on the ticket.</p>
             <a href="#/ticket/${r.ticketId}" data-main>Open ticket #${r.ticketId}</a>`
-            : html`<p><b>Done.</b> Pull request #${r.pr?.number} is open as a draft. Its checks show in the context panel.</p>
-            <a href=${r.pr?.url ?? "#"} target="_blank" rel="noopener" data-main>Open it on GitHub</a>`
+            : html`<p><b>Done.</b> Pull request #$r.pr?.numberis open as a draft. Its checks show in the context panel.</p>
+            <a href=$r.pr?.url ?? "#"target="_blank" rel="noopener" data-main>Open it on GitHub</a>`
       }
     </div>`;
   }
@@ -410,7 +420,7 @@ export class IncConvShip extends LitElement {
             takeback
               ? html`<section aria-labelledby="h-tb"><h3 id="h-tb">What happens</h3>
                   <p>Ticket #${ticketId} ends as rejected, so nothing more happens to it, and nothing is merged by i.inc. ${this.name()} can change this conversation's files again, and is told what the ticket did.</p>
-                  <p class="muted">A pull request already open on GitHub stays open: close it there if you don't want it.</p></section>`
+                  <p class="muted">Its pull request on GitHub, if it has one, is closed too. You can reopen it there.</p></section>`
               : this.loading
                 ? html`<div class="skeleton" aria-label="Looking at the working copy"><i></i><i></i><i></i></div>`
                 : this.loadError

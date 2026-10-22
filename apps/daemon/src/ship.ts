@@ -558,6 +558,7 @@ export class Shipping {
           .commit(
             ctx.copy,
             `${type}: ${title}\n\nCommitted by i.inc when ${ctx.conv.title === DEFAULT_TITLE ? "a conversation" : `the conversation "${clean(ctx.conv.title, 80)}"`} became a ticket.`,
+            { scanned: true },
           )
           .catch((e) => this.refusal(e));
       }
@@ -754,6 +755,7 @@ export class Shipping {
           .commit(
             ctx.copy,
             `${typeOf(title)}: ${title}\n\nCommitted by i.inc when the conversation's work became a pull request.`,
+            { scanned: true },
           )
           .catch((e) => this.refusal(e));
       }
@@ -880,9 +882,11 @@ export class Shipping {
    * The owner takes the work back from a ticket that is waiting for them (a question, or its report): the ticket
    * is ended as rejected, and the conversation has its copy again. A ticket that is running can't be taken back.
    */
-  async takeBack(conversation: string): Promise<{ released: boolean }> {
+  async takeBack(
+    conversation: string,
+  ): Promise<{ released: boolean; pr: "closed" | "open" | "merged" | "none"; prProblem?: string }> {
     const h = this.active(conversation);
-    if (!h) return { released: false };
+    if (!h) return { released: false, pr: "none" };
     if (!h.ticket) {
       throw new ShipError("The ticket is still being made. Try again in a moment.", 409, "busy");
     }
@@ -899,10 +903,36 @@ export class Shipping {
     if (this.d.running?.(h.ticket)) {
       throw new ShipError(`Ticket #${h.ticket} is still working. Try again in a moment.`, 409, "running");
     }
+    // The ticket's pull request goes with it: closed on GitHub (reopening it there is one click), so a PR
+    // for work the owner turned down isn't left open. If GitHub can't be asked, the owner is told it is still open.
+    const number = state.pr?.number ?? this.prRow(conversation)?.number;
+    const repo = this.d.conversations.get(conversation)?.project
+      ? this.d.registry.project(this.d.conversations.get(conversation)?.project as string)?.repo
+      : undefined;
+    let pr: "closed" | "open" | "merged" | "none" = "none";
+    let prProblem: string | undefined;
+    if (number !== undefined && repo) {
+      try {
+        const now = await this.d.port.prs.get(repo, number);
+        if (now.state === "open") {
+          await this.d.port.prs.close(repo, number);
+          pr = "closed";
+        } else pr = now.state === "merged" ? "merged" : "closed";
+        this.prCache.delete(conversation);
+      } catch (e) {
+        pr = "open";
+        prProblem =
+          e instanceof UpstreamGitHubError
+            ? describeGitHubError(e).error
+            : "Couldn't ask GitHub about the pull request.";
+      }
+    }
     await this.d.store.append(h.ticket, [{ type: "closed", at: this.d.clock.now(), outcome: "rejected" }]);
-    this.d.log?.(`conversation ${conversation} took its work back from ticket ${h.ticket}`);
+    this.d.log?.(
+      `conversation ${conversation} took its work back from ticket ${h.ticket} (pull request: ${pr})`,
+    );
     await this.onTicket(h.ticket);
-    return { released: true };
+    return { released: true, pr, ...(prProblem ? { prProblem } : {}) };
   }
 
   /** What stops a copy: a credential, a file that couldn't be read, a link out of the project; and binaries to confirm. */

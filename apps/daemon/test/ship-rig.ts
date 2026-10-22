@@ -93,6 +93,12 @@ export class FakePrs {
     this.calls.push(`checks ${sha.slice(0, 7)}`);
     return this.checkState;
   }
+  async close(_repo: string, number: number) {
+    this.guard();
+    this.calls.push(`close ${number}`);
+    const pr = this.prs.find((p) => p.number === number);
+    if (pr) pr.state = "closed";
+  }
   async isDraft(_repo: string, number: number) {
     return this.prs.find((p) => p.number === number)?.draft ?? false;
   }

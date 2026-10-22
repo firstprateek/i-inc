@@ -817,7 +817,10 @@ describe("taking the work back, and what a ticket leaves for the conversation", 
     expect((await rig.call("POST", `/api/conversations/${c.conv.id}/take-back`, { x: 1 })).status).toBe(400);
     const back = await rig.call("POST", `/api/conversations/${c.conv.id}/take-back`, {});
     expect(back.status).toBe(200);
-    expect(back.body).toEqual({ ok: true, released: true });
+    expect(back.body).toEqual({ ok: true, released: true, pr: "closed" });
+    // The ticket's pull request is closed with it.
+    expect(rig.prs.prs[0]?.state).toBe("closed");
+    expect(rig.prs.calls).toContain("close 1");
     const s = await rig.app.daemon.state(id);
     expect(s.status).toBe("done");
     expect(s.outcome).toBe("rejected");
@@ -828,10 +831,27 @@ describe("taking the work back, and what a ticket leaves for the conversation", 
     expect((await rig.call("POST", `/api/conversations/${c.conv.id}/take-back`, {})).body).toEqual({
       ok: true,
       released: false,
+      pr: "none",
     });
     c.say("plain back again", "t2");
     await until(() => rig.app.ahp.host.chatState(c.conv.ahpChat)?.turns.length === 2);
     expect(JSON.stringify(rig.sandbox.last.prompts.at(-1))).toContain("ended: rejected");
+  });
+
+  it("says the pull request is still open when GitHub can't be asked, and still gives the copy back", async () => {
+    const rig = await make({ mode: "owner-merges" });
+    const c = await rig.conversation();
+    c.write("a.txt", "a\n");
+    const r = await rig.call("POST", `/api/conversations/${c.conv.id}/ticket`, {});
+    await rig.settle();
+    const { UpstreamGitHubError } = await import("../src/github.ts");
+    rig.prs.failWith = new UpstreamGitHubError(500, "GET", "/repos/x/pulls/1", "internal detail");
+    const back = await rig.call("POST", `/api/conversations/${c.conv.id}/take-back`, {});
+    expect(back.status).toBe(200);
+    expect(back.body).toMatchObject({ released: true, pr: "open" });
+    expect(back.body.prProblem).not.toMatch(/internal detail/);
+    expect((await rig.app.daemon.state(r.body.ticket.id)).outcome).toBe("rejected");
+    expect(rig.prs.prs[0]?.state).toBe("open");
   });
 
   it("won't take the work back from a ticket that is running", async () => {
