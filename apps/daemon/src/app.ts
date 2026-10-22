@@ -96,7 +96,7 @@ export interface AppOptions extends ApiOptions {
 export async function createApp(o: AppOptions) {
   const db = await openDb(o.dbPath);
   migrate(db);
-  const registry = new Registry(db);
+  const registry = new Registry(db, o.log);
   const live = o.live ?? new LiveEvents();
   registry.onChange = (kind) => {
     if (kind === "employee" || kind === "team") {
@@ -104,7 +104,7 @@ export async function createApp(o: AppOptions) {
     }
   };
 
-  const tickets = new Tickets(db);
+  const tickets = new Tickets(db, o.log);
   tickets.onChange = (id) => live.notifyTicket(id);
 
   const proposals = new Proposals(db);
@@ -125,7 +125,7 @@ export async function createApp(o: AppOptions) {
         )
       : port;
 
-  const store = new SqliteEventStore(db);
+  const store = new SqliteEventStore(db, o.log, () => o.clock.now());
   store.onAppend = (id) => live.notifyTicket(id);
 
   const knowledge = new KnowledgeStore(o.knowledgeDir, () => o.clock.now());

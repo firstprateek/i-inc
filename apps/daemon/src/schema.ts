@@ -13,6 +13,17 @@ export function migrate(db: Db): void {
       PRIMARY KEY (ticket_id, seq)
     );
     CREATE INDEX IF NOT EXISTS idx_events_type_at ON events(type, at);
+    -- Event rows that could not be read back (truncated, not JSON, not an event). They stay in the
+    -- events table (append-only), are replayed as a placeholder that changes nothing, and are listed
+    -- here (T63).
+    CREATE TABLE IF NOT EXISTS event_quarantine (
+      ticket_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      reason TEXT NOT NULL,
+      body TEXT NOT NULL,
+      at INTEGER NOT NULL,
+      PRIMARY KEY (ticket_id, seq)
+    );
     CREATE TABLE IF NOT EXISTS tickets (
       id TEXT PRIMARY KEY,
       body TEXT NOT NULL,

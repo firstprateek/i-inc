@@ -1,5 +1,5 @@
 // The backlog: ticket definitions, priority and holds. What happened to a ticket lives in the events.
-import type { Id, Ticket, TicketAttachment } from "@i-inc/core";
+import { efforts, type Id, isRecord, type Ticket, type TicketAttachment } from "@i-inc/core";
 import type { Db } from "./db.ts";
 
 export interface NewTicket {
@@ -74,6 +74,37 @@ export interface TicketRecord {
   pickedAt: number | null;
 }
 
+const ticketTypes: readonly Ticket["type"][] = ["fix", "feat", "chore", "errand", "orientation"];
+
+/**
+ * A stored ticket as the rest of the daemon can rely on it. A ticket whose body isn't JSON, or isn't
+ * a ticket, can't be read at all (null). One with an effort or type this version doesn't know (an
+ * agent's follow-up filed it) is read as Medium effort or a chore, so it still has a plan.
+ */
+function readTicket(id: string, body: string): Ticket | null {
+  let v: unknown;
+  try {
+    v = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (!isRecord(v)) return null;
+  const str = (x: unknown, fallback = "") => (typeof x === "string" ? x : fallback);
+  const t: Ticket = {
+    ...(v as unknown as Ticket),
+    id: str(v.id, id),
+    title: str(v.title, `Ticket ${id}`),
+    project: str(v.project),
+    type: ticketTypes.includes(v.type as Ticket["type"]) ? (v.type as Ticket["type"]) : "chore",
+    effort: efforts.includes(v.effort as Ticket["effort"]) ? (v.effort as Ticket["effort"]) : "medium",
+    doneWhen: Array.isArray(v.doneWhen) ? v.doneWhen.filter((d): d is string => typeof d === "string") : [],
+    assignee: str(v.assignee),
+  };
+  if (!Array.isArray(t.labels)) delete t.labels;
+  if (!Array.isArray(t.attachments)) delete t.attachments;
+  return t;
+}
+
 export class Tickets {
   onChange?: (ticketId: Id) => void;
   private readonly listeners = new Set<(ticketId: Id) => void>();
@@ -89,8 +120,19 @@ export class Tickets {
       listener(ticketId);
     }
   }
+  /** Rows that couldn't be read, by ticket id, with why (logged once). */
+  private readonly unreadableRows = new Map<Id, string>();
 
-  constructor(private readonly db: Db) {}
+  constructor(
+    private readonly db: Db,
+    private readonly log?: (msg: string) => void,
+  ) {}
+
+  /** Backlog rows that can't be read back, which the board lists instead of hiding them. */
+  unreadable(): { id: Id; reason: string }[] {
+    // Reading is what finds them; a caller that wants the current list asks for all() first.
+    return [...this.unreadableRows].map(([id, reason]) => ({ id, reason }));
+  }
 
   create(input: NewTicket, now: number, images: NewAttachment[] = []): Ticket {
     const [row] = this.db.all<{ n: number }>("SELECT COUNT(*) AS n FROM tickets");
@@ -210,16 +252,33 @@ export class Tickets {
 
   private rows(where: string, ...params: string[]): TicketRecord[] {
     return this.db
-      .all<{ body: string; priority: number; hold: number; created_at: number; picked_at: number | null }>(
-        `SELECT body, priority, hold, created_at, picked_at FROM tickets ${where}`,
-        ...params,
-      )
-      .map((r) => ({
-        ticket: JSON.parse(r.body) as Ticket,
-        priority: r.priority,
-        hold: r.hold === 1,
-        createdAt: r.created_at,
-        pickedAt: r.picked_at,
-      }));
+      .all<{
+        id: string;
+        body: string;
+        priority: number;
+        hold: number;
+        created_at: number;
+        picked_at: number | null;
+      }>(`SELECT id, body, priority, hold, created_at, picked_at FROM tickets ${where}`, ...params)
+      .flatMap((r) => {
+        const ticket = readTicket(r.id, r.body);
+        if (!ticket) {
+          if (!this.unreadableRows.has(r.id)) {
+            this.unreadableRows.set(r.id, "its stored definition can't be read");
+            this.log?.(`ticket ${r.id}: its stored definition can't be read, so it is skipped`);
+          }
+          return [];
+        }
+        this.unreadableRows.delete(r.id);
+        return [
+          {
+            ticket,
+            priority: r.priority,
+            hold: r.hold === 1,
+            createdAt: r.created_at,
+            pickedAt: r.picked_at,
+          },
+        ];
+      });
   }
 }

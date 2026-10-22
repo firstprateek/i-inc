@@ -8,7 +8,7 @@
 // commands"). There is no `machine start`: `machine run` boots a stopped machine, and fails with
 // "notFound" for a missing one. `machine create` boots the new machine itself. `machine stop` also
 // succeeds on a machine that's already stopped.
-import { type ChildProcessWithoutNullStreams, execFile, spawn } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { statSync } from "node:fs";
 import {
   type AgentHarness,
@@ -21,7 +21,9 @@ import {
 } from "@i-inc/core";
 import type { AgentProcess, Launch } from "./acp.ts";
 import { type EgressWall, isHomeMachine, WallError, type WallRow } from "./egress-wall.ts";
+import { describeMs, guardStdin, stopGroup } from "./proc.ts";
 import { launcherNeedsUpdate, newAgentId, noteLauncher, trackAgent } from "./reaper.ts";
+import { defaultTimeoutsMs, type TimeoutsMs } from "./timeouts.ts";
 
 export const BOOT_FAILURES: Record<SandboxFaultKind, { reason: string; fix: string; waiting: string }> = {
   "stale-hostname": {
@@ -87,6 +89,8 @@ export interface MachineSettings {
    * confirmed. Absent, nothing is checked but the walls marker, and no home machine runs.
    */
   wall?: EgressWall;
+  /** The limits in timeouts.ts as the owner has them now, read at each call (milliseconds). */
+  timeouts?: () => Partial<TimeoutsMs>;
 }
 
 export const defaultMachineSettings: MachineSettings = {
@@ -257,23 +261,71 @@ export interface ExecOptions {
 /** Runs a command and resolves with its output, or rejects with its error output. */
 export type Exec = (bin: string, args: string[], opts?: ExecOptions) => Promise<string>;
 
+/** `exec` with a limit on every command that doesn't name its own (the `container` commands in timeouts.ts). */
+export function withDefaultTimeout(s: MachineSettings, exec: Exec): Exec {
+  return (bin, args, opts) =>
+    exec(bin, args, {
+      ...opts,
+      timeoutMs: opts?.timeoutMs ?? s.timeouts?.().machineCommandMs ?? defaultTimeoutsMs.machineCommandMs,
+    });
+}
+
 export const execDefault: Exec = (bin, args, opts) =>
   new Promise((resolve, reject) => {
-    const child = execFile(
-      bin,
-      args,
-      {
-        encoding: "utf8",
-        ...(opts?.env ? { env: { ...process.env, ...opts.env } } : {}),
-        ...(opts?.timeoutMs ? { timeout: opts.timeoutMs } : {}),
-        maxBuffer: 8 * 1024 * 1024,
-      },
-      (err, stdout, stderr) => (err ? reject(new Error(stderr.trim() || err.message)) : resolve(stdout)),
-    );
-    if (opts?.input && child.stdin) {
-      child.stdin.write(opts.input);
-      child.stdin.end();
-    }
+    // Detached, so the command leads a process group that a timeout can stop as a whole.
+    const child = spawn(bin, args, {
+      env: opts?.env ? { ...process.env, ...opts.env } : process.env,
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: true,
+    });
+    const maxBuffer = 8 * 1024 * 1024;
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    // The deadline rejects the call itself: a killed command whose children still hold its pipes
+    // would never close.
+    const timer = opts?.timeoutMs
+      ? setTimeout(() => {
+          stopGroup(child, 1000);
+          fail(
+            new Error(
+              `\`${bin} ${args.slice(0, 3).join(" ")}\` timed out after ${describeMs(opts.timeoutMs ?? 0)}`,
+            ),
+          );
+        }, opts.timeoutMs)
+      : undefined;
+    timer?.unref?.();
+    const fail = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(err);
+    };
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+      if (stdout.length > maxBuffer) {
+        stopGroup(child, 1000);
+        fail(new Error(`\`${bin}\` wrote more than ${maxBuffer} bytes`));
+      }
+    });
+    child.stderr.on("data", (chunk: string) => {
+      if (stderr.length < maxBuffer) stderr += chunk;
+    });
+    child.on("error", fail);
+    child.on("close", (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (code === 0) resolve(stdout);
+      else reject(new Error(stderr.trim() || `Command failed: ${bin} ${args.join(" ")} (${code ?? signal})`));
+    });
+    // A command that exits before it reads its input leaves the write with EPIPE: its exit is the
+    // answer, not a crash.
+    guardStdin(child.stdin);
+    if (opts?.input) child.stdin.write(opts.input);
+    child.stdin.end();
   });
 
 /** Employee ids are validated at hiring (1-32 lowercase letters, digits or dashes). */
@@ -301,13 +353,24 @@ export class AppleMachines implements MachineProvider {
   private readonly attempts = new Map<string, number>();
   private readonly lastLogged = new Map<string, string>();
 
+  private readonly exec: Exec;
+
   constructor(
     private readonly s: MachineSettings = defaultMachineSettings,
-    private readonly exec: Exec = execDefault,
+    exec: Exec = execDefault,
     private readonly sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
     private readonly now: () => number = Date.now,
     private readonly log?: (msg: string) => void,
-  ) {}
+  ) {
+    // Every `container` command has a limit (timeouts.ts): a frozen container service must not hold a
+    // ticket, and with it a deploy, for ever. A call that names its own limit keeps it.
+    this.exec = (bin, args, opts) =>
+      exec(bin, args, {
+        ...opts,
+        timeoutMs:
+          opts?.timeoutMs ?? this.s.timeouts?.().machineCommandMs ?? defaultTimeoutsMs.machineCommandMs,
+      });
+  }
 
   async ensureUp(employeeId: Id): Promise<void> {
     assertWalls(this.s);
@@ -835,7 +898,9 @@ export const launchers: Record<string, string> = {
 /** Starts the `container` CLI; a test can stand in for it. */
 export type Spawn = (bin: string, args: string[], env: NodeJS.ProcessEnv) => ChildProcessWithoutNullStreams;
 
-const spawnDefault: Spawn = (bin, args, env) => spawn(bin, args, { env, stdio: ["pipe", "pipe", "pipe"] });
+// Detached, so the agent's whole process group can be stopped (killGroup).
+const spawnDefault: Spawn = (bin, args, env) =>
+  spawn(bin, args, { env, stdio: ["pipe", "pipe", "pipe"], detached: true });
 
 /**
  * Starts a harness's ACP server in the employee's machine:
@@ -850,8 +915,9 @@ const spawnDefault: Spawn = (bin, args, env) => spawn(bin, args, { env, stdio: [
 export function machineLaunch(
   s: MachineSettings = defaultMachineSettings,
   run: Spawn = spawnDefault,
-  exec: Exec = execDefault,
+  execRaw: Exec = execDefault,
 ): Launch {
+  const exec = withDefaultTimeout(s, execRaw);
   return ({ employeeId, engine, cwd, env }) => {
     const machine = machineOf(s, employeeId);
     // With the new walls (or for a home machine) the live address is checked first, which takes a look at
@@ -881,12 +947,14 @@ export function machineLaunch(
       );
       const exited = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
       trackAgent(agentId, exited);
+      // The agent exits when its machine goes away; a write after that must not crash the daemon.
+      guardStdin(child.stdin);
       const proc: AgentProcess = {
         agentId,
         stdin: child.stdin,
         stdout: child.stdout,
         stderr: child.stderr,
-        kill: () => child.kill(),
+        kill: () => stopGroup(child),
         exited,
       };
       return proc;

@@ -11,6 +11,7 @@ import {
   type Company,
   type Duty,
   type Employee,
+  findEngine,
   fold,
   type Harness,
   type HelperModel,
@@ -23,10 +24,12 @@ import {
   type Ports,
   type ProjectRelease,
   type RunResult,
+  readFollowUps,
   runTicket,
   type SessionOutcome,
   type SessionRequest,
   type Snapshot,
+  type StageId,
   StartupError,
   schedule,
   type Ticket,
@@ -132,6 +135,16 @@ export class Daemon {
   waiting: Waiting[] = [];
   /** For a waiting ticket blocked by an account or usage cap: when it resets (epoch ms). */
   waitingUntil: Record<Id, number> = {};
+  /**
+   * Tickets whose run threw, with how many times in a row and when they may run again. A ticket that
+   * keeps failing backs off (30 s, doubling, up to 10 min) and is failed with the reason after
+   * `maxErrors` in a row; a `StartupError` only waits, as its `retryAt` says.
+   */
+  private readonly failures = new Map<Id, { count: number; retryAt: number; reason: string }>();
+  /** Tickets whose events or fold broke in a pass, with why: skipped, logged once, shown on the board. */
+  private readonly broken = new Map<Id, string>();
+  /** Things already logged, so a standing problem is logged once and not at every tick. */
+  private readonly logged = new Set<string>();
 
   private readonly stateCache = new Map<Id, TicketState>();
   private readonly dirtyTickets = new Set<Id>();
@@ -150,6 +163,25 @@ export class Daemon {
   invalidate(ticketId: Id): void {
     this.dirtyTickets.add(ticketId);
     this.stateCache.delete(ticketId);
+  }
+
+  /** Logs a message once per key (a standing problem would otherwise fill the log every 30 seconds). */
+  private logOnce(key: string, msg: string): void {
+    if (this.logged.has(key)) return;
+    this.logged.add(key);
+    this.d.log?.(msg);
+  }
+
+  /** Folds a ticket's events; an event that can't be applied is skipped and logged once. */
+  private foldTicket(id: Id, events: TicketEvent[]): TicketState {
+    return fold(events, (_event, why) =>
+      this.logOnce(`fold:${id}:${why}`, `ticket ${id}: skipped an event: ${why}`),
+    );
+  }
+
+  /** Tickets the daemon can't read or fold at the moment, with why. The board lists them. */
+  unreadable(): { id: Id; reason: string }[] {
+    return [...this.d.tickets.unreadable(), ...[...this.broken].map(([id, reason]) => ({ id, reason }))];
   }
 
   /** Employees waiting for their sandbox's cleanup to finish, with why: shown on their tickets. */
@@ -251,8 +283,9 @@ export class Daemon {
         if (fault && this.d.clock.now() < fault.retryAt) {
           return { reason: fault.waiting, until: fault.retryAt };
         }
+        const eng = findEngine(reg, engineId);
+        if (!eng) return { reason: `the engine "${engineId}" was removed in Setup` };
         if (duty === "review" || duty === "verify") {
-          const eng = reg.engine(engineId);
           const signedIn = this.d.machines.signedIn?.(employeeId, eng.harness);
           if (signedIn === false) {
             return { reason: `${eng.harness} is not signed in for this team` };
@@ -426,7 +459,7 @@ export class Daemon {
     const cached = this.stateCache.get(id);
     if (cached && !this.dirtyTickets.has(id)) return cached;
     const events = await this.d.store.read(id);
-    const s = fold(events);
+    const s = this.foldTicket(id, events);
     this.stateCache.set(id, s);
     this.dirtyTickets.delete(id);
     return s;
@@ -437,42 +470,79 @@ export class Daemon {
 
   /**
    * One scheduling pass. Returns once everything it started is under way. Passes never overlap, so
-   * a reviewer is never picked twice; a tick asked for while one is waiting to run joins it.
+   * a reviewer is never picked twice; a tick asked for while one is waiting to run joins it. A pass
+   * that fails is logged and the next tick tries again: it never rejects, so no caller (startup
+   * included) can be taken down by what one pass found.
    */
   tick(): Promise<void> {
     if (this.queued) return this.queued;
-    const next = this.chain.then(() => {
-      this.queued = null;
-      return this.pass();
-    });
+    const next = this.chain
+      .then(() => {
+        this.queued = null;
+        return this.pass();
+      })
+      .catch((e: unknown) => {
+        const msg = `tick failed: ${errorLine(e)}`;
+        if (this.d.log) this.d.log(msg);
+        else console.error(msg);
+      });
     this.queued = next;
-    this.chain = next.catch((e: unknown) => this.d.log?.(`tick failed: ${String(e)}`));
+    this.chain = next;
     return next;
+  }
+
+  /** Runs one piece of a ticket's housekeeping; a failure is logged and stops nothing else. */
+  private async guarded(id: Id, what: string, fn: () => void | Promise<void>): Promise<void> {
+    try {
+      await fn();
+    } catch (err) {
+      this.logOnce(`${what}:${id}:${errorLine(err)}`, `ticket ${id}: ${what} failed: ${errorLine(err)}`);
+    }
   }
 
   private async pass(): Promise<void> {
     const now = this.d.clock.now();
-    const records = this.d.tickets.all();
     const states = new Map<Id, TicketState>();
-    for (const r of records) {
-      let s = this.stateCache.get(r.ticket.id);
-      if (!s || this.dirtyTickets.has(r.ticket.id)) {
-        const events = await this.d.store.read(r.ticket.id);
-        s = fold(events);
-        this.stateCache.set(r.ticket.id, s);
-        this.applyKnowledge(r.ticket.id, events);
-        this.fileFollowUps(r.ticket.id, events);
-        try {
-          await this.sendPushNotifications(r.ticket, events);
-        } catch (err) {
-          this.d.log?.(`push error: ${String(err)}`);
+    // One ticket's bad data (an event that won't fold, a step that throws) costs only that ticket:
+    // it is left out of this pass, logged once, and listed on the board; the others carry on.
+    const records: TicketRecord[] = [];
+    for (const r of this.d.tickets.all()) {
+      const id = r.ticket.id;
+      let fresh: TicketEvent[] | null = null;
+      try {
+        let s = this.stateCache.get(id);
+        if (!s || this.dirtyTickets.has(id)) {
+          fresh = await this.d.store.read(id);
+          s = this.foldTicket(id, fresh);
+          this.stateCache.set(id, s);
         }
+        states.set(id, s);
+      } catch (err) {
+        this.broken.set(id, errorLine(err));
+        this.logOnce(
+          `broken:${id}:${errorLine(err)}`,
+          `ticket ${id} can't be read and is skipped: ${errorLine(err)}`,
+        );
+        continue;
       }
-      states.set(r.ticket.id, s);
+      this.broken.delete(id);
+      records.push(r);
+      if (fresh) {
+        const events = fresh;
+        await this.guarded(id, "applying its knowledge edits", () => this.applyKnowledge(id, events));
+        await this.guarded(id, "filing its follow-ups", () => this.fileFollowUps(id, events));
+        await this.guarded(id, "sending its notifications", () =>
+          this.sendPushNotifications(r.ticket, events),
+        );
+      }
     }
     this.dirtyTickets.clear();
 
-    this.checkAutoReleases(records, states, now);
+    try {
+      this.checkAutoReleases(records, states, now);
+    } catch (err) {
+      this.logOnce(`releases:${errorLine(err)}`, `auto-release check failed: ${errorLine(err)}`);
+    }
     try {
       this.fileTidy(records, states, now);
     } catch (err) {
@@ -496,7 +566,7 @@ export class Daemon {
           sandboxWaitingUntil[r.ticket.id] = fault.retryAt;
           continue;
         }
-        this.run(r.ticket.id);
+        this.runQuietly(r.ticket.id);
       }
     }
 
@@ -513,7 +583,11 @@ export class Daemon {
     const soon = records
       .filter((r) => states.get(r.ticket.id)?.waitingFor)
       .map((r) => builderOf(r.ticket.id, r.ticket.assignee));
-    await this.sleepIdle(new Set([...busy, ...soon]));
+    try {
+      await this.sleepIdle(new Set([...busy, ...soon]));
+    } catch (err) {
+      this.logOnce(`sleep:${errorLine(err)}`, `stopping idle machines failed: ${errorLine(err)}`);
+    }
     const pending: PendingDuty[] = records.flatMap((r) => {
       const w = states.get(r.ticket.id)?.waitingFor;
       return w
@@ -532,8 +606,10 @@ export class Daemon {
     const accountsBlockedUntil: Record<Id, number> = {};
     for (const s of states.values()) {
       if (s.paused) {
-        const account = this.d.registry.engine(s.paused.engineId).accountId;
-        accountsBlockedUntil[account] = Math.max(accountsBlockedUntil[account] ?? 0, s.paused.until);
+        // An engine removed while a ticket waits on it blocks no account.
+        const account = findEngine(this.d.registry, s.paused.engineId)?.accountId;
+        if (account)
+          accountsBlockedUntil[account] = Math.max(accountsBlockedUntil[account] ?? 0, s.paused.until);
       }
     }
 
@@ -585,6 +661,13 @@ export class Daemon {
     };
     const plan = schedule(snap, this.company);
     this.waiting = [...plan.waiting, ...sandboxWaiting];
+    // A ticket that is backing off after an error says so, until it runs again.
+    for (const [id, f] of this.failures) {
+      if (f.retryAt > now && !this.waiting.some((w) => w.ticketId === id)) {
+        this.waiting.push({ ticketId: id, reason: f.reason });
+        sandboxWaitingUntil[id] ??= f.retryAt;
+      }
+    }
     // A ticket whose builder waits for its sandbox's cleanup says so.
     for (const r of records) {
       const reason = this.holds.get(states.get(r.ticket.id)?.assignee ?? r.ticket.assignee);
@@ -595,15 +678,41 @@ export class Daemon {
     this.waitingUntil = { ...(plan.resets ?? {}), ...sandboxWaitingUntil };
 
     for (const start of plan.starts) {
-      if (start.as !== "build") await assignHelper(this.ports, start.ticketId, start.as, start.employeeId);
-      else if (start.by === "standing-order") this.d.tickets.assign(start.ticketId, start.employeeId, now);
-      this.run(start.ticketId);
+      try {
+        if (start.as !== "build") await assignHelper(this.ports, start.ticketId, start.as, start.employeeId);
+        else if (start.by === "standing-order") this.d.tickets.assign(start.ticketId, start.employeeId, now);
+      } catch (err) {
+        this.logOnce(
+          `start:${start.ticketId}:${errorLine(err)}`,
+          `ticket ${start.ticketId} didn't start: ${errorLine(err)}`,
+        );
+        continue;
+      }
+      this.runQuietly(start.ticketId);
     }
   }
 
-  /** Runs (or resumes) one ticket in the background, unless it's already running. */
-  run(id: Id): void {
+  /** `run`, for the tick: a ticket that can't be run costs only itself. */
+  private runQuietly(id: Id): void {
+    try {
+      this.run(id);
+    } catch (err) {
+      this.logOnce(`run:${id}:${errorLine(err)}`, `ticket ${id} didn't run: ${errorLine(err)}`);
+    }
+  }
+
+  /** How many errors in a row stop a ticket for good. */
+  static readonly maxErrors = 5;
+
+  /**
+   * Runs (or resumes) one ticket in the background, unless it's already running. A ticket that threw
+   * lately waits out its back-off first, unless the owner has just acted on it (`force`).
+   */
+  run(id: Id, opts: { force?: boolean } = {}): void {
     if (this.running.has(id)) return;
+    const held = this.failures.get(id);
+    if (opts.force) this.failures.delete(id);
+    else if (held && this.d.clock.now() < held.retryAt) return;
     const record = this.d.tickets.get(id);
     if (!record) throw new Error(`no ticket ${id}`);
     const signal = (employeeId: Id) => {
@@ -613,43 +722,87 @@ export class Daemon {
     };
     const done = runTicket(this.ports, record.ticket, { helpers: "scheduler", signal })
       .then(async (r: RunResult) => {
+        this.failures.delete(id);
         this.d.log?.(`ticket ${id}: ${r.status}`);
-        const events = await this.d.store.read(id);
-        const s = fold(events);
-        this.stateCache.set(id, s);
-        this.dirtyTickets.delete(id);
-        this.applyKnowledge(id, events);
-        this.fileFollowUps(id, events);
-        await this.sendPushNotifications(record.ticket, events);
-        // The ticket is over (after its retro, or it failed): what the agents wrote in their brain
-        // copies is collected, checked and committed. Never a reason for the ticket to fail.
-        if (r.status === "done" || r.status === "failed") await this.harvestTicket(record.ticket, events);
+        // What follows is housekeeping: its failure is logged and is not the ticket's error.
+        await this.guarded(id, "its after-run steps", async () => {
+          const events = await this.d.store.read(id);
+          const s = this.foldTicket(id, events);
+          this.stateCache.set(id, s);
+          this.dirtyTickets.delete(id);
+          this.applyKnowledge(id, events);
+          this.fileFollowUps(id, events);
+          await this.sendPushNotifications(record.ticket, events);
+          // The ticket is over (after its retro, or it failed): what the agents wrote in their brain
+          // copies is collected, checked and committed. Never a reason for the ticket to fail.
+          if (r.status === "done" || r.status === "failed") await this.harvestTicket(record.ticket, events);
+        });
         // A stage finished or wants a helper: someone may be free now, or a reviewer is needed.
         if (r.status !== "paused") void this.tick().catch(() => {});
       })
-      .catch((e: unknown) => {
-        if (e instanceof StartupError) {
-          const existing = this.waiting.find((w) => w.ticketId === id);
-          if (existing) existing.reason = e.message;
-          else this.waiting.push({ ticketId: id, reason: e.message });
-          if (e.retryAt) this.waitingUntil[id] = e.retryAt;
-          this.d.log?.(`ticket ${id} waiting: ${e.message}`);
-          return;
-        }
-        const retryAfterSec =
-          typeof (e as { retryAfterSec?: unknown })?.retryAfterSec === "number"
-            ? (e as { retryAfterSec: number }).retryAfterSec
-            : undefined;
-        if (retryAfterSec && retryAfterSec > 0) {
-          this.waitingUntil[id] = this.d.clock.now() + retryAfterSec * 1000;
-        }
-        this.d.log?.(`ticket ${id} stopped: ${String(e)}`);
-      })
+      .catch((e: unknown) => this.runFailed(id, e))
       .finally(() => {
         this.running.delete(id);
         this.sessions.delete(id);
       });
     this.running.set(id, done);
+  }
+
+  /** A ticket's run threw: wait (a startup problem), back off (anything else), or give up after a few in a row. */
+  private async runFailed(id: Id, e: unknown): Promise<void> {
+    const now = this.d.clock.now();
+    const prev = this.failures.get(id);
+    if (e instanceof StartupError) {
+      const existing = this.waiting.find((w) => w.ticketId === id);
+      if (existing) existing.reason = e.message;
+      else this.waiting.push({ ticketId: id, reason: e.message });
+      if (e.retryAt) {
+        this.waitingUntil[id] = e.retryAt;
+        this.failures.set(id, { count: prev?.count ?? 0, retryAt: e.retryAt, reason: e.message });
+      }
+      this.d.log?.(`ticket ${id} waiting: ${e.message}`);
+      return;
+    }
+    const count = (prev?.count ?? 0) + 1;
+    const reason = errorLine(e);
+    this.d.log?.(`ticket ${id} stopped (${count} in a row): ${reason}`);
+    if (count >= Daemon.maxErrors) {
+      this.failures.delete(id);
+      await this.giveUp(id, count, reason);
+      return;
+    }
+    let backoff = Math.min(30_000 * 2 ** (count - 1), 10 * 60_000);
+    // An upstream that says when to come back (GitHub's rate limit) is believed.
+    const retryAfterSec = (e as { retryAfterSec?: unknown })?.retryAfterSec;
+    if (typeof retryAfterSec === "number" && retryAfterSec > 0) {
+      backoff = Math.max(backoff, retryAfterSec * 1000);
+      this.waitingUntil[id] = now + retryAfterSec * 1000;
+    }
+    this.failures.set(id, {
+      count,
+      retryAt: now + backoff,
+      reason: `hit an error and tries again shortly: ${reason}`,
+    });
+  }
+
+  /** Fails a ticket that keeps throwing, so it reaches the owner instead of looping for ever. */
+  private async giveUp(id: Id, count: number, reason: string): Promise<void> {
+    try {
+      const s = await this.state(id);
+      if (s.status === "failed" || s.status === "done" || s.status === "ready") return;
+      const stage: StageId = s.active ?? "pickup";
+      await this.d.store.append(id, [
+        {
+          type: "failed",
+          at: this.d.clock.now(),
+          stage,
+          reason: `stopped after ${count} errors in a row: ${reason}`,
+          tried: [],
+        },
+      ]);
+    } catch (err) {
+      this.d.log?.(`ticket ${id}: couldn't record that it gave up: ${errorLine(err)}`);
+    }
   }
 
   /**
@@ -812,9 +965,19 @@ export class Daemon {
 
   /** The handbook, and a brain for everyone who works here (hiring makes one; this covers the rest). */
   ensureKnowledge(): void {
-    this.d.knowledge.ensureHandbook();
-    for (const e of this.d.registry.employees()) this.d.knowledge.ensureBrain(e);
-    this.ensurePushBaseline();
+    // Startup: a handbook or a brain that can't be made is logged, and the daemon still comes up.
+    const attempt = (what: string, fn: () => void) => {
+      try {
+        fn();
+      } catch (err) {
+        this.d.log?.(`${what} failed: ${errorLine(err)}`);
+      }
+    };
+    attempt("making the handbook", () => this.d.knowledge.ensureHandbook());
+    for (const e of this.d.registry.employees()) {
+      attempt(`making ${e.id}'s brain`, () => this.d.knowledge.ensureBrain(e));
+    }
+    attempt("seeding the notification baseline", () => this.ensurePushBaseline());
   }
 
   /** Seeds push_sent with a baseline on initial startup so historical events aren't notified. */
@@ -837,8 +1000,12 @@ export class Daemon {
       for (const r of rows) {
         const idx = byTicket.get(r.ticket_id) ?? 0;
         byTicket.set(r.ticket_id, idx + 1);
-        const e = JSON.parse(r.body) as TicketEvent;
-        if (e.type === "needs-you" || e.type === "report-ready" || e.type === "main-red") {
+        // A row that can't be read is an `unreadable` placeholder in the store, at the same index.
+        let e: { type?: unknown } | null = null;
+        try {
+          e = JSON.parse(r.body) as { type?: unknown };
+        } catch {}
+        if (e?.type === "needs-you" || e?.type === "report-ready" || e?.type === "main-red") {
           this.d.db.run(
             "INSERT OR IGNORE INTO push_sent (key, at) VALUES (?, ?)",
             `push:${r.ticket_id}:${idx}`,
@@ -859,14 +1026,22 @@ export class Daemon {
     const now = this.d.clock.now();
     const dayStart = now - (now % 86_400_000);
     events.forEach((e, i) => {
-      if (e.type !== "follow-ups") return;
-      e.tickets.forEach((f, j) => {
+      if (e.type !== "follow-ups" || !Array.isArray(e.tickets)) return;
+      e.tickets.forEach((raw, j) => {
         const key = `followup:${ticketId}:${i}:${j}`;
         const [done] = this.d.db.all<{ n: number }>(
           "SELECT COUNT(*) AS n FROM knowledge_applied WHERE edit_id = ?",
           key,
         );
         if (done?.n) return;
+        // Events stored before replies were checked may hold anything: it is read again here, and what
+        // can't be a ticket is marked done and left alone, never filed and never tried again.
+        const [f] = readFollowUps([raw], 1).kept;
+        if (!f || typeof e.employeeId !== "string") {
+          this.d.db.run("INSERT OR IGNORE INTO knowledge_applied (edit_id, at) VALUES (?, ?)", key, now);
+          this.d.log?.(`follow-up ${j + 1} of ticket ${ticketId} isn't a ticket and was left out`);
+          return;
+        }
         // The budget counts what agents filed on their own today; a ticket the owner accepted from
         // a proposal was their call, so it doesn't use any of it.
         const filedToday = this.d.tickets
@@ -878,44 +1053,47 @@ export class Daemon {
               !r.ticket.labels?.includes(ACCEPTED_LABEL) &&
               r.createdAt >= dayStart,
           ).length;
-        if (filedToday >= this.d.registry.projectPolicy(from.project).followUpsPerDay) {
-          // Over budget: the owner decides, so it waits as a proposal instead of being dropped.
-          const made = this.d.proposals.add(
-            {
-              project: from.project,
-              title: f.title,
-              body: f.reason ?? "",
-              proposedBy: e.employeeId,
-              sourceTicket: ticketId,
-              type: f.type,
-              effort: f.effort,
-              doneWhen: f.doneWhen,
-            },
-            now,
-          );
-          if (made) {
-            this.d.log?.(
-              `follow-up "${f.title}" from ${e.employeeId} kept as proposal ${made.id}: ${from.project}'s budget for today is used`,
+        // Filing and marking it filed go together, so a crash between them can't file it twice.
+        this.d.db.transaction(() => {
+          if (filedToday >= this.d.registry.projectPolicy(from.project).followUpsPerDay) {
+            // Over budget: the owner decides, so it waits as a proposal instead of being dropped.
+            const made = this.d.proposals.add(
+              {
+                project: from.project,
+                title: f.title,
+                body: f.reason ?? "",
+                proposedBy: e.employeeId,
+                sourceTicket: ticketId,
+                type: f.type,
+                effort: f.effort,
+                doneWhen: f.doneWhen,
+              },
+              now,
             );
+            if (made) {
+              this.d.log?.(
+                `follow-up "${f.title}" from ${e.employeeId} kept as proposal ${made.id}: ${from.project}'s budget for today is used`,
+              );
+            }
+          } else {
+            const t = this.d.tickets.create(
+              {
+                title: f.title,
+                project: from.project,
+                type: f.type,
+                effort: f.effort,
+                doneWhen: f.doneWhen,
+                assignee: e.employeeId,
+                createdBy: e.employeeId,
+                ...(f.reason ? { reason: f.reason } : {}),
+                labels: ["follow-up"],
+              },
+              now,
+            );
+            this.d.log?.(`ticket ${t.id} filed by ${e.employeeId} as a follow-up of ${ticketId}: ${f.title}`);
           }
-        } else {
-          const t = this.d.tickets.create(
-            {
-              title: f.title,
-              project: from.project,
-              type: f.type,
-              effort: f.effort,
-              doneWhen: f.doneWhen,
-              assignee: e.employeeId,
-              createdBy: e.employeeId,
-              ...(f.reason ? { reason: f.reason } : {}),
-              labels: ["follow-up"],
-            },
-            now,
-          );
-          this.d.log?.(`ticket ${t.id} filed by ${e.employeeId} as a follow-up of ${ticketId}: ${f.title}`);
-        }
-        this.d.db.run("INSERT OR IGNORE INTO knowledge_applied (edit_id, at) VALUES (?, ?)", key, now);
+          this.d.db.run("INSERT OR IGNORE INTO knowledge_applied (edit_id, at) VALUES (?, ?)", key, now);
+        });
       });
     });
   }
@@ -1062,4 +1240,10 @@ export class Daemon {
       this.d.log?.(`auto-release ${tag} recorded for project ${project.id} (${ticketIds.length} tickets)`);
     }
   }
+}
+
+/** An error as one short line for the log and for a ticket's reason: no control characters, cut at 300. */
+function errorLine(e: unknown): string {
+  const text = (e instanceof Error ? e.message : String(e)).replace(/\p{Cc}+/gu, " ").trim();
+  return text.length > 300 ? `${text.slice(0, 299)}…` : text;
 }

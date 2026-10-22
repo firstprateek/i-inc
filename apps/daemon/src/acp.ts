@@ -18,9 +18,12 @@ import type {
   SessionTranscriptItem,
   Ticket,
 } from "@i-inc/core";
+import { StartupError } from "@i-inc/core";
+import { describeMs, guardStdin } from "./proc.ts";
 import type { Reap } from "./reaper.ts";
 import type { AccountRateLimit } from "./registry.ts";
 import { capText } from "./sessions.ts";
+import { defaultTimeoutsMs, type TimeoutsMs } from "./timeouts.ts";
 
 type Json = Record<string, unknown>;
 
@@ -80,7 +83,14 @@ export interface AcpOptions {
   cancelGraceMs?: number;
   /** When an engine's limits show only as errors (Antigravity), how long to wait before trying again. */
   unknownResetMs?: number;
+  /** The limits in timeouts.ts as the owner has them now, read at each session (milliseconds). */
+  timeouts?: () => Partial<TimeoutsMs>;
+  /** How long a ticket waits before a launch that failed is tried again. */
+  launchRetryMs?: number;
 }
+
+/** The error code of a request the client gave up on (the JSON-RPC server-error range). */
+export const ACP_TIMED_OUT = -32098;
 
 export function extractRateLimit(rl: Record<string, unknown>, now = Date.now()): AccountRateLimit {
   const windows = (rl.unifiedWindows ?? {}) as Record<string, Record<string, unknown>>;
@@ -177,10 +187,23 @@ export class AcpAgent implements Agent {
     const now = this.o.now ?? Date.now;
     if (this.shuttingDown) return stuck("the daemon is stopping", true);
     const cwd = this.o.cwdFor(r.ticket.id);
-    const env = await this.o.credentials(r.engine, r.ticket, r.duty, r.employee.id);
-    // An agent a dead daemon left on this ticket would work in the same folder as the new one.
-    await this.o.reap?.(r.employee.id, { cwd });
-    const proc = await this.o.launch({ employeeId: r.employee.id, engine: r.engine, cwd, env });
+    const limits = { ...defaultTimeoutsMs, ...this.o.timeouts?.() };
+    let proc: AgentProcess;
+    try {
+      const env = await this.o.credentials(r.engine, r.ticket, r.duty, r.employee.id);
+      // An agent a dead daemon left on this ticket would work in the same folder as the new one.
+      await this.o.reap?.(r.employee.id, { cwd });
+      proc = await this.o.launch({ employeeId: r.employee.id, engine: r.engine, cwd, env });
+    } catch (err) {
+      // Whatever stops a launch (the walls are down, GitHub won't give a token, no such launcher) is
+      // the daemon's to wait out, not a reason to throw from the tick again every 30 seconds with
+      // another session-started each time: the ticket waits, and the daemon backs off.
+      if (err instanceof StartupError) throw err;
+      throw new StartupError(
+        `couldn't start ${r.engine.harness} for ${r.employee.name}: ${upstreamReason(err)}`,
+        now() + (this.o.launchRetryMs ?? 60_000),
+      );
+    }
     const rpc = new Rpc(proc, this.o.log);
     this.open.set(rpc, r.employee.id);
     let limit: { rejected: boolean; resetsAt: number | null; fromMeta?: boolean } = {
@@ -322,15 +345,29 @@ export class AcpAgent implements Agent {
     };
 
     try {
-      const init = await rpc.request("initialize", {
-        protocolVersion: 1,
-        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
-        clientInfo: { name: "i.inc", version: "0.1.0" },
-      });
-      if (init.error)
+      const init = await rpc.request(
+        "initialize",
+        {
+          protocolVersion: 1,
+          clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+          clientInfo: { name: "i.inc", version: "0.1.0" },
+        },
+        { timeoutMs: limits.agentStartMs },
+      );
+      if (init.error) {
+        if (timedOut(init)) rpc.kill();
         return stuck(`the ${r.engine.harness} ACP server didn't start: ${upstreamReason(init.error)}`, true);
+      }
 
-      const created = await rpc.request("session/new", { cwd: this.o.cwdFor(r.ticket.id), mcpServers: [] });
+      const created = await rpc.request(
+        "session/new",
+        { cwd: this.o.cwdFor(r.ticket.id), mcpServers: [] },
+        { timeoutMs: limits.agentStartMs },
+      );
+      if (created.error && timedOut(created)) {
+        rpc.kill();
+        return stuck(`${r.engine.harness} couldn't open a session: ${upstreamReason(created.error)}`, true);
+      }
       if (created.error) {
         const e = created.error as Json;
         // "Authentication required": sign-ins need the owner (spec §5), so the switch rules take over.
@@ -356,11 +393,11 @@ export class AcpAgent implements Agent {
           const value = desired(configChoices(config));
           if (!value) throw new Error(`Codex ACP doesn't offer the configured ${label}`);
           if (config.currentValue === value) return;
-          const changed = await rpc.request("session/set_config_option", {
-            sessionId,
-            configId: String(config.id ?? config.configId),
-            value,
-          });
+          const changed = await rpc.request(
+            "session/set_config_option",
+            { sessionId, configId: String(config.id ?? config.configId), value },
+            { timeoutMs: limits.agentStartMs },
+          );
           if (changed.error)
             throw new Error(`Codex ACP couldn't select ${label}: ${upstreamReason(changed.error)}`);
           const result = (changed.result ?? {}) as Json;
@@ -400,7 +437,13 @@ export class AcpAgent implements Agent {
           String(m.id),
         );
         const bypass = modes.find((m) => bypassMode.test(m));
-        if (bypass) await rpc.request("session/set_mode", { sessionId, modeId: bypass });
+        if (bypass) {
+          await rpc.request(
+            "session/set_mode",
+            { sessionId, modeId: bypass },
+            { timeoutMs: limits.agentStartMs },
+          );
+        }
       }
 
       let cancelled = false;
@@ -412,11 +455,19 @@ export class AcpAgent implements Agent {
       if (r.signal?.aborted) onAbort();
       else r.signal?.addEventListener("abort", onAbort, { once: true });
 
-      const done = await rpc.request("session/prompt", {
-        sessionId,
-        prompt: [{ type: "text", text: r.brief }],
-      });
+      // No limit on how long the work takes, only on how long the agent can say nothing at all.
+      const done = await rpc.request(
+        "session/prompt",
+        { sessionId, prompt: [{ type: "text", text: r.brief }] },
+        { timeoutMs: limits.agentIdleMs, idle: true },
+      );
       r.signal?.removeEventListener("abort", onAbort);
+      if (timedOut(done) && !cancelled) {
+        // A frozen agent: stop it, and let the switch rules treat the session as stuck.
+        rpc.notify("session/cancel", { sessionId });
+        rpc.kill();
+        return stuck(`the agent said nothing for ${describeMs(limits.agentIdleMs)} and was stopped`);
+      }
 
       const reason = String(r.signal?.reason ?? "the owner sent an urgent message");
       if (cancelled) return { kind: "interrupted", reason };
@@ -487,6 +538,8 @@ export function locationPaths(locations: unknown): string[] {
     .map((p) => p.slice(0, 500));
 }
 
+const timedOut = (m: Json): boolean => (m.error as Json | undefined)?.code === ACP_TIMED_OUT;
+
 function stuck(reason: string, startup?: boolean): SessionOutcome {
   return { kind: "stuck", reason, ...(startup ? { startup: true } : {}) };
 }
@@ -555,6 +608,10 @@ class Rpc {
   private readonly pending = new Map<number, (m: Json) => void>();
   onNotice: (method: string, params: Json) => void = () => {};
   private exited = false;
+  /** Writing to the agent's stdin failed (it has gone): nothing more is written. */
+  private broken = false;
+  /** When the agent last sent anything, for the idle limit. */
+  private activity = Date.now();
 
   constructor(
     private readonly p: AgentProcess,
@@ -565,24 +622,68 @@ class Rpc {
       // Sign-in links and crashes show here; tokens don't (credentials go in by environment).
       if (/error|https:\/\//i.test(line)) this.log?.(`acp stderr: ${line.slice(0, 300)}`);
     });
+    // A write after the agent has exited is EPIPE, which with no listener ends the daemon.
+    guardStdin(p.stdin, (err) => {
+      this.broken = true;
+      this.failPending(`the agent stopped listening (${err.message})`);
+    });
     void p.exited.then((code) => {
       this.exited = true;
-      for (const resolve of this.pending.values()) {
-        resolve({ error: { code: -32099, message: `the agent exited (${code ?? "killed"}) mid-session` } });
-      }
-      this.pending.clear();
+      this.failPending(`the agent exited (${code ?? "killed"}) mid-session`, true);
     });
   }
 
-  private write(m: Json): void {
-    if (!this.exited) this.p.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...m })}\n`);
+  private failPending(message: string, exited = false): void {
+    for (const resolve of [...this.pending.values()]) {
+      resolve({ error: { code: exited ? -32099 : -32097, message } });
+    }
+    this.pending.clear();
   }
 
-  request(method: string, params: Json): Promise<Json> {
+  private write(m: Json): void {
+    if (this.exited || this.broken) return;
+    try {
+      this.p.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...m })}\n`);
+    } catch {
+      // The stream was already destroyed: same as a broken pipe.
+      this.broken = true;
+    }
+  }
+
+  /**
+   * Sends a request. With `timeoutMs` the answer is given up on after that long (an error with code
+   * ACP_TIMED_OUT); with `idle` the time counts from the agent's last word, not from the request.
+   */
+  request(method: string, params: Json, o: { timeoutMs?: number; idle?: boolean } = {}): Promise<Json> {
     if (this.exited) return Promise.resolve({ error: { code: -32099, message: "the agent has exited" } });
+    if (this.broken)
+      return Promise.resolve({ error: { code: -32097, message: "the agent stopped listening" } });
     const id = this.next++;
     // Listen before writing: a reply can arrive before write() returns.
-    const reply = new Promise<Json>((resolve) => this.pending.set(id, resolve));
+    const reply = new Promise<Json>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      this.pending.set(id, (m) => {
+        clearTimeout(timer);
+        resolve(m);
+      });
+      const limit = o.timeoutMs;
+      if (limit === undefined) return;
+      const arm = (ms: number) => {
+        timer = setTimeout(() => {
+          const quiet = Date.now() - this.activity;
+          if (o.idle && quiet < limit) return arm(limit - quiet);
+          this.pending.delete(id);
+          resolve({
+            error: {
+              code: ACP_TIMED_OUT,
+              message: `no word from the agent for ${describeMs(limit)} (${method})`,
+            },
+          });
+        }, ms);
+        timer.unref?.();
+      };
+      arm(limit);
+    });
     this.write({ id, method, params });
     return reply;
   }
@@ -592,6 +693,7 @@ class Rpc {
   }
 
   private receive(line: string): void {
+    this.activity = Date.now();
     let m: Json;
     try {
       m = JSON.parse(line) as Json;

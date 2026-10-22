@@ -3,12 +3,13 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeAgent, FakeChat, FakeClock, FakeHarness, FakeHelper, FakeMachines } from "@i-inc/core/testing";
-import { createApp } from "../src/app.ts";
+import { type AppOptions, createApp } from "../src/app.ts";
 import { seedDemo } from "../src/demo.ts";
 
 export async function testApp(
   dbPath = ":memory:",
   knowledgeDir = mkdtempSync(join(tmpdir(), "i-inc-knowledge-")),
+  extra: Partial<AppOptions> = {},
 ) {
   const clock = new FakeClock();
   const agent = new FakeAgent();
@@ -25,6 +26,7 @@ export async function testApp(
     helper,
     chat,
     machines: new FakeMachines(),
+    ...extra,
   });
   if (app.deps.registry.employees().length === 0) {
     seedDemo(app.deps.registry);

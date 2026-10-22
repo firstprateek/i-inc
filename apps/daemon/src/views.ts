@@ -129,6 +129,15 @@ export function proposalView(p: StoredProposal, registry: Registry): ProposalVie
   return { ...p, proposer: personOf(registry, p.proposedBy) };
 }
 
+/** An engine's model name, or its id when the engine was removed in Setup while an event or employee still names it. */
+function modelOf(registry: Registry, id: Id): string {
+  try {
+    return registry.engine(id).model;
+  } catch {
+    return id;
+  }
+}
+
 function nameOf(registry: Registry, id: Id): string {
   try {
     return registry.employee(id).name;
@@ -142,46 +151,55 @@ export function liveLine(events: TicketEvent[], registry: Registry): string {
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i];
     if (!e) continue;
-    switch (e.type) {
-      case "checks-ran":
-        return e.green ? "Checks green" : `Checks · ${e.failures.length} failing`;
-      case "out-of-tokens":
-        return `Out of tokens · resumes ${new Date(e.resetsAt).toISOString().slice(11, 16)} UTC`;
-      case "engine-switched":
-        return `Switched to ${registry.engine(e.to).model}: ${e.reason}`;
-      case "review-verdict":
-        return e.approved
-          ? `Approved in round ${e.round}`
-          : `Review round ${e.round} · ${e.findings.length} findings`;
-      case "needs-you":
-        return e.ask.kind === "plan-gate"
-          ? "Plan gate: the plan waits for you"
-          : e.ask.kind === "disagreement"
-            ? "Disagreement: both sides wait for you"
-            : e.ask.kind === "proposals"
-              ? `${e.ask.items.length} ${e.ask.items.length === 1 ? "proposal waits" : "proposals wait"} for you`
-              : e.ask.kind === "protected-paths"
-                ? `Protected paths wait for your OK: ${e.ask.paths.join(", ")}`
-                : `Stuck: ${e.ask.reason}`;
-      case "report-ready":
-        return "Report ready";
-      case "failed":
-        return `Failed: ${e.reason}`;
-      case "closed":
-        return e.outcome === "merged" ? "Merged" : e.outcome === "rejected" ? "Rejected" : "Done";
-      case "session-started":
-        return `${capitalize(e.stage)} · ${nameOf(registry, e.employeeId)} on ${registry.engine(e.engineId).model}`;
-      case "session-interrupted":
-        return `${capitalize(e.stage)} · starting again with your urgent message`;
-      case "helper-wanted":
-        return `${capitalize(e.stage)} · waits for a ${e.duty === "review" ? "reviewer" : "verifier"}`;
-      case "helper-unavailable":
-        return `${capitalize(e.stage)} · ${nameOf(registry, e.employeeId)} unavailable: ${e.reason}`;
-      case "stage-started":
-        return capitalize(e.stage);
-    }
+    // An event that can't be described (stored before replies were checked) is passed over.
+    try {
+      const line = describe(e, registry);
+      if (line !== null) return line;
+    } catch {}
   }
   return "Queued";
+}
+
+function describe(e: TicketEvent, registry: Registry): string | null {
+  switch (e.type) {
+    case "checks-ran":
+      return e.green ? "Checks green" : `Checks · ${e.failures.length} failing`;
+    case "out-of-tokens":
+      return `Out of tokens · resumes ${new Date(e.resetsAt).toISOString().slice(11, 16)} UTC`;
+    case "engine-switched":
+      return `Switched to ${modelOf(registry, e.to)}: ${e.reason}`;
+    case "review-verdict":
+      return e.approved
+        ? `Approved in round ${e.round}`
+        : `Review round ${e.round} · ${Array.isArray(e.findings) ? e.findings.length : 0} findings`;
+    case "needs-you":
+      return e.ask.kind === "plan-gate"
+        ? "Plan gate: the plan waits for you"
+        : e.ask.kind === "disagreement"
+          ? "Disagreement: both sides wait for you"
+          : e.ask.kind === "proposals"
+            ? `${e.ask.items.length} ${e.ask.items.length === 1 ? "proposal waits" : "proposals wait"} for you`
+            : e.ask.kind === "protected-paths"
+              ? `Protected paths wait for your OK: ${e.ask.paths.join(", ")}`
+              : `Stuck: ${e.ask.reason}`;
+    case "report-ready":
+      return "Report ready";
+    case "failed":
+      return `Failed: ${e.reason}`;
+    case "closed":
+      return e.outcome === "merged" ? "Merged" : e.outcome === "rejected" ? "Rejected" : "Done";
+    case "session-started":
+      return `${capitalize(e.stage)} · ${nameOf(registry, e.employeeId)} on ${modelOf(registry, e.engineId)}`;
+    case "session-interrupted":
+      return `${capitalize(e.stage)} · starting again with your urgent message`;
+    case "helper-wanted":
+      return `${capitalize(e.stage)} · waits for a ${e.duty === "review" ? "reviewer" : "verifier"}`;
+    case "helper-unavailable":
+      return `${capitalize(e.stage)} · ${nameOf(registry, e.employeeId)} unavailable: ${e.reason}`;
+    case "stage-started":
+      return capitalize(e.stage);
+  }
+  return null;
 }
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -195,7 +213,7 @@ export function officeView(
   localHour: number,
 ): DeskEntry[] {
   return employees.map((e) => {
-    const engine = registry.engine(e.engines.default).model;
+    const engine = modelOf(registry, e.engines.default);
     const own = views.filter((v) => v.assignee?.id === e.id && v.column !== "done" && v.status !== "queued");
     const reviewing = [...states.entries()].find(
       ([, s]) =>

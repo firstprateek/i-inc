@@ -31,6 +31,7 @@ import { type Reap, reaper, reapMachines } from "./reaper.ts";
 import type { Registry } from "./registry.ts";
 import { conversationShip, type ShipPort } from "./ship-git.ts";
 import type { Tickets } from "./tickets.ts";
+import { timeoutsMs } from "./timeouts.ts";
 import { GitHubWorkspace, prepareConversationCopy, removeCopyScript } from "./workspace.ts";
 
 export interface RealOptions {
@@ -120,6 +121,8 @@ export function realPorts(o: RealOptions): Pick<
               `inc-${t.id}` === machine &&
               registry.employees().some((e) => t.members.includes(e.id) && isHomeEmployee(e)),
           ),
+      // Read at each call, so a change in Setup applies at once (timeouts.ts).
+      timeouts: () => timeoutsMs(registry.settings().timeouts),
     };
     return settings;
   };
@@ -186,6 +189,7 @@ export function realPorts(o: RealOptions): Pick<
         cwdFor: dirOf(tickets),
         onUsage: (u) => registry.recordUsage(u),
         onRateLimit: (accountId, limit) => registry.setAccountRateLimit(accountId, limit),
+        timeouts: () => timeoutsMs(registry.settings().timeouts),
         ...(o.log ? { log: o.log } : {}),
       });
     },
@@ -196,6 +200,7 @@ export function realPorts(o: RealOptions): Pick<
           defaultBranch: (project) => registry.project(project)?.defaultBranch,
           worktree: dirOf(tickets),
           machine,
+          timeouts: () => timeoutsMs(registry.settings().timeouts),
           policy: (project) => registry.projectPolicy(project),
           ...(github
             ? {

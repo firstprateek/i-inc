@@ -158,15 +158,16 @@ describe("hiring a PA", () => {
     registry.saveEmployeeInTeam = () => {
       throw new Error("disk full");
     };
-    await expect(
-      r.app.handle(
-        new Request("http://i.inc/api/employees", {
-          method: "POST",
-          body: JSON.stringify(hirePa("sam")),
-          headers: { "content-type": "application/json" },
-        }),
-      ),
-    ).rejects.toThrow("disk full");
+    // A route that throws answers 500 (T63), with the details in the log and not in the answer.
+    const res = await r.app.handle(
+      new Request("http://i.inc/api/employees", {
+        method: "POST",
+        body: JSON.stringify(hirePa("sam")),
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    expect(res.status).toBe(500);
+    expect(JSON.stringify(await res.json())).not.toContain("disk full");
     registry.saveEmployeeInTeam = real;
     expect(registry.teams().map((t) => t.id)).toEqual(before);
     expect(registry.employees().some((e) => e.id === "sam")).toBe(false);

@@ -306,6 +306,7 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
     case "knowledge-proposed":
       return { ...s, interrupted: false, retroBy: [...s.retroBy, e.employeeId] };
     case "reply-flagged":
+    case "unreadable":
       return s;
     case "reassigned":
       return {
