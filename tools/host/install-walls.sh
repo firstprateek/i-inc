@@ -5,7 +5,8 @@
 # and the daemon writes its list of home machines there (see walls.sh).
 # It also installs inc.i.restart, a restart on the 1st of each month at 05:15.
 # Undo it: sudo launchctl bootout system/inc.i.walls, delete /Library/LaunchDaemons/inc.i.walls.plist,
-# /usr/local/lib/i-inc, /var/run/i-inc and /var/run/i-inc-walls.*, then sudo sh tools/m1/pf/remove.sh.
+# /usr/local/lib/i-inc, /var/run/i-inc and /var/run/i-inc-walls.*, then sudo sh tools/m1/pf/remove.sh
+# (that also gives bridge100's filter flags back; run it before deleting /usr/local/lib/i-inc).
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 # launchd_reload waits for launchd to drop a job before bootstrapping it again (launchd.sh).
@@ -32,6 +33,8 @@ install -o root -g wheel -m 644 "$here/../m1/pf/i-inc-machines.pf" /usr/local/li
 printf '%s\n' "$owner" >/usr/local/lib/i-inc/owner
 chown root:wheel /usr/local/lib/i-inc/owner && chmod 644 /usr/local/lib/i-inc/owner
 install -o root -g wheel -m 755 "$here/walls.sh" /usr/local/lib/i-inc/walls.sh
+# What sets the bridge's filter flags, so that pf sees traffic between machines (walls.sh, T70).
+install -o root -g wheel -m 755 "$here/bridge-filter.sh" /usr/local/lib/i-inc/bridge-filter.sh
 install -o root -g wheel -m 644 "$here/inc.i.walls.plist" /Library/LaunchDaemons/inc.i.walls.plist
 # And a monthly restart, for the macOS uptime bug that ran the mini out of ports (inc.i.restart.plist).
 install -o root -g wheel -m 644 "$here/inc.i.restart.plist" /Library/LaunchDaemons/inc.i.restart.plist

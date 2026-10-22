@@ -27,6 +27,13 @@ if [ ! -s "$token_file" ]; then
 fi
 echo "pf reference token saved in $token_file"
 
+# Frames between machines reach pf only when the bridge's filter flags ask for it (T70); remove.sh
+# clears them. tools/host/walls.sh does the same every minute once installed.
+if ifconfig bridge100 >/dev/null 2>&1; then
+  sh "$(dirname "$0")/../../host/bridge-filter.sh" bridge100 6
+  echo "bridge100: $(ifconfig bridge100 | grep ipfilter)"
+fi
+
 # pflog0 receives the rules' log entries; read it with: tcpdump -n -e -ttt -i pflog0
 ifconfig pflog0 >/dev/null 2>&1 || ifconfig pflog0 create
 
