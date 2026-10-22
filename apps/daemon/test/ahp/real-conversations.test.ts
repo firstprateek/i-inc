@@ -99,7 +99,7 @@ describe("a conversation's working copy", () => {
   const kit = (run: Any) => ({
     project: (name: string) =>
       name === "Duet" ? { id: "Duet", repo: "firstprateek/duet", checks: [] } : undefined,
-    tokens: { token: async () => "ghs_token" },
+    tokens: { token: async () => "ghs_token", readToken: async () => "ghs_token" },
     identity: async () => ({ name: "Ada (i.inc)", email: "bot@users.noreply.github.com" }),
     run,
   });
@@ -182,7 +182,7 @@ describe("hostile branch names and folders never reach a script", () => {
   const ran: string[] = [];
   const kit = {
     project: () => ({ id: "Duet", repo: "firstprateek/duet", checks: [] }),
-    tokens: { token: async () => "t" },
+    tokens: { token: async () => "t", readToken: async () => "t" },
     identity: async () => ({ name: "Ada", email: "a@b.c" }),
     run: async (_e: string, script: string) => {
       ran.push(script);

@@ -1,5 +1,6 @@
 // The Workspace port on GitHub (spec §6, stages 1 and 9). Pick-up makes the ticket's worktree and
-// branch in the builder's machine, pushes the branch as the bot, and opens a draft PR. GitHub opens
+// branch in the builder's machine, has the host push the branch as the bot (the machine holds no write
+// credential: T68, host-push.ts), and opens a draft PR. GitHub opens
 // no PR without a commit, so a new branch starts with an empty one; the squash merge drops it. The
 // report stage writes the PR's body and takes it out of draft. Both are safe to repeat: a crash, a
 // handoff or a new machine finds the branch and the PR that are already there.
@@ -14,7 +15,9 @@ import {
 } from "@i-inc/core";
 import type { PullRequests, TokenSource } from "./github.ts";
 import type { RunScript } from "./harness.ts";
+import { type HostPush, HostPushError } from "./host-push.ts";
 import type { Project } from "./registry.ts";
+import { pushFromSandbox } from "./sandbox-push.ts";
 import type { AttachmentFile } from "./tickets.ts";
 
 export interface WorkspaceOptions {
@@ -30,6 +33,8 @@ export interface WorkspaceOptions {
   policy?: (project: string) => ProjectPolicy;
   /** Where the repo is cloned from; tests use a local path. */
   remote?: (repo: string) => string;
+  /** Pushes a commit a machine hands over (host-push.ts). Without it nothing is pushed. */
+  host?: HostPush;
   log?: (msg: string) => void;
   /** The images the owner attached to a ticket, with their bytes. */
   attachments?: (ticketId: string) => AttachmentFile[];
@@ -98,7 +103,10 @@ export function openScript(o: {
   name: string;
   email: string;
   message: string;
-  /** Owner-merges mode pushes the branch for a PR; direct mode keeps it local. Default: push. */
+  /**
+   * Owner-merges mode has the branch pushed for a PR (by the host: the script makes the commit and says
+   * `@@head <sha>` and `@@needpush`); direct mode keeps it local. Default: push.
+   */
   push?: boolean;
   /**
    * What to do with a local branch that has commits GitHub's copy lacks, when the worktree is made
@@ -168,9 +176,24 @@ export function openScript(o: {
       ? ["echo @@ready"]
       : [
           `if [ -z "$(git rev-list \${BASE_REF:-origin/main}..HEAD 2>/dev/null)" ]; then git commit --quiet --allow-empty -m ${quote(o.message)}; fi`,
-          `git push --quiet -u origin ${branch}`,
-          "echo @@pushed",
+          // GitHub has the branch already when the copy came from it and has nothing GitHub lacks.
+          `if git show-ref --quiet --verify refs/remotes/origin/${o.branch} && [ -z "$(git rev-list origin/${o.branch}..HEAD)" ]; then echo "@@needpush 0"; else echo "@@needpush 1"; fi`,
+          'echo "@@head $(git rev-parse HEAD)"',
+          "echo @@ready",
         ]),
+  ].join("\n");
+}
+
+/** Tells a working copy the branch it was pushed from the host is on GitHub: its remote-tracking ref and upstream. */
+export function syncScript(worktree: string, branch: string): string {
+  if (!isSafeRefName(branch)) throw new Error(`not a branch name: ${branch}`);
+  if (!isSafeWorkDir(worktree)) throw new Error(`not a safe folder: ${String(worktree)}`);
+  const [w, b] = [worktree, branch].map(quote);
+  return [
+    `cd ${w} || exit 0`,
+    `git fetch --quiet origin ${quote(`+refs/heads/${branch}:refs/remotes/origin/${branch}`)} 2>/dev/null || exit 0`,
+    `git branch --set-upstream-to=${quote(`origin/${branch}`)} ${b} >/dev/null 2>&1 || true`,
+    "echo @@synced",
   ].join("\n");
 }
 
@@ -315,7 +338,7 @@ export async function prepareConversationCopy(
   const project = o.project(c.project);
   if (!project) throw new Error(`no project ${c.project}`);
   const { repo } = project;
-  const [token, who] = await Promise.all([o.tokens.token(repo), o.identity(c.employee)]);
+  const [token, who] = await Promise.all([o.tokens.readToken([repo]), o.identity(c.employee)]);
   const script = openScript({
     remote: o.remote?.(repo) ?? `https://github.com/${repo}.git`,
     repoDir: `${dirname(c.cwd)}/${repo.split("/")[1]}`,
@@ -346,7 +369,7 @@ export class GitHubWorkspace implements Workspace {
     const branch = branchName(ticket);
     const worktree = this.o.worktree(ticket.id);
     const direct = this.o.policy?.(ticket.project).mode === "direct";
-    const [token, who] = await Promise.all([this.o.tokens.token(repo), this.o.identity(builder)]);
+    const [token, who] = await Promise.all([this.o.tokens.readToken([repo]), this.o.identity(builder)]);
     const script = openScript({
       remote: this.o.remote?.(repo) ?? `https://github.com/${repo}.git`,
       repoDir: `${dirname(worktree)}/${repo.split("/")[1]}`,
@@ -359,9 +382,27 @@ export class GitHubWorkspace implements Workspace {
       ...(ticket.conversation ? { local: "keep" as const } : {}),
     });
     const r = await this.o.run(builder.id, script, { GH_TOKEN: token });
-    if (r.code !== 0 || !r.output.includes(direct ? "@@ready" : "@@pushed")) {
+    if (r.code !== 0 || !r.output.includes("@@ready")) {
       const tail = r.output.trim().split("\n").slice(-5).join("\n");
       throw new Error(`git in ${builder.name}'s machine failed: ${tail}`);
+    }
+    if (!direct && r.output.includes("@@needpush 1")) {
+      const head = /^@@head ([0-9a-f]{40})$/m.exec(r.output)?.[1];
+      if (!head) throw new Error(`git in ${builder.name}'s machine gave no commit to push`);
+      // The branch is pushed by the host, from a bundle of exactly this commit.
+      await pushFromSandbox({
+        host: this.o.host,
+        run: (script) => this.o.run(builder.id, script),
+        worktree,
+        sha: head,
+        req: { repo, branch, defaultBranch: project.defaultBranch ?? "main", ticket: ticket.id },
+        baseBranches: [project.defaultBranch ?? "main", branch],
+      }).catch((e) => {
+        if (e instanceof HostPushError) throw new Error(`couldn't push ${branch}: ${e.message}`);
+        throw e;
+      });
+      // The machine learns the branch is on GitHub now (best effort; the next fetch would too).
+      await this.o.run(builder.id, syncScript(worktree, branch), { GH_TOKEN: token }).catch(() => undefined);
     }
     await this.attach(ticket, builder);
     // A local branch with commits GitHub did not have was reset to GitHub's; the ticket says where the old one is.
@@ -415,7 +456,7 @@ export class GitHubWorkspace implements Workspace {
       worktree,
       branch: branchName(ticket),
     });
-    const token = await this.o.tokens.token(repo);
+    const token = await this.o.tokens.readToken([repo]);
     const r = await this.o.run(employee.id, script, { GH_TOKEN: token });
     if (r.code !== 0 || !r.output.includes("@@ready")) {
       const tail = r.output.trim().split("\n").slice(-5).join("\n");

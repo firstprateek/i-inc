@@ -146,7 +146,7 @@ describe("a ticket's worktree made again over a diverged local branch", () => {
     const worktree = join(work, "inc-7");
     const ws = new GitHubWorkspace({
       project: () => ({ id: "Duet", repo: "o/repo", checks: [] }) as never,
-      tokens: { token: async () => "t" },
+      tokens: { token: async () => "t", readToken: async () => "t" },
       prs: {} as never,
       identity: async () => ({ name: "Ada (i.inc)", email: "bot@example.com" }),
       worktree: () => worktree,

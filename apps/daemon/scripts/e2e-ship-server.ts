@@ -20,6 +20,7 @@ import { createApp } from "../src/app.ts";
 import { seedDemo } from "../src/demo.ts";
 import type { PullRequests } from "../src/github.ts";
 import type { RunScript } from "../src/harness.ts";
+import { HostPusher } from "../src/host-push.ts";
 import { defaultMachineSettings } from "../src/machines.ts";
 import { realPorts } from "../src/real.ts";
 import { FakeSandbox } from "../test/ahp/fake-acp.ts";
@@ -99,14 +100,23 @@ const agent: Agent = {
 const { wallsMarker: _, ...noWalls } = defaultMachineSettings;
 const sandbox = new FakeSandbox();
 const prs = new FakePrs(originOf);
+// Every push is the host's (T68): the machine hands over a bundle, and this pushes it to the local bare repo.
+const e2eTokens = { token: async () => "ghs_e2e_token", readToken: async () => "ghs_e2e_read_token" };
+const hostPush = new HostPusher({
+  tokens: e2eTokens,
+  mirrors: join(world, "mirrors"),
+  ledger: join(world, "pushed-main.jsonl"),
+  remote: originOf,
+});
 const ports = realPorts({
+  hostPush,
   credentials: { "claude-pro": { CLAUDE_CODE_OAUTH_TOKEN: "sk-x" } },
   machine: noWalls,
   exec: async () => "",
   launch: sandbox.launch,
   runScript,
   github: {
-    tokens: { token: async () => "ghs_e2e_token" },
+    tokens: e2eTokens,
     slug: "i-inc-bot",
     prs: prs as unknown as PullRequests,
   },

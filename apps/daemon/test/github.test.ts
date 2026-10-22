@@ -90,6 +90,49 @@ describe("the GitHub App", () => {
     });
   });
 
+  it("mints a sandbox's token read-only and limited to the repos asked for (T68)", async () => {
+    const now = Date.parse("2026-09-28T10:00:00Z");
+    let minted = 0;
+    const { calls, f } = recorder(() => ({
+      status: 201,
+      json: { token: `ghs_${++minted}`, expires_at: new Date(now + 60 * 60_000).toISOString() },
+    }));
+    const app = new GitHubApp(
+      { appId: "123", installationId: "456", privateKeyPath: "/unused" },
+      { fetch: f, now: () => now, readKey: () => privateKey },
+    );
+    expect(await app.readToken(["firstprateek/duet", "firstprateek/notes"])).toBe("ghs_1");
+    expect(calls[0]?.body).toEqual({
+      repositories: ["duet", "notes"],
+      permissions: { contents: "read", pull_requests: "read", metadata: "read", checks: "read" },
+    });
+    // The same repos in another order are the same token; another set of repos is another token.
+    expect(await app.readToken(["firstprateek/notes", "firstprateek/duet"])).toBe("ghs_1");
+    expect(await app.readToken(["firstprateek/duet"])).toBe("ghs_2");
+    expect(calls[1]?.body).toEqual({
+      repositories: ["duet"],
+      permissions: { contents: "read", pull_requests: "read", metadata: "read", checks: "read" },
+    });
+    // A write token for the same repo is a different one: the two never share a cache entry.
+    expect(await app.token("firstprateek/duet")).toBe("ghs_3");
+    expect(calls[2]?.body).toEqual({ repositories: ["duet"] });
+    // Nothing "all repos" and nothing empty is ever asked for as a sandbox's token.
+    await expect(app.readToken([])).rejects.toThrow(/at least one repo/);
+    await expect(app.readToken(["*"])).rejects.toThrow(/not a repo/);
+    await expect(app.scopedToken([], { contents: "read" })).rejects.toThrow();
+    expect(calls).toHaveLength(3);
+    // Custom permissions go through as given.
+    await app.scopedToken(["firstprateek/duet"], { contents: "read", issues: "read" });
+    expect(calls[3]?.body).toEqual({
+      repositories: ["duet"],
+      permissions: { contents: "read", issues: "read" },
+    });
+  });
+
+  it("a stand-in token can't be narrowed, so it never goes into a sandbox", async () => {
+    await expect(new FineGrainedToken("github_pat_x").readToken()).rejects.toThrow(/read-only/);
+  });
+
   it("drops tokens that have expired, so repos that are gone don't keep one", async () => {
     let now = Date.parse("2026-09-28T10:00:00Z");
     let minted = 0;

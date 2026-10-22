@@ -8,19 +8,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Employee } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
+import { bundleScript } from "../src/bundle.ts";
+import { HostPusher } from "../src/host-push.ts";
 import {
   addedLines,
   blockers,
   commitScript,
   conversationShip,
   inspectScript,
-  pushScript,
   readInspect,
   SCAN_LIMIT,
   type ShipCopy,
   scanPatch,
   secretsSentence,
 } from "../src/ship-git.ts";
+import { fakeTokens, READ_TOKEN, WRITE_TOKEN } from "./fake-tokens.ts";
 
 const ada = { id: "ada", name: "Ada" } as Employee;
 const copy = (over: Partial<ShipCopy> = {}): ShipCopy => ({
@@ -278,9 +280,15 @@ describe("what reaches a shell", () => {
     ] as const) {
       expect(() => inspectScript(bad, remote, NONCE)).toThrow();
       expect(() => commitScript(bad, remote, "m")).toThrow();
-      expect(() => pushScript(bad, remote, "a".repeat(40))).toThrow();
     }
-    expect(() => pushScript(copy(), REMOTE, "not-a-sha")).toThrow();
+    // The bundle script takes the same care: a folder that isn't a working copy, a sha that isn't one.
+    for (const cwd of ["/etc", "/home/employee/work/../../etc", "/home/employee/work/conv-x; id"]) {
+      expect(() => bundleScript({ worktree: cwd, sha: "a".repeat(40), nonce: NONCE })).toThrow();
+    }
+    expect(() => bundleScript({ worktree: copy().cwd, sha: "not-a-sha", nonce: NONCE })).toThrow();
+    expect(() =>
+      bundleScript({ worktree: copy().cwd, sha: "a".repeat(40), bases: ["x; id"], nonce: NONCE }),
+    ).toThrow();
   });
 
   it("takes a base branch with a slash in its name (release/1.0)", () => {
@@ -300,11 +308,7 @@ describe("what reaches a shell", () => {
   });
 
   it("takes the token out of the environment first, and uses it only in the network function", () => {
-    for (const script of [
-      inspectScript(copy(), REMOTE, NONCE),
-      commitScript(copy(), REMOTE, "m"),
-      pushScript(copy(), REMOTE, "a".repeat(40)),
-    ]) {
+    for (const script of [inspectScript(copy(), REMOTE, NONCE), commitScript(copy(), REMOTE, "m")]) {
       const at = script.indexOf("unset GH_TOKEN");
       expect(at).toBeGreaterThan(0);
       expect(script.slice(0, at)).not.toContain("git ");
@@ -368,10 +372,16 @@ function world() {
   git(cwd, "config", "user.name", "Ada (i.inc)");
   git(cwd, "config", "user.email", "bot@x.invalid");
   const seen: Record<string, string>[] = [];
+  const scripts: string[] = [];
+  // The sandbox's token is read-only; the write token is the host's own.
+  const tokens = fakeTokens();
+  const hostTokens = { ...fakeTokens(), token: async () => WRITE_TOKEN };
   const ship = conversationShip({
-    tokens: { token: async () => "ghs_secret_token_value" },
+    tokens,
+    host: new HostPusher({ tokens: hostTokens, mirrors: join(dir, "mirrors"), remote: () => origin }),
     run: async (_e, script, extra) => {
       seen.push(extra ?? {});
+      scripts.push(script);
       return bash(script.replaceAll("/home/employee/work", work).replaceAll(REMOTE, origin), extra);
     },
     prs: {} as never,
@@ -384,7 +394,7 @@ function world() {
     git(cwd, "add", "-A");
     git(cwd, "commit", "-q", "--no-verify", "-m", msg);
   };
-  return { dir, origin, cwd, ship, seen, commit };
+  return { dir, origin, cwd, ship, seen, scripts, commit };
 }
 
 describe("real git", () => {
@@ -497,16 +507,20 @@ describe("real git", () => {
     expect(existsSync(marker)).toBe(false);
   });
 
-  it("gives the bot's token only to the scripts that talk to GitHub", async () => {
+  it("gives the sandbox a read-only token, and only to the scripts that talk to GitHub; the write token never goes in", async () => {
     const w = world();
     writeFileSync(join(w.cwd, "x.txt"), "x\n");
     await w.ship.commit(copy(), "feat: x");
     await w.ship.push(copy());
-    // inspect (to fetch) and push carry it; the commit script never does.
-    const withToken = w.seen.filter((e) => e.GH_TOKEN === "ghs_secret_token_value").length;
+    // The inspect carries it (to fetch the base); the commit and the bundling scripts never do.
+    const withToken = w.seen.filter((e) => e.GH_TOKEN === READ_TOKEN).length;
     const without = w.seen.filter((e) => e.GH_TOKEN === undefined).length;
-    expect(withToken).toBeGreaterThanOrEqual(2);
-    expect(without).toBe(1);
+    expect(withToken).toBeGreaterThanOrEqual(1);
+    expect(without).toBeGreaterThanOrEqual(2);
+    expect(JSON.stringify(w.seen)).not.toContain(WRITE_TOKEN);
+    expect(w.scripts.join("\n")).not.toContain(WRITE_TOKEN);
+    expect(w.scripts.join("\n")).not.toContain("git push");
+    expect(git(w.origin, "rev-parse", "conv/ab12cd34")).toBe(git(w.cwd, "rev-parse", "HEAD"));
   });
 
   it("flags absolute links and binaries over a few KB, and not small ones", async () => {
@@ -582,7 +596,12 @@ describe("real git", () => {
       GIT_DIR: join(w.dir, "nope"),
     };
     const ship = conversationShip({
-      tokens: { token: async () => "ghs_secret_token_value" },
+      tokens: fakeTokens(),
+      host: new HostPusher({
+        tokens: fakeTokens(),
+        mirrors: join(w.dir, "mirrors2"),
+        remote: () => w.origin,
+      }),
       run: async (_e, script, extra) =>
         bash(
           script

@@ -12,6 +12,7 @@ export const emptyState = (): State => ({
   ready: {},
   retry: {},
   ancestrySkipped: [],
+  reviewSkipped: {},
   allowRewrite: [],
   recorded: [],
   paused: null,

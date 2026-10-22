@@ -12,9 +12,12 @@ import {
   machineOf,
   withDefaultTimeout,
 } from "./machines.ts";
+import { type HostPush, HostPushError } from "./host-push.ts";
+import { isHostExecuted, isProtected } from "./paths.ts";
 import { describeMs, guardStdin, stopGroup, trackGroup } from "./proc.ts";
+import { pushFromSandbox } from "./sandbox-push.ts";
 import { defaultTimeoutsMs, type TimeoutsMs } from "./timeouts.ts";
-import { isSafeRefName } from "./workspace.ts";
+import { branchName, isSafeRefName } from "./workspace.ts";
 
 /**
  * Runs a script in an employee's machine and resolves with its exit code and output. Variables in
@@ -33,6 +36,9 @@ export type RunScript = (
 
 /** The exit code of a script that was stopped for running too long (the one GNU `timeout` uses). */
 export const TIMED_OUT = 124;
+
+/** The most a script's output is kept: past it the script is stopped and its output ends with `@@output-limit`. */
+export const MAX_SCRIPT_OUTPUT = 16 * 1024 * 1024;
 
 export function machineScript(
   s: MachineSettings = defaultMachineSettings,
@@ -78,12 +84,24 @@ export function machineScript(
         });
       }, limit);
       timer.unref?.();
-      child.stdout.on("data", (chunk) => {
+      // A script that prints without end (a runaway check, a hostile machine) is stopped at the cap, not held in
+      // memory. A bundle (bundle.ts) is capped well under it.
+      let size = 0;
+      const take = (chunk: Buffer | string) => {
+        if (settled) return;
+        size += chunk.length;
+        if (size > MAX_SCRIPT_OUTPUT) {
+          stopGroup(child, 2000);
+          settle({
+            code: 1,
+            output: `${output.slice(-4000)}\n@@output-limit the script printed more than ${MAX_SCRIPT_OUTPUT / 1048576} MB\n`,
+          });
+          return;
+        }
         output += chunk;
-      });
-      child.stderr.on("data", (chunk) => {
-        output += chunk;
-      });
+      };
+      child.stdout.on("data", take);
+      child.stderr.on("data", take);
       // A write to a child that has already exited is EPIPE: its exit is the answer, not a crash.
       guardStdin(child.stdin);
       child.on("error", (err) => {
@@ -121,6 +139,20 @@ export interface HarnessSettings {
   defaultBranch?: (project: string) => string | undefined;
   /** The limits in timeouts.ts, as the owner has them now (milliseconds). */
   timeouts?: () => Partial<TimeoutsMs>;
+  /**
+   * With GitHub: pushes what passed the gates (the rebased branch, or main), from a bundle of exactly the commit
+   * that was rebased and checked. The machine holds no write credential (T68). Without it, nothing is pushed.
+   */
+  host?: HostPush;
+  /** The project's repo ("owner/name"), for the host's push. */
+  repo?: (project: string) => string | undefined;
+  /**
+   * Is this project's repo the one the deployer deploys onto the host? Then every path the host could run needs the
+   * owner's OK (paths.ts), whatever the project's `protectedPaths` say.
+   */
+  hostExecuted?: (project: string) => boolean;
+  /** The git identity of the commit the host makes to take work back out of main (a revert). */
+  author?: (ticket: Ticket) => Promise<{ name: string; email: string }>;
 }
 
 /** Direct mode: the files this ticket's work changes, against where it left main. */
@@ -134,69 +166,6 @@ export function changedScript(worktree: string, branch = "main"): string {
     `git diff --name-only -z --no-renames --no-ext-diff "$(git merge-base origin/${branch} HEAD)" | while IFS= read -r -d '' f; do printf '@@changed64 %s\\n' "$(printf %s "$f" | base64 | tr -d '\\n')"; done`,
   ].join("\n");
 }
-
-/** Direct mode: pushes the rebased work to main, or says main moved since the rebase. */
-export function pushMainScript(worktree: string, branch = "main"): string {
-  if (!isSafeRefName(branch)) throw new Error(`not a branch name: ${branch}`);
-  return [
-    `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
-    `if out=$(git push --quiet origin HEAD:${branch} 2>&1); then`,
-    '  echo "@@pushed $(git rev-parse HEAD)"',
-    "else",
-    '  echo "$out"',
-    '  case "$out" in *"fetch first"*|*non-fast-forward*|*rejected*) echo "@@behind"; exit 7 ;; esac',
-    "  exit 1",
-    "fi",
-  ].join("\n");
-}
-
-/** Direct mode: takes a commit back out of main, from a scratch worktree beside the ticket's. */
-export function revertScript(worktree: string, sha: string, branch = "main"): string {
-  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`not a commit: ${sha}`);
-  if (!isSafeRefName(branch)) throw new Error(`not a branch name: ${branch}`);
-  return [
-    `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
-    "tmp=$(mktemp -d)",
-    "for attempt in 1 2 3; do",
-    `  git fetch --quiet origin ${branch} || continue`,
-    `  rm -rf "$tmp"; git worktree add --quiet --detach "$tmp" origin/${branch} || continue`,
-    `  if (cd "$tmp" && git revert --no-edit ${sha} >/dev/null && git push --quiet origin HEAD:${branch}); then`,
-    '    git worktree remove --force "$tmp"; echo @@reverted; exit 0',
-    "  fi",
-    '  git worktree remove --force "$tmp" 2>/dev/null',
-    "done",
-    "exit 1",
-  ].join("\n");
-}
-
-/**
- * Whether a changed file falls under one of a project's protected paths. An entry protects that exact
- * path and everything under it, with or without a trailing slash: `.github/workflows` and
- * `.github/workflows/` both hold `.github/workflows/ci.yml`, and neither holds `.github/workflows-old`.
- */
-export const isProtected = (file: string, paths: string[]) =>
-  paths.some((p) => {
-    const dir = p.replace(/\/+$/, "");
-    return dir !== "" && (file === dir || file.startsWith(`${dir}/`));
-  });
-
-/** Direct mode: says `@@landed` if the commit is on main already (an ancestor of origin/main), else `@@not-landed`. */
-export function landedScript(worktree: string, sha: string, branch = "main"): string {
-  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`not a commit: ${sha}`);
-  if (!isSafeRefName(branch)) throw new Error(`not a branch name: ${branch}`);
-  return [
-    `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
-    `git fetch --quiet origin ${branch} || { echo '@@fail git fetch'; exit 1; }`,
-    `if git merge-base --is-ancestor ${sha} origin/${branch} 2>/dev/null; then echo @@landed; else echo @@not-landed; fi`,
-  ].join("\n");
-}
-
-/** The worktree's HEAD, for the write-ahead note before a push. */
-export const headScript = (worktree: string): string =>
-  [
-    `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
-    'echo "@@head $(git rev-parse HEAD)"',
-  ].join("\n");
 
 const safeId = /^[A-Za-z0-9_-]{1,64}$/;
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -220,14 +189,19 @@ export function checksScript(worktree: string, recipe: string[], tail: number): 
   ].join("\n");
 }
 
-/** Fetches main and rebases onto it. A conflict aborts the rebase and says so. */
-export function rebaseScript(worktree: string, branch = "main"): string {
+/**
+ * Fetches main and rebases onto it. A conflict aborts the rebase and says so. `own` is the ticket's own branch
+ * on GitHub (the daemon's name for it, not the working copy's): its tip is read as the lease. Says
+ * `@@head <sha>`: the rebased commit, the one the checks and the push are about.
+ */
+export function rebaseScript(worktree: string, branch = "main", own = ""): string {
   if (!isSafeRefName(branch)) throw new Error(`not a branch name: ${branch}`);
+  if (own !== "" && !isSafeRefName(own)) throw new Error(`not a branch name: ${own}`);
   return [
     `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
     // Uncommitted work would stop the rebase, and isn't a conflict.
     `if [ -n "$(git status --porcelain)" ]; then git status --porcelain | head -20 | sed 's/^/@@dirty /'; exit 3; fi`,
-    "branch=$(git branch --show-current)",
+    own ? `branch=${quote(own)}` : "branch=$(git branch --show-current)",
     `git fetch --quiet origin ${branch} || { echo '@@fail git fetch'; exit 1; }`,
     // Whatever GitHub has on the branch must already be here, or the force-push would drop it. Its
     // commit is the lease the push holds to.
@@ -244,20 +218,8 @@ export function rebaseScript(worktree: string, branch = "main"): string {
     "fi",
     // Pick-up's empty commit alone isn't work.
     `if git diff --quiet origin/${branch} HEAD; then echo "@@empty $(git rev-parse origin/${branch})"; exit 5; fi`,
+    'echo "@@head $(git rev-parse HEAD)"',
     "echo @@rebased",
-  ].join("\n");
-}
-
-/**
- * Pushes the rebased branch over the PR's, only if the PR's branch is still at `lease`, the commit
- * the gates found there (empty: it didn't exist), so nobody else's push is dropped.
- */
-export function pushScript(worktree: string, lease: string): string {
-  if (!/^([0-9a-f]{40})?$/.test(lease)) throw new Error(`not a commit: ${lease}`);
-  return [
-    `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
-    "branch=$(git branch --show-current)",
-    `git push --quiet --force-with-lease="$branch:${lease}" origin HEAD && echo "@@pushed $(git rev-parse HEAD)"`,
   ].join("\n");
 }
 
@@ -275,6 +237,9 @@ export function readChecks(code: number, output: string): ChecksResult {
 }
 
 export class MachineHarness implements Harness {
+  /** Tickets whose commit the credential scan refused and the owner was asked about: the commit it was. */
+  private readonly secretsShown = new Map<string, string>();
+
   constructor(
     private readonly s: HarnessSettings,
     private readonly run: RunScript = machineScript(),
@@ -293,6 +258,54 @@ export class MachineHarness implements Harness {
 
   private defaultBranch(ticket: Ticket): string {
     return this.s.defaultBranch?.(ticket.project) || "main";
+  }
+
+  /**
+   * Has the host push `sha`, the commit that was rebased and checked, from a bundle the machine hands over.
+   * `lease`: replace the ticket's branch only if it is still where the gates found it; absent: a fast-forward of
+   * the default branch. The repo and branch are the daemon's own, never read back from the machine.
+   */
+  private async pushFromMachine(
+    ticket: Ticket,
+    sha: string,
+    to: {
+      branch: string;
+      lease?: string;
+      protect?: { paths: string[]; hostExecuted?: boolean };
+      ownerApproved?: boolean;
+      approvedPaths?: string[];
+      overrideSecrets?: boolean;
+      allowDefaultBranch?: boolean;
+    },
+  ): Promise<{ ok: true } | { ok: false; kind: string; reason: string; findings: string[] }> {
+    const repo = this.s.repo?.(ticket.project);
+    const defaultBranch = this.defaultBranch(ticket);
+    try {
+      if (!repo) throw new HostPushError(`no repo for ${ticket.project}`, "git");
+      await pushFromSandbox({
+        host: this.s.host,
+        run: (script) => this.run(ticket.assignee, script),
+        worktree: this.worktree(ticket),
+        sha,
+        req: {
+          repo,
+          branch: to.branch,
+          defaultBranch,
+          ticket: ticket.id,
+          ...(to.lease !== undefined ? { lease: to.lease } : {}),
+          ...(to.protect ? { protect: to.protect } : {}),
+          ...(to.ownerApproved ? { ownerApproved: true } : {}),
+          ...(to.approvedPaths ? { approvedPaths: to.approvedPaths } : {}),
+          ...(to.overrideSecrets ? { overrideSecrets: true } : {}),
+          ...(to.allowDefaultBranch ? { allowDefaultBranch: true } : {}),
+        },
+        baseBranches: [defaultBranch, to.branch],
+      });
+      return { ok: true };
+    } catch (e) {
+      if (e instanceof HostPushError) return { ok: false, kind: e.kind, reason: e.message, findings: e.findings };
+      throw e;
+    }
   }
 
   describe(ticket: Ticket): string[] {
@@ -323,7 +336,8 @@ export class MachineHarness implements Harness {
     if (policy?.mode === "direct") return this.directGates(ticket, policy, opts);
     const env = (await this.s.github?.(ticket)) ?? {};
     const branch = this.defaultBranch(ticket);
-    const rebased = await this.run(ticket.assignee, rebaseScript(this.worktree(ticket), branch), env);
+    const own = branchName(ticket);
+    const rebased = await this.run(ticket.assignee, rebaseScript(this.worktree(ticket), branch, own), env);
     if (rebased.code === 2) {
       const files = [...rebased.output.matchAll(/^@@conflict (.+)$/gm)].map((m) => m[1]);
       return {
@@ -344,6 +358,8 @@ export class MachineHarness implements Harness {
     if (rebased.code === 5) return no(`the branch has no changes beyond ${branch}`);
     if (rebased.code !== 0) return no(`couldn't rebase on ${branch}: ${rebased.output.trim().slice(-300)}`);
     const lease = lines("lease")[0] ?? "";
+    // The commit that was rebased: the checks run on it, and exactly it is pushed.
+    const head = lines("head")[0] ?? "";
     const checks = await this.runChecks(ticket);
     if (!checks.green) {
       return {
@@ -353,16 +369,12 @@ export class MachineHarness implements Harness {
       };
     }
     if (this.s.github) {
-      const pushed = await this.run(ticket.assignee, pushScript(this.worktree(ticket), lease), env);
-      const sha = /^@@pushed ([0-9a-f]{40})$/m.exec(pushed.output)?.[1];
-      if (pushed.code !== 0 || !sha) {
-        return {
-          ok: false,
-          conflict: false,
-          reason: `couldn't push the rebased branch: ${pushed.output.trim().slice(-300)}`,
-        };
+      if (!/^[0-9a-f]{40}$/.test(head) || !/^([0-9a-f]{40})?$/.test(lease)) {
+        return no("the rebase gave no commit to push");
       }
-      const ci = await this.s.ci?.(ticket, sha);
+      const pushed = await this.pushFromMachine(ticket, head, { branch: own, lease });
+      if (!pushed.ok) return no(`couldn't push the rebased branch: ${pushed.reason}`);
+      const ci = await this.s.ci?.(ticket, head);
       if (ci && !ci.ok) return { ok: false, conflict: false, reason: ci.reason };
     }
     return { ok: true };
@@ -381,10 +393,17 @@ export class MachineHarness implements Harness {
 
     // A run before this one wrote down the commit it was about to push. If that commit is on main now,
     // the push landed and only its record was lost (a stop, a crash, a lost reply): carry on from there.
+    // Whether it landed is asked of the HOST's mirror of GitHub (an ancestor of its fetched origin/<default>),
+    // never of the machine, whose say-so about what is on main is worth nothing.
     const landed = async (): Promise<GatesResult | null> => {
       if (!opts.pushIntended) return null;
-      const out = await this.run(ticket.assignee, landedScript(worktree, opts.pushIntended, branch), env);
-      return out.output.includes("@@landed") ? { ok: true, pushed: opts.pushIntended } : null;
+      const repo = this.s.repo?.(ticket.project);
+      const there =
+        this.s.host && repo ? await this.s.host.landed({ repo, branch, sha: opts.pushIntended }) : null;
+      if (there === null) {
+        return no(`couldn't tell whether ${opts.pushIntended.slice(0, 7)} reached ${branch}: GitHub could not be read`);
+      }
+      return there ? { ok: true, pushed: opts.pushIntended } : null;
     };
     const earlier = await landed();
     if (earlier) return earlier;
@@ -397,8 +416,9 @@ export class MachineHarness implements Harness {
     // The owner's OK covers the paths on the card they answered, and no others. Without a list (an
     // `ownerApproved` alone) it covers all, as it always did.
     const approved = new Set(opts.approvedPaths);
+    const hostExec = this.s.hostExecuted?.(ticket.project) === true;
     const held = files
-      .filter((f) => isProtected(f, policy.protectedPaths))
+      .filter((f) => isProtected(f, policy.protectedPaths) || (hostExec && isHostExecuted(f)))
       .filter((f) => (opts.approvedPaths ? !approved.has(f) : !ownerApproved));
     if (held.length) {
       return {
@@ -410,7 +430,7 @@ export class MachineHarness implements Harness {
     }
 
     for (let attempt = 1; attempt <= 3; attempt++) {
-      const rebased = await this.run(ticket.assignee, rebaseScript(worktree, branch), env);
+      const rebased = await this.run(ticket.assignee, rebaseScript(worktree, branch, branchName(ticket)), env);
       const lines = (tag: string) =>
         [...rebased.output.matchAll(new RegExp(`^@@${tag} ?(.*)$`, "gm"))].map((m) => m[1]);
       if (rebased.code === 2) {
@@ -434,23 +454,44 @@ export class MachineHarness implements Harness {
       const checks = await this.runChecks(ticket);
       if (!checks.green)
         return no(`the checks fail after rebasing on ${branch}: ${checks.failures.join("; ")}`);
+      const head = lines("head")[0] ?? "";
+      if (!/^[0-9a-f]{40}$/.test(head)) return no("the rebase gave no commit to push");
       // Written first, so a stop after the push but before its record can be told from a push that never happened.
-      if (opts.onPushIntended) {
-        const head = /^@@head ([0-9a-f]{40})$/m.exec(
-          (await this.run(ticket.assignee, headScript(worktree), env)).output,
-        )?.[1];
-        if (head) await opts.onPushIntended(head);
+      if (opts.onPushIntended) await opts.onPushIntended(head);
+      // The host reads the change from the commits and holds protected paths itself: the machine's say-so
+      // about what changed (`changedScript`) is a courtesy, not the check. A credential scan finding the owner
+      // has been shown for this very commit and called harmless is let through (and recorded in the ledger).
+      const pushed = await this.pushFromMachine(ticket, head, {
+        branch,
+        protect: { paths: policy.protectedPaths, hostExecuted: hostExec },
+        ownerApproved,
+        ...(opts.approvedPaths ? { approvedPaths: opts.approvedPaths } : {}),
+        allowDefaultBranch: true,
+        ...(ownerApproved && this.secretsShown.get(ticket.id) === head ? { overrideSecrets: true } : {}),
+      });
+      if (pushed.ok) {
+        this.secretsShown.delete(ticket.id);
+        return { ok: true, pushed: head };
       }
-      const pushed = await this.run(ticket.assignee, pushMainScript(worktree, branch), env);
-      const sha = /^@@pushed ([0-9a-f]{40})$/m.exec(pushed.output)?.[1];
-      if (sha) return { ok: true, pushed: sha };
-      if (pushed.code !== 7) {
+      if (pushed.kind === "protected") {
+        return { ok: false, conflict: false, reason: pushed.reason, protectedPaths: pushed.findings };
+      }
+      if (pushed.kind === "secrets" && pushed.findings.length) {
+        // Asked of the owner like a protected path: "approve" says it is not a secret, and it is pushed.
+        this.secretsShown.set(ticket.id, head);
+        return {
+          ok: false,
+          conflict: false,
+          reason: pushed.reason,
+          protectedPaths: pushed.findings.map((f) => `${f} (looks like a credential)`),
+        };
+      }
+      if (pushed.kind !== "behind") {
         // GitHub refuses the bot any change to workflows: that needs the owner's push.
-        const workflows = /workflow/i.test(pushed.output) && /refusing|permission/i.test(pushed.output);
         return no(
-          workflows
+          pushed.kind === "workflow"
             ? "GitHub won't let the bot push changes to workflows: the owner pushes this one (tools/host/push-for-owner.sh)"
-            : `couldn't push to ${branch}: ${pushed.output.trim().slice(-300)}`,
+            : `couldn't push to ${branch}: ${pushed.reason}`,
         );
       }
     }
@@ -462,15 +503,20 @@ export class MachineHarness implements Harness {
     return (await this.s.ci?.(ticket, sha)) ?? { ok: true };
   }
 
-  /** Direct mode: reverts a commit on main that stayed red too long. */
+  /** Direct mode: reverts a commit on main that stayed red too long. The host makes the revert and pushes it. */
   async revert(ticket: Ticket, sha: string): Promise<void> {
-    const env = (await this.s.github?.(ticket)) ?? {};
-    const r = await this.run(
-      ticket.assignee,
-      revertScript(this.worktree(ticket), sha, this.defaultBranch(ticket)),
-      env,
-    );
-    if (!r.output.includes("@@reverted"))
-      throw new Error(`couldn't revert ${sha}: ${r.output.trim().slice(-300)}`);
+    if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`not a commit: ${sha}`);
+    const repo = this.s.repo?.(ticket.project);
+    if (!this.s.host || !repo) throw new Error(`couldn't revert ${sha}: no host push is set up`);
+    const author = (await this.s.author?.(ticket)) ?? {
+      name: "i.inc",
+      email: "i-inc@users.noreply.github.com",
+    };
+    const branch = this.defaultBranch(ticket);
+    try {
+      await this.s.host.revert({ repo, branch, defaultBranch: branch, sha, author, ticket: ticket.id });
+    } catch (e) {
+      throw new Error(`couldn't revert ${sha}: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 }

@@ -15,6 +15,12 @@ export interface TokenSource {
    */
   token(repo: string, access?: "write" | "read", f?: typeof fetch): Promise<string>;
   /**
+   * The only token a sandbox ever gets (T68): read-only (`READ_PERMISSIONS`) and limited to the named repos.
+   * `repos` is never empty and never "*". A source that can't limit a token this way (a stand-in) throws, so
+   * a sandbox gets no GitHub access rather than a write token.
+   */
+  readToken(repos: string[], f?: typeof fetch): Promise<string>;
+  /**
    * What the App's installation is: whose account it sits on, and what it may do there. Only the GitHub
    * App can say (it signs as itself); a stand-in token can't, and the projects flow then assumes the
    * least (no repo creation).
@@ -34,6 +40,14 @@ export interface InstallationInfo {
   /** The App's public name in URLs. */
   slug: string;
 }
+
+/** What a sandbox's token may do: look, never change. `metadata` is what GitHub always adds. */
+export const READ_PERMISSIONS = {
+  contents: "read",
+  pull_requests: "read",
+  metadata: "read",
+  checks: "read",
+} as const;
 
 /** A session can run for most of an hour, so it gets a token with at least this long left. */
 const minLeftMs = 50 * 60_000;
@@ -309,7 +323,33 @@ export class GitHubApp implements TokenSource {
   }
 
   async token(repo: string, access: "write" | "read" = "write", f?: typeof fetch): Promise<string> {
-    const key = `${repo} ${access}`;
+    if (repo === "*") return this.mint([], access === "read" ? READ_PERMISSIONS : undefined, f);
+    return this.mint([repo], access === "read" ? READ_PERMISSIONS : undefined, f);
+  }
+
+  /**
+   * A token limited to `repos` ("owner/name", at least one) and to `permissions`, using the `repositories` and
+   * `permissions` fields of the access-token request. GitHub gives a token no more than the App has, so this
+   * can only narrow it.
+   */
+  async scopedToken(repos: string[], permissions: Record<string, string>, f?: typeof fetch): Promise<string> {
+    if (repos.length === 0) throw new Error("a scoped token needs at least one repo");
+    return this.mint(repos, permissions, f);
+  }
+
+  /** The token a sandbox gets: read-only, and only for the repos it works on. */
+  async readToken(repos: string[], f?: typeof fetch): Promise<string> {
+    return this.scopedToken(repos, READ_PERMISSIONS, f);
+  }
+
+  /** `repos` empty: every repo of the installation (the host's own use only). */
+  private async mint(
+    repos: string[],
+    permissions: Record<string, string> | undefined,
+    f?: typeof fetch,
+  ): Promise<string> {
+    const names = [...new Set(repos.map((r) => checkRepo(r).split("/")[1] as string))].sort();
+    const key = `${names.join(",") || "*"} ${permissions ? JSON.stringify(permissions) : "write"}`;
     const cached = this.cache.get(key);
     if (cached && cached.expiresAt - this.now() > minLeftMs) return cached.token;
     const jwt = appJwt(this.config.appId, this.readKey(this.config.privateKeyPath), this.now());
@@ -319,12 +359,10 @@ export class GitHubApp implements TokenSource {
       {
         method: "POST",
         headers: { authorization: `Bearer ${jwt}` },
-        // Only the ticket's repo: with whatever the App was granted there, or read-only.
+        // Only the named repos: with whatever the App was granted there, or only what `permissions` names.
         body: JSON.stringify({
-          ...(repo === "*" ? {} : { repositories: [checkRepo(repo).split("/")[1]] }),
-          ...(access === "read"
-            ? { permissions: { contents: "read", pull_requests: "read", metadata: "read", checks: "read" } }
-            : {}),
+          ...(names.length ? { repositories: names } : {}),
+          ...(permissions ? { permissions } : {}),
         }),
       },
     );
@@ -342,6 +380,12 @@ export class FineGrainedToken implements TokenSource {
   constructor(private readonly value: string) {}
   async token(): Promise<string> {
     return this.value;
+  }
+  /** A stand-in token can't be narrowed, so it never goes into a sandbox (T68). */
+  async readToken(): Promise<string> {
+    throw new Error(
+      "a stand-in token can't be limited to read-only, so a sandbox gets no GitHub access: set up the GitHub App (docs/github-app.md)",
+    );
   }
 }
 

@@ -2,8 +2,9 @@
 // subscriptions (decided 2026-10-17): ACP sessions run there, the harness runs each project's recipe
 // there, and the workspace makes a branch per ticket there. In direct mode (the default) reviewed work
 // goes straight to main; owner-merges projects get a draft PR. The daemon keeps each sandbox signed in
-// to GitHub as the bot, so sessions of any length can push. Claude's usage reports land in the
-// registry. The helper model and chat use Ollama on the host.
+// to GitHub as the bot with a READ-ONLY token for the repos its sessions work on (T68): a sandbox never
+// holds a credential that can write. Every push is made on the host, from a bundle the sandbox hands over
+// (host-push.ts). Claude's usage reports land in the registry. The helper model and chat use Ollama on the host.
 import { type Employee, type Id, isHomeEmployee } from "@i-inc/core";
 import { AcpAgent, type Launch } from "./acp.ts";
 import type { AgentBackend } from "./ahp/backend.ts";
@@ -16,6 +17,7 @@ import { type Credentials, credentialsFor } from "./config.ts";
 import { EgressWall } from "./egress-wall.ts";
 import { commitIdentity, PullRequests, type TokenSource, waitForCi } from "./github.ts";
 import { MachineHarness, machineScript, type RunScript } from "./harness.ts";
+import { type HostPush, HostPusher } from "./host-push.ts";
 import {
   AppleMachines,
   convDir,
@@ -39,6 +41,16 @@ export interface RealOptions {
   /** The GitHub App (or a stand-in token), and its slug for the bot's commit address. */
   github?: { tokens: TokenSource; slug: string; prs?: PullRequests };
   machine?: MachineSettings;
+  /**
+   * Where pushes are made (T68): a stand-in for tests, or the host's mirrors and ledger (main.ts:
+   * `~/.i-inc/push-mirrors` and `~/.i-inc/pushed-main.jsonl`). With GitHub but neither, nothing can be pushed.
+   */
+  hostPush?: HostPush | { mirrors: string; ledger?: string };
+  /**
+   * The repo ("owner/name") the deployer deploys onto the host. Anything a push to it changes that the host could
+   * run needs the owner's OK (paths.ts), whatever the project's protected paths say. The deployer's `I_INC_REPO`.
+   */
+  deployRepo?: string;
   log?: (msg: string) => void;
   now?: () => number;
   /** Stand-ins for the `container` CLI, for tests. */
@@ -56,6 +68,8 @@ export interface RealOptions {
 /** What the employee image has (images/employee/Dockerfile), for briefs. */
 const machine =
   "Your machine runs Ubuntu 24.04. You're the user employee, with passwordless sudo (except in a personal assistant's sandbox, which has no sudo and no internet). It has Node 24, pnpm 10, git, gh and Docker; install anything else you need. Other agents on your team share it: run servers only on the ports in $I_INC_PORTS.";
+
+const quoteArg = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
 
 /** A ticket's own range of 100 ports, so agents sharing a sandbox don't take each other's. */
 export function portsFor(ticketId: Id): string {
@@ -75,6 +89,12 @@ export function realPorts(o: RealOptions): Pick<
   /** Renews the GitHub sign-in of every sandbox in use. main.ts calls it on a timer. */
   keepLoginsFresh: () => Promise<void>;
   /**
+   * At startup: signs every running sandbox out of GitHub (`gh auth logout`, so a write token an older daemon left
+   * there is gone). The first session that needs GitHub signs in again, read-only, for its own repo. Returns how many
+   * sandboxes it did.
+   */
+  resignAll: () => Promise<number>;
+  /**
    * Stops the agents an earlier daemon left running in every sandbox that is up (never starting one),
    * all machines at once. main.ts calls it at startup, before anything launches, and with `all` at shutdown.
    */
@@ -89,6 +109,17 @@ export function realPorts(o: RealOptions): Pick<
   const now = o.now ?? Date.now;
   const account = credentialsFor(o.credentials);
   const { github } = o;
+  const host: HostPush | undefined =
+    o.hostPush && "push" in o.hostPush
+      ? o.hostPush
+      : github && o.hostPush
+        ? new HostPusher({
+            tokens: github.tokens,
+            mirrors: o.hostPush.mirrors,
+            ...(o.hostPush.ledger ? { ledger: o.hostPush.ledger } : {}),
+            ...(o.log ? { log: o.log } : {}),
+          })
+        : undefined;
   let bot: Promise<{ email: string }> | undefined;
   const identity =
     o.identity ??
@@ -150,25 +181,41 @@ export function realPorts(o: RealOptions): Pick<
     return reapOnce;
   };
 
-  // Each sandbox is signed in to GitHub as the bot, for all the App's repos, renewed before it
-  // expires. A session's token in its environment would stop working after an hour; this doesn't.
+  // Each sandbox is signed in to GitHub as the bot with a read-only token for the repos its sessions work on,
+  // renewed before it expires. A session's token in its environment would stop working after an hour; this
+  // doesn't. A sandbox shared by tickets of several projects is signed in for all of them (the sign-in is
+  // the machine's, not the session's), and a session that needs no GitHub adds nothing. Never a write token.
   const signedIn = new Map<string, number>();
-  const signIn = async (registry: Registry, employeeId: Id): Promise<void> => {
+  const loginRepos = new Map<string, Set<string>>();
+  const ghLogin = "gh auth login --hostname github.com --git-protocol https --with-token && echo @@signed-in";
+  const loginScript = `printf %s "$I_INC_GH" | ${ghLogin}`;
+  const signIn = async (registry: Registry, employeeId: Id, repo?: string | null): Promise<void> => {
     if (!github) return;
     const name = machineOf(teams(registry), employeeId);
-    if (now() - (signedIn.get(name) ?? 0) < loginEveryMs) return;
-    const token = await github.tokens.token("*");
-    const r = await run(registry)(
-      employeeId,
-      'printf %s "$I_INC_GH" | gh auth login --hostname github.com --git-protocol https --with-token && echo @@signed-in',
-      { I_INC_GH: token },
-    );
+    const known = loginRepos.get(name);
+    const wanted = new Set(known);
+    if (repo) wanted.add(repo);
+    if (wanted.size === 0) return; // no session here has needed GitHub: it gets none
+    const widened = wanted.size !== (known?.size ?? 0);
+    if (!widened && now() - (signedIn.get(name) ?? 0) < loginEveryMs) return;
+    let token: string;
+    try {
+      token = await github.tokens.readToken([...wanted]);
+    } catch (err) {
+      o.log?.(`couldn't mint a read-only GitHub token for ${name}: ${String(err)}`);
+      return;
+    }
+    const r = await run(registry)(employeeId, loginScript, { I_INC_GH: token });
     if (!r.output.includes("@@signed-in")) {
       o.log?.(`couldn't sign ${name} in to GitHub: ${r.output.trim().slice(-200)}`);
       return;
     }
     signedIn.set(name, now());
+    loginRepos.set(name, wanted);
   };
+  /** The repo ("owner/name") of a project, for a session's sign-in. */
+  const repoOf = (registry: Registry, project: string | null | undefined): string | null =>
+    (project ? registry.project(project)?.repo : undefined) ?? null;
 
   return {
     machines: (registry) => {
@@ -183,7 +230,7 @@ export function realPorts(o: RealOptions): Pick<
         // The account's credential if it has one (machines sign in themselves by default), and the
         // ticket's ports. GitHub comes from the sandbox's sign-in.
         credentials: async (engine, ticket, _duty, employeeId) => {
-          await signIn(registry, employeeId);
+          await signIn(registry, employeeId, repoOf(registry, ticket.project));
           return { ...account(engine), I_INC_PORTS: portsFor(ticket.id) };
         },
         cwdFor: dirOf(tickets),
@@ -204,9 +251,19 @@ export function realPorts(o: RealOptions): Pick<
           policy: (project) => registry.projectPolicy(project),
           ...(github
             ? {
+                ...(host ? { host } : {}),
+                hostExecuted: (project) =>
+                  o.deployRepo !== undefined &&
+                  registry.project(project)?.repo.toLowerCase() === o.deployRepo.toLowerCase(),
+                repo: (project) => registry.project(project)?.repo,
+                author: async (ticket) => {
+                  const who = await identity(registry.employee(ticket.assignee));
+                  return who;
+                },
                 github: async (ticket) => {
                   const repo = registry.project(ticket.project)?.repo;
-                  return repo ? { GH_TOKEN: await github.tokens.token(repo) } : {};
+                  // Reading only: the fetch and the ls-remote. Pushes are the host's (host-push.ts).
+                  return repo ? { GH_TOKEN: await github.tokens.readToken([repo]) } : {};
                 },
                 ci: async (ticket, sha) => {
                   const proj = registry.project(ticket.project);
@@ -229,6 +286,7 @@ export function realPorts(o: RealOptions): Pick<
               tokens: github.tokens,
               run: run(registry),
               prs: github.prs ?? new PullRequests(github.tokens),
+              ...(host ? { host } : {}),
             }),
           workspace: (registry, tickets) =>
             new GitHubWorkspace({
@@ -240,6 +298,7 @@ export function realPorts(o: RealOptions): Pick<
               identity,
               worktree: dirOf(tickets),
               run: run(registry),
+              ...(host ? { host } : {}),
               ...(o.log ? { log: o.log } : {}),
             }),
         }
@@ -271,7 +330,7 @@ export function realPorts(o: RealOptions): Pick<
           return prepareConversationCopy(
             {
               project: (name) => registry.project(name),
-              tokens: github?.tokens ?? { token: async () => "" },
+              tokens: github?.tokens ?? { token: async () => "", readToken: async () => "" },
               identity,
               run: run(registry),
             },
@@ -282,7 +341,7 @@ export function realPorts(o: RealOptions): Pick<
           await run(registry)(c.employeeId, removeCopyScript({ worktree: c.cwd, branch: c.branch }));
         },
         credentials: async (engine, c) => {
-          await signIn(registry, c.employeeId);
+          await signIn(registry, c.employeeId, repoOf(registry, c.project));
           return { ...account(engine), I_INC_PORTS: portsFor(`conv-${c.id}`) };
         },
         employeeKnown: (employeeId) => registry.employees().some((e) => e.id === employeeId),
@@ -295,6 +354,33 @@ export function realPorts(o: RealOptions): Pick<
     helper: new OllamaHelper(o.ollama),
     chat: new OllamaChat(o.ollama),
     sweepAgents: async (opts) => (machines ? reapMachines(machines, o.log, opts) : 0),
+    resignAll: async () => {
+      if (!github || !machines) return 0;
+      const m = machines;
+      const up = (await m.listMachines().catch(() => [])).filter(
+        (row) => row.name.startsWith("inc-") && row.state === "running",
+      );
+      // Signed out, and nothing more: the first session that needs GitHub signs its machine in again, with a
+      // read-only token for its own repo and no other. (A token for every project would reach further than
+      // the work needs.)
+      const script = [
+        "gh auth logout --hostname github.com >/dev/null 2>&1 || true",
+        'rm -f "$HOME/.config/gh/hosts.yml"',
+        "echo @@signed-out",
+      ].join("\n");
+      let n = 0;
+      await Promise.all(
+        up.map(async (row) => {
+          try {
+            await m.runIn(row.name, script, 60_000);
+            n++;
+          } catch (err) {
+            o.log?.(`couldn't sign ${row.name} out of GitHub: ${String(err)}`);
+          }
+        }),
+      );
+      return n;
+    },
     keepLoginsFresh: async () => {
       if (!machines || !registryRef) return;
       const registry = registryRef;

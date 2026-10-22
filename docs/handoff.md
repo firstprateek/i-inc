@@ -47,9 +47,43 @@ deployed: after a force-push to an older or unrelated commit it logs a warning, 
 `skipped-ancestry` and pushes; allow it with `--once --sha <full sha>`. The last 5 releases are kept,
 and never the running one or the one before it. Nothing needs root.
 
+**Host code deploys only with your approval or from a pull request you merged (T68).** The deployer runs
+agents' pushes onto the host, and an agent's checks and review run where the builder does, so the
+pipeline's say-so is not enough for code. Before it builds a candidate the deployer looks at every commit in
+`git rev-list <running>..<candidate>` (`apps/deployer/src/review.ts`). A commit that changes only documents
+(`docs/**/*.md` and top-level `*.md`; not `CLAUDE.md`, `AGENTS.md`, `.cursor*` or anything in a dot folder,
+which steer agents, and not `.html` or `.mjs` under `docs/`) is fine. Any other commit must be (a) in
+`~/.i-inc/pushed-main.jsonl`, the ledger the daemon writes of every commit it pushes to the default branch
+(`{sha, repo, branch, ticket, at, parents, tip}`), **with `ownerApproved: true`** (you tapped OK on the change
+in the app) or `hostRevert` (the daemon made it to take a commit back out); or (b) the squash or merge
+commit of a pull request into main that you merged (`merged_by` is the repo's owner and `merge_commit_sha`
+is the commit), or one of that pull request's own commits (the merge-commit method). A plain ledgered commit
+is accepted only if it is docs-only. In the daemon, the repo the deployer deploys (`I_INC_REPO`, default
+`firstprateek/i-inc`) treats every path the host could run as protected, whatever the project's
+`protectedPaths` say: a ticket that changes one waits for your OK (the protected-paths card) before the
+daemon pushes it. A credential-scan finding gets the same card ("<commit> (looks like a credential)"):
+approving says it is not a secret, and the ledger records it. If a candidate has a commit that is none of
+these, the deployer skips it: nothing is built, it is never marked bad, nothing is rolled back; it logs a
+warning, records `skipped-review` in `deploys.jsonl`, and the daemon pushes "A commit on main didn't come
+through review: <sha7>. Not deployed." It looks at the same tip again after 15 minutes (a merge can take a
+moment to show) and at once when main moves. More than 90 new commits at once are left to you too. **To
+deploy one anyway** (you looked at it): `bun apps/deployer/src/main.ts --once --sha <full sha>`. GitHub is
+asked without credentials (60 calls an hour, waited out when used up); give the deployer a read-only token
+in `I_INC_GITHUB_TOKEN` to ask with one, and verdicts by pull request are kept in
+`~/i-inc-releases/review-cache.json`.
+
+**Rolling this out (T68).** The deployer runs from `~/i-inc` and does not update itself, so once this PR is
+merged and deployed by hand: `cd ~/i-inc && git pull --ff-only && launchctl kickstart -k
+gui/$(id -u)/inc.i.deployer` (or, if automatic deploys are still paused:
+`launchctl bootstrap gui/501 ~/Library/LaunchAgents/inc.i.deployer.plist`). Commits that older daemons
+pushed to main before the ledger existed are in no ledger: if the running release is older than that,
+the first candidate may list some code commits that neither the ledger nor an owner-merged PR explains.
+That candidate is skipped and you are told; look at it, and deploy it once with `--once --sha <full sha>`.
+After that the ledger covers what the daemon pushes.
+
 - **See deploys:** My desk → Releases → Deploys (the last 8), `GET /api/deploys` (the last 20),
   `tail -n 5 ~/.i-inc/deploys.jsonl` (`{at, sha, from, outcome, reason, durationMs}`, outcome is one of
-  `deployed`, `rolled-back`, `failed-build`, `failed-smoke`, `skipped-ci`), and one line per state change
+  `deployed`, `rolled-back`, `failed-build`, `failed-smoke`, `skipped-ci`, `skipped-ancestry`, `skipped-review`), and one line per state change
   in `~/Library/Logs/i-inc-deployer.log`. `curl -s http://127.0.0.1:7420/api/health` says which sha is
   running and whether it is busy.
 - **Pause:** `launchctl bootout gui/$(id -u)/inc.i.deployer`. Resume:
@@ -94,6 +128,26 @@ Before the deployer is installed, deploy by hand:
 2. `pnpm install --frozen-lockfile && pnpm --filter @i-inc/web build`
 3. `launchctl kickstart -k gui/$(id -u)/inc.i.daemon`
 4. `curl -sf https://iinc.<tailnet>.ts.net/api/auth`
+
+### No write credentials in sandboxes (T68)
+
+A sandbox's `gh` sign-in is a **read-only** token limited to the repos its sessions work on; every
+push is made by the daemon on the host (docs/github-app.md). What to know when operating it:
+
+- **The mirrors:** `~/.i-inc/push-mirrors/<owner>/<repo>.git`, bare repos the daemon fetches into and
+  pushes from. Safe to delete (they are fetched again); never edit them. The ledger,
+  `~/.i-inc/pushed-main.jsonl`, is append-only: keep it.
+- **A push the daemon refuses** says why in the ticket: a credential in a commit (named by commit or
+  file, never the value), a bundle that does not match the commit that was checked, a protected path,
+  more than 500 commits, or a bundle over 10 MB (a script's output is capped at 16 MB).
+- **Old machines need no host step.** The image keeps gh as git's credential helper. A sandbox signed
+  in before this change keeps its write token until it expires (about an hour) or is replaced, so on
+  every start the daemon signs each running sandbox out (`gh auth logout`, and removes gh's
+  `hosts.yml`) at once, and signs none in: the first session that needs GitHub signs its machine in
+  with a read-only token for its own repo. Look for "signed N sandbox(es) out of GitHub" in the daemon
+  log. A sandbox that was stopped at that moment has an expired token by the time it runs again.
+- **An agent that runs `git push` itself** is refused by GitHub (403): tell it the work is handed over
+  by the pipeline (a ticket) or by "Open a PR".
 
 ### Sandbox sign-in scripts (`tools/host`)
 Each team's sandbox signs in to harnesses once using host tools:

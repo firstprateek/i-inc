@@ -85,6 +85,11 @@ const real = demo
   : realPorts({
       credentials,
       log,
+      // Every push is made here on the host, from the mirrors; main's commits are written to the ledger the
+      // deployer checks (T68).
+      // The repo the deployer deploys: what it runs on the host needs your OK (I_INC_REPO, as the deployer's).
+      deployRepo: process.env.I_INC_REPO ?? "firstprateek/i-inc",
+      hostPush: { mirrors: join(home, "push-mirrors"), ledger: join(home, "pushed-main.jsonl") },
       ...(appConfig
         ? { github: { tokens: new GitHubApp(appConfig), slug: appConfig.slug ?? "i-inc-bot" } }
         : {}),
@@ -151,6 +156,20 @@ const watchHome = async () => {
     .then((stopped) => stopped.length && log(`the home wall doesn't cover ${stopped.join(", ")}: stopped`))
     .catch((err) => log(`home wall check failed: ${err}`));
 };
+// A write token an older daemon left in a sandbox's gh config is gone first: every running sandbox is signed
+// out of GitHub (T68); a session signs its machine in again with a read-only token for its own repo.
+if (real) {
+  void real
+    .resignAll()
+    .then(
+      (n) =>
+        n &&
+        log(
+          `signed ${n} sandbox(es) out of GitHub (the first session that needs it signs in again, read-only)`,
+        ),
+    )
+    .catch((err) => log(`re-signing the sandboxes failed: ${err}`));
+}
 if (real) {
   void watchHome()
     .then(() => real.sweepAgents())

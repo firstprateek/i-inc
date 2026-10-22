@@ -312,6 +312,25 @@ describe("push for a failed deploy", () => {
     expect(push.sent[0]?.body).toContain("force-push");
   });
 
+  it("pushes once when a commit on main didn't come through review, and says it was not deployed (T68)", async () => {
+    const path = join(dir, "deploys.jsonl");
+    const { app, push } = await guarded({ deploysPath: path });
+    writeFileSync(
+      path,
+      jsonl(
+        entry({
+          outcome: "skipped-review",
+          sha: "c0ffee0".padEnd(40, "0"),
+          reason: "c0ffee0 is not in the push ledger",
+        }),
+      ),
+    );
+    expect(await make(path, push, app).check()).toBe(1);
+    expect(push.sent[0]?.body).toBe("A commit on main didn't come through review: c0ffee0. Not deployed.");
+    expect(await make(path, push, app).check()).toBe(0);
+    // And the deploys API lists it.
+  });
+
   it("strips absolute home paths from what the API and the push show", async () => {
     const path = join(dir, "deploys.jsonl");
     const { app, push, send, authed } = await guarded({ deploysPath: path });

@@ -1,6 +1,8 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell scripts, not templates
 // The git side of shipping a conversation's work (T62b): look at the conversation's working copy, commit
-// what is uncommitted, and push its branch as the bot. Every script runs in the employee's team machine.
+// what is uncommitted, and push its branch as the bot. Every script runs in the employee's team machine,
+// except the push itself: the machine holds no write credential (T68), so the push is the host's, from a
+// bundle of exactly the commit that was scanned (bundle.ts, host-push.ts).
 // Nothing leaves the sandbox before the daemon has read the change and found no credential in it: the
 // scan reuses the patterns that redact transcripts (`redactTokens`, ahp/sanitize.ts), and a file that
 // usually holds secrets (.env, a private key) stops it by name. Findings name the file, never the value.
@@ -9,7 +11,9 @@ import type { Employee } from "@i-inc/core";
 import { redactTokens } from "./ahp/sanitize.ts";
 import type { DraftPr, PullRequests, TokenSource } from "./github.ts";
 import type { RunScript } from "./harness.ts";
-import { isProtected } from "./harness.ts";
+import { type HostPush, HostPushError } from "./host-push.ts";
+import { isProtected } from "./paths.ts";
+import { pushFromSandbox } from "./sandbox-push.ts";
 import { isSafeRefName, isSafeWorkDir } from "./workspace.ts";
 
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -98,7 +102,7 @@ export interface ShipPort {
     message: string,
     opts?: { scanned?: boolean },
   ): Promise<{ committed: boolean; head: string }>;
-  /** Scans exactly what will be pushed, then pushes that commit as the bot, never forcing. */
+  /** Scans exactly what will be pushed, then has the host push that commit as the bot, never forcing. */
   push(copy: ShipCopy): Promise<{ head: string }>;
   prs: ShipPrs;
 }
@@ -245,35 +249,10 @@ export function commitScript(copy: ShipCopy, remote: string, message: string): s
   ].join("\n");
 }
 
-/**
- * Pushes `sha`, the commit that was scanned, to the branch: if the copy has moved on since, it doesn't. A branch
- * GitHub has moved on is never overwritten.
- */
-export function pushScript(copy: ShipCopy, remote: string, sha: string): string {
-  check(copy, remote);
-  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`not a commit: ${sha}`);
-  return [
-    "set -u",
-    ...enter(copy, remote),
-    // The scanned commit, as a value: HEAD and the branch are not read again, so a copy that moves meanwhile
-    // changes nothing about what is sent.
-    ...cleanRepo(quote(sha)),
-    // Only the clean repo's one ref goes, to the repo's own address; nothing of the copy's config or refs is in play.
-    `if out=$(NC push --quiet "$URL" ${quote(`refs/heads/ship:refs/heads/${copy.branch}`)} 2>&1); then`,
-    `  echo ${quote(`@@pushed ${sha}`)}`,
-    "else",
-    '  echo "$out" | tail -n 5',
-    // A branch GitHub has moved on is the one rejection with its own sentence; any other is said as it is.
-    '  case "$out" in *"[rejected]"*"fetch first"*|*"[rejected]"*"non-fast-forward"*) echo "@@diverged"; exit 7 ;; esac',
-    "  exit 1",
-    "fi",
-  ].join("\n");
-}
-
 const tail = (output: string) => output.trim().split("\n").slice(-4).join(" ").slice(0, 300);
 
 /** A file that usually holds secrets, by its name. */
-const secretFile = [
+export const secretFile = [
   /(^|\/)\.env(\.(?!example$|sample$|template$|dist$)[^/]+)?$/i,
   /\.(pem|key|p12|pfx|jks|keystore)$/i,
   /(^|\/)id_(rsa|dsa|ecdsa|ed25519)$/,
@@ -289,7 +268,7 @@ const extraCredential = [
 ];
 
 /** `redactTokens` stops at a million characters, so a long text is looked at in pieces of whole lines. */
-function holdsCredential(added: string): boolean {
+export function holdsCredential(added: string): boolean {
   const piece = 400_000;
   let chunk = "";
   const looks = (t: string) =>
@@ -351,6 +330,41 @@ function patchBlocks(patch: string): string[] {
     else if (blocks.length) blocks[blocks.length - 1] += `\n${line}`;
   }
   return blocks;
+}
+
+/**
+ * Reads the history section (`@@total N`, then each commit's `commit` marker, sha, message and patch, fenced by
+ * markers that carry `nonce`) for credentials: which commits hold one, which could not be read, and whether
+ * there were too many commits to look at. The host's push uses it on the commits a bundle brings (host-push.ts).
+ */
+export function scanHistory(
+  hist: string,
+  nonce: string,
+): { secrets: { path: string; kind: string }[]; unscanned: string[]; tooBig: boolean } {
+  const secrets: { path: string; kind: string }[] = [];
+  const unscanned: string[] = [];
+  const total = Number(/^@@total (\d+)/m.exec(hist)?.[1] ?? 0);
+  const tooBig = total > MAX_COMMITS;
+  const commitMark = marker(nonce, "commit");
+  for (const block of hist.split(new RegExp(`^${commitMark} `, "m")).slice(1)) {
+    const nl = block.indexOf("\n");
+    const sha = block.slice(0, nl < 0 ? undefined : nl).trim();
+    const rest = nl < 0 ? "" : block.slice(nl + 1);
+    const mb = `${marker(nonce, "msg-begin")}\n`;
+    const me = `\n${marker(nonce, "msg-end")}`;
+    const from = rest.indexOf(mb);
+    const to = rest.indexOf(me, from);
+    if (!/^[0-9a-f]{7,40}$/.test(sha) || from < 0 || to < 0) {
+      unscanned.push("a commit that could not be read");
+      continue;
+    }
+    const message = rest.slice(from + mb.length, to);
+    const patchText = rest.slice(to + me.length);
+    if (holdsCredential(message) || scanPatch(patchText)) {
+      secrets.push({ path: `commit ${sha.slice(0, 7)}`, kind: "a commit in the branch's history" });
+    }
+  }
+  return { secrets, unscanned, tooBig };
 }
 
 /**
@@ -425,27 +439,10 @@ export function readInspect(copy: ShipCopy, output: string, nonce: string): Copy
   });
 
   // The history, commit by commit.
-  const total = Number(/^@@total (\d+)/m.exec(hist ?? "")?.[1] ?? 0);
-  if (total > MAX_COMMITS) tooBig = true;
-  const commitMark = marker(nonce, "commit");
-  for (const block of (hist ?? "").split(new RegExp(`^${commitMark} `, "m")).slice(1)) {
-    const nl = block.indexOf("\n");
-    const sha = block.slice(0, nl < 0 ? undefined : nl).trim();
-    const rest = nl < 0 ? "" : block.slice(nl + 1);
-    const mb = `${marker(nonce, "msg-begin")}\n`;
-    const me = `\n${marker(nonce, "msg-end")}`;
-    const from = rest.indexOf(mb);
-    const to = rest.indexOf(me, from);
-    if (!/^[0-9a-f]{7,40}$/.test(sha) || from < 0 || to < 0) {
-      unscanned.push("a commit that could not be read");
-      continue;
-    }
-    const message = rest.slice(from + mb.length, to);
-    const patchText = rest.slice(to + me.length);
-    if (holdsCredential(message) || scanPatch(patchText)) {
-      secrets.push({ path: `commit ${sha.slice(0, 7)}`, kind: "a commit in the branch's history" });
-    }
-  }
+  const h = scanHistory(hist ?? "", nonce);
+  if (h.tooBig) tooBig = true;
+  unscanned.push(...h.unscanned);
+  secrets.push(...h.secrets);
 
   return {
     head: head("head").trim(),
@@ -499,16 +496,18 @@ export interface ShipKit {
   tokens: TokenSource;
   run: RunScript;
   prs: ShipPrs;
-  /** Where the repo is fetched from and pushed to; tests use a path. Default: github.com. */
+  /** Where the repo is fetched from; tests use a path. Default: github.com. */
   remote?: (repo: string) => string;
+  /** Pushes the bundle a machine hands over. Without it nothing is pushed. */
+  host?: HostPush;
 }
 
 export function conversationShip(kit: ShipKit): ShipPort {
   const remoteOf = (copy: ShipCopy) => kit.remote?.(copy.repo) ?? `https://github.com/${copy.repo}.git`;
-  // The token goes only to a script that talks to GitHub (the inspect's fetch, and the push), where the script
-  // takes it out of its environment before anything else runs.
+  // A read-only token goes only to a script that talks to GitHub (the inspect's fetch), where the script takes it
+  // out of its environment before anything else runs. Nothing in a machine can push.
   const exec = async (copy: ShipCopy, script: string, network: boolean) =>
-    kit.run(copy.employee.id, script, network ? { GH_TOKEN: await kit.tokens.token(copy.repo) } : {});
+    kit.run(copy.employee.id, script, network ? { GH_TOKEN: await kit.tokens.readToken([copy.repo]) } : {});
   const why = (r: { output: string }, doing: string) => {
     const fail = /^@@fail (.+)$/m.exec(r.output)?.[1];
     return `Couldn't ${doing}: ${fail ?? tail(r.output)}`;
@@ -542,16 +541,28 @@ export function conversationShip(kit: ShipKit): ShipPort {
       const report = await verify(copy, "pushed");
       if (!/^[0-9a-f]{40}$/.test(report.head))
         throw new ShipRefusal("Couldn't read the working copy's commit.", "git");
-      const r = await exec(copy, pushScript(copy, remoteOf(copy), report.head), true);
-      if (r.output.includes("@@diverged")) {
-        throw new ShipRefusal(
-          `GitHub's copy of ${copy.branch} has changes this working copy doesn't, so it wasn't pushed. Nothing was overwritten.`,
-          "diverged",
-        );
+      try {
+        await pushFromSandbox({
+          host: kit.host,
+          run: (script) => kit.run(copy.employee.id, script),
+          worktree: copy.cwd,
+          sha: report.head,
+          req: { repo: copy.repo, branch: copy.branch, defaultBranch: copy.base },
+          baseBranches: [copy.base, copy.branch],
+        });
+      } catch (e) {
+        if (!(e instanceof HostPushError)) throw e;
+        if (e.kind === "behind") {
+          throw new ShipRefusal(
+            `GitHub's copy of ${copy.branch} has changes this working copy doesn't, so it wasn't pushed. Nothing was overwritten.`,
+            "diverged",
+          );
+        }
+        if (e.kind === "secrets") throw new ShipRefusal(e.message, "secrets");
+        if (e.kind === "too-big") throw new ShipRefusal(`Couldn't push the branch: ${e.message}`, "too-big");
+        throw new ShipRefusal(`Couldn't push the branch: ${e.message}`, "git");
       }
-      const head = /^@@pushed ([0-9a-f]{7,40})$/m.exec(r.output)?.[1];
-      if (r.code !== 0 || !head) throw new ShipRefusal(why(r, "push the branch"), "git");
-      return { head };
+      return { head: report.head };
     },
   };
 }
