@@ -102,4 +102,6 @@ export type TicketEvent =
       engineId?: Id;
       reason: string;
     }
+  /** Part of an agent's reply wasn't usable (a bad enum, a wrong type) and was left out, not stored. */
+  | { type: "reply-flagged"; at: number; stage: StageId; what: string; detail: string }
   | { type: "failed"; at: number; stage: StageId; reason: string; tried: string[] };

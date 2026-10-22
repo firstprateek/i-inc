@@ -103,5 +103,7 @@ export function planFor(ticket: Ticket, policy: ProjectPolicy = defaultProjectPo
   if (ticket.type === "errand") return errandPlan;
   if (ticket.type === "orientation") return orientationPlan;
   if (ticket.type === "tidy") return tidyPlan;
-  return (policy.mode === "direct" ? directPlans : stagePlans)[ticket.effort];
+  // An effort this version doesn't know (a bad value stored from an agent's reply) plans as Medium.
+  const plans = policy.mode === "direct" ? directPlans : stagePlans;
+  return plans[ticket.effort] ?? plans.medium;
 }

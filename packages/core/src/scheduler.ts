@@ -1,6 +1,7 @@
 // Who starts what next (spec §6, "Assignment and scheduling"). Pure: the daemon passes a snapshot
 // and starts what comes back. Every ticket that doesn't start gets a reason, which the board shows
 // ("waits for Claude Pro at 3:40 pm").
+import { findEngine } from "./engines.ts";
 import type { Duty, Employee, Id, StandingOrder, TicketType, WorkingHours } from "./model.ts";
 import type { Company } from "./ports.ts";
 import type { TicketState } from "./state.ts";
@@ -85,7 +86,10 @@ export function schedule(snap: Snapshot, company: Pick<Company, "engine" | "engi
     }
     const cap = snap.capReachedUntil[e.id];
     if (cap !== undefined && cap > snap.now) return `${e.name} reached its usage cap`;
-    const engine = company.engine(e.engines.perDuty?.[duty] ?? e.engines.default);
+    // An engine removed from Setup while the employee still names it: they can't start, and the
+    // rest of the pass goes on.
+    const engine = findEngine(company, e.engines.perDuty?.[duty] ?? e.engines.default);
+    if (!engine) return `${e.name}'s engine was removed in Setup`;
     const accountCap = snap.capReachedUntil[engine.accountId];
     if (accountCap !== undefined && accountCap > snap.now) return `${e.name} reached its usage cap`;
     const blocked = snap.accountsBlockedUntil[engine.accountId];
@@ -100,7 +104,8 @@ export function schedule(snap: Snapshot, company: Pick<Company, "engine" | "engi
 
   /** When an account block or usage cap on this employee's engine for the duty ends, if one is in force. */
   const resetAt = (e: Employee, duty: Duty = "build"): number | undefined => {
-    const engine = company.engine(e.engines.perDuty?.[duty] ?? e.engines.default);
+    const engine = findEngine(company, e.engines.perDuty?.[duty] ?? e.engines.default);
+    if (!engine) return undefined;
     const times = [
       snap.capReachedUntil[e.id],
       snap.capReachedUntil[engine.accountId],
