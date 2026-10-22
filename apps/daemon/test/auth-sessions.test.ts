@@ -17,7 +17,12 @@ async function rig(opts: { owner?: boolean } = {}) {
   const logs: string[] = [];
   app.deps.log = (m: string) => logs.push(m);
   const mk = () =>
-    createApi(app.daemon, app.deps, { token: TOKEN, hosts: [HOST, "iinc.tail.ts.net"], setupCodePath });
+    createApi(app.daemon, app.deps, {
+      token: TOKEN,
+      hosts: [HOST, "iinc.tail.ts.net"],
+      setupCodePath,
+      heartbeatMs: 40,
+    });
   let handle = mk();
   const send = async (method: string, path: string, body?: unknown, headers: Record<string, string> = {}) => {
     const res = await handle(
@@ -43,7 +48,18 @@ async function rig(opts: { owner?: boolean } = {}) {
     });
     expect(r.status).toBe(201);
   }
-  return { app, send, code, setupCodePath, logs, cookieOf, restart: () => (handle = mk()), db: app.db };
+  return {
+    app,
+    send,
+    code,
+    setupCodePath,
+    logs,
+    cookieOf,
+    restart: () => (handle = mk()),
+    stream: (headers: Record<string, string>) =>
+      handle(new Request(`http://${HOST}/api/events`, { headers: { host: HOST, ...headers } })),
+    db: app.db,
+  };
 }
 
 describe("first-run signup needs the setup code", () => {
@@ -65,7 +81,9 @@ describe("first-run signup needs the setup code", () => {
     const t = await rig();
     expect(statSync(t.setupCodePath).mode & 0o777).toBe(0o600);
     expect(t.code()).toMatch(/^[a-z2-9]{4}-[a-z2-9]{4}-[a-z2-9]{4}$/);
-    expect(t.logs.some((l) => l.includes(t.code()))).toBe(true);
+    // the log says where the code is, never what it is
+    expect(t.logs.some((l) => l.includes(t.code()))).toBe(false);
+    expect(t.logs.some((l) => l.includes(t.setupCodePath))).toBe(true);
     const code = t.code();
     const ok = await t.send("POST", "/api/signup", {
       username: "owner",
@@ -103,27 +121,58 @@ describe("first-run signup needs the setup code", () => {
     expect(ok.status).toBe(201);
   });
 
-  it("changes the code after five wrong guesses", async () => {
+  const signupWith = (t: Awaited<ReturnType<typeof rig>>, setupCode: string, client: string) =>
+    t.send(
+      "POST",
+      "/api/signup",
+      { username: "x", password: "long-enough-password", setupCode },
+      { "x-forwarded-for": client },
+    );
+
+  it("limits wrong guesses per client: one peer can neither guess on nor invalidate the code for the owner", async () => {
+    const t = await rig();
+    const code = t.code();
+    const wrong = await Promise.all(
+      Array.from({ length: 5 }, (_, i) => signupWith(t, `bad${i}`, "100.64.0.9")),
+    );
+    expect(wrong.every((g) => g.status === 403)).toBe(true);
+    // the attacker is told to wait, even with the right code; the code is unchanged
+    const blocked = await signupWith(t, code, "100.64.0.9");
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers.get("retry-after")).toBeTruthy();
+    expect(t.code()).toBe(code);
+    // another client is not affected, and the owner gets in
+    expect((await signupWith(t, "bad", "100.64.0.20")).status).toBe(403);
+    expect((await signupWith(t, code, "100.64.0.20")).status).toBe(201);
+  }, 15_000);
+
+  it("lets a blocked client try again after the window", async () => {
+    const t = await rig();
+    await Promise.all(Array.from({ length: 5 }, (_, i) => signupWith(t, `bad${i}`, "100.64.0.9")));
+    expect((await signupWith(t, "again", "100.64.0.9")).status).toBe(429);
+    t.app.clock.advance(11); // minutes
+    expect((await signupWith(t, "again", "100.64.0.9")).status).toBe(403);
+  }, 15_000);
+
+  it("changes the code only after a flood of wrong guesses from everywhere", async () => {
     const t = await rig();
     const first = t.code();
-    const guesses = await Promise.all(
-      Array.from({ length: 5 }, (_, i) =>
-        t.send("POST", "/api/signup", {
-          username: "x",
-          password: "long-enough-password",
-          setupCode: `bad${i}`,
-        }),
-      ),
-    );
-    expect(guesses.every((g) => g.status === 403)).toBe(true);
+    await Promise.all(Array.from({ length: 99 }, (_, i) => signupWith(t, `bad${i}`, `100.64.1.${i}`)));
+    expect(t.code()).toBe(first);
+    await signupWith(t, "bad-last", "100.64.2.1");
     expect(t.code()).not.toBe(first);
-    const old = await t.send("POST", "/api/signup", {
-      username: "x",
-      password: "long-enough-password",
-      setupCode: first,
-    });
-    expect(old.status).toBe(403);
-  }, 15_000);
+    expect((await signupWith(t, first, "100.64.3.1")).status).toBe(403);
+  }, 30_000);
+
+  it("writes the code file with mode 0600 every time, replacing an old readable one", async () => {
+    const t = await rig();
+    const { writeFileSync, chmodSync } = await import("node:fs");
+    writeFileSync(t.setupCodePath, "old\n", { mode: 0o644 });
+    chmodSync(t.setupCodePath, 0o644);
+    t.restart();
+    expect(statSync(t.setupCodePath).mode & 0o777).toBe(0o600);
+    expect(t.code()).not.toBe("old");
+  });
 
   it("makes no code when an owner already exists (a restart of a set-up daemon)", async () => {
     const t = await rig({ owner: true });
@@ -153,14 +202,52 @@ describe("a login is a session, not the daemon token", () => {
     expect((await t.send("GET", "/api/board", undefined, { cookie: t.cookieOf(a) })).status).toBe(200);
   });
 
-  it("is Secure when the request came over https (a forwarded proto or an https origin), not over http", async () => {
+  it("is Secure on every host but loopback (and on loopback behind an https proxy)", async () => {
     const t = await rig({ owner: true });
-    expect((await login(t)).headers.get("set-cookie")).not.toContain("Secure");
-    const fwd = await login(t, { "x-forwarded-proto": "https" });
-    expect(fwd.headers.get("set-cookie")).toMatch(/; Secure$/);
-    const origin = await login(t, { origin: "https://iinc.tail.ts.net", host: "iinc.tail.ts.net" });
-    expect(origin.headers.get("set-cookie")).toMatch(/; Secure$/);
+    // the browser on the machine itself, over plain http: no Secure, or it couldn't be stored
+    for (const host of ["127.0.0.1:7420"])
+      expect((await login(t, { host })).headers.get("set-cookie")).not.toContain("Secure");
+    // the tailnet name, with no X-Forwarded-Proto and no Origin at all
+    const bare = await login(t, { host: "iinc.tail.ts.net" });
+    expect(bare.headers.get("set-cookie")).toMatch(/; Secure$/);
+    expect((await login(t, { "x-forwarded-proto": "https" })).headers.get("set-cookie")).toMatch(/; Secure$/);
   });
+
+  it("keeps Secure when a GET renews the cookie on the tailnet name", async () => {
+    const t = await rig({ owner: true });
+    const a = t.cookieOf(await login(t));
+    t.app.clock.advance(2 * 24 * 60);
+    const renewed = await t.send("GET", "/api/board", undefined, { cookie: a, host: "iinc.tail.ts.net" });
+    expect(renewed.status).toBe(200);
+    expect(renewed.headers.get("set-cookie")).toMatch(
+      /; HttpOnly; SameSite=Strict; Path=\/; Max-Age=\d+; Secure$/,
+    );
+    // the old cookie swapped for a session on the tailnet name is Secure too
+    const legacy = await t.send("GET", "/api/board", undefined, {
+      cookie: `i_inc=${TOKEN}`,
+      "sec-fetch-site": "same-origin",
+      host: "iinc.tail.ts.net",
+    });
+    expect(legacy.headers.get("set-cookie")).toMatch(/; Secure$/);
+  });
+
+  it("throttles password logins per client, before any password is hashed", async () => {
+    const t = await rig({ owner: true });
+    const wrong = (client: string) =>
+      t.send(
+        "POST",
+        "/api/login",
+        { username: "owner", password: "wrong-password" },
+        { "x-forwarded-for": client },
+      );
+    const first = await Promise.all(Array.from({ length: 10 }, () => wrong("100.64.0.5")));
+    expect(first.every((r) => r.status === 401)).toBe(true);
+    expect((await wrong("100.64.0.5")).status).toBe(429);
+    // even the right password waits for that client; another client is fine
+    const right = { username: "owner", password: "long-enough-password" };
+    expect((await t.send("POST", "/api/login", right, { "x-forwarded-for": "100.64.0.5" })).status).toBe(429);
+    expect((await t.send("POST", "/api/login", right, { "x-forwarded-for": "100.64.0.6" })).status).toBe(200);
+  }, 20_000);
 
   it("is revoked by sign out: a copy of the cookie stops working, the other sessions and the bearer token don't", async () => {
     const t = await rig({ owner: true });
@@ -248,6 +335,55 @@ describe("a browser logged in before sessions", () => {
     });
     expect(r.status).toBe(401);
     expect(r.headers.get("set-cookie")).toBeNull();
+  });
+});
+
+describe("the event stream is tied to the session", () => {
+  const login = (t: Awaited<ReturnType<typeof rig>>) =>
+    t.send("POST", "/api/login", { username: "owner", password: "long-enough-password" });
+
+  /** Reads the stream until it ends or `ms` passes: true when it ended. */
+  async function ends(res: Response, ms = 2000): Promise<boolean> {
+    const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      const r = await Promise.race([
+        reader.read(),
+        new Promise<null>((ok) => setTimeout(() => ok(null), 100)),
+      ]);
+      if (r?.done) return true;
+    }
+    return false;
+  }
+
+  it("ends when the session is signed out", async () => {
+    const t = await rig({ owner: true });
+    const cookie = t.cookieOf(await login(t));
+    const res = await t.stream({ cookie });
+    expect(res.status).toBe(200);
+    await t.send("POST", "/api/logout", {}, { cookie });
+    expect(await ends(res)).toBe(true);
+  });
+
+  it("ends when the session expires, and delivers nothing more", async () => {
+    const t = await rig({ owner: true });
+    const cookie = t.cookieOf(await login(t));
+    const res = await t.stream({ cookie });
+    t.app.clock.advance(31 * 24 * 60);
+    expect(await ends(res)).toBe(true); // the heartbeat (40 ms here) notices
+  });
+
+  it("leaves another session's stream and a bearer-token stream open", async () => {
+    const t = await rig({ owner: true });
+    const a = t.cookieOf(await login(t));
+    const b = t.cookieOf(await login(t));
+    const sa = await t.stream({ cookie: a });
+    const sb = await t.stream({ cookie: b });
+    const st = await t.stream({ authorization: `Bearer ${TOKEN}` });
+    await t.send("POST", "/api/logout", {}, { cookie: a });
+    expect(await ends(sa)).toBe(true);
+    expect(await ends(sb, 400)).toBe(false);
+    expect(await ends(st, 400)).toBe(false);
   });
 });
 

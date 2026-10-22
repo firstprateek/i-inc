@@ -6,7 +6,7 @@
 // for a ticket, must carry a custom header, which needs a preflight too (see isUpload).
 
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   type AccountCost,
@@ -68,6 +68,7 @@ import { type ProposalStatus, RECOVERED_BODY } from "./proposals.ts";
 import { type NotifySettings, notifyKeys, notifySettings, type PushSubscription } from "./push.ts";
 import { defaultTeam, type Project } from "./registry.ts";
 import { ShipError } from "./ship.ts";
+import { clientKey, GuessLimit } from "./throttle.ts";
 import type { NewAttachment, NewTicket } from "./tickets.ts";
 import { defaultTimeoutSettings, readTimeoutSettings, timeoutSettings } from "./timeouts.ts";
 import {
@@ -106,6 +107,12 @@ export interface ApiOptions {
   version?: string;
   /** ~/.i-inc/deploys.jsonl, which the deployer writes, for GET /api/deploys. */
   deploysPath?: string;
+}
+
+/** An open /api/events stream tied to a browser session. */
+interface EventStream {
+  /** Ends the stream if its session is gone. */
+  check(): void;
 }
 
 type Handler = (req: Request, params: Record<string, string>) => Promise<Response>;
@@ -358,6 +365,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     return out;
   };
 
+  const eventStreams = new Set<EventStream>();
   const routes: [string, string, Handler][] = [
     [
       "GET",
@@ -375,14 +383,25 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       async (req) => {
         const encoder = new TextEncoder();
         let closed = false;
+        // A stream opened with a browser session ends with it: signed out, or expired.
+        const session =
+          opts.token && credential(req, opts.token, sessions) === "session" ? sessionCookie(req) : undefined;
+        const alive = () => session === undefined || sessions.valid(session);
+        const tracked: EventStream = {
+          check: () => {
+            if (!alive()) onAbort();
+          },
+        };
         let timer: ReturnType<typeof setInterval> | null = null;
         let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
 
         const onTicket = (id: Id) => {
+          if (!alive()) return onAbort();
           send(`event: ticket\ndata: ${JSON.stringify({ id })}\n\n`);
         };
 
         const onOffice = () => {
+          if (!alive()) return onAbort();
           send("event: office\ndata: {}\n\n");
         };
 
@@ -405,6 +424,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
             d.live.off("office", onOffice);
           }
           req.signal?.removeEventListener("abort", onAbort);
+          eventStreams.delete(tracked);
         };
 
         const send = (chunk: string) => {
@@ -436,6 +456,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
               }
 
               req.signal?.addEventListener("abort", onAbort);
+              if (session !== undefined) eventStreams.add(tracked);
 
               send(": connected\n\n");
 
@@ -446,6 +467,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
 
               const interval = opts.heartbeatMs ?? 25_000;
               timer = setInterval(() => {
+                if (!alive()) return onAbort();
                 send(": keepalive\n\n");
               }, interval);
               timer.unref?.();
@@ -2748,13 +2770,21 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
   }
 
   const sessions = opts.webSessions ?? new WebSessions(d.db, () => d.clock.now());
+  // Open /api/events streams that ride on a browser session: signing out closes them at once.
+  sessions.onRevoke(() => {
+    for (const st of [...eventStreams]) st.check();
+  });
 
   // The one-time setup code for the first-run signup: made when the daemon starts without an owner,
-  // logged and written to a file only the machine's owner can read, rotated after a few wrong guesses,
-  // and gone once the owner account exists.
+  // written to a file only the machine's owner can read (the log says where, not what), and gone once the
+  // owner account exists. Wrong guesses are limited per client; only a flood of them from everywhere
+  // changes the code, so one peer on the tailnet can't keep invalidating it.
   let setupCode: string | undefined;
   let setupFailures = 0;
-  const SETUP_GUESSES = 5;
+  /** Per client: this many wrong codes in this long, and it waits. */
+  const setupGuesses = new GuessLimit(5, 10 * 60_000, () => d.clock.now());
+  /** The code is replaced after this many wrong guesses in all. */
+  const SETUP_ROTATE_AFTER = 100;
   function newSetupCode() {
     const alphabet = "abcdefghjkmnpqrstuvwxyz23456789"; // no 0/o/1/l/i
     const bytes = randomBytes(12);
@@ -2764,18 +2794,21 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     if (opts.setupCodePath) {
       try {
         mkdirSync(dirname(opts.setupCodePath), { recursive: true });
-        writeFileSync(opts.setupCodePath, `${setupCode}\n`, { mode: 0o600 });
+        // A fresh file each time, created with its mode (never a readable file written then tightened).
+        rmSync(opts.setupCodePath, { force: true });
+        writeFileSync(opts.setupCodePath, `${setupCode}\n`, { mode: 0o600, flag: "wx" });
+        chmodSync(opts.setupCodePath, 0o600);
       } catch (e) {
         d.log?.(
           `could not write the setup code to ${opts.setupCodePath}: ${e instanceof Error ? e.message : e}`,
         );
       }
+      d.log?.(
+        `no owner account yet: create it in the web app with the setup code in ${opts.setupCodePath} (cat it)`,
+      );
+    } else {
+      d.log?.(`no owner account yet: create it in the web app with the setup code ${setupCode}`);
     }
-    d.log?.(
-      `no owner account yet: create it in the web app with the setup code ${setupCode}${
-        opts.setupCodePath ? ` (also in ${opts.setupCodePath})` : ""
-      }`,
-    );
   }
   function clearSetupCode() {
     setupCode = undefined;
@@ -2793,16 +2826,27 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     return false;
   }
 
-  /** A browser asked over https (a tailnet address served by `tailscale serve`, or a direct TLS request)? */
-  function overHttps(req: Request): boolean {
-    if (new URL(req.url).protocol === "https:") return true;
-    if ((req.headers.get("x-forwarded-proto") ?? "").split(",")[0]?.trim() === "https") return true;
-    return (req.headers.get("origin") ?? "").startsWith("https://");
-  }
+  // Password and token logins: wrong guesses are limited per client too, before any password is hashed.
+  const loginGuesses = new GuessLimit(10, 10 * 60_000, () => d.clock.now());
+  const tooMany = (seconds: number) =>
+    json({ error: "too many wrong tries: wait a few minutes", code: "throttled" }, 429, {
+      "retry-after": String(seconds),
+    });
+
+  const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+  /** The Host without its port: `iinc.tail.ts.net`, `127.0.0.1`, `[::1]`. */
+  const hostName = (req: Request): string => {
+    const h = (req.headers.get("host") ?? new URL(req.url).host).toLowerCase();
+    return h.startsWith("[") ? h.slice(0, h.indexOf("]") + 1) : (h.split(":")[0] ?? h);
+  };
+  /** Secure on every cookie unless the browser reached the daemon on its own machine (plain http on loopback). */
+  const secureCookie = (req: Request): boolean =>
+    !LOOPBACK.has(hostName(req)) ||
+    (req.headers.get("x-forwarded-proto") ?? "").split(",")[0]?.trim() === "https";
 
   /** The cookie for a session token. HttpOnly: scripts can't read it; Strict: other sites can't send it. */
   function cookieFor(req: Request, value: string, maxAge: number): string {
-    return `i_inc=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${overHttps(req) ? "; Secure" : ""}`;
+    return `i_inc=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${secureCookie(req) ? "; Secure" : ""}`;
   }
 
   /** Signs a browser in: a new session, its cookie. Never the daemon token. */
@@ -2892,10 +2936,16 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         setupCode?: unknown;
       };
       // Nobody can claim the company without the code the daemon printed (or its token).
+      const who = clientKey(req);
+      if (opts.token && !(how === "bearer" || how === "session")) {
+        const wait = setupGuesses.retryAfter(who);
+        if (wait) return tooMany(wait);
+      }
       if (opts.token && !(how === "bearer" || how === "session" || setupProof(body.setupCode))) {
         if (typeof body.setupCode === "string" && body.setupCode) {
+          setupGuesses.fail(who);
           setupFailures += 1;
-          if (setupFailures >= SETUP_GUESSES) newSetupCode();
+          if (setupFailures >= SETUP_ROTATE_AFTER) newSetupCode();
           await new Promise((r) => setTimeout(r, 1000)); // slows guessing
           return json({ error: "that's not the setup code", code: "setup-code" }, 403);
         }
@@ -2927,6 +2977,9 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         password?: unknown;
         token?: unknown;
       };
+      const who = clientKey(req);
+      const wait = loginGuesses.retryAfter(who);
+      if (wait) return tooMany(wait);
       if (body.username !== undefined || body.password !== undefined) {
         const owner = getOwner();
         if (!owner) return json({ error: "create an owner account first" }, 400);
@@ -2936,11 +2989,15 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           body.username.trim() !== owner.username ||
           !verifyPassword(body.password, owner.password_hash)
         ) {
+          loginGuesses.fail(who);
+          await new Promise((r) => setTimeout(r, 1000)); // slows guessing
           return json({ error: "wrong username or password" }, 401);
         }
+        loginGuesses.clear(who);
         return opts.token ? startSession(req, { ok: true }, 200) : json({ ok: true });
       }
       if (!opts.token || typeof body.token !== "string" || !same(body.token, opts.token)) {
+        loginGuesses.fail(who);
         await new Promise((r) => setTimeout(r, 1000)); // slows guessing
         return json({ error: "that's not the token" }, 401);
       }
