@@ -25,6 +25,7 @@ import {
 import { arrive, ScrollMemory, stampEntry } from "../scroll-memory.ts";
 import { LAYOUT_BREAKPOINTS } from "./layout.ts";
 import type { LoadState } from "./loader.ts";
+import { NEW_TICKET_EVENT } from "./new-ticket.ts";
 import { base } from "./shared.ts";
 import "./office.ts";
 import "./board.ts";
@@ -689,15 +690,17 @@ export class IncApp extends LitElement {
     if (r.view === "conversations") return "";
     return html`<p slot="subtitle">${AREA_SUBTITLES[area]}</p>
       ${
-        r.view === "team"
-          ? html`<a slot="actions" class="btn" href="#/company/team/hiring">Hire someone</a>`
-          : r.view === "projects" && !r.id && !r.flow
-            ? html`<a slot="actions" class="btn ghost" href="#/company/projects/add">Add a repo</a><a slot="actions" class="btn" href="#/company/projects/new">New project</a>`
-            : r.view === "projects"
-              ? html`<a slot="actions" class="btn ghost" href="#/company/projects">All projects</a>`
-              : r.view === "hiring"
-                ? html`<a slot="actions" class="btn ghost" href="#/company/team">Back to the team</a>`
-                : ""
+        r.view === "work" && r.tab === "board"
+          ? html`<button slot="actions" class="btn" type="button" aria-haspopup="dialog" @click=${() => window.dispatchEvent(new Event(NEW_TICKET_EVENT))}>New ticket</button>`
+          : r.view === "team"
+            ? html`<a slot="actions" class="btn" href="#/company/team/hiring">Hire someone</a>`
+            : r.view === "projects" && !r.id && !r.flow
+              ? html`<a slot="actions" class="btn ghost" href="#/company/projects/add">Add a repo</a><a slot="actions" class="btn" href="#/company/projects/new">New project</a>`
+              : r.view === "projects"
+                ? html`<a slot="actions" class="btn ghost" href="#/company/projects">All projects</a>`
+                : r.view === "hiring"
+                  ? html`<a slot="actions" class="btn ghost" href="#/company/team">Back to the team</a>`
+                  : ""
       }`;
   }
 

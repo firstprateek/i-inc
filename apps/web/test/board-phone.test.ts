@@ -1,9 +1,10 @@
-// The board on the phone: the new-ticket form, agent-filed badges, the protected-paths OK card
-// and the digest of recent reports, against a fake API.
+// The board: the kanban first, the new-ticket form as a dialog (opened from the header), agent-filed badges and
+// the reports on the Done column's cards, against a fake API.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TicketEvent, TicketView } from "../src/api.ts";
 import { ago, digestRow } from "../src/components/board.ts";
 import "../src/components/board.ts";
+import { NEW_TICKET_EVENT } from "../src/components/new-ticket.ts";
 
 const view = (over: Partial<TicketView> & { createdBy?: unknown }): TicketView =>
   ({
@@ -65,9 +66,13 @@ async function mount(): Promise<ShadowRoot> {
   return el.shadowRoot as ShadowRoot;
 }
 
+/** Opens the new-ticket dialog the way the header's New ticket button does, and returns the form in it. */
 const form = async (root: ShadowRoot) => {
-  const el = root.querySelector("inc-new-ticket") as HTMLElement & { updateComplete: Promise<unknown> };
-  (el.shadowRoot as ShadowRoot).querySelector<HTMLButtonElement>("button[aria-expanded]")?.click();
+  window.dispatchEvent(new Event(NEW_TICKET_EVENT));
+  await tick();
+  const el = root.querySelector("dialog inc-new-ticket") as HTMLElement & {
+    updateComplete: Promise<unknown>;
+  };
   await el.updateComplete;
   return el;
 };
@@ -86,7 +91,8 @@ afterEach(() => vi.unstubAllGlobals());
 describe("the new-ticket form", () => {
   it("files a ticket with the title, details, project and effort, and says so", async () => {
     serve([]);
-    const el = await form(await mount());
+    const root = await mount();
+    const el = await form(root);
     const r = el.shadowRoot as ShadowRoot;
     setValue(r.querySelector("input[name=title]") as HTMLInputElement, "  Dark mode for the chart ");
     setValue(
@@ -107,8 +113,11 @@ describe("the new-ticket form", () => {
       effort: "high",
       doneWhen: ["Chart follows the theme", "Legend is readable"],
     });
-    expect(r.querySelector("[role=status]")?.textContent).toContain("#9");
+    // the form clears, the dialog closes, and the board says what was filed
     expect((r.querySelector("input[name=title]") as HTMLInputElement).value).toBe("");
+    expect(root.querySelector("dialog")?.hasAttribute("open")).toBe(false);
+    expect(root.querySelector(".filed")?.textContent).toContain("#9");
+    expect(root.querySelector(".filed a")?.getAttribute("href")).toBe("#/ticket/9");
   });
 
   it("defaults to the last project used", async () => {
@@ -167,8 +176,8 @@ describe("agent-filed follow-ups", () => {
   });
 });
 
-describe("the protected-paths card", () => {
-  it("surfaces the ticket at the top with an OK action that uses the approval API", async () => {
+describe("the protected-paths ticket", () => {
+  it("is not a card above the board: the ticket's card says it needs you, and the OK is in Needs you", async () => {
     serve([
       view({
         id: "4",
@@ -178,60 +187,22 @@ describe("the protected-paths card", () => {
       }),
     ]);
     const root = await mount();
-    const card = root.querySelector(".ok-card");
-    expect(card?.textContent).toContain(".github/workflows/release.yml");
-    const ok = [...(card?.querySelectorAll("button") ?? [])].find((b) => b.textContent === "OK it");
-    ok?.click();
-    await tick();
-    expect(calls).toContainEqual({
-      method: "POST",
-      url: "/api/tickets/4/answer",
-      body: { answer: "approve" },
-    });
-  });
-
-  it("shows the commit and the change itself, with the rest behind Show all (T68)", async () => {
-    const long = `diff --git a/apps/x.ts b/apps/x.ts\n${"+let a = 1;\n".repeat(600)}+THE-END\n`;
-    serve([
-      view({
-        id: "5",
-        title: "Change the daemon",
-        status: "needs-you",
-        needsYou: {
-          kind: "protected-paths",
-          paths: ["apps/x.ts"],
-          sha: "abcdef1234567890abcdef1234567890abcdef12",
-          patchId: "p".repeat(64),
-          diff: long,
-          diffTruncated: true,
-        },
-      }),
-    ]);
-    const card = (await mount()).querySelector(".ok-card");
-    expect(card?.textContent).toContain("abcdef1");
-    expect(card?.textContent).toContain("+let a = 1;");
-    // A preview first; the end of the diff is behind "Show all".
-    const shown = [...(card?.querySelectorAll("pre.diff") ?? [])].map((p) => p.textContent ?? "");
-    expect(shown).toHaveLength(2);
-    expect(shown[0]).not.toContain("THE-END");
-    expect(shown[1]).toContain("THE-END");
-    expect(card?.querySelector("details summary")?.textContent).toBe("Show all");
-    expect(card?.textContent).toContain("the rest is cut");
-  });
-
-  it("shows nothing extra when no ticket waits on protected paths", async () => {
-    serve([view({})]);
-    expect((await mount()).querySelector(".ok-card")).toBeNull();
+    expect(root.querySelector(".ok-card")).toBeNull();
+    expect(root.firstElementChild?.classList.contains("cols")).toBe(true);
+    const card = [...root.querySelectorAll("a.card")].find((c) =>
+      c.textContent?.includes("Add a release workflow"),
+    );
+    expect(card?.textContent).toContain("Needs you");
   });
 });
 
-describe("the digest of recent reports", () => {
+describe("the reports on the board's cards", () => {
   const merged: TicketEvent[] = [
     { type: "pushed", at: minutesAgo(130), sha: "abc" },
     { type: "closed", at: minutesAgo(120), outcome: "merged" },
   ];
 
-  it("lists the last few finished tickets, newest first, each linking to its ticket", async () => {
+  it("puts a finished ticket's report on its card in the Done column, linking to the ticket, and keeps no separate list", async () => {
     serve(
       [
         view({ id: "1", title: "Older merge", column: "done", status: "done", outcome: "merged" }),
@@ -246,21 +217,26 @@ describe("the digest of recent reports", () => {
         "2": [{ type: "failed", at: minutesAgo(30), stage: "checks", reason: "checks red", tried: [] }],
       },
     );
-    const rows = [...(await mount()).querySelectorAll(".digest li")];
-    expect(rows.map((r) => r.querySelector(".title")?.textContent)).toEqual([
-      "Broke the build",
-      "Older merge",
-    ]);
-    expect(rows[0]?.querySelector(".chip")?.textContent).toBe("Failed");
-    expect(rows[0]?.querySelector(".note")?.textContent).toBe("failed");
-    expect(rows[1]?.querySelector(".chip")?.textContent).toBe("Merged");
-    expect(rows[1]?.querySelector(".note")?.textContent).toBe("pushed");
-    expect(rows[1]?.querySelector("a")?.getAttribute("href")).toBe("#/ticket/1");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    const root = await mount();
+    vi.useRealTimers();
+    expect(root.querySelector(".digest")).toBeNull();
+    expect(root.textContent).not.toContain("Recent reports");
+    const done = [...root.querySelectorAll("section")].find((s) => s.getAttribute("aria-label") === "Done");
+    const card = done?.querySelector("a.card") as HTMLAnchorElement;
+    expect(card.getAttribute("href")).toBe("#/ticket/1");
+    expect(card.querySelector(".report .chip")?.textContent).toBe("Merged");
+    expect(card.querySelector(".report .note")?.textContent).toBe("pushed");
+    expect(card.querySelector(".report")?.textContent).toMatch(/10 h ago$/);
+    // a card with no finished work has no report line
+    const going = [...root.querySelectorAll("a.card")].find((c) => c.textContent?.includes("Still going"));
+    expect(going?.querySelector(".report")).toBeNull();
   });
 
-  it("is absent when nothing has finished", async () => {
+  it("has no report line when nothing has finished", async () => {
     serve([view({})]);
-    expect((await mount()).querySelector(".digest")).toBeNull();
+    expect((await mount()).querySelector(".report")).toBeNull();
   });
 
   it("reads one ticket's events into outcome, push state and time", () => {

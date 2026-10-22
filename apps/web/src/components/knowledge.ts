@@ -3,6 +3,7 @@ import { ApiError, api, type KnowledgeView, type NamedChange, type Page } from "
 import { safeHref } from "../conversations/markdown.ts";
 import { brainHash } from "../routes.ts";
 import { setupApi } from "../setup-api.ts";
+import { friendlyWhen } from "../time.ts";
 import { LAYOUT_BREAKPOINTS, layoutStyles } from "./layout.ts";
 import { Loader } from "./loader.ts";
 import { avatar, base } from "./shared.ts";
@@ -213,16 +214,11 @@ export class IncKnowledge extends Loader<KnowledgeData> {
         </nav>
         <div class="col layout-split-work">
           ${this.actionNotice()}
-          ${(d.awaiting ?? []).map(
-            (p) => html`<section class="card waiting" aria-label="Policy change from ${p.author}">
-              <b>${p.author} proposes a change to the ${p.page} policy</b>
-              <blockquote>${p.text}</blockquote>
-              <div class="row">
-                <button type="button" class="btn" ?disabled=${this.pressing} @click=${() => this.press(() => api.decidePolicy(p.id, true))}>Approve</button>
-                <button type="button" class="btn ghost" ?disabled=${this.pressing} @click=${() => this.press(() => api.decidePolicy(p.id, false))}>Decline</button>
-              </div>
-            </section>`,
-          )}
+          ${
+            (d.awaiting ?? []).length
+              ? html`<p class="muted awaiting-note" role="status">${(d.awaiting ?? []).length} policy ${(d.awaiting ?? []).length === 1 ? "change waits" : "changes wait"} for your answer in <a href="#/work/needs-you">Needs you</a>.</p>`
+              : ""
+          }
           ${
             page
               ? html`<article class="card">
@@ -414,8 +410,7 @@ function title(p: Page): string {
 }
 
 function when(at: number): string {
-  const d = new Date(at);
-  return `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${d.toTimeString().slice(0, 5)}`;
+  return friendlyWhen(at);
 }
 
 customElements.define("inc-knowledge", IncKnowledge);

@@ -49,6 +49,10 @@ export interface TicketView {
   project: string;
   type: string;
   effort: string;
+  /** What was asked: the ticket's "done when" list, as the owner (or the agent that filed it) wrote it. */
+  doneWhen: string[];
+  /** Why it is worth doing, for a follow-up an agent filed. Absent for the owner's tickets. */
+  reason?: string;
   assignee: Person | null;
   column: Column;
   status: TicketState["status"] | "queued";
@@ -57,6 +61,8 @@ export interface TicketView {
   stages: { id: StageId; state: "done" | "current" | "todo" }[];
   /** One line of what's happening now, e.g. "Checks · 2 failing". */
   live: string;
+  /** When the ticket resumes, if `live` is "Waiting for tokens" (epoch ms): the web app words it in the owner's time zone. */
+  resumesAt?: number;
   needsYou: NeedsYou | null;
   /** The scheduler's reason this ticket isn't running, as it sends it (the web app words it for people). */
   waiting: string | null;
@@ -93,7 +99,7 @@ export interface DeskEntry {
   role: string;
   engine: string;
   state: EmployeeState;
-  ticket: { id: Id; title: string; project: string; live: string } | null;
+  ticket: { id: Id; title: string; project: string; live: string; resumesAt?: number } | null;
 }
 
 export interface PendingTicket {

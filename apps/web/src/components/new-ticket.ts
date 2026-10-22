@@ -9,6 +9,12 @@ import { draftMemo } from "../drafts.ts";
 import { ImagePicker, imagePickerStyles } from "./image-picker.ts";
 import { base, selectField } from "./shared.ts";
 
+/** The header's New ticket button sends this on `window`; the board opens the form as a dialog. */
+export const NEW_TICKET_EVENT = "i-inc-new-ticket";
+/** Sent by the form in a dialog: it was filed (`detail` is the ticket), or closed without filing. */
+export const TICKET_FILED = "ticket-filed";
+export const TICKET_FORM_CLOSE = "ticket-form-close";
+
 type Effort = NewTicketBody["effort"];
 type Kind = NewTicketBody["type"];
 
@@ -64,7 +70,10 @@ export class IncNewTicket extends LitElement {
     /** A project page presets the project and opens the form (T62). */
     presetProject: { type: String },
     startOpen: { type: Boolean },
+    /** In a dialog (the board): always the form, a Close button that asks the dialog to close, and no inline "Filed". */
+    modal: { type: Boolean, reflect: true },
   };
+  declare modal: boolean;
   declare presetProject: string;
   declare startOpen: boolean;
   declare open: boolean;
@@ -103,6 +112,7 @@ export class IncNewTicket extends LitElement {
     this.assigneeChosen = false;
     this.presetProject = "";
     this.startOpen = false;
+    this.modal = false;
   }
 
   override connectedCallback(): void {
@@ -149,6 +159,7 @@ export class IncNewTicket extends LitElement {
     css`
       :host { display: block; }
       .box { padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+      :host([modal]) .box { border: 0; box-shadow: none; background: transparent; padding: 0; }
       .head { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
       h2 { font-size: 18px; }
       form { display: flex; flex-direction: column; gap: 12px; }
@@ -213,6 +224,10 @@ export class IncNewTicket extends LitElement {
       memo.set("kind", this.kind);
       memo.set("effort", this.effort);
       this.filed = { id: ticket.id, title };
+      if (this.modal)
+        this.dispatchEvent(
+          new CustomEvent(TICKET_FILED, { bubbles: true, composed: true, detail: { id: ticket.id, title } }),
+        );
       this.title = "";
       this.details = "";
       draftMemo.set(DRAFT_TITLE, "");
@@ -227,7 +242,7 @@ export class IncNewTicket extends LitElement {
   }
 
   override render() {
-    if (!this.open) {
+    if (!this.open && !this.modal) {
       return html`<div class="card box">
         <div class="head">
           <h2>New ticket</h2>
@@ -243,6 +258,8 @@ export class IncNewTicket extends LitElement {
         <h2>New ticket</h2>
         <button type="button" class="btn ghost" aria-expanded="true" @click=${() => {
           this.open = false;
+          this.filed = null;
+          this.dispatchEvent(new CustomEvent(TICKET_FORM_CLOSE, { bubbles: true, composed: true }));
         }}>Close</button>
       </div>
       <form @submit=${this.submit} @paste=${this.picker.paste} novalidate>
@@ -310,7 +327,7 @@ export class IncNewTicket extends LitElement {
           hint: `Screenshots or photos, up to ${imageRules.count}, 10 MB each. You can paste a screenshot too.`,
         })}
         ${this.problem() ? html`<div class="note bad" role="alert">${this.problem()}</div>` : ""}
-        ${this.filed ? this.success() : ""}
+        ${this.filed && !this.modal ? this.success() : ""}
         <div class="actions">
           <button class="btn" type="submit" ?disabled=${this.busy}>${this.busy ? "Filing…" : "File ticket"}</button>
         </div>

@@ -3,7 +3,8 @@
 import type { Employee } from "@i-inc/core";
 import { css, html } from "lit";
 import { ApiError, api, imageRules, refreshNow, type TicketEvent, type TicketView } from "../api.ts";
-import { assignees, notStarted, optionLabel, waitingLine } from "../assign.ts";
+import { assignees, liveText, notStarted, optionLabel, waitingLine } from "../assign.ts";
+import { clock, friendlyWhen } from "../time.ts";
 import { ImagePicker, imagePickerStyles } from "./image-picker.ts";
 import { Loader } from "./loader.ts";
 import { protectedDiff } from "./protected-card.ts";
@@ -27,7 +28,10 @@ export class IncTicket extends Loader<Data> {
     note: { state: true },
     pick: { state: true },
     missing: { state: true },
+    askedOpen: { state: true },
   };
+  /** The owner's choice for "What was asked"; null follows its length (short stays open, long folds). */
+  declare askedOpen: boolean | null;
   declare ticketId: string;
   /** The daemon says there is no such ticket. */
   declare missing: boolean;
@@ -55,6 +59,7 @@ export class IncTicket extends Loader<Data> {
     this.note = "";
     this.pick = "";
     this.missing = false;
+    this.askedOpen = null;
   }
 
   protected fetch = async (): Promise<Data> => {
@@ -94,6 +99,7 @@ export class IncTicket extends Loader<Data> {
     // while the new ticket loads (or for good, when there is no such ticket).
     if (changed.has("ticketId") && changed.get("ticketId") !== undefined) {
       this.pick = "";
+      this.askedOpen = null;
       this.anchored = false;
       this.missing = false;
       this.resetLoad();
@@ -138,6 +144,17 @@ export class IncTicket extends Loader<Data> {
       .wrap { display: flex; flex-direction: column; gap: var(--layout-section-gap, 20px); align-items: stretch; }
       .main { flex-grow: 1; min-width: 0; padding: 26px 30px; display: flex; flex-direction: column; gap: 18px; }
       .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+      .asked { border: 1px solid var(--line); border-radius: 14px; background: var(--sunken); padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+      .asked h3 { margin: 0; font: 800 12px var(--body); text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink-2); }
+      .asked-toggle { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 8px; min-height: 44px; width: 100%; cursor: pointer;
+        font: 800 12px var(--body); text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink-2); }
+      .asked-toggle .muted { text-transform: none; letter-spacing: 0; font-weight: 600; font-size: 13px; }
+      .asked-toggle:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 2px; border-radius: 8px; }
+      .asked .chev { width: 7px; height: 7px; border-right: 2px solid var(--ink-2); border-bottom: 2px solid var(--ink-2); transform: rotate(-45deg); flex-shrink: 0; margin: 0 4px 0 2px; }
+      .asked-toggle[aria-expanded="true"] .chev { transform: rotate(45deg); }
+      .asked .why { margin: 0; font-size: 15px; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-wrap; }
+      .asked .done-when { margin: 6px 0 2px; font-size: 13px; font-weight: 700; color: var(--ink-2); }
+      .asked ul { margin: 0; padding-left: 22px; font-size: 15px; line-height: 1.5; display: flex; flex-direction: column; gap: 3px; overflow-wrap: anywhere; }
       .from { margin: -6px 0 0; font-size: 14px; color: var(--ink-2); display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: baseline; overflow-wrap: anywhere; }
       .from a { color: var(--reviewing-fg); font-weight: 600; text-underline-offset: 2px; display: inline-flex; align-items: center; min-height: 44px; }
       h2 { font-size: 24px; letter-spacing: -0.4px; overflow-wrap: anywhere; }
@@ -210,6 +227,7 @@ export class IncTicket extends Loader<Data> {
         </div>
         <h2>${t.title}</h2>
         ${this.fromConversation(t)}
+        ${this.asked(t)}
         ${this.images(t)}
         ${t.waiting ? html`<p class="waits"><i aria-hidden="true"></i><span>${waitingLine(t.waiting, t.waitingUntil)}</span></p>` : ""}
         ${this.actionError ? html`<p role="alert">${this.actionError}</p>` : ""}
@@ -235,6 +253,41 @@ export class IncTicket extends Loader<Data> {
           ? html`<span>(no longer there)</span>`
           : html`<a href="#/conversations/${encodeURIComponent(from.id)}">${from.title}</a>`
       }</p>`;
+  }
+
+  /**
+   * What was asked, at the top: why it is worth doing (for a follow-up an agent filed) and the "done when"
+   * list. It is above the gate or status, so the question is read before the answer is asked for. A long one
+   * folds to its header.
+   */
+  private asked(t: TicketView) {
+    const reason = t.reason?.trim() ?? "";
+    const items = t.doneWhen ?? [];
+    if (!reason && !items.length) return "";
+    const long = reason.length > 280 || items.length > 4 || items.join(" ").length > 400;
+    const open = this.askedOpen ?? !long;
+    const count = items.length ? `${items.length} done-when ${items.length === 1 ? "item" : "items"}` : "";
+    return html`<section class="asked" aria-labelledby="asked-h">
+      <h3 id="asked-h">
+        ${
+          long
+            ? html`<button type="button" class="asked-toggle" aria-expanded=${open ? "true" : "false"} aria-controls="asked-body"
+                @click=${() => {
+                  this.askedOpen = !open;
+                }}><span class="chev" aria-hidden="true"></span>What was asked${count ? html`<span class="muted"> · ${count}</span>` : ""}</button>`
+            : html`What was asked`
+        }
+      </h3>
+      <div id="asked-body" ?hidden=${!open}>
+        ${reason ? html`<p class="why">${reason}</p>` : ""}
+        ${
+          items.length
+            ? html`<p class="done-when">Done when</p>
+              <ul aria-label="Done when">${items.map((d) => html`<li>${d}</li>`)}</ul>`
+            : ""
+        }
+      </div>
+    </section>`;
   }
 
   /** The owner's images, each opening at full size. */
@@ -340,7 +393,7 @@ export class IncTicket extends Loader<Data> {
         </div>`;
     }
     if (t.status === "failed") {
-      return html`<div class="ask"><b>An honest failure${t.failure ? ` in ${t.failure.stage}` : ""}</b><p>${t.failure?.reason ?? "Failed"}</p>
+      return html`<div class="ask"><b>Failed${t.failure ? ` in ${t.failure.stage}` : ""}</b><p>${t.failure?.reason ?? "Failed"}</p>
         ${t.failure?.tried?.length ? html`<p class="muted">Tried: ${t.failure.tried.join(", ")}</p>` : ""}
         <div class="actions">
           <button type="button" class="btn" ?disabled=${this.busy} @click=${() => this.act(() => api.retry(id))}>Retry ticket</button>
@@ -348,7 +401,7 @@ export class IncTicket extends Loader<Data> {
     }
     if (t.status === "done") return html`<p><span class="chip done">${t.outcome}</span></p>`;
     if (t.waiting) return "";
-    return html`<p class="muted">${t.status === "queued" ? "Queued" : t.live}</p>`;
+    return html`<p class="muted">${liveText(t)}</p>`;
   }
 
   /** The team for this ticket's project, the usual employee first. */
@@ -394,11 +447,7 @@ export class IncTicket extends Loader<Data> {
   }
 
   private line(e: TicketEvent) {
-    const time = new Date(e.at).toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-      hourCycle: "h23",
-    });
+    const time = clock(e.at);
     const item = (text: unknown, dot = "") =>
       html`<li><time>${time}</time><i class=${dot}></i><span>${text}</span></li>`;
     switch (e.type) {
@@ -407,7 +456,7 @@ export class IncTicket extends Loader<Data> {
       case "checks-ran":
         return e.green ? item("Checks green") : item(`Checks: ${e.failures.length} failing`, "bad");
       case "out-of-tokens":
-        return item("Out of tokens: a coffee break", "you");
+        return item(`Waiting for tokens until ${friendlyWhen(e.resetsAt)}`, "you");
       case "engine-switched":
         return item(`Switched engine: ${e.reason}`, "bad");
       case "review-verdict":

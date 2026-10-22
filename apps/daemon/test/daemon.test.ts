@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeWorkspace } from "@i-inc/core/testing";
 import { describe, expect, it } from "vitest";
-import { liveLine } from "../src/views.ts";
+import { liveInfo, liveLine } from "../src/views.ts";
 import { refunds, testApp } from "./setup.ts";
 
 describe("the event log in SQLite", () => {
@@ -543,6 +543,36 @@ describe("chat", () => {
     });
     const events = (await app.call("GET", "/api/tickets/1")).body.events;
     expect(events.at(-1)).toMatchObject({ type: "owner-message", text: "Keep it behind a flag" });
+  });
+
+  it("says a ticket waits for tokens without a time of day, and sends when it resumes for the app to word in the owner's zone", async () => {
+    const app = await testApp();
+    const resetsAt = Date.UTC(2026, 9, 22, 21, 14);
+    const info = liveInfo(
+      [{ type: "out-of-tokens", at: 1000, stage: "build", engineId: "opus", resetsAt }],
+      app.deps.registry,
+    );
+    expect(info).toEqual({ live: "Waiting for tokens", resumesAt: resetsAt });
+    expect(info.live).not.toMatch(/UTC|coffee|\d:\d\d/i);
+    // a later event takes the line over, and no resume time stays behind
+    expect(
+      liveInfo(
+        [
+          { type: "out-of-tokens", at: 1000, stage: "build", engineId: "opus", resetsAt },
+          { type: "stage-started", at: 2000, stage: "build" },
+        ],
+        app.deps.registry,
+      ),
+    ).toEqual({ live: "Build" });
+    expect(liveLine([], app.deps.registry)).toBe("Queued");
+  });
+
+  it("puts what was asked on the ticket's view: the done-when list, and why for a follow-up", async () => {
+    const app = await testApp();
+    await app.call("POST", "/api/tickets", refunds);
+    const view = (await app.call("GET", "/api/tickets/1")).body.ticket;
+    expect(view.doneWhen).toEqual(refunds.doneWhen);
+    expect(view.reason).toBeUndefined();
   });
 
   it("formats helper-unavailable event in liveLine with stage, helper name and reason", async () => {

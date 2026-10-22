@@ -345,10 +345,26 @@ describe("Company → Projects", () => {
   it("says the GitHub App isn't set up", async () => {
     serve({ projects: [], status: orgStatus({ configured: false, installation: null }), repos: [] });
     const { root } = await mount("inc-setup-projects");
-    expect(text(root.querySelector(".conn"))).toContain("GitHub App isn't set up");
-    expect(link(root, "Install the bot on GitHub")?.getAttribute("href")).toBe(
+    // One compact notice and one button, above the list: not the long paragraph and several links
+    const notice = root.querySelector(".notice");
+    expect(text(notice)).toBe("Connect GitHub to add repos Connect GitHub");
+    expect(link(root, "Connect GitHub")?.getAttribute("href")).toBe(
       "https://github.com/apps/i-inc-bot/installations/new",
     );
+    expect(root.querySelectorAll("a[href^='https://github.com']").length).toBe(1);
+    expect(root.querySelector(".conn")).toBeNull();
+    expect(root.textContent).not.toContain("docs/github-app.md");
+    expect(root.textContent).not.toContain("Repos you can add");
+    expect(button(root, "Refresh repos")).toBeUndefined();
+    const list = root.querySelector('[aria-label="Your projects"]') as Element;
+    expect((notice as Element).compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("shows no notice once the GitHub App is set up", async () => {
+    serve({ projects: [], status: orgStatus(), repos: [] });
+    const { root } = await mount("inc-setup-projects");
+    expect(root.querySelector(".notice")).toBeNull();
+    expect(root.querySelector(".conn")).not.toBeNull();
   });
 
   it("explains a GitHub failure in words and offers another try, never a raw status", async () => {

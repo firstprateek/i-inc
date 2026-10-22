@@ -117,6 +117,22 @@ than repeating the route heading. An action button belongs in the frame's action
 component boundary allows it. Hiring remains an independently owned component; the outer Page frame
 constrains its available width without changing hiring-specific markup or behavior.
 
+## The board and ticket (T64)
+
+- **Board:** the kanban is the first thing under the Work header, and its four columns share the whole content width.
+  **New ticket** is a header action (the `actions` slot, like Hire someone on Team) that opens the form as a dialog: a
+  centred modal on a laptop, a bottom sheet on a phone; Escape or Close closes it, and filing closes it and says what was
+  filed. There is no Proposed band on the board (proposals are Needs you cards) and no Recent reports list: a finished
+  ticket's report (outcome, whether it was pushed, how long ago) is on its card in the Done column.
+- **Ticket:** under the title, **What was asked** (why, for a follow-up an agent filed, and the done-when list) comes
+  before the gate or status; it folds behind a 44px toggle when it is long.
+- **Times and statuses:** every time is in the owner's own zone and friendly (`time.ts`: "2:14 AM", "Tomorrow 2:14 AM"),
+  never "UTC". Statuses are plain: "Idle", "Off hours", "Waiting for tokens until 2:14 AM" (the daemon sends the status and
+  `resumesAt`; the app words the time).
+- **Releases:** a project with nothing unreleased says "Up to date" and has no Cut release button. "General", the name the
+  daemon files tickets under when they belong to no project, shows as "No project" and only while it has something to release.
+- **Projects:** without the GitHub App there is one compact notice ("Connect GitHub to add repos") with one button above the list.
+
 ## Choosing a layout
 
 Centre forms, lists, and readers to keep line lengths and scan paths calm. Keep the board and office

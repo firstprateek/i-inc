@@ -1,5 +1,6 @@
 import { css, html } from "lit";
 import { api, type DeskView, type NamedChange, refreshNow } from "../api.ts";
+import { dayLabel } from "../time.ts";
 import { describe } from "./knowledge.ts";
 import { LAYOUT_BREAKPOINTS, layoutStyles } from "./layout.ts";
 import "./deploys.ts";
@@ -20,6 +21,13 @@ const waitNames: Record<string, string> = {
   "owner-answer": "Your answers",
   "owner-decision": "Your decisions",
 };
+
+/**
+ * "General" is not a repo: the daemon files tickets that belong to no project under that name (the daily brain
+ * tidy-up, a new hire's orientation when they have no project). In Releases it is called "No project", and it
+ * is left out while it has nothing unreleased.
+ */
+export const NO_PROJECT = "General";
 
 const hours = (h: number) => (h < 1 ? `${Math.round(h * 60)} min` : `${h.toFixed(1)} h`);
 const money = (n: number) => `$${n.toFixed(n < 10 ? 2 : 0)}`;
@@ -139,6 +147,9 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
     if (!this.data)
       return html`<p class="muted">Loading ${this.show === "releases" ? "releases" : "usage"}…</p>`;
     const d = this.data;
+    const releaseRows = (d.pendingReleases ?? []).filter(
+      (p) => !(p.project === NO_PROJECT && p.pendingTickets.length === 0),
+    );
     const b = d.bottleneck;
     const max = Math.max(...d.spend.lines.map((l) => l.amount), 0.01);
     return html`<div class="grid layout-page-band">
@@ -206,25 +217,33 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
             : ""
         }
         ${
-          (d.pendingReleases ?? []).length
-            ? (d.pendingReleases ?? []).map((p) => {
+          releaseRows.length
+            ? releaseRows.map((p) => {
                 const count = p.pendingTickets.length;
                 const key = p.project || p.id;
                 const busy = this.cutting.has(key);
                 return html`<div class="release-project">
                 <div class="release-project-header">
-                  ${projectBadge(p.project || p.id)}
-                  <span class="muted font-small">${count} unreleased ${count === 1 ? "ticket" : "tickets"}</span>
+                  ${
+                    p.project === NO_PROJECT
+                      ? html`<span class="tag">No project</span>`
+                      : projectBadge(p.project || p.id)
+                  }
+                  <span class="muted font-small">${count ? `${count} unreleased ${count === 1 ? "ticket" : "tickets"}` : "Up to date"}</span>
                   <span class="spacer"></span>
-                  <button
-                    class="btn ${count ? "" : "ghost"} release-btn"
-                    type="button"
-                    aria-busy=${busy ? "true" : "false"}
-                    ?disabled=${count === 0 || busy}
-                    @click=${() => this.cutRelease(key)}
-                  >
-                    ${busy ? "Cutting…" : "Cut release"}
-                  </button>
+                  ${
+                    count
+                      ? html`<button
+                          class="btn release-btn"
+                          type="button"
+                          aria-busy=${busy ? "true" : "false"}
+                          ?disabled=${busy}
+                          @click=${() => this.cutRelease(key)}
+                        >
+                          ${busy ? "Cutting…" : "Cut release"}
+                        </button>`
+                      : ""
+                  }
                 </div>
                 ${
                   count > 0
@@ -236,7 +255,7 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
                         </div>`,
                       )}
                     </div>`
-                    : html`<span class="note">Up to date.</span>`
+                    : ""
                 }
               </div>`;
               })
@@ -255,7 +274,7 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
                     <span class="tag font-mono">${r.tag}</span>
                     ${projectBadge(r.project)}
                     <span class="spacer"></span>
-                    <small class="muted">${new Date(r.at).toISOString().slice(0, 10)}</small>
+                    <small class="muted">${dayLabel(r.at)}</small>
                   </div>
                   <div class="recent-release-meta">
                     <small class="muted">${r.ticketIds.length} ${r.ticketIds.length === 1 ? "ticket" : "tickets"} (${r.ticketIds.map((id: string) => `#${id}`).join(", ")})</small>

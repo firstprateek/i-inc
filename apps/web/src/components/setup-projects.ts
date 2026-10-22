@@ -79,6 +79,9 @@ export class IncSetupProjects extends Loader<ListData> {
     base,
     projectStyles,
     css`
+      .notice { display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; padding: 10px 14px; }
+      .notice .line { margin: 0; font-size: 15px; font-weight: 600; }
+      .notice .btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; box-sizing: border-box; }
       .conn { gap: 8px; }
       .conn .line { font-size: 15px; line-height: 1.45; }
       .project { gap: 10px; }
@@ -174,6 +177,15 @@ export class IncSetupProjects extends Loader<ListData> {
           ${this.refreshing ? "Checking GitHub…" : "Refresh repos"}</button>
       </div>
       ${this.refreshNote ? html`<p class=${this.refreshNote.ok ? "hint" : "error-line"} role=${this.refreshNote.ok ? "status" : "alert"}>${this.refreshNote.text}</p>` : ""}
+    </section>`;
+  }
+
+  /** The GitHub App isn't set up: one compact notice and one button, instead of the long explanation and links. */
+  private notConnected(d: ListData) {
+    const install = d.status?.links.install ?? GITHUB_INSTALL_URL;
+    return html`<section class="card notice" aria-label="GitHub access">
+      <p class="line">Connect GitHub to add repos</p>
+      <a class="btn" href=${install} target="_blank" rel="noopener noreferrer" aria-label="Connect GitHub (opens GitHub)">Connect GitHub</a>
     </section>`;
   }
 
@@ -290,6 +302,7 @@ export class IncSetupProjects extends Loader<ListData> {
     const d = this.data;
     if (!d) return html`<p class="muted" role="status">Loading projects…</p>`;
     const visible = d.repos ? new Set(d.repos.map((r) => r.fullName.toLowerCase())) : null;
+    const connected = !(d.status && !d.status.configured);
     return html`<div class="stack">
       ${
         d.draft
@@ -299,7 +312,7 @@ export class IncSetupProjects extends Loader<ListData> {
             </div>`
           : ""
       }
-      ${this.connection(d)}
+      ${connected ? this.connection(d) : this.notConnected(d)}
       <section class="block" aria-label="Your projects">
         <h2>Your projects</h2>
         ${
@@ -313,7 +326,7 @@ export class IncSetupProjects extends Loader<ListData> {
               )
         }
       </section>
-      ${this.repos(d)}
+      ${connected ? this.repos(d) : ""}
     </div>`;
   }
 }

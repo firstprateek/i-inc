@@ -22,6 +22,7 @@ const mockTicket: TicketView = {
   project: "i-inc",
   type: "fix",
   effort: "small",
+  doneWhen: [],
   assignee: { id: "ada", name: "Ada", tint: 0 },
   column: "in-progress",
   status: "running",

@@ -16,6 +16,7 @@ const view = (over: Partial<TicketView>): TicketView => ({
   project: "Duet",
   type: "fix",
   effort: "medium",
+  doneWhen: [],
   assignee: { id: "ada", name: "Ada", tint: 0 },
   column: "in-progress",
   status: "running",

@@ -4,6 +4,7 @@
 import { css, html, LitElement, nothing } from "lit";
 import { api, refresh, type TicketSession, type TranscriptItem } from "../api.ts";
 import { brainHref, brainScopeLabel } from "../conversations/model.ts";
+import { clock } from "../time.ts";
 import { base } from "./shared.ts";
 
 /** Output past this many lines or characters is cut, with a "Show all" button. */
@@ -36,10 +37,6 @@ const failed = (status?: string) => !!status && /fail|error|denied|cancel/i.test
 
 export function sessionHasError(s: TicketSession): boolean {
   return s.items.some((i) => i.kind === "tool" && failed(i.status));
-}
-
-function clock(ms: number): string {
-  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 }
 
 function span(s: TicketSession): string {

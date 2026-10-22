@@ -154,10 +154,10 @@ export const stateLabel: Record<string, [string, string]> = {
   working: ["Working", "working"],
   reviewing: ["Reviewing", "reviewing"],
   "needs-you": ["Needs you", "needs"],
-  "out-of-tokens": ["Coffee break", ""],
+  "out-of-tokens": ["Waiting for tokens", ""],
   done: ["Done", "done"],
   failed: ["Failed", "alarm"],
-  off: ["Off", ""],
+  off: ["Off hours", ""],
   idle: ["Idle", ""],
 };
 
