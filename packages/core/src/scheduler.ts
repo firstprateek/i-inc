@@ -77,7 +77,9 @@ export function schedule(snap: Snapshot, company: Pick<Company, "engine" | "engi
   const picked = { ...snap.pickedUpToday };
 
   const available = (e: Employee, duty: Duty): string | null => {
-    if (taken.has(e.id) || (duty === "build" && holding.has(e.id))) return `${e.name} is busy`;
+    if (taken.has(e.id) || ((duty === "build" || duty === "librarian") && holding.has(e.id))) {
+      return `${e.name} is busy`;
+    }
     if (e.workingHours && !withinHours(e.workingHours, snap.localHour)) {
       return `${e.name} is off until ${e.workingHours.from}:00`;
     }
@@ -96,14 +98,14 @@ export function schedule(snap: Snapshot, company: Pick<Company, "engine" | "engi
     return null;
   };
 
-  /** When an account block or usage cap on this employee's build engine ends, if one is in force. */
-  const resetAt = (e: Employee): number | undefined => {
-    const engine = company.engine(e.engines.perDuty?.build ?? e.engines.default);
+  /** When an account block or usage cap on this employee's engine for the duty ends, if one is in force. */
+  const resetAt = (e: Employee, duty: Duty = "build"): number | undefined => {
+    const engine = company.engine(e.engines.perDuty?.[duty] ?? e.engines.default);
     const times = [
       snap.capReachedUntil[e.id],
       snap.capReachedUntil[engine.accountId],
       snap.accountsBlockedUntil[engine.accountId],
-      company.engineBlock?.(e.id, engine.id, "build")?.until,
+      company.engineBlock?.(e.id, engine.id, duty)?.until,
     ].filter((x): x is number => x !== undefined && x > snap.now);
     return times.length ? Math.max(...times) : undefined;
   };
@@ -149,9 +151,11 @@ export function schedule(snap: Snapshot, company: Pick<Company, "engine" | "engi
         waiting.push({ ticketId: t.id, reason: `assignee ${t.assignee} doesn't work here` });
         continue;
       }
-      const why = available(e, "build");
+      // The daily brain tidy-up is the librarian's work: it runs on the engine chosen for that duty.
+      const duty: Duty = t.type === "tidy" ? "librarian" : "build";
+      const why = available(e, duty);
       if (why) {
-        const until = isReset(why) ? resetAt(e) : undefined;
+        const until = isReset(why) ? resetAt(e, duty) : undefined;
         if (until) resets[t.id] = until;
         waiting.push({ ticketId: t.id, reason: why });
         continue;

@@ -48,6 +48,7 @@ import {
   snapshotId,
   verifyScript,
 } from "./brain-snapshot.ts";
+import { renderTidyReport, type TidyReport, tidyReport } from "./brain-tidy.ts";
 import type { Db } from "./db.ts";
 import type { RunScript } from "./harness.ts";
 import type { KnowledgeStore, Repo } from "./knowledge.ts";
@@ -673,6 +674,27 @@ export class BrainFeed {
 
   private markHints(ids: number[]): void {
     for (const id of ids) this.o.db.run("UPDATE brain_hints SET taken = 1 WHERE id = ?", id);
+  }
+
+  /** When page use began to be counted: no page is called unused before it has been watched for 60 days. */
+  private trackedSince(): number {
+    const key = "brain-tracking-since";
+    const [row] = this.o.db.all<{ body: string }>("SELECT body FROM storage_state WHERE key = ?", key);
+    if (row) return Number(row.body) || 0;
+    const at = this.o.now();
+    this.o.db.run("INSERT OR IGNORE INTO storage_state (key, body) VALUES (?, ?)", key, String(at));
+    return at;
+  }
+
+  /** What the tidy-up could do now for these scopes' pages; the scopes this employee may write from a code-free copy. */
+  tidyData(employeeId: string): TidyReport {
+    this.index.refresh();
+    return tidyReport(this.index, this.readable(employeeId, false), this.o.now(), this.trackedSince());
+  }
+
+  /** The tidy-up report as the end of a brief for the librarian's copy. */
+  tidyText(employeeId: string): string {
+    return renderTidyReport(this.tidyData(employeeId), this.copyId(employeeId, false), this.o.home);
   }
 
   // ---- Copies that don't belong any more -------------------------------------------------------------
