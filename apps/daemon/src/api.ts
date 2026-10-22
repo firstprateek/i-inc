@@ -2780,17 +2780,16 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
   // owner account exists. Wrong guesses are limited per client; only a flood of them from everywhere
   // changes the code, so one peer on the tailnet can't keep invalidating it.
   let setupCode: string | undefined;
-  let setupFailures = 0;
   /** Per client: this many wrong codes in this long, and it waits. */
   const setupGuesses = new GuessLimit(5, 10 * 60_000, () => d.clock.now());
-  /** The code is replaced after this many wrong guesses in all. */
-  const SETUP_ROTATE_AFTER = 100;
+  // Across every client: 20 wrong codes in all, and signup is refused for an hour. The code changes at most
+  // once an hour, when that ceiling is hit, so a flood can neither guess it nor keep invalidating it.
+  const setupCeiling = new GuessLimit(20, 3600_000, () => d.clock.now(), 3600_000);
   function newSetupCode() {
     const alphabet = "abcdefghjkmnpqrstuvwxyz23456789"; // no 0/o/1/l/i
     const bytes = randomBytes(12);
     const chars = Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
     setupCode = `${chars.slice(0, 4)}-${chars.slice(4, 8)}-${chars.slice(8, 12)}`;
-    setupFailures = 0;
     if (opts.setupCodePath) {
       try {
         mkdirSync(dirname(opts.setupCodePath), { recursive: true });
@@ -2882,9 +2881,9 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     return undefined;
   }
 
-  async function handle(req: Request): Promise<Response> {
+  async function handle(req: Request, conn?: { peer?: string | undefined }): Promise<Response> {
     const how = opts.token ? credential(req, opts.token, sessions) : undefined;
-    const res = await dispatch(req, how);
+    const res = await dispatch(req, how, conn?.peer);
     if (res.status === 401 || res.headers.has("set-cookie")) return res;
     const cookie = refreshedCookie(req, how);
     if (!cookie) return res;
@@ -2898,7 +2897,11 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     }
   }
 
-  async function dispatch(req: Request, how: ReturnType<typeof credential>): Promise<Response> {
+  async function dispatch(
+    req: Request,
+    how: ReturnType<typeof credential>,
+    peer?: string,
+  ): Promise<Response> {
     const path = new URL(req.url).pathname;
     const authStatus = req.method === "GET" && path === "/api/auth";
     // The deployer polls this without a login. It says nothing but the release's sha, whether work is
@@ -2936,16 +2939,15 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         setupCode?: unknown;
       };
       // Nobody can claim the company without the code the daemon printed (or its token).
-      const who = clientKey(req);
+      const who = clientKey(req, peer);
       if (opts.token && !(how === "bearer" || how === "session")) {
-        const wait = setupGuesses.retryAfter(who);
+        const wait = Math.max(setupGuesses.retryAfter(who), setupCeiling.retryAfter("all"));
         if (wait) return tooMany(wait);
       }
       if (opts.token && !(how === "bearer" || how === "session" || setupProof(body.setupCode))) {
         if (typeof body.setupCode === "string" && body.setupCode) {
           setupGuesses.fail(who);
-          setupFailures += 1;
-          if (setupFailures >= SETUP_ROTATE_AFTER) newSetupCode();
+          if (setupCeiling.fail("all")) newSetupCode();
           await new Promise((r) => setTimeout(r, 1000)); // slows guessing
           return json({ error: "that's not the setup code", code: "setup-code" }, 403);
         }
@@ -2977,7 +2979,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         password?: unknown;
         token?: unknown;
       };
-      const who = clientKey(req);
+      const who = clientKey(req, peer);
       const wait = loginGuesses.retryAfter(who);
       if (wait) return tooMany(wait);
       if (body.username !== undefined || body.password !== undefined) {

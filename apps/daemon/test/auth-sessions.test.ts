@@ -24,7 +24,14 @@ async function rig(opts: { owner?: boolean } = {}) {
       heartbeatMs: 40,
     });
   let handle = mk();
-  const send = async (method: string, path: string, body?: unknown, headers: Record<string, string> = {}) => {
+  const send = async (
+    method: string,
+    path: string,
+    body?: unknown,
+    allHeaders: Record<string, string> = {},
+  ) => {
+    // "x-test-peer" is not a header: it is the socket's peer address, which the daemon learns from Bun, not the client.
+    const { "x-test-peer": peer, ...headers } = allHeaders;
     const res = await handle(
       new Request(`http://${HOST}${path}`, {
         method,
@@ -35,6 +42,7 @@ async function rig(opts: { owner?: boolean } = {}) {
         },
         ...(method === "GET" ? {} : { body: JSON.stringify(body ?? {}) }),
       }),
+      { peer },
     );
     return { status: res.status, body: (await res.json()) as Record<string, unknown>, headers: res.headers };
   };
@@ -154,15 +162,67 @@ describe("first-run signup needs the setup code", () => {
     expect((await signupWith(t, "again", "100.64.0.9")).status).toBe(403);
   }, 15_000);
 
-  it("changes the code only after a flood of wrong guesses from everywhere", async () => {
+  it("caps wrong guesses across all clients: 20, then an hour's refusal, and one new code", async () => {
     const t = await rig();
     const first = t.code();
-    await Promise.all(Array.from({ length: 99 }, (_, i) => signupWith(t, `bad${i}`, `100.64.1.${i}`)));
+    await Promise.all(Array.from({ length: 19 }, (_, i) => signupWith(t, `bad${i}`, `100.64.1.${i}`)));
     expect(t.code()).toBe(first);
-    await signupWith(t, "bad-last", "100.64.2.1");
-    expect(t.code()).not.toBe(first);
-    expect((await signupWith(t, first, "100.64.3.1")).status).toBe(403);
+    await signupWith(t, "bad-last", "100.64.2.1"); // the 20th
+    const second = t.code();
+    expect(second).not.toBe(first);
+    // everyone is refused for the hour, the owner's new code included
+    const refused = await signupWith(t, second, "100.64.3.1");
+    expect(refused.status).toBe(429);
+    expect(Number(refused.headers.get("retry-after"))).toBeGreaterThan(3000);
+    t.app.clock.advance(30);
+    expect((await signupWith(t, second, "100.64.3.2")).status).toBe(429);
+    t.app.clock.advance(31);
+    // an hour on: the old code is dead, the new one works, and the code was not rotated again meanwhile
+    expect(t.code()).toBe(second);
+    expect((await signupWith(t, first, "100.64.3.3")).status).toBe(403);
+    expect((await signupWith(t, second, "100.64.3.4")).status).toBe(201);
   }, 30_000);
+
+  it("cannot be dodged by spoofing X-Forwarded-For: only the hop the proxy appended counts", async () => {
+    const t = await rig();
+    const code = t.code();
+    // the same real client (last hop) behind a different made-up prefix each time
+    const spoofed = (i: number) => signupWith(t, `bad${i}`, `10.0.${i}.1, 10.0.${i}.2, 100.64.0.9`);
+    const first = await Promise.all(Array.from({ length: 5 }, (_, i) => spoofed(i)));
+    expect(first.every((r) => r.status === 403)).toBe(true);
+    expect((await spoofed(5)).status).toBe(429);
+    expect((await signupWith(t, code, "evil-1, evil-2, 100.64.0.9")).status).toBe(429);
+    // a different real client is not caught by it
+    expect((await signupWith(t, code, "evil-1, 100.64.0.77")).status).toBe(201);
+  }, 20_000);
+
+  it("keys a connection that did not come from the proxy by its socket address, ignoring its headers", async () => {
+    const t = await rig();
+    const direct = (i: number) =>
+      t.send(
+        "POST",
+        "/api/signup",
+        { username: "x", password: "long-enough-password", setupCode: `bad${i}` },
+        { "x-forwarded-for": `1.2.3.${i}`, "x-test-peer": "192.168.1.50" },
+      );
+    const first = await Promise.all(Array.from({ length: 5 }, (_, i) => direct(i)));
+    expect(first.every((r) => r.status === 403)).toBe(true);
+    expect((await direct(9)).status).toBe(429);
+  }, 20_000);
+
+  it("tells tailnet users apart by login when Tailscale names one", async () => {
+    const t = await rig();
+    const as = (login: string, i: number) =>
+      t.send(
+        "POST",
+        "/api/signup",
+        { username: "x", password: "long-enough-password", setupCode: `bad${i}` },
+        { "x-forwarded-for": "100.64.0.9", "tailscale-user-login": login },
+      );
+    await Promise.all(Array.from({ length: 5 }, (_, i) => as("a@example.com", i)));
+    expect((await as("a@example.com", 9)).status).toBe(429);
+    expect((await as("b@example.com", 9)).status).toBe(403);
+  }, 20_000);
 
   it("writes the code file with mode 0600 every time, replacing an old readable one", async () => {
     const t = await rig();
@@ -248,6 +308,21 @@ describe("a login is a session, not the daemon token", () => {
     expect((await t.send("POST", "/api/login", right, { "x-forwarded-for": "100.64.0.5" })).status).toBe(429);
     expect((await t.send("POST", "/api/login", right, { "x-forwarded-for": "100.64.0.6" })).status).toBe(200);
   }, 20_000);
+
+  it("is not dodged by spoofed X-Forwarded-For prefixes on password logins", async () => {
+    const t = await rig({ owner: true });
+    const wrong = (i: number) =>
+      t.send(
+        "POST",
+        "/api/login",
+        { username: "owner", password: "wrong-password" },
+        { "x-forwarded-for": `9.9.${i}.1, 8.8.${i}.1, 100.64.0.5` },
+      );
+    const first = await Promise.all(Array.from({ length: 10 }, (_, i) => wrong(i)));
+    expect(first.every((r) => r.status === 401)).toBe(true);
+    expect((await wrong(11)).status).toBe(429);
+    expect((await wrong(12)).status).toBe(429);
+  }, 30_000);
 
   it("is revoked by sign out: a copy of the cookie stops working, the other sessions and the bearer token don't", async () => {
     const t = await rig({ owner: true });

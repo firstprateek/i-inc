@@ -238,7 +238,7 @@ const server = Bun.serve<WsData>({
       return new Response("websocket upgrade failed", { status: 400 });
     }
     return new URL(req.url).pathname.startsWith("/api/") || !existsSync(web)
-      ? app.handle(req)
+      ? app.handle(req, { peer: server.requestIP(req)?.address })
       : serveWeb(req);
   },
   websocket: app.ahp.transport.websocket,

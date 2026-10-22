@@ -133,7 +133,7 @@ owner and the daemon has a token; older daemons omit it);
 `POST /api/signup` `{ "username", "password", "setupCode" }` → `201 { "ok": true, "username" }` (sets a session cookie; `409`
 once initialized; **`403 { "error", "code": "setup-code" }`** without a right `setupCode`). The setup code is made when the daemon
 starts with a token and no owner: logged, and written to `~/.i-inc/setup-code` (mode 0600). It is one-time (deleted when the
-owner exists), is not logged (the log names the file), wrong guesses are limited per client (5 in 10 minutes, then `429` with `Retry-After`; the code changes only after 100 wrong guesses in all), and the daemon token is accepted in its place. Demo mode (no token) needs none;
+owner exists), is not logged (the log names the file), wrong guesses are limited per client (5 in 10 minutes, then `429` with `Retry-After`; 20 wrong guesses in all, from anyone, refuse signup for an hour and change the code once; a client is the LAST `X-Forwarded-For` hop, only when the peer is loopback (the proxy), else the socket address, plus `Tailscale-User-Login` when present), and the daemon token is accepted in its place. Demo mode (no token) needs none;
 `POST /api/login` `{ "username", "password" }` or `{ "token" }` → `{ "ok": true }` (sets a session cookie);
 `POST /api/logout` → `{ "ok": true }` (**revokes** the session server-side and clears the `i_inc` cookie).
 **Upgrading:** a browser still holding the old cookie (the daemon token itself) keeps working, and on its next request (a
