@@ -714,6 +714,19 @@ export class IncApp extends LitElement {
   }
 
   /** The thread's composer has focus on a phone: the keyboard is up, so the tab bar gives its row back. */
+  /** The stage of the session on screen, as its view said (for the page's short name). */
+  private sessionStage: { ticket: string; session: string; stage: string } | undefined;
+  private stageOfRoute(): string | undefined {
+    const r = this.route;
+    const s = this.sessionStage;
+    return r.view === "ticket" && r.session && s?.ticket === r.id && s.session === r.session
+      ? s.stage
+      : undefined;
+  }
+  private onSessionStage = (e: Event) => {
+    this.sessionStage = (e as CustomEvent<{ ticket: string; session: string; stage: string }>).detail;
+  };
+
   private onComposerFocus = (e: Event) => {
     const open = (e as CustomEvent<{ focused: boolean }>).detail.focused;
     this.toggleAttribute("composing", open && !!this.phoneQuery?.matches);
@@ -768,9 +781,9 @@ export class IncApp extends LitElement {
           }
         </div>
       </header>
-      <main tabindex="-1" @conv-focus=${this.onComposerFocus} @load-state=${this.onLoadState}>
+      <main tabindex="-1" @session-stage=${this.onSessionStage} @conv-focus=${this.onComposerFocus} @load-state=${this.onLoadState}>
         <inc-layout .kind=${layoutForRoute(this.route)} ?dense=${this.route.view === "conversations" || (this.route.view === "ticket" && !!this.route.session)} ?hide-heading=${this.threadOnPhone()}>
-          <h1 id="view-heading" tabindex="-1" slot="heading">${routeName(this.route).long}</h1>
+          <h1 id="view-heading" tabindex="-1" slot="heading">${routeName(this.route, this.stageOfRoute()).long}</h1>
           ${this.renderHeadExtras()}
           ${this.renderTabs()}
           ${this.notice()}

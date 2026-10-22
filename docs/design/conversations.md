@@ -148,7 +148,7 @@ Open the session (T69, contract C22 "Ticket sessions"):
   conversation thread, read-only ("Watching #12 · build", a live mark while it runs, no composer), with the context
   panel (plan, files changed, usage). Back returns to the ticket; on a phone it is one column and the panel a sheet. A
   live stage updates as it works; a finished one replays from the store, also after a restart.
-- **Limits.** The live view of a stage that ended before the transcript compaction window (30 days by default) is let
+- **Limits.** The live view of a stage that ended before `stageViewDays` (30 by default) is let
   go of with the hourly maintenance; the transcript stays. Everything else is the host's existing eviction, caps and
   redaction.
 

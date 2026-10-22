@@ -372,6 +372,9 @@ describe("the route layout language", () => {
     expect(layoutForRoute(parse("#/needs-you"))).toBe("page");
     expect(layoutForRoute(parse("#/board"))).toBe("wide");
     expect(routeName(parse("#/chat/ada")).long).toBe("Conversations");
+    const session = parse("#/ticket/12/session/7");
+    expect(routeName(session).short).toBe("#12");
+    expect(routeName(session, "build").short).toBe("#12 · build");
   });
 
   it("keeps the selected frame around offline, loading, and error content", async () => {

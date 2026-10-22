@@ -27,10 +27,19 @@ export const isTicketSession = (uri: string): boolean => uri.startsWith("ahp-ses
 
 /** The brief is shown cut to this many characters: it is the prompt, not the work. */
 export const BRIEF_CHARS = 4000;
-/** A stage's chat takes at most this many text parts and tool calls; the transcript has the rest. */
+/**
+ * A stage's chat takes at most this many text parts and tool calls. The last TAIL_PARTS of them are kept for the end
+ * (a note of how many steps were left out, and the final answer), so a long stage still shows how it came out.
+ */
 export const MAX_STAGE_PARTS = 600;
+export const TAIL_PARTS = 8;
+/**
+ * A tool's result or output, and a call's input, is kept to this many characters in the view: tighter than the host's
+ * general 64 KB for a string, because a stage runs hundreds of tools and nobody reads their output here.
+ */
+export const MAX_TOOL_TEXT = 8 * 1024;
 /** One side of a diff is kept to this many characters in the view. */
-const MAX_DIFF_CHARS = 200_000;
+const MAX_DIFF_CHARS = 32_000;
 /** An image or other binary a tool returned is not kept past this. */
 const MAX_BINARY_BYTES = 512 * 1024;
 /** A reply the agent never streamed (it gave only its final answer) is shown up to this long. */
@@ -70,6 +79,28 @@ const oneLine = (s: string, max: number): string => {
   const t = redactText(s).replace(/\s+/g, " ").trim();
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 };
+
+const TOOL_TEXT_KEYS = new Set(["text", "toolInput", "partialInput"]);
+
+/**
+ * A tool call's action with its texts cut to MAX_TOOL_TEXT. Only the fields a tool fills (`toolInput`, the `text` of
+ * result content); everything structural is left alone. The host redacts and caps again.
+ */
+export function capToolTexts<T>(action: T): T {
+  const walk = (v: unknown, key: string | undefined, inTool: boolean): unknown => {
+    if (typeof v === "string")
+      return inTool && key && TOOL_TEXT_KEYS.has(key) && v.length > MAX_TOOL_TEXT
+        ? `${v.slice(0, MAX_TOOL_TEXT)}\n[…truncated: the stage view keeps the first ${MAX_TOOL_TEXT / 1024} KB]`
+        : v;
+    if (Array.isArray(v)) return v.map((x) => walk(x, key, inTool));
+    if (v && typeof v === "object")
+      return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x, k, inTool)]));
+    return v;
+  };
+  const type = (action as { type?: string }).type;
+  const tool = typeof type === "string" && type.startsWith("chat/toolCall");
+  return tool ? (walk(action, undefined, true) as T) : action;
+}
 
 /** "#12 Fix the refunds · build". */
 export function stageTitle(ticketId: Id, ticketTitle: string, stage: string): string {
@@ -172,6 +203,10 @@ export class StageFeed {
   private broken = false;
   private parts = 0;
   private capped = false;
+  /** Steps (text parts and tool calls) the cap kept out of the view. */
+  private hidden = 0;
+  /** The newest text part the agent opened was one the cap kept out. */
+  private lastTextHidden = false;
   private spoke = false;
   private readonly started = new Set<string>();
   private readonly texts = new Map<string, string>();
@@ -260,7 +295,8 @@ export class StageFeed {
     const action = a as unknown as Json;
     const type = action.type;
     const opens = type === ActionType.ChatResponsePart || type === ActionType.ChatToolCallStart;
-    if (opens && this.parts >= MAX_STAGE_PARTS) {
+    // The last slots are for the end: the note of what was left out, and the answer.
+    if (opens && this.parts >= MAX_STAGE_PARTS - TAIL_PARTS) {
       if (!this.capped) {
         this.capped = true;
         this.host.emit(this.chat, {
@@ -269,18 +305,24 @@ export class StageFeed {
           part: {
             kind: ResponsePartKind.Markdown,
             id: `${this.turnId}:cap`,
-            content: `…this view stops adding new steps after ${MAX_STAGE_PARTS}. The ticket's transcript has the rest.`,
+            content: `…this view stops adding new steps after ${MAX_STAGE_PARTS - TAIL_PARTS}. The ticket's transcript lists the rest.`,
           },
         } as never);
       }
+      this.hidden++;
+      if (type === ActionType.ChatResponsePart) this.lastTextHidden = true;
       return false;
     }
     if (type === ActionType.ChatToolCallStart) this.started.add(String(action.toolCallId));
     if (this.capped && typeof action.toolCallId === "string" && !this.started.has(action.toolCallId))
       return false;
     if (opens) this.parts++;
-    if (type === ActionType.ChatResponsePart || type === ActionType.ChatDelta) this.spoke = true;
-    this.host.emit(this.chat, a as never);
+    if (type === ActionType.ChatResponsePart) {
+      this.spoke = true;
+      this.lastTextHidden = false;
+    }
+    if (type === ActionType.ChatDelta) this.spoke = true;
+    this.host.emit(this.chat, capToolTexts(a) as never);
     return true;
   }
 
@@ -294,6 +336,7 @@ export class StageFeed {
         // Past the cap only what is already open is followed: no new calls are remembered.
         const kind = u.sessionUpdate;
         const id = typeof u.toolCallId === "string" ? u.toolCallId : "";
+        if (kind === "tool_call") this.hidden++;
         if (kind === "tool_call" || kind === "plan" || (kind === "tool_call_update" && !this.started.has(id)))
           return;
       }
@@ -359,6 +402,18 @@ export class StageFeed {
     });
   }
 
+  /** A text part at the end of the turn, in the slots the cap keeps for it. */
+  private emitTail(id: string, content: string): void {
+    this.host.emit(
+      this.chat as string,
+      {
+        type: ActionType.ChatResponsePart,
+        turnId: this.turnId,
+        part: { kind: ResponsePartKind.Markdown, id: `${this.turnId}:${id}`, content },
+      } as never,
+    );
+  }
+
   /** The session is over. Safe to call twice. */
   end(how: StageEnd): void {
     if (this.ended) return;
@@ -377,18 +432,17 @@ export class StageFeed {
       if (!this.chat && ((how.kind === "stuck" && how.startup === true) || how.kind === "stopping")) return;
       this.open();
       const chat = this.chat as string;
-      // An agent that gave only its answer (no streamed text): the answer is the reply.
-      if (!this.spoke && how.kind === "done" && how.output.trim()) {
-        this.emit({
-          type: ActionType.ChatResponsePart,
-          turnId: this.turnId,
-          part: {
-            kind: ResponsePartKind.Markdown,
-            id: `${this.turnId}:answer`,
-            content: capText(how.output.trim(), MAX_ANSWER_CHARS),
-          },
-        } as never);
+      // What the cap kept out is counted, so the view never looks complete when it is not, and the answer is shown
+      // even when the cap hid the text part it was said in.
+      const out = how.kind === "done" ? how.output.trim() : "";
+      const showAnswer = out !== "" && (!this.spoke || (this.capped && this.lastTextHidden));
+      if (this.hidden > 0) {
+        this.emitTail(
+          "hidden",
+          `${this.hidden} step${this.hidden === 1 ? "" : "s"} not shown here. The ticket's transcript lists them.`,
+        );
       }
+      if (showAnswer) this.emitTail("answer", capText(out, MAX_ANSWER_CHARS));
       this.mapper?.finish();
       const usage = this.promptUsage;
       if (usage || this.contextUsage) {

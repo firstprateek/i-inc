@@ -8,6 +8,7 @@
 //
 // What AHP 1.0 has no field for travels in `_meta` (contract C22): tool-call locations, the plan.
 import type { ContentRef, Message, SessionConfigState } from "@microsoft/agent-host-protocol";
+import { redactTokens } from "./sanitize.ts";
 import {
   ActionType,
   type ChatAction,
@@ -34,6 +35,26 @@ interface ToolState {
   optionKinds?: Map<string, string>;
 }
 
+/**
+ * A tool call's ACP `locations` as the view keeps them (`_meta["iinc.locations"]`): at most 20, each path with the
+ * credentials in it redacted (a path can carry a token or a URL's userinfo) and cut to 500 characters, as the
+ * paths of a diff are. Only `path` and `line` are kept.
+ */
+export function cleanLocations(locations: unknown): Json[] {
+  if (!Array.isArray(locations)) return [];
+  const out: Json[] = [];
+  for (const l of locations) {
+    if (out.length >= 20) break;
+    if (!l || typeof l !== "object" || typeof (l as Json).path !== "string") continue;
+    const { path, line } = l as Json;
+    out.push({
+      path: redactTokens(String(path)).slice(0, 500),
+      ...(typeof line === "number" && Number.isFinite(line) ? { line } : {}),
+    });
+  }
+  return out;
+}
+
 const lines = (s: string | undefined | null) => (s ? s.split("\n").length - (s.endsWith("\n") ? 1 : 0) : 0);
 const MAX_DIFF_SIDE = 1024 * 1024;
 const cutSide = (s: string) => (s.length > MAX_DIFF_SIDE ? `${s.slice(0, MAX_DIFF_SIDE)}\n[…truncated]` : s);
@@ -55,7 +76,8 @@ export function mapToolContent(content: Json[] | undefined, put: PutContent): Js
         text: `${String(l.name ?? "link")}: ${String(l.uri ?? "")}`,
       });
     } else if (c.type === "diff") {
-      const uri = String(c.path).startsWith("/") ? `file://${String(c.path)}` : `file:///${String(c.path)}`;
+      const path = redactTokens(String(c.path)).slice(0, 500);
+      const uri = path.startsWith("/") ? `file://${path}` : `file:///${path}`;
       const before = c.oldText !== undefined && c.oldText !== null ? cutSide(String(c.oldText)) : undefined;
       const after = cutSide(String(c.newText ?? ""));
       out.push({
@@ -174,14 +196,14 @@ export class TurnMapper {
     const id = String(u.toolCallId);
     const title = String(u.title ?? id);
     const kind = String(u.kind ?? "other");
-    const locations = u.locations as unknown[] | undefined;
+    const locations = cleanLocations(u.locations);
     this.tools.set(id, { title, kind, phase: "streaming", rawInput: u.rawInput });
     this.emit({
       type: ActionType.ChatToolCallStart,
       toolCallId: id,
       toolName: kind,
       displayName: title,
-      ...(locations?.length ? { _meta: { "iinc.locations": locations } } : {}),
+      ...(locations.length ? { _meta: { "iinc.locations": locations } } : {}),
     });
     // `pending` means the agent may still ask for permission. Anything else is already past that:
     // in_progress is running (its content so far shows), and completed or failed is over, with its
@@ -208,8 +230,8 @@ export class TurnMapper {
         content: mapToolContent(u.content as Json[] | undefined, this.env.put),
         ...(ok ? {} : { error: { message: `${t.title} failed` } }),
       },
-      ...(u.locations && (u.locations as unknown[]).length
-        ? { _meta: { "iinc.locations": u.locations } }
+      ...(cleanLocations(u.locations).length
+        ? { _meta: { "iinc.locations": cleanLocations(u.locations) } }
         : {}),
     });
   }

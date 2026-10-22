@@ -360,8 +360,11 @@ const safeDecode = (s: string) => {
 
 const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
 
-/** The page heading: the area, or the ticket. `short` is for very narrow screens. */
-export function routeName(r: Route): { long: string; short: string } {
+/**
+ * The page heading: the area, or the ticket. `short` is for very narrow screens. A ticket's session is named
+ * "#<ticket> · <stage>" once the view has said which stage it is (`stage`), and "#<ticket>" until then.
+ */
+export function routeName(r: Route, stage?: string): { long: string; short: string } {
   const same = (t: string) => ({ long: t, short: t });
   switch (r.view) {
     case "conversations":
@@ -373,7 +376,7 @@ export function routeName(r: Route): { long: string; short: string } {
     case "ticket":
       return r.id
         ? r.session
-          ? { long: `Session of ticket #${r.id}`, short: `Session #${r.id}` }
+          ? { long: `Session of ticket #${r.id}`, short: stage ? `#${r.id} · ${stage}` : `#${r.id}` }
           : { long: `Ticket #${r.id}`, short: `#${r.id}` }
         : same("Ticket");
     default:

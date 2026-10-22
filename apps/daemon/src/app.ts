@@ -294,8 +294,7 @@ export async function createApp(o: AppOptions) {
     // A copy a ticket is working in is not cleaned away, archived or not.
     archivedConversations: () => conversations.forCleanup().filter((c) => !deps.shipping?.holds(c.id)),
     copiesGone: (ids) => conversations.copiesGone(ids),
-    sweepTicketSessions: (endedBefore) =>
-      ticketChannels.sweep(endedBefore === undefined ? {} : { endedBefore }),
+    sweepTicketSessions: (endedBefore) => ticketChannels.sweep({ endedBefore }),
     footprint: () => ({
       ...daemon.footprint(),
       ticketFeeds: ticketChannels.footprint().feeds,

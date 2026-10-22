@@ -14,6 +14,11 @@ export interface StorageSettings {
   cacheCapGb: number;
   /** Whether cleanup prunes Docker's stopped containers, dangling images and old build cache in a machine. */
   dockerPrune: boolean;
+  /**
+   * Days after a ticket stage's session ends before its live view (the read-only chat behind "Open the session", T69) is
+   * let go of. The transcript stays. Always applies: it does not follow `transcriptCompactDays`, which may be off.
+   */
+  stageViewDays: number;
   /** Days after a ticket closes before its session transcripts are compacted. 0 turns it off. */
   transcriptCompactDays: number;
   /** Transcript items kept per session when a closed ticket's transcripts are compacted. */
@@ -40,6 +45,7 @@ export const defaultStorageSettings: StorageSettings = {
   unpushedKeepDays: 30,
   cacheCapGb: 2,
   dockerPrune: true,
+  stageViewDays: 30,
   transcriptCompactDays: 30,
   transcriptKeepItems: 50,
   backupMaxAgeDays: 30,
@@ -56,6 +62,7 @@ const bounds: Record<Exclude<keyof StorageSettings, "dockerPrune">, Bounds> = {
   sandboxCleanupDays: { min: 0, max: 365 },
   unpushedKeepDays: { min: 1, max: 365 },
   cacheCapGb: { min: 1, max: 500 },
+  stageViewDays: { min: 1, max: 3650 },
   transcriptCompactDays: { min: 0, max: 3650 },
   transcriptKeepItems: { min: 10, max: 500 },
   backupMaxAgeDays: { min: 0, max: 3650 },

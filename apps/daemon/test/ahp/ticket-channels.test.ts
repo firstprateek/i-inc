@@ -10,8 +10,10 @@ import { describe, expect, it } from "vitest";
 import { AcpAgent, type AgentProcess } from "../../src/acp.ts";
 import {
   MAX_STAGE_PARTS,
+  MAX_TOOL_TEXT,
   shownBrief,
   stageChatUri,
+  TAIL_PARTS,
   ticketSessionUri,
 } from "../../src/ahp/ticket-channels.ts";
 import {
@@ -529,11 +531,65 @@ describe("bounds", () => {
     feed.update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "late words" } });
     feed.end({ kind: "done", output: "ok" });
     const turn = app.ahp.host.chatState(stageChatUri(77))?.turns[0] as Any;
-    expect(turn.responseParts.length).toBeLessThanOrEqual(MAX_STAGE_PARTS + 2);
-    expect(JSON.stringify(turn.responseParts)).toContain("stops adding new steps");
+    // the steps stop at the cap, and the last slots show how it came out: a count of what was left out, and the answer
+    expect(turn.responseParts.length).toBeLessThanOrEqual(MAX_STAGE_PARTS + 3);
+    const all = JSON.stringify(turn.responseParts);
+    expect(all).toContain("stops adding new steps");
+    expect(all).toContain(
+      `${MAX_STAGE_PARTS + 200 + 1 - (MAX_STAGE_PARTS - TAIL_PARTS)} steps not shown here`,
+    );
+    expect(turn.responseParts.at(-1)).toMatchObject({ kind: "markdown", content: "ok" });
     expect(turn.state).toBe("complete");
     expect(turn.message.text.length).toBeLessThan(4300);
     expect(app.ahp.tickets.footprint()).toEqual({ feeds: 0 });
+  });
+
+  it("keeps a tool's result and input to 8 KB, with a marker, and leaves short ones alone", async () => {
+    const app = await testApp();
+    const feed = app.ahp.tickets.begin({
+      ticketId: "9",
+      ticketTitle: "Big output",
+      stage: "build",
+      sessionId: 61,
+      employeeId: "ada",
+      engineId: "opus",
+      model: "m",
+      brief: "b",
+      startedAt: app.clock.now(),
+    });
+    const big = `${"line of output\n".repeat(5000)}`;
+    feed.update({
+      sessionUpdate: "tool_call",
+      toolCallId: "t1",
+      title: "Run tests",
+      kind: "execute",
+      status: "in_progress",
+      rawInput: { command: big },
+    });
+    feed.update({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "t1",
+      status: "completed",
+      content: [{ type: "content", content: { type: "text", text: big } }],
+    });
+    feed.update({
+      sessionUpdate: "tool_call",
+      toolCallId: "t2",
+      title: "Run short",
+      kind: "execute",
+      status: "completed",
+      content: [{ type: "content", content: { type: "text", text: "all green" } }],
+    });
+    feed.end({ kind: "done", output: "ok" });
+    const parts = (turnOf(app, stageChatUri(61)) as Any).responseParts.filter(
+      (p: Any) => p.kind === "toolCall",
+    );
+    const t1 = parts[0].toolCall;
+    const out = t1.content[0].text as string;
+    expect(out.length).toBeLessThan(MAX_TOOL_TEXT + 200);
+    expect(out).toContain("truncated");
+    expect((t1.toolInput as string).length).toBeLessThan(MAX_TOOL_TEXT + 400);
+    expect(parts[1].toolCall.content[0].text).toBe("all green");
   });
 
   it("a view that breaks never fails the stage, and is not left running", async () => {
@@ -614,6 +670,31 @@ describe("retention", () => {
     expect(after).toHaveLength(transcripts);
     expect(after[0].channel).toBeNull();
     expect(after[0].items.length).toBeGreaterThan(0);
+  });
+
+  it("has its own window, stageViewDays, which applies even when the transcripts' compaction is off", async () => {
+    const { app, id } = await ranTicket();
+    const host = app.ahp.host;
+    await app.call("POST", `/api/tickets/${id}/decide`, { decision: "approve" });
+    await app.daemon.idle();
+    const chats = host.chatsOf(ticketSessionUri(id));
+    expect(chats.length).toBeGreaterThan(0);
+    const set = await app.call("PUT", "/api/storage/settings", {
+      transcriptCompactDays: 0,
+      stageViewDays: 60,
+    });
+    expect(set.status).toBe(200);
+    expect(set.body.settings.stageViewDays).toBe(60);
+    app.clock.advance(45 * 24 * 60);
+    expect((await app.deps.storage?.maintainHost({ manual: true }))?.ticketViews).toEqual({
+      chats: 0,
+      sessions: 0,
+    });
+    app.clock.advance(20 * 24 * 60);
+    const late = await app.deps.storage?.maintainHost({ manual: true });
+    expect(late?.ticketViews?.chats).toBe(chats.length);
+    for (const chat of chats) expect(host.hasChannel(chat)).toBe(false);
+    expect((await app.call("PUT", "/api/storage/settings", { stageViewDays: 0 })).status).toBe(400);
   });
 
   it("lets go of the view of a stage whose transcript is gone, and never one that is running", async () => {

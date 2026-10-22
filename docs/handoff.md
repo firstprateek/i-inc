@@ -434,9 +434,9 @@ header) lists the plan, the files changed and the usage; Back returns to the tic
   notifications for `ahp-session:/ticket:` sessions. `listSessions` over AHP does list them (title `#12 Refunds · build`,
   `_meta.readOnly`).
 - **Retention:** the hourly host maintenance lets go of the chat of a stage session that ended before the transcript
-  compaction setting (`transcriptCompactDays`, 30 by default; 0 keeps them) or whose transcript row is gone, and the
+  `stageViewDays` setting (30 by default, always on, separate from `transcriptCompactDays`) or whose transcript row is gone, and the
   ticket's session once it has no chat; the transcript stays and the ticket page then says "Only the transcript is kept".
-  A stage's chat is capped at 600 steps.
+  A stage's chat is capped at 592 steps (the end, with a count of what was left out and the answer, always shows) and a tool's output at 8 KB.
 - **Trying it:** `node tools/e2e/ticket-session/run.mjs` (`pnpm e2e ticket-session`) runs a ticket's plan stage in three
   scripted steps, opens its session, watches the parts arrive, reloads, restarts the daemon and replays, then does it on a
   phone. The server is `apps/daemon/scripts/e2e-session-server.ts`.

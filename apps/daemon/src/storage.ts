@@ -98,10 +98,10 @@ export interface StorageDeps {
     machine?: string | null;
   }[];
   /**
-   * Lets go of the live views (read-only AHP chats, T69) of stage sessions that ended before this time, and of those
-   * whose transcript is gone. The transcripts stay. Absent in tests that have no host.
+   * Lets go of the live views (read-only AHP chats, T69) of stage sessions that ended before this time (`stageViewDays`),
+   * and of those whose transcript is gone. The transcripts stay. Absent in tests that have no host.
    */
-  sweepTicketSessions?: (endedBefore: number | undefined) => Promise<{ chats: number; sessions: number }>;
+  sweepTicketSessions?: (endedBefore: number) => Promise<{ chats: number; sessions: number }>;
   /** Told which archived conversations' copies a real pass found gone (removed now, or not there): their tombstones can go in time. */
   copiesGone?: (ids: Id[]) => void;
   /** Ask a machine to hand freed blocks back to the host. */
@@ -743,9 +743,8 @@ export class Storage {
       });
       await step("ticket sessions", async () => {
         if (dryRun || !this.d.sweepTicketSessions) return;
-        // The same window as the transcripts' compaction: what is compacted has no use for a live view either.
-        const days = settings.transcriptCompactDays;
-        out.ticketViews = await this.d.sweepTicketSessions(days > 0 ? now - days * DAY : undefined);
+        // Its own window, always on: the transcript's compaction may be off, and the views would then never go.
+        out.ticketViews = await this.d.sweepTicketSessions(now - settings.stageViewDays * DAY);
       });
       await step("vacuum", () => {
         const r = vacuumIfNeeded(this.d.db, {

@@ -161,6 +161,15 @@ export class IncTicketSession extends LitElement {
       this.ticket = ticket;
       this.employees = Array.isArray(employees) ? employees : [];
       const session = (sessions ?? []).find((s) => s.id === want);
+      // The shell names the page by the stage ("#12 · build").
+      if (session)
+        this.dispatchEvent(
+          new CustomEvent("session-stage", {
+            detail: { ticket: this.ticketId, session: this.sessionId, stage: session.stage },
+            bubbles: true,
+            composed: true,
+          }),
+        );
       this.found = !session
         ? { kind: "no-session" }
         : session.channel

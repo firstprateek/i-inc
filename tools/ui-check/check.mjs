@@ -198,6 +198,9 @@ async function endOfPage() {
   const all = deep(document.body);
   const out = [];
   const ownText = (el) => [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
+  // Not rendered at all (display: none up the tree, or skipped by content-visibility: auto): nothing to measure.
+  const renders = (el) =>
+    typeof el.checkVisibility !== "function" || el.checkVisibility({ contentVisibilityAuto: true });
   const ancestors = (el) => {
     const result = [];
     for (let p = el; p; p = parentOf(p)) result.push(p);
@@ -308,7 +311,13 @@ async function endOfPage() {
 
       const texts = all.filter((el) => {
         const s = getComputedStyle(el);
-        return ownText(el) && s.visibility !== "hidden" && s.display !== "none" && Number(s.opacity) > 0.05;
+        return (
+          ownText(el) &&
+          s.visibility !== "hidden" &&
+          s.display !== "none" &&
+          Number(s.opacity) > 0.05 &&
+          renders(el)
+        );
       });
       const seen = new Set();
       for (const bar of bars) {
@@ -350,11 +359,15 @@ function auditInPage() {
     const text = (el.innerText || el.getAttribute("aria-label") || el.tagName).trim().replace(/\s+/g, " ");
     return `<${el.tagName.toLowerCase()}> "${text.slice(0, 40)}"`;
   };
+  // Not rendered at all (display: none up the tree, or skipped by content-visibility: auto): nothing to measure.
+  const renders = (el) =>
+    typeof el.checkVisibility !== "function" || el.checkVisibility({ contentVisibilityAuto: true });
   const visible = (el) => {
     const s = getComputedStyle(el);
     const r = el.getBoundingClientRect();
     // Skip hidden elements and screen-reader-only ones (1 px boxes).
     return (
+      renders(el) &&
       s.visibility !== "hidden" &&
       s.display !== "none" &&
       Number(s.opacity) > 0.05 &&
