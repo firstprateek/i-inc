@@ -41,6 +41,11 @@ async function settle(el: Element) {
   await (el as unknown as { updateComplete: Promise<unknown> }).updateComplete;
 }
 
+/** Waits (up to 2 s) for a condition that depends on a chain of promises and renders: robust on a busy machine. */
+async function until(f: () => unknown) {
+  for (let i = 0; i < 200 && !f(); i++) await new Promise((r) => setTimeout(r, 10));
+}
+
 async function mount<T extends HTMLElement>(tag: string, props: Record<string, unknown> = {}) {
   const el = document.createElement(tag) as T;
   Object.assign(el, props);
@@ -91,6 +96,7 @@ describe("a daemon that goes away and comes back", () => {
     up = false;
     const { refreshNow } = await import("../src/api.ts");
     refreshNow();
+    await until(() => app.shadowRoot?.querySelector("inc-offline"));
     await settle(app);
 
     expect(app.shadowRoot?.querySelector("inc-offline")).toBeTruthy();
@@ -106,7 +112,7 @@ describe("a daemon that goes away and comes back", () => {
     up = true;
     const { send } = await import("../src/api.ts");
     await send("/api/auth");
-    await settle(app);
+    await until(() => !app.shadowRoot?.querySelector("inc-offline") && boardCalls > before);
     expect(app.shadowRoot?.querySelector("inc-offline")).toBeNull();
     expect(boardCalls).toBeGreaterThan(before);
     expect(title.value).toBe("Half-written ticket");
@@ -142,6 +148,7 @@ describe("a refresh that fails with an answer from the daemon", () => {
     expect(board.shadowRoot?.textContent).toContain("Refunds are counted as spending");
     fail = true;
     await board.reload();
+    await until(() => app.shadowRoot?.querySelector('[slot="notice"]'));
     await settle(app);
     // still the board, still the ticket
     expect(app.shadowRoot?.querySelector("inc-board")).toBe(board);
@@ -152,7 +159,7 @@ describe("a refresh that fails with an answer from the daemon", () => {
     // retry works, and the banner goes
     fail = false;
     notice?.querySelector("button")?.click();
-    await settle(app);
+    await until(() => !app.shadowRoot?.querySelector('[slot="notice"]'));
     expect(app.shadowRoot?.querySelector('[slot="notice"]')).toBeNull();
   });
 });
