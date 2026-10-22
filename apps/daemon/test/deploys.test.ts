@@ -33,7 +33,7 @@ let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "i-inc-deploys-"));
 });
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+afterEach(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 
 const entry = (over: Record<string, unknown> = {}) => ({
   at: 1_700_000_000_000,

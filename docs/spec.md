@@ -123,7 +123,7 @@ Each case is a short story followed by the rule it sets for the design.
    - the working hours: nights only.
 
    i.inc builds Juno's machine, and Juno's first ticket is orientation: reading the handbook (a
-   read-only copy is in the machine, and the brief carries its map) and each project's `CLAUDE.md`,
+   copy is in the machine, and the brief carries its map) and each project's `CLAUDE.md`,
    then writing project pages in its brain.
    → *The team is yours to build. Nothing is preset.*
 8. **Monday planning.** At your desk you see every project, a live status line on each running card,
@@ -251,7 +251,7 @@ Once you've made the choices above, i.inc:
 
 The employee's first ticket is orientation. It reads each project's `CLAUDE.md` and then writes
 project pages in its brain. Like every session, it gets the handbook's map and the pages that match
-its task in its brief, and a read-only copy of the handbook in its machine (§5, "The brain").
+its task in its brief, and a copy of the handbook in its machine (§5, "The brain").
 
 ### Engines and switching: identity is memory
 
@@ -437,7 +437,7 @@ nothing.
 **How the brain reaches agents.** Markdown in git on the host is the truth; sandboxes cannot reach the
 host, so the brain is copied in, never served:
 
-- Before every session (a ticket stage, a conversation turn) the daemon puts a read-only copy of the
+- Before every session (a ticket stage, a conversation turn) the daemon puts a copy of the
   scopes that employee may read in its machine, at `/home/employee/brain/<employee>/`: the company
   handbook, its team's section and its own brain, each folder with an `INDEX.md` map, and a `brain
   search "<words>"` command. Never another employee's brain, another team's section or a PA's home
@@ -455,8 +455,11 @@ host, so the brain is copied in, never served:
 - The owner-facing chat (§10) is a small local model that answers from the employee's role, current
   ticket and recent notes; it does not read the brain. Conversations, which run a real agent, do.
 
-Writing back (the agent's edits to its copy, collected after a session) is the next step (T58). The
-design is in [design/brain.md](design/brain.md).
+Writing back: the agent's edits to its copy are collected after a session (a ticket ends, a conversation
+goes idle or ends, or you say "remember this"), checked, and committed with no approval. Every change
+shows in Company → Brain → Changes with a one-click revert, and a daily "Tend the brain" ticket for an
+employee with the librarian duty merges duplicates and prunes. The design is in
+[design/brain.md](design/brain.md).
 
 Your review feedback is the richest material for learning. A Reviewer learns what you care about
 from your Request changes notes, so over time it catches what you would have caught. You can read,

@@ -117,6 +117,92 @@ export function migrate(db: Db): void {
       at INTEGER NOT NULL,
       PRIMARY KEY (machine, employee_id)
     );
+    -- Harvests of the agents' edits to their brain copies (T58, contract C19): one row a collection.
+    CREATE TABLE IF NOT EXISTS brain_harvests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      at INTEGER NOT NULL,
+      employee_id TEXT NOT NULL,
+      copy TEXT NOT NULL,
+      ref_kind TEXT NOT NULL,
+      ref_id TEXT NOT NULL,
+      trigger TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'running',
+      committed INTEGER NOT NULL DEFAULT 0,
+      rejected INTEGER NOT NULL DEFAULT 0,
+      detail TEXT
+    );
+    -- The Brain changes feed: every change that was committed or refused, newest first by id.
+    CREATE TABLE IF NOT EXISTS brain_changes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      harvest TEXT NOT NULL,
+      at INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('committed', 'rejected')),
+      employee_id TEXT NOT NULL,
+      ref_kind TEXT NOT NULL,
+      ref_id TEXT NOT NULL,
+      scope TEXT,
+      slug TEXT,
+      path TEXT NOT NULL,
+      op TEXT NOT NULL,
+      code TEXT,
+      reason TEXT,
+      repo TEXT,
+      commit_sha TEXT,
+      sha TEXT,
+      diff TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '[]',
+      untrusted INTEGER NOT NULL DEFAULT 0,
+      policy INTEGER NOT NULL DEFAULT 0,
+      conflict INTEGER NOT NULL DEFAULT 0,
+      reverted_at INTEGER,
+      revert_sha TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_brain_changes_employee ON brain_changes(employee_id, id);
+    CREATE INDEX IF NOT EXISTS idx_brain_changes_seen ON brain_changes(employee_id, path, sha, code);
+    -- What to tell an agent about its earlier edits at its next brief or turn (a duplicate and the page to merge into).
+    CREATE TABLE IF NOT EXISTS brain_hints (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      employee_id TEXT NOT NULL,
+      copy TEXT NOT NULL,
+      at INTEGER NOT NULL,
+      text TEXT NOT NULL,
+      taken INTEGER NOT NULL DEFAULT 0
+    );
+    -- Copies to harvest when their machine is next up: the ticket or conversation ended while it was stopped.
+    CREATE TABLE IF NOT EXISTS brain_harvest_due (
+      employee_id TEXT NOT NULL,
+      copy TEXT NOT NULL,
+      ref_kind TEXT NOT NULL,
+      ref_id TEXT NOT NULL,
+      trigger TEXT NOT NULL,
+      tidy INTEGER NOT NULL DEFAULT 0,
+      at INTEGER NOT NULL,
+      PRIMARY KEY (employee_id, copy)
+    );
+    -- The text each copy's baseline holds for a page the daemon took from the agent (the baseline moved to it),
+    -- so the base of a later merge is the daemon's own record, never the copy's ref. Cleared when a copy delivers the path.
+    CREATE TABLE IF NOT EXISTS brain_bases (
+      employee_id TEXT NOT NULL,
+      copy TEXT NOT NULL,
+      path TEXT NOT NULL,
+      text TEXT NOT NULL,
+      PRIMARY KEY (employee_id, copy, path)
+    );
+    -- Conversation turns in flight or done: who may have been working in a shared sandbox, and when.
+    CREATE TABLE IF NOT EXISTS brain_activity (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      employee_id TEXT NOT NULL,
+      started_at INTEGER NOT NULL,
+      ended_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_brain_activity_employee ON brain_activity(employee_id, started_at);
+    -- Tickets and conversations whose session handled external content (a GitHub issue, a web fetch).
+    CREATE TABLE IF NOT EXISTS brain_external (
+      ref_kind TEXT NOT NULL,
+      ref_id TEXT NOT NULL,
+      why TEXT NOT NULL,
+      PRIMARY KEY (ref_kind, ref_id)
+    );
     CREATE TABLE IF NOT EXISTS storage_state (
       key TEXT PRIMARY KEY,
       body TEXT NOT NULL

@@ -167,7 +167,7 @@ describe("the index's look at HEAD", () => {
       execFileSync("git", ["-C", join(root, "brains/zed"), "init", "-q", "-b", "main"]);
       expect(store.headSha({ kind: "brain", id: "zed" })).toBeNull();
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 

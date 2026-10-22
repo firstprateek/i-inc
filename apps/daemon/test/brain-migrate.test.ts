@@ -11,7 +11,8 @@ import { KnowledgeStore, pageTitle } from "../src/knowledge.ts";
 const roots: string[] = [];
 afterEach(() => {
   vi.restoreAllMocks();
-  for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
+  for (const r of roots.splice(0))
+    rmSync(r, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 const git = (dir: string, ...a: string[]) =>

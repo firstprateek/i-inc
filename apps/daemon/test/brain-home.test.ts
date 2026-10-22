@@ -455,7 +455,12 @@ describe("a copy leaves the machine its employee left", () => {
     const r = await brainRig();
     r.commit("ada", { "tools/x.md": page("X", "x", "x") });
     await r.feed.sync("ada");
-    rmSync(join(r.knowledgeDir, "brains", "ada"), { recursive: true, force: true });
+    rmSync(join(r.knowledgeDir, "brains", "ada"), {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
     expect((await r.feed.sync("ada")).ok).toBe(true);
     expect(existsSync(r.copy("ada", "personal/tools/x.md"))).toBe(false);
     expect(existsSync(dirname(r.copy("ada", "company/INDEX.md")))).toBe(false);

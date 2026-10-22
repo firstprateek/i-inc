@@ -68,6 +68,7 @@ describe("parse", () => {
     ["#/company/team/hiring/ada", { view: "hiring", id: "ada" }],
     ["#/company/brain", { view: "brain", id: "" }],
     ["#/company/brain/ada", { view: "brain", id: "ada" }],
+    ["#/company/brain/changes", { view: "brain", id: "", changes: true }],
     ["#/company/projects", { view: "projects" }],
     ["#/company/usage", { view: "usage" }],
     ["#/company/settings", { view: "settings", section: "teams" }],
@@ -184,6 +185,7 @@ describe("redirectFor: tidying, mistyped and unknown hashes", () => {
     ["#/company/settings/nonsense", "#/company/settings/teams"],
     ["#/company/Team/Hiring/ada", "#/company/team/hiring/ada"],
     ["#/company/brain/Ada?x", "#/company/brain/Ada"],
+    ["#/company/Brain/Changes", "#/company/brain/changes"],
     ["#/company/whatever", "#/company/team"],
     ["#/Ticket/12/Assign", "#/ticket/12/assign"],
     ["#/ticket/12?from=push", "#/ticket/12"],
@@ -285,6 +287,7 @@ describe("areas and tabs", () => {
     expect(tabOf(parse("#/ticket/3"))).toBeNull();
     expect(tabOf(parse("#/company/team/hiring/ada"))).toBe("team");
     expect(tabOf(parse("#/company/brain/ada"))).toBe("brain");
+    expect(tabOf(parse("#/company/brain/changes"))).toBe("brain");
     expect(tabOf(parse("#/company/settings/sandboxes"))).toBe("settings");
     expect(tabOf(parse("#/company/projects"))).toBe("projects");
   });
@@ -313,6 +316,7 @@ describe("the route layout language", () => {
     ["conversations", "split"],
     ["company/brain", "split"],
     ["company/brain/ada", "split"],
+    ["company/brain/changes", "page"],
     ["company/settings", "split"],
     ["company/settings/engines", "split"],
     ["company/settings/sandboxes", "split"],

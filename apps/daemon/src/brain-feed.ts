@@ -48,6 +48,7 @@ import {
   snapshotId,
   verifyScript,
 } from "./brain-snapshot.ts";
+import { renderTidyReport, type TidyReport, tidyReport } from "./brain-tidy.ts";
 import type { Db } from "./db.ts";
 import type { RunScript } from "./harness.ts";
 import type { KnowledgeStore, Repo } from "./knowledge.ts";
@@ -144,6 +145,8 @@ export class BrainFeed {
   private readonly delivered = new Map<string, Delivered>();
   private readonly locks = new Map<string, Promise<unknown>>();
   private readonly seenReads = new Map<string, true>();
+  /** Whether the last copy made for an employee worked (their retro asks for edits in it only if so). */
+  private readonly lastSync = new Map<string, boolean>();
   private readonly trees = new Map<string, { head: string; tree: Map<string, string> }>();
   private readonly cleaned = new Set<string>();
   private readonly keptLogged = new Map<string, string>();
@@ -414,7 +417,24 @@ export class BrainFeed {
    * Calls for one employee run one at a time. Never throws: a failure is reported, and the session
    * goes on without the files. A PA gets no copy while anyone else works in its sandbox.
    */
+  /** Whether an employee's copy is available to edit: there are sandboxes, and the last copy made worked. */
+  copyUsable(employeeId: string): boolean {
+    if (!this.enabled) return false;
+    try {
+      if (this.place(employeeId).blocked) return false;
+    } catch {
+      return false;
+    }
+    return this.lastSync.get(employeeId) ?? true;
+  }
+
   async sync(employeeId: string, allowHome = true): Promise<SyncReport> {
+    const report = await this.syncLocked(employeeId, allowHome);
+    this.lastSync.set(employeeId, report.ok);
+    return report;
+  }
+
+  private async syncLocked(employeeId: string, allowHome = true): Promise<SyncReport> {
     const copy = this.copyId(employeeId, allowHome);
     const key = `${this.machineOf(employeeId)}:${copy}`;
     const prior = this.locks.get(key) ?? Promise.resolve();
@@ -520,7 +540,27 @@ export class BrainFeed {
       // What the sandbox holds: the new snapshot, except the files whose local edits were kept. Those
       // stay as they were last delivered (or absent), so the next copy offers them again, and a copy
       // is never taken for "current" while any are pending.
+      // When the copy was first made: the earliest a harvest of it could be doubted from.
+      if (!last) {
+        this.o.db.run(
+          "INSERT OR IGNORE INTO storage_state (key, body) VALUES (?, ?)",
+          `brain-copy-created:${machine}:${copy}`,
+          String(now),
+        );
+      }
       const kept = new Set(result.kept);
+      // What this copy delivered is its baseline now: the daemon's record of the agent's text for those pages goes.
+      const sentPaths = how === "delta" ? changedFiles(b.snap, last?.snap) : [...b.snap.files.keys()];
+      for (const p of sentPaths) {
+        if (!kept.has(p)) {
+          this.o.db.run(
+            "DELETE FROM brain_bases WHERE employee_id = ? AND copy = ? AND path = ?",
+            employeeId,
+            copy,
+            p,
+          );
+        }
+      }
       const files = new Map(b.snap.files);
       for (const p of kept) {
         const before = last?.snap.files.get(p);
@@ -567,6 +607,175 @@ export class BrainFeed {
     } catch {
       return [1, ""];
     }
+  }
+
+  // ---- What a harvest needs (brain-harvest.ts) ---------------------------------------------------------
+
+  /** Where an employee's copy for this kind of session is, and whether it may be in that machine at all. */
+  place(
+    employeeId: string,
+    allowHome = true,
+  ): { copy: string; machine: string; root: string; blocked: string | null } {
+    const copy = this.copyId(employeeId, allowHome);
+    const machine = this.machineOf(employeeId);
+    const blocked =
+      this.isHome(employeeId) && this.o.registry.machineMates(employeeId).length > 0
+        ? `${employeeId} works on home data and shares ${machine} with others, so there is no copy to collect from`
+        : null;
+    return { copy, machine, root: this.rootOf(copy), blocked };
+  }
+
+  /** Whether a machine is running now. A harvest, like a copy, never starts one. */
+  isMachineUp(machine: string): Promise<boolean> {
+    return this.machineIsUp(machine);
+  }
+
+  /** Runs one script in the employee's sandbox (with the same time limit as a copy). */
+  exec(employeeId: string, script: string): Promise<{ code: number; output: string }> {
+    return this.run(employeeId, script);
+  }
+
+  /** Runs `fn` while nothing else (a copy, another harvest) touches this employee's copy. */
+  async exclusive<T>(employeeId: string, allowHome: boolean, fn: () => Promise<T>): Promise<T> {
+    const copy = this.copyId(employeeId, allowHome);
+    const key = `${this.machineOf(employeeId)}:${copy}`;
+    const prior = this.locks.get(key) ?? Promise.resolve();
+    const mine = prior.then(fn, fn);
+    this.locks.set(key, mine);
+    try {
+      return await mine;
+    } finally {
+      if (this.locks.get(key) === mine) this.locks.delete(key);
+    }
+  }
+
+  /**
+   * The paths the baseline of a copy took from the agent's text: the next copy sends them again (the
+   * shared brain's version, repaired and merged) over the agent's file, which is no longer an edit.
+   */
+  forget(employeeId: string, allowHome: boolean, paths: string[]): void {
+    if (!paths.length) return;
+    const copy = this.copyId(employeeId, allowHome);
+    const machine = this.machineOf(employeeId);
+    const key = `${machine}:${copy}`;
+    const last = this.lastDelivered(key, employeeId, copy);
+    if (!last) return;
+    const files = new Map(last.snap.files);
+    for (const p of paths) files.delete(p);
+    const next: Delivered = {
+      ...last,
+      snap: { ...last.snap, files },
+      pending: [...new Set([...last.pending, ...paths])].sort(),
+    };
+    this.delivered.set(key, next);
+    this.o.db.run(
+      "INSERT OR REPLACE INTO brain_synced (machine, employee_id, snapshot_id, files, pending, at) VALUES (?, ?, ?, ?, ?, ?)",
+      machine,
+      copy,
+      last.snap.id,
+      JSON.stringify(
+        Object.fromEntries([...files.values()].map((f) => [f.path, [f.sha, f.tracked ? 1 : 0]])),
+      ),
+      JSON.stringify(next.pending),
+      this.o.now(),
+    );
+  }
+
+  /** When this employee's copy was first made in their machine, or null if the daemon never saw it made. */
+  copyCreatedAt(employeeId: string, allowHome: boolean): number | null {
+    const [row] = this.o.db.all<{ body: string }>(
+      "SELECT body FROM storage_state WHERE key = ?",
+      `brain-copy-created:${this.machineOf(employeeId)}:${this.copyId(employeeId, allowHome)}`,
+    );
+    return row ? Number(row.body) || null : null;
+  }
+
+  /** What the daemon last delivered to an employee's copy: when, and each page's blob id. */
+  deliveredInfo(
+    employeeId: string,
+    allowHome: boolean,
+  ): { at: number; files: Map<string, string> } | undefined {
+    const copy = this.copyId(employeeId, allowHome);
+    const [row] = this.o.db.all<{ at: number; files: string }>(
+      "SELECT at, files FROM brain_synced WHERE machine = ? AND employee_id = ?",
+      this.machineOf(employeeId),
+      copy,
+    );
+    if (!row) return undefined;
+    try {
+      const files = JSON.parse(row.files) as Record<string, [string, number]>;
+      return { at: row.at, files: new Map(Object.entries(files).map(([p, [sha]]) => [p, sha])) };
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Something to tell an agent at its next brief or turn about its earlier edits. */
+  addHint(employeeId: string, copy: string, text: string): void {
+    const have = this.o.db.all<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM brain_hints WHERE employee_id = ? AND copy = ? AND text = ? AND taken = 0",
+      employeeId,
+      copy,
+      text,
+    );
+    if (have[0]?.n) return;
+    this.o.db.run(
+      "INSERT INTO brain_hints (employee_id, copy, at, text) VALUES (?, ?, ?, ?)",
+      employeeId,
+      copy,
+      this.o.now(),
+      text.slice(0, 600),
+    );
+  }
+
+  /** The hints not told yet (newest five, none older than three days). */
+  private hints(employeeId: string, copy: string): { id: number; text: string }[] {
+    return this.o.db
+      .all<{ id: number; text: string }>(
+        "SELECT id, text FROM brain_hints WHERE employee_id = ? AND copy = ? AND taken = 0 AND at > ? ORDER BY id DESC LIMIT 5",
+        employeeId,
+        copy,
+        this.o.now() - 3 * 86_400_000,
+      )
+      .reverse();
+  }
+
+  private markHints(ids: number[]): void {
+    for (const id of ids) this.o.db.run("UPDATE brain_hints SET taken = 1 WHERE id = ?", id);
+  }
+
+  /** When page use began to be counted: no page is called unused before it has been watched for 60 days. */
+  private trackedSince(): number {
+    const key = "brain-tracking-since";
+    const [row] = this.o.db.all<{ body: string }>("SELECT body FROM storage_state WHERE key = ?", key);
+    if (row) return Number(row.body) || 0;
+    const at = this.o.now();
+    this.o.db.run("INSERT OR IGNORE INTO storage_state (key, body) VALUES (?, ?)", key, String(at));
+    return at;
+  }
+
+  /** What the tidy-up could do now for these scopes' pages; the scopes this employee may write from a code-free copy. */
+  tidyData(employeeId: string): TidyReport {
+    this.index.refresh();
+    // The report is made once for a state of the repos and a day: the daemon asks on every tick, and a big brain
+    // takes seconds of the event loop to look through.
+    const heads = this.o.store
+      .repos()
+      .map((r) => `${repoKey(r)}@${this.o.store.head(r)?.sha ?? ""}`)
+      .join(",");
+    const now = this.o.now();
+    const key = `${heads}|${now - (now % 86_400_000)}`;
+    const cached = this.tidyCache.get(employeeId);
+    if (cached && cached.key === key) return cached.report;
+    const report = tidyReport(this.index, this.readable(employeeId, false), now, this.trackedSince());
+    this.tidyCache.set(employeeId, { key, report });
+    return report;
+  }
+  private readonly tidyCache = new Map<string, { key: string; report: TidyReport }>();
+
+  /** The tidy-up report as the end of a brief for the librarian's copy. */
+  tidyText(employeeId: string): string {
+    return renderTidyReport(this.tidyData(employeeId), this.copyId(employeeId, false), this.o.home);
   }
 
   // ---- Copies that don't belong any more -------------------------------------------------------------
@@ -706,6 +915,7 @@ export class BrainFeed {
     const report = await this.sync(i.employeeId, allowHome);
     const scopes = this.readable(i.employeeId, allowHome);
     const pages = this.retrieveFor(i.employeeId, ticketQuery(i.query), [], allowHome);
+    const hints = report.ok ? this.hints(i.employeeId, this.copyId(i.employeeId, allowHome)) : [];
     const text = renderBrainPrompt(
       {
         maps: this.maps(i.employeeId, scopes, allowHome),
@@ -714,9 +924,11 @@ export class BrainFeed {
         search: report.search !== false,
         employeeId: this.copyId(i.employeeId, allowHome),
         ...(this.o.home ? { home: this.o.home } : {}),
+        ...(hints.length ? { notes: hints.map((h) => h.text) } : {}),
       },
       { maps: true },
     );
+    this.markHints(hints.map((h) => h.id));
     const uses = usesOf(pages);
     if (i.sessionId !== null) this.record("session", String(i.sessionId), "", { pages: uses });
     this.countUse(scopes, uses);
@@ -763,8 +975,9 @@ export class BrainFeed {
       allowHome,
     );
     const uses = usesOf(pages);
+    const hints = report.ok ? this.hints(i.employeeId, this.copyId(i.employeeId, allowHome)) : [];
     let text = "";
-    if (changed.length || pages.length) {
+    if (changed.length || pages.length || hints.length) {
       text = renderBrainPrompt(
         {
           maps,
@@ -773,6 +986,7 @@ export class BrainFeed {
           search: report.search !== false,
           employeeId: this.copyId(i.employeeId, allowHome),
           ...(this.o.home ? { home: this.o.home } : {}),
+          ...(hints.length ? { notes: hints.map((h) => h.text) } : {}),
         },
         { maps: changed.map((m) => m.scope) },
       );
@@ -788,6 +1002,7 @@ export class BrainFeed {
     const commit = () => {
       this.commitTurn(i.conversation, i.turn, record);
       this.countUse(scopes, uses);
+      this.markHints(hints.map((h) => h.id));
     };
     const shown = new Map<string, BrainUse>();
     for (const p of [...uses, ...this.conversationPages(i.conversation)]) {

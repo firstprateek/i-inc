@@ -590,6 +590,22 @@ export class BrainIndex implements RetrievalSource {
     return out;
   }
 
+  /** Every `[[link]]` out of the pages of these scopes: where it is written and what it names. */
+  allLinks(scopes: Scope[]): { scope: Scope; slug: string; to: string }[] {
+    if (!scopes.length) return [];
+    return this.db
+      .all<{ from_scope: string; from_slug: string; to_slug: string }>(
+        `SELECT from_scope, from_slug, to_slug FROM links WHERE from_scope IN (${scopes.map(() => "?").join(",")}) ORDER BY from_scope, from_slug, to_slug`,
+        ...scopes,
+      )
+      .map((r) => ({ scope: r.from_scope as Scope, slug: r.from_slug, to: r.to_slug }));
+  }
+
+  /** The page a `[[link]]` names, looked for in these scopes in order; null when it names none. */
+  resolveLink(to: string, scopes: Scope[]): { scope: Scope; slug: string } | null {
+    return this.resolve(to, scopes);
+  }
+
   /** An exact slug, else a unique page whose last path segment is the name, in the first scope that has one. */
   private resolve(to: string, scopes: Scope[]): { scope: Scope; slug: string } | null {
     for (const scope of scopes) {

@@ -11,7 +11,8 @@ import { KnowledgeStore } from "../src/knowledge.ts";
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
+  for (const r of roots.splice(0))
+    rmSync(r, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 const day = (iso: string) => Date.parse(`${iso}T12:00:00Z`);

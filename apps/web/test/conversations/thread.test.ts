@@ -430,6 +430,21 @@ describe("the thread", () => {
     expect(sent()[0]).toMatchObject({ type: "chat/turnCancelled", turnId: "t1" });
   });
 
+  it("has a Remember this button that sends /remember as a turn, or queues it behind a running one", async () => {
+    const { host, sent, root, el } = await setup();
+    const button = () => must<HTMLButtonElement>(root().querySelector('button[aria-label="Remember this"]'));
+    await until(() => !button().disabled);
+    button().click();
+    await until(() => sent().length);
+    expect(sent()[0]).toMatchObject({ type: "chat/turnStarted", message: { text: "/remember" } });
+    host.send(CHAT, started);
+    await until(() => root().querySelector("inc-conv-turn[active]"));
+    await el.updateComplete;
+    button().click();
+    await until(() => sent().length > 1);
+    expect(sent()[1]).toMatchObject({ type: "chat/pendingMessageSet", message: { text: "/remember" } });
+  });
+
   it("sends steering and queued messages as chat/pendingMessageSet", async () => {
     const { host, sent, root, el } = await setup();
     host.send(CHAT, started);

@@ -89,6 +89,18 @@ export interface SessionHostOptions {
    * that match the message go in as extra prompt content; reads the agent makes feed the page counters.
    */
   brain?: Pick<BrainFeed, "enabled" | "forTurn" | "noteRead" | "conversationPages">;
+  /**
+   * The employee's brain copy is collected (brain-harvest.ts) when a conversation goes idle or ends, and
+   * after a turn where the owner said `/remember` (T58). Never awaited by a turn; a failure is only logged.
+   */
+  harvest?: (c: ConversationInfo, why: "idle" | "end" | "remember") => Promise<unknown> | undefined;
+  /**
+   * A turn of this employee's is running: a team shares one machine and one Unix user, so the brain harvest
+   * needs to know who may have been working there. Returns what to call when the turn ends.
+   */
+  activity?: (employeeId: Id) => () => void;
+  /** The agent fetched something from outside (a web page): what it writes into its brain is marked untrusted. */
+  external?: (c: ConversationInfo, why: string) => void;
   /** Live conversations per team. Default 3. */
   perTeamCap?: number;
   /** A conversation with nothing happening for this long is suspended. Default 15 minutes. */
@@ -160,6 +172,20 @@ function copyNote(info: ConversationInfo, copy: CopyState): string {
   if (copy === "remote")
     return `${gone} It was rebuilt from ${info.branch} on GitHub; changes that were not committed were not kept.`;
   return `${gone} Its branch is gone too, so this is a new copy from the project's main branch.`;
+}
+
+/** A tool call that fetches from outside: ACP's `fetch` kind, a web fetch or search tool, `curl` or `wget` of a URL. */
+export function fetchesFromOutside(u: Json): boolean {
+  const title = String(u.title ?? "");
+  return u.kind === "fetch" || externalTool.test(title);
+}
+export const externalTool =
+  /^\s*(?:web[ _-]?fetch|web[ _-]?search|fetch|search the web)\b|\b(?:curl|wget)\b[^\n]*https?:\/\//i;
+
+/** What the agent is asked when the owner types `/remember`. */
+function rememberPrompt(note: string): string {
+  const extra = note.trim() ? ` The owner adds: ${note.trim()}` : "";
+  return `The owner asked you to remember this conversation. In your brain copy, write down what is worth keeping from it: update the page that already covers a topic (rewrite it, don't append) or create one if none does, and search first so you never make a near-duplicate. Only what clears the bar: durable, non-obvious and reusable.${extra} Then reply with one line saying what you wrote, or that nothing here clears the bar.`;
 }
 
 const fileUriPath = (uri: string): string | undefined =>
@@ -324,6 +350,7 @@ export class SessionHost implements AgentBackend {
       put: (data, mime) => this.h.putContent(typeof data === "string" ? redactTokens(data) : data, mime),
       side: (kind, u) => this.onSide(live, kind, u),
     });
+    let endActivity: (() => void) | undefined;
     const active: ActiveRun = {
       turn: run,
       mapper,
@@ -333,12 +360,22 @@ export class SessionHost implements AgentBackend {
       killTimer: undefined,
     };
     live.run = active;
+    try {
+      endActivity = this.o.activity?.(live.info.employeeId);
+    } catch (e) {
+      this.log(`couldn't note the turn's activity: ${e instanceof Error ? e.message : e}`);
+    }
     if (run.signal.aborted) {
       // Cancelled between the host recording the turn and the prompt going out.
       live.run = undefined;
+      endActivity?.();
       return { kind: "cancelled" };
     }
-    let blocks = promptBlocks(run.message, live.caps);
+    // `/remember [note]`: the owner asks the agent to write what is worth keeping into its brain copy, and
+    // the copy is collected as soon as the turn is over.
+    const remember = /^\s*\/remember\b[ \t]*([\s\S]*)$/i.exec(run.message.text);
+    const message = remember ? { ...run.message, text: rememberPrompt(remember[1] ?? "") } : run.message;
+    let blocks = promptBlocks(message, live.caps);
     if (blank) {
       blocks = [{ type: "text", text: this.continuationBrief(live, run.message) }, ...blocks.slice(1)];
     }
@@ -356,8 +393,11 @@ export class SessionHost implements AgentBackend {
         live.brainPending = [];
         this.publishBrain(live);
       }
-      return this.outcome(live, active, done);
+      const outcome = this.outcome(live, active, done);
+      if (remember && outcome.kind === "complete") this.collect(live.info, "remember");
+      return outcome;
     } finally {
+      endActivity?.();
       if (active.killTimer) clearTimeout(active.killTimer);
       if (live.run === active) live.run = undefined;
       live.lastActive = this.now();
@@ -609,6 +649,8 @@ export class SessionHost implements AgentBackend {
 
   /** Stops the agent process but keeps the conversation: it starts again, with its memory, on the next message. */
   private suspend(live: Live, why: string): void {
+    // The conversation is going quiet: what the agent wrote in its brain copy is collected now.
+    if (why !== "its employee left") this.collect(live.info, "idle");
     const conn = live.conn;
     live.conn = undefined; // before the kill: its exit is expected, not a crash
     this.release(live);
@@ -620,6 +662,7 @@ export class SessionHost implements AgentBackend {
 
   /** Forgets a conversation's agent for good. */
   private discard(live: Live): void {
+    this.collect(live.info, "end");
     const conn = live.conn;
     live.conn = undefined;
     if (live.run) {
@@ -628,6 +671,17 @@ export class SessionHost implements AgentBackend {
     this.release(live);
     this.lives.delete(live.session);
     conn?.kill();
+  }
+
+  /** Collects the conversation's brain copy in the background. */
+  private collect(info: ConversationInfo, why: "idle" | "end" | "remember"): void {
+    try {
+      void this.o
+        .harvest?.(info, why)
+        ?.catch((e) => this.log(`couldn't collect the brain copy: ${String(e)}`));
+    } catch (e) {
+      this.log(`couldn't collect the brain copy: ${String(e)}`);
+    }
   }
 
   /** Suspends the idle and archived conversations. Call it from a timer. */
@@ -1008,6 +1062,13 @@ export class SessionHost implements AgentBackend {
         } catch (e) {
           this.log(`couldn't note a brain read: ${e instanceof Error ? e.message : e}`);
         }
+      }
+    }
+    if (u.sessionUpdate === "tool_call" && fetchesFromOutside(u)) {
+      try {
+        this.o.external?.(live.info, "a web fetch");
+      } catch (e) {
+        this.log(`couldn't note an outside fetch: ${e instanceof Error ? e.message : e}`);
       }
     }
     if (live.run) live.run.mapper.update(u);

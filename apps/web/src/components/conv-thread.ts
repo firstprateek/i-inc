@@ -727,6 +727,14 @@ export class IncConvThread extends LitElement {
     this.dispatchChat(running ? pendingMessage("queued", d.text) : turnStarted(d.text));
   };
 
+  /** `/remember`: the agent writes what is worth keeping into its brain copy, and the daemon collects it. */
+  private onRemember = () => {
+    const conv = this.conv;
+    if (!conv) return;
+    const running = !!ahp().chat(conv.ahpChat)?.activeTurn;
+    this.dispatchChat(running ? pendingMessage("queued", "/remember") : turnStarted("/remember"));
+  };
+
   private onStop = () => {
     const turn = this.conv ? ahp().chat(this.conv.ahpChat)?.activeTurn : undefined;
     if (turn) this.dispatchChat(cancelTurn(turn.id, turn.startedAt));
@@ -991,6 +999,9 @@ export class IncConvThread extends LitElement {
         <button class="tool-btn" type="button" aria-label="Context panel" aria-pressed=${this.contextOpen ? "true" : "false"} title="Context: plan, files, usage"
           @click=${() => this.dispatchEvent(new CustomEvent("conv-toggle-context", { bubbles: true, composed: true }))}>
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg></button>
+        <button class="tool-btn" type="button" aria-label="Remember this" title="Remember this: the agent writes what is worth keeping into its brain"
+          ?disabled=${!chat} @click=${this.onRemember}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10a1 1 0 0 1 1 1v15l-6-4-6 4V5a1 1 0 0 1 1-1z"/></svg></button>
       </div>
       ${
         held

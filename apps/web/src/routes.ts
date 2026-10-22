@@ -57,8 +57,11 @@ export type Route =
   | { view: "ticket"; id: string }
   | { view: "team" }
   | { view: "hiring"; id?: string }
-  /** An empty id is the company brain (the handbook); otherwise one employee's brain. */
-  | { view: "brain"; id: string }
+  /**
+   * An empty id is the company brain (the handbook); otherwise one employee's brain. `changes` is the Brain
+   * changes feed (`#/company/brain/changes`): every change agents made to the brain, with one-click undo.
+   */
+  | { view: "brain"; id: string; changes?: true }
   /**
    * `#/company/projects` is the list. After it: `add` (pick or confirm a repo to add, `?repo=owner/name`),
    * `new` (start a new project), or a project's id (its page).
@@ -96,9 +99,10 @@ export function tabOf(r: Route): WorkTab | CompanyTab | null {
 export function layoutForRoute(route: Route): LayoutKind {
   switch (route.view) {
     case "conversations":
-    case "brain":
     case "settings":
       return "split";
+    case "brain":
+      return route.changes ? "page" : "split";
     case "team":
       return "wide";
     case "work":
@@ -193,7 +197,7 @@ export function redirectFor(hash: string): string | null {
       case "company": {
         const a = lower(rest[0]);
         if (a === undefined) out = "#/company";
-        else if (a === "brain") out = `#/${tail(v, a, rest[1])}`;
+        else if (a === "brain") out = `#/${tail(v, a, lower(rest[1]) === "changes" ? "changes" : rest[1])}`;
         else if (a === "usage") out = `#/company/${a}`;
         else if (a === "projects") {
           // add and new are the flows; anything else is a project's id, which keeps its case.
@@ -270,7 +274,7 @@ export function parse(hash: string): Route {
     case "company":
       switch (a) {
         case "brain":
-          return { view: "brain", id: b ?? "" };
+          return b === "changes" ? { view: "brain", id: "", changes: true } : { view: "brain", id: b ?? "" };
         case "projects":
           return b === "add" || b === "new"
             ? { view: "projects", flow: b }
@@ -333,7 +337,9 @@ function titleParts(r: Route): string[] {
     case "hiring":
       return ["Hiring", "Company"];
     case "brain":
-      return [r.id ? `${cap(r.id)}’s brain` : "Brain", "Company"];
+      return r.changes
+        ? ["Changes", "Brain", "Company"]
+        : [r.id ? `${cap(r.id)}’s brain` : "Brain", "Company"];
     case "projects":
       return r.id
         ? [r.id, "Projects", "Company"]

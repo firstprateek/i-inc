@@ -490,6 +490,15 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     await c.emit(finished(c, "report", out), { type: "report-ready", at, summary: capPayload(out) });
   },
 
+  // The daily tidy-up (docs/design/brain.md, "Tending"): the librarian edits the brain copy. What it changes is
+  // collected, checked and committed by the daemon after the ticket; nothing here proposes an edit.
+  async tidy(c) {
+    const out = await session(c, "librarian", c.builder, tidyTask);
+    if (out === null) return;
+    const at = c.p.clock.now();
+    await c.emit(checkpoint(c, "tidy", out), finished(c, "tidy"), { type: "closed", at, outcome: "done" });
+  },
+
   // The retro (spec §6, stage 11): builder and reviewer each propose 0-2 knowledge edits.
   async retro(c) {
     const reviewerId = c.s.sessions.find(
@@ -502,9 +511,13 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
         c,
         next.id === c.builder.id ? "build" : "review",
         next,
-        `Look back at this ticket. Propose at most 2 durable, non-obvious, reusable lessons. Reply as JSON: {"edits":[{"layer":"brain"|"fact"|"policy","page","text"}]}. "brain" is your own working style and duty lessons; "fact" is useful to every employee; "policy" changes how the company works. ${pageRules}`,
+        c.p.brainWrites?.(next.id)
+          ? retroInCopy
+          : `Look back at this ticket. Propose at most 2 durable, non-obvious, reusable lessons. Reply as JSON: {"edits":[{"layer":"brain"|"fact"|"policy","page","text"}]}. "brain" is your own working style and duty lessons; "fact" is useful to every employee; "policy" changes how the company works. ${pageRules}`,
       );
       if (out === null) return;
+      // With a brain copy the lessons are edits to its files, collected after the ticket. A reply that still
+      // carries lessons as JSON (the copy wasn't available this time, and the brief said to) is taken as before.
       const edits = (parseJson<{ edits: KnowledgeEdit[] }>(out)?.edits ?? [])
         .slice(0, 2)
         .map((e) => routed(c.ticket, e));
@@ -990,6 +1003,17 @@ function failed(c: Step, stage: StageId, reason: string): TicketEvent {
   ];
   return { type: "failed", at: c.p.clock.now(), stage, reason, tried };
 }
+
+/**
+ * The retro when the agent has a brain copy: the lessons are edits to its files (docs/design/brain.md,
+ * "Writing"), not a reply. Most tickets write nothing.
+ */
+const retroInCopy =
+  "Look back at this ticket. If you learned something durable (still true in a month), non-obvious (not in the code, --help or a README) and reusable (it will change a future task), write it in your brain copy: update the one page for that topic, rewriting it rather than appending, or create the page if there is none (search first). Company facts and policies go in the company/ folder, your own working style and duty lessons in personal/. Most tickets write nothing; if so, change nothing. Reply with one line saying what you changed, or `nothing`.";
+
+/** The tidy-up's task: the report of what to look at comes with the brain section of the brief. */
+const tidyTask =
+  "Tend the brain. Work through the tidy-up report at the end of this brief, in your brain copy: merge duplicate pages into one (the better-named page keeps its name, the other is deleted), resolve contradictions and every `## Conflict` section by keeping what is true, fix broken [[links]], delete the pages the report lists as unused for 60 days and linked from nowhere (unless they are still true and worth keeping), and keep each scope's map short by merging or pruning. Rewrite pages, do not append. Never touch another person's brain. Reply with a short summary of what you changed.";
 
 /** How pages are named, so the daemon can file an edit (see pagePath in knowledge.ts). */
 const pageRules =

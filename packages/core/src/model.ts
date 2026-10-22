@@ -2,8 +2,11 @@
 
 export type Id = string;
 
-/** What a stage asks an employee to do (spec §5, "Roles and duties"). */
-export type Duty = "plan" | "build" | "verify" | "review";
+/**
+ * What a stage asks an employee to do (spec §5, "Roles and duties"). `librarian` tends the brain:
+ * the daily "Tend the brain" ticket (docs/design/brain.md, "Tending").
+ */
+export type Duty = "plan" | "build" | "verify" | "review" | "librarian";
 
 export type AgentHarness = "claude-code" | "antigravity" | "opencode" | "codex";
 
@@ -127,8 +130,11 @@ export interface KnowledgeEdit {
   text: string;
 }
 
-/** An orientation is a new hire's first ticket: read the handbook and projects, write brain pages. */
-export type TicketType = "fix" | "feat" | "chore" | "errand" | "orientation";
+/**
+ * An orientation is a new hire's first ticket: read the handbook and projects, write brain pages. A
+ * `tidy` ticket is the daily "Tend the brain" pass: it edits the brain copy and nothing else.
+ */
+export type TicketType = "fix" | "feat" | "chore" | "errand" | "orientation" | "tidy";
 
 /**
  * A code ticket's branch, as pick-up made it (spec §6, stage 1). In owner-merges mode it also has a

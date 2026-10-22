@@ -18,7 +18,7 @@ export const page = (title: string, description: string, body: string, tags: str
 
 const dirs: string[] = [];
 export function cleanRigs(): void {
-  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
 export interface Run {
@@ -66,7 +66,7 @@ export async function brainRig(o: { delivered?: boolean; real?: boolean } = {}) 
         launch: fake.launch,
         isUp: async () => machineUp.value,
         runScript: async (employeeId, script, _env, opts) =>
-          /__INC_TAR__|\.snapshot\.id|@@removed/.test(script)
+          /__INC_TAR__|\.snapshot\.id|@@removed|refs\/inc\/baseline/.test(script)
             ? local(employeeId, script, {}, opts)
             : { code: 0, output: "@@ready\n" },
         log: (m) => logs.push(m),

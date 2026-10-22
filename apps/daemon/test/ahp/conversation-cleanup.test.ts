@@ -39,7 +39,7 @@ beforeEach(() => {
   mkdirSync(work);
   mkdirSync(home);
 });
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 
 const base = () => ({
   work,

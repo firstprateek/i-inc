@@ -86,7 +86,7 @@ beforeEach(() => {
   mkdirSync(work, { recursive: true });
   mkdirSync(home, { recursive: true });
 });
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 
 describe("cleanupScript", () => {
   it("removes a closed ticket's worktree, its images and its reviewer's leftovers, and nothing else", () => {
@@ -234,7 +234,7 @@ describe("cleanupScript", () => {
     const real = join(root, "real-npm");
     mkdirSync(join(real, "_cacache"), { recursive: true });
     writeFileSync(join(real, "_cacache", "blob"), "x".repeat(300_000));
-    rmSync(join(home, ".npm"), { recursive: true, force: true });
+    rmSync(join(home, ".npm"), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     symlinkSync(real, join(home, ".npm"));
     run(cleanupScript({ ...base(), cacheCapKb: 100 }));
     expect(existsSync(join(real, "_cacache", "blob"))).toBe(true);
@@ -374,7 +374,7 @@ describe("the merged and aged lists", () => {
 
   it("keep a merged ticket's copy when the fetch fails", () => {
     const path = ticketCopy("1", { dirty: true });
-    rmSync(join(root, "origin.git"), { recursive: true, force: true });
+    rmSync(join(root, "origin.git"), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     const r = run(cleanupScript({ ...base(), ids: ["1"], merged: ["1"] }));
     expect(r.kept).toEqual([{ ticket: "1", reason: "fetchfail" }]);
     expect(existsSync(path)).toBe(true);

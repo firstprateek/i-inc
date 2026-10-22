@@ -5,7 +5,7 @@
 // `data`) are left alone: the redactor's hex and base64 rules would mangle them. Streaming deltas are
 // redacted chunk by chunk, so a secret split across two chunks is not caught; tool results, which
 // arrive whole, are.
-import { redactSecrets } from "../sessions.ts";
+import { redactKeyed, redactSecrets } from "../sessions.ts";
 import type { Json } from "./wire.ts";
 
 /** Keys whose string values are free text from an agent or a tool. */
@@ -134,6 +134,8 @@ function redactCredentials(text: string): string {
   t = t.replace(/\bxox[baprs]-[0-9A-Za-z-]{10,}\b/g, "[redacted]");
   t = t.replace(/\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\b/g, "[redacted]");
   t = t.replace(/\bAKIA[0-9A-Z]{16}\b/g, "[redacted]");
+  t = t.replace(/\b(?:[sr]k_live|whsec)_[A-Za-z0-9]{8,}\b/g, "[redacted]");
+  t = t.replace(/\bnpm_[A-Za-z0-9]{20,}\b/g, "[redacted]");
   // AWS's 40-character secret access key, named: aws_secret_access_key = ..., "SecretAccessKey": "..."
   t = t.replace(
     /((?:aws[_-]?)?secret[_-]?(?:access[_-]?)?key["']?\s{0,5}[=:]\s{0,5}["']?)[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/gi,
@@ -219,8 +221,19 @@ export function sanitizeAction<T>(action: T, caps: Pick<Caps, "maxString" | "max
  * Only the patterns that are unmistakably credentials, for file contents (diffs) where the full
  * redactor's hex and base64 rules would mangle source code: GitHub, OpenAI/Anthropic, Google, Slack,
  * AWS and JWT tokens, bearer headers, private key blocks and passwords in URLs: the same set
- * `redactText` starts with (`redactCredentials`).
+ * `redactText` starts with (`redactCredentials`). It leaves `token: string` in source code alone.
  */
 export function redactTokens(text: string): string {
   return redactCredentials(text.length > 1_000_000 ? text.slice(0, 1_000_000) : text);
+}
+
+/**
+ * For prose that people read later, such as brain pages: every credential `redactTokens` finds, and anything
+ * named like a secret (`password: x`, `API_KEY=x`, `--token x`), the same sets `redactText` uses, without its
+ * hex and base64 guesses (a commit id in a page stays).
+ */
+export function redactProse(text: string): string {
+  return redactKeyed(redactTokens(text))
+    .replace(/(client[_-]?secret["']?\s*[:=]\s*)(["']?)[^\s"',;]{4,}\2/gi, "$1[redacted]")
+    .replace(/(\bsecret["']?\s*=\s*)(?:(["'])[^"'\n]{1,500}\2|[^\s"',;]{4,})/gi, "$1[redacted]");
 }

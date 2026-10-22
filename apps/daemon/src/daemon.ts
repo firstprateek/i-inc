@@ -10,10 +10,12 @@ import {
   type Clock,
   type Company,
   type Duty,
+  type Employee,
   fold,
   type Harness,
   type HelperModel,
   type Id,
+  isHomeEmployee,
   knowledgeLog,
   type MachineProvider,
   occupancy,
@@ -34,7 +36,9 @@ import {
   type Workspace,
 } from "@i-inc/core";
 import type { ConversationService } from "./ahp/conversations.ts";
+import { externalTool } from "./ahp/session-host.ts";
 import type { BrainFeed } from "./brain-feed.ts";
+import type { BrainHarvest } from "./brain-harvest.ts";
 import type { BrainIndex } from "./brain-index.ts";
 import type { ChatLog } from "./chat.ts";
 import type { Db } from "./db.ts";
@@ -74,6 +78,8 @@ export interface DaemonDeps {
   brain: BrainIndex;
   /** The brain's copy in sandboxes and its retrieval into briefs and turns (T57). */
   brainFeed: BrainFeed;
+  /** Collects what agents wrote in their brain copies, checks it and commits it (T58). */
+  brainHarvest: BrainHarvest;
   db: Db;
   push?: PushService;
   live?: LiveEvents;
@@ -99,6 +105,21 @@ export interface StorageHooks {
 
 /** On a ticket the owner accepted from a proposal, so the daily follow-up budget doesn't count it. */
 export const ACCEPTED_LABEL = "accepted-proposal";
+
+/** A ticket that carries someone else's words: it names a GitHub issue or pull request, or is labelled as one. */
+export function ticketFromOutside(t: Ticket): boolean {
+  const text = [t.title, t.reason ?? "", ...t.doneWhen].join("\n");
+  return (
+    (t.labels ?? []).some((l) => /^(?:github-)?issue$|^from-issue$|^external$/i.test(l)) ||
+    /github\.com\/[^\s/]+\/[^\s/]+\/(?:issues|pull)\/\d+/i.test(text)
+  );
+}
+
+/** On the daily "Tend the brain" tickets (docs/design/brain.md, "Tending"). */
+export const TIDY_LABEL = "brain-tidy";
+
+/** The project the tidy-up ticket is filed under, like a new hire's orientation. */
+const TIDY_PROJECT = "General";
 
 export class Daemon {
   private readonly running = new Map<Id, Promise<void>>();
@@ -314,14 +335,29 @@ export class Daemon {
               },
             });
             if (ctx.text) req.brief = `${req.brief}\n\n${ctx.text}`;
+            // The retro asked for edits in the copy, and the copy isn't there this time: lessons go as JSON.
+            if (req.stage === "retro" && !ctx.copy) {
+              req.brief = `${req.brief}\n\nYour brain copy is not available this time, so reply with your lessons as JSON instead: {"edits":[{"layer":"brain"|"fact"|"policy","page","text"}]}, at most 2.`;
+            }
+            // The tidy-up is told where to look: duplicates, conflicts, broken links, unused pages, map sizes.
+            if (req.stage === "tidy") req.brief = `${req.brief}\n\n${feed.tidyText(req.employee.id)}`;
           } catch (err) {
             this.d.log?.(`brain: no pages for ${req.ticket.id}/${req.stage}: ${err}`);
           }
         }
+        // What the session handles from outside (a GitHub issue as the ticket, a web fetch) makes what it writes
+        // into the brain untrusted.
+        const harvest = this.d.brainHarvest;
+        const ticketSource = { kind: "ticket" as const, id: req.ticket.id };
+        if (harvest && ticketFromOutside(req.ticket))
+          harvest.noteExternal(ticketSource, "the ticket comes from a GitHub issue");
         let textCount = 0;
         const origOnTranscriptItem = req.onTranscriptItem;
         req.onTranscriptItem = (item) => {
           if (item.kind === "text") textCount++;
+          if (harvest && item.kind === "tool" && item.title && externalTool.test(item.title)) {
+            harvest.noteExternal(ticketSource, "a web fetch");
+          }
           // Reads of brain pages in the employee's copy (the agent's own tool calls) feed the page counters.
           if (item.locations?.length && sessionId !== null && feed) {
             try {
@@ -381,6 +417,8 @@ export class Daemon {
       harness,
       company: this.company,
       ...(workspace ? { workspace } : {}),
+      // Agents with a copy of the brain edit it; the retro asks for lessons there (T58).
+      ...(this.d.brainFeed?.enabled ? { brainWrites: (id: Id) => this.d.brainFeed.copyUsable(id) } : {}),
     };
   }
 
@@ -435,6 +473,13 @@ export class Daemon {
     this.dirtyTickets.clear();
 
     this.checkAutoReleases(records, states, now);
+    try {
+      this.fileTidy(records, states, now);
+    } catch (err) {
+      this.d.log?.(`brain: couldn't file the tidy-up: ${String(err)}`);
+    }
+    // Brain copies whose machine was stopped when their work ended are collected once it is up.
+    void this.d.brainHarvest?.catchUp().catch((e) => this.d.log?.(`brain: catch-up failed: ${String(e)}`));
 
     const sandboxWaiting: Waiting[] = [];
     const sandboxWaitingUntil: Record<Id, number> = {};
@@ -576,6 +621,9 @@ export class Daemon {
         this.applyKnowledge(id, events);
         this.fileFollowUps(id, events);
         await this.sendPushNotifications(record.ticket, events);
+        // The ticket is over (after its retro, or it failed): what the agents wrote in their brain
+        // copies is collected, checked and committed. Never a reason for the ticket to fail.
+        if (r.status === "done" || r.status === "failed") await this.harvestTicket(record.ticket, events);
         // A stage finished or wants a helper: someone may be free now, or a reviewer is needed.
         if (r.status !== "paused") void this.tick().catch(() => {});
       })
@@ -605,11 +653,132 @@ export class Daemon {
   }
 
   /**
+   * The employee who tends the brain today: those with the librarian duty take turns by the day. With
+   * none, a fallback: the first person (never a personal assistant, whose brain is home data) with the
+   * plan duty, else review, else any. Returns what to say about it when it is a fallback.
+   */
+  pickLibrarian(now: number): { employee: Employee; fallback: Duty | null } | null {
+    const people = this.d.registry.employees().filter((e) => !isHomeEmployee(e));
+    const librarians = people.filter((e) => e.duties.includes("librarian"));
+    if (librarians.length) {
+      return {
+        employee: librarians[Math.floor(now / 86_400_000) % librarians.length] as Employee,
+        fallback: null,
+      };
+    }
+    for (const duty of ["plan", "review", "build"] as Duty[]) {
+      const e = people.find((x) => x.duties.includes(duty));
+      if (e) return { employee: e, fallback: duty };
+    }
+    const any = people[0];
+    return any ? { employee: any, fallback: any.duties[0] ?? null } : null;
+  }
+
+  private tidyNoted = "";
+
+  /**
+   * The daily "Tend the brain" ticket: at most one a day, none while the previous one is still open, none
+   * when there is nothing to tend, and it counts against the project's daily budget for tickets agents
+   * file themselves (like a follow-up, but it is skipped rather than turned into a proposal).
+   */
+  private fileTidy(records: TicketRecord[], states: Map<Id, TicketState>, now: number): void {
+    const feed = this.d.brainFeed;
+    if (!feed?.enabled) return;
+    const note = (why: string) => {
+      if (this.tidyNoted !== why) this.d.log?.(`brain: no tidy-up ticket: ${why}`);
+      this.tidyNoted = why;
+    };
+    const tidy = records.filter((r) => r.ticket.labels?.includes(TIDY_LABEL));
+    const open = tidy.find((r) => {
+      const s = states.get(r.ticket.id);
+      return !s?.created || (s.status !== "done" && s.status !== "failed");
+    });
+    if (open) {
+      note(`ticket ${open.ticket.id} is still open`);
+      return;
+    }
+    const dayStart = now - (now % 86_400_000);
+    if (tidy.some((r) => r.createdAt >= dayStart)) return;
+    const pick = this.pickLibrarian(now);
+    if (!pick) {
+      note("nobody to ask");
+      return;
+    }
+    const filedToday = records.filter(
+      (r) =>
+        r.ticket.project === TIDY_PROJECT &&
+        r.ticket.createdBy &&
+        !r.ticket.labels?.includes(ACCEPTED_LABEL) &&
+        r.createdAt >= dayStart,
+    ).length;
+    if (filedToday >= this.d.registry.projectPolicy(TIDY_PROJECT).followUpsPerDay) {
+      note(`today's budget for tickets agents file in ${TIDY_PROJECT} is used`);
+      return;
+    }
+    const r = feed.tidyData(pick.employee.id);
+    const work =
+      r.duplicates.length +
+      r.conflicts.length +
+      r.broken.length +
+      r.unused.length +
+      r.maps.filter((m) => m.lines > m.limit).length;
+    if (!work) {
+      note("the brain has nothing to tend");
+      return;
+    }
+    this.tidyNoted = "";
+    const reason = pick.fallback
+      ? `Nobody has the librarian duty, so ${pick.employee.name} (${pick.fallback}) was asked. Give someone the Librarian duty in Company → Team to choose who tends the brain.`
+      : "The brain is tended once a day.";
+    const t = this.d.tickets.create(
+      {
+        title: "Tend the brain",
+        project: TIDY_PROJECT,
+        type: "tidy",
+        effort: "low",
+        doneWhen: [
+          "duplicate pages are merged into one",
+          "conflicts and contradictions are resolved",
+          "broken [[links]] are fixed",
+          "pages unused for 60 days and linked from nowhere are pruned",
+          "each scope's map is under its limit",
+        ],
+        assignee: pick.employee.id,
+        createdBy: pick.employee.id,
+        labels: [TIDY_LABEL],
+        reason,
+      },
+      now,
+    );
+    this.d.log?.(
+      `brain: ticket ${t.id} "Tend the brain" filed for ${pick.employee.name}${pick.fallback ? ` (no librarian; fell back to the ${pick.fallback} duty)` : ""}`,
+    );
+  }
+
+  /** Collects the brain copy of everyone who worked on a ticket that has ended (brain-harvest.ts). */
+  private async harvestTicket(ticket: Ticket, events: TicketEvent[]): Promise<void> {
+    const harvest = this.d.brainHarvest;
+    if (!harvest || !this.d.brainFeed?.enabled) return;
+    try {
+      const s = fold(events);
+      const people = [
+        ...(s.assignee ? [s.assignee] : [ticket.assignee]),
+        ...s.sessions.map((x) => x.employeeId),
+      ].filter(Boolean);
+      await harvest.ticketEnded(ticket, people);
+    } catch (e) {
+      this.d.log?.(`brain: couldn't collect the brain copies of ticket ${ticket.id}: ${String(e)}`);
+    }
+  }
+
+  /**
    * Stops the machines of employees with nothing running (spec §12). A machine keeps what it has
    * touched in memory until it restarts, and wakes in under a second, so idle ones are stopped.
    */
   private async sleepIdle(busy: Set<Id>): Promise<void> {
     if (!this.d.machines.stop) return;
+    // A brain copy is being collected: its machine stays up until the next pass.
+    if (this.d.brainHarvest?.busy) return;
     const inSession = new Set([...this.sessions.values()].map((s) => s.employeeId));
     // A machine is in use while any employee awake in it is, and is cleaned (when it is due) once
     // none is: it is up, and about to stop, so cleaning never has to wake it.

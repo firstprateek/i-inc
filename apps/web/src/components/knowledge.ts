@@ -84,7 +84,7 @@ export class IncKnowledge extends Loader<KnowledgeData> {
       :host { display: block; height: 100%; min-height: 0; }
       .head { display: flex; align-items: center; gap: 14px; margin: 4px 0 18px; }
       .spacer { flex-grow: 1; }
-      .company-link { white-space: nowrap; }
+      .company-link, .changes-link { white-space: nowrap; }
       .company-callout {
         padding: 12px 16px;
         background: var(--sunken);
@@ -132,7 +132,7 @@ export class IncKnowledge extends Loader<KnowledgeData> {
       article, .change > span, .waiting blockquote { overflow-wrap: anywhere; }
       @media (max-width: ${LAYOUT_BREAKPOINTS.split - 1}px) {
         .head { flex-wrap: wrap; }
-        .company-link { min-height: 44px; }
+        .company-link, .changes-link { min-height: 44px; }
         .wrap { grid-template-rows: auto auto minmax(0, 1fr); gap: var(--layout-section-gap, 20px); }
         .head { grid-column: auto; }
         nav { flex-direction: row; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
@@ -169,10 +169,12 @@ export class IncKnowledge extends Loader<KnowledgeData> {
         <div>
           <span class="muted">${isHandbook ? "Organisation-wide knowledge: facts, policies, and team guidelines" : (d.employee?.role ?? "")}</span>
         </div>
+        <span class="spacer"></span>
+        <a class="btn ghost changes-link" href="#/company/brain/changes"
+          style="display:inline-flex;align-items:center;text-decoration:none">Changes</a>
         ${
           !isHandbook
-            ? html`<span class="spacer"></span>
-              <a
+            ? html`<a
                 class="btn ghost company-link"
                 href="#/company/brain"
                 style="display:inline-flex;align-items:center;text-decoration:none"

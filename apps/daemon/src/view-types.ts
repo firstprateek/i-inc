@@ -240,3 +240,40 @@ export interface ShipView {
   /** Only with `?preview=1`: what the confirm dialog starts with. */
   suggestion?: { title: string; doneWhen: string[]; description: string };
 }
+
+/** One entry of the Brain changes feed (contract C19): a change an agent made to its brain copy, committed or refused. */
+export interface BrainChangeView {
+  id: number;
+  /** `h<n>`: the collection it came from. */
+  harvest: string;
+  at: number;
+  status: "committed" | "rejected";
+  /** A committed change the owner undid. */
+  reverted: boolean;
+  revertedAt: number | null;
+  scope: string | null;
+  slug: string | null;
+  /** The page in the agent's copy, e.g. `company/facts/gh.md`. */
+  path: string;
+  op: "create" | "update" | "delete" | "rename";
+  employee: { id: Id; name: string };
+  source: { kind: "ticket" | "conversation"; id: string; url: string };
+  /** Why a refused change was refused (`code`), in words. */
+  code: string | null;
+  reason: string | null;
+  commit: string | null;
+  /** A few changed lines: `+` added, `-` removed. */
+  diff: string;
+  notes: string[];
+  untrusted: boolean;
+  policy: boolean;
+  conflict: boolean;
+  revertible: boolean;
+}
+
+export interface BrainChangesView {
+  changes: BrainChangeView[];
+  /** Pass as `before` for the next page; null at the end. */
+  next: number | null;
+  facets: { scopes: string[]; employees: { id: Id; name: string }[] };
+}

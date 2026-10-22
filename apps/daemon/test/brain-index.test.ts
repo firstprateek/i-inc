@@ -22,7 +22,8 @@ import { KnowledgeStore } from "../src/knowledge.ts";
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
+  for (const r of roots.splice(0))
+    rmSync(r, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 const page = (title: string, description: string, body: string, tags: string[] = []) =>
@@ -752,7 +753,7 @@ describe("the index heals without a restart", () => {
   it("forgets the pages of a repo that is gone", async () => {
     const { index, root } = await setup();
     expect(index.pages(["brain:pia"]).length).toBe(1);
-    rmSync(join(root, "brains", "pia"), { recursive: true, force: true });
+    rmSync(join(root, "brains", "pia"), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     index.refresh();
     expect(index.pages(["brain:pia"]).length).toBe(0);
   });
