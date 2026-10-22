@@ -174,7 +174,7 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 | T55 | Phase 1a: AHP spike and decision (official TS client / host SDK under Bun, spec stability, VS Code attach over the tailnet) | spike | done (draft PR #79, reference only) | `spike/ahp` | | conversations.md |
 | T56 | Phase 1b: Brain V1 part 1 — page format + frontmatter, SQLite FTS5 index + links, per-scope maps, migration of existing pages, read API | core + daemon | done (PR #78) | #78 | | brain.md |
 | T57 | Phase 1b: Brain V1 part 2 — sandbox snapshot + automatic retrieval into ticket briefs (then conversations), pages-used visibility | core + daemon + web | done (PR #91) | #91 | T56 | brain.md |
-| T58 | Phase 1b: Brain V1 part 3 — diff-harvest writes (no approval), Brain changes feed + revert, daily tidy-up ticket (librarian duty) | core + daemon + web | in review (PR #PRNUM) | `t58-brain-writes` | T57 | brain.md |
+| T58 | Phase 1b: Brain V1 part 3 — diff-harvest writes (no approval), Brain changes feed + revert, daily tidy-up ticket (librarian duty) | core + daemon + web | in review (PR #95) | `t58-brain-writes` | T57 | brain.md |
 | T59 | Phase 1c: session host + ACP→AHP event mapper + action store (tickets' stages move onto it) | daemon + core | done (PR #83, #84); moving ticket stages onto the host is a follow-up | #83, #84 | T55 | conversations.md |
 | T60 | Phase 1c: Conversations screen (list, thread, composer with modes/models/stop/steer, permission cards, context panel), default mode bypass | web | done (PR #87) | #87 | T59 | conversations.md |
 | T61 | Phase 1d: three areas (Conversations · Work · Company), Needs-you badge, first-run checklist, rename Chat → Conversations | web | done (PR #81) | #81 | | v1-plan §1 |
