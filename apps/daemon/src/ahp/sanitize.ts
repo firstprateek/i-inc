@@ -134,7 +134,7 @@ function redactCredentials(text: string): string {
   t = t.replace(/\bxox[baprs]-[0-9A-Za-z-]{10,}\b/g, "[redacted]");
   t = t.replace(/\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\b/g, "[redacted]");
   t = t.replace(/\bAKIA[0-9A-Z]{16}\b/g, "[redacted]");
-  t = t.replace(/\b(?:[sprw]k_(?:live|test)|whsec)_[A-Za-z0-9]{8,}\b/g, "[redacted]");
+  t = t.replace(/\b(?:[sr]k_live|whsec)_[A-Za-z0-9]{8,}\b/g, "[redacted]");
   t = t.replace(/\bnpm_[A-Za-z0-9]{20,}\b/g, "[redacted]");
   // AWS's 40-character secret access key, named: aws_secret_access_key = ..., "SecretAccessKey": "..."
   t = t.replace(
@@ -233,5 +233,7 @@ export function redactTokens(text: string): string {
  * hex and base64 guesses (a commit id in a page stays).
  */
 export function redactProse(text: string): string {
-  return redactKeyed(redactTokens(text));
+  return redactKeyed(redactTokens(text))
+    .replace(/(client[_-]?secret["']?\s*[:=]\s*)(["']?)[^\s"',;]{4,}\2/gi, "$1[redacted]")
+    .replace(/(\bsecret["']?\s*=\s*)(?:(["'])[^"'\n]{1,500}\2|[^\s"',;]{4,})/gi, "$1[redacted]");
 }

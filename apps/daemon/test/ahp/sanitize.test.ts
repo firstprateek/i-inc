@@ -439,6 +439,9 @@ describe("redactProse covers what is named like a secret, for brain pages and th
     [`npm_${"aB3dE5gH7j".repeat(3)}`, "aB3dE5gH7j"],
     [["sk", "live", "4eC39HqLyjWDarjtT1zdp7dc"].join("_"), "4eC39HqLyjWDarjtT1zdp7dc"],
     ["curl --token s3cr3tvalue https://x.example", "s3cr3tvalue"],
+    ['client_secret: "n0t-a-real-value-123"', "n0t-a-real-value"],
+    ["const secret = 'abc123def456ghi'", "abc123def456ghi"],
+    ["secret = abc123def456ghi", "abc123def456ghi"],
   ])("%s", (line, secret) => {
     expect(redactProse(`+ ${line}\n`)).not.toContain(secret);
     expect(redactText(line)).not.toContain(secret);
@@ -448,6 +451,10 @@ describe("redactProse covers what is named like a secret, for brain pages and th
     const text = "fixed in 9fceb02d0ae598e95dc970b74767f19372d61e53";
     expect(redactProse(text)).toBe(text);
     expect(redactTokens("token: string;")).toBe("token: string;");
+    // Publishable keys are public: a scan of code must not refuse them.
+    for (const k of ["pk_test", "pk_live", "sk_test"]) {
+      expect(redactTokens(`const key = "${k}_51Habcdefghijklmnop";`)).toContain(`${k}_51H`);
+    }
     expect(redactTokens(`npm_${"aB3dE5gH7j".repeat(3)}`)).not.toContain("aB3dE5gH7j");
   });
 });

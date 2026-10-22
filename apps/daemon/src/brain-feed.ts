@@ -540,6 +540,14 @@ export class BrainFeed {
       // What the sandbox holds: the new snapshot, except the files whose local edits were kept. Those
       // stay as they were last delivered (or absent), so the next copy offers them again, and a copy
       // is never taken for "current" while any are pending.
+      // When the copy was first made: the earliest a harvest of it could be doubted from.
+      if (!last) {
+        this.o.db.run(
+          "INSERT OR IGNORE INTO storage_state (key, body) VALUES (?, ?)",
+          `brain-copy-created:${machine}:${copy}`,
+          String(now),
+        );
+      }
       const kept = new Set(result.kept);
       // What this copy delivered is its baseline now: the daemon's record of the agent's text for those pages goes.
       const sentPaths = how === "delta" ? changedFiles(b.snap, last?.snap) : [...b.snap.files.keys()];
@@ -671,6 +679,15 @@ export class BrainFeed {
       JSON.stringify(next.pending),
       this.o.now(),
     );
+  }
+
+  /** When this employee's copy was first made in their machine, or null if the daemon never saw it made. */
+  copyCreatedAt(employeeId: string, allowHome: boolean): number | null {
+    const [row] = this.o.db.all<{ body: string }>(
+      "SELECT body FROM storage_state WHERE key = ?",
+      `brain-copy-created:${this.machineOf(employeeId)}:${this.copyId(employeeId, allowHome)}`,
+    );
+    return row ? Number(row.body) || null : null;
   }
 
   /** What the daemon last delivered to an employee's copy: when, and each page's blob id. */

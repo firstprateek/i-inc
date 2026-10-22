@@ -309,7 +309,9 @@ export class BrainHarvest {
       employeeId,
       copy,
     );
-    const since = Math.max(last?.t ?? 0, feed.deliveredInfo(employeeId, allowHome)?.at ?? 0);
+    // Not the last delivery: a delivery keeps a file the agent edited, so a teammate's edit made before it is still
+    // in the copy. Only a harvest takes the edits out (the copy's creation, if it was never harvested).
+    const since = last?.t ?? feed.copyCreatedAt(employeeId, allowHome) ?? 0;
     const marks = mates.map(() => "?").join(",");
     for (const table of ["ticket_sessions", "brain_activity"]) {
       const [row] = db.all<{ n: number }>(

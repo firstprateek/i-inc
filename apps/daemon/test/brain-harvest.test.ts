@@ -501,22 +501,42 @@ describe("a shared sandbox: edits that may not be the employee's own", () => {
     expect((await w.changes()).every((c) => c.untrusted)).toBe(true);
   });
 
-  it("leaves them trusted when nobody else worked there since the copy was delivered", async () => {
+  it("leaves them trusted when nobody else worked there since the copy was last collected", async () => {
     const w = await world();
-    // Kit's session is over before Ada's copy is brought up to date.
     const id = w.app.deps.sessions.start("99", "build", "kit", "sonnet");
     w.app.deps.sessions.finish(id);
     w.clock.advance(10);
-    w.commit("handbook", { "facts/news.md": page("News", "Something new", longBody("News")) });
-    await w.feed.sync("ada");
-    w.clock.advance(5);
+    // The first collection still covers Kit's session, which came after the copy was made.
+    w.copyFile("ada", "company/facts/first.md", page("First", "A first page", longBody("First things")));
+    await w.harvest("ada", "13");
+    w.clock.advance(10);
     w.copyFile("ada", "personal/tools/secret.md", page("Notes", "Ada's notes", longBody("Ada's notes")));
-    // Ada's own session, and a session that ended before the delivery, don't count.
+    // Ada's own session doesn't count.
     w.app.deps.sessions.start("100", "build", "ada", "opus");
     await w.harvest("ada", "14");
-    const [c] = await w.changes();
-    expect(c).toMatchObject({ status: "committed", untrusted: false });
+    const feed = await w.changes();
+    expect(feed.find((c) => c.path === "personal/tools/secret.md")).toMatchObject({
+      status: "committed",
+      untrusted: false,
+    });
     expect(w.host("ada", "tools/secret.md")).not.toContain("source: external");
+  });
+
+  it("is not fooled by a delivery after the teammate's edit: a copy keeps the edited file", async () => {
+    const w = await world();
+    const id = w.app.deps.sessions.start("99", "build", "kit", "sonnet");
+    // Kit's agent writes into Ada's copy, and its session ends.
+    w.copyFile("ada", "personal/tools/secret.md", page("Notes", "Not Ada's", longBody("Planted notes")));
+    w.app.deps.sessions.finish(id);
+    w.clock.advance(10);
+    // Ada's copy is brought up to date; the file stays, as any edit does.
+    w.commit("handbook", { "facts/news.md": page("News", "Something new", longBody("News")) });
+    const sync = await w.feed.sync("ada");
+    expect(sync.kept).toContain("personal/tools/secret.md");
+    w.clock.advance(10);
+    await w.harvest("ada", "14");
+    expect((await w.changes())[0]).toMatchObject({ status: "committed", untrusted: true });
+    expect(w.host("ada", "tools/secret.md")).toContain("source: external");
   });
 
   it("marks the changes when the session handled external content", async () => {

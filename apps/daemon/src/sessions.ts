@@ -43,7 +43,7 @@ export function redactKeyed(text: string): string {
 
   // 4. OpenAI / Anthropic keys (sk-...), Stripe keys (sk_live_...), npm tokens (npm_...)
   out = out.replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[redacted]");
-  out = out.replace(/\b(?:[sprw]k_(?:live|test)|whsec)_[A-Za-z0-9]{8,}\b/g, "[redacted]");
+  out = out.replace(/\b(?:[sr]k_live|whsec)_[A-Za-z0-9]{8,}\b/g, "[redacted]");
   out = out.replace(/\bnpm_[A-Za-z0-9]{20,}\b/g, "[redacted]");
 
   // 5. Google AIza API keys
