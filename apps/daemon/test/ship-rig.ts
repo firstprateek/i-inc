@@ -135,6 +135,8 @@ export async function shipRig(o: RigOptions) {
   const work = join(root, "work");
   const origin = join(root, "origin.git");
   mkdirSync(home, { recursive: true });
+  // No background `git gc`/maintenance: a detached child keeping the pipes open or touching the repos under a test.
+  writeFileSync(join(home, ".gitconfig"), "[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n");
   mkdirSync(work, { recursive: true });
   const env = {
     ...process.env,
@@ -167,7 +169,7 @@ export async function shipRig(o: RigOptions) {
       child.stderr.on("data", (c) => {
         output += c;
       });
-      child.on("exit", (code) => resolve({ code: code ?? 1, output }));
+      child.on("close", (code) => resolve({ code: code ?? 1, output }));
       child.stdin.end(script);
     });
   const runScript: RunScript = async (employeeId, script, extra) => {

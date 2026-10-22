@@ -17,6 +17,8 @@ export function pushRig(o: { files?: Record<string, string>; ledger?: boolean } 
   const root = mkdtempSync(join(tmpdir(), "inc-push-"));
   const home = join(root, "home");
   mkdirSync(home, { recursive: true });
+  // No background `git gc`/maintenance: a detached child keeping the pipes open or touching the repos under a test.
+  writeFileSync(join(home, ".gitconfig"), "[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n");
   const env = {
     ...process.env,
     HOME: home,
@@ -71,7 +73,7 @@ export function pushRig(o: { files?: Record<string, string>; ledger?: boolean } 
       child.stderr.on("data", (c) => {
         output += c;
       });
-      child.on("exit", (code) => resolve({ code: code ?? 1, output }));
+      child.on("close", (code) => resolve({ code: code ?? 1, output }));
       child.stdin.end(script);
     });
 

@@ -347,7 +347,7 @@ const bash = (script: string, extra: Record<string, string> = {}) =>
     c.stderr.on("data", (d) => {
       output += d;
     });
-    c.on("exit", (code) => resolve({ code: code ?? 1, output }));
+    c.on("close", (code) => resolve({ code: code ?? 1, output }));
     c.stdin.end(script);
   });
 
