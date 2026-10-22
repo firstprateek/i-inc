@@ -6,6 +6,7 @@ import {
   type Agent,
   assignHelper,
   type BacklogItem,
+  type BrainState,
   type ChatSession,
   type Clock,
   type Company,
@@ -541,7 +542,55 @@ export class Daemon {
       ...(workspace ? { workspace } : {}),
       // Agents with a copy of the brain edit it; the retro asks for lessons there (T58).
       ...(this.d.brainFeed?.enabled ? { brainWrites: (id: Id) => this.d.brainFeed.copyUsable(id) } : {}),
+      brainState: this.brainState,
     };
+  }
+
+  /**
+   * What an orientation or tidy-up is checked against when its session ends. With sandboxes the employee's
+   * copy is collected first (the same harvest that runs at the end of the ticket, which then finds nothing
+   * more), so the pages the agent wrote are in the brain when they are looked at.
+   */
+  private readonly brainState: BrainState = {
+    pages: async (employeeId, ticketId) => {
+      await this.collectCopy(employeeId, ticketId, false);
+      const repo = { kind: "brain", id: employeeId } as const;
+      if (!this.d.knowledge.exists(repo)) return null;
+      return new Map(this.d.knowledge.pages(repo).map((p) => [p.path.replace(/\.md$/, ""), p.text]));
+    },
+    tidyLeft: async (employeeId, ticketId) => {
+      await this.collectCopy(employeeId, ticketId, true);
+      const feed = this.d.brainFeed;
+      if (!feed) return null;
+      const r = feed.tidyData(employeeId);
+      const at = (p: { scope: string; slug: string }) => `${p.scope}/${p.slug}`;
+      return [
+        ...r.duplicates.map((x) => `duplicate pages not merged: ${at(x.a)} and ${at(x.b)} (${x.why})`),
+        ...r.conflicts.map((x) => `a \`## Conflict\` section is still in ${at(x)}`),
+        ...r.broken.map((x) => `broken link [[${x.link}]] in ${at(x.from)}`),
+        ...r.maps
+          .filter((m) => m.lines > m.limit)
+          .map((m) => `the map of ${m.scope} is ${m.lines} lines, over its limit of ${m.limit}`),
+      ];
+    },
+  };
+
+  /** Collects an employee's brain copy into the shared brain, now. A copy that can't be collected fails the run, which backs off and tries again. */
+  private async collectCopy(employeeId: Id, ticketId: Id, tidy: boolean): Promise<void> {
+    const harvest = this.d.brainHarvest;
+    if (!harvest || !this.d.brainFeed?.enabled) return;
+    const r = await harvest.run({
+      employeeId,
+      allowHome: !tidy,
+      source: { kind: "ticket", id: ticketId },
+      trigger: "ticket-end",
+      tidy,
+    });
+    if (r.status === "failed") {
+      throw new Error(
+        `couldn't collect ${employeeId}'s brain copy to check the work${r.detail ? `: ${r.detail}` : ""}`,
+      );
+    }
   }
 
   async state(id: Id): Promise<TicketState> {

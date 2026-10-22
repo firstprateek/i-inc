@@ -27,6 +27,7 @@ import {
   isHomeEmployee,
   isLocalEngine,
   knowledgeLog,
+  orientationDoneWhen,
   type ProjectRelease,
   type ProposedEdit,
   parseScope,
@@ -1904,14 +1905,14 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         }
         // A brain from the template, and orientation as the first ticket (spec §5, "Hiring").
         d.knowledge.ensureBrain(hire);
-        const pa = hire.role === "Personal Assistant";
+        const pa = isHomeEmployee(hire);
         const orientation = d.tickets.create(
           {
             title: `Orientation for ${hire.name}`,
             project: pa ? "Home" : (hire.projects?.[0] ?? "General"),
             type: "orientation",
             effort: "low",
-            doneWhen: ["the brain has a page for each project"],
+            doneWhen: orientationDoneWhen(pa),
             assignee: hire.id,
             priority: 100,
           },

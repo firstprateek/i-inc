@@ -341,4 +341,20 @@ export interface Ports {
    * as JSON. Absent in demo mode and in tests; false when the copy is unavailable for this employee.
    */
   brainWrites?: (employeeId: Id) => boolean;
+  /**
+   * What the brain holds, for checking an orientation or a tidy-up against its done-when when its session ends.
+   * Absent in tests that don't need it: the ticket then closes as before.
+   */
+  brainState?: BrainState;
+}
+
+/** The brain as the runner checks it. Each method may return null: it can't tell now, and the check is skipped. */
+export interface BrainState {
+  /**
+   * The pages of this employee's own brain, by page (`projects/duet`) with their text, after the pages the
+   * session wrote in its copy have been collected into it.
+   */
+  pages(employeeId: Id, ticketId: Id): Promise<Map<string, string> | null>;
+  /** After collecting: what the tidy-up still has to do, as plain lines. Empty: nothing is left. */
+  tidyLeft(employeeId: Id, ticketId: Id): Promise<string[] | null>;
 }

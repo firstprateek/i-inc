@@ -1,5 +1,7 @@
 // The brief a session starts from. Any engine can pick up a stage from it, so an engine switch or a
 // crash costs only the old session's in-context memory (spec §4, principle 5).
+import { isHomeEmployee } from "./hiring.ts";
+import { offlineNotes } from "./home.ts";
 import { attachmentPath, type Employee, type Ticket } from "./model.ts";
 import type { StageId } from "./stages.ts";
 import type { TicketState } from "./state.ts";
@@ -19,6 +21,8 @@ export function brief(
     ...(ticket.reason ? [`Why: ${ticket.reason}`] : []),
     ...(employee ? [`Assignee: ${employee.name}, ${employee.role}`] : []),
     ...(employee?.prompt ? ["Role instructions:", employee.prompt] : []),
+    // A PA's machine has no internet and no root, and a small model that isn't told tries to install things.
+    ...(employee && isHomeEmployee(employee) ? [offlineNotes(employee.id)] : []),
     "Done when:",
     ...ticket.doneWhen.map((d) => `- ${d}`),
     ...images(ticket),

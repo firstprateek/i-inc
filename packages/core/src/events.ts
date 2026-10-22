@@ -126,4 +126,9 @@ export type TicketEvent =
   | { type: "unreadable"; at: number; seq: number; reason: string }
   /** Part of an agent's reply wasn't usable (a bad enum, a wrong type) and was left out, not stored. */
   | { type: "reply-flagged"; at: number; stage: StageId; what: string; detail: string }
+  /**
+   * An orientation or tidy-up ended and its done-when was checked against what the agent left behind (the brain
+   * pages it wrote, what the tidy-up report still lists). `missing` is what was not there; empty means met.
+   */
+  | { type: "done-when-checked"; at: number; stage: StageId; met: boolean; missing: string[] }
   | { type: "failed"; at: number; stage: StageId; reason: string; tried: string[] };

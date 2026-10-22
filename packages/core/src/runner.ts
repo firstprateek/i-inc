@@ -6,6 +6,14 @@
 import { brief, freshBrief } from "./brief.ts";
 import { engineAllowed, engineFor, findEngine, nextFallback } from "./engines.ts";
 import type { Decision, HelperDuty, NeedsYou, TicketEvent } from "./events.ts";
+import { isHomeEmployee } from "./hiring.ts";
+import {
+  engineerOrientationTask,
+  homeOrientationTask,
+  orientationExpectations,
+  orientationFeedback,
+  tidyFeedback,
+} from "./home.ts";
 import {
   type Duty,
   defaultProjectPolicy,
@@ -219,23 +227,47 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     );
   },
 
-  // Orientation (spec §5, "Hiring"): the new hire reads, then proposes its brain's first pages.
+  // Orientation (spec §5, "Hiring"): the new hire reads, then writes its brain's first pages. A PA has no code
+  // projects, so its orientation is its own (home.ts). It closes only when the pages it was asked for are there.
   async orient(c) {
-    const out = await session(
-      c,
-      "build",
-      c.builder,
-      `Read the handbook and each project's CLAUDE.md. Write what you will need as pages in your brain: one page per project under projects/, plus anything about the tools. ${pageRules} Reply as JSON: {"edits":[{"page","text"}]}.`,
-    );
+    if (c.s.lastAnswer?.answer === "reject") {
+      await c.emit(failed(c, "orient", "the owner declined to keep going"));
+      return;
+    }
+    const home = isHomeEmployee(c.builder);
+    const expected = orientationExpectations(c.ticket, c.builder, home);
+    const last = c.s.doneWhen.last;
+    const redo = last && !last.met ? expected.filter((e) => last.missing.includes(e.missing)) : [];
+    const task = [
+      home ? homeOrientationTask(c.builder) : engineerOrientationTask(pageRules),
+      ...(redo.length ? [orientationFeedback(redo)] : []),
+    ].join("\n\n");
+    const out = await session(c, "build", c.builder, task);
     if (out === null) return;
     const read = readEdits(replyField(out, "edits"), { layer: "brain" });
     const edits = read.kept;
     const at = c.p.clock.now();
-    await c.emit(
-      ...flagged(c, "orient", "edits", read.dropped),
-      { type: "knowledge-proposed", at, employeeId: c.builder.id, apply: edits, awaitOwner: [] },
-      finished(c, "orient"),
-      { type: "closed", at, outcome: "done" },
+    // What the agent wrote in its brain copy is collected now, so the check sees it (and the harvest at the end
+    // of the ticket finds nothing more to do). Pages it sent back as JSON count as written too.
+    const have = await c.p.brainState?.pages(c.builder.id, c.ticket.id);
+    let unmet: string[] | null = null;
+    if (have) {
+      const pages = new Map([
+        ...have,
+        ...Object.entries(c.s.brainProposed),
+        ...edits.map((e): [string, string] => [e.page, e.text]),
+      ]);
+      unmet = expected.filter((e) => !e.met(pages)).map((e) => e.missing);
+    }
+    await closeIfDone(
+      c,
+      "orient",
+      unmet,
+      [
+        ...flagged(c, "orient", "edits", read.dropped),
+        { type: "knowledge-proposed", at, employeeId: c.builder.id, apply: edits, awaitOwner: [] },
+      ],
+      home ? "its home pages" : "its project pages",
     );
   },
 
@@ -520,10 +552,22 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
   // The daily tidy-up (docs/design/brain.md, "Tending"): the librarian edits the brain copy. What it changes is
   // collected, checked and committed by the daemon after the ticket; nothing here proposes an edit.
   async tidy(c) {
-    const out = await session(c, "librarian", c.builder, tidyTask);
+    if (c.s.lastAnswer?.answer === "reject") {
+      await c.emit(failed(c, "tidy", "the owner declined to keep going"));
+      return;
+    }
+    const last = c.s.doneWhen.last;
+    const out = await session(
+      c,
+      "librarian",
+      c.builder,
+      last && !last.met ? `${tidyTask}\n\n${tidyFeedback(last.missing)}` : tidyTask,
+    );
     if (out === null) return;
-    const at = c.p.clock.now();
-    await c.emit(checkpoint(c, "tidy", out), finished(c, "tidy"), { type: "closed", at, outcome: "done" });
+    // What the librarian changed in its copy is collected now, then the report is made again: the ticket is
+    // done when nothing it listed is left (the pages unused for 60 days may stay if they are worth keeping).
+    const left = (await c.p.brainState?.tidyLeft(c.builder.id, c.ticket.id)) ?? null;
+    await closeIfDone(c, "tidy", left, [checkpoint(c, "tidy", out)], "the tidy-up");
   },
 
   // The retro (spec §6, stage 11): builder and reviewer each propose 0-2 knowledge edits.
@@ -800,6 +844,45 @@ async function helper(c: Step, duty: HelperDuty): Promise<Employee | "none" | "e
 async function wantHelper(c: Step, duty: HelperDuty): Promise<void> {
   if (c.opts.helpers !== "scheduler" || c.s.waitingFor) return;
   await c.emit({ type: "helper-wanted", at: c.p.clock.now(), stage: c.s.active as StageId, duty });
+}
+
+/** How many sessions an orientation or tidy-up gets to meet its done-when before it goes to the owner. */
+const maxMisses = 2;
+
+/**
+ * Closes an orientation or tidy-up only when its done-when is met. `unmet` is what the check found missing, or
+ * null when it can't tell (no brain to look at: the ticket closes as it always did). The first miss runs the
+ * stage once more, with what is missing in its brief; the second goes to the owner as a Needs you card with the
+ * reason, never to done (spec §6).
+ */
+async function closeIfDone(
+  c: Step,
+  stage: "orient" | "tidy",
+  unmet: string[] | null,
+  before: TicketEvent[],
+  what: string,
+): Promise<void> {
+  const at = c.p.clock.now();
+  if (unmet !== null && unmet.length > 0) {
+    const misses = c.s.doneWhen.misses + 1;
+    const reason = `${c.builder.name} says ${what} is done, but ${unmet.join("; ")}${
+      misses >= maxMisses ? `, after ${misses} sessions` : ""
+    }`;
+    await c.emit(
+      ...before,
+      { type: "done-when-checked", at, stage, met: false, missing: unmet },
+      ...(misses >= maxMisses ? [needsYou(c, stage, { kind: "stuck", reason })] : []),
+    );
+    return;
+  }
+  await c.emit(
+    ...before,
+    ...(unmet === null
+      ? []
+      : [{ type: "done-when-checked", at, stage, met: true, missing: [] } as TicketEvent]),
+    finished(c, stage),
+    { type: "closed", at, outcome: "done" },
+  );
 }
 
 /** Runs one session. Returns its output, or null when it paused, switched engine, escalated or failed. */

@@ -99,6 +99,13 @@ export interface TicketState {
    * has pushed since (the revert waits for at least one: downtime is not a failed fix).
    */
   mainRed: { sha: string; since: number; reason: string; fixes: number } | null;
+  /**
+   * The done-when check of an orientation or tidy-up: how many times in a row it found something missing (the
+   * stage is tried once more, then goes to the owner), and the last result, which the next session is told.
+   */
+  doneWhen: { misses: number; last: { met: boolean; missing: string[] } | null };
+  /** Brain pages the agent replied with as JSON, by page: they are applied after the run, but count as written. */
+  brainProposed: Record<string, string>;
   /** Time spent running, leaving out time paused, failed or waiting on the owner. */
   workedMs: number;
   /** When the last event happened, for `workedMs`. */
@@ -148,6 +155,8 @@ export function emptyState(): TicketState {
     waitingFor: null,
     pr: null,
     prFor: null,
+    doneWhen: { misses: 0, last: null },
+    brainProposed: {},
     workedMs: 0,
     lastAt: null,
     pushed: null,
@@ -171,6 +180,7 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
         checkFailures: 0,
         fixDue: false,
         lastAnswer: null,
+        doneWhen: { misses: 0, last: null },
       };
     case "session-started":
       return {
@@ -287,6 +297,7 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
           checkFailures: 0,
           proofFailures: 0,
           gateConflicts: 0,
+          doneWhen: { ...s.doneWhen, misses: 0 },
           lastAnswer: e.answer === "reject" ? answered : null,
         };
       }
@@ -338,6 +349,7 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
             checkFailures: 0,
             proofFailures: 0,
             gateConflicts: 0,
+            doneWhen: { ...s.doneWhen, misses: 0 },
           }
         : s;
     case "pr-opened":
@@ -373,7 +385,31 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
       }
       return { ...s, status: "running", decision: e.decision };
     case "knowledge-proposed":
-      return { ...s, interrupted: false, retroBy: [...s.retroBy, e.employeeId] };
+      return {
+        ...s,
+        interrupted: false,
+        retroBy: [...s.retroBy, e.employeeId],
+        brainProposed: {
+          ...s.brainProposed,
+          ...Object.fromEntries(
+            (Array.isArray(e.apply) ? e.apply : [])
+              .filter((x) => isRecord(x) && x.layer === "brain" && typeof x.page === "string")
+              .map((x) => [x.page, text(x.text)]),
+          ),
+        },
+      };
+    case "done-when-checked":
+      return {
+        ...s,
+        interrupted: false,
+        doneWhen: {
+          misses: e.met ? 0 : s.doneWhen.misses + 1,
+          last: {
+            met: e.met === true,
+            missing: Array.isArray(e.missing) ? e.missing.map((m) => text(m)) : [],
+          },
+        },
+      };
     case "reply-flagged":
     case "unreadable":
       return s;
