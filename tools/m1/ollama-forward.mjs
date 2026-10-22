@@ -7,9 +7,15 @@
 // registry, and `:cloud` models send the prompt to Ollama's servers. So a request is forwarded only if
 //   - it is one of the calls below, with the method it needs, on exactly that path (no pull, push,
 //     create, copy, delete or blobs, no other path, no encoded or dotted path);
-//   - its JSON body names a model that is installed on this host (from /api/tags, kept for 30 s),
-//     is not a cloud model (`:cloud`, `-cloud`, or listed by Ollama as served remotely), and has no
-//     registry host in its name.
+//   - its JSON body names a model that is installed on this host (from /api/tags, kept for 30 s) and
+//     is not a cloud model (`:cloud`, `-cloud`, or listed by Ollama as served remotely). A name that
+//     isn't installed is refused, which includes any name with a registry host in it;
+//   - its JSON object has exactly one `model` (and `name`) key, spelt that way: Ollama matches keys
+//     without regard to case and the last one wins, so `{"model":"ok","MODEL":"x:cloud"}` would
+//     otherwise get past the check. What is forwarded is the object as parsed and re-serialised, never
+//     the bytes as received, so what was checked is what Ollama reads;
+//   - it fits the limits: few connections, few from one machine, a body of 4 MB at most that arrives
+//     within 15 s. A generation itself may run for minutes, with its answer streaming.
 // It logs one line per request: which machine, the call, the model and the answer.
 // Run it on the host: node tools/m1/ollama-forward.mjs, or as a LaunchAgent (tools/host/).
 import http from "node:http";
@@ -30,20 +36,41 @@ export const ALLOWED = new Map([
   ["GET /v1/models", null],
 ]);
 
-const MAX_BODY = 32 * 1024 * 1024;
+/** The limits, each of which a test can lower through createRelay's `limits`. */
+export const LIMITS = {
+  maxBody: 4 * 1024 * 1024,
+  maxConnections: 32,
+  perAddress: 4,
+  /** Time to send the headers and then the whole body; an idle connection is dropped after the same. */
+  receiveMs: 15_000,
+  /** Time a call may go without a byte either way once it was received (a model loading, a long answer). */
+  idleMs: 10 * 60_000,
+};
 const TAGS_TTL_MS = 30_000;
 
 /** `qwen3` is `qwen3:latest`. */
 const withTag = (name) => (name.includes(":") ? name : `${name}:latest`);
 
-/** Why a model name may not be used, or null when it may (it is already known to be installed). */
+/** Why a model name may not be used, or null when it may (installed or not: see `registryHost`). */
 export function modelProblem(name) {
   if (typeof name !== "string" || name.length === 0 || name.length > 200) return "a model name is needed";
   if (!/^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/.test(name)) return "that is not a model name";
   if (/(^|[:\-_/])cloud$/i.test(name) || /:cloud\b/i.test(name)) return "cloud models are not served";
-  const slash = name.indexOf("/");
-  if (slash > 0 && /[.:]/.test(name.slice(0, slash))) return "models from a registry host are not served";
   return null;
+}
+
+/** Whether a name carries a registry host (`evil.example/x`): such a name is only served if it is already installed. */
+export function registryHost(name) {
+  const slash = name.indexOf("/");
+  return slash > 0 && /[.:]/.test(name.slice(0, slash));
+}
+
+/** Keys of the JSON object that Ollama would read as `model` or `name` but that are not spelt that way, or are doubled. */
+export function oddModelKeys(object) {
+  return Object.keys(object).filter((k) => {
+    const lower = k.toLowerCase();
+    return (lower === "model" || lower === "name") && k !== lower;
+  });
 }
 
 /**
@@ -54,7 +81,11 @@ export function createRelay({
   ollama = { host: "127.0.0.1", port: Number(process.env.OLLAMA_PORT ?? 11434) },
   now = Date.now,
   log = () => {},
+  limits = {},
 } = {}) {
+  const lim = { ...LIMITS, ...limits };
+  /** Open connections by remote address. */
+  const open = new Map();
   let tags = { at: -Infinity, names: new Set() };
 
   /** The names Ollama has installed here, cached. Cloud entries are not counted. */
@@ -91,35 +122,56 @@ export function createRelay({
       let body = Buffer.alloc(0);
       let model;
       if (fields) {
+        const declared = Number(req.headers["content-length"]);
+        if (Number.isFinite(declared) && declared > lim.maxBody)
+          return refuse(413, "the request is too large");
         const chunks = [];
         let size = 0;
         for await (const chunk of req) {
           size += chunk.length;
-          if (size > MAX_BODY) return refuse(413, "the request is too large");
+          if (size > lim.maxBody) return refuse(413, "the request is too large");
           chunks.push(chunk);
         }
-        body = Buffer.concat(chunks);
         let json;
         try {
-          json = JSON.parse(body.toString("utf8"));
+          json = JSON.parse(Buffer.concat(chunks).toString("utf8"));
         } catch {
           return refuse(400, "the body is not JSON");
         }
         if (json === null || typeof json !== "object" || Array.isArray(json)) {
           return refuse(400, "the body is not a JSON object");
         }
+        // Any key that is not plain ASCII, or that reads as model/name without being spelt so, is refused.
+        if (Object.keys(json).some((k) => !/^[A-Za-z0-9_.-]{1,64}$/.test(k))) {
+          return refuse(400, "the body has a key that is not a plain name");
+        }
+        const odd = oddModelKeys(json);
+        if (odd.length) return refuse(400, "a model is named by `model` (or `name`), spelt that way", odd[0]);
         const named = fields.map((f) => json[f]).filter((v) => v !== undefined);
         if (named.length === 0) return refuse(400, "a model is needed");
         const names = await installed();
         for (const n of named) {
           const problem = modelProblem(n);
           if (problem) return refuse(403, problem, String(n).slice(0, 60));
-          if (!names.has(withTag(n))) return refuse(403, "that model is not installed on this host", n);
+          if (!names.has(withTag(n))) {
+            return refuse(
+              403,
+              registryHost(n)
+                ? "models from a registry host are not served unless installed"
+                : "that model is not installed on this host",
+              n,
+            );
+          }
         }
         model = named[0];
+        // What was checked is what is sent: the parsed object, written out again (a doubled key keeps the
+        // value that was checked, the last one, which is the one Ollama reads too).
+        body = Buffer.from(JSON.stringify(json));
       } else {
         req.resume();
       }
+      // The call is in: from here it may take as long as the model needs, as long as bytes keep moving.
+      req.socket.setTimeout(lim.idleMs);
 
       const upstream = http.request(
         {
@@ -148,14 +200,37 @@ export function createRelay({
         else res.destroy();
       });
       res.on("close", () => upstream.destroy());
+      // Once the answer is out, a connection kept alive is idle again.
+      res.on("finish", () => req.socket.setTimeout(lim.receiveMs));
       upstream.end(body);
     } catch (err) {
       if (!res.headersSent) refuse(502, `the relay failed (${err.message})`);
       else res.destroy();
     }
   });
-  server.headersTimeout = 10_000;
-  server.requestTimeout = 0; // a generation can run for minutes
+  // Hold-ups: the headers and the body must arrive within receiveMs; a quiet connection is dropped after
+  // that too, and a call that is in progress is dropped after idleMs without a byte (set per call above).
+  server.headersTimeout = lim.receiveMs;
+  server.requestTimeout = lim.receiveMs;
+  server.keepAliveTimeout = lim.receiveMs;
+  server.maxConnections = lim.maxConnections;
+  server.on("connection", (socket) => {
+    const from = socket.remoteAddress ?? "?";
+    const n = (open.get(from) ?? 0) + 1;
+    if (n > lim.perAddress) {
+      log(`${from} refused: more than ${lim.perAddress} connections open`);
+      socket.destroy();
+      return;
+    }
+    open.set(from, n);
+    socket.setTimeout(lim.receiveMs);
+    socket.on("timeout", () => socket.destroy());
+    socket.on("close", () => {
+      const left = (open.get(from) ?? 1) - 1;
+      if (left <= 0) open.delete(from);
+      else open.set(from, left);
+    });
+  });
   return server;
 }
 

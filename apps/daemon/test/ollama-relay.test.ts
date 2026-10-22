@@ -3,6 +3,7 @@
 // of its choosing, no cloud models, no model that isn't installed.
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import net from "node:net";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -14,9 +15,12 @@ const relayModule = (await import(relayPath)) as {
     log?: (l: string) => void;
   }) => http.Server;
   modelProblem: (n: unknown) => string | null;
+  registryHost: (n: string) => boolean;
+  oddModelKeys: (o: Record<string, unknown>) => string[];
+  LIMITS: Record<string, number>;
   ALLOWED: Map<string, string[] | null>;
 };
-const { createRelay, modelProblem, ALLOWED } = relayModule;
+const { createRelay, modelProblem, registryHost, oddModelKeys, ALLOWED } = relayModule;
 
 let ollama: http.Server;
 let relay: http.Server;
@@ -25,6 +29,7 @@ let tagsCalls: number;
 let clock: number;
 let logs: string[];
 let models: Record<string, unknown>[];
+let upstreamPort: number;
 
 const listen = (s: http.Server) =>
   new Promise<number>((r) => s.listen(0, "127.0.0.1", () => r((s.address() as AddressInfo).port)));
@@ -37,6 +42,7 @@ beforeEach(async () => {
   models = [
     { name: "qwen3:8b", model: "qwen3:8b" },
     { name: "nomic-embed-text:latest", model: "nomic-embed-text:latest" },
+    { name: "hf.co/someone/model:Q4_K_M", model: "hf.co/someone/model:Q4_K_M" },
     { name: "gpt-oss:120b-cloud", model: "gpt-oss:120b-cloud", remote_host: "https://ollama.com:443" },
   ];
   ollama = http.createServer((req, res) => {
@@ -56,6 +62,7 @@ beforeEach(async () => {
     });
   });
   const upstream = await listen(ollama);
+  upstreamPort = upstream;
   relay = createRelay({
     ollama: { host: "127.0.0.1", port: upstream },
     now: () => clock,
@@ -157,7 +164,7 @@ describe("the Ollama relay", () => {
       "evil.example/c2VjcmV0/x",
       "evil.example:5000/data/x:latest",
       "registry.ollama.ai/library/qwen3:8b",
-      "hf.co/someone/model",
+      "hf.co/someone/other-model",
       "llama3",
       "qwen3", // only qwen3:8b is installed: qwen3 is qwen3:latest
       "qwen3:70b",
@@ -210,7 +217,7 @@ describe("the Ollama relay", () => {
   });
 
   it("refuses an oversized request without forwarding it", async () => {
-    const big = JSON.stringify({ model: "qwen3:8b", prompt: "x".repeat(33 * 1024 * 1024) });
+    const big = JSON.stringify({ model: "qwen3:8b", prompt: "x".repeat(5 * 1024 * 1024) });
     const r = await call("POST", "/api/generate", undefined, big).catch(() => ({ status: 413, text: "" }));
     expect([413, 0]).toContain(r.status);
     expect(hits).toEqual([]);
@@ -231,12 +238,192 @@ describe("the Ollama relay", () => {
   });
 });
 
+describe("the model check cannot be got round", () => {
+  it("serves a model that is installed locally even though its name has a registry host", async () => {
+    expect((await call("POST", "/api/chat", { model: "hf.co/someone/model:Q4_K_M" })).status).toBe(200);
+  });
+
+  it("refuses a key that reads as model or name without being spelt so, whatever the case or encoding", async () => {
+    for (const raw of [
+      '{"model":"qwen3:8b","MODEL":"gpt-oss:120b-cloud"}',
+      '{"MODEL":"qwen3:8b"}',
+      '{"Model":"qwen3:8b"}',
+      '{"model":"qwen3:8b","mOdEl":"x"}',
+      '{"model":"qwen3:8b","Name":"evil.example/x"}',
+      '{"model":"qwen3:8b","NAME":"x:cloud"}',
+      '{"model":"qwen3:8b","\\u004dodel":"gpt-oss:120b-cloud"}',
+      '{"model":"qwen3:8b","mode\\u006c ":"x"}',
+      '{"model":"qwen3:8b","ſame":"x"}',
+      '{"model":"qwen3:8b","modeꞁ":"x"}',
+    ]) {
+      const r = await call("POST", "/api/chat", undefined, raw);
+      expect([400, 403], raw).toContain(r.status);
+    }
+    expect(hits).toEqual([]);
+    expect(oddModelKeys({ model: "a", MODEL: "b", Name: "c", name: "d", other: 1 })).toEqual([
+      "MODEL",
+      "Name",
+    ]);
+  });
+
+  it("forwards the object it checked, re-written, not the bytes it received", async () => {
+    // A doubled key: the last wins in JSON.parse and in Ollama, and what is sent has the key once.
+    await call("POST", "/api/chat", undefined, '{"model":"gpt-oss:120b-cloud","model":"qwen3:8b","x":1}');
+    expect(hits).toHaveLength(1);
+    expect(hits[0]?.body).toBe('{"model":"qwen3:8b","x":1}');
+    expect((hits[0]?.body.match(/"model"/g) ?? []).length).toBe(1);
+    // The other way round is refused: the model that counts is the cloud one.
+    const refused = await call(
+      "POST",
+      "/api/chat",
+      undefined,
+      '{"model":"qwen3:8b","model":"gpt-oss:120b-cloud"}',
+    );
+    expect(refused.status).toBe(403);
+    // Whitespace, an escaped key that spells `model`, and key order don't matter: one key, checked.
+    hits.length = 0;
+    await call("POST", "/api/chat", undefined, ' { "mod\\u0065l" : "qwen3:8b" , "stream" : false } ');
+    expect(hits[0]?.body).toBe('{"model":"qwen3:8b","stream":false}');
+  });
+});
+
+describe("the relay's limits", () => {
+  const rawSocket = (port: number) =>
+    new Promise<net.Socket>((r, j) => {
+      const sock = net.connect(port, "127.0.0.1", () => r(sock));
+      sock.on("error", j);
+    });
+  const closed = (sock: net.Socket) =>
+    new Promise<void>((r) => (sock.destroyed ? r() : sock.once("close", () => r())));
+  const small = (limits: Record<string, number>) => {
+    relay.closeAllConnections();
+    return createRelay({ ollama: { host: "127.0.0.1", port: upstreamPort }, limits });
+  };
+  async function serve(server: http.Server) {
+    relay = server;
+    return listen(server);
+  }
+
+  it("refuses a body over the cap, by its declared length without reading it and by its size when it has no length", async () => {
+    const port = await serve(small({ maxBody: 1000 }));
+    const sock = await rawSocket(port);
+    sock.write(
+      "POST /api/chat HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 30000000\r\n\r\n",
+    );
+    const answer = await new Promise<string>((r) => sock.once("data", (d) => r(String(d))));
+    expect(answer).toContain("413");
+    sock.destroy();
+    const chunked = await rawSocket(port);
+    chunked.write("POST /api/chat HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n");
+    chunked.write(`${(2000).toString(16)}\r\n${"x".repeat(2000)}\r\n`);
+    const answer2 = await new Promise<string>((r) => chunked.once("data", (d) => r(String(d))));
+    expect(answer2).toContain("413");
+    chunked.destroy();
+    expect(hits).toEqual([]);
+  });
+
+  it("drops a connection that promises a body and does not send it", async () => {
+    const port = await serve(small({ receiveMs: 150 }));
+    const sock = await rawSocket(port);
+    sock.on("error", () => {});
+    sock.write("POST /api/chat HTTP/1.1\r\nHost: x\r\nContent-Length: 3000000\r\n\r\n{");
+    await closed(sock);
+    const idle = await rawSocket(port); // and one that sends nothing at all
+    idle.on("error", () => {});
+    await closed(idle);
+    expect(hits).toEqual([]);
+  });
+
+  it("allows a few connections from one address, and no more", async () => {
+    const port = await serve(small({ perAddress: 2, receiveMs: 5000 }));
+    const a = await rawSocket(port);
+    const b = await rawSocket(port);
+    const c = await rawSocket(port).catch(() => undefined);
+    c?.on("error", () => {});
+    if (c) await closed(c);
+    expect(c === undefined || c.destroyed).toBe(true);
+    a.destroy();
+    b.destroy();
+    await closed(a);
+    await closed(b);
+    // The count goes back down when they close.
+    const d = await rawSocket(port);
+    const answer = new Promise<string>((r) => d.once("data", (x) => r(String(x))));
+    d.write("GET /api/tags HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    expect(await answer).toContain("200");
+    d.destroy();
+  });
+
+  it("caps the connections it holds in all", async () => {
+    const server = small({ maxConnections: 2, perAddress: 10, receiveMs: 5000 });
+    const port = await serve(server);
+    expect(server.maxConnections).toBe(2);
+    const a = await rawSocket(port);
+    const b = await rawSocket(port);
+    const c = await rawSocket(port).catch(() => undefined);
+    c?.on("error", () => {});
+    if (c) await closed(c);
+    expect(c === undefined || c.destroyed).toBe(true);
+    a.destroy();
+    b.destroy();
+  });
+
+  it("lets a long generation stream for longer than the time to receive a request", async () => {
+    ollama.removeAllListeners("request");
+    ollama.on("request", (req, res) => {
+      req.resume();
+      res.writeHead(200, { "content-type": "application/x-ndjson" });
+      let n = 0;
+      const tick = setInterval(() => {
+        res.write(`{"n":${n++}}\n`);
+        if (n === 3) {
+          clearInterval(tick);
+          res.end();
+        }
+      }, 300);
+    });
+    clock += 60_000; // tags are fetched afresh; the fake above answers any path, so give it a tags list
+    const tagsServer = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ models }));
+    });
+    const tagsPort = await listen(tagsServer);
+    const gen = http.createServer((req, res) => {
+      if (req.url === "/api/tags") return tagsServer.emit("request", req, res);
+      ollama.emit("request", req, res);
+    });
+    const genPort = await listen(gen);
+    const port = await serve(
+      createRelay({ ollama: { host: "127.0.0.1", port: genPort }, limits: { receiveMs: 200, idleMs: 3000 } }),
+    );
+    const r = await new Promise<string>((resolveCall, reject) => {
+      const req = http.request({ host: "127.0.0.1", port, method: "POST", path: "/api/chat" }, (res) => {
+        let text = "";
+        res.on("data", (c) => {
+          text += c;
+        });
+        res.on("end", () => resolveCall(text));
+      });
+      req.on("error", reject);
+      req.end(JSON.stringify({ model: "qwen3:8b" }));
+    });
+    expect(r).toBe('{"n":0}\n{"n":1}\n{"n":2}\n');
+    gen.closeAllConnections();
+    tagsServer.closeAllConnections();
+    await Promise.all([new Promise((x) => gen.close(x)), new Promise((x) => tagsServer.close(x))]);
+    void tagsPort;
+  });
+});
+
 describe("what makes a model name unusable", () => {
   it("is a cloud name, a registry host, or not a name", () => {
     expect(modelProblem("qwen3:8b")).toBeNull();
     expect(modelProblem("library/qwen3:8b")).toBeNull();
-    expect(modelProblem("a.b/c")).toMatch(/registry/);
-    expect(modelProblem("a:5000/c")).toMatch(/registry/);
+    expect(modelProblem("a.b/c")).toBeNull(); // served only if installed: the relay checks that
+    expect(registryHost("a.b/c")).toBe(true);
+    expect(registryHost("a:5000/c")).toBe(true);
+    expect(registryHost("library/qwen3")).toBe(false);
+    expect(registryHost("qwen3:8b")).toBe(false);
     expect(modelProblem("m:cloud")).toMatch(/cloud/);
     expect(modelProblem("m-cloud")).toMatch(/cloud/);
     expect(modelProblem(undefined)).toMatch(/needed/);
