@@ -38,7 +38,7 @@ import { avatar, base, projectBadge, selectField } from "./shared.ts";
 import "./conv-composer.ts";
 import "./conv-turn.ts";
 import { modeKey, rememberModes } from "../conversations/prefs.ts";
-import { web } from "../links.ts";
+import { app, web } from "../links.ts";
 import type { SendDetail } from "./conv-composer.ts";
 import type { InputDetail } from "./conv-question.ts";
 import type { ConfirmDetail } from "./conv-tool.ts";
@@ -1019,7 +1019,7 @@ export class IncConvThread extends LitElement {
             !chat
               ? gone
                 ? watch
-                  ? html`<div class="empty"><h2>This session's live view is gone</h2><p>It was let go of to save space. The ticket page still has its transcript.</p><p><a href=${watch.back}>Back to the ticket</a></p></div>`
+                  ? html`<div class="empty"><h2>This session's live view is gone</h2><p>It was let go of to save space. The ticket page still has its transcript.</p><p><a href=${app(watch.back)}>Back to the ticket</a></p></div>`
                   : html`<div class="empty"><h2>This conversation is gone</h2><p>It was removed from the host. Pick another from the list.</p></div>`
                 : html`<div class="skeleton" aria-busy="true" aria-label="Loading the conversation"><i></i><i></i><i></i></div>`
               : html`
@@ -1062,7 +1062,7 @@ export class IncConvThread extends LitElement {
         ${
           watch
             ? html`<p class="ro-note" role="note"><span>Read-only: you are watching ${name}'s ${watch.stage} stage of ticket #${watch.ticket}. It runs on its own, so there is nothing to send here.</span>
-                <a href=${watch.back}>Back to the ticket</a></p>`
+                <a href=${app(watch.back)}>Back to the ticket</a></p>`
             : html`<inc-conv-composer .session=${session} .chat=${chat} .conversationId=${conv.id} .name=${name} .blocked=${blocked} .onSend=${this.send}></inc-conv-composer>`
         }
       </div>`;

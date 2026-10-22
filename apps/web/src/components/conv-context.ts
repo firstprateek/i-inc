@@ -241,7 +241,7 @@ export class IncConvContext extends LitElement {
           <div class="kv">
             <div><span>Employee</span><span>${this.employee?.name ?? conv.employeeId}</span></div>
             <div><span>Project</span>${conv.project ? projectBadge(conv.project) : html`<span>None</span>`}</div>
-            ${this.watch ? html`<div><span>Ticket</span><a href=${this.watch.back}>#${this.watch.ticket}</a></div><div><span>Stage</span><span>${this.watch.stage}</span></div>` : nothing}
+            ${this.watch ? html`<div><span>Ticket</span><a href=${app(this.watch.back)}>#${this.watch.ticket}</a></div><div><span>Stage</span><span>${this.watch.stage}</span></div>` : nothing}
             ${conv.branch && !this.watch ? html`<div><span>Branch</span><code title=${conv.branch}>${conv.branch}</code></div>` : nothing}
             <div><span>Engine</span><span>${conv.engineId}</span></div>
           </div>
