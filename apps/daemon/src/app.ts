@@ -18,6 +18,7 @@ import { AhpTransport } from "./ahp/transport.ts";
 import { type ApiOptions, createApi } from "./api.ts";
 import { same } from "./auth.ts";
 import { BrainFeed } from "./brain-feed.ts";
+import { BrainHarvest } from "./brain-harvest.ts";
 import { BrainIndex } from "./brain-index.ts";
 import { ChatLog } from "./chat.ts";
 import { Daemon, type DaemonDeps } from "./daemon.ts";
@@ -41,7 +42,9 @@ import { Tickets } from "./tickets.ts";
  * A port, or a way to make it from the registry (real mode's recipes and usage live there) and the
  * backlog (the workspace reads a ticket's images from it).
  */
-export type FromRegistry<T> = T | ((registry: Registry, tickets: Tickets, brain: BrainFeed) => T);
+export type FromRegistry<T> =
+  | T
+  | ((registry: Registry, tickets: Tickets, brain: BrainFeed, harvest: BrainHarvest) => T);
 
 export interface AppOptions extends ApiOptions {
   dbPath: string;
@@ -110,9 +113,16 @@ export async function createApp(o: AppOptions) {
   // The brain's feed (copy into sandboxes, retrieval into prompts) is made before the ports, because
   // real mode's ports hand it the way into a sandbox.
   let brainFeed: BrainFeed | undefined;
+  let brainHarvest: BrainHarvest | undefined;
+  let depsRef: DaemonDeps | undefined;
   const make = <T>(port: FromRegistry<T>): T =>
     typeof port === "function"
-      ? (port as (r: Registry, t: Tickets, b: BrainFeed) => T)(registry, tickets, brainFeed as BrainFeed)
+      ? (port as (r: Registry, t: Tickets, b: BrainFeed, h: BrainHarvest) => T)(
+          registry,
+          tickets,
+          brainFeed as BrainFeed,
+          brainHarvest as BrainHarvest,
+        )
       : port;
 
   const store = new SqliteEventStore(db);
@@ -134,6 +144,19 @@ export async function createApp(o: AppOptions) {
     ...(o.brainHome ? { home: o.brainHome } : {}),
   });
 
+  // What agents wrote in their copies is collected, checked and committed (brain-harvest.ts). Its push is the
+  // owner's, made below with the rest of the deps.
+  brainHarvest = new BrainHarvest({
+    feed: brainFeed,
+    store: knowledge,
+    index: brain,
+    registry,
+    db,
+    now: () => o.clock.now(),
+    push: () => depsRef?.push,
+    ...(o.log ? { log: o.log } : {}),
+  });
+
   // A change of team (or an employee who leaves) takes their copy out of the machine they worked in.
   const registryChanged = registry.onChange;
   registry.onChange = (kind) => {
@@ -149,6 +172,7 @@ export async function createApp(o: AppOptions) {
 
   const deps: DaemonDeps = {
     brainFeed,
+    brainHarvest,
     clock: o.clock,
     store,
     sessions: o.sessions ?? new SessionStore(db, o.clock),
@@ -172,6 +196,7 @@ export async function createApp(o: AppOptions) {
     live,
     ...(o.log ? { log: o.log } : {}),
   };
+  depsRef = deps;
   const token = o.token;
   const backend: AgentBackend = o.ahpBackend
     ? make(o.ahpBackend)
@@ -270,6 +295,11 @@ export async function createApp(o: AppOptions) {
   // Conversations count as work: the health check, the deployer's drain and VACUUM see their turns,
   // and a machine with a live conversation agent is neither cleaned nor stopped.
   daemon.onBusy(() => host.busy());
+  // A brain copy being collected is work too: the deployer waits for it, and its machine stays up.
+  daemon.onBusy(() => brainHarvest?.busy ?? false);
+  daemon.onMachineBusy((machine) =>
+    (brainHarvest?.employeesWorking() ?? []).some((e) => storage.machineOf(e) === machine),
+  );
   if (backend.liveEmployees) {
     const live = () => backend.liveEmployees?.() ?? [];
     daemon.onMachineBusy((machine) => live().some((e) => storage.machineOf(e) === machine));

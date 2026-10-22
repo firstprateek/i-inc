@@ -1,8 +1,18 @@
 // Brains and the handbook on the host (spec §5, "The brain"): one git repo per brain and one for the
 // handbook, never pushed anywhere. Only the daemon writes them, from edits employees proposed; every
 // edit is a commit, so the owner can read, diff or revert what anyone learned.
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   clip,
@@ -53,7 +63,13 @@ export class KnowledgeStore {
     return execFileSync(
       "git",
       ["-c", "user.name=i.inc", "-c", "user.email=daemon@i-inc.local", "-c", "commit.gpgsign=false", ...args],
-      { cwd: this.dir(repo), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+      {
+        cwd: this.dir(repo),
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        // A file called "*.md" is that file, not a pattern.
+        env: { ...process.env, GIT_LITERAL_PATHSPECS: "1" },
+      },
     );
   }
 
@@ -263,6 +279,123 @@ export class KnowledgeStore {
     if (!change.author) throw new Error("only learned edits can be reverted");
     this.git(repo, "revert", "--no-edit", commit);
     this.onCommit?.(repo);
+  }
+
+  /**
+   * Writes and deletes pages and commits them as ONE commit (a harvested change, docs/design/brain.md,
+   * "Writing"). `files` maps a path in the repo to its new text, or null to delete it; `trailers` go at
+   * the end of the message (Author, Ticket or Conversation, Harvest). Returns the commit id, or null when
+   * nothing changed. The repo must exist.
+   */
+  commitFiles(
+    repo: Repo,
+    files: Record<string, string | null>,
+    subject: string,
+    trailers: Record<string, string>,
+  ): string | null {
+    if (!this.exists(repo)) throw new Error("no such repo");
+    const dir = this.dir(repo);
+    const paths = Object.keys(files);
+    for (const path of paths) {
+      if (
+        !path.endsWith(".md") ||
+        path.startsWith("/") ||
+        path.split("/").some((s) => !s || s === ".." || s.startsWith("."))
+      ) {
+        throw new Error(`not a page path: ${path}`);
+      }
+    }
+    for (const [path, text] of Object.entries(files)) {
+      const file = join(dir, path);
+      if (text === null) {
+        rmSync(file, { force: true });
+        // An empty folder left behind is tidied away; git does not track folders.
+        for (let d = dirname(file); d !== dir && d.startsWith(dir); d = dirname(d)) {
+          try {
+            rmdirSync(d);
+          } catch {
+            break;
+          }
+        }
+      } else {
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(file, text);
+      }
+    }
+    this.git(repo, "add", "-A", "--", ...paths);
+    if (!this.git(repo, "diff", "--cached", "--name-only").trim()) return null;
+    const lines = Object.entries(trailers).map(([k, v]) => `${k}: ${v.replace(/[\r\n]+/g, " ")}`);
+    this.git(repo, "commit", "-q", "-m", subject, "-m", lines.join("\n"));
+    this.onCommit?.(repo, paths);
+    return this.git(repo, "rev-parse", "HEAD").trim();
+  }
+
+  /** The committed text of one page at HEAD, or null when there is none. */
+  textOf(repo: Repo, path: string): string | null {
+    if (!this.exists(repo)) return null;
+    return this.readAtHead(repo, [path]).get(path)?.text ?? null;
+  }
+
+  /**
+   * Three-way merge of two edits of one text with `git merge-file`. `conflicts` is the number of places
+   * where both changed the same lines (the text then holds git's conflict markers).
+   */
+  mergeText(ours: string, base: string, theirs: string): { text: string; conflicts: number } {
+    const tmp = mkdtempSync(join(tmpdir(), "i-inc-merge-"));
+    try {
+      writeFileSync(join(tmp, "ours"), ours);
+      writeFileSync(join(tmp, "base"), base);
+      writeFileSync(join(tmp, "theirs"), theirs);
+      const r = spawnSync("git", ["merge-file", "-p", "ours", "base", "theirs"], {
+        cwd: tmp,
+        encoding: "utf8",
+      });
+      if (r.error || r.status === null || r.status < 0 || r.status > 127) {
+        throw new Error(`merge failed: ${r.error?.message ?? r.stderr}`);
+      }
+      return { text: r.stdout, conflicts: r.status };
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * Undoes one commit with a new commit, whoever made it (the history keeps both): `Revert "<subject>"`,
+   * "This reverts commit <id>." and the trailers. Throws, and leaves the repo as it was, when later edits
+   * to the same lines overlap, or when there is nothing to undo.
+   */
+  revertCommit(repo: Repo, commit: string, trailers: Record<string, string>): string {
+    if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error("not a commit id");
+    if (!this.changes(repo).includes(commit)) throw new Error("no such change");
+    const was = this.git(repo, "log", "-1", "--format=%s", commit).trim();
+    try {
+      this.git(repo, "revert", "--no-commit", commit);
+    } catch {
+      try {
+        this.git(repo, "revert", "--abort");
+      } catch {
+        this.git(repo, "reset", "-q", "--hard", "HEAD");
+      }
+      throw new Error("later edits to the same page overlap this change, so it can't be undone in one step");
+    }
+    const touched = this.git(repo, "diff", "--cached", "--name-only", "-z").split("\0").filter(Boolean);
+    if (!touched.length) {
+      this.git(repo, "reset", "-q", "--hard", "HEAD");
+      throw new Error("there is nothing to undo: later edits already changed it back");
+    }
+    const lines = [
+      `This reverts commit ${commit}.`,
+      "",
+      ...Object.entries(trailers).map(([k, v]) => `${k}: ${v}`),
+    ];
+    this.git(repo, "commit", "-q", "-m", `Revert "${was}"`, "-m", lines.join("\n"));
+    this.onCommit?.(repo, touched);
+    return this.git(repo, "rev-parse", "HEAD").trim();
+  }
+
+  /** Commit ids of a repo's history, newest first (for "does this commit exist"). */
+  private changes(repo: Repo): string[] {
+    return this.git(repo, "rev-list", "HEAD").split("\n").filter(Boolean);
   }
 
   /** Every brain on the host. */

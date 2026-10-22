@@ -51,6 +51,10 @@ export const dutyDescriptions: Record<Duty, { title: string; desc: string }> = {
   build: { title: "Build", desc: "Write & edit code in the walled sandbox" },
   verify: { title: "Verify", desc: "Run checks, test suites & proof verification" },
   review: { title: "Review", desc: "Fresh-context code review for correctness & security" },
+  librarian: {
+    title: "Librarian",
+    desc: "Tend the brain each day: merge duplicates, fix links, prune stale pages",
+  },
 };
 
 type Mode = "ask" | "rule" | "off";
@@ -75,7 +79,16 @@ const outboundRows: { action: OutboundAction; label: string; rule: OutboundRule;
   },
 ];
 
-const dutyNames: Record<Duty, string> = { plan: "Plan", build: "Build", verify: "Verify", review: "Review" };
+/** The duties, in the order the form lists them. */
+const dutyList: Duty[] = ["plan", "build", "verify", "review", "librarian"];
+
+const dutyNames: Record<Duty, string> = {
+  plan: "Plan",
+  build: "Build",
+  verify: "Verify",
+  review: "Review",
+  librarian: "Librarian",
+};
 
 export class IncHiring extends LitElement {
   static override properties = {
@@ -598,7 +611,7 @@ export class IncHiring extends LitElement {
             Which stages of the company's development loop this employee can perform.
           </span>
           <div class="duties-grid">
-            ${(["plan", "build", "verify", "review"] as Duty[]).map(
+            ${dutyList.map(
               (d) => html`<div class="duty-card" @click=${() => this.toggleDuty(d)}>
                 <input type="checkbox" .checked=${this.dutiesSet.has(d)} @click=${(e: Event) => e.stopPropagation()} @change=${() => this.toggleDuty(d)} />
                 <div class="duty-info">

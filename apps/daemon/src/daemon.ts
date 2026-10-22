@@ -35,6 +35,7 @@ import {
 } from "@i-inc/core";
 import type { ConversationService } from "./ahp/conversations.ts";
 import type { BrainFeed } from "./brain-feed.ts";
+import type { BrainHarvest } from "./brain-harvest.ts";
 import type { BrainIndex } from "./brain-index.ts";
 import type { ChatLog } from "./chat.ts";
 import type { Db } from "./db.ts";
@@ -74,6 +75,8 @@ export interface DaemonDeps {
   brain: BrainIndex;
   /** The brain's copy in sandboxes and its retrieval into briefs and turns (T57). */
   brainFeed: BrainFeed;
+  /** Collects what agents wrote in their brain copies, checks it and commits it (T58). */
+  brainHarvest: BrainHarvest;
   db: Db;
   push?: PushService;
   live?: LiveEvents;
@@ -381,6 +384,8 @@ export class Daemon {
       harness,
       company: this.company,
       ...(workspace ? { workspace } : {}),
+      // Agents with a copy of the brain edit it; the retro asks for lessons there (T58).
+      ...(this.d.brainFeed?.enabled ? { brainWrites: true } : {}),
     };
   }
 
@@ -435,6 +440,8 @@ export class Daemon {
     this.dirtyTickets.clear();
 
     this.checkAutoReleases(records, states, now);
+    // Brain copies whose machine was stopped when their work ended are collected once it is up.
+    void this.d.brainHarvest?.catchUp().catch((e) => this.d.log?.(`brain: catch-up failed: ${String(e)}`));
 
     const sandboxWaiting: Waiting[] = [];
     const sandboxWaitingUntil: Record<Id, number> = {};
@@ -576,6 +583,9 @@ export class Daemon {
         this.applyKnowledge(id, events);
         this.fileFollowUps(id, events);
         await this.sendPushNotifications(record.ticket, events);
+        // The ticket is over (after its retro, or it failed): what the agents wrote in their brain
+        // copies is collected, checked and committed. Never a reason for the ticket to fail.
+        if (r.status === "done" || r.status === "failed") await this.harvestTicket(record.ticket, events);
         // A stage finished or wants a helper: someone may be free now, or a reviewer is needed.
         if (r.status !== "paused") void this.tick().catch(() => {});
       })
@@ -597,12 +607,30 @@ export class Daemon {
     this.running.set(id, done);
   }
 
+  /** Collects the brain copy of everyone who worked on a ticket that has ended (brain-harvest.ts). */
+  private async harvestTicket(ticket: Ticket, events: TicketEvent[]): Promise<void> {
+    const harvest = this.d.brainHarvest;
+    if (!harvest || !this.d.brainFeed?.enabled) return;
+    try {
+      const s = fold(events);
+      const people = [
+        ...(s.assignee ? [s.assignee] : [ticket.assignee]),
+        ...s.sessions.map((x) => x.employeeId),
+      ].filter(Boolean);
+      await harvest.ticketEnded(ticket, people);
+    } catch (e) {
+      this.d.log?.(`brain: couldn't collect the brain copies of ticket ${ticket.id}: ${String(e)}`);
+    }
+  }
+
   /**
    * Stops the machines of employees with nothing running (spec §12). A machine keeps what it has
    * touched in memory until it restarts, and wakes in under a second, so idle ones are stopped.
    */
   private async sleepIdle(busy: Set<Id>): Promise<void> {
     if (!this.d.machines.stop) return;
+    // A brain copy is being collected: its machine stays up until the next pass.
+    if (this.d.brainHarvest?.busy) return;
     const inSession = new Set([...this.sessions.values()].map((s) => s.employeeId));
     // A machine is in use while any employee awake in it is, and is cleaned (when it is due) once
     // none is: it is up, and about to stop, so cleaning never has to wake it.

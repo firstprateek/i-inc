@@ -36,6 +36,7 @@ import {
 } from "@i-inc/core";
 import { ConversationError } from "./ahp/conversations.ts";
 import { authorized, hostAllowed, originAllowed, same } from "./auth.ts";
+import { RevertError } from "./brain-harvest.ts";
 import { ACCEPTED_LABEL, type Daemon, type DaemonDeps } from "./daemon.ts";
 import { readDeploys } from "./deploys.ts";
 import {
@@ -2290,6 +2291,70 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         const lines = Object.hasOwn(built.sections, section) ? built.sections[section] : undefined;
         if (!lines) return json({ error: "no such section" }, 404);
         return json({ scope, section, lines, sections: Object.keys(built.sections) });
+      },
+    ],
+
+    // C19 (T58): the Brain changes feed. Every change the daemon collected from an agent's brain copy,
+    // committed or refused, newest first, and the owner's one-click undo.
+    [
+      "GET",
+      "/api/brain/changes",
+      async (req) => {
+        const url = new URL(req.url);
+        const scope = url.searchParams.get("scope") ?? "";
+        if (scope && (scope === "all" || !parseScope(scope))) {
+          return json({ error: "scope must be company, team:<id> or brain:<id>" }, 400);
+        }
+        const employee = url.searchParams.get("employee") ?? "";
+        if (employee && !/^[a-z0-9][a-z0-9-]{0,31}$/.test(employee)) {
+          return json({ error: "employee must be an employee id" }, 400);
+        }
+        const status = url.searchParams.get("status") ?? "";
+        if (status && status !== "committed" && status !== "rejected") {
+          return json({ error: "status must be committed or rejected" }, 400);
+        }
+        const before = url.searchParams.get("before");
+        if (before !== null && !/^\d{1,12}$/.test(before))
+          return json({ error: "before must be an entry id" }, 400);
+        const page = d.brainHarvest.feedPage({
+          ...(scope ? { scope } : {}),
+          ...(employee ? { employee } : {}),
+          ...(status ? { status: status as "committed" | "rejected" } : {}),
+          ...(before !== null ? { before: Number(before) } : {}),
+          limit: Math.min(200, Math.max(1, Number(url.searchParams.get("limit")) || 50)),
+        });
+        const names = new Map(d.registry.employees().map((e) => [e.id, e.name]));
+        const who = (id: string) => ({ id, name: names.get(id) ?? id });
+        return json({
+          changes: page.changes.map((c) => ({
+            ...c,
+            employee: who(c.employee),
+            source: {
+              ...c.source,
+              url: c.source.kind === "ticket" ? `#/ticket/${c.source.id}` : `#/conversations/${c.source.id}`,
+            },
+          })),
+          next: page.next,
+          facets: { scopes: page.facets.scopes, employees: page.facets.employees.map(who) },
+        });
+      },
+    ],
+    [
+      "POST",
+      "/api/brain/changes/:id/revert",
+      async (_req, p) => {
+        const id = p.id ?? "";
+        if (!/^\d{1,12}$/.test(id)) return json({ error: "no such change" }, 404);
+        try {
+          const change = d.brainHarvest.revert(Number(id));
+          d.brain.refresh();
+          return json({
+            change: { ...change, employee: { id: change.employee, name: nameOf(change.employee) } },
+          });
+        } catch (e) {
+          if (e instanceof RevertError) return json({ error: e.message }, e.status);
+          throw e;
+        }
       },
     ],
 

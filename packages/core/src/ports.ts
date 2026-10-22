@@ -249,4 +249,10 @@ export interface Ports {
   company: Company;
   /** Absent in demo mode and in tests: tickets then run without a branch or PR. */
   workspace?: Workspace;
+  /**
+   * The agents have a copy of the brain in their machine whose edits the daemon collects after the session
+   * (docs/design/brain.md, "Writing"). Then the retro asks them to edit the copy instead of replying with
+   * edits as JSON. Absent in demo mode and in tests.
+   */
+  brainWrites?: boolean;
 }

@@ -156,6 +156,8 @@ export interface BrainPrompt {
   home?: string;
   /** `brain search` works in the machine (default yes; false when its Node can't do SQLite FTS5). */
   search?: boolean;
+  /** What the daemon wants to tell this agent about its last edits (a rejected duplicate and the page to merge into). */
+  notes?: string[];
 }
 
 const escapeAttr = (s: string): string =>
@@ -211,6 +213,13 @@ export function fitMaps(maps: PromptMap[], total = mapLinesTotal): PromptMap[] {
   });
 }
 
+/**
+ * What an agent is told about writing (docs/design/brain.md, "Writing"). The daemon collects the diff of its
+ * copy after the session and checks every change, so these are the rules it will be held to.
+ */
+export const editRules =
+  "You may edit the copy: after the session the daemon collects your changes, checks them and commits them to the shared brain with no approval, and the owner can revert any of them. Write only what clears the bar: durable (still true in a month), non-obvious (not in the code, --help or a README) and reusable (it will change a future task); most sessions write nothing. One page per topic: search first, then rewrite the page that exists instead of appending to it or making a near-duplicate. A page needs frontmatter with a title and a description (the one line the map shows: what would make a reader open it?); `sources` and `updated` are added for you. Write only in the folders above, never secrets, and nothing from a home or personal-assistant context into company/ or team folders. A page built from web pages, issues or other people's repos gets `source: external` in its frontmatter. Do not edit INDEX.md maps or personal/personality.md.";
+
 /** A fixed marker that tells an agent which part of a prompt is the brain, and where it ends. */
 export const brainOpen = "<brain>";
 export const brainClose = "</brain>";
@@ -225,13 +234,13 @@ export function renderBrainPrompt(p: BrainPrompt, o: { maps?: boolean | Scope[] 
   const out: string[] = [brainOpen];
   out.push(
     p.snapshot
-      ? `Your brain: i.inc's shared memory, markdown pages in three scopes. A read-only copy is in ${root}/ (${
+      ? `Your brain: i.inc's shared memory, markdown pages in three scopes. A copy of it is in ${root}/ (${
           p.maps.map((m) => `${m.dir}/`).join(", ") || "no pages yet"
         }), each folder with an INDEX.md map. ${
           p.search === false
             ? "`brain search` doesn't work in this machine, so read the INDEX.md maps and the files."
             : `Search it with \`${root}/.bin/brain search "<words>"\`, or just read the files.`
-        } Read it, don't edit it: edits are not collected yet.`
+        } ${editRules}`
       : "Your brain: i.inc's shared memory, markdown pages. The copy in your machine is not available this time, so only the pages below are.",
   );
   out.push(
@@ -268,6 +277,9 @@ export function renderBrainPrompt(p: BrainPrompt, o: { maps?: boolean | Scope[] 
     }
   } else if (shown.length) {
     out.push("", "No page matched this task closely; the maps above list everything.");
+  }
+  if (p.notes?.length) {
+    out.push("", "About your earlier brain edits:", ...p.notes.map((n) => `- ${escapeBody(n)}`));
   }
   out.push(brainClose);
   return out.join("\n");

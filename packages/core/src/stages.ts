@@ -13,6 +13,7 @@ export type StageId =
   | "work"
   | "proposals"
   | "orient"
+  | "tidy"
   | "retro";
 
 /** Who does a stage: an employee with a duty, or the harness (deterministic code, no tokens). */
@@ -28,6 +29,7 @@ export const stageDuty: Record<StageId, Duty | "harness"> = {
   work: "build",
   proposals: "harness",
   orient: "build",
+  tidy: "librarian",
   retro: "build",
 };
 
@@ -67,6 +69,13 @@ export const orientationPlan: StagePlan = {
   planGate: "never",
 };
 
+/** The daily "Tend the brain" ticket (docs/design/brain.md, "Tending"): one session by the librarian, no code. */
+export const tidyPlan: StagePlan = {
+  stages: ["pickup", "tidy"],
+  reviewRounds: 0,
+  planGate: "never",
+};
+
 /**
  * Direct mode (decided 2026-10-17): every code ticket is reviewed by a fresh pair of eyes, for at
  * most 2 rounds, and nothing waits for the owner except protected paths. The gates push to main.
@@ -93,5 +102,6 @@ export const directPlans: Record<Effort, StagePlan> = {
 export function planFor(ticket: Ticket, policy: ProjectPolicy = defaultProjectPolicy): StagePlan {
   if (ticket.type === "errand") return errandPlan;
   if (ticket.type === "orientation") return orientationPlan;
+  if (ticket.type === "tidy") return tidyPlan;
   return (policy.mode === "direct" ? directPlans : stagePlans)[ticket.effort];
 }

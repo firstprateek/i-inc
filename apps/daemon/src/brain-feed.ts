@@ -569,6 +569,112 @@ export class BrainFeed {
     }
   }
 
+  // ---- What a harvest needs (brain-harvest.ts) ---------------------------------------------------------
+
+  /** Where an employee's copy for this kind of session is, and whether it may be in that machine at all. */
+  place(
+    employeeId: string,
+    allowHome = true,
+  ): { copy: string; machine: string; root: string; blocked: string | null } {
+    const copy = this.copyId(employeeId, allowHome);
+    const machine = this.machineOf(employeeId);
+    const blocked =
+      this.isHome(employeeId) && this.o.registry.machineMates(employeeId).length > 0
+        ? `${employeeId} works on home data and shares ${machine} with others, so there is no copy to collect from`
+        : null;
+    return { copy, machine, root: this.rootOf(copy), blocked };
+  }
+
+  /** Whether a machine is running now. A harvest, like a copy, never starts one. */
+  isMachineUp(machine: string): Promise<boolean> {
+    return this.machineIsUp(machine);
+  }
+
+  /** Runs one script in the employee's sandbox (with the same time limit as a copy). */
+  exec(employeeId: string, script: string): Promise<{ code: number; output: string }> {
+    return this.run(employeeId, script);
+  }
+
+  /** Runs `fn` while nothing else (a copy, another harvest) touches this employee's copy. */
+  async exclusive<T>(employeeId: string, allowHome: boolean, fn: () => Promise<T>): Promise<T> {
+    const copy = this.copyId(employeeId, allowHome);
+    const key = `${this.machineOf(employeeId)}:${copy}`;
+    const prior = this.locks.get(key) ?? Promise.resolve();
+    const mine = prior.then(fn, fn);
+    this.locks.set(key, mine);
+    try {
+      return await mine;
+    } finally {
+      if (this.locks.get(key) === mine) this.locks.delete(key);
+    }
+  }
+
+  /**
+   * The paths the baseline of a copy took from the agent's text: the next copy sends them again (the
+   * shared brain's version, repaired and merged) over the agent's file, which is no longer an edit.
+   */
+  forget(employeeId: string, allowHome: boolean, paths: string[]): void {
+    if (!paths.length) return;
+    const copy = this.copyId(employeeId, allowHome);
+    const machine = this.machineOf(employeeId);
+    const key = `${machine}:${copy}`;
+    const last = this.lastDelivered(key, employeeId, copy);
+    if (!last) return;
+    const files = new Map(last.snap.files);
+    for (const p of paths) files.delete(p);
+    const next: Delivered = {
+      ...last,
+      snap: { ...last.snap, files },
+      pending: [...new Set([...last.pending, ...paths])].sort(),
+    };
+    this.delivered.set(key, next);
+    this.o.db.run(
+      "INSERT OR REPLACE INTO brain_synced (machine, employee_id, snapshot_id, files, pending, at) VALUES (?, ?, ?, ?, ?, ?)",
+      machine,
+      copy,
+      last.snap.id,
+      JSON.stringify(
+        Object.fromEntries([...files.values()].map((f) => [f.path, [f.sha, f.tracked ? 1 : 0]])),
+      ),
+      JSON.stringify(next.pending),
+      this.o.now(),
+    );
+  }
+
+  /** Something to tell an agent at its next brief or turn about its earlier edits. */
+  addHint(employeeId: string, copy: string, text: string): void {
+    const have = this.o.db.all<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM brain_hints WHERE employee_id = ? AND copy = ? AND text = ? AND taken = 0",
+      employeeId,
+      copy,
+      text,
+    );
+    if (have[0]?.n) return;
+    this.o.db.run(
+      "INSERT INTO brain_hints (employee_id, copy, at, text) VALUES (?, ?, ?, ?)",
+      employeeId,
+      copy,
+      this.o.now(),
+      text.slice(0, 600),
+    );
+  }
+
+  /** The hints not told yet (newest five, none older than three days). */
+  private hints(employeeId: string, copy: string): { id: number; text: string }[] {
+    return this.o.db
+      .all<{ id: number; text: string }>(
+        "SELECT id, text FROM brain_hints WHERE employee_id = ? AND copy = ? AND taken = 0 AND at > ? ORDER BY id DESC LIMIT 5",
+        employeeId,
+        copy,
+        this.o.now() - 3 * 86_400_000,
+      )
+      .reverse();
+  }
+
+  private markHints(ids: number[]): void {
+    for (const id of ids) this.o.db.run("UPDATE brain_hints SET taken = 1 WHERE id = ?", id);
+  }
+
   // ---- Copies that don't belong any more -------------------------------------------------------------
 
   /**
@@ -706,6 +812,7 @@ export class BrainFeed {
     const report = await this.sync(i.employeeId, allowHome);
     const scopes = this.readable(i.employeeId, allowHome);
     const pages = this.retrieveFor(i.employeeId, ticketQuery(i.query), [], allowHome);
+    const hints = report.ok ? this.hints(i.employeeId, this.copyId(i.employeeId, allowHome)) : [];
     const text = renderBrainPrompt(
       {
         maps: this.maps(i.employeeId, scopes, allowHome),
@@ -714,9 +821,11 @@ export class BrainFeed {
         search: report.search !== false,
         employeeId: this.copyId(i.employeeId, allowHome),
         ...(this.o.home ? { home: this.o.home } : {}),
+        ...(hints.length ? { notes: hints.map((h) => h.text) } : {}),
       },
       { maps: true },
     );
+    this.markHints(hints.map((h) => h.id));
     const uses = usesOf(pages);
     if (i.sessionId !== null) this.record("session", String(i.sessionId), "", { pages: uses });
     this.countUse(scopes, uses);
@@ -763,8 +872,9 @@ export class BrainFeed {
       allowHome,
     );
     const uses = usesOf(pages);
+    const hints = report.ok ? this.hints(i.employeeId, this.copyId(i.employeeId, allowHome)) : [];
     let text = "";
-    if (changed.length || pages.length) {
+    if (changed.length || pages.length || hints.length) {
       text = renderBrainPrompt(
         {
           maps,
@@ -773,6 +883,7 @@ export class BrainFeed {
           search: report.search !== false,
           employeeId: this.copyId(i.employeeId, allowHome),
           ...(this.o.home ? { home: this.o.home } : {}),
+          ...(hints.length ? { notes: hints.map((h) => h.text) } : {}),
         },
         { maps: changed.map((m) => m.scope) },
       );
@@ -788,6 +899,7 @@ export class BrainFeed {
     const commit = () => {
       this.commitTurn(i.conversation, i.turn, record);
       this.countUse(scopes, uses);
+      this.markHints(hints.map((h) => h.id));
     };
     const shown = new Map<string, BrainUse>();
     for (const p of [...uses, ...this.conversationPages(i.conversation)]) {

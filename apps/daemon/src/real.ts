@@ -11,6 +11,7 @@ import { agentsFromRegistry } from "./ahp/conversations.ts";
 import { SessionHost } from "./ahp/session-host.ts";
 import type { AppOptions } from "./app.ts";
 import type { BrainFeed } from "./brain-feed.ts";
+import type { BrainHarvest } from "./brain-harvest.ts";
 import { type Credentials, credentialsFor } from "./config.ts";
 import { EgressWall } from "./egress-wall.ts";
 import { commitIdentity, PullRequests, type TokenSource, waitForCi } from "./github.ts";
@@ -239,9 +240,18 @@ export function realPorts(o: RealOptions): Pick<
         }
       : {}),
     // Conversations: long-lived agent sessions in the same team sandboxes, behind the AHP host.
-    ahpBackend: (registry, _tickets, brain): AgentBackend =>
+    ahpBackend: (registry, _tickets, brain, harvest: BrainHarvest): AgentBackend =>
       new SessionHost({
         brain: withBrain(registry, brain),
+        // A conversation's brain copy is collected when it goes idle or ends, and on `/remember`.
+        harvest: (c, why) =>
+          harvest.run({
+            employeeId: c.employeeId,
+            // A conversation on a project can push to a repository; a PA's home data stays out of it.
+            allowHome: c.project === null,
+            source: { kind: "conversation", id: c.id },
+            trigger: why,
+          }),
         launch: o.launch ?? machineLaunch(teams(registry), undefined, o.exec),
         reap: reap(registry),
         agents: () => agentsFromRegistry(registry),
