@@ -13,6 +13,7 @@ import "../src/components/conv-turn.ts";
 import "../src/components/ticket.ts";
 import { liveText } from "../src/assign.ts";
 import { atTime } from "../src/time.ts";
+import { answer } from "./daemon-board.ts";
 
 const view = (over: Partial<TicketView>): TicketView =>
   ({
@@ -53,6 +54,8 @@ beforeEach(() => {
   handbook = { pages: [], history: [], awaiting: [] };
   localStorage.clear();
   vi.stubGlobal("fetch", async (url: string) => {
+    const board = answer({ tickets, awaiting: (handbook as { awaiting: unknown[] }).awaiting }, url);
+    if (board !== undefined) return json(board);
     if (url === "/api/board") return json({ tickets });
     if (url === "/api/projects") return json({ projects: [{ id: "Duet" }] });
     if (url === "/api/knowledge/handbook") return json(handbook);
@@ -187,7 +190,9 @@ describe("the New ticket button in every state of the board", () => {
 
   it("opens the dialog while the board is still loading", async () => {
     vi.stubGlobal("fetch", (url: string) =>
-      url === "/api/board" ? new Promise(() => {}) : Promise.resolve(json({ projects: [], employees: [] })),
+      url.startsWith("/api/board")
+        ? new Promise(() => {})
+        : Promise.resolve(json({ projects: [], employees: [] })),
     );
     const el = document.createElement("inc-board");
     document.body.append(el);
@@ -200,7 +205,9 @@ describe("the New ticket button in every state of the board", () => {
 
   it("opens the dialog when the board failed to load", async () => {
     vi.stubGlobal("fetch", async (url: string) =>
-      url === "/api/board" ? json({ error: "no board today" }, 500) : json({ projects: [], employees: [] }),
+      url.startsWith("/api/board")
+        ? json({ error: "no board today" }, 500)
+        : json({ projects: [], employees: [] }),
     );
     const el = document.createElement("inc-board");
     document.body.append(el);

@@ -1,3 +1,4 @@
+export * from "./board.ts";
 export * from "./brain-map.ts";
 export * from "./brain-prompt.ts";
 export * from "./brain-retrieval.ts";

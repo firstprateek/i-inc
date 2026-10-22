@@ -1,5 +1,6 @@
 // The shapes the API returns, kept apart from the daemon's code so the web app can import them.
 import type {
+  DigestRow,
   Id,
   NeedsYou,
   ProjectRelease,
@@ -289,4 +290,28 @@ export interface BrainChangesView {
   /** Pass as `before` for the next page; null at the end. */
   next: number | null;
   facets: { scopes: string[]; employees: { id: Id; name: string }[] };
+}
+
+/** One column of the board's summary (T63): its total, and the cards that were sent. */
+export interface BoardColumnView {
+  total: number;
+  tickets: TicketView[];
+}
+
+/** `GET /api/board/summary`: each column's first cards and total, and the report of each Done card. */
+export interface BoardSummaryView {
+  columns: Record<Column, BoardColumnView>;
+  reports: Record<Id, DigestRow>;
+  unreadable?: { id: Id; reason: string }[];
+}
+
+/** `GET /api/needs-you`: everything waiting for the owner, and the count the badge shows. */
+export interface NeedsYouView {
+  count: number;
+  /** Tickets asking for the owner, ready for review, or waiting for someone to be assigned. */
+  tickets: TicketView[];
+  policies: PolicyProposal[];
+  proposals: ProposalView[];
+  /** Conversations with a permission or a question waiting. */
+  conversations: unknown[];
 }

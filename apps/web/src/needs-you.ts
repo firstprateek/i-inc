@@ -1,5 +1,12 @@
 // What needs the owner, counted one way for the top-bar badge, the phone tab and the Needs you list.
-import { api, type Conversation, type PolicyProposal, type ProposalView, type TicketView } from "./api.ts";
+import {
+  api,
+  type Conversation,
+  type NeedsYouView,
+  type PolicyProposal,
+  type ProposalView,
+  type TicketView,
+} from "./api.ts";
 import { waitsForAssignee } from "./assign.ts";
 
 /**
@@ -21,26 +28,33 @@ export function needsYouCount(
   );
 }
 
-/** Conversations with a permission or a question waiting for the owner; none when the host has no conversations. */
-export const waitingConversations = (): Promise<Conversation[]> =>
-  api
-    .conversations()
-    .then((all) => all.filter((c) => c.needsYou))
-    .catch(() => []);
-
 /** Tells the shell to recount: a conversation started or stopped waiting for the owner. */
 export const needsYouSignal = new EventTarget();
 export const notifyNeedsYou = (): void => {
   needsYouSignal.dispatchEvent(new Event("change"));
 };
 
-/** The current count, from the same data the Needs you tab shows. */
+/** What waits for the owner, as the daemon sees it (`GET /api/needs-you`). */
+export type NeedsYouData = Omit<NeedsYouView, "conversations"> & { conversations: Conversation[] };
+
+let shared: Promise<NeedsYouData> | null = null;
+
+/**
+ * Everything waiting for the owner, in one request. The shell's badge and the Needs you page ask on the same
+ * refresh, in the same turn; they share one request instead of making one each (it was the board, the
+ * handbook, the proposals and every conversation, twice). A caller in a later turn gets a fresh answer.
+ */
+export function loadNeedsYou(): Promise<NeedsYouData> {
+  if (!shared) {
+    shared = api.needsYou().then((r) => r as NeedsYouData);
+    queueMicrotask(() => {
+      shared = null;
+    });
+  }
+  return shared;
+}
+
+/** The count the badge and the phone tab show. */
 export async function loadNeedsYouCount(): Promise<number> {
-  const [tickets, handbook, proposals, conversations] = await Promise.all([
-    api.board(),
-    api.handbook().catch(() => null),
-    api.proposals(),
-    waitingConversations(),
-  ]);
-  return needsYouCount(tickets, handbook?.awaiting ?? [], proposals, conversations);
+  return (await loadNeedsYou()).count;
 }

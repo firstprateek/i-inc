@@ -3,7 +3,7 @@
 // phone) or pasted as a screenshot. Built to be used one-handed on a phone.
 import type { Employee } from "@i-inc/core";
 import { css, html, LitElement } from "lit";
-import { api, imageRules, type NewTicketBody, refreshNow, type TicketView } from "../api.ts";
+import { api, imageRules, type NewTicketBody, type RecentWork, refreshNow } from "../api.ts";
 import { assignees, NOBODY_LABEL, optionLabel } from "../assign.ts";
 import { draftMemo } from "../drafts.ts";
 import { ImagePicker, imagePickerStyles } from "./image-picker.ts";
@@ -87,7 +87,7 @@ export class IncNewTicket extends LitElement {
   declare error: string | null;
   declare filed: { id: string; title: string } | null;
   declare employees: Employee[];
-  declare recent: TicketView[];
+  declare recent: RecentWork[];
   /** The employee picked, or "" for nobody yet. Follows the project until the owner chooses. */
   declare assignee: string;
   declare assigneeChosen: boolean;
@@ -132,7 +132,7 @@ export class IncNewTicket extends LitElement {
         this.error = e instanceof Error ? e.message : String(e);
       });
     // Who can take it is a nicety: the form still files a ticket if these don't load.
-    void Promise.all([api.employees().catch(() => []), api.board().catch(() => [])]).then(([e, t]) => {
+    void Promise.all([api.employees().catch(() => []), api.recentWork().catch(() => [])]).then(([e, t]) => {
       this.employees = Array.isArray(e) ? e : [];
       this.recent = Array.isArray(t) ? t : [];
       this.followProject();

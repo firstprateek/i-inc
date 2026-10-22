@@ -7,6 +7,7 @@ import "../src/components/desk.ts";
 import "../src/components/inbox.ts";
 import "../src/components/office.ts";
 import "../src/components/ticket.ts";
+import { answer } from "./daemon-board.ts";
 
 const view = (over: Partial<TicketView>): TicketView => ({
   id: "1",
@@ -43,8 +44,15 @@ function serve(tickets: TicketView[], handbook: unknown = { pages: [], history: 
       url,
       body: init?.body ? JSON.parse(String(init.body)) : undefined,
     });
+    const board = answer({ tickets, awaiting: (handbook as { awaiting?: unknown[] }).awaiting ?? [] }, url);
     const body =
-      url === "/api/board" ? { tickets } : url === "/api/knowledge/handbook" ? handbook : { ok: true };
+      board !== undefined
+        ? board
+        : url === "/api/board"
+          ? { tickets }
+          : url === "/api/knowledge/handbook"
+            ? handbook
+            : { ok: true };
     return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
   });
 }

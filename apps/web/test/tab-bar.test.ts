@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IncApp } from "../src/components/app.ts";
+import { answer } from "./daemon-board.ts";
 
 const phone = (matches: boolean) =>
   vi.stubGlobal("matchMedia", (query: string) => ({
@@ -215,14 +216,15 @@ describe("mobile app tab bar (T25)", () => {
       async (url: string) =>
         new Response(
           JSON.stringify(
-            url.includes("/api/board")
-              ? {
-                  tickets: [
-                    { id: "1", title: "a", status: "needs-you", column: "in-progress", stages: [] },
-                    { id: "2", title: "b", status: "needs-you", column: "in-progress", stages: [] },
-                  ],
-                }
-              : { awaiting: [] },
+            answer(
+              {
+                tickets: [
+                  { id: "1", title: "a", status: "needs-you", column: "in-progress", stages: [] },
+                  { id: "2", title: "b", status: "needs-you", column: "in-progress", stages: [] },
+                ],
+              },
+              url,
+            ) ?? { awaiting: [] },
           ),
         ),
     );

@@ -35,10 +35,22 @@ import {
   type Scope,
   sharedHomeProblems,
   type Ticket,
+  type TicketEvent,
   type TicketState,
+  waitsForAssignee,
 } from "@i-inc/core";
 import { ConversationError } from "./ahp/conversations.ts";
 import { credential, hostAllowed, originAllowed, same, sessionCookie } from "./auth.ts";
+import {
+  type BoardItem,
+  boardColumn,
+  boardSummary,
+  COLUMN_LIMIT,
+  COLUMNS,
+  MAX_PAGE,
+  recentWork,
+  reportsFor,
+} from "./board-summary.ts";
 import { type BrainChange, RevertError } from "./brain-harvest.ts";
 import { ACCEPTED_LABEL, type Daemon, type DaemonDeps } from "./daemon.ts";
 import { readDeploys } from "./deploys.ts";
@@ -69,8 +81,9 @@ import { type NotifySettings, notifyKeys, notifySettings, type PushSubscription 
 import { defaultTeam, type Project } from "./registry.ts";
 import { ShipError } from "./ship.ts";
 import { clientKey, GuessLimit } from "./throttle.ts";
-import type { NewAttachment, NewTicket } from "./tickets.ts";
+import type { NewAttachment, NewTicket, TicketRecord } from "./tickets.ts";
 import { defaultTimeoutSettings, readTimeoutSettings, timeoutSettings } from "./timeouts.ts";
+import type { Column } from "./view-types.ts";
 import {
   allRateLimits,
   deskView,
@@ -213,31 +226,38 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
 
   /** Tickets whose card couldn't be built in this request, with why: the board lists them. */
   let unbuilt: { id: Id; reason: string }[] = [];
-  const views = async (): Promise<TicketView[]> => {
-    const waiting = new Map(daemon.waiting.map((w) => [w.ticketId, w.reason]));
-    const out: TicketView[] = [];
+  /** One ticket's card and the events it was built from; null when it can't be shown. */
+  const itemOf = async (r: TicketRecord, waiting: Map<string, string>): Promise<BoardItem | null> => {
+    // One ticket that can't be shown never takes the board down: it is listed as unreadable.
+    try {
+      const events = await d.store.read(r.ticket.id);
+      const view = ticketView(
+        r,
+        await daemon.state(r.ticket.id),
+        events,
+        d.registry,
+        waiting.get(r.ticket.id) ?? null,
+        daemon.waitingUntil[r.ticket.id] ?? null,
+      );
+      return { view, events };
+    } catch (err) {
+      console.error(`[board] ticket ${r.ticket.id}: ${logLine(err)}`);
+      unbuilt.push({ id: r.ticket.id, reason: "it can't be shown; its events could not be read" });
+      return null;
+    }
+  };
+  const waitingMap = () => new Map(daemon.waiting.map((w) => [w.ticketId, w.reason]));
+  const boardItems = async (): Promise<BoardItem[]> => {
+    const waiting = waitingMap();
+    const out: BoardItem[] = [];
     unbuilt = [];
     for (const r of d.tickets.all()) {
-      // One ticket that can't be shown never takes the board down: it is listed as unreadable.
-      try {
-        const events = await d.store.read(r.ticket.id);
-        out.push(
-          ticketView(
-            r,
-            await daemon.state(r.ticket.id),
-            events,
-            d.registry,
-            waiting.get(r.ticket.id) ?? null,
-            daemon.waitingUntil[r.ticket.id] ?? null,
-          ),
-        );
-      } catch (err) {
-        console.error(`[board] ticket ${r.ticket.id}: ${logLine(err)}`);
-        unbuilt.push({ id: r.ticket.id, reason: "it can't be shown; its events could not be read" });
-      }
+      const item = await itemOf(r, waiting);
+      if (item) out.push(item);
     }
     return out;
   };
+  const views = async (): Promise<TicketView[]> => (await boardItems()).map((i) => i.view);
   const unreadableTickets = () => {
     const seen = new Set<string>();
     return [...daemon.unreadable(), ...unbuilt].filter((u) => !seen.has(u.id) && seen.add(u.id));
@@ -374,6 +394,89 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         const tickets = await views();
         const unreadable = unreadableTickets();
         return json({ tickets, ...(unreadable.length ? { unreadable } : {}) });
+      },
+    ],
+
+    // The board in pages (T63): the summary opens it, a column's rest and a live ticket's card follow.
+    [
+      "GET",
+      "/api/board/summary",
+      async (req) => {
+        const q = new URL(req.url).searchParams;
+        const summary = boardSummary(await boardItems(), {
+          ...(q.has("limit") ? { limit: Number(q.get("limit")) } : {}),
+          ...(q.has("doneLimit") ? { doneLimit: Number(q.get("doneLimit")) } : {}),
+        });
+        const unreadable = unreadableTickets();
+        return json({ ...summary, ...(unreadable.length ? { unreadable } : {}) });
+      },
+    ],
+    ["GET", "/api/board/recent", async () => json({ tickets: recentWork(await boardItems()) })],
+    [
+      "GET",
+      "/api/board/column",
+      async (req) => {
+        const q = new URL(req.url).searchParams;
+        const column = q.get("column") as Column | null;
+        if (!column || !COLUMNS.includes(column)) {
+          return json({ error: "column must be todo, in-progress, review or done" }, 400);
+        }
+        const page = boardColumn(
+          await boardItems(),
+          column,
+          Number(q.get("offset") ?? 0) || 0,
+          Number(q.get("limit") ?? COLUMN_LIMIT) || COLUMN_LIMIT,
+        );
+        return json(page);
+      },
+    ],
+    [
+      "GET",
+      "/api/board/cards",
+      async (req) => {
+        const ids = (new URL(req.url).searchParams.get("ids") ?? "")
+          .split(",")
+          .map((x) => x.trim())
+          .filter(Boolean)
+          .slice(0, MAX_PAGE);
+        const waiting = waitingMap();
+        const items: BoardItem[] = [];
+        const gone: string[] = [];
+        for (const id of ids) {
+          const r = d.tickets.get(id);
+          const item = r ? await itemOf(r, waiting) : null;
+          if (item) items.push(item);
+          else gone.push(id);
+        }
+        return json({ tickets: items.map((i) => i.view), reports: reportsFor(items), gone });
+      },
+    ],
+
+    // Everything waiting for the owner, in one answer: the badge, the phone tab and the Needs you page share it.
+    [
+      "GET",
+      "/api/needs-you",
+      async () => {
+        const waiting = waitingMap();
+        const tickets: TicketView[] = [];
+        const policies: ProposedEdit[] = [];
+        for (const r of d.tickets.all()) {
+          const item = await itemOf(r, waiting);
+          if (!item) continue;
+          const v = item.view;
+          if (v.status === "needs-you" || v.status === "ready" || waitsForAssignee(v)) tickets.push(v);
+          policies.push(...knowledgeLog(r.ticket.id, item.events as TicketEvent[]).awaiting);
+        }
+        policies.sort((a, b) => a.at - b.at);
+        const proposals = d.proposals.list("open").map((p) => proposalView(p, d.registry));
+        const conversations = (d.conversations?.list({}) ?? []).filter((c) => c.needsYou);
+        const count =
+          tickets.filter((t) => t.status === "needs-you").length +
+          tickets.filter(waitsForAssignee).length +
+          policies.length +
+          proposals.length +
+          conversations.length;
+        return json({ count, tickets, policies: policies.map(proposal), proposals, conversations });
       },
     ],
 

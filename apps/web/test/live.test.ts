@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type RefreshScope, refresh } from "../src/api.ts";
 import { Loader } from "../src/components/loader.ts";
 import { report } from "../src/connection.ts";
-import { Live, startLiveUpdates } from "../src/live.ts";
+import { DEBOUNCE_MS, Live, startLiveUpdates } from "../src/live.ts";
 
 class FakeEventSource {
   static all: FakeEventSource[] = [];
@@ -241,5 +241,45 @@ describe("Loader scope", () => {
     stop();
     plain.remove();
     one.remove();
+  });
+});
+
+describe("a backgrounded tab", () => {
+  const setVisibility = (state: "visible" | "hidden") => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+    document.dispatchEvent(new Event("visibilitychange"));
+  };
+  afterEach(() => setVisibility("visible"));
+
+  it("does not refetch for events while hidden, and catches up once, naming what changed, when shown", () => {
+    const live = new Live();
+    const stop = startLiveUpdates(live);
+    latest().open();
+    setVisibility("hidden");
+    latest().emit("ticket", { id: "7" });
+    latest().emit("ticket", { id: "8" });
+    vi.advanceTimersByTime(DEBOUNCE_MS + 10);
+    expect(refreshes).toEqual([]);
+    setVisibility("visible");
+    vi.advanceTimersByTime(DEBOUNCE_MS + 10);
+    expect(refreshes).toHaveLength(1);
+    expect([...(refreshes[0] as RefreshScope).tickets].sort()).toEqual(["7", "8"]);
+    stop();
+  });
+
+  it("does not refetch on a reconnect while hidden, but does when shown", () => {
+    const live = new Live();
+    const stop = startLiveUpdates(live);
+    latest().open();
+    latest().fail();
+    vi.advanceTimersByTime(1100);
+    setVisibility("hidden");
+    latest().open();
+    expect(refreshes).toEqual([]);
+    setVisibility("visible");
+    vi.advanceTimersByTime(DEBOUNCE_MS + 10);
+    expect(refreshes).toHaveLength(1);
+    expect(refreshes[0]).toBeNull();
+    stop();
   });
 });

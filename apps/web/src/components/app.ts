@@ -87,6 +87,8 @@ export class IncApp extends LitElement {
   private left = false;
   private settleToken = 0;
   private needsToken = 0;
+  /** A recount was skipped because the tab was hidden. */
+  private needsStale = false;
   private phoneQuery: MediaQueryList | null = null;
   private lastView: Route["view"] = "conversations";
   private releaseAhp: (() => void) | undefined;
@@ -127,6 +129,7 @@ export class IncApp extends LitElement {
     // The logo goes home, and home differs between a laptop and a phone: follow a resize across the line.
     this.phoneQuery = matchMedia(`(max-width: ${LAYOUT_BREAKPOINTS.phone}px)`);
     this.phoneQuery.addEventListener?.("change", this.onPhoneChange);
+    document.addEventListener("visibilitychange", this.onVisible);
     document.addEventListener("click", this.onDocumentClick);
     document.addEventListener("keydown", this.onDocumentKeydown);
     this.stopLive = startLiveUpdates();
@@ -214,6 +217,7 @@ export class IncApp extends LitElement {
     this.releaseAhp = undefined;
     clearTimeout(this.rosterTimer);
     this.phoneQuery?.removeEventListener?.("change", this.onPhoneChange);
+    document.removeEventListener("visibilitychange", this.onVisible);
     document.removeEventListener("click", this.onDocumentClick);
     document.removeEventListener("keydown", this.onDocumentKeydown);
     this.stopLive?.();
@@ -223,6 +227,12 @@ export class IncApp extends LitElement {
 
   /** The Needs you count, from the same data as the Needs you tab. A failed read keeps the last number. */
   private loadNeeds = async () => {
+    // Nobody is looking at the badge: count again when the tab is shown (onVisible).
+    if (document.visibilityState === "hidden") {
+      this.needsStale = true;
+      return;
+    }
+    this.needsStale = false;
     const token = ++this.needsToken;
     try {
       const n = await loadNeedsYouCount();
@@ -291,6 +301,10 @@ export class IncApp extends LitElement {
   }
 
   private onPhoneChange = () => this.requestUpdate();
+
+  private onVisible = () => {
+    if (document.visibilityState === "visible" && this.needsStale) void this.loadNeeds();
+  };
 
   private onConnection = () => {
     this.offline = isOffline();

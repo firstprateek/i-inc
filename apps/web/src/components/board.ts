@@ -1,87 +1,28 @@
 // The board (spec §10): To do → In progress → Review → Done, across projects and Home.
+
+import type { DigestRow } from "@i-inc/core";
 import { css, html } from "lit";
-import { api, type TicketEvent, type TicketView } from "../api.ts";
+import { api, type RefreshScope, type TicketView } from "../api.ts";
 import { liveText, waitingLine, waitsForAssignee } from "../assign.ts";
+import {
+  appendPage,
+  applyCards,
+  type BoardData,
+  type BoardTicket,
+  type Column,
+  fromSummary,
+  loadedLimits,
+  PAGE,
+} from "./board-model.ts";
 import { LAYOUT_BREAKPOINTS, layoutStyles } from "./layout.ts";
 import { Loader } from "./loader.ts";
 import { NEW_TICKET_EVENT } from "./new-ticket.ts";
 import { avatar, base, projectBadge } from "./shared.ts";
 import "./new-ticket.ts";
 
-/** A board ticket. `createdBy` is the agent that filed it, when the daemon says so (owner tickets have none). */
-export type BoardTicket = TicketView & { createdBy?: NonNullable<TicketView["assignee"]> | null };
-
-/** One line of the digest: a finished ticket and how it ended. */
-export interface DigestRow {
-  id: string;
-  title: string;
-  outcome: "Merged" | "Done" | "Rejected" | "Failed" | "Ready";
-  /** "pushed" when the work reached main, "failed" when it didn't, else where it stands. */
-  note: string;
-  at: number;
-}
-
-interface BoardData {
-  tickets: BoardTicket[];
-  /** The last report of each recently finished ticket, by ticket id; the card in the Done column shows it. */
-  digest: DigestRow[];
-}
-
-const DIGEST_LOOKUPS = 12;
-
-/** The ticket's last report, from its event log. Null while it has none. */
-export function digestRow(t: TicketView, events: TicketEvent[]): DigestRow | null {
-  const failed = t.status === "failed";
-  const finished = events.filter(
-    (e) => e.type === "closed" || e.type === "failed" || e.type === "report-ready",
-  );
-  const last = finished.at(-1);
-  if (!last) return null;
-  const pushed = events.some((e) => e.type === "pushed");
-  const opened = events.some((e) => e.type === "pr-opened");
-  const closed = events.findLast((e) => e.type === "closed");
-  const outcome: DigestRow["outcome"] = failed
-    ? "Failed"
-    : closed?.type === "closed"
-      ? closed.outcome === "merged"
-        ? "Merged"
-        : closed.outcome === "rejected"
-          ? "Rejected"
-          : "Done"
-      : "Ready";
-  return {
-    id: t.id,
-    title: t.title,
-    outcome,
-    note: failed
-      ? "failed"
-      : pushed
-        ? "pushed"
-        : outcome === "Ready"
-          ? "awaits you"
-          : opened
-            ? "PR opened"
-            : "not pushed",
-    at: last.at,
-  };
-}
-
-/** The reports of the most recently finished tickets, newest first. Looks at the most recent few only. */
-export async function loadDigest(tickets: TicketView[]): Promise<DigestRow[]> {
-  const finished = tickets
-    .filter((t) => t.column === "done" || t.status === "failed" || t.status === "ready")
-    .sort((a, b) => Number(b.id) - Number(a.id))
-    .slice(0, DIGEST_LOOKUPS);
-  const rows = await Promise.all(
-    finished.map((t) =>
-      api
-        .ticket(t.id)
-        .then((r) => digestRow(r.ticket, r.events))
-        .catch(() => null),
-    ),
-  );
-  return rows.filter((r): r is DigestRow => r !== null).sort((a, b) => b.at - a.at);
-}
+export type { DigestRow } from "@i-inc/core";
+export { digestRow } from "@i-inc/core";
+export type { BoardTicket } from "./board-model.ts";
 
 /** "5 min ago", "3 h ago", "2 d ago". */
 export function ago(at: number, now = Date.now()): string {
@@ -128,10 +69,36 @@ export class IncBoard extends Loader<BoardData> {
     this.filed = null;
   }
 
-  protected fetch = async () => {
-    const tickets: BoardTicket[] = await api.board();
-    return { tickets, digest: await loadDigest(tickets) };
-  };
+  /** One request: each column's first cards and total, with the reports of the Done cards (no request per card). */
+  protected fetch = async (): Promise<BoardData> =>
+    fromSummary(await api.boardSummary(loadedLimits(this.data)));
+
+  /**
+   * A live event named some tickets: fetch just their cards and update those in place, instead of the whole
+   * board. A board that can't place a card (one it never loaded that isn't new) reloads.
+   */
+  protected override async applyScope(scope: RefreshScope): Promise<boolean> {
+    if (!this.data) return false;
+    if (scope.tickets.size === 0) return true; // an employee event: nothing on the board changes
+    if (scope.tickets.size > 20) return false;
+    const cards = await api.boardCards([...scope.tickets]);
+    // The board may have moved on (a reload, a Show more) while the cards were coming.
+    const next = this.data && applyCards(this.data, cards as Parameters<typeof applyCards>[1]);
+    if (!next) return false;
+    this.data = next;
+    return true;
+  }
+
+  /** "Show more": the next page of one column. */
+  private async more(column: Column): Promise<void> {
+    const data = this.data;
+    if (!data) return;
+    await this.press(async () => {
+      const page = await api.boardColumn(column, data.columns[column].tickets.length, PAGE);
+      if (this.data) this.data = appendPage(this.data, column, page as Parameters<typeof appendPage>[2]);
+      return false; // no refetch: the page is what was asked for
+    });
+  }
 
   override connectedCallback(): void {
     super.connectedCallback();
@@ -191,6 +158,7 @@ export class IncBoard extends Loader<BoardData> {
         background: var(--working-bg); color: var(--working-fg); font-size: 14px; }
       .filed a { font-weight: 700; }
       .filed .btn { flex: none; min-width: 44px; }
+      .more { width: 100%; min-height: 44px; justify-content: center; }
       .cols { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; align-items: start; min-width: 0; }
       /* The report of a finished ticket, on its card in the Done column (and on any card that has one). */
       .report { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; color: var(--ink-2); }
@@ -254,8 +222,7 @@ export class IncBoard extends Loader<BoardData> {
   private content() {
     if (this.error) return this.failure("the board");
     if (!this.data) return html`<p class="muted">Loading the board…</p>`;
-    const { tickets, digest } = this.data;
-    const reports = new Map(digest.map((r) => [r.id, r]));
+    const { columns: cols, reports } = this.data;
     return html`
       ${this.actionError ? html`<div class="err" role="alert">${this.actionError}</div>` : ""}
       ${
@@ -268,10 +235,18 @@ export class IncBoard extends Loader<BoardData> {
       }
     <div class="cols">
       ${columns.map(([id, name, dotCls]) => {
-        const list = tickets.filter((t) => t.column === id);
+        const list = cols[id].tickets;
+        const hidden = cols[id].total - list.length;
         return html`<section aria-label=${name}>
-          <h2><span class="col-dot ${dotCls}" aria-hidden="true"></span>${name}<span>${list.length}</span></h2>
-          ${list.length ? list.map((t) => this.card(t, id === "done" ? reports.get(t.id) : undefined)) : html`<div class="empty">${emptyColumn[id]}</div>`}
+          <h2><span class="col-dot ${dotCls}" aria-hidden="true"></span>${name}<span>${cols[id].total}</span></h2>
+          ${list.length ? list.map((t) => this.card(t, id === "done" ? reports[t.id] : undefined)) : html`<div class="empty">${emptyColumn[id]}</div>`}
+          ${
+            hidden > 0
+              ? html`<button type="button" class="btn ghost more" ?disabled=${this.pressing}
+                  aria-label="Show ${Math.min(PAGE, hidden)} more in ${name}, ${hidden} not shown"
+                  @click=${() => void this.more(id)}>Show ${Math.min(PAGE, hidden)} more <span class="muted">(${hidden} not shown)</span></button>`
+              : ""
+          }
         </section>`;
       })}
     </div>`;

@@ -11,6 +11,7 @@ import "../src/components/hiring.ts";
 import "../src/components/office.ts";
 import "../src/components/setup.ts";
 import { needsYouCount } from "../src/needs-you.ts";
+import { answer } from "./daemon-board.ts";
 
 const phone = (matches: boolean) =>
   vi.stubGlobal("matchMedia", (query: string) => ({
@@ -49,13 +50,8 @@ let openProposals: unknown[] = [];
 function serve(tickets: TicketView[], awaiting: unknown[] = []) {
   vi.stubGlobal("fetch", async (url: string) => {
     const body =
-      url === "/api/board"
-        ? { tickets }
-        : url === "/api/knowledge/handbook"
-          ? { pages: [], history: [], awaiting }
-          : url.startsWith("/api/proposals")
-            ? { proposals: openProposals }
-            : {};
+      answer({ tickets, awaiting, proposals: openProposals }, url) ??
+      (url === "/api/knowledge/handbook" ? { pages: [], history: [], awaiting } : {});
     return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
   });
 }

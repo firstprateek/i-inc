@@ -3,7 +3,7 @@ import { css, html } from "lit";
 import { api, type Conversation, type PolicyProposal, type ProposalView, type TicketView } from "../api.ts";
 import { waitingLine, waitsForAssignee } from "../assign.ts";
 import { visible } from "../conversations/model.ts";
-import { needsYouCount, waitingConversations } from "../needs-you.ts";
+import { loadNeedsYou, needsYouCount } from "../needs-you.ts";
 import { layoutStyles } from "./layout.ts";
 import { Loader } from "./loader.ts";
 import "./proposals.ts";
@@ -21,13 +21,14 @@ export class IncInbox extends Loader<{
   private sawProposals = false;
 
   protected fetch = async () => {
-    const conversations = await waitingConversations();
+    // One request answers the whole page, shared with the shell's badge (needs-you.ts).
+    const r = await loadNeedsYou();
     return {
-      tickets: await api.board(),
-      policies: (await api.handbook()).awaiting ?? [],
-      proposals: await api.proposals(),
-      conversations,
-      names: conversations.length
+      tickets: r.tickets,
+      policies: r.policies,
+      proposals: r.proposals,
+      conversations: r.conversations,
+      names: r.conversations.length
         ? Object.fromEntries((await api.employees().catch(() => [])).map((e) => [e.id, e.name]))
         : {},
     };

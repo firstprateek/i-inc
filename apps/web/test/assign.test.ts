@@ -7,6 +7,7 @@ import { assignees, waitingLine, waitsForAssignee } from "../src/assign.ts";
 import "../src/components/board.ts";
 import "../src/components/inbox.ts";
 import "../src/components/ticket.ts";
+import { answer } from "./daemon-board.ts";
 
 const emp = (id: string, name: string, over: Partial<Employee> = {}): Employee =>
   ({
@@ -131,6 +132,8 @@ function serve(tickets: TicketView[], employees: Employee[] = team) {
     calls.push({ method, url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
     const reply = (body: unknown, status = 200) =>
       new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const board = answer({ tickets }, url);
+    if (board !== undefined) return reply(board);
     if (url === "/api/board") return reply({ tickets });
     if (url === "/api/employees") return reply({ employees });
     if (url === "/api/projects")

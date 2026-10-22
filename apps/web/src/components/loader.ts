@@ -49,8 +49,30 @@ export abstract class Loader<T> extends LitElement {
   private onRefresh = (e: Event) => {
     const scope = (e as CustomEvent<RefreshScope | undefined>).detail;
     if (scope && this.ticketId !== undefined && !scope.tickets.has(this.ticketId)) return;
+    if (scope) {
+      // A live event named the tickets that changed: a view that can update just those does, and reloads
+      // only when it can't (it didn't know the ticket, or the update failed).
+      const seq = this.loadSeq;
+      void this.applyScope(scope).then(
+        (done) => {
+          if (!done && seq === this.loadSeq) void this.reload();
+        },
+        () => {
+          if (seq === this.loadSeq) void this.reload();
+        },
+      );
+      return;
+    }
     void this.reload();
   };
+
+  /**
+   * Brings `data` up to date for the tickets in `scope` without refetching everything. Resolves true when it
+   * did; false asks for a full reload. Views that don't override it always reload.
+   */
+  protected async applyScope(_scope: RefreshScope): Promise<boolean> {
+    return false;
+  }
 
   async reload(): Promise<void> {
     const seq = ++this.loadSeq;

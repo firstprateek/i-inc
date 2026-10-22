@@ -2,7 +2,15 @@
 // timeline from its event log (spec §6, §10).
 import type { Employee } from "@i-inc/core";
 import { css, html } from "lit";
-import { ApiError, api, imageRules, refreshNow, type TicketEvent, type TicketView } from "../api.ts";
+import {
+  ApiError,
+  api,
+  imageRules,
+  type RecentWork,
+  refreshNow,
+  type TicketEvent,
+  type TicketView,
+} from "../api.ts";
 import { assignees, liveText, notStarted, optionLabel, waitingLine } from "../assign.ts";
 import { atTime, clock } from "../time.ts";
 import { ImagePicker, imagePickerStyles } from "./image-picker.ts";
@@ -17,7 +25,7 @@ interface Data {
   events: TicketEvent[];
   /** Only for a ticket that has not started: who could take it, and the board for who worked here last. */
   employees?: Employee[];
-  recent?: TicketView[];
+  recent?: RecentWork[];
 }
 
 export class IncTicket extends Loader<Data> {
@@ -75,7 +83,7 @@ export class IncTicket extends Loader<Data> {
     // The assign card needs the team and the board; the ticket still shows if they don't load.
     const [employees, recent] = await Promise.all([
       api.employees().catch(() => []),
-      api.board().catch(() => []),
+      api.recentWork().catch(() => []),
     ]);
     return {
       ...r,
