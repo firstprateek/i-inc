@@ -155,6 +155,10 @@ describe("vacuuming the database", () => {
       ran: false,
       reason: "dry run",
     });
+    expect(vacuumIfNeeded(db, { freePct: 20, minFreeBytes: 1, idle: true, maxDbBytes: 100 })).toMatchObject({
+      ran: false,
+      reason: "database exceeds synchronous vacuum size cap",
+    });
     expect(dbSpace(db).freePages).toBeGreaterThan(0);
     db.close();
   });

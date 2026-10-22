@@ -76,6 +76,19 @@ export interface TicketRecord {
 
 export class Tickets {
   onChange?: (ticketId: Id) => void;
+  private readonly listeners = new Set<(ticketId: Id) => void>();
+
+  subscribe(fn: (ticketId: Id) => void): () => void {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+
+  private notifyChange(ticketId: Id): void {
+    this.onChange?.(ticketId);
+    for (const listener of this.listeners) {
+      listener(ticketId);
+    }
+  }
 
   constructor(private readonly db: Db) {}
 
@@ -110,7 +123,7 @@ export class Tickets {
       );
       this.insertImages(id, attachments, images, now);
     });
-    this.onChange?.(id);
+    this.notifyChange(id);
     return ticket;
   }
 
@@ -133,7 +146,7 @@ export class Tickets {
       );
       this.insertImages(id, added, images, now);
     });
-    this.onChange?.(id);
+    this.notifyChange(id);
     return added;
   }
 
@@ -180,19 +193,19 @@ export class Tickets {
       pickedAt,
       id,
     );
-    this.onChange?.(id);
+    this.notifyChange(id);
   }
 
   setProject(id: Id, project: string): void {
     const r = this.get(id);
     if (!r) throw new Error(`no ticket ${id}`);
     this.db.run("UPDATE tickets SET body = ? WHERE id = ?", JSON.stringify({ ...r.ticket, project }), id);
-    this.onChange?.(id);
+    this.notifyChange(id);
   }
 
   setHold(id: Id, hold: boolean): void {
     this.db.run("UPDATE tickets SET hold = ? WHERE id = ?", hold ? 1 : 0, id);
-    this.onChange?.(id);
+    this.notifyChange(id);
   }
 
   private rows(where: string, ...params: string[]): TicketRecord[] {

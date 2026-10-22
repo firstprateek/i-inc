@@ -486,7 +486,7 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
         return;
       }
     }
-    await c.emit(finished(c, "report", out), { type: "report-ready", at, summary: out });
+    await c.emit(finished(c, "report", out), { type: "report-ready", at, summary: capPayload(out) });
   },
 
   // The retro (spec §6, stage 11): builder and reviewer each propose 0-2 knowledge edits.
@@ -856,14 +856,18 @@ async function fallBackFromEmptyAccount(c: Step): Promise<boolean> {
   return true;
 }
 
+const MAX_PAYLOAD_CHARS = 16 * 1024;
+export const capPayload = (text: string, max = MAX_PAYLOAD_CHARS): string =>
+  text.length <= max ? text : `${text.slice(0, max)}\n...[truncated]`;
+
 function finished(c: Step, stage: StageId, output?: string): TicketEvent {
   return output === undefined
     ? { type: "stage-finished", at: c.p.clock.now(), stage }
-    : { type: "stage-finished", at: c.p.clock.now(), stage, output };
+    : { type: "stage-finished", at: c.p.clock.now(), stage, output: capPayload(output) };
 }
 
 function checkpoint(c: Step, stage: StageId, note: string): TicketEvent {
-  return { type: "checkpoint", at: c.p.clock.now(), stage, note };
+  return { type: "checkpoint", at: c.p.clock.now(), stage, note: capPayload(note) };
 }
 
 function needsYou(c: Step, stage: StageId, ask: NeedsYou): TicketEvent {

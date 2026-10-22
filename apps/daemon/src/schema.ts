@@ -12,6 +12,7 @@ export function migrate(db: Db): void {
       body TEXT NOT NULL,
       PRIMARY KEY (ticket_id, seq)
     );
+    CREATE INDEX IF NOT EXISTS idx_events_type_at ON events(type, at);
     CREATE TABLE IF NOT EXISTS tickets (
       id TEXT PRIMARY KEY,
       body TEXT NOT NULL,
@@ -20,6 +21,7 @@ export function migrate(db: Db): void {
       created_at INTEGER NOT NULL,
       picked_at INTEGER
     );
+    CREATE INDEX IF NOT EXISTS idx_tickets_created_at_id ON tickets(created_at, CAST(id AS INTEGER));
     CREATE TABLE IF NOT EXISTS chat (
       employee_id TEXT NOT NULL,
       seq INTEGER NOT NULL,

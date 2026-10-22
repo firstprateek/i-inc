@@ -643,6 +643,7 @@ export class Storage {
           minFreeBytes: 16 * 1024 ** 2,
           idle: !this.d.hostBusy(),
           dryRun,
+          maxDbBytes: 500 * 1024 ** 2,
         });
         out.vacuum = {
           ran: r.ran,
