@@ -138,6 +138,13 @@ export interface SessionRequest {
   onLaunched?: () => Promise<void>;
   /** Emits transcript items (streamed from ACP notifications) for recording. */
   onTranscriptItem?: (item: SessionTranscriptItem) => void;
+  /**
+   * For an agent that speaks ACP: every `session/update` it sends, as it arrives, for the read-only live view of
+   * the session (T69). Raw and unredacted: the receiver redacts and caps. It never throws into the session.
+   */
+  onAgentUpdate?: (update: Record<string, unknown>) => void;
+  /** For an agent that speaks ACP: the token counts of the finished prompt (`_meta.usage`), if it gave any. */
+  onAgentUsage?: (usage: Record<string, unknown>) => void;
 }
 
 export interface SessionTranscriptItem {
@@ -153,6 +160,8 @@ export interface SessionTranscriptItem {
 }
 
 export interface TicketSessionTranscript {
+  /** The session's id (the daemon's `ticket_sessions` row): it names the session in `#/ticket/<id>/session/<id>`. */
+  id?: number;
   stage: string;
   employeeId: string;
   engineId: string;

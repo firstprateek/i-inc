@@ -59,6 +59,9 @@ import {
 } from "./wire.ts";
 
 export const DEFAULT_TITLE = "New conversation";
+/** What a client is told when it acts on a read-only channel (a ticket stage's session, T69). */
+export const READ_ONLY_WHY =
+  "This is a read-only view of a ticket stage: it takes no messages, answers or settings. The ticket runs on its own.";
 const CUT_MARKER = "\n[…cut: a part of a reply is kept to its first 2 MB]";
 
 /** What a socket must offer the host. The Bun glue in transport.ts adapts `ServerWebSocket` to it. */
@@ -423,6 +426,7 @@ export class AhpHost {
       }
       if (c.kind === "chat" && c.state.activeTurn) {
         const t = c.state.activeTurn;
+        const readOnly = c.state._meta?.readOnly === true;
         this.apply(ch.uri, {
           type: ActionType.ChatError,
           turnId: t.id,
@@ -432,7 +436,9 @@ export class AhpHost {
             resumable: false,
             error: {
               errorType: "host_restarted",
-              message: "The daemon restarted while this turn was running. Send a message to carry on.",
+              message: readOnly
+                ? "The daemon restarted while this stage was running. The ticket carries on in a new session."
+                : "The daemon restarted while this turn was running. Send a message to carry on.",
             },
           },
         });
@@ -486,6 +492,22 @@ export class AhpHost {
   isLoaded(uri: string): boolean {
     const ch = this.chans.get(uri);
     return !!ch?.c && ch.kind === "chat";
+  }
+  /** Is there such a channel? */
+  hasChannel(uri: string): boolean {
+    return this.chans.has(uri);
+  }
+  /**
+   * A read-only channel is a view the daemon fills and no client may change: a ticket stage's session and its
+   * chats (T69). The mark is in the session's `_meta` and the chat's, from the day it was made.
+   */
+  isReadOnly(uri: string): boolean {
+    const ch = this.chans.get(uri);
+    if (!ch) return false;
+    const session =
+      ch.kind === "session" ? ch.uri : ch.kind === "chat" ? this.chatSession.get(ch.uri) : undefined;
+    const meta = session ? this.chans.get(session)?.c : undefined;
+    return meta?.kind === "session" && meta.state._meta?.readOnly === true;
   }
   /** Chats held in memory now (the rest are on disk). */
   get loadedChats(): number {
@@ -817,7 +839,11 @@ export class AhpHost {
   private noteSummary(uri: string): void {
     const sum = this.summary(uri);
     if (!sum) return;
-    const key = JSON.stringify([sum.status, sum.title, sum.activity, sum.modifiedAt, sum.chats]);
+    // A ticket's session changes with every word its agent says: root subscribers hear when it starts, ends or is
+    // renamed, not each time (a client that watches it is subscribed to its chat).
+    const key = this.isReadOnly(uri)
+      ? JSON.stringify([sum.status, sum.title, sum.chats?.length ?? 0])
+      : JSON.stringify([sum.status, sum.title, sum.activity, sum.modifiedAt, sum.chats]);
     const before = this.lastSummary.get(uri);
     this.lastSummary.set(uri, key);
     if (before !== undefined && before !== key) {
@@ -1487,6 +1513,7 @@ export class AhpHost {
 
   private async disposeSessionCommand(uri: string): Promise<null> {
     if (!this.sessionState(uri)) throw new RpcError(AhpErrorCodes.SessionNotFound, "no such session");
+    if (this.isReadOnly(uri)) throw new RpcError(AhpErrorCodes.Conflict, READ_ONLY_WHY);
     if (this.hooks.canDisposeSession && !this.hooks.canDisposeSession(uri)) {
       throw new RpcError(AhpErrorCodes.Conflict, "archive the conversation before disposing its session");
     }
@@ -1520,10 +1547,138 @@ export class AhpHost {
     this.hooks.onSessionDisposed?.(uri);
   }
 
+  // ── read-only sessions: a ticket's stages (T69) ───────────────────────────────────────────────
+  //
+  // The daemon makes these itself, never a client (`createSession` and `createChat` refuse them). A session
+  // has a chat per stage session; each chat holds one turn, whose reply is the agent's work, streamed in. They
+  // live in the same store as conversations, so they are replayed, snapshotted, pruned, capped and redacted the
+  // same way, and a client reads them like any chat.
+
+  /** Makes a read-only session unless it exists; true when it was made. */
+  openReadOnlySession(spec: { session: string; provider: string; title: string; meta: Json }): boolean {
+    if (channelKind(spec.session) !== "session" || spec.session.length > 200)
+      throw invalid("session must be an ahp-session: URI");
+    if (this.chans.has(spec.session)) return false;
+    const now = this.now();
+    const title = spec.title.slice(0, 200);
+    const initial: SessionState = {
+      provider: spec.provider,
+      title,
+      status: SessionStatus.Idle,
+      lifecycle: SessionLifecycle.Creating,
+      activeClients: [],
+      chats: [],
+      _meta: { ...spec.meta, readOnly: true },
+    };
+    this.store.createChannel({
+      uri: spec.session,
+      kind: "session",
+      initial,
+      createdSeq: this.seq,
+      createdAt: now,
+      meta: {},
+    });
+    this.chans.set(spec.session, {
+      uri: spec.session,
+      kind: "session",
+      initial,
+      c: { kind: "session", state: initial },
+      touched: ++this.tick,
+      bytes: 0,
+      createdAt: now,
+      meta: {},
+      sinceSnapshot: 0,
+      logBytes: 0,
+      stateBytes: 0,
+      snapshotAt: 0,
+      lastSeq: this.seq,
+    });
+    this.apply(spec.session, { type: ActionType.SessionReady });
+    this.lastSummary.delete(spec.session);
+    this.noteSummary(spec.session);
+    const sum = this.summary(spec.session);
+    if (sum) this.notify(ROOT, "root/sessionAdded", { summary: sum });
+    return true;
+  }
+
+  /** Adds a read-only chat to a read-only session unless it exists (and names the session after it). */
+  addReadOnlyChat(spec: { session: string; chat: string; title: string; meta: Json }): boolean {
+    if (!this.isReadOnly(spec.session)) throw invalid("not a read-only session");
+    if (channelKind(spec.chat) !== "chat" || spec.chat.length > 200)
+      throw invalid("chat must be an ahp-chat: URI");
+    if (this.chans.has(spec.chat)) return false;
+    const now = this.now();
+    const stamp = new Date(now).toISOString();
+    const title = spec.title.slice(0, 200);
+    const initial: ChatState = {
+      resource: spec.chat,
+      title,
+      status: SessionStatus.Idle,
+      modifiedAt: stamp,
+      turns: [],
+      interactivity: "read-only" as never,
+      _meta: { ...spec.meta, readOnly: true },
+    };
+    this.store.createChannel({
+      uri: spec.chat,
+      kind: "chat",
+      initial,
+      createdSeq: this.seq,
+      createdAt: now,
+      meta: { session: spec.session, active: false },
+    });
+    this.chans.set(spec.chat, {
+      uri: spec.chat,
+      kind: "chat",
+      initial,
+      c: { kind: "chat", state: initial },
+      touched: ++this.tick,
+      bytes: 0,
+      createdAt: now,
+      meta: { session: spec.session, active: false },
+      sinceSnapshot: 0,
+      logBytes: 0,
+      stateBytes: 0,
+      snapshotAt: 0,
+      lastSeq: this.seq,
+    });
+    this.chatSession.set(spec.chat, spec.session);
+    this.apply(spec.session, {
+      type: ActionType.SessionChatAdded,
+      summary: { resource: spec.chat, title, status: SessionStatus.Idle, modifiedAt: stamp },
+    });
+    if (this.sessionState(spec.session)?.title !== title)
+      this.apply(spec.session, { type: ActionType.SessionTitleChanged, title });
+    return true;
+  }
+
+  /** The chats of a session, oldest first. */
+  chatsOf(session: string): string[] {
+    return this.sessionChats(session);
+  }
+
+  /** Forgets one chat of a read-only session (its log and snapshots too). Not one that is mid-turn. */
+  dropReadOnlyChat(chat: string): boolean {
+    const sessionUri = this.chatSession.get(chat);
+    if (!sessionUri || !this.isReadOnly(chat) || this.hasActiveTurn(chat)) return false;
+    this.flushDeltas(chat);
+    this.apply(sessionUri, { type: ActionType.SessionChatRemoved, chat });
+    this.chans.delete(chat);
+    this.chatSession.delete(chat);
+    this.tails.delete(chat);
+    for (const conn of this.conns) {
+      conn.subs.delete(chat);
+      conn.windows.delete(chat);
+    }
+    this.store.deleteChannels([chat]);
+    return true;
+  }
+
   private async createChatCommand(p: Json): Promise<null> {
     const sessionUri = str(p.channel, "channel");
     const session = this.sessionState(sessionUri);
     if (!session) throw new RpcError(AhpErrorCodes.SessionNotFound, "no such session");
+    if (this.isReadOnly(sessionUri)) throw new RpcError(AhpErrorCodes.Conflict, READ_ONLY_WHY);
     const chat = str(p.chat, "chat");
     if (channelKind(chat) !== "chat" || chat.length > 200) throw invalid("chat must be an ahp-chat: URI");
     if (this.chans.has(chat)) throw new RpcError(AhpErrorCodes.AlreadyExists, "chat already exists");
@@ -1580,6 +1735,7 @@ export class AhpHost {
     const sessionUri = this.chatSession.get(chat);
     const session = sessionUri ? this.sessionState(sessionUri) : undefined;
     if (!sessionUri || !session) throw new RpcError(AhpErrorCodes.SessionNotFound, "no such chat");
+    if (this.isReadOnly(chat)) throw new RpcError(AhpErrorCodes.Conflict, READ_ONLY_WHY);
     if (session.defaultChat === chat || session.chats.length <= 1) {
       throw new RpcError(AhpErrorCodes.Conflict, "the default chat of a session cannot be disposed");
     }
@@ -1634,6 +1790,8 @@ export class AhpHost {
     if (!isClientDispatchable(a as never)) return refuse(`${a.type} is not client-dispatchable`);
     const kind: ChannelKind = ch.kind;
     if (!a.type.startsWith(`${kind}/`)) return refuse(`${a.type} does not belong on a ${kind} channel`);
+    // A ticket stage's session is watched, not driven: no turns, no steering, no answers, no settings.
+    if (this.isReadOnly(channel)) return refuse(READ_ONLY_WHY);
     const origin = { clientId: conn.clientId ?? `conn-${conn.id}`, clientSeq };
     try {
       this.dispatchChecked(conn, ch, a, origin, refuse);
