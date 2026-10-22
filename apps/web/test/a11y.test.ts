@@ -341,7 +341,9 @@ describe("tap targets that were 38px", () => {
   it("the Brain's pointer to Settings → Teams is a 44px link of its own, not a phrase in a sentence", () => {
     const s = read("src/components/knowledge.ts");
     expect(s).toMatch(/\.settings-link \{[^}]*min-height: 44px/);
-    expect(s).toContain('<a class="btn ghost settings-link" href="#/company/settings/teams">Open Settings → Teams</a>');
+    expect(s).toContain(
+      '<a class="btn ghost settings-link" href="#/company/settings/teams">Open Settings → Teams</a>',
+    );
     expect(s).not.toMatch(/<p class="muted">[^<]*<a href="#\/company\/settings\/teams">/);
   });
 });

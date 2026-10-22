@@ -78,7 +78,7 @@ const smallTargets = () => {
       if (child.shadowRoot) all(child.shadowRoot, sel, out);
     return out;
   };
-  return all(document, "button, a.btn, select, [role=tab], .tabs button")
+  return all(document, "button, a.btn, select, [role=tab], .tabs a")
     .filter((el) => {
       const r = el.getBoundingClientRect();
       const s = getComputedStyle(el);

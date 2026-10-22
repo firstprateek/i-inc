@@ -497,7 +497,8 @@ export class IncHiring extends LitElement {
       .duty-note { margin: 6px 0 0; min-height: 0; font-size: 13px; color: var(--ink-2); }
       .duty-note:empty { display: none; }
       /* The whole card is the label, so the tap target is the card (44px or more), and the box is easy to see. */
-      .duty-card { min-height: 44px; box-sizing: border-box; }
+      /* A label, so it must undo the form's label layout (a column of full-width text). */
+      .duty-card { min-height: 44px; box-sizing: border-box; flex-direction: row; width: auto; gap: 10px; font-weight: normal; color: var(--ink); align-items: flex-start; }
       .duty-card:has(input:focus-visible) { outline: 3px solid var(--reviewing-mark); outline-offset: 2px; }
       .duty-card input[type="checkbox"] { width: 22px; height: 22px; margin: 0; flex: none; accent-color: var(--ink); }
       .duty-info { display: flex; flex-direction: column; gap: 2px; }
