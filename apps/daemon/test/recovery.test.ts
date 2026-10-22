@@ -461,6 +461,28 @@ describe("2.6 the low-disk gate", () => {
     expect((await app.call("GET", `/api/tickets/${id}`)).body.ticket.status).toBe("ready");
   });
 
+  it("does not hold a ticket that was running when the daemon restarted", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "i-inc-lowdisk-"));
+    const path = join(dir, "t.db");
+    const first = await testApp(path);
+    first.agent.on({ stage: "build" }, { kind: "crash" });
+    await first.call("POST", "/api/tickets", refunds);
+    await first.daemon.idle();
+    expect((await first.call("GET", "/api/tickets/1")).body.ticket.status).toBe("running");
+    first.db.close();
+
+    const second = await testApp(path);
+    const { storage, state } = storageFor(second);
+    second.daemon.storage = storage;
+    state.free = 1 * GB;
+    // A new ticket waits; the one that was running goes on.
+    await second.call("POST", "/api/tickets", { ...refunds, title: "Another" });
+    await second.daemon.tick();
+    await second.daemon.idle();
+    expect((await second.call("GET", "/api/tickets/1")).body.ticket.status).toBe("ready");
+    expect(await second.deps.store.read("2")).toEqual([]);
+  });
+
   it("is configurable, and off at 0", async () => {
     const app = await testApp();
     const { storage, state } = storageFor(app);

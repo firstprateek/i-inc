@@ -271,6 +271,8 @@ describe("what reaches a shell", () => {
       [copy({ cwd: "/etc" }), REMOTE],
       [copy({ cwd: "/home/employee/work/../../etc" }), REMOTE],
       [copy({ base: "main; id" }), REMOTE],
+      [copy({ base: "release/../x" }), REMOTE],
+      [copy({ base: "-x" }), REMOTE],
       [copy(), "https://evil.example/x.git"],
       [copy(), "https://github.com/a/b.git; id"],
     ] as const) {
@@ -279,6 +281,14 @@ describe("what reaches a shell", () => {
       expect(() => pushScript(bad, remote, "a".repeat(40))).toThrow();
     }
     expect(() => pushScript(copy(), REMOTE, "not-a-sha")).toThrow();
+  });
+
+  it("takes a base branch with a slash in its name (release/1.0)", () => {
+    const release = copy({ base: "release/1.0" });
+    expect(() => inspectScript(release, REMOTE, NONCE)).not.toThrow();
+    expect(() => commitScript(release, REMOTE, "m")).not.toThrow();
+    expect(() => pushScript(release, REMOTE, "a".repeat(40))).not.toThrow();
+    expect(inspectScript(release, REMOTE, NONCE)).toContain("+refs/heads/release/1.0:refs/heads/base");
   });
 
   it("carries the commit message as base64, so no message can break out of the script", () => {
