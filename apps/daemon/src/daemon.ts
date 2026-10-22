@@ -36,6 +36,7 @@ import {
   type Workspace,
 } from "@i-inc/core";
 import type { ConversationService } from "./ahp/conversations.ts";
+import { externalTool } from "./ahp/session-host.ts";
 import type { BrainFeed } from "./brain-feed.ts";
 import type { BrainHarvest } from "./brain-harvest.ts";
 import type { BrainIndex } from "./brain-index.ts";
@@ -104,6 +105,15 @@ export interface StorageHooks {
 
 /** On a ticket the owner accepted from a proposal, so the daily follow-up budget doesn't count it. */
 export const ACCEPTED_LABEL = "accepted-proposal";
+
+/** A ticket that carries someone else's words: it names a GitHub issue or pull request, or is labelled as one. */
+export function ticketFromOutside(t: Ticket): boolean {
+  const text = [t.title, t.reason ?? "", ...t.doneWhen].join("\n");
+  return (
+    (t.labels ?? []).some((l) => /^(?:github-)?issue$|^from-issue$|^external$/i.test(l)) ||
+    /github\.com\/[^\s/]+\/[^\s/]+\/(?:issues|pull)\/\d+/i.test(text)
+  );
+}
 
 /** On the daily "Tend the brain" tickets (docs/design/brain.md, "Tending"). */
 export const TIDY_LABEL = "brain-tidy";
@@ -325,16 +335,29 @@ export class Daemon {
               },
             });
             if (ctx.text) req.brief = `${req.brief}\n\n${ctx.text}`;
+            // The retro asked for edits in the copy, and the copy isn't there this time: lessons go as JSON.
+            if (req.stage === "retro" && !ctx.copy) {
+              req.brief = `${req.brief}\n\nYour brain copy is not available this time, so reply with your lessons as JSON instead: {"edits":[{"layer":"brain"|"fact"|"policy","page","text"}]}, at most 2.`;
+            }
             // The tidy-up is told where to look: duplicates, conflicts, broken links, unused pages, map sizes.
             if (req.stage === "tidy") req.brief = `${req.brief}\n\n${feed.tidyText(req.employee.id)}`;
           } catch (err) {
             this.d.log?.(`brain: no pages for ${req.ticket.id}/${req.stage}: ${err}`);
           }
         }
+        // What the session handles from outside (a GitHub issue as the ticket, a web fetch) makes what it writes
+        // into the brain untrusted.
+        const harvest = this.d.brainHarvest;
+        const ticketSource = { kind: "ticket" as const, id: req.ticket.id };
+        if (harvest && ticketFromOutside(req.ticket))
+          harvest.noteExternal(ticketSource, "the ticket comes from a GitHub issue");
         let textCount = 0;
         const origOnTranscriptItem = req.onTranscriptItem;
         req.onTranscriptItem = (item) => {
           if (item.kind === "text") textCount++;
+          if (harvest && item.kind === "tool" && item.title && externalTool.test(item.title)) {
+            harvest.noteExternal(ticketSource, "a web fetch");
+          }
           // Reads of brain pages in the employee's copy (the agent's own tool calls) feed the page counters.
           if (item.locations?.length && sessionId !== null && feed) {
             try {
@@ -395,7 +418,7 @@ export class Daemon {
       company: this.company,
       ...(workspace ? { workspace } : {}),
       // Agents with a copy of the brain edit it; the retro asks for lessons there (T58).
-      ...(this.d.brainFeed?.enabled ? { brainWrites: true } : {}),
+      ...(this.d.brainFeed?.enabled ? { brainWrites: (id: Id) => this.d.brainFeed.copyUsable(id) } : {}),
     };
   }
 

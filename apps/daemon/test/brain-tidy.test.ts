@@ -3,8 +3,9 @@
 import type { Employee, Ticket } from "@i-inc/core";
 import type { FakeAgent } from "@i-inc/core/testing";
 import { afterEach, describe, expect, it } from "vitest";
+import { externalTool } from "../src/ahp/session-host.ts";
 import { tidyReport } from "../src/brain-tidy.ts";
-import { TIDY_LABEL } from "../src/daemon.ts";
+import { TIDY_LABEL, ticketFromOutside } from "../src/daemon.ts";
 import { brainRig, cleanRigs, page } from "./brain-rig.ts";
 
 afterEach(cleanRigs);
@@ -232,5 +233,99 @@ describe("what the librarian is told", () => {
     expect(r.unused.map((u) => u.slug)).toEqual(["facts/stale"]);
     expect(r.broken).toEqual([]);
     expect(r.maps[0]).toMatchObject({ scope: "company", limit: 150 });
+  });
+});
+
+describe("the report is made once for a state of the brain and a day", () => {
+  it("is the same object until a repo changes or the day ends", async () => {
+    const w = await world();
+    const feed = w.app.deps.brainFeed;
+    const first = feed.tidyData("grace");
+    expect(feed.tidyData("grace")).toBe(first);
+    expect(feed.tidyData("grace")).toBe(first);
+    w.commit("handbook", {
+      "facts/more.md": page("More", "More things", "A new page with some words in it."),
+    });
+    const second = feed.tidyData("grace");
+    expect(second).not.toBe(first);
+    expect(feed.tidyData("grace")).toBe(second);
+    w.clock.advance(24 * 60);
+    expect(feed.tidyData("grace")).not.toBe(second);
+  });
+
+  it("is not made again by the daemon's ticks while there is nothing to tend", async () => {
+    const w = await brainRig();
+    w.commit("handbook", {
+      "facts/gh.md": page("GitHub CLI", "gh pr checks waits for CI", "Use gh pr checks --watch."),
+    });
+    const feed = w.app.deps.brainFeed;
+    const first = feed.tidyData("grace");
+    for (let i = 0; i < 3; i++) await w.app.daemon.tick();
+    expect(feed.tidyData("grace")).toBe(first);
+  });
+});
+
+describe("what a session handled from outside", () => {
+  const run = async (
+    w: Awaited<ReturnType<typeof world>>,
+    ticket: Ticket,
+    items: { kind: "tool"; title: string; at: number }[] = [],
+  ) => {
+    const ports = (w.app.daemon as unknown as { ports: { agent: { run: (r: unknown) => Promise<unknown> } } })
+      .ports;
+    (w.app.deps.agent as FakeAgent).on({ ticket: ticket.id }, { kind: "done", output: "ok", items } as never);
+    await ports.agent.run({
+      ticket,
+      stage: "build",
+      duty: "build",
+      employee: w.app.deps.registry.employee("ada"),
+      engine: w.app.deps.registry.engine("opus"),
+      brief: "go",
+    });
+    return w.app.deps.db.all<{ ref_id: string; why: string }>("SELECT ref_id, why FROM brain_external");
+  };
+  const ticket = (id: string, over: Partial<Ticket> = {}): Ticket => ({
+    id,
+    title: "Fix the thing",
+    project: "Duet",
+    type: "fix",
+    effort: "low",
+    doneWhen: [],
+    assignee: "ada",
+    ...over,
+  });
+
+  it("is noted for a ticket that names a GitHub issue, and for a web fetch in a tool call", async () => {
+    const w = await world();
+    expect(await run(w, ticket("1"))).toEqual([]);
+    expect(
+      await run(w, ticket("2", { reason: "see https://github.com/acme/duet/issues/12 for the report" })),
+    ).toEqual([{ ref_id: "2", why: "the ticket comes from a GitHub issue" }]);
+    expect(await run(w, ticket("3", { labels: ["issue"] }))).toHaveLength(2);
+    const fetched = await run(w, ticket("4"), [
+      { kind: "tool", title: "WebFetch https://example.com/x", at: 0 },
+    ]);
+    expect(fetched.find((r) => r.ref_id === "4")).toMatchObject({ why: "a web fetch" });
+    expect(ticketFromOutside(ticket("5"))).toBe(false);
+    expect(externalTool.test("Run curl -s https://example.com | head")).toBe(true);
+    expect(externalTool.test("Read src/app.ts")).toBe(false);
+  });
+
+  it("asks the retro for JSON when the brain copy is not there", async () => {
+    const w = await world();
+    w.app.deps.brainFeed.deliver = async () => ({ code: 1, output: "boom" });
+    const ports = (w.app.daemon as unknown as { ports: { agent: { run: (r: unknown) => Promise<unknown> } } })
+      .ports;
+    await ports.agent.run({
+      ticket: ticket("7"),
+      stage: "retro",
+      duty: "build",
+      employee: w.app.deps.registry.employee("ada"),
+      engine: w.app.deps.registry.engine("opus"),
+      brief: "look back",
+    });
+    const brief = (w.app.deps.agent as FakeAgent).calls.at(-1)?.brief ?? "";
+    expect(brief).toContain("brain copy is not available this time");
+    expect(brief).toContain('"edits"');
   });
 });

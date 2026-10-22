@@ -510,17 +510,16 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
         c,
         next.id === c.builder.id ? "build" : "review",
         next,
-        c.p.brainWrites
+        c.p.brainWrites?.(next.id)
           ? retroInCopy
           : `Look back at this ticket. Propose at most 2 durable, non-obvious, reusable lessons. Reply as JSON: {"edits":[{"layer":"brain"|"fact"|"policy","page","text"}]}. "brain" is your own working style and duty lessons; "fact" is useful to every employee; "policy" changes how the company works. ${pageRules}`,
       );
       if (out === null) return;
-      // With a brain copy the lessons are edits to its files, collected after the ticket; the reply proposes nothing.
-      const edits = c.p.brainWrites
-        ? []
-        : (parseJson<{ edits: KnowledgeEdit[] }>(out)?.edits ?? [])
-            .slice(0, 2)
-            .map((e) => routed(c.ticket, e));
+      // With a brain copy the lessons are edits to its files, collected after the ticket. A reply that still
+      // carries lessons as JSON (the copy wasn't available this time, and the brief said to) is taken as before.
+      const edits = (parseJson<{ edits: KnowledgeEdit[] }>(out)?.edits ?? [])
+        .slice(0, 2)
+        .map((e) => routed(c.ticket, e));
       await c.emit({
         type: "knowledge-proposed",
         at: c.p.clock.now(),

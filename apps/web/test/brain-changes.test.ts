@@ -53,7 +53,11 @@ function api(pages: Any[] = [{ changes: [change()], next: null, facets }]) {
     calls.push({ method, url });
     const json = (body: unknown, status = 200) =>
       new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-    if (method === "POST" && /\/revert$/.test(url)) return json({ change: change({ reverted: true }) });
+    if (method === "POST" && /\/revert$/.test(url)) {
+      return json({
+        change: change({ id: Number(/changes\/(\d+)\//.exec(url)?.[1]), reverted: true, revertible: false }),
+      });
+    }
     if (url.startsWith("/api/brain/changes")) return json(pages[Math.min(n++, pages.length - 1)]);
     return json({});
   });
@@ -148,20 +152,26 @@ describe("the Brain changes view", () => {
     expect(entry.querySelector("button")).toBeNull();
   });
 
-  it("reverts with one click, then reloads the list", async () => {
+  it("reverts with one click and updates the entry in place, keeping the older pages already loaded", async () => {
     const calls = api([
-      { changes: [change()], next: null, facets },
-      { changes: [change({ reverted: true, revertible: false })], next: null, facets },
+      { changes: [change({ id: 9 })], next: 9, facets },
+      { changes: [change({ id: 8, slug: "facts/older" })], next: null, facets },
     ]);
     const { el, root } = await mount();
+    const more = [...root.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("older"),
+    ) as HTMLButtonElement;
+    more.click();
+    await settle(el);
+    expect(root.querySelectorAll("ol > li")).toHaveLength(2);
     (root.querySelector("ol li button") as HTMLButtonElement).click();
     await settle(el);
     expect(calls.filter((c) => c.method === "POST").map((c) => c.url)).toEqual([
-      "/api/brain/changes/3/revert",
+      "/api/brain/changes/9/revert",
     ]);
-    expect(calls.filter((c) => c.method === "GET")).toHaveLength(2);
-    expect(root.querySelector("ol li button")).toBeNull();
+    expect(root.querySelectorAll("ol > li")).toHaveLength(2);
     expect(root.querySelector(".tags")?.textContent).toContain("reverted by owner");
+    expect(root.querySelectorAll("ol li button")).toHaveLength(1);
   });
 
   it("shows the reason when a revert can't be done", async () => {

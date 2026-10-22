@@ -507,7 +507,7 @@ net is the **Brain changes** feed (Company → Brain → Changes, `#/company/bra
   only (never another employee's brain, another team, `teams/` under company, `personality.md`, or the generated
   `INDEX.md`); a PA's home copy writes only its own brain, never a shared scope (its code copy the reverse); plain
   paths; 64 KB a page, 512 KB, 40 changes and 5 deletions a harvest (25 for the tidy-up); credentials redacted with the
-  shared patterns (`redactTokens`), a page that is mostly secret refused; frontmatter repaired, never refused (title,
+  shared patterns (`redactProse`), a page that is mostly secret refused; frontmatter repaired, never refused (title,
   description, `updated`, `sources` + the ticket or conversation); the write bar (nothing in it, only appended noise, a
   wipe of a long page); a NEW page that closely matches an existing page of the same scope (title, name, description,
   full-text hits) is **not created**: it stays in the copy, is recorded as refused with the page to merge into, and the
@@ -533,9 +533,25 @@ net is the **Brain changes** feed (Company → Brain → Changes, `#/company/bra
   something. Its brief ends with the report; its edits go through the same harvest (more deletions allowed). It tends
   the scopes its employee may write; another employee's personal brain and other teams' sections are tended by them.
   Pages are called unused only after use has been counted for 60 days (`brain-tracking-since` in `storage_state`).
-- **Limits to know.** A team shares one Unix user in its sandbox, so an agent could edit a colleague's copy; that copy is
-  then harvested as the colleague's, with the checks above still applying. The retro no longer proposes policies for the
-  owner to approve when agents have a copy (old pending proposals can still be decided).
+- **The shared Unix user (known gap).** A team shares one sandbox and one Unix user, so an agent can write in a
+  colleague's copy, and that copy is harvested as the colleague's. File times can't be trusted (the agent can `touch`
+  them), so the daemon uses what it knows: when another employee of the same team had a ticket stage (`ticket_sessions`)
+  or a conversation turn (`brain_activity`) running since this copy was last collected or delivered, every change of
+  that harvest is marked untrusted (`source: external` in the page, the feed's badge, the note "possibly edited by a
+  teammate (shared sandbox)", and the policy push says so). Nothing is blocked. **The real fix is a Unix user per
+  employee** (filed as its own task); until then the mark is a hint, and revert is the remedy.
+- **Other things that make a harvest untrusted:** the ticket names a GitHub issue or pull request (or is labelled
+  `issue`), or the session made a web fetch (an ACP `fetch` tool call, a web fetch or search tool, `curl` or `wget` of a
+  URL): `brain_external`.
+- **Bases.** The base of a three-way merge is the daemon's own record: what it last delivered (`brain_synced`, the blob
+  from the host repo) or the text it took from the agent (`brain_bases`, cleared when a copy delivers the path), never
+  the copy's `refs/inc/baseline`, which the agent can rewrite. A page the daemon never delivered is a new page.
+- **A copy that isn't there.** The retro asks for lessons as edits to the copy only for an employee whose last copy
+  worked (`copyUsable`); if the copy fails at that very session the brief says to reply with JSON, which is still taken.
+  A harvest whose machine stops mid-run is recorded (`brain_harvest_due`, first session kept) and collected later.
+- **Cost.** The tidy-up report is cached per state of the repos and day.
+- The retro no longer proposes policies for the owner to approve when agents have a copy (old pending proposals can
+  still be decided).
 
 ## Storage and cleanup
 

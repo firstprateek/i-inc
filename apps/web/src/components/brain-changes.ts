@@ -107,8 +107,11 @@ export class IncBrainChanges extends Loader<BrainChangesView> {
     this.busy = c.id;
     this.note = "";
     try {
-      await api.revertBrainChange(c.id);
-      await this.reload();
+      const { change } = await api.revertBrainChange(c.id);
+      // The entry changes in place: a reload would drop the older pages already loaded.
+      const swap = (list: BrainChangeView[]) => list.map((x) => (x.id === change.id ? change : x));
+      this.more = swap(this.more);
+      if (this.data) this.data = { ...this.data, changes: swap(this.data.changes) };
     } catch (e) {
       this.note = e instanceof Error ? e.message : String(e);
     } finally {

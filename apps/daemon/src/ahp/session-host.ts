@@ -94,6 +94,13 @@ export interface SessionHostOptions {
    * after a turn where the owner said `/remember` (T58). Never awaited by a turn; a failure is only logged.
    */
   harvest?: (c: ConversationInfo, why: "idle" | "end" | "remember") => Promise<unknown> | undefined;
+  /**
+   * A turn of this employee's is running: a team shares one machine and one Unix user, so the brain harvest
+   * needs to know who may have been working there. Returns what to call when the turn ends.
+   */
+  activity?: (employeeId: Id) => () => void;
+  /** The agent fetched something from outside (a web page): what it writes into its brain is marked untrusted. */
+  external?: (c: ConversationInfo, why: string) => void;
   /** Live conversations per team. Default 3. */
   perTeamCap?: number;
   /** A conversation with nothing happening for this long is suspended. Default 15 minutes. */
@@ -166,6 +173,14 @@ function copyNote(info: ConversationInfo, copy: CopyState): string {
     return `${gone} It was rebuilt from ${info.branch} on GitHub; changes that were not committed were not kept.`;
   return `${gone} Its branch is gone too, so this is a new copy from the project's main branch.`;
 }
+
+/** A tool call that fetches from outside: ACP's `fetch` kind, a web fetch or search tool, `curl` or `wget` of a URL. */
+export function fetchesFromOutside(u: Json): boolean {
+  const title = String(u.title ?? "");
+  return u.kind === "fetch" || externalTool.test(title);
+}
+export const externalTool =
+  /^\s*(?:web[ _-]?fetch|web[ _-]?search|fetch|search the web)\b|\b(?:curl|wget)\b[^\n]*https?:\/\//i;
 
 /** What the agent is asked when the owner types `/remember`. */
 function rememberPrompt(note: string): string {
@@ -335,6 +350,7 @@ export class SessionHost implements AgentBackend {
       put: (data, mime) => this.h.putContent(typeof data === "string" ? redactTokens(data) : data, mime),
       side: (kind, u) => this.onSide(live, kind, u),
     });
+    let endActivity: (() => void) | undefined;
     const active: ActiveRun = {
       turn: run,
       mapper,
@@ -344,9 +360,15 @@ export class SessionHost implements AgentBackend {
       killTimer: undefined,
     };
     live.run = active;
+    try {
+      endActivity = this.o.activity?.(live.info.employeeId);
+    } catch (e) {
+      this.log(`couldn't note the turn's activity: ${e instanceof Error ? e.message : e}`);
+    }
     if (run.signal.aborted) {
       // Cancelled between the host recording the turn and the prompt going out.
       live.run = undefined;
+      endActivity?.();
       return { kind: "cancelled" };
     }
     // `/remember [note]`: the owner asks the agent to write what is worth keeping into its brain copy, and
@@ -375,6 +397,7 @@ export class SessionHost implements AgentBackend {
       if (remember && outcome.kind === "complete") this.collect(live.info, "remember");
       return outcome;
     } finally {
+      endActivity?.();
       if (active.killTimer) clearTimeout(active.killTimer);
       if (live.run === active) live.run = undefined;
       live.lastActive = this.now();
@@ -1039,6 +1062,13 @@ export class SessionHost implements AgentBackend {
         } catch (e) {
           this.log(`couldn't note a brain read: ${e instanceof Error ? e.message : e}`);
         }
+      }
+    }
+    if (u.sessionUpdate === "tool_call" && fetchesFromOutside(u)) {
+      try {
+        this.o.external?.(live.info, "a web fetch");
+      } catch (e) {
+        this.log(`couldn't note an outside fetch: ${e instanceof Error ? e.message : e}`);
       }
     }
     if (live.run) live.run.mapper.update(u);

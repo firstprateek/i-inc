@@ -1,6 +1,6 @@
 // What the host keeps from an agent: secrets out wherever they fall, and no input that stalls it.
 import { describe, expect, it } from "vitest";
-import { redactText, redactTokens, sanitizeAction } from "../../src/ahp/sanitize.ts";
+import { redactProse, redactText, redactTokens, sanitizeAction } from "../../src/ahp/sanitize.ts";
 import { redactSecrets } from "../../src/sessions.ts";
 
 // Assembled here so that no secret scanner mistakes the example for a real key.
@@ -429,5 +429,25 @@ describe("redaction comes before the cut", () => {
       .text;
     expect(out.length).toBeLessThanOrEqual(65_536 + 64);
     expect(out).toMatch(/word\n\[…\d+ more characters not kept\]$/);
+  });
+});
+
+describe("redactProse covers what is named like a secret, for brain pages and their diffs", () => {
+  it.each([
+    ["password: hunter2hunter2", "hunter2"],
+    ["API_KEY=abcd1234efgh5678", "abcd1234efgh"],
+    [`npm_${"aB3dE5gH7j".repeat(3)}`, "aB3dE5gH7j"],
+    [["sk", "live", "4eC39HqLyjWDarjtT1zdp7dc"].join("_"), "4eC39HqLyjWDarjtT1zdp7dc"],
+    ["curl --token s3cr3tvalue https://x.example", "s3cr3tvalue"],
+  ])("%s", (line, secret) => {
+    expect(redactProse(`+ ${line}\n`)).not.toContain(secret);
+    expect(redactText(line)).not.toContain(secret);
+  });
+
+  it("still leaves commit ids alone, and redactTokens leaves source code that talks about tokens alone", () => {
+    const text = "fixed in 9fceb02d0ae598e95dc970b74767f19372d61e53";
+    expect(redactProse(text)).toBe(text);
+    expect(redactTokens("token: string;")).toBe("token: string;");
+    expect(redactTokens(`npm_${"aB3dE5gH7j".repeat(3)}`)).not.toContain("aB3dE5gH7j");
   });
 });

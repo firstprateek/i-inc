@@ -37,7 +37,7 @@ describe("Web Push: VAPID keys", () => {
       const keys2 = vapidKeys(dir);
       expect(keys2.publicKey).toBe(keys.publicKey);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 });
@@ -70,7 +70,7 @@ describe("Web Push: RFC 8292 VAPID Authorization", () => {
       expect(decodedPayload.sub).toBe("mailto:owner@i.inc");
       expect(decodedPayload.exp).toBe(Math.floor(now / 1000) + 12 * 3600);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 });
@@ -186,7 +186,7 @@ describe("WebPushSender", () => {
       expect(remaining).toHaveLength(1);
       expect(remaining[0]?.endpoint).toBe("https://push.example.com/sub/active");
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 

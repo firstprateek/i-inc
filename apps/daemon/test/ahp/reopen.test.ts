@@ -68,11 +68,11 @@ beforeEach(() => {
   git(seed, "commit", "--quiet", "-m", "first");
   git(seed, "push", "--quiet", remote, "main");
 });
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 
 /** What the storage cleanup does to a copy: the folder goes, then git forgets the worktree. */
 const cleanedUp = (cwd: string) => {
-  rmSync(cwd, { recursive: true, force: true });
+  rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   git(join(work, "repo"), "worktree", "prune");
 };
 

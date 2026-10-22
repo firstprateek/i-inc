@@ -109,7 +109,7 @@ afterEach(() => {
   spawned.length = 0;
   forgetLiveAgents();
   forgetSweepState();
-  rmSync(home, { recursive: true, force: true });
+  rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 describe("an agent the daemon left behind", () => {

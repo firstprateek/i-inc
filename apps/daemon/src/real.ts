@@ -243,6 +243,8 @@ export function realPorts(o: RealOptions): Pick<
     ahpBackend: (registry, _tickets, brain, harvest: BrainHarvest): AgentBackend =>
       new SessionHost({
         brain: withBrain(registry, brain),
+        activity: (employeeId) => harvest.beginActivity(employeeId),
+        external: (c, why) => harvest.noteExternal({ kind: "conversation", id: c.id }, why),
         // A conversation's brain copy is collected when it goes idle or ends, and on `/remember`.
         harvest: (c, why) =>
           harvest.run({

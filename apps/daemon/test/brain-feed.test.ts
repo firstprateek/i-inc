@@ -142,13 +142,13 @@ describe("the copy", () => {
   it("copies the whole brain again when the sandbox was wiped, and tells a delta from a full copy", async () => {
     const r = await seeded();
     await r.feed.sync("ada");
-    rmSync(r.copy("ada"), { recursive: true, force: true });
+    rmSync(r.copy("ada"), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     // Nothing changed upstream: the periodic check notices the copy is gone.
     r.clock.advance(6);
     expect(await r.feed.sync("ada")).toMatchObject({ ok: true, how: "full" });
     expect(existsSync(r.copy("ada", "company/facts/gh.md"))).toBe(true);
     // A change after a wipe: the delta is refused by the sandbox and the whole thing goes.
-    rmSync(r.copy("ada"), { recursive: true, force: true });
+    rmSync(r.copy("ada"), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     r.commit("handbook", { "facts/gh.md": page("GitHub CLI", "gh", "Changed.") });
     expect(await r.feed.sync("ada")).toMatchObject({ ok: true, how: "full" });
     expect(tree(r.copy("ada")).length).toBeGreaterThan(8);
@@ -297,7 +297,7 @@ describe("path safety", () => {
     expect((await r.feed.sync("ada")).ok).toBe(true);
     expect(lstatSync(r.copy("ada", "company")).isSymbolicLink()).toBe(false);
     expect(readdirSync(outside)).toEqual([]);
-    rmSync(outside, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   it("refuses an archive that holds a link or a climbing path, on the sandbox side", async () => {
@@ -326,7 +326,7 @@ describe("path safety", () => {
         expect(existsSync(join(root, "evil"))).toBe(false);
       }
     } finally {
-      rmSync(work, { recursive: true, force: true });
+      rmSync(work, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 });

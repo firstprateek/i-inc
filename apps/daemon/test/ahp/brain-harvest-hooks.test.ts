@@ -85,3 +85,24 @@ describe("collecting a conversation's brain copy", () => {
     await t.say(a, c.chat, "plain still works");
   });
 });
+
+describe("who is working in a team's machine", () => {
+  it("tells the daemon when a turn starts and ends, and when the agent fetches from outside", async () => {
+    const events: string[] = [];
+    const t = await sessionRig({
+      host: {
+        activity: (employee) => {
+          events.push(`start ${employee}`);
+          return () => events.push(`end ${employee}`);
+        },
+        external: (c, why) => {
+          events.push(`external ${c.id}: ${why}`);
+        },
+      },
+    });
+    const c = await t.create("c1");
+    const a = await t.client(c);
+    await t.say(a, c.chat, "plain hello");
+    expect(events).toEqual(["start ada", "end ada"]);
+  });
+});

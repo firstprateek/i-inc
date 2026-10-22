@@ -10,7 +10,9 @@ import {
   findDuplicate,
   lineDiff,
   normalizePage,
+  overlap,
   type RawChange,
+  words,
 } from "../src/brain-check.ts";
 
 const good = (title: string, body: string, extra = "") =>
@@ -38,6 +40,7 @@ function ctx(over: Partial<CheckContext> = {}): CheckContext {
     provenance: "ticket-14",
     today: "2026-10-21",
     tainted: false,
+    suspect: [],
     tidy: false,
     limits: defaultLimits,
     pagesOf: (s: Scope) => pages[s] ?? [],
@@ -264,6 +267,28 @@ describe("secrets", () => {
     expect(a?.notes.some((n) => n.startsWith("redacted 2 credential"))).toBe(true);
   });
 
+  it("redacts what is named like a secret and the npm and Stripe keys, the same set as the transcripts", () => {
+    const text = [
+      "The deploy notes say:",
+      "password: hunter2hunter2",
+      "API_KEY=abcd1234efgh5678",
+      `npm token npm_${"aB3dE5gH7j".repeat(3)} in the file`,
+      `stripe key ${["sk", "live", "4eC39HqLyjWDarjtT1zdp7dc"].join("_")}`,
+      "--token s3cr3tvalue here",
+    ].join("\n");
+    const a = one(add("company/facts/ops.md", good("Ops", `${body}\n${text}`))).a;
+    for (const leaked of [
+      "hunter2",
+      "abcd1234efgh",
+      "aB3dE5gH7j",
+      "4eC39HqLyjWDarjtT1zdp7dc",
+      "s3cr3tvalue",
+    ]) {
+      expect(a?.text, leaked).not.toContain(leaked);
+    }
+    expect(a?.text).toContain("The release is cut with Release Please");
+  });
+
   it("refuses a page that is mostly secret", () => {
     const key = `-----BEGIN PRIVATE KEY-----\n${"MIIEvQIBADANBgkqhkiG9w0BAQEFAASC".repeat(8)}\n-----END PRIVATE KEY-----`;
     const { r } = one(add("company/facts/key.md", `---\ntitle: Key\ndescription: A key\n---\n${key}\n`));
@@ -326,7 +351,12 @@ describe("the write bar", () => {
 
 describe("duplicates", () => {
   it("does not create a new page that closely matches one of the same scope, and says which to update", () => {
-    const { a, r } = one(add("company/facts/release-signing.md", good("Release signing", body)));
+    const { a, r } = one(
+      add(
+        "company/facts/release-signing.md",
+        `---\ntitle: Release signing\ndescription: The signing step only the owner can do\n---\n${body}\n`,
+      ),
+    );
     expect(a).toBeUndefined();
     expect(r).toMatchObject({
       code: "duplicate",
@@ -345,12 +375,23 @@ describe("duplicates", () => {
       },
     ];
     const page = (slug: string, title: string, description: string) => ({ slug, title, description });
-    expect(findDuplicate(page("patterns/vitest-mocks", "Mocks in vitest", "x y z"), among, [])).toMatchObject(
-      {
-        slug: "tools/vitest-mocks",
-      },
-    );
-    expect(findDuplicate(page("tools/other", "Vitest mocking pattern", "q"), among, [])).not.toBeNull();
+    // The same name and a similar title and description.
+    expect(
+      findDuplicate(
+        page("patterns/vitest-mocks", "Mocks in vitest", "How to mock modules in vitest"),
+        among,
+        [],
+      ),
+    ).toMatchObject({ slug: "tools/vitest-mocks" });
+    expect(
+      findDuplicate(
+        page("tools/other", "Vitest mocking pattern", "How to mock a module in vitest"),
+        among,
+        [],
+      ),
+    ).not.toBeNull();
+    // A title alone is not enough: the description has to agree too.
+    expect(findDuplicate(page("patterns/vitest-mocks", "Mocks in vitest", "x y z"), among, [])).toBeNull();
     expect(
       findDuplicate(page("tools/gardening", "Tomatoes", "Sun and water"), among, ["tools/vitest-mocks"]),
     ).toBeNull();
@@ -359,6 +400,32 @@ describe("duplicates", () => {
         "tools/vitest-mocks",
       ]),
     ).not.toBeNull();
+  });
+
+  it("keeps siblings apart: a desktop release page and a mobile one are two pages", () => {
+    const among = [
+      { slug: "releases/desktop", title: "Desktop release", description: "How the desktop app is released" },
+    ];
+    const mobile = {
+      slug: "releases/mobile",
+      title: "Mobile release",
+      description: "How the mobile app is released",
+    };
+    expect(findDuplicate(mobile, among, ["releases/desktop"])).toBeNull();
+    // The same title with a different description is a different page too.
+    expect(
+      findDuplicate(
+        { slug: "a/release", title: "Release", description: "Cutting a desktop build" },
+        [{ slug: "b/release", title: "Release", description: "Signing the iOS binary" }],
+        [],
+      ),
+    ).toBeNull();
+  });
+
+  it("stems alike: signings and signing are the same word", () => {
+    expect(words("Release signings")).toEqual(words("Release signing"));
+    expect(words("mocks mocking mocked")).toEqual(["mock", "mock", "mock"]);
+    expect(overlap("Signings", "signing")).toBe(1);
   });
 
   it("does not call a page a duplicate of a page it moves, and a new page at an old slug is not one either", () => {
@@ -388,6 +455,32 @@ describe("duplicates", () => {
     );
     expect(r.accepted).toHaveLength(1);
     expect(r.rejected[0]).toMatchObject({ code: "duplicate" });
+  });
+});
+
+describe("a harvest that may not be the employee's own", () => {
+  it("marks every change untrusted, with the reason, when something makes the harvest doubtful", () => {
+    const why = ["possibly edited by a teammate (shared sandbox)"];
+    const r = checkHarvest(
+      [
+        add("personal/tools/x.md", good("X", body)),
+        add("company/policies/review.md", good("Review", `${body} Always.`)),
+        del("company/facts/old.md", good("Old", body)),
+      ],
+      ctx({ suspect: why }),
+    );
+    expect(r.accepted).toHaveLength(3);
+    for (const a of r.accepted) {
+      expect(a.untrusted, a.path).toBe(true);
+      expect(a.notes).toContain(why[0]);
+    }
+    expect(r.accepted.find((a) => a.policy)?.text).toContain("source: external");
+  });
+
+  it("leaves them trusted otherwise", () => {
+    const r = checkHarvest([add("personal/tools/x.md", good("X", body))], ctx());
+    expect(r.accepted[0]?.untrusted).toBe(false);
+    expect(r.accepted[0]?.notes).toEqual([]);
   });
 });
 

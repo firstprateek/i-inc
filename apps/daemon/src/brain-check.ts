@@ -11,7 +11,7 @@
 //      assistant's home data never goes to a shared scope;
 //   3. the page name must be a plain lowercase slug (a new page; an old page keeps whatever name it had);
 //   4. size caps per page and per harvest, and a cap on deletions;
-//   5. credentials are redacted with the shared patterns (`redactTokens`), and a page that is mostly secret
+//   5. credentials are redacted with the shared patterns (`redactProse`), and a page that is mostly secret
 //      is refused;
 //   6. the frontmatter is repaired (a title, a description, `updated`, `sources`) rather than refused;
 //   7. the write bar: a page with nothing in it, an edit that only appends noise, an edit that wipes a page;
@@ -29,7 +29,7 @@ import {
   titleFromSlug,
   wordCount,
 } from "@i-inc/core";
-import { redactTokens } from "./ahp/sanitize.ts";
+import { redactProse } from "./ahp/sanitize.ts";
 
 // ---- What the sandbox reports --------------------------------------------------------------------------
 
@@ -93,6 +93,12 @@ export interface CheckContext {
   today: string;
   /** The session read pages that were built from untrusted content. */
   tainted: boolean;
+  /**
+   * Reasons to doubt where the whole harvest came from: the session handled external content (a GitHub issue,
+   * a web fetch), or another employee may have been editing this copy (a shared sandbox). Each is noted on
+   * every change, and every page is marked untrusted. Nothing is blocked.
+   */
+  suspect: string[];
   /** A tidy-up may shrink and delete more than other sessions (it merges and prunes). */
   tidy: boolean;
   limits: Limits;
@@ -182,12 +188,18 @@ const stop = new Set(
 export function words(s: string): string[] {
   const out: string[] = [];
   for (const m of s.toLowerCase().matchAll(/[\p{L}\p{N}]+/gu)) {
-    let w = m[0];
-    if (stop.has(w)) continue;
-    if (w.length > 4) w = w.replace(/(?:ing|ed|es|s)$/, "");
-    out.push(w);
+    const w = stem(m[0]);
+    if (!stop.has(w)) out.push(w);
   }
   return out;
+}
+
+/** The same stem for "signing", "signings" and "signed": plural first, then the verb ending. */
+function stem(word: string): string {
+  let w = word;
+  if (w.length > 4) w = w.replace(/ies$/, "y").replace(/(?<![su])s$/, "");
+  if (w.length > 5) w = w.replace(/(?:ing|ed)$/, "");
+  return w;
 }
 
 /** The share of words two texts have in common (0 to 1). */
@@ -229,12 +241,15 @@ export function findDuplicate(
     if (e.slug === page.slug) continue;
     const t = overlap(page.title, e.title);
     const d = overlap(page.description, e.description);
-    if (key(page.title) !== "" && key(page.title) === key(e.title)) consider(e, "has the same title", 3 + t);
-    else if (t >= 0.8) consider(e, "has almost the same title", 2 + t);
-    else if (last(page.slug) !== "" && last(page.slug) === last(e.slug) && t >= 0.5)
-      consider(e, "has the same name and a similar title", 1.5 + t);
-    else if (d >= 0.7 && t >= 0.4) consider(e, "has a similar title and description", 1 + d);
-    else if (hits.includes(e.slug) && t >= 0.5 && d >= 0.35)
+    // A match needs the title AND the description to agree: "Desktop release" and "Mobile release" share a
+    // word and are different pages.
+    if (key(page.title) !== "" && key(page.title) === key(e.title) && d >= 0.5)
+      consider(e, "has the same title and a similar description", 3 + d);
+    else if (t >= 0.8 && d >= 0.4) consider(e, "has almost the same title and a similar description", 2 + t);
+    else if (last(page.slug) !== "" && last(page.slug) === last(e.slug) && t >= 0.5 && d >= 0.4)
+      consider(e, "has the same name and a similar title and description", 1.5 + t);
+    else if (d >= 0.7 && t >= 0.5) consider(e, "has a similar title and description", 1 + d);
+    else if (hits.includes(e.slug) && t >= 0.5 && d >= 0.4)
       consider(e, "matches it in search, in title and in description", 0.5 + t);
   }
   return best.m;
@@ -256,7 +271,7 @@ const bytes = (s: string) => Buffer.byteLength(s, "utf8");
 
 /** The share of a text that the credential patterns took out (0 to 1), and how many places they took. */
 export function secretShare(text: string): { redacted: string; share: number; count: number } {
-  const redacted = redactTokens(text);
+  const redacted = redactProse(text);
   const markers = redacted.match(/\[redacted\]|\[private key\]/g)?.length ?? 0;
   if (redacted === text) return { redacted, share: 0, count: 0 };
   const left = redacted.replace(/\[redacted\]|\[private key\]/g, "");
@@ -438,7 +453,7 @@ export function lineDiff(before: string | null, after: string | null, maxLines =
 const thinWords = 6;
 
 function reject(c: RawChange, code: RejectCode, reason: string, extra: Partial<Rejected> = {}): Rejected {
-  const text = c.text === null ? null : redactTokens(c.text).slice(0, 8000);
+  const text = c.text === null ? null : redactProse(c.text).slice(0, 8000);
   return {
     path: c.path,
     status: c.status,
@@ -449,7 +464,7 @@ function reject(c: RawChange, code: RejectCode, reason: string, extra: Partial<R
     keep: false,
     silent: false,
     sha: c.sha,
-    base: c.base === null ? null : redactTokens(c.base).slice(0, 8000),
+    base: c.base === null ? null : redactProse(c.base).slice(0, 8000),
     text,
     ...extra,
   };
@@ -651,9 +666,9 @@ export function checkHarvest(changes: RawChange[], ctx: CheckContext): CheckResu
         base: c.base,
         sha: null,
         proposed: null,
-        untrusted: false,
+        untrusted: ctx.suspect.length > 0,
         policy,
-        notes: [],
+        notes: [...ctx.suspect],
         noop: false,
       });
       continue;
@@ -701,12 +716,13 @@ export function checkHarvest(changes: RawChange[], ctx: CheckContext): CheckResu
       );
       continue;
     }
-    const notes: string[] = [];
+    const notes: string[] = [...ctx.suspect];
     if (secrets.count) notes.push(`redacted ${secrets.count} credential${secrets.count === 1 ? "" : "s"}`);
 
     // 6. Frontmatter, and untrusted marking.
     const first = parsePage(secrets.redacted, slug);
     const external =
+      ctx.suspect.length > 0 ||
       first.meta.source === "external" ||
       first.meta.sources.some((s) => looksExternal(s)) ||
       (ctx.tainted && looksExternal(addedText(c.base, secrets.redacted)));

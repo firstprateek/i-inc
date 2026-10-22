@@ -97,7 +97,7 @@ export class KnowledgeStore {
       { kind: "handbook" },
       {
         "INDEX.md":
-          "# Handbook\n\nWhat every employee should know. Facts are added at task boundaries; policies change only with the owner's approval.\n\n## Facts\n\n## Policies\n",
+          "# Handbook\n\nWhat every employee should know. Agents keep it up to date; every change shows in Company → Brain → Changes, where you can undo it.\n\n## Facts\n\n## Policies\n",
       },
       "Handbook created",
     );

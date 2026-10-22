@@ -19,7 +19,12 @@ export function capText(s: string, maxBytes = 4096): string {
 const secretName =
   /password|passwd|passphrase|\bpwd\b|token|secret|(?:[-_]key|apikey|privatekey|accesskey|authkey|\bkey)(?:[-_][a-zA-Z0-9_-]{1,60})?$/i;
 
-export function redactSecrets(text: string): string {
+/**
+ * Rules 1-14 of `redactSecrets`: tokens of known kinds and anything named like a secret (`password: x`,
+ * `API_KEY=x`, `--token x`, a JSON key). Without the hex and base64 rules, so it never mangles a commit id or
+ * source code; it is the one set `redactSecrets` and `redactTokens` (diffs, brain pages) share.
+ */
+export function redactKeyed(text: string): string {
   if (!text) return text;
   let out = text;
 
@@ -36,8 +41,10 @@ export function redactSecrets(text: string): string {
   // 3. GitHub tokens (ghp_, gho_, ghs_, github_pat_)
   out = out.replace(/(?:ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]+\b/g, "[redacted]");
 
-  // 4. OpenAI / Anthropic keys (sk-...)
+  // 4. OpenAI / Anthropic keys (sk-...), Stripe keys (sk_live_...), npm tokens (npm_...)
   out = out.replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[redacted]");
+  out = out.replace(/\b(?:[sprw]k_(?:live|test)|whsec)_[A-Za-z0-9]{8,}\b/g, "[redacted]");
+  out = out.replace(/\bnpm_[A-Za-z0-9]{20,}\b/g, "[redacted]");
 
   // 5. Google AIza API keys
   out = out.replace(/AIza[0-9A-Za-z_-]{20,}\b/g, "[redacted]");
@@ -85,6 +92,13 @@ export function redactSecrets(text: string): string {
     /(?<![a-zA-Z0-9_-])([a-zA-Z0-9_-]{1,200}=)(?:(["'])([^\r\n"']{1,1000})\2|([^\s&;"']+))/gi,
     (m, pre: string) => (secretName.test(pre.slice(0, -1)) ? `${pre}[redacted]` : m),
   );
+
+  return out;
+}
+
+export function redactSecrets(text: string): string {
+  if (!text) return text;
+  let out = redactKeyed(text);
 
   // 15. Long hex strings (32+ chars, containing both digits and hex letters)
   out = out.replace(/\b(?=[0-9a-fA-F]*[0-9])(?=[0-9a-fA-F]*[a-fA-F])[0-9a-fA-F]{32,}\b/g, "[redacted]");

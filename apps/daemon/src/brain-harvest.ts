@@ -23,6 +23,7 @@ import {
   readableScopes,
   repoOfScope,
   scopeDir,
+  scopeOfDir,
   serializePage,
 } from "@i-inc/core";
 import {
@@ -82,6 +83,8 @@ export interface BrainHarvestOptions {
 }
 
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+/** A body in the shape `normalizePage` writes: LF endings, no blank lines at the start, one final newline. */
+const shape = (s: string) => `${s.replace(/\r\n?/g, "\n").replace(/^\n+/, "").trimEnd()}\n`;
 const squash = (s: string) => s.replace(/\s+/g, " ").trim();
 const repoKey = (r: RepoRef | Repo) => (r.kind === "handbook" ? "handbook" : `brain:${r.id}`);
 
@@ -174,24 +177,27 @@ export class BrainHarvest {
     if (place.blocked) return skipped(place.blocked);
     // A stopped machine is not started for this: the copy is collected when the machine is next up.
     if (!(await feed.isMachineUp(place.machine))) {
-      db.run(
-        "INSERT OR REPLACE INTO brain_harvest_due (employee_id, copy, ref_kind, ref_id, trigger, tidy, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        req.employeeId,
-        place.copy,
-        req.source.kind,
-        req.source.id,
-        req.trigger,
-        req.tidy ? 1 : 0,
-        this.o.now(),
-      );
+      this.markDue(req, place.copy);
       return skipped(`${place.machine} isn't running; the copy is collected when it is`);
     }
-    db.run("DELETE FROM brain_harvest_due WHERE employee_id = ? AND copy = ?", req.employeeId, place.copy);
-
-    const r = await feed.exec(req.employeeId, harvestScript(place.root));
+    let r: { code: number; output: string };
+    try {
+      r = await feed.exec(req.employeeId, harvestScript(place.root));
+    } catch (e) {
+      // The machine went down mid-run, or the script timed out: try again when it is up, for the same work.
+      this.markDue(req, place.copy);
+      this.log(
+        `couldn't collect ${req.employeeId}'s copy from ${place.machine}: ${e instanceof Error ? e.message : String(e)}`,
+      );
+      return { id: null, status: "failed", committed: 0, rejected: 0, detail: String(e) };
+    }
     const got = parseHarvest(r.code, r.output);
+    if (got.kind !== "failed") {
+      db.run("DELETE FROM brain_harvest_due WHERE employee_id = ? AND copy = ?", req.employeeId, place.copy);
+    }
     if (got.kind === "missing") return skipped("there is no copy in the sandbox yet");
     if (got.kind === "failed") {
+      this.markDue(req, place.copy);
       this.log(`couldn't collect ${req.employeeId}'s copy from ${place.machine}: ${got.detail}`);
       return {
         id: null,
@@ -220,6 +226,23 @@ export class BrainHarvest {
     return this.deal(req, allowHome, place.copy, place.root, fresh);
   }
 
+  /**
+   * Remembers that this copy has work to collect: when its machine is up again (or the script ran again), the
+   * harvest is made for the session that made the edits, the first one asked for (a later one doesn't replace it).
+   */
+  private markDue(req: HarvestRequest, copy: string): void {
+    this.o.db.run(
+      "INSERT OR IGNORE INTO brain_harvest_due (employee_id, copy, ref_kind, ref_id, trigger, tidy, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      req.employeeId,
+      copy,
+      req.source.kind,
+      req.source.id,
+      req.trigger,
+      req.tidy ? 1 : 0,
+      this.o.now(),
+    );
+  }
+
   /** Whether this exact change was refused before and left in the copy. */
   private seen(employeeId: string, c: RawChange): boolean {
     if (c.sha === null) return false;
@@ -232,9 +255,147 @@ export class BrainHarvest {
     return (row?.n ?? 0) > 0;
   }
 
+  // ---- Where the edits came from ---------------------------------------------------------------------
+
+  /** A conversation turn of this employee is running: they may be editing files in their team's machine. */
+  beginActivity(employeeId: string): () => void {
+    const { db } = this.o;
+    db.run("INSERT INTO brain_activity (employee_id, started_at) VALUES (?, ?)", employeeId, this.o.now());
+    const id = db.all<{ id: number }>("SELECT last_insert_rowid() AS id")[0]?.id ?? 0;
+    return () => {
+      db.run("UPDATE brain_activity SET ended_at = ? WHERE id = ?", this.o.now(), id);
+    };
+  }
+
+  /** The session of a ticket or conversation fetched something from outside (a web page, an issue). */
+  noteExternal(source: HarvestSource, why: string): void {
+    this.o.db.run(
+      "INSERT OR IGNORE INTO brain_external (ref_kind, ref_id, why) VALUES (?, ?, ?)",
+      source.kind,
+      source.id,
+      why.slice(0, 120),
+    );
+  }
+
+  private externalInput(source: HarvestSource): string | null {
+    const [row] = this.o.db.all<{ why: string }>(
+      "SELECT why FROM brain_external WHERE ref_kind = ? AND ref_id = ?",
+      source.kind,
+      source.id,
+    );
+    return row?.why ?? null;
+  }
+
+  /**
+   * Whether another employee had a session in this employee's machine since this copy was last collected or
+   * delivered: a ticket stage or a conversation turn. A team shares one Unix user in its sandbox, so such a
+   * teammate could have written in this copy; what the daemon knows (not file times, which can be set) says when.
+   */
+  private teammateWorked(employeeId: string, copy: string, allowHome: boolean, now: number): boolean {
+    const { db, registry, feed } = this.o;
+    let mates: string[];
+    try {
+      const team = registry.teamOf(employeeId).id;
+      mates = registry
+        .employees()
+        .filter((e) => e.id !== employeeId && registry.teamOf(e.id).id === team)
+        .map((e) => e.id);
+    } catch {
+      return false;
+    }
+    if (!mates.length) return false;
+    const [last] = db.all<{ t: number | null }>(
+      "SELECT MAX(at) AS t FROM brain_harvests WHERE employee_id = ? AND copy = ?",
+      employeeId,
+      copy,
+    );
+    const since = Math.max(last?.t ?? 0, feed.deliveredInfo(employeeId, allowHome)?.at ?? 0);
+    const marks = mates.map(() => "?").join(",");
+    for (const table of ["ticket_sessions", "brain_activity"]) {
+      const [row] = db.all<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM ${table} WHERE employee_id IN (${marks}) AND started_at <= ? AND (ended_at IS NULL OR ended_at >= ?)`,
+        ...mates,
+        now,
+        since,
+      );
+      if ((row?.n ?? 0) > 0) return true;
+    }
+    return false;
+  }
+
+  /** The text the daemon knows the copy's baseline holds for a path: its record of what it took, else what it delivered. */
+  private baseOf(employeeId: string, copy: string, allowHome: boolean, path: string): string | null {
+    const { db, feed, store } = this.o;
+    const [row] = db.all<{ text: string }>(
+      "SELECT text FROM brain_bases WHERE employee_id = ? AND copy = ? AND path = ?",
+      employeeId,
+      copy,
+      path,
+    );
+    if (row) return row.text;
+    const sha = feed.deliveredInfo(employeeId, allowHome)?.files.get(path);
+    const slash = path.indexOf("/");
+    const scope = slash < 1 ? null : scopeOfDir(path.slice(0, slash), employeeId);
+    const repo = scope ? repoOfScope(scope) : null;
+    if (!sha || !repo || !store.exists(repo)) return null;
+    try {
+      return store.blobs(repo, [sha]).get(sha) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The changes with their bases and kinds from the daemon's own record: a page it never delivered is new
+   * whatever the copy's baseline says, a page it did is an edit, and a delete of an unknown page is nothing.
+   */
+  private withOwnBases(
+    employeeId: string,
+    copy: string,
+    allowHome: boolean,
+    changes: RawChange[],
+  ): RawChange[] {
+    const out: RawChange[] = [];
+    for (const c of changes) {
+      if (c.bad) {
+        out.push({ ...c, base: null });
+        continue;
+      }
+      const base = this.baseOf(employeeId, copy, allowHome, c.path);
+      if (c.status === "D" && base === null) continue;
+      out.push({ ...c, base, status: c.status === "D" ? "D" : base === null ? "A" : "M" });
+    }
+    return out;
+  }
+
+  private keepBase(employeeId: string, copy: string, path: string, text: string | null): void {
+    const { db } = this.o;
+    if (text === null) {
+      db.run(
+        "DELETE FROM brain_bases WHERE employee_id = ? AND copy = ? AND path = ?",
+        employeeId,
+        copy,
+        path,
+      );
+      return;
+    }
+    db.run(
+      "INSERT OR REPLACE INTO brain_bases (employee_id, copy, path, text) VALUES (?, ?, ?, ?)",
+      employeeId,
+      copy,
+      path,
+      text,
+    );
+  }
+
   // ---- Checking and committing ----------------------------------------------------------------------
 
-  private context(req: HarvestRequest, employee: Employee, provenance: string): CheckContext {
+  private context(
+    req: HarvestRequest,
+    employee: Employee,
+    provenance: string,
+    suspect: string[],
+  ): CheckContext {
     const { index, store, registry } = this.o;
     index.refresh();
     const limits = { ...defaultLimits, ...this.o.limits, ...(req.tidy ? { maxDeletes: 25 } : {}) };
@@ -247,6 +408,7 @@ export class BrainHarvest {
       provenance,
       today: day(this.o.now()),
       tainted: this.tainted(req.source),
+      suspect,
       tidy: req.tidy === true,
       limits,
       pagesOf: (scope): Existing[] =>
@@ -307,6 +469,13 @@ export class BrainHarvest {
     const { db, feed } = this.o;
     const employee = this.o.registry.employee(req.employeeId);
     const at = this.o.now();
+    // Doubts about where the edits came from, worked out before this harvest is written down (they use the last one).
+    const suspect: string[] = [];
+    if (this.teammateWorked(employee.id, copy, allowHome, at)) {
+      suspect.push("possibly edited by a teammate (shared sandbox)");
+    }
+    const outside = this.externalInput(req.source);
+    if (outside) suspect.push(`the session handled external content (${outside})`);
     db.run(
       "INSERT INTO brain_harvests (at, employee_id, copy, ref_kind, ref_id, trigger) VALUES (?, ?, ?, ?, ?, ?)",
       at,
@@ -318,9 +487,12 @@ export class BrainHarvest {
     );
     const hid = `h${db.all<{ id: number }>("SELECT last_insert_rowid() AS id")[0]?.id ?? 0}`;
     const provenance = `${req.source.kind}-${req.source.id}`;
-    const ctx = this.context(req, employee, provenance);
+    const ctx = this.context(req, employee, provenance, suspect);
     ctx.copy = copy.endsWith(".code") ? "code" : "main";
-    const { accepted, rejected } = checkHarvest(changes, ctx);
+    // The base of a change is what the daemon delivered or took, never what the copy's own ref says.
+    const rawText = new Map(changes.map((c) => [c.path, c.text]));
+    const trusted = this.withOwnBases(employee.id, copy, allowHome, changes);
+    const { accepted, rejected } = checkHarvest(trusted, ctx);
 
     // Commit what passed. A change that cannot be committed is left for the next harvest.
     const moved: { path: string; sha: string | null }[] = [];
@@ -333,6 +505,7 @@ export class BrainHarvest {
           // The edit leaves the page as it is: only the baseline moves.
           moved.push({ path: a.path, sha: a.sha });
           forget.push(a.path);
+          this.keepBase(employee.id, copy, a.path, rawText.get(a.path) ?? null);
           continue;
         }
         const done = this.commit(a, req, hid, employee);
@@ -354,7 +527,10 @@ export class BrainHarvest {
         }
         moved.push({ path: a.path, sha: a.op === "delete" ? null : a.sha });
         if (a.from) moved.push({ path: a.from.path, sha: null });
-        if (a.op !== "delete") forget.push(a.path);
+        forget.push(a.path);
+        if (a.from) forget.push(a.from.path);
+        this.keepBase(employee.id, copy, a.path, a.op === "delete" ? null : (rawText.get(a.path) ?? null));
+        if (a.from) this.keepBase(employee.id, copy, a.from.path, null);
         if (done.commit === "") continue;
         committed++;
         this.record({
@@ -506,11 +682,12 @@ export class BrainHarvest {
     if (squash(mine.body) === squash(theirParsed.body) && mine.meta.title === theirParsed.meta.title) {
       return { text: ours, conflict: false, notes: [] };
     }
-    // Both changed it: merge the bodies, line by line, from the text the copy was given.
+    // Both changed it: merge the bodies, line by line, from the text the copy was given. All three are put in
+    // the same shape first (line endings, edges, one final newline), or a missing newline is a conflict.
     let body: string | null = null;
     if (a.base !== null) {
       const base = parsePage(a.base, a.slug);
-      const m = store.mergeText(mine.body, base.body, theirParsed.body);
+      const m = store.mergeText(shape(mine.body), shape(base.body), shape(theirParsed.body));
       if (m.conflicts === 0) body = m.text;
     }
     const meta = { ...mine.meta };
@@ -614,7 +791,7 @@ export class BrainHarvest {
     void push
       .send({
         title: `Policy ${verb} · ${a.slug.replace(/^policies\//, "")}`,
-        body: `${employee.name} ${verb} the company policy "${a.slug}" in ${from}${conflict ? " (a conflict is kept for the tidy-up)" : ""}. You can undo it in Company → Brain → Changes.`,
+        body: `${employee.name} ${verb} the company policy "${a.slug}" in ${from}${conflict ? " (a conflict is kept for the tidy-up)" : ""}${a.notes.some((n) => /teammate/.test(n)) ? ". It may have been edited by a teammate (shared sandbox)" : ""}. You can undo it in Company → Brain → Changes.`,
         url: "#/company/brain/changes",
         tag: `brain-policy:${a.slug}`,
       })

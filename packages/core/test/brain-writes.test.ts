@@ -37,22 +37,28 @@ const tidy = (over: Partial<Ticket> = {}): Ticket => ({
 });
 
 describe("the retro with a brain copy", () => {
-  it("asks for lessons as edits to the copy and proposes none itself", async () => {
+  it("asks for lessons as edits to the copy, per employee: one without a copy is still asked for JSON", async () => {
     const p = ports();
-    p.brainWrites = true;
-    p.agent.on(
-      { stage: "retro" },
-      { kind: "done", output: '{"edits":[{"layer":"policy","page":"x","text":"sneaky"}]}' },
-    );
+    p.brainWrites = (id) => id === "ada";
     await runTicket(p, refundsTicket());
     await decide(p, "42", "approve");
     await runTicket(p, refundsTicket());
-    const brief = p.agent.callsFor("ada", "retro")[0]?.brief ?? "";
-    expect(brief).toContain("brain copy");
-    expect(brief).not.toContain('Reply as JSON: {"edits"');
-    // Whatever the reply says, nothing is proposed: the copy is what counts.
-    const log = knowledgeLog("42", await p.store.read("42"));
-    expect([...log.due, ...log.awaiting, ...log.refused]).toEqual([]);
+    const ada = p.agent.callsFor("ada", "retro")[0]?.brief ?? "";
+    expect(ada).toContain("brain copy");
+    expect(ada).not.toContain('Reply as JSON: {"edits"');
+    // Grace's copy is unavailable: she is asked the old way.
+    expect(p.agent.callsFor("grace", "retro")[0]?.brief).toContain('Reply as JSON: {"edits"');
+    // A reply in copy mode that still carries lessons as JSON (no copy this time) is not dropped.
+    const q = ports();
+    q.brainWrites = () => true;
+    q.agent.on(
+      { employee: "ada", stage: "retro" },
+      { kind: "done", output: '{"edits":[{"layer":"fact","page":"gh-cli","text":"kept"}]}' },
+    );
+    await runTicket(q, refundsTicket());
+    await decide(q, "42", "approve");
+    await runTicket(q, refundsTicket());
+    expect(knowledgeLog("42", await q.store.read("42")).due.map((e) => e.edit.text)).toEqual(["kept"]);
   });
 
   it("keeps the JSON reply when there is no copy (demo mode)", async () => {

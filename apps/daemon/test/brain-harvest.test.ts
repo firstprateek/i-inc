@@ -462,3 +462,207 @@ describe("policies and untrusted pages", () => {
     expect(w.host("handbook", "facts/vendor.md")).toContain("source: external");
   });
 });
+
+describe("a shared sandbox: edits that may not be the employee's own", () => {
+  const edit = async () => {
+    const w = await world();
+    w.copyFile("ada", "personal/tools/secret.md", page("Notes", "Ada's notes", longBody("Ada's notes")));
+    w.copyFile(
+      "ada",
+      "company/policies/reviews.md",
+      page("Reviews", "Every change is reviewed", longBody("Reviews")),
+    );
+    return w;
+  };
+
+  it("marks the changes untrusted, in the file, the feed and the policy push, when a teammate had a session meanwhile", async () => {
+    const w = await edit();
+    // Kit is in the middle of a ticket stage in the same machine.
+    w.app.deps.sessions.start("99", "build", "kit", "sonnet");
+    await w.harvest("ada", "14");
+    const feed = await w.changes();
+    expect(feed.filter((c) => c.status === "committed")).toHaveLength(2);
+    for (const c of feed) {
+      expect(c.untrusted).toBe(true);
+      expect((c as unknown as { notes: string[] }).notes).toContain(
+        "possibly edited by a teammate (shared sandbox)",
+      );
+    }
+    expect(w.host("ada", "tools/secret.md")).toContain("source: external");
+    expect(w.host("handbook", "policies/reviews.md")).toContain("source: external");
+    expect(w.push.sent[0]?.body).toContain("teammate");
+  });
+
+  it("counts a conversation turn of a teammate too", async () => {
+    const w = await edit();
+    const end = w.app.deps.brainHarvest.beginActivity("kit");
+    await w.harvest("ada", "14");
+    end();
+    expect((await w.changes()).every((c) => c.untrusted)).toBe(true);
+  });
+
+  it("leaves them trusted when nobody else worked there since the copy was delivered", async () => {
+    const w = await world();
+    // Kit's session is over before Ada's copy is brought up to date.
+    const id = w.app.deps.sessions.start("99", "build", "kit", "sonnet");
+    w.app.deps.sessions.finish(id);
+    w.clock.advance(10);
+    w.commit("handbook", { "facts/news.md": page("News", "Something new", longBody("News")) });
+    await w.feed.sync("ada");
+    w.clock.advance(5);
+    w.copyFile("ada", "personal/tools/secret.md", page("Notes", "Ada's notes", longBody("Ada's notes")));
+    // Ada's own session, and a session that ended before the delivery, don't count.
+    w.app.deps.sessions.start("100", "build", "ada", "opus");
+    await w.harvest("ada", "14");
+    const [c] = await w.changes();
+    expect(c).toMatchObject({ status: "committed", untrusted: false });
+    expect(w.host("ada", "tools/secret.md")).not.toContain("source: external");
+  });
+
+  it("marks the changes when the session handled external content", async () => {
+    const w = await edit();
+    w.app.deps.brainHarvest.noteExternal({ kind: "ticket", id: "14" }, "a web fetch");
+    await w.harvest("ada", "14");
+    const feed = await w.changes();
+    expect(feed.every((c) => c.untrusted)).toBe(true);
+    expect(feed[0] && (feed[0] as unknown as { notes: string[] }).notes.join(" ")).toContain(
+      "external content (a web fetch)",
+    );
+  });
+});
+
+describe("what the daemon takes as the base of a change", () => {
+  it("is its own record, not the copy's baseline ref: a forged ref can't hide someone else's edit", async () => {
+    const w = await world();
+    const original = w.read("ada", "company/projects/duet.md");
+    // Someone else edits the page in the shared brain after Ada's copy was made.
+    const theirs = original.replace("Tauri and Lit.", "Tauri and Lit. Someone else's important line.");
+    w.commit("handbook", { "projects/duet.md": theirs });
+    // Ada rewrites the page, and points the copy's baseline at the new shared text, so that "nothing changed
+    // upstream" looks true to anyone who trusts it.
+    const mine = original.replace("Duet matters", "Duet really matters");
+    w.copyFile("ada", "company/projects/duet.md", mine);
+    const copy = w.copy("ada");
+    const git = (a: string[], env: Record<string, string> = {}) =>
+      execFileSync("git", ["-C", copy, "-c", "user.name=a", "-c", "user.email=a@a", ...a], {
+        encoding: "utf8",
+        env: { ...process.env, ...env },
+      }).trim();
+    const blob = execFileSync("git", ["-C", copy, "hash-object", "-w", "--stdin"], {
+      input: theirs,
+      encoding: "utf8",
+    }).trim();
+    const idx = join(w.sandbox, "forged-index");
+    git(["read-tree", "refs/inc/baseline"], { GIT_INDEX_FILE: idx });
+    git(["update-index", "--cacheinfo", `100644,${blob},company/projects/duet.md`], { GIT_INDEX_FILE: idx });
+    const tree = git(["write-tree"], { GIT_INDEX_FILE: idx });
+    const forged = git(["commit-tree", tree, "-p", "refs/inc/baseline", "-m", "forged"]);
+    git(["update-ref", "refs/inc/baseline", forged]);
+
+    await w.harvest("ada", "14");
+    const text = w.host("handbook", "projects/duet.md") ?? "";
+    // Both edits survive (merged, or kept side by side), instead of Ada's text replacing the other.
+    expect(text).toContain("Someone else's important line");
+    expect(text).toContain("Duet really matters");
+  });
+
+  it("treats a page the daemon never delivered as new, whatever the copy says", async () => {
+    const w = await world();
+    // A page in the baseline that the daemon has no record of: the copy's ref is all that says it existed.
+    w.app.deps.db.run("DELETE FROM brain_synced");
+    w.copyFile(
+      "ada",
+      "company/facts/gh.md",
+      `${w.read("ada", "company/facts/gh.md")}\nA real new detail about waiting for CI.\n`,
+    );
+    const report = await w.harvest("ada", "14");
+    expect(report.committed).toBe(1);
+    // Not an update over the old text: a concurrent create, merged with what is there.
+    expect(w.host("handbook", "facts/gh.md")).toContain("A real new detail");
+    expect(w.host("handbook", "facts/gh.md")).toContain("## Conflict");
+  });
+});
+
+describe("merging", () => {
+  it("does not make a conflict of a missing final newline", async () => {
+    const w = await world();
+    const raw = (first: string, last: string) =>
+      `---\ntitle: Notes\ndescription: Some notes\n---\n${first}\nA middle line that stays the same here.\n${last}`;
+    w.commit("handbook", {
+      "facts/nonl.md": raw("First line, original text here.", "Last line, original text here."),
+    });
+    await w.feed.sync("ada");
+    // Someone else rewrites the last line (the shared brain keeps the normal final newline).
+    w.commit("handbook", {
+      "facts/nonl.md": `${raw("First line, original text here.", "Last line, changed by someone else.")}\n`,
+    });
+    // Ada, on the old text, rewrites the first line.
+    w.copyFile(
+      "ada",
+      "company/facts/nonl.md",
+      raw("First line, rewritten by Ada with detail.", "Last line, original text here."),
+    );
+    await w.harvest("ada", "14");
+    const text = w.host("handbook", "facts/nonl.md") ?? "";
+    expect(text).toContain("rewritten by Ada");
+    expect(text).toContain("changed by someone else");
+    expect(text).not.toContain("## Conflict");
+  });
+});
+
+describe("a machine that stops mid-collection", () => {
+  it("is collected later, for the session that made the edits", async () => {
+    const w = await world();
+    w.copyFile(
+      "ada",
+      "company/facts/lesson.md",
+      page("Flaky tests", "Retry a flaky test once", longBody("Flaky tests")),
+    );
+    w.failing.next = true;
+    expect(await w.harvest("ada", "14")).toMatchObject({ status: "failed" });
+    const due = w.app.deps.db.all<{ ref_kind: string; ref_id: string }>(
+      "SELECT ref_kind, ref_id FROM brain_harvest_due",
+    );
+    expect(due).toEqual([{ ref_kind: "ticket", ref_id: "14" }]);
+    // Another ticket asks while it is still down: the first one's name stays.
+    expect(await w.harvest("ada", "15")).toMatchObject({ status: "failed" });
+    expect(w.app.deps.db.all("SELECT ref_id FROM brain_harvest_due")).toEqual([{ ref_id: "14" }]);
+    w.failing.next = false;
+    await w.app.deps.brainHarvest.catchUp();
+    expect(w.host("handbook", "facts/lesson.md")).toContain("sources: [ticket-14]");
+    expect(w.git("handbook", "log", "-1", "--format=%b")).toContain("Ticket: 14");
+    expect(w.app.deps.db.all("SELECT * FROM brain_harvest_due")).toEqual([]);
+  });
+
+  it("is collected later when the script itself throws", async () => {
+    const w = await world();
+    w.copyFile(
+      "ada",
+      "company/facts/lesson.md",
+      page("Flaky tests", "Retry a flaky test once", longBody("Flaky tests")),
+    );
+    const real = w.feed.deliver;
+    w.feed.deliver = async () => {
+      throw new Error("the machine stopped");
+    };
+    expect(await w.harvest("ada", "14")).toMatchObject({ status: "failed" });
+    expect(w.app.deps.db.all("SELECT ref_id FROM brain_harvest_due")).toEqual([{ ref_id: "14" }]);
+    w.feed.deliver = real;
+    await w.app.deps.brainHarvest.catchUp();
+    expect(w.host("handbook", "facts/lesson.md")).toContain("Flaky tests");
+  });
+});
+
+describe("the retro with a copy that is not there", () => {
+  it("is asked for lessons as JSON, for that employee only", async () => {
+    const w = await world();
+    expect(w.feed.copyUsable("kit")).toBe(true);
+    w.failing.next = true;
+    await w.feed.sync("kit");
+    expect(w.feed.copyUsable("kit")).toBe(false);
+    expect(w.feed.copyUsable("ada")).toBe(true);
+    w.failing.next = false;
+    await w.feed.sync("kit");
+    expect(w.feed.copyUsable("kit")).toBe(true);
+  });
+});

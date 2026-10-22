@@ -179,6 +179,30 @@ export function migrate(db: Db): void {
       at INTEGER NOT NULL,
       PRIMARY KEY (employee_id, copy)
     );
+    -- The text each copy's baseline holds for a page the daemon took from the agent (the baseline moved to it),
+    -- so the base of a later merge is the daemon's own record, never the copy's ref. Cleared when a copy delivers the path.
+    CREATE TABLE IF NOT EXISTS brain_bases (
+      employee_id TEXT NOT NULL,
+      copy TEXT NOT NULL,
+      path TEXT NOT NULL,
+      text TEXT NOT NULL,
+      PRIMARY KEY (employee_id, copy, path)
+    );
+    -- Conversation turns in flight or done: who may have been working in a shared sandbox, and when.
+    CREATE TABLE IF NOT EXISTS brain_activity (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      employee_id TEXT NOT NULL,
+      started_at INTEGER NOT NULL,
+      ended_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_brain_activity_employee ON brain_activity(employee_id, started_at);
+    -- Tickets and conversations whose session handled external content (a GitHub issue, a web fetch).
+    CREATE TABLE IF NOT EXISTS brain_external (
+      ref_kind TEXT NOT NULL,
+      ref_id TEXT NOT NULL,
+      why TEXT NOT NULL,
+      PRIMARY KEY (ref_kind, ref_id)
+    );
     CREATE TABLE IF NOT EXISTS storage_state (
       key TEXT PRIMARY KEY,
       body TEXT NOT NULL

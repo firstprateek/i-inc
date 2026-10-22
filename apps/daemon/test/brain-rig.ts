@@ -18,7 +18,7 @@ export const page = (title: string, description: string, body: string, tags: str
 
 const dirs: string[] = [];
 export function cleanRigs(): void {
-  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
 export interface Run {
