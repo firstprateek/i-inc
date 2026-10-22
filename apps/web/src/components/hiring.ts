@@ -124,6 +124,7 @@ export class IncHiring extends LitElement {
     prompt: { state: true },
     effort: { state: true },
     dutiesSet: { state: true },
+    dutyNote: { state: true },
     engine: { state: true },
     fallback: { state: true },
     nights: { state: true },
@@ -153,6 +154,8 @@ export class IncHiring extends LitElement {
   declare prompt: string;
   declare effort: Effort;
   declare dutiesSet: Set<Duty>;
+  /** Why the last duty could not be unchecked; empty otherwise. Read out as a status. */
+  declare dutyNote: string;
   declare engine: string;
   declare fallback: string;
   declare nights: boolean;
@@ -181,6 +184,7 @@ export class IncHiring extends LitElement {
     this.prompt = defaultPrompts["Senior Engineer"] ?? "";
     this.effort = "medium";
     this.dutiesSet = new Set(defaultDuties["Senior Engineer"] ?? ["build"]);
+    this.dutyNote = "";
     this.engine = "";
     this.fallback = "";
     this.nights = false;
@@ -294,14 +298,27 @@ export class IncHiring extends LitElement {
     this.role = val.trim() || "Custom Role";
   }
 
-  private toggleDuty(d: Duty) {
+  private toggleDuty(d: Duty): boolean {
     const next = new Set(this.dutiesSet);
     if (next.has(d)) {
-      if (next.size > 1) next.delete(d); // require at least one duty
+      // An employee needs at least one duty: the last one stays, and the form says why.
+      if (next.size <= 1) {
+        this.dutyNote = `${dutyDescriptions[d].title} stays on: an employee needs at least one duty.`;
+        return false;
+      }
+      next.delete(d);
     } else {
       next.add(d);
     }
+    this.dutyNote = "";
     this.dutiesSet = next;
+    return true;
+  }
+
+  /** A duty checkbox changed. A refused change puts the box back, since the browser already flipped it. */
+  private onDutyChange(d: Duty, e: Event): void {
+    this.toggleDuty(d);
+    (e.target as HTMLInputElement).checked = this.dutiesSet.has(d);
   }
 
   private resetPrompt() {
@@ -459,13 +476,13 @@ export class IncHiring extends LitElement {
       label { font-size: 13px; font-weight: 600; color: var(--ink-2); display: flex; flex-direction: column; gap: 6px; min-width: 0; width: 100%; box-sizing: border-box; }
       input[type="text"], select, textarea {
         font: 16px var(--body); min-height: 44px; padding: 10px 12px; border-radius: 10px;
-        border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); box-sizing: border-box;
+        border: 1px solid var(--control-edge); background: var(--surface); color: var(--ink); box-sizing: border-box;
         width: 100%; max-width: 100%; min-width: 0;
       }
       textarea { font-family: inherit; line-height: 1.5; resize: vertical; min-height: 100px; }
       .pills { display: flex; flex-wrap: wrap; gap: 6px; }
       .pill {
-        font: 600 13px var(--body); min-height: 38px; padding: 0 14px; border-radius: 999px; cursor: pointer;
+        font: 600 13px var(--body); min-height: 44px; padding: 0 14px; border-radius: 999px; cursor: pointer;
         border: 1px solid var(--line-strong); background: transparent; color: var(--ink); display: inline-flex;
         align-items: center; justify-content: center; transition: all 0.15s ease;
       }
@@ -475,7 +492,14 @@ export class IncHiring extends LitElement {
         display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--line);
         border-radius: 10px; background: var(--surface); cursor: pointer; user-select: none;
       }
-      .duty-card input[type="checkbox"] { width: 18px; height: 18px; margin-top: 2px; accent-color: var(--ink); }
+      .duty-set { border: 0; margin: 0; padding: 0; min-width: 0; }
+      .duty-set legend { padding: 0; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+      .duty-note { margin: 6px 0 0; min-height: 0; font-size: 13px; color: var(--ink-2); }
+      .duty-note:empty { display: none; }
+      /* The whole card is the label, so the tap target is the card (44px or more), and the box is easy to see. */
+      .duty-card { min-height: 44px; box-sizing: border-box; }
+      .duty-card:has(input:focus-visible) { outline: 3px solid var(--reviewing-mark); outline-offset: 2px; }
+      .duty-card input[type="checkbox"] { width: 22px; height: 22px; margin: 0; flex: none; accent-color: var(--ink); }
       .duty-info { display: flex; flex-direction: column; gap: 2px; }
       .duty-title { font-size: 13px; font-weight: 700; color: var(--ink); }
       .duty-desc { font-size: 11px; color: var(--ink-2); line-height: 1.3; }
@@ -629,23 +653,24 @@ export class IncHiring extends LitElement {
           <button type="button" class="btn ghost small" @click=${() => this.resetPrompt()}>Reset prompt to role default</button>
         </div>
 
-        <div>
-          <span style="font-size:13px;font-weight:600;color:var(--ink-2);display:block">Pipeline Duties</span>
-          <span class="muted" style="font-size:12px;font-weight:normal;display:block;margin-bottom:6px">
-            Which stages of the company's development loop this employee can perform.
+        <fieldset class="duty-set">
+          <legend>Pipeline Duties</legend>
+          <span class="muted" id="duty-help" style="font-size:12px;font-weight:normal;display:block;margin-bottom:6px">
+            Which stages of the company's development loop this employee can perform. At least one is needed.
           </span>
-          <div class="duties-grid">
+          <div class="duties-grid" aria-describedby="duty-help">
             ${dutyList.map(
-              (d) => html`<div class="duty-card" @click=${() => this.toggleDuty(d)}>
-                <input type="checkbox" .checked=${this.dutiesSet.has(d)} @click=${(e: Event) => e.stopPropagation()} @change=${() => this.toggleDuty(d)} />
-                <div class="duty-info">
+              (d) => html`<label class="duty-card">
+                <input type="checkbox" name="duty-${d}" .checked=${this.dutiesSet.has(d)} @change=${(e: Event) => this.onDutyChange(d, e)} />
+                <span class="duty-info">
                   <span class="duty-title">${dutyDescriptions[d].title}</span>
                   <span class="duty-desc">${dutyDescriptions[d].desc}</span>
-                </div>
-              </div>`,
+                </span>
+              </label>`,
             )}
           </div>
-        </div>
+          <p class="duty-note" role="status">${this.dutyNote}</p>
+        </fieldset>
       </section>
 
       <section class="card">

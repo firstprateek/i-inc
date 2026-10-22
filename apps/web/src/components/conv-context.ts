@@ -20,6 +20,7 @@ import {
 import { cardStyles } from "../conversations/styles.ts";
 import { base, projectBadge } from "./shared.ts";
 import "./conv-diff.ts";
+import { app, web } from "../links.ts";
 
 export class IncConvContext extends LitElement {
   static override properties = {
@@ -171,7 +172,7 @@ export class IncConvContext extends LitElement {
       }
       ${
         pr
-          ? html`<div class="ship-row"><a href=${pr.url} target="_blank" rel="noopener">Pull request #${pr.number} on GitHub</a>
+          ? html`<div class="ship-row"><a href=${web(pr.url)} target="_blank" rel="noopener">Pull request #${pr.number} on GitHub</a>
               <span class="sub"><span class="pill ${pr.state === "merged" ? "ok" : ""}">${pr.state === "open" ? (pr.draft ? "Draft" : "Open") : pr.state === "unknown" ? "Open" : pr.state === "merged" ? "Merged" : "Closed"}</span></span>
               ${
                 checks
@@ -277,7 +278,7 @@ export class IncConvContext extends LitElement {
           <ul class="brain">${brain.map(
             (
               p,
-            ) => html`<li>${p.href ? html`<a href=${p.href} title=${p.slug ?? p.title}>${p.title}</a>` : p.title}
+            ) => html`<li>${p.href ? html`<a href=${app(p.href)} title=${p.slug ?? p.title}>${p.title}</a>` : p.title}
               ${p.scope ? html`<span class="tag">${brainScopeLabel(p.scope)}</span>` : nothing}
               ${p.read ? html`<span class="tag">opened</span>` : nothing}
               ${p.untrusted ? html`<span class="tag warn" title="Built from web pages, issues or other people's repos">untrusted</span>` : nothing}</li>`,

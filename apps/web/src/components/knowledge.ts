@@ -141,6 +141,8 @@ export class IncKnowledge extends Loader<KnowledgeData> {
       .team-members { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
       .team-members li a { color: var(--ink); font-weight: 600; text-decoration: none; }
       .team-members li a:hover { text-decoration: underline; }
+      /* A link to Settings is a 44px target of its own, not a phrase inside a sentence. */
+      .settings-link { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; width: fit-content; box-sizing: border-box; text-decoration: none; }
       section.log { padding: 18px 22px; display: flex; flex-direction: column; gap: 4px; }
       .change { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: center; padding: 10px 0;
         border-top: 1px solid var(--line); }
@@ -262,12 +264,14 @@ export class IncKnowledge extends Loader<KnowledgeData> {
                                       html`<li><a class="member-brain-link" href="#/company/brain/${m.id}">${m.name}</a></li>`,
                                   )}
                                 </ul>`
-                                : html`<p class="muted">No members yet. Add someone in Company → Settings → Teams.</p>`
+                                : html`<p class="muted">No members yet. Add someone in Company → Settings → Teams.</p>
+                                  <a class="btn ghost settings-link" href="#/company/settings/teams">Open Settings → Teams</a>`
                             }
                           </section>`;
                         })}
                       </div>`
-                      : html`<p class="muted">No teams yet. Create one in <a href="#/company/settings/teams">Settings → Teams</a>.</p>`
+                      : html`<p class="muted">No teams yet. Create one in Settings → Teams.</p>
+                        <a class="btn ghost settings-link" href="#/company/settings/teams">Open Settings → Teams</a>`
                   }
                 </section>`
               : ""

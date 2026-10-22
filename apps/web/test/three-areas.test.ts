@@ -72,9 +72,10 @@ async function mount(hash: string): Promise<{ app: IncApp; root: ShadowRoot }> {
 }
 
 const text = (e: Element | null | undefined) => e?.textContent?.replace(/\s+/g, " ").trim();
+/** The links marking themselves as the current page: aria-current for links, aria-selected for the tab row. */
 const current = (root: ShadowRoot, sel: string) =>
   [...root.querySelectorAll(sel)]
-    .filter((a) => a.getAttribute("aria-current") === "page")
+    .filter((a) => a.getAttribute("aria-current") === "page" || a.getAttribute("aria-selected") === "true")
     .map((a) => text(a));
 
 beforeEach(() => {
@@ -141,7 +142,7 @@ describe("the top bar", () => {
     phone(true);
     ({ root } = await mount(""));
     expect(root.querySelector("inc-inbox")).not.toBeNull();
-    expect(current(root, ".tabs button")).toEqual(["Needs you"]);
+    expect(current(root, ".tabs a")).toEqual(["Needs you"]);
   });
 });
 
@@ -250,13 +251,13 @@ describe("the Needs you count", () => {
   it("is the same link on a phone: the bottom tab goes to Needs you and lights up there", async () => {
     phone(true);
     const { app, root } = await mount("#/work/board");
-    const tab = [...root.querySelectorAll(".tabs button")].find((b) =>
+    const tab = [...root.querySelectorAll(".tabs a")].find((b) =>
       text(b)?.startsWith("Needs you"),
     ) as HTMLElement;
     tab.click();
     await settle(app);
     expect(location.hash).toBe("#/needs-you");
-    expect(current(root, ".tabs button")).toEqual(["Needs you"]);
+    expect(current(root, ".tabs a")).toEqual(["Needs you"]);
   });
 
   it("updates when the daemon says something changed", async () => {

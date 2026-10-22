@@ -193,7 +193,7 @@ describe("T27: Mobile bug hunt & touch regression tests (390x844)", () => {
 
     const nav = app.shadowRoot?.querySelector(".tabs");
     expect(nav).not.toBeNull();
-    const tabs = [...(nav?.querySelectorAll<HTMLButtonElement>("button") ?? [])];
+    const tabs = [...(nav?.querySelectorAll<HTMLAnchorElement>("a") ?? [])];
     expect(tabs.length).toBe(4);
 
     const [conversationsBtn, workBtn, needsBtn, companyBtn] = tabs;
@@ -201,7 +201,7 @@ describe("T27: Mobile bug hunt & touch regression tests (390x844)", () => {
 
     // 1. The phone opens on Needs you
     expect(needsBtn.getAttribute("aria-current")).toBe("page");
-    expect(needsBtn.getAttribute("aria-selected")).toBe("true");
+    expect(needsBtn.getAttribute("aria-current")).toBe("page");
     expect(app.shadowRoot?.querySelector("inc-inbox")).not.toBeNull();
 
     // 2. Tap Work: routes to #/work/board and mounts <inc-board>
@@ -209,8 +209,8 @@ describe("T27: Mobile bug hunt & touch regression tests (390x844)", () => {
     await app.updateComplete;
     expect(location.hash).toBe("#/work/board");
     expect(workBtn.getAttribute("aria-current")).toBe("page");
-    expect(workBtn.getAttribute("aria-selected")).toBe("true");
-    expect(needsBtn.getAttribute("aria-selected")).toBe("false");
+    expect(workBtn.getAttribute("aria-current")).toBe("page");
+    expect(needsBtn.getAttribute("aria-current")).toBe("false");
     expect(app.shadowRoot?.querySelector("inc-board")).not.toBeNull();
 
     // 3. Tap Conversations: routes to #/conversations and mounts <inc-conversations>
@@ -218,8 +218,8 @@ describe("T27: Mobile bug hunt & touch regression tests (390x844)", () => {
     await app.updateComplete;
     expect(location.hash).toBe("#/conversations");
     expect(conversationsBtn.getAttribute("aria-current")).toBe("page");
-    expect(conversationsBtn.getAttribute("aria-selected")).toBe("true");
-    expect(workBtn.getAttribute("aria-selected")).toBe("false");
+    expect(conversationsBtn.getAttribute("aria-current")).toBe("page");
+    expect(workBtn.getAttribute("aria-current")).toBe("false");
     expect(app.shadowRoot?.querySelector("inc-conversations")).not.toBeNull();
 
     // 4. Tap Company: routes to #/company/team and mounts the team floor
@@ -227,8 +227,8 @@ describe("T27: Mobile bug hunt & touch regression tests (390x844)", () => {
     await app.updateComplete;
     expect(location.hash).toBe("#/company/team");
     expect(companyBtn.getAttribute("aria-current")).toBe("page");
-    expect(companyBtn.getAttribute("aria-selected")).toBe("true");
-    expect(conversationsBtn.getAttribute("aria-selected")).toBe("false");
+    expect(companyBtn.getAttribute("aria-current")).toBe("page");
+    expect(conversationsBtn.getAttribute("aria-current")).toBe("false");
     expect(app.shadowRoot?.querySelector("inc-office")).not.toBeNull();
 
     // 5. Tap Needs you: returns to #/needs-you
@@ -236,8 +236,8 @@ describe("T27: Mobile bug hunt & touch regression tests (390x844)", () => {
     await app.updateComplete;
     expect(location.hash).toBe("#/needs-you");
     expect(needsBtn.getAttribute("aria-current")).toBe("page");
-    expect(needsBtn.getAttribute("aria-selected")).toBe("true");
-    expect(companyBtn.getAttribute("aria-selected")).toBe("false");
+    expect(needsBtn.getAttribute("aria-current")).toBe("page");
+    expect(companyBtn.getAttribute("aria-current")).toBe("false");
     expect(app.shadowRoot?.querySelector("inc-inbox")).not.toBeNull();
   });
 
@@ -260,9 +260,9 @@ describe("T27: Mobile bug hunt & touch regression tests (390x844)", () => {
       window.dispatchEvent(new HashChangeEvent("hashchange"));
       await app.updateComplete;
 
-      const companyTab = app.shadowRoot?.querySelector(".tabs button:last-child");
+      const companyTab = app.shadowRoot?.querySelector(".tabs a:last-child");
       expect(companyTab?.getAttribute("aria-current")).toBe("page");
-      expect(companyTab?.getAttribute("aria-selected")).toBe("true");
+      expect(companyTab?.getAttribute("aria-current")).toBe("page");
       expect(app.shadowRoot?.querySelector(component)).not.toBeNull();
     }
   });
@@ -307,10 +307,12 @@ describe("T27: Mobile bug hunt & touch regression tests (390x844)", () => {
     document.body.append(app);
     await app.updateComplete;
 
-    const tabButtons = app.shadowRoot?.querySelectorAll<HTMLButtonElement>(".tabs button") ?? [];
-    for (const btn of tabButtons) {
-      expect(btn.type).toBe("button");
-      expect(btn.getAttribute("role")).toBe("tab");
+    const tabButtons = app.shadowRoot?.querySelectorAll<HTMLAnchorElement>(".tabs a") ?? [];
+    // The tab bar is navigation (links with the current page marked), not a tablist of buttons.
+    expect(tabButtons.length).toBe(4);
+    for (const link of tabButtons) {
+      expect(link.getAttribute("href")).toMatch(/^#\//);
+      expect(link.getAttribute("role")).toBeNull();
     }
 
     const headerButtons = app.shadowRoot?.querySelectorAll<HTMLButtonElement>("header button") ?? [];

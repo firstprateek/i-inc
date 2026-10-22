@@ -350,3 +350,15 @@ body {
 html {
   scrollbar-color: var(--scroll-thumb) transparent;
 }
+
+/* Less motion for anyone who asked for it (each component's shadow root repeats this through shared.ts `base`). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

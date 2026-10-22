@@ -1163,3 +1163,32 @@ describe("a daemon 401 signs the owner out, a GitHub problem doesn't", () => {
     expect(document.querySelector("inc-login")).toBeNull();
   });
 });
+
+describe("addresses that come from data (T63)", () => {
+  it("never become a link when they are not http(s): a javascript: or data: address is drawn without a destination", async () => {
+    serve({
+      projects: [
+        {
+          ...duet,
+          repoUrl: "javascript:alert(document.domain)",
+          openPrs: [
+            { ticketId: "13", number: 41, url: "data:text/html,<script>alert(1)</script>" },
+            { ticketId: "14", number: 42, url: "https://github.com/acme/duet/pull/42" },
+          ],
+        },
+      ],
+    });
+    const { root } = await mount("inc-setup-projects");
+    const repoLink = root.querySelector("a.repo");
+    expect(repoLink).not.toBeNull();
+    expect(repoLink?.hasAttribute("href")).toBe(false);
+    const prs = [...root.querySelectorAll("dd a")].filter((a) => /#4[12]/.test(text(a)));
+    expect(prs).toHaveLength(2);
+    expect(prs[0]?.hasAttribute("href")).toBe(false);
+    expect(prs[1]?.getAttribute("href")).toBe("https://github.com/acme/duet/pull/42");
+    // And nothing in the view can be followed to a script.
+    for (const a of root.querySelectorAll("a[href]")) {
+      expect(a.getAttribute("href"), text(a)).not.toMatch(/^\s*(javascript|data|vbscript):/i);
+    }
+  });
+});

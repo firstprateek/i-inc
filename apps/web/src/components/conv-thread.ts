@@ -38,6 +38,7 @@ import { avatar, base, projectBadge, selectField } from "./shared.ts";
 import "./conv-composer.ts";
 import "./conv-turn.ts";
 import { modeKey, rememberModes } from "../conversations/prefs.ts";
+import { web } from "../links.ts";
 import type { SendDetail } from "./conv-composer.ts";
 import type { InputDetail } from "./conv-question.ts";
 import type { ConfirmDetail } from "./conv-tool.ts";
@@ -350,7 +351,7 @@ export class IncConvThread extends LitElement {
             ${ship?.ticket?.canTakeBack ? html`<button class="mi" type="button" role="menuitem" @click=${() => this.openShip("takeback")}>Take the work back<small>End ticket #${ship.ticket.id} and carry on here</small></button>` : nothing}
             ${held || prUrl ? html`<hr />` : nothing}
             ${held ? html`<a class="mi" role="menuitem" href="#/ticket/${held}" @click=${() => (this.shipMenu = false)}>Open ticket #${held}</a>` : nothing}
-            ${prUrl ? html`<a class="mi" role="menuitem" href=${prUrl} target="_blank" rel="noopener" @click=${() => (this.shipMenu = false)}>Open PR #${prNo} on GitHub</a>` : nothing}
+            ${prUrl ? html`<a class="mi" role="menuitem" href=${web(prUrl)} target="_blank" rel="noopener" @click=${() => (this.shipMenu = false)}>Open PR #${prNo} on GitHub</a>` : nothing}
           </div>`
           : nothing
       }

@@ -56,7 +56,7 @@ export const layoutStyles = css`
   }
   /* A heading block is never shorter than the 44px action beside it, so a route with an action and one
      without put the title in the same place. */
-  .heading-copy { min-width: 0; flex: 1 1 auto; min-height: 44px; display: flex; flex-direction: column; justify-content: center; }
+  .heading-copy { min-width: 0; flex: 1 1 auto; min-height: 44px; display: flex; flex-direction: column; justify-content: flex-start; }
   /* The area's tab row (one per area): its own full-width line under the heading and actions. */
   .page-tabs { flex: 1 0 100%; min-width: 0; order: 3; }
   .page-header h1 { margin: 0; font: 700 30px/1.15 var(--display); letter-spacing: -0.5px; overflow-wrap: anywhere; }
@@ -107,8 +107,12 @@ export class IncLayout extends LitElement {
       .frame.page.compact { max-width: var(--compact-page-width, 24rem); }
       .frame.page.compact .page-header { max-width: var(--compact-page-width, 24rem); }
       .frame.split { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+      /* The title sits in a 44px band at the top of the header on every route, whether or not the route has a
+         subtitle, an action or a tab row, so it is at the same y everywhere (docs/layout.md, the header rule). */
       ::slotted([slot="heading"]) {
-        display: block;
+        display: flex;
+        align-items: center;
+        min-height: 44px;
         margin: 0;
         font: 700 30px/1.15 var(--display);
         letter-spacing: -0.5px;

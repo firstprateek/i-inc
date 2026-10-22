@@ -17,6 +17,7 @@ import { ImagePicker, imagePickerStyles } from "./image-picker.ts";
 import { Loader } from "./loader.ts";
 import { protectedDiff } from "./protected-card.ts";
 import "./transcript.ts";
+import { api as apiHref } from "../links.ts";
 import { layoutStyles } from "./layout.ts";
 import { base, check, projectBadge, selectField } from "./shared.ts";
 
@@ -186,7 +187,7 @@ export class IncTicket extends Loader<Data> {
       .assign .pick { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
       .assign label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 700; color: var(--ink-2); flex: 1 1 240px; min-width: 0; }
       .assign .btn:disabled { opacity: 0.6; cursor: default; }
-      textarea { font: 16px var(--body); padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line-strong);
+      textarea { font: 16px var(--body); padding: 10px 12px; border-radius: 12px; border: 1px solid var(--control-edge);
         background: var(--surface); color: var(--ink); min-height: 44px; flex-grow: 1; min-width: 220px; }
       aside { width: auto; padding: 22px 24px; display: flex; flex-direction: column; gap: 12px; }
       ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
@@ -306,8 +307,8 @@ export class IncTicket extends Loader<Data> {
     if (!t.attachments?.length) return "";
     return html`<ul class="shots" aria-label="Images from the owner">
       ${t.attachments.map(
-        (a) => html`<li><a href=${a.url} target="_blank" rel="noopener" aria-label="Open ${a.name}">
-          <img src=${a.url} alt=${a.name} loading="lazy" /></a></li>`,
+        (a) => html`<li><a href=${apiHref(a.url)} target="_blank" rel="noopener" aria-label="Open ${a.name}">
+          <img src=${apiHref(a.url)} alt=${a.name} loading="lazy" /></a></li>`,
       )}
     </ul>`;
   }

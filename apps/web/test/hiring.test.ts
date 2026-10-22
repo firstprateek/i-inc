@@ -620,3 +620,53 @@ describe("configure new engine / model form and layout", () => {
     expect(cssText).toContain("grid-template-columns: 1fr");
   });
 });
+
+describe("the pipeline duties form group (T63)", () => {
+  const boxes = (root: ShadowRoot) => [
+    ...root.querySelectorAll<HTMLInputElement>('fieldset.duty-set input[type="checkbox"]'),
+  ];
+  const change = (box: HTMLInputElement, checked: boolean) => {
+    box.checked = checked;
+    box.dispatchEvent(new Event("change"));
+  };
+
+  it("is a group named Pipeline Duties, and every checkbox is named by its card", async () => {
+    serve();
+    const root = await mount();
+    expect(root.querySelector("fieldset.duty-set > legend")?.textContent).toBe("Pipeline Duties");
+    const all = boxes(root);
+    expect(all).toHaveLength(5);
+    for (const box of all) {
+      const label = box.closest("label");
+      expect(label, box.name).not.toBeNull();
+      expect(label?.querySelector(".duty-title")?.textContent?.trim()).toBeTruthy();
+    }
+    // The whole card is the label, so the tap target is the card, not an 18px box.
+    expect(root.querySelectorAll("fieldset.duty-set label.duty-card")).toHaveLength(5);
+    expect(root.querySelector("fieldset.duty-set .duties-grid")?.getAttribute("aria-describedby")).toBe(
+      "duty-help",
+    );
+  });
+
+  it("keeps the last duty checked and says why", async () => {
+    serve();
+    const root = await mount();
+    const all = boxes(root);
+    for (const box of all.filter((b) => b.checked).slice(1)) change(box, false);
+    await new Promise((r) => setTimeout(r, 0));
+    const left = boxes(root).filter((b) => b.checked);
+    expect(left).toHaveLength(1);
+    const only = left[0] as HTMLInputElement;
+    change(only, false);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(only.checked).toBe(true);
+    const note = root.querySelector(".duty-note");
+    expect(note?.getAttribute("role")).toBe("status");
+    expect(note?.textContent).toContain("needs at least one duty");
+    // Checking another clears the note.
+    const other = boxes(root).find((b) => !b.checked) as HTMLInputElement;
+    change(other, true);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(root.querySelector(".duty-note")?.textContent?.trim()).toBe("");
+  });
+});

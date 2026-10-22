@@ -7,6 +7,7 @@ import { ago, conversationHref, type ProjectDetail, problemText, projectsApi } f
 import { type MergeMode, policyDefaults, setupApi } from "../setup-api.ts";
 import { listEditor } from "../setup-shared.ts";
 import "./new-ticket.ts";
+import { web } from "../links.ts";
 import { Loader } from "./loader.ts";
 import { modePicker, projectStyles } from "./project-parts.ts";
 import { base } from "./shared.ts";
@@ -217,7 +218,7 @@ export class IncProjectPage extends Loader<ProjectDetail> {
           <h2>${id}</h2>
           ${
             d.repoUrl
-              ? html`<a class="repo" href=${d.repoUrl} target="_blank" rel="noopener noreferrer" aria-label="${d.repo} on GitHub (opens GitHub)">${d.repo}<span aria-hidden="true">&nbsp;↗</span></a>`
+              ? html`<a class="repo" href=${web(d.repoUrl)} target="_blank" rel="noopener noreferrer" aria-label="${d.repo} on GitHub (opens GitHub)">${d.repo}<span aria-hidden="true">&nbsp;↗</span></a>`
               : html`<span class="repo">${d.repo}</span>`
           }
         </div>
@@ -225,7 +226,7 @@ export class IncProjectPage extends Loader<ProjectDetail> {
           <span class="chip">${d.mode === "direct" ? "Direct" : "Owner merges"}</span>
           ${d.defaultBranch ? html`<span class="tag">${d.defaultBranch}</span>` : ""}
           <span class="muted">${d.openTickets} open ${d.openTickets === 1 ? "ticket" : "tickets"}</span>
-          ${d.openPrs.map((p) => html`<a class="link" href=${p.url} target="_blank" rel="noopener noreferrer">PR ${p.number ? `#${p.number}` : `for #${p.ticketId}`}</a>`)}
+          ${d.openPrs.map((p) => html`<a class="link" href=${web(p.url)} target="_blank" rel="noopener noreferrer">PR ${p.number ? `#${p.number}` : `for #${p.ticketId}`}</a>`)}
         </div>
         <div class="go">
           <a class="btn" href=${conversationHref(id)}>Start a conversation</a>

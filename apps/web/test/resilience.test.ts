@@ -6,6 +6,7 @@ import "../src/components/app.ts";
 import "../src/components/board.ts";
 import "../src/components/inbox.ts";
 import "../src/components/knowledge.ts";
+import type { LoadState } from "../src/components/loader.ts";
 import "../src/components/ticket.ts";
 import { report } from "../src/connection.ts";
 import { parse } from "../src/routes.ts";
@@ -41,6 +42,19 @@ const tick = async (n = 6) => {
 async function settle(el: Element) {
   await tick();
   await (el as unknown as { updateComplete: Promise<unknown> }).updateComplete;
+}
+
+/** Resolves with the next `load-state` any view sends (it bubbles to `target`) that `want` accepts. */
+function loadState(target: EventTarget, want: (d: LoadState) => boolean = () => true): Promise<LoadState> {
+  return new Promise((resolve) => {
+    const on = (e: Event) => {
+      const d = (e as CustomEvent<LoadState>).detail;
+      if (!want(d)) return;
+      target.removeEventListener("load-state", on);
+      resolve(d);
+    };
+    target.addEventListener("load-state", on);
+  });
 }
 
 /** Waits (up to 2 s) for a condition that depends on a chain of promises and renders: robust on a busy machine. */
@@ -139,6 +153,8 @@ describe("a daemon that goes away and comes back", () => {
 
 describe("a refresh that fails with an answer from the daemon", () => {
   it("keeps the data, and the shell says so with a retry", async () => {
+    // No timers, no polling and no counting of ticks: each step waits for the event that says it is done (the
+    // view's `load-state`, which the shell turns into its banner as it is dispatched).
     let fail = false;
     vi.stubGlobal("fetch", async (url: string) => {
       if (url.startsWith("/api/board/summary"))
@@ -148,23 +164,35 @@ describe("a refresh that fails with an answer from the daemon", () => {
       return json({ proposals: [], conversations: [], employees: [], projects: [] });
     });
     location.hash = "#/work/board";
-    const app = await mount<HTMLElement>("inc-app");
-    const board = app.shadowRoot?.querySelector("inc-board") as HTMLElement & { reload(): Promise<void> };
-    expect(board.shadowRoot?.textContent).toContain("Refunds are counted as spending");
+    const board = (d: LoadState) => (d.source as Element).localName === "inc-board";
+    const loaded = loadState(document, (d) => board(d) && d.message === null);
+    const app = document.createElement("inc-app");
+    document.body.append(app);
+    await loaded;
+    const view_ = app.shadowRoot?.querySelector("inc-board") as HTMLElement & { reload(): Promise<void> };
+    await (view_ as unknown as { updateComplete: Promise<unknown> }).updateComplete;
+    await (app as unknown as { updateComplete: Promise<unknown> }).updateComplete;
+    expect(view_.shadowRoot?.textContent).toContain("Refunds are counted as spending");
+
+    // a refresh fails with an answer from the daemon: the shell shows the reason, the view keeps its data
     fail = true;
-    await board.reload();
-    await until(() => app.shadowRoot?.querySelector('[slot="notice"]'));
-    await settle(app);
-    // still the board, still the ticket
-    expect(app.shadowRoot?.querySelector("inc-board")).toBe(board);
-    expect(board.shadowRoot?.textContent).toContain("Refunds are counted as spending");
+    const failed = loadState(document, (d) => board(d) && d.message !== null);
+    const done = view_.reload(); // resolves once the failure has been reported
+    await failed;
+    await done;
+    await (app as unknown as { updateComplete: Promise<unknown> }).updateComplete;
+    expect(app.shadowRoot?.querySelector("inc-board")).toBe(view_);
+    expect(view_.shadowRoot?.textContent).toContain("Refunds are counted as spending");
     const notice = app.shadowRoot?.querySelector('[slot="notice"]');
     expect(notice?.textContent).toContain("the daemon had a bad day");
     expect(notice?.querySelector("button")?.textContent).toBe("Try again");
+
     // retry works, and the banner goes
     fail = false;
+    const healed = loadState(document, (d) => board(d) && d.message === null);
     notice?.querySelector("button")?.click();
-    await until(() => !app.shadowRoot?.querySelector('[slot="notice"]'));
+    await healed;
+    await (app as unknown as { updateComplete: Promise<unknown> }).updateComplete;
     expect(app.shadowRoot?.querySelector('[slot="notice"]')).toBeNull();
   });
 });

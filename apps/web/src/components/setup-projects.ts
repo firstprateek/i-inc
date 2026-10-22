@@ -16,6 +16,7 @@ import {
   projectHref,
   projectsApi,
 } from "../github-projects.ts";
+import { web } from "../links.ts";
 import { GITHUB_INSTALL_URL, GITHUB_MANAGE_URL } from "../setup-api.ts";
 import { Loader } from "./loader.ts";
 import { problemBox, projectStyles } from "./project-parts.ts";
@@ -79,6 +80,12 @@ export class IncSetupProjects extends Loader<ListData> {
     base,
     projectStyles,
     css`
+      /* On a phone the header has room for one action (New project); Add a repo moves down here. */
+      .only-phone { display: none; }
+      @media (max-width: 600px) {
+        .only-phone { display: inline-flex; align-items: center; justify-content: center; align-self: flex-start;
+          text-decoration: none; box-sizing: border-box; }
+      }
       .notice { display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; padding: 10px 14px; }
       .notice .line { margin: 0; font-size: 15px; font-weight: 600; }
       .notice .btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; box-sizing: border-box; }
@@ -166,10 +173,10 @@ export class IncSetupProjects extends Loader<ListData> {
       ${d.warning ? html`<p class="callout needs" role="status">${d.warning} The list below is from a little while ago.</p>` : ""}
       ${d.statusError && !d.reposError ? problemBox(d.statusError) : ""}
       <div class="row">
-        <a class="link" href=${manage} target="_blank" rel="noopener noreferrer">Give i.inc access to more repos<span class="muted" aria-hidden="true">&nbsp;↗</span><span class="sr"> (opens GitHub)</span></a>
+        <a class="link" href=${web(manage)} target="_blank" rel="noopener noreferrer">Give i.inc access to more repos<span class="muted" aria-hidden="true">&nbsp;↗</span><span class="sr"> (opens GitHub)</span></a>
         ${
           d.status && !d.status.configured
-            ? html`<a class="link" href=${install} target="_blank" rel="noopener noreferrer">Install the bot on GitHub<span aria-hidden="true">&nbsp;↗</span></a>`
+            ? html`<a class="link" href=${web(install)} target="_blank" rel="noopener noreferrer">Install the bot on GitHub<span aria-hidden="true">&nbsp;↗</span></a>`
             : ""
         }
         <span class="spacer"></span>
@@ -185,7 +192,7 @@ export class IncSetupProjects extends Loader<ListData> {
     const install = d.status?.links.install ?? GITHUB_INSTALL_URL;
     return html`<section class="card notice" aria-label="GitHub access">
       <p class="line">Connect GitHub to add repos</p>
-      <a class="btn" href=${install} target="_blank" rel="noopener noreferrer" aria-label="Connect GitHub (opens GitHub)">Connect GitHub</a>
+      <a class="btn" href=${web(install)} target="_blank" rel="noopener noreferrer" aria-label="Connect GitHub (opens GitHub)">Connect GitHub</a>
     </section>`;
   }
 
@@ -197,7 +204,7 @@ export class IncSetupProjects extends Loader<ListData> {
         <h3><a href=${projectHref(p.id)}>${p.id}</a></h3>
         ${
           p.repoUrl
-            ? html`<a class="repo" href=${p.repoUrl} target="_blank" rel="noopener noreferrer" aria-label="${p.repo} on GitHub (opens GitHub)">${p.repo}</a>`
+            ? html`<a class="repo" href=${web(p.repoUrl)} target="_blank" rel="noopener noreferrer" aria-label="${p.repo} on GitHub (opens GitHub)">${p.repo}</a>`
             : html`<span class="repo">${p.repo}</span>`
         }
       </div>
@@ -220,7 +227,7 @@ export class IncSetupProjects extends Loader<ListData> {
         ${
           p.openPrs.length
             ? html`<dt>Open PRs</dt>
-              <dd>${p.openPrs.slice(0, 4).map((pr, i) => html`${i ? ", " : ""}<a href=${pr.url} target="_blank" rel="noopener noreferrer">${pr.number ? `#${pr.number}` : `ticket #${pr.ticketId}`}</a>`)}${p.openPrs.length > 4 ? html` <span class="muted">+${p.openPrs.length - 4} more</span>` : ""}</dd>`
+              <dd>${p.openPrs.slice(0, 4).map((pr, i) => html`${i ? ", " : ""}<a href=${web(pr.url)} target="_blank" rel="noopener noreferrer">${pr.number ? `#${pr.number}` : `ticket #${pr.ticketId}`}</a>`)}${p.openPrs.length > 4 ? html` <span class="muted">+${p.openPrs.length - 4} more</span>` : ""}</dd>`
             : ""
         }
       </dl>
@@ -315,6 +322,7 @@ export class IncSetupProjects extends Loader<ListData> {
       ${connected ? this.connection(d) : this.notConnected(d)}
       <section class="block" aria-label="Your projects">
         <h2>Your projects</h2>
+        ${d.projects.length ? html`<a class="btn ghost only-phone" href=${ADD_PROJECT_HREF}>Add a repo</a>` : ""}
         ${
           d.projects.length === 0
             ? this.teach()
