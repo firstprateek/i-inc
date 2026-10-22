@@ -1,5 +1,4 @@
 import { css, html, LitElement, nothing } from "lit";
-import { ahp, useAhp } from "../ahp/hub.ts";
 import { logout, refresh, refreshNow } from "../api.ts";
 import { connection, isOffline } from "../connection.ts";
 import { isDismissed, showGettingStarted } from "../first-run.ts";
@@ -25,24 +24,10 @@ import {
 import { arrive, ScrollMemory, stampEntry } from "../scroll-memory.ts";
 import { LAYOUT_BREAKPOINTS } from "./layout.ts";
 import type { LoadState } from "./loader.ts";
-import { NEW_TICKET_EVENT } from "./new-ticket.ts";
+import { NEW_TICKET_EVENT } from "./new-ticket-event.ts";
 import { base } from "./shared.ts";
-import "./office.ts";
-import "./board.ts";
-import "./ticket.ts";
-import "./ticket-session.ts";
-import "./desk.ts";
-import "./inbox.ts";
-import "./hiring.ts";
-import "./chat.ts";
-import "./conversations.ts";
-import "./brain-changes.ts";
-import "./knowledge.ts";
 import "./offline.ts";
-import "./setup.ts";
-import "./setup-projects.ts";
-import "./project-flow.ts";
-import "./project-page.ts";
+import { isReady, loadViews, needFor } from "./views.ts";
 
 // The areas and their tabs live in ../routes.ts; the shell re-exports what the rest of the app and the
 // tests read from here.
@@ -84,7 +69,10 @@ export class IncApp extends LitElement {
     offline: { state: true },
     accountOpen: { state: true },
     needsCount: { state: true },
+    loadFailed: { state: true },
   };
+  /** The route's code could not be loaded (the network, or a newer build replaced its file). */
+  declare loadFailed: boolean;
   declare route: Route;
   declare offline: boolean;
   declare theme: "light" | "dark" | null;
@@ -113,6 +101,7 @@ export class IncApp extends LitElement {
     this.offline = isOffline();
     this.accountOpen = false;
     this.needsCount = null;
+    this.loadFailed = false;
   }
 
   /**
@@ -135,12 +124,6 @@ export class IncApp extends LitElement {
     connection.addEventListener("change", this.onConnection);
     refresh.addEventListener("refresh", this.loadNeeds);
     needsYouSignal.addEventListener("change", this.loadNeeds);
-    // The host tells the shell when a conversation starts or stops waiting for the owner.
-    this.releaseAhp = useAhp();
-    this.offRoster = ahp().onRoster(() => {
-      clearTimeout(this.rosterTimer);
-      this.rosterTimer = setTimeout(() => void this.loadNeeds(), 600);
-    });
     // The logo goes home, and home differs between a laptop and a phone: follow a resize across the line.
     this.phoneQuery = matchMedia(`(max-width: ${LAYOUT_BREAKPOINTS.phone}px)`);
     this.phoneQuery.addEventListener?.("change", this.onPhoneChange);
@@ -157,12 +140,45 @@ export class IncApp extends LitElement {
     } catch {}
     this.currentKey = stampEntry();
     document.title = routeTitle(this.route);
-    void this.loadNeeds();
+    // The first count comes first; the AHP client (a chunk of its own) loads behind it.
+    void this.loadNeeds().finally(() => void this.followRoster());
   }
 
-  override willUpdate(): void {
+  /**
+   * The host tells the shell when a conversation starts or stops waiting for the owner. The client is
+   * loaded on demand, so the first paint does not wait for it.
+   */
+  private async followRoster(): Promise<void> {
+    if (this.releaseAhp || !this.isConnected) return;
+    const { ahp, useAhp } = await import("../ahp/hub.ts").catch(() => ({ ahp: null, useAhp: null }));
+    if (!ahp || !useAhp || !this.isConnected || this.releaseAhp) return;
+    this.releaseAhp = useAhp();
+    this.offRoster = ahp().onRoster(() => {
+      clearTimeout(this.rosterTimer);
+      this.rosterTimer = setTimeout(() => void this.loadNeeds(), 600);
+    });
+  }
+
+  override willUpdate(changed: Map<string, unknown>): void {
     // Split routes own their pane scrolling. Every other route scrolls <main>.
     this.toggleAttribute("own-scroll", layoutForRoute(this.route) === "split");
+    if (changed.has("route")) this.fetchViews();
+  }
+
+  /** Loads the code for the route (the shell ships without the views), then draws it. */
+  private fetchViews(): void {
+    const need = needFor(this.route);
+    this.loadFailed = false;
+    if (isReady(need)) return;
+    const route = this.route;
+    loadViews(need).then(
+      () => {
+        if (route === this.route) this.requestUpdate();
+      },
+      () => {
+        if (route === this.route) this.loadFailed = true;
+      },
+    );
   }
 
   override updated(changed: Map<string, unknown>): void {
@@ -193,7 +209,9 @@ export class IncApp extends LitElement {
     refresh.removeEventListener("refresh", this.loadNeeds);
     needsYouSignal.removeEventListener("change", this.loadNeeds);
     this.offRoster?.();
+    this.offRoster = undefined;
     this.releaseAhp?.();
+    this.releaseAhp = undefined;
     clearTimeout(this.rosterTimer);
     this.phoneQuery?.removeEventListener?.("change", this.onPhoneChange);
     document.removeEventListener("click", this.onDocumentClick);
@@ -798,6 +816,14 @@ export class IncApp extends LitElement {
 
   private view() {
     const r = this.route;
+    if (!isReady(needFor(r))) {
+      return this.loadFailed
+        ? html`<div class="load-error" role="alert">
+            <span>This page couldn't load. The app may have been updated.</span>
+            <button class="btn ghost" type="button" @click=${() => location.reload()}>Reload</button>
+          </div>`
+        : html`<p class="muted" role="status">Loading…</p>`;
+    }
     switch (r.view) {
       case "conversations":
         return r.old

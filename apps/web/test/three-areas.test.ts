@@ -2,6 +2,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TicketView } from "../src/api.ts";
 import { IncApp } from "../src/components/app.ts";
+import "../src/components/desk.ts";
+import "../src/components/group-brain.ts";
+import "../src/components/group-conversations.ts";
+import "../src/components/group-projects.ts";
+import "../src/components/group-work.ts";
+import "../src/components/hiring.ts";
+import "../src/components/office.ts";
+import "../src/components/setup.ts";
 import { needsYouCount } from "../src/needs-you.ts";
 
 const phone = (matches: boolean) =>

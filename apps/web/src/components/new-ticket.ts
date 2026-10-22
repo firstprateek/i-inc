@@ -7,10 +7,10 @@ import { api, imageRules, type NewTicketBody, refreshNow, type TicketView } from
 import { assignees, NOBODY_LABEL, optionLabel } from "../assign.ts";
 import { draftMemo } from "../drafts.ts";
 import { ImagePicker, imagePickerStyles } from "./image-picker.ts";
+import { NEW_TICKET_EVENT } from "./new-ticket-event.ts";
 import { base, selectField } from "./shared.ts";
 
-/** The header's New ticket button sends this on `window`; the board opens the form as a dialog. */
-export const NEW_TICKET_EVENT = "i-inc-new-ticket";
+export { NEW_TICKET_EVENT };
 /** Sent by the form in a dialog: it was filed (`detail` is the ticket), or closed without filing. */
 export const TICKET_FILED = "ticket-filed";
 export const TICKET_FORM_CLOSE = "ticket-form-close";

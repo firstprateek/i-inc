@@ -1,6 +1,7 @@
 // Tests for Company brain discoverability, team sections, and handbook links (T26).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IncApp } from "../src/components/app.ts";
+import "../src/components/group-brain.ts";
 import type { IncKnowledge } from "../src/components/knowledge.ts";
 
 async function mountKnowledge(repo = "handbook"): Promise<{ el: IncKnowledge; root: ShadowRoot }> {
