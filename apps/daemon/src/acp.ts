@@ -17,9 +17,9 @@ import {
   type SessionRequest,
   type SessionTranscriptItem,
   ShuttingDown,
+  StartupError,
   type Ticket,
 } from "@i-inc/core";
-import { StartupError } from "@i-inc/core";
 import { describeMs, guardStdin } from "./proc.ts";
 import type { Reap } from "./reaper.ts";
 import type { AccountRateLimit } from "./registry.ts";
