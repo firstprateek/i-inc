@@ -143,7 +143,7 @@ The audit's fixes ([audit/T63-report.md](audit/T63-report.md)), in one place:
 - **Backups and disk.** A daily `VACUUM INTO ~/.i-inc/i-inc.db.autobak-<date>` when idle (30 days kept, the newest always), `PRAGMA quick_check` at startup (a failure is pushed and logged; the daemon keeps serving), and a low-disk gate: under 5 GB free (`minFreeGb`) no new ticket or conversation turn starts, and the ticket says why.
 - **Retries.** An upstream GitHub 5xx, a rate limit or a network blip is retried (with `retryAfter`) instead of failing the ticket; `waitForCi` no longer treats a failed rules lookup as "no required checks".
 - **Sign-in.** A first-run signup needs a one-time setup code; every login is a revocable server-side session; failed logins and setup guesses are limited (see "Owner authentication").
-- **Speed.** The tick folds only tickets that changed (a state cache), the knowledge lookup is indexed (it was quadratic), event text is capped at 16 KB, and the web app's first load, board and Needs you page are paged and compressed (see "The web app").
+- **Speed.** The tick folds only tickets that changed (a state cache), the knowledge lookup is indexed (it was quadratic), event text is capped at 16 KB, and the web app's first load, board and Needs you page are being paged and compressed (PRs #107 and #109, in review; see the audit report).
 
 ## The web app
 
