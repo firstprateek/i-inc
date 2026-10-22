@@ -347,12 +347,21 @@ describe("the relay's limits", () => {
     b.destroy();
     await closed(a);
     await closed(b);
-    // The count goes back down when they close.
-    const d = await rawSocket(port);
-    const answer = new Promise<string>((r) => d.once("data", (x) => r(String(x))));
-    d.write("GET /api/tags HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
-    expect(await answer).toContain("200");
-    d.destroy();
+    // The count goes back down when they close (the server sees the closes a moment after the client does).
+    let got = "";
+    for (let attempt = 0; attempt < 100 && !got.includes("200"); attempt++) {
+      const d = await rawSocket(port);
+      d.on("error", () => {});
+      const answer = new Promise<string>((r) => {
+        d.once("data", (x) => r(String(x)));
+        d.once("close", () => r(""));
+      });
+      d.write("GET /api/tags HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+      got = await answer;
+      d.destroy();
+      if (!got) await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(got).toContain("200");
   });
 
   it("caps the connections it holds in all", async () => {
