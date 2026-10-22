@@ -810,14 +810,23 @@ async function session(
         isAssignee && duty !== "review",
         employee,
       );
-  await c.emit({
-    type: "session-started",
-    at: c.p.clock.now(),
-    stage,
-    employeeId: employee.id,
-    engineId,
-    resume: c.s.interrupted || c.s.paused !== null,
-  });
+  // The session is recorded as started when it is. An agent that says when its process is up
+  // (`reportsLaunch`) is waited for, so a launch that fails again and again (the walls are down, GitHub
+  // gives no token) leaves nothing in the ticket's log; any other agent is recorded up front.
+  const resume = c.s.interrupted || c.s.paused !== null;
+  let recorded: Promise<void> | undefined;
+  const recordStart = (): Promise<void> => {
+    recorded ??= c.emit({
+      type: "session-started",
+      at: c.p.clock.now(),
+      stage,
+      employeeId: employee.id,
+      engineId,
+      resume,
+    });
+    return recorded;
+  };
+  if (!c.p.agent.reportsLaunch) await recordStart();
   const signal = c.opts.signal?.(employee.id);
   let out: SessionOutcome;
   try {
@@ -829,7 +838,10 @@ async function session(
       engine,
       brief: text,
       ...(signal ? { signal } : {}),
+      ...(c.p.agent.reportsLaunch ? { onLaunched: recordStart } : {}),
     });
+    // An agent that never said it had launched still ran: the session is recorded before its outcome.
+    await recordStart();
   } catch (err) {
     // A helper whose session couldn't even launch is skipped, like one whose sandbox won't boot.
     if (helperDuty && err instanceof StartupError) return unavailable(err.message);

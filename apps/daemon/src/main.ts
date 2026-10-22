@@ -18,6 +18,7 @@ import { resolveVersion } from "./deploys.ts";
 import { GitHubApp, readGitHubAppConfig } from "./github.ts";
 import { installGuards, serverError } from "./guards.ts";
 import { AppleMachines, defaultMachineSettings, wallsUp } from "./machines.ts";
+import { killTracked, stopTracked } from "./proc.ts";
 import { realPorts } from "./real.ts";
 import { checkpoint } from "./retention.ts";
 
@@ -252,6 +253,8 @@ async function shutdown(signal: string): Promise<void> {
       app.ahp.backend instanceof SessionHost ? app.ahp.backend.shutdown() : undefined,
       agent.shutdown?.(),
     ]);
+    // Scripts and commands run detached, so launchd's kill of the daemon's group would miss them.
+    stopTracked();
     // Whatever ignored both the end of its stdin and the kill of its client, in every machine that is
     // up (a stopped one is not started to look), all at once, within a few seconds.
     if (real) await real.sweepAgents({ all: true, timeoutMs: 8000 });
@@ -262,6 +265,8 @@ async function shutdown(signal: string): Promise<void> {
   } catch (err) {
     log(`shutdown: ${err instanceof Error ? err.message : err}`);
   }
+  // Nothing detached outlives the daemon: launchd's kill of its group would not reach it.
+  killTracked();
   clearTimeout(hard);
   process.exit(0);
 }

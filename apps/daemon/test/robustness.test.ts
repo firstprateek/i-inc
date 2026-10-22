@@ -19,7 +19,7 @@ import {
   execDefault,
   machineLaunch,
 } from "../src/machines.ts";
-import { describeMs, killGroup } from "../src/proc.ts";
+import { describeMs, killGroup, stopTracked, trackedCount } from "../src/proc.ts";
 import { defaultTimeoutSettings, defaultTimeoutsMs, timeoutsMs } from "../src/timeouts.ts";
 import { refunds, testApp } from "./setup.ts";
 
@@ -184,6 +184,21 @@ describe("machineScript timeout", () => {
     expect(r.code).toBe(TIMED_OUT);
     expect(r.output).toContain("timed out after 1 minute");
     await vi.waitFor(() => expect(alive(pid)).toBe(false));
+  });
+
+  it("on shutdown, a script's group is stopped too, since a detached child outlives launchd's group kill", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "inc-shutdown-"));
+    const pidfile = join(dir, "pid");
+    const bin = fakeBin(`sleep 300 &\necho $! > ${pidfile}\nwait`);
+    const done = machineScript({ ...noWalls, bin })("ada", "true");
+    await vi.waitFor(() => expect(existsSync(pidfile) && readFileSync(pidfile, "utf8").trim()).toBeTruthy());
+    const pid = Number(readFileSync(pidfile, "utf8"));
+    expect(trackedCount()).toBeGreaterThan(0);
+    expect(stopTracked()).toBeGreaterThan(0);
+    const r = await done;
+    expect(r.code).not.toBe(0);
+    await vi.waitFor(() => expect(alive(pid)).toBe(false));
+    await vi.waitFor(() => expect(trackedCount()).toBe(0));
   });
 
   it("gives the checks their own, longer limit", async () => {

@@ -12,7 +12,7 @@ import {
   machineOf,
   withDefaultTimeout,
 } from "./machines.ts";
-import { describeMs, guardStdin, stopGroup } from "./proc.ts";
+import { describeMs, guardStdin, stopGroup, trackGroup } from "./proc.ts";
 import { defaultTimeoutsMs, type TimeoutsMs } from "./timeouts.ts";
 
 /**
@@ -58,6 +58,7 @@ export function machineScript(
         stdio: ["pipe", "pipe", "pipe"],
         detached: true,
       });
+      trackGroup(child);
       let output = "";
       let settled = false;
       const settle = (result: { code: number; output: string }) => {

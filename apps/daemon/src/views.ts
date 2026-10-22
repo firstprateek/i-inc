@@ -74,6 +74,8 @@ export function ticketView(
   }
 
   const pushed = events.some((e) => e.type === "pushed") || Boolean(s.pushed);
+  // Rows the store could not read back stand in the log as placeholders (store.ts).
+  const unreadable = events.filter((e) => e.type === "unreadable").length;
 
   return {
     id: r.ticket.id,
@@ -96,6 +98,11 @@ export function ticketView(
     createdBy,
     finishedAt,
     pushed,
+    ...(unreadable
+      ? {
+          note: `${unreadable} unreadable ${unreadable === 1 ? "event was" : "events were"} set aside (see event_quarantine)`,
+        }
+      : {}),
     ...(r.ticket.conversation ? { fromConversation: { id: r.ticket.conversation, title: null } } : {}),
     ...(r.ticket.attachments?.length
       ? {
@@ -170,8 +177,10 @@ function describe(e: TicketEvent, registry: Registry): string | null {
       return `Switched to ${modelOf(registry, e.to)}: ${e.reason}`;
     case "review-verdict":
       return e.approved
-        ? `Approved in round ${e.round}`
-        : `Review round ${e.round} · ${Array.isArray(e.findings) ? e.findings.length : 0} findings`;
+        ? typeof e.round === "number"
+          ? `Approved in round ${e.round}`
+          : "Approved"
+        : `Review${typeof e.round === "number" ? ` round ${e.round}` : ""} · ${Array.isArray(e.findings) ? e.findings.length : 0} findings`;
     case "needs-you":
       return e.ask.kind === "plan-gate"
         ? "Plan gate: the plan waits for you"

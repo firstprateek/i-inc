@@ -21,7 +21,7 @@ import {
 } from "@i-inc/core";
 import type { AgentProcess, Launch } from "./acp.ts";
 import { type EgressWall, isHomeMachine, WallError, type WallRow } from "./egress-wall.ts";
-import { describeMs, guardStdin, stopGroup } from "./proc.ts";
+import { describeMs, guardStdin, stopGroup, trackGroup } from "./proc.ts";
 import { launcherNeedsUpdate, newAgentId, noteLauncher, trackAgent } from "./reaper.ts";
 import { defaultTimeoutsMs, type TimeoutsMs } from "./timeouts.ts";
 
@@ -278,6 +278,7 @@ export const execDefault: Exec = (bin, args, opts) =>
       stdio: ["pipe", "pipe", "pipe"],
       detached: true,
     });
+    trackGroup(child);
     const maxBuffer = 8 * 1024 * 1024;
     let stdout = "";
     let stderr = "";
@@ -947,6 +948,7 @@ export function machineLaunch(
       );
       const exited = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
       trackAgent(agentId, exited);
+      trackGroup(child);
       // The agent exits when its machine goes away; a write after that must not crash the daemon.
       guardStdin(child.stdin);
       const proc: AgentProcess = {

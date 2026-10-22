@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fold, type TicketEvent } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
+import { AcpAgent } from "../src/acp.ts";
 import { refunds, testApp } from "./setup.ts";
 
 type App = Awaited<ReturnType<typeof testApp>>;
@@ -395,5 +396,88 @@ describe("startup and requests survive bad data", () => {
     const events: TicketEvent[] = await app.deps.store.read("1");
     expect(fold(events).status).toBe("ready");
     await theAppStillAnswers(app);
+  });
+});
+
+describe("a launch that keeps failing", () => {
+  it("adds nothing to the log, then puts the ticket in front of the owner after two hours", async () => {
+    let clockNow = () => 0;
+    let attempts = 0;
+    const agent = new AcpAgent({
+      launch: () => {
+        attempts++;
+        throw new Error("the walls aren't up");
+      },
+      credentials: () => ({}),
+      cwdFor: (id) => `/w/inc-${id}`,
+      now: () => clockNow(),
+    });
+    const app = await testApp(":memory:", undefined, { agent });
+    clockNow = () => app.clock.now();
+    await app.call("POST", "/api/tickets", { ...refunds, effort: "low" });
+    await app.daemon.idle();
+    expect(attempts).toBe(1);
+    expect(app.daemon.waiting.find((w) => w.ticketId === "1")?.reason).toContain("the walls aren't up");
+
+    let hours = 0;
+    for (let i = 0; i < 60 && (await statusOf(app, "1")) === "running"; i++) {
+      app.clock.advance(11);
+      hours += 11;
+      await app.daemon.tick();
+      await app.daemon.idle();
+    }
+    // It waited out the first two hours, trying again each time, and no session was ever recorded.
+    expect(hours).toBeGreaterThanOrEqual(120);
+    expect(attempts).toBeGreaterThan(5);
+    const events = await app.deps.store.read("1");
+    expect(events.filter((e) => e.type === "session-started")).toHaveLength(0);
+    const s = fold(events);
+    expect(s.status).toBe("needs-you");
+    expect(s.needsYou).toMatchObject({ kind: "stuck", reason: expect.stringContaining("can't start: ") });
+    expect(JSON.stringify(s.needsYou)).toContain("the walls aren't up");
+  });
+});
+
+describe("what the ticket says about its record", () => {
+  it("notes the unreadable events that were set aside", async () => {
+    const app = await testApp();
+    await app.call("POST", "/api/tickets", refunds);
+    await app.daemon.idle();
+    expect((await app.call("GET", "/api/tickets/1")).body.ticket.note).toBeUndefined();
+    app.db.run("UPDATE events SET body = substr(body, 1, 10) WHERE ticket_id = '1' AND seq IN (3, 4)");
+    const one = (await app.call("GET", "/api/tickets/1")).body.ticket;
+    expect(one.note).toBe("2 unreadable events were set aside (see event_quarantine)");
+    const board = (await app.call("GET", "/api/board")).body.tickets;
+    expect(board.find((t: { id: string }) => t.id === "1").note).toContain("2 unreadable events");
+  });
+
+  it("does not say 'round undefined' for a verdict stored without a round", async () => {
+    const app = await testApp();
+    await app.call("POST", "/api/tickets", refunds);
+    await app.daemon.idle();
+    const at = app.clock.now();
+    insertRow(
+      app,
+      "1",
+      at,
+      "review-verdict",
+      JSON.stringify({ type: "review-verdict", at, reviewerId: "grace", approved: true, findings: [] }),
+    );
+    const live = (await app.call("GET", "/api/board")).body.tickets.find(
+      (t: { id: string }) => t.id === "1",
+    ).live;
+    expect(live).toBe("Approved");
+    expect(live).not.toContain("undefined");
+    insertRow(
+      app,
+      "1",
+      at,
+      "review-verdict",
+      JSON.stringify({ type: "review-verdict", at, reviewerId: "grace", approved: false, findings: [] }),
+    );
+    expect(
+      (await app.call("GET", "/api/board")).body.tickets.find((t: { id: string }) => t.id === "1").live,
+    ).toBe("Review · 0 findings");
+    expect(Number.isFinite(fold(await app.deps.store.read("1")).review.round)).toBe(true);
   });
 });

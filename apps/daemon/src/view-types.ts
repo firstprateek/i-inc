@@ -68,6 +68,8 @@ export interface TicketView {
   createdBy?: Person | null;
   finishedAt?: number | null;
   pushed?: boolean;
+  /** One line about the ticket's record, e.g. that unreadable events were set aside (T63). Absent when there is none. */
+  note?: string;
   /** The owner's images, each with the URL that serves it. */
   attachments?: (TicketAttachment & { url: string })[];
   /** Made from a conversation ("Make this a ticket"); `title` is null when that conversation is gone. */

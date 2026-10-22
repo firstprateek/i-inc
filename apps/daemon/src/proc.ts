@@ -41,6 +41,39 @@ export function stopGroup(
 }
 
 /**
+ * Children the daemon started detached (so each leads a process group): scripts in machines and
+ * `container` commands. Detached children don't die with the daemon's own group, so launchd's group
+ * kill on exit would miss them; `stopTracked` is what shutdown calls.
+ */
+const tracked = new Set<Pick<ChildProcess, "pid" | "kill" | "exitCode" | "signalCode">>();
+
+/** Remembers a detached child until it ends. */
+export function trackGroup(child: ChildProcess): void {
+  if (typeof child.once !== "function") return;
+  tracked.add(child);
+  const forget = () => void tracked.delete(child);
+  child.once("close", forget);
+  child.once("error", forget);
+}
+
+/** How many detached children are running now. */
+export const trackedCount = (): number => tracked.size;
+
+/** Stops every tracked group (SIGTERM, then SIGKILL after `graceMs`). Returns how many it signalled. */
+export function stopTracked(graceMs = 2000): number {
+  const children = [...tracked];
+  for (const child of children) stopGroup(child, graceMs);
+  return children.length;
+}
+
+/** Kills every tracked group at once: the last thing shutdown does before the process leaves. */
+export function killTracked(): number {
+  const children = [...tracked];
+  for (const child of children) killGroup(child, "SIGKILL");
+  return children.length;
+}
+
+/**
  * Makes a child's stdin safe to write to. A write to a process that has already exited fails with
  * EPIPE, which Node reports as an 'error' event on the stream; with no listener that is an uncaught
  * exception, and on Bun 1.4.2 it ends the daemon. The error is handed to `onError` and nothing more:

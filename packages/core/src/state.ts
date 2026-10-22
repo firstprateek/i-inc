@@ -219,7 +219,7 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
         ...s,
         interrupted: false,
         review: {
-          round: e.round,
+          round: typeof e.round === "number" && Number.isFinite(e.round) ? e.round : s.review.round + 1,
           approved: e.approved === true,
           findings: readFindings(e.findings),
           disputed: null,

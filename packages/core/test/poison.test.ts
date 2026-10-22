@@ -13,7 +13,9 @@ import {
   readProposals,
   readVerdict,
   runTicket,
+  type SessionRequest,
   type Snapshot,
+  StartupError,
   schedule,
   type TicketEvent,
 } from "../src/index.ts";
@@ -268,5 +270,30 @@ describe("an engine removed from Setup", () => {
     p.agent.on({ stage: "build" }, { kind: "stuck", reason: "lost" });
     const result = await runTicket(p, refundsTicket({ effort: "low" }));
     expect(result).toMatchObject({ status: "failed", tried: expect.arrayContaining(["gone"]) });
+  });
+});
+
+describe("a session is recorded when it starts", () => {
+  it("an agent that reports its launch leaves nothing in the log when the launch fails, and a session when it works", async () => {
+    const p = ports();
+    const inner = p.agent;
+    p.agent = {
+      reportsLaunch: true,
+      run: async () => {
+        throw new StartupError("the walls aren't up");
+      },
+    } as never;
+    await expect(runTicket(p, refundsTicket({ effort: "low" }))).rejects.toThrow("the walls aren't up");
+    expect((await p.store.read("42")).filter((e) => e.type === "session-started")).toHaveLength(0);
+
+    p.agent = {
+      reportsLaunch: true,
+      run: async (r: SessionRequest) => {
+        await r.onLaunched?.();
+        return inner.run(r);
+      },
+    } as never;
+    await runTicket(p, refundsTicket({ effort: "low" }));
+    expect((await p.store.read("42")).filter((e) => e.type === "session-started").length).toBeGreaterThan(0);
   });
 });

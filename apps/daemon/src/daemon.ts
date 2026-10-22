@@ -140,7 +140,10 @@ export class Daemon {
    * keeps failing backs off (30 s, doubling, up to 10 min) and is failed with the reason after
    * `maxErrors` in a row; a `StartupError` only waits, as its `retryAt` says.
    */
-  private readonly failures = new Map<Id, { count: number; retryAt: number; reason: string }>();
+  private readonly failures = new Map<
+    Id,
+    { count: number; since: number; retryAt: number; reason: string }
+  >();
   /** Tickets whose events or fold broke in a pass, with why: skipped, logged once, shown on the board. */
   private readonly broken = new Map<Id, string>();
   /** Things already logged, so a standing problem is logged once and not at every tick. */
@@ -337,6 +340,7 @@ export class Daemon {
       ...(retrySandbox ? { retrySandbox: (team, size) => retrySandbox.call(m, team, size) } : {}),
     };
     const agent: Agent = {
+      reportsLaunch: this.d.agent.reportsLaunch === true,
       run: async (req: SessionRequest): Promise<SessionOutcome> => {
         let sessionId: number | null = null;
         try {
@@ -752,37 +756,67 @@ export class Daemon {
   private async runFailed(id: Id, e: unknown): Promise<void> {
     const now = this.d.clock.now();
     const prev = this.failures.get(id);
-    if (e instanceof StartupError) {
+    const count = (prev?.count ?? 0) + 1;
+    const since = prev?.since ?? now;
+    const startup = e instanceof StartupError;
+    const reason = errorLine(e);
+    let backoff = Math.min(30_000 * 2 ** (count - 1), 10 * 60_000);
+    // An upstream that says when to come back (GitHub's rate limit, a sandbox's own retry time) is believed.
+    const retryAfterSec = (e as { retryAfterSec?: unknown })?.retryAfterSec;
+    if (typeof retryAfterSec === "number" && retryAfterSec > 0)
+      backoff = Math.max(backoff, retryAfterSec * 1000);
+    if (startup && e.retryAt) backoff = Math.max(backoff, e.retryAt - now);
+    const retryAt = now + backoff;
+    this.waitingUntil[id] = retryAt;
+    if (startup) {
+      // Not the ticket's fault, so it waits and shows why, but not for ever: after a long stretch it
+      // is the owner's to look at.
       const existing = this.waiting.find((w) => w.ticketId === id);
-      if (existing) existing.reason = e.message;
-      else this.waiting.push({ ticketId: id, reason: e.message });
-      if (e.retryAt) {
-        this.waitingUntil[id] = e.retryAt;
-        this.failures.set(id, { count: prev?.count ?? 0, retryAt: e.retryAt, reason: e.message });
+      if (existing) existing.reason = reason;
+      else this.waiting.push({ ticketId: id, reason });
+      this.d.log?.(`ticket ${id} waiting (${count} in a row): ${reason}`);
+      if (count >= Daemon.maxStartAttempts || now - since >= Daemon.maxStartWindowMs) {
+        this.failures.delete(id);
+        await this.escalate(id, `can't start: ${reason}`);
+        return;
       }
-      this.d.log?.(`ticket ${id} waiting: ${e.message}`);
+      this.failures.set(id, { count, since, retryAt, reason });
       return;
     }
-    const count = (prev?.count ?? 0) + 1;
-    const reason = errorLine(e);
     this.d.log?.(`ticket ${id} stopped (${count} in a row): ${reason}`);
     if (count >= Daemon.maxErrors) {
       this.failures.delete(id);
       await this.giveUp(id, count, reason);
       return;
     }
-    let backoff = Math.min(30_000 * 2 ** (count - 1), 10 * 60_000);
-    // An upstream that says when to come back (GitHub's rate limit) is believed.
-    const retryAfterSec = (e as { retryAfterSec?: unknown })?.retryAfterSec;
-    if (typeof retryAfterSec === "number" && retryAfterSec > 0) {
-      backoff = Math.max(backoff, retryAfterSec * 1000);
-      this.waitingUntil[id] = now + retryAfterSec * 1000;
-    }
     this.failures.set(id, {
       count,
-      retryAt: now + backoff,
+      since,
+      retryAt,
       reason: `hit an error and tries again shortly: ${reason}`,
     });
+  }
+
+  /** How many launches that can't start in a row, or how long of them, before the owner is asked. */
+  static readonly maxStartAttempts = 60;
+  static readonly maxStartWindowMs = 2 * 60 * 60_000;
+
+  /** A ticket that can't start for hours is put in front of the owner, as a Needs you card with why. */
+  private async escalate(id: Id, reason: string): Promise<void> {
+    try {
+      const s = await this.state(id);
+      if (s.status !== "running" && s.status !== "paused") return;
+      await this.d.store.append(id, [
+        {
+          type: "needs-you",
+          at: this.d.clock.now(),
+          stage: s.active ?? "pickup",
+          ask: { kind: "stuck", reason },
+        },
+      ]);
+    } catch (err) {
+      this.d.log?.(`ticket ${id}: couldn't ask the owner: ${errorLine(err)}`);
+    }
   }
 
   /** Fails a ticket that keeps throwing, so it reaches the owner instead of looping for ever. */

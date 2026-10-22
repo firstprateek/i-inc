@@ -153,6 +153,8 @@ export function resetFromText(text: string, now: number): number | null {
 }
 
 export class AcpAgent implements Agent {
+  /** The runner records a session as started when `onLaunched` is called, not before the launch. */
+  readonly reportsLaunch = true;
   /** Transient errors in a row, per employee and ticket. */
   private readonly transient = new Map<string, number>();
 
@@ -345,6 +347,7 @@ export class AcpAgent implements Agent {
     };
 
     try {
+      await r.onLaunched?.();
       const init = await rpc.request(
         "initialize",
         {
