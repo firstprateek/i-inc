@@ -1278,6 +1278,26 @@ describe("engine edit and deletion routes (Contract C11)", () => {
     app.db.close();
   });
 
+  it("won't turn an engine a PA uses into a cloud one (its sandbox has no internet)", async () => {
+    const app = await testApp();
+    const hire = await app.call("POST", "/api/employees", {
+      name: "Pip Local",
+      role: "Personal Assistant",
+      duties: ["build"],
+      engines: { default: "qwen", fallbacks: [] },
+    });
+    expect(hire.status).toBe(201);
+    const res = await app.call("PUT", "/api/engines/qwen", { local: false });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("Pip Local");
+    expect(res.body.error).toContain("has to stay a local engine");
+    expect(app.deps.registry.engine("qwen")).toMatchObject({ local: true });
+    // The same through a harness change; a change that keeps it local is fine.
+    expect((await app.call("PUT", "/api/engines/qwen", { harness: "codex", local: false })).status).toBe(409);
+    expect((await app.call("PUT", "/api/engines/qwen", { model: "qwen3:14b" })).status).toBe(200);
+    app.db.close();
+  });
+
   it("edits an existing engine partially without re-specifying harness and account", async () => {
     const app = await testApp();
 

@@ -413,8 +413,8 @@ describe("the machine provider's side", () => {
     const exec: Exec = async () => listing("running");
     const m = new AppleMachines(noWalls, exec);
     expect(await m.listMachines()).toEqual([
-      { name: "inc-engineering", state: "running", diskBytes: Math.round(20.4 * GB) },
-      { name: "inc-design", state: "stopped", diskBytes: 812 * 1024 ** 2 },
+      { name: "inc-engineering", state: "running", ip: "192.168.64.22", diskBytes: Math.round(20.4 * GB) },
+      { name: "inc-design", state: "stopped", ip: "192.168.64.23", diskBytes: 812 * 1024 ** 2 },
     ]);
   });
 

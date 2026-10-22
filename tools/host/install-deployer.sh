@@ -22,6 +22,9 @@ set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
+# launchd_reload: bootout, wait until launchd has dropped the service, then bootstrap (see launchd.sh).
+# shellcheck source=/dev/null
+. "$here/launchd.sh"
 home=${HOME:?HOME is not set}
 releases="$home/i-inc-releases"
 agents="$home/Library/LaunchAgents"
@@ -86,11 +89,21 @@ wait_for_version() {
   return 1
 }
 
+# Reloads a LaunchAgent: bootout, wait for launchd to drop it, bootstrap with retries. $3, when given,
+# is the plist to put back (and load) if the new one cannot be loaded, so a running service is never
+# left down. Fails then.
 reload() {
   label=$1
   plist=$2
-  run launchctl bootout "gui/$uid/$label" 2>/dev/null || true
-  run launchctl bootstrap "gui/$uid" "$plist"
+  previous=${3:-}
+  if [ "$dry" = 1 ]; then
+    say "    \$ launchctl bootout gui/$uid/$label"
+    say "      (waits up to about 10 s until launchctl print says it is gone)"
+    say "    \$ launchctl bootstrap gui/$uid $plist"
+    say "      (tries again on error 5${previous:+, and puts $previous back if it still fails})"
+    return 0
+  fi
+  launchd_reload "gui/$uid" "$label" "$plist" "$previous"
 }
 
 if [ "$action" = rollback ]; then
@@ -99,9 +112,8 @@ if [ "$action" = rollback ]; then
   head_now=$(git -C "$repo" rev-parse HEAD)
   run launchctl bootout "gui/$uid/inc.i.deployer" 2>/dev/null || true
   run rm -f "$eplist"
-  run launchctl bootout "gui/$uid/inc.i.daemon" 2>/dev/null || true
   run cp "$backup" "$dplist"
-  run launchctl bootstrap "gui/$uid" "$dplist"
+  reload inc.i.daemon "$dplist" || fail "the old daemon plist would not load: see above"
   if [ "$dry" = 1 ]; then
     say "    then wait for GET /api/health to report $(printf %s "$head_now" | cut -c1-7)"
     exit 0
@@ -142,7 +154,8 @@ else
   say "    $backup already exists: keeping it"
 fi
 new=$(mktemp)
-trap 'rm -f "$new"' EXIT HUP INT TERM
+snapshot=$(mktemp)
+trap 'rm -f "$new" "$snapshot"' EXIT HUP INT TERM
 # An exact edit: only a <string> that is the checkout path itself, or starts with "<checkout>/", is
 # rewritten. (A bare prefix match would also hit ~/i-inc-releases, which starts with ~/i-inc.)
 esc_repo=$(printf '%s' "$repo" | sed 's/[][\.*^$#]/\\&/g')
@@ -159,6 +172,9 @@ else
   if [ "$dry" = 1 ]; then
     say "    \$ write the edited plist shown above to $dplist"
   else
+    # The plist as it is right now, which is what a failed restart must put back: the pre-deployer
+    # backup can be older than the one that has been running.
+    cp "$dplist" "$snapshot"
     cp "$new" "$dplist"
   fi
 fi
@@ -166,16 +182,16 @@ fi
 # 3. Restart the daemon on it, and check it is the release we seeded.
 say "==> 3. restart the daemon from the release and check GET /api/health reports $(printf %s "$head" | cut -c1-7)"
 if [ "$changed" = 1 ] || [ "$dry" = 1 ]; then
-  reload inc.i.daemon "$dplist"
+  # If the new plist won't load, the old one is put back and loaded: the daemon is never left down.
+  reload inc.i.daemon "$dplist" "$snapshot" || fail "the daemon would not load from the release: the old plist was put back. See $home/Library/Logs/i-inc-daemon.log"
   if [ "$dry" = 0 ]; then
     want=$(basename "$(readlink "$releases/current")")
     if wait_for_version "$want"; then
       say "    the daemon runs release $(printf %s "$want" | cut -c1-7)"
     else
       say "    the daemon did not report version $want: restoring the old plist"
-      cp "$backup" "$dplist"
-      launchctl bootout "gui/$uid/inc.i.daemon" 2>/dev/null || true
-      launchctl bootstrap "gui/$uid" "$dplist"
+      cp "$snapshot" "$dplist"
+      reload inc.i.daemon "$dplist" || true
       fail "nothing was installed. See $home/Library/Logs/i-inc-daemon.log"
     fi
   fi
@@ -192,10 +208,13 @@ if [ "$dry" = 1 ]; then
   say "      BUN=$bun REPO=$repo RELEASES=$releases LOG=$log"
   say "      PATH=$path"
 else
+  oldep=$(mktemp)
+  trap 'rm -f "$new" "$snapshot" "$oldep"' EXIT HUP INT TERM
+  [ ! -f "$eplist" ] || cp "$eplist" "$oldep"
   sed -e "s#@BUN@#$bun#g" -e "s#@REPO@#$repo#g" -e "s#@RELEASES@#$releases#g" -e "s#@LOG@#$log#g" \
     -e "s#@PATH@#$path#g" "$here/inc.i.deployer.plist" >"$eplist"
 fi
-reload inc.i.deployer "$eplist"
+reload inc.i.deployer "$eplist" "${oldep:-}" || fail "the deployer would not load: see above"
 
 say "==> done"
 say "    NOTE: re-running tools/host/install-daemon.sh from a checkout older than this change resets the"

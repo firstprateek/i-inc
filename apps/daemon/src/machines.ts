@@ -20,6 +20,7 @@ import {
   StartupError,
 } from "@i-inc/core";
 import type { AgentProcess, Launch } from "./acp.ts";
+import { type EgressWall, isHomeMachine, WallError, type WallRow } from "./egress-wall.ts";
 import { launcherNeedsUpdate, newAgentId, noteLauncher, trackAgent } from "./reaper.ts";
 
 export const BOOT_FAILURES: Record<SandboxFaultKind, { reason: string; fix: string; waiting: string }> = {
@@ -76,6 +77,16 @@ export interface MachineSettings {
   machineFor?: (employeeId: Id) => string;
   /** A machine's size, when its team sets one. Absent: `cpus` and `memory`. */
   sizeFor?: (machine: string) => { cpus: number; memory: string } | undefined;
+  /**
+   * Whether a machine is a home machine: a team's sandbox with a personal assistant in it, whatever the
+   * team is called. (A machine named inc-home-… is one in any case.)
+   */
+  homeMachine?: (machine: string) => boolean;
+  /**
+   * The egress wall (egress-wall.ts): which machines the walls let out, and what the walls job has
+   * confirmed. Absent, nothing is checked but the walls marker, and no home machine runs.
+   */
+  wall?: EgressWall;
 }
 
 export const defaultMachineSettings: MachineSettings = {
@@ -106,6 +117,123 @@ export function assertWalls(s: MachineSettings): void {
   }
 }
 
+/** Whether this machine is a home machine (a PA's sandbox): it is shut in, and its user has no root. */
+export function isHome(s: MachineSettings, machine: string): boolean {
+  return isHomeMachine(machine) || s.homeMachine?.(machine) === true;
+}
+
+/**
+ * The running containers in `container ls` (it leaves machines out), as rows named `container:<id>`:
+ * the image builder (`container build` runs in a container called buildkit on the same bridge) and any
+ * `container run`. They are the owner's, started from the host, and have the internet as they did before the
+ * walls were closed. A row named inc-… is left out in case a later version lists machines here too.
+ */
+export function parseContainerListing(listing: string): WallRow[] {
+  const rows: WallRow[] = [];
+  for (const line of listing.split("\n").slice(1)) {
+    const cols = line.trim().split(/\s+/);
+    const id = cols[0];
+    if (!id || id.startsWith("inc-") || !cols.includes("running")) continue;
+    const ip = cols.map((c) => /^(\d{1,3}(?:\.\d{1,3}){3})(?:\/\d+)?$/.exec(c)?.[1]).find(Boolean);
+    if (ip) rows.push({ name: `container:${id}`, state: "running", ip, home: false });
+  }
+  return rows;
+}
+
+/**
+ * The machines in `machine ls`, with whether each is a home machine. With `containers`, also the running
+ * containers of the host's `container ls` (for the list of addresses to let out, not for a launch's check).
+ */
+export async function wallRows(s: MachineSettings, exec: Exec, containers = false): Promise<WallRow[]> {
+  const rows: WallRow[] = parseMachineListing(await exec(s.bin, ["machine", "ls"])).map((r) => ({
+    name: r.name,
+    state: r.state,
+    ...(r.ip ? { ip: r.ip } : {}),
+    home: isHome(s, r.name),
+  }));
+  if (!containers) return rows;
+  try {
+    const known = new Set(rows.map((r) => r.ip));
+    for (const c of parseContainerListing(await exec(s.bin, ["ls"]))) if (!known.has(c.ip)) rows.push(c);
+  } catch {
+    // The builder isn't there, or the service answered badly: nothing to add.
+  }
+  return rows;
+}
+
+/**
+ * Takes root from a home machine's user, run as root before anything else runs in the machine. The image
+ * gives the user passwordless sudo (images/employee/Dockerfile), and with it a PA's agent could give the
+ * machine an address the walls let out (`ip addr add`), or join the groups that are root in all but name.
+ */
+export const removeRootScript = (user: string): string =>
+  [
+    "set -eu",
+    `user=${user}`,
+    'rm -f "/etc/sudoers.d/$user"',
+    'for f in /etc/sudoers.d/*; do [ -f "$f" ] || continue; case "$f" in */README) ;; *) rm -f "$f" ;; esac; done',
+    '[ ! -f /etc/sudoers ] || sed -i "/^$user[[:space:]]/d" /etc/sudoers',
+    'for g in sudo admin wheel docker lxd adm disk; do getent group "$g" >/dev/null 2>&1 && gpasswd -d "$user" "$g" >/dev/null 2>&1 || true; done',
+    // An empty file, root's and immutable where the filesystem allows, so nothing puts the grant back.
+    ': >"/etc/sudoers.d/$user"',
+    'chown root:root "/etc/sudoers.d/$user" && chmod 0440 "/etc/sudoers.d/$user"',
+    'chattr +i "/etc/sudoers.d/$user" 2>/dev/null || true',
+    "echo @@no-root",
+    "",
+  ].join("\n");
+
+/** Run as the user: says @@root if sudo works without a password or the user is in a group that is root in all but name. */
+export const rootProbeScript = [
+  "if sudo -n true </dev/null >/dev/null 2>&1; then echo @@root; fi",
+  "if id -nG | tr ' ' '\\n' | grep -qx -e sudo -e admin -e wheel -e docker -e root; then echo @@root; fi",
+  "echo @@checked",
+  "",
+].join("\n");
+
+/** Whether the machine's user has no way to root. Runs a fixed script in the machine: nothing of anyone's. */
+export async function isRootless(s: MachineSettings, exec: Exec, machine: string): Promise<boolean> {
+  const out = await exec(s.bin, ["machine", "run", "-i", "-u", s.user, "-n", machine, "--", "bash", "-s"], {
+    input: rootProbeScript,
+    timeoutMs: 60_000,
+  });
+  return out.includes("@@checked") && !out.includes("@@root");
+}
+
+/** Removes the user's root (removeRootScript) in a home machine. */
+export async function removeRoot(s: MachineSettings, exec: Exec, machine: string): Promise<void> {
+  const out = await exec(s.bin, ["machine", "run", "-i", "-u", "root", "-n", machine, "--", "bash", "-s"], {
+    input: removeRootScript(s.user),
+    timeoutMs: 60_000,
+  });
+  if (!out.includes("@@no-root")) throw new WallError(`couldn't take root from ${s.user} in ${machine}`);
+}
+
+/**
+ * The checks before anything runs in a machine, and so before every launch (spec §5 and §7): the walls
+ * are up and, once the new walls are installed, the machine's live address is where the walls' acknowledgement
+ * says it should be (let out for an engineers' machine, shut in for a PA's sandbox), and a PA's sandbox
+ * still has no root. With the old walls an engineers' machine passes as it always did and a home machine
+ * is refused with a message that says to update them. A launch into a machine `machine ls` doesn't show
+ * running is refused too, since `machine run` would boot it.
+ */
+export async function assertRunnable(s: MachineSettings, exec: Exec, machine: string): Promise<void> {
+  assertWalls(s);
+  const home = isHome(s, machine);
+  const wall = s.wall;
+  if (!wall) {
+    if (home)
+      throw new WallError(`${machine} is a home machine, and no wall is set up, so nothing runs in it`);
+    return;
+  }
+  let row: WallRow | undefined;
+  if (wall.state().kind !== "old") row = (await wallRows(s, exec)).find((r) => r.name === machine);
+  const why = wall.problem(machine, home, row);
+  if (why) throw new WallError(why);
+  if (home && !(await isRootless(s, exec, machine))) {
+    throw new WallError(`${machine}'s user can still get root, so nothing runs in it`);
+  }
+}
+
 /** Where a ticket's worktree is in its machine, and so where its ACP sessions work. */
 export const workDir = (ticketId: Id, s: MachineSettings = defaultMachineSettings) => {
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(ticketId)) throw new Error(`not a ticket id: ${ticketId}`);
@@ -129,7 +257,7 @@ export interface ExecOptions {
 /** Runs a command and resolves with its output, or rejects with its error output. */
 export type Exec = (bin: string, args: string[], opts?: ExecOptions) => Promise<string>;
 
-const execDefault: Exec = (bin, args, opts) =>
+export const execDefault: Exec = (bin, args, opts) =>
   new Promise((resolve, reject) => {
     const child = execFile(
       bin,
@@ -184,8 +312,11 @@ export class AppleMachines implements MachineProvider {
   async ensureUp(employeeId: Id): Promise<void> {
     assertWalls(this.s);
     const name = machineOf(this.s, employeeId);
+    this.preflight(name);
     const working = this.up.get(name);
     if (working) {
+      // Already up: its address and its lack of root are checked again, since it may have been restarted.
+      await this.secure(name, false);
       working.add(employeeId);
       return;
     }
@@ -216,7 +347,120 @@ export class AppleMachines implements MachineProvider {
       // Boot it here rather than in its first job.
       await this.bootWithRecovery(name);
     }
+    // Before anything is run in it: a home machine loses its user's root, and the walls must have its address.
+    await this.secure(name, true);
     this.up.set(name, new Set([employeeId]));
+  }
+
+  /**
+   * A home machine (a personal assistant's sandbox) is made and booted only if the walls can shut it in:
+   * the new walls have to be installed and running. Nothing is created otherwise. (Apple container 1.4.1
+   * has no network option for machines, so the walls name the machines they let out: egress-wall.ts.)
+   * Other machines are not asked anything.
+   */
+  private preflight(name: string): void {
+    if (!isHome(this.s, name)) return;
+    const why = this.s.wall
+      ? this.s.wall.stateProblem(name, true)
+      : `${name} is a home machine, and no wall is set up, so nothing runs in it`;
+    if (why) this.wallFailure(name, why, "state");
+    // The walls were updated since: no need to wait out the backoff of "update the walls".
+    if (this.wallFaults.get(name) === "state") this.clearWallFault(name);
+  }
+
+  /** Records why the walls hold a machine back, for Setup > Sandboxes and the log, and throws it as a wait. */
+  private wallFailure(name: string, why: string, kind: "state" | "verify" = "verify"): never {
+    const t = this.now();
+    const before = this.faults.get(name);
+    this.faults.set(name, {
+      machine: name,
+      kind: "unknown",
+      reason: why,
+      waiting: why,
+      since: before?.since ?? t,
+      retryAt: t + 60_000,
+      attempts: (before?.attempts ?? 0) + 1,
+    });
+    this.wallFaults.set(name, kind);
+    this.logStateChange(name, `fault:wall:${why}`, why);
+    throw new StartupError(why, t + 60_000);
+  }
+
+  /** Machines whose fault is the walls', so it can be cleared when the walls settle. */
+  private readonly wallFaults = new Map<string, "state" | "verify">();
+
+  private clearWallFault(name: string): void {
+    if (!this.wallFaults.delete(name)) return;
+    this.faults.delete(name);
+    this.attempts.delete(name);
+    this.logStateChange(name, "running", "the walls settled");
+  }
+
+  /**
+   * After a machine is up and before anything runs in it: a home machine's user loses root, and the walls
+   * must have the machine's address (let out for an engineers' machine, shut in for a home one). A home
+   * machine that can't be secured is stopped. With the old walls an engineers' machine is not asked anything.
+   */
+  private async secure(name: string, fresh: boolean): Promise<void> {
+    const home = isHome(this.s, name);
+    const wall = this.s.wall;
+    if (!home && (!wall || wall.state().kind === "old")) return;
+    try {
+      if (home) {
+        if (fresh || !(await isRootless(this.s, this.exec, name))) await removeRoot(this.s, this.exec, name);
+        if (!(await isRootless(this.s, this.exec, name))) {
+          throw new WallError(`${name}'s user can still get root after it was taken away`);
+        }
+      }
+      if (wall) await wall.verify(name, home, () => wallRows(this.s, this.exec, true), this.sleep);
+    } catch (err) {
+      const why = err instanceof Error ? err.message : String(err);
+      this.up.delete(name);
+      if (home) {
+        try {
+          await this.exec(this.s.bin, ["machine", "stop", name]);
+        } catch {
+          // already stopped
+        }
+      }
+      this.wallFailure(name, why);
+    }
+    this.clearWallFault(name);
+  }
+
+  /**
+   * One look at the machines, every thirty seconds or so, once the new walls are installed: tells the
+   * walls job about the machines that may reach the internet (so a machine that woke with a new address is
+   * let out), stops a home machine whose address the walls let out for longer than `graceMs`, and one whose
+   * user has root again. Returns the machines stopped.
+   */
+  async watchHome(graceMs = 90_000): Promise<string[]> {
+    const wall = this.s.wall;
+    if (!wall || wall.state().kind === "old") return [];
+    const { stop, rows } = await wall.watch(() => wallRows(this.s, this.exec, true), graceMs);
+    for (const r of rows) {
+      if (!r.home || r.state !== "running" || stop.includes(r.name)) continue;
+      try {
+        if (!(await isRootless(this.s, this.exec, r.name))) {
+          await removeRoot(this.s, this.exec, r.name);
+          if (!(await isRootless(this.s, this.exec, r.name))) stop.push(r.name);
+        }
+      } catch (err) {
+        this.log?.(`[sandbox:${r.name}] couldn't check it for root: ${err}`);
+      }
+    }
+    for (const name of stop) {
+      this.log?.(
+        `[sandbox:${name}] the walls don't hold it (its address is let out, or it has root), so it is stopped`,
+      );
+      this.up.delete(name);
+      try {
+        await this.exec(this.s.bin, ["machine", "stop", name]);
+      } catch (err) {
+        this.log?.(`[sandbox:${name}] couldn't stop it: ${err}`);
+      }
+    }
+    return stop;
   }
 
   /**
@@ -315,7 +559,10 @@ export class AppleMachines implements MachineProvider {
     this.attempts.delete(machine);
     this.lastLogged.delete(machine);
     try {
+      // A home machine is booted only if the walls are ready for it, and is secured like any other boot.
+      this.preflight(machine);
       await this.bootWithRecovery(machine);
+      await this.secure(machine, true);
     } catch {
       // faults will be updated if it fails
     }
@@ -392,8 +639,8 @@ export class AppleMachines implements MachineProvider {
    * (T52: cleaning must not wake a machine).
    */
   async runIn(machine: string, script: string, timeoutMs = 15 * 60_000): Promise<string> {
-    assertWalls(this.s);
     if (!/^inc-[a-z0-9-]{1,32}$/.test(machine)) throw new Error(`not a machine name: ${machine}`);
+    await assertRunnable(this.s, this.exec, machine);
     const row = (await this.listMachines()).find((m) => m.name === machine);
     if (row?.state !== "running") throw new Error(`${machine} isn't running, so nothing is run in it`);
     return this.exec(
@@ -418,8 +665,8 @@ export class AppleMachines implements MachineProvider {
   }
 
   async deliverCallback(teamId: Id, url: string): Promise<void> {
-    assertWalls(this.s);
     const machine = machineName(teamId);
+    await assertRunnable(this.s, this.exec, machine);
     await this.exec(
       this.s.bin,
       ["machine", "run", "-i", "-u", this.s.user, "-n", machine, "-e", "CALLBACK_URL", "--", "bash", "-s"],
@@ -476,13 +723,16 @@ export class AppleMachines implements MachineProvider {
         : "stopped";
 
     let signedIn = this.signedInCache.get(machine) ?? defaultSignedIn;
-    if (wallsUp(this.s) && state === "running") {
+    if (wallsUp(this.s) && state === "running" && (await this.runnable(machine))) {
       try {
         signedIn = await this.probeSignIn(machine);
       } catch {
         // keep cached or fallback
       }
     }
+
+    // A PA's sandbox waits for the walls to be updated: Setup > Sandboxes says so before anyone tries it.
+    const wallReason = isHome(this.s, machine) ? this.s.wall?.stateProblem(machine, true) : undefined;
 
     return {
       team,
@@ -492,8 +742,22 @@ export class AppleMachines implements MachineProvider {
       memory: size.memory,
       signedIn,
       ...(launcherNeedsUpdate(machine) ? { launcher: "needs-update" as const } : {}),
-      ...(fault && inFault ? { reason: fault.reason, kind: fault.kind, retryAt: fault.retryAt } : {}),
+      ...(fault && inFault
+        ? { reason: fault.reason, kind: fault.kind, retryAt: fault.retryAt }
+        : wallReason
+          ? { reason: wallReason }
+          : {}),
     };
+  }
+
+  /** Whether the walls let anything run in the machine now. */
+  private async runnable(machine: string): Promise<boolean> {
+    try {
+      await assertRunnable(this.s, this.exec, machine);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async probeSignIn(
@@ -530,6 +794,8 @@ export interface MachineRow {
   state: "running" | "stopped" | string;
   /** The machine's disk on the host, in bytes, when the listing has one. */
   diskBytes?: number;
+  /** Its address on the machines' network, when it has one (the listing's IP column; "-" while stopped). */
+  ip?: string;
 }
 
 const units: Record<string, number> = { K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 };
@@ -546,10 +812,13 @@ export function parseMachineListing(listing: string): MachineRow[] {
     const at = cols.indexOf(state);
     const m = /^(\d+(?:\.\d+)?)([KMGT])B?$/i.exec(cols[at - 1] ?? "");
     const unit = units[(m?.[2] ?? "").toUpperCase()];
+    // The IP column sits between the creation time and the CPUs.
+    const ip = cols.find((c) => /^\d{1,3}(?:\.\d{1,3}){3}$/.test(c));
     rows.push({
       name,
       state,
       ...(m && unit ? { diskBytes: Math.round(Number(m[1]) * unit) } : {}),
+      ...(ip ? { ip } : {}),
     });
   }
   return rows;
@@ -581,34 +850,52 @@ const spawnDefault: Spawn = (bin, args, env) => spawn(bin, args, { env, stdio: [
 export function machineLaunch(
   s: MachineSettings = defaultMachineSettings,
   run: Spawn = spawnDefault,
+  exec: Exec = execDefault,
 ): Launch {
   return ({ employeeId, engine, cwd, env }) => {
-    assertWalls(s);
-    const launcher = launchers[engine.harness];
-    if (!launcher) throw new Error(`no ACP launcher for ${engine.harness}`);
-    // The launcher notes this token, the pid and the start time in the sandbox (reaper.ts), so an
-    // agent that outlives the daemon can be found and stopped.
-    const agentId = newAgentId();
-    const vars: Record<string, string> = { I_INC_CWD: cwd, ...env, I_INC_AGENT: agentId };
-    for (const name of Object.keys(vars)) {
-      if (!/^[A-Z_][A-Z0-9_]*$/.test(name)) throw new Error(`can't pass ${name} into a machine`);
+    const machine = machineOf(s, employeeId);
+    // With the new walls (or for a home machine) the live address is checked first, which takes a look at
+    // `machine ls`, so the launch is asynchronous then. With the old walls an engineers' machine starts at once.
+    const checked = needsLiveCheck(s, machine);
+    if (!checked) {
+      assertWalls(s);
+      return start();
     }
-    const flags = Object.keys(vars).flatMap((name) => ["-e", name]);
-    const child = run(
-      s.bin,
-      ["machine", "run", "-i", "-u", s.user, "-n", machineOf(s, employeeId), ...flags, "--", launcher],
-      { ...process.env, ...vars },
-    );
-    const exited = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
-    trackAgent(agentId, exited);
-    const proc: AgentProcess = {
-      agentId,
-      stdin: child.stdin,
-      stdout: child.stdout,
-      stderr: child.stderr,
-      kill: () => child.kill(),
-      exited,
-    };
-    return proc;
+    return assertRunnable(s, exec, machine).then(start);
+
+    function start(): AgentProcess {
+      const launcher = launchers[engine.harness];
+      if (!launcher) throw new Error(`no ACP launcher for ${engine.harness}`);
+      // The launcher notes this token, the pid and the start time in the sandbox (reaper.ts), so an
+      // agent that outlives the daemon can be found and stopped.
+      const agentId = newAgentId();
+      const vars: Record<string, string> = { I_INC_CWD: cwd, ...env, I_INC_AGENT: agentId };
+      for (const name of Object.keys(vars)) {
+        if (!/^[A-Z_][A-Z0-9_]*$/.test(name)) throw new Error(`can't pass ${name} into a machine`);
+      }
+      const flags = Object.keys(vars).flatMap((name) => ["-e", name]);
+      const child = run(
+        s.bin,
+        ["machine", "run", "-i", "-u", s.user, "-n", machineOf(s, employeeId), ...flags, "--", launcher],
+        { ...process.env, ...vars },
+      );
+      const exited = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
+      trackAgent(agentId, exited);
+      const proc: AgentProcess = {
+        agentId,
+        stdin: child.stdin,
+        stdout: child.stdout,
+        stderr: child.stderr,
+        kill: () => child.kill(),
+        exited,
+      };
+      return proc;
+    }
   };
+}
+
+/** Whether a launch has to look at `machine ls` first: a home machine, or any machine once the new walls are in. */
+function needsLiveCheck(s: MachineSettings, machine: string): boolean {
+  if (!s.wall) return isHome(s, machine); // (a home machine is then refused)
+  return isHome(s, machine) || s.wall.state().kind !== "old";
 }

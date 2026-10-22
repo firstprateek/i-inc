@@ -1,0 +1,53 @@
+#!/bin/sh
+# A fake launchctl for the host-script tests. It keeps its state in $FAKE_LAUNCHCTL_DIR and logs each
+# call to $FAKE_LAUNCHCTL_LOG. It behaves as the real one did on the mini: `bootout` returns before
+# the service is gone, and a `bootstrap` while the old one is still being dropped fails with
+# "Bootstrap failed: 5: Input/output error".
+#   FAKE_UNLOAD_POLLS=n      a booted-out service shows in `print` n more times before it is gone
+#   FAKE_BOOTSTRAP_FAIL=n    the first n bootstraps fail with error 5 whatever the state
+#   a plist that contains the word BROKEN always fails with error 5
+set -u
+dir=${FAKE_LAUNCHCTL_DIR:?}
+mkdir -p "$dir/loaded" "$dir/unloading"
+echo "launchctl $*" >>"${FAKE_LAUNCHCTL_LOG:?}"
+label_of() { printf '%s' "${1##*/}"; }
+settle() { # a service being dropped goes after its remaining looks
+  l=$1
+  [ -f "$dir/unloading/$l" ] || return 0
+  n=$(cat "$dir/unloading/$l")
+  if [ "$n" -le 0 ]; then rm -f "$dir/loaded/$l" "$dir/unloading/$l"; else echo $((n - 1)) >"$dir/unloading/$l"; fi
+}
+case "${1:-}" in
+  print)
+    l=$(label_of "$2")
+    settle "$l"
+    [ -f "$dir/loaded/$l" ]
+    ;;
+  bootout)
+    l=$(label_of "$2")
+    if [ -f "$dir/loaded/$l" ]; then
+      echo "${FAKE_UNLOAD_POLLS:-0}" >"$dir/unloading/$l"
+      [ "${FAKE_UNLOAD_POLLS:-0}" -gt 0 ] || rm -f "$dir/loaded/$l" "$dir/unloading/$l"
+      exit 0
+    fi
+    echo "Boot-out failed: 3: No such process" >&2
+    exit 3
+    ;;
+  bootstrap)
+    plist=$3
+    l=$(basename "$plist" .plist)
+    fails=$(cat "$dir/fail-count" 2>/dev/null || echo 0)
+    if [ "$fails" -lt "${FAKE_BOOTSTRAP_FAIL:-0}" ]; then
+      echo $((fails + 1)) >"$dir/fail-count"
+      echo "Bootstrap failed: 5: Input/output error" >&2
+      exit 5
+    fi
+    if grep -q BROKEN "$plist" 2>/dev/null || [ -f "$dir/loaded/$l" ]; then
+      echo "Bootstrap failed: 5: Input/output error" >&2
+      exit 5
+    fi
+    cp "$plist" "$dir/loaded/$l"
+    ;;
+  kickstart) ;;
+  *) ;;
+esac

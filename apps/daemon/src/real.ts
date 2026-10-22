@@ -4,7 +4,7 @@
 // goes straight to main; owner-merges projects get a draft PR. The daemon keeps each sandbox signed in
 // to GitHub as the bot, so sessions of any length can push. Claude's usage reports land in the
 // registry. The helper model and chat use Ollama on the host.
-import type { Employee, Id } from "@i-inc/core";
+import { type Employee, type Id, isHomeEmployee } from "@i-inc/core";
 import { AcpAgent, type Launch } from "./acp.ts";
 import type { AgentBackend } from "./ahp/backend.ts";
 import { agentsFromRegistry } from "./ahp/conversations.ts";
@@ -12,6 +12,7 @@ import { SessionHost } from "./ahp/session-host.ts";
 import type { AppOptions } from "./app.ts";
 import type { BrainFeed } from "./brain-feed.ts";
 import { type Credentials, credentialsFor } from "./config.ts";
+import { EgressWall } from "./egress-wall.ts";
 import { commitIdentity, PullRequests, type TokenSource, waitForCi } from "./github.ts";
 import { MachineHarness, machineScript, type RunScript } from "./harness.ts";
 import {
@@ -52,7 +53,7 @@ export interface RealOptions {
 
 /** What the employee image has (images/employee/Dockerfile), for briefs. */
 const machine =
-  "Your machine runs Ubuntu 24.04. You're the user employee, with passwordless sudo. It has Node 24, pnpm 10, git, gh and Docker; install anything else you need. Other agents on your team share it: run servers only on the ports in $I_INC_PORTS.";
+  "Your machine runs Ubuntu 24.04. You're the user employee, with passwordless sudo (except in a personal assistant's sandbox, which has no sudo and no internet). It has Node 24, pnpm 10, git, gh and Docker; install anything else you need. Other agents on your team share it: run servers only on the ports in $I_INC_PORTS.";
 
 /** A ticket's own range of 100 ports, so agents sharing a sandbox don't take each other's. */
 export function portsFor(ticketId: Id): string {
@@ -105,14 +106,25 @@ export function realPorts(o: RealOptions): Pick<
     registryRef = registry;
     settings ??= {
       ...base,
+      // The egress wall is checked whenever the walls marker is (not in the tests that turn that off).
+      ...(base.wallsMarker && !base.wall ? { wall: new EgressWall() } : {}),
       machineFor: (employeeId) => `inc-${registry.teamOf(employeeId).id}`,
       sizeFor: (name) => registry.teams().find((t) => `inc-${t.id}` === name)?.sandbox,
+      // A sandbox with a PA in it gets the home wall, whatever its team is called (egress-wall.ts).
+      homeMachine: (machine) =>
+        registry
+          .teams()
+          .some(
+            (t) =>
+              `inc-${t.id}` === machine &&
+              registry.employees().some((e) => t.members.includes(e.id) && isHomeEmployee(e)),
+          ),
     };
     return settings;
   };
   let runner: RunScript | undefined;
   const run = (registry: Registry): RunScript => {
-    runner ??= o.runScript ?? machineScript(teams(registry));
+    runner ??= o.runScript ?? machineScript(teams(registry), o.exec);
     return runner;
   };
   // The brain's copy goes into a sandbox through the same script runner as everything else (a tar
@@ -162,7 +174,7 @@ export function realPorts(o: RealOptions): Pick<
     agent: (registry, tickets, brain) => {
       withBrain(registry, brain);
       return new AcpAgent({
-        launch: o.launch ?? machineLaunch(teams(registry)),
+        launch: o.launch ?? machineLaunch(teams(registry), undefined, o.exec),
         reap: reap(registry),
         // The account's credential if it has one (machines sign in themselves by default), and the
         // ticket's ports. GitHub comes from the sandbox's sign-in.
@@ -230,7 +242,7 @@ export function realPorts(o: RealOptions): Pick<
     ahpBackend: (registry, _tickets, brain): AgentBackend =>
       new SessionHost({
         brain: withBrain(registry, brain),
-        launch: o.launch ?? machineLaunch(teams(registry)),
+        launch: o.launch ?? machineLaunch(teams(registry), undefined, o.exec),
         reap: reap(registry),
         agents: () => agentsFromRegistry(registry),
         engine: (id) => registry.engines().find((e) => e.id === id),

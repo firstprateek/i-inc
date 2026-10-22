@@ -131,8 +131,20 @@ if (demo && app.deps.registry.employees().length === 0) {
 // Agents an earlier daemon left running (it crashed, was killed, or a deploy did not wait for it) are
 // stopped before anything launches: every launch waits for this sweep (reaper.ts), so no agent this
 // daemon starts can be taken for a leftover. It runs on every machine that is up, all at once.
+// Home machines (a personal assistant's sandbox) are looked at first: the sweep runs in one only if the
+// walls job has confirmed it is walled off (egress-wall.ts).
+const watchHome = async () => {
+  if (demo || !(app.deps.machines instanceof AppleMachines)) return;
+  if (!wallsUp(defaultMachineSettings)) return; // the watch below already stops every machine
+  await app.deps.machines
+    .watchHome()
+    .then((stopped) => stopped.length && log(`the home wall doesn't cover ${stopped.join(", ")}: stopped`))
+    .catch((err) => log(`home wall check failed: ${err}`));
+};
 if (real)
-  void real.sweepAgents().then((n) => n && log(`stopped ${n} agent(s) an earlier daemon left running`));
+  void watchHome()
+    .then(() => real.sweepAgents())
+    .then((n) => n && log(`stopped ${n} agent(s) an earlier daemon left running`));
 await app.daemon.tick();
 setInterval(() => void app.daemon.tick(), 30_000);
 
@@ -166,6 +178,10 @@ if (!demo && app.deps.machines instanceof AppleMachines) {
       .catch((err) => log(`the walls are down, and stopping the machines failed: ${err}`));
   }, 30_000);
 }
+
+// The open machines are declared to the walls job, and a home machine whose address the walls let out (it
+// restarted with a new one) or whose user has root again is stopped (egress-wall.ts).
+setInterval(() => void watchHome(), 30_000);
 
 /** The web app's build, with index.html for every other path. */
 async function serveWeb(req: Request): Promise<Response> {

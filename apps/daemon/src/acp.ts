@@ -45,7 +45,11 @@ export interface LaunchRequest {
   env: Record<string, string>;
 }
 
-export type Launch = (r: LaunchRequest) => AgentProcess;
+/**
+ * Starts an agent in a machine. It answers at once for an ordinary machine, and as a promise when the walls
+ * have to be looked at first (machines.ts, machineLaunch).
+ */
+export type Launch = (r: LaunchRequest) => AgentProcess | Promise<AgentProcess>;
 
 /** What Claude's adapter reports about an account's windows (`_meta["_claude/rateLimit"]`). */
 export interface UsageReport {
@@ -176,7 +180,7 @@ export class AcpAgent implements Agent {
     const env = await this.o.credentials(r.engine, r.ticket, r.duty, r.employee.id);
     // An agent a dead daemon left on this ticket would work in the same folder as the new one.
     await this.o.reap?.(r.employee.id, { cwd });
-    const proc = this.o.launch({ employeeId: r.employee.id, engine: r.engine, cwd, env });
+    const proc = await this.o.launch({ employeeId: r.employee.id, engine: r.engine, cwd, env });
     const rpc = new Rpc(proc, this.o.log);
     this.open.set(rpc, r.employee.id);
     let limit: { rejected: boolean; resetsAt: number | null; fromMeta?: boolean } = {

@@ -3,7 +3,14 @@
 // because `machine run` re-splits its arguments (M1).
 import { spawn } from "node:child_process";
 import type { ChecksResult, GatesResult, Harness, ProjectPolicy, Ticket } from "@i-inc/core";
-import { assertWalls, defaultMachineSettings, type MachineSettings, machineOf } from "./machines.ts";
+import {
+  assertRunnable,
+  defaultMachineSettings,
+  type Exec,
+  execDefault,
+  type MachineSettings,
+  machineOf,
+} from "./machines.ts";
 
 /**
  * Runs a script in an employee's machine and resolves with its exit code and output. Variables in
@@ -17,34 +24,22 @@ export type RunScript = (
   opts?: { machine?: string },
 ) => Promise<{ code: number; output: string }>;
 
-export function machineScript(s: MachineSettings = defaultMachineSettings): RunScript {
-  return (employeeId, script, env = {}, opts = {}) =>
-    new Promise((resolve, reject) => {
-      try {
-        assertWalls(s);
-        if (opts.machine !== undefined && !/^inc-[a-z0-9-]{1,32}$/.test(opts.machine)) {
-          throw new Error(`not a machine name: ${opts.machine}`);
-        }
-      } catch (err) {
-        return reject(err);
-      }
-      const names = Object.keys(env);
-      const bad = names.find((name) => !/^[A-Z_][A-Z0-9_]*$/.test(name));
-      if (bad) return reject(new Error(`can't pass ${bad} into a machine`));
-      const flags = names.flatMap((name) => ["-e", name]);
-      const args = [
-        "machine",
-        "run",
-        "-i",
-        "-u",
-        s.user,
-        "-n",
-        opts.machine ?? machineOf(s, employeeId),
-        ...flags,
-        "--",
-        "bash",
-        "-s",
-      ];
+export function machineScript(
+  s: MachineSettings = defaultMachineSettings,
+  exec: Exec = execDefault,
+): RunScript {
+  return async (employeeId, script, env = {}, opts = {}) => {
+    if (opts.machine !== undefined && !/^inc-[a-z0-9-]{1,32}$/.test(opts.machine)) {
+      throw new Error(`not a machine name: ${opts.machine}`);
+    }
+    const machine = opts.machine ?? machineOf(s, employeeId);
+    await assertRunnable(s, exec, machine);
+    const names = Object.keys(env);
+    const bad = names.find((name) => !/^[A-Z_][A-Z0-9_]*$/.test(name));
+    if (bad) throw new Error(`can't pass ${bad} into a machine`);
+    const flags = names.flatMap((name) => ["-e", name]);
+    const args = ["machine", "run", "-i", "-u", s.user, "-n", machine, ...flags, "--", "bash", "-s"];
+    return new Promise((resolve, reject) => {
       const child = spawn(s.bin, args, { env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "pipe"] });
       let output = "";
       child.stdout.on("data", (chunk) => {
@@ -57,6 +52,7 @@ export function machineScript(s: MachineSettings = defaultMachineSettings): RunS
       child.on("exit", (code) => resolve({ code: code ?? 1, output }));
       child.stdin.end(script);
     });
+  };
 }
 
 export interface HarnessSettings {

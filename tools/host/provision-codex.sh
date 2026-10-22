@@ -29,8 +29,8 @@ root=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 "$c" machine run -u employee -n "$machine" -- mkdir -p /home/employee/.codex </dev/null
 
 put() { # put <source file> <sandbox path> <mode>
-  cat "$1" | "$c" machine run -i -u employee -n "$machine" -- sudo tee "$2" >/dev/null
-  "$c" machine run -u employee -n "$machine" -- sudo chmod "$3" "$2" </dev/null
+  cat "$1" | "$c" machine run -i -u root -n "$machine" -- tee "$2" >/dev/null
+  "$c" machine run -u root -n "$machine" -- chmod "$3" "$2" </dev/null
 }
 put "$root/images/employee/acp-env.sh" /usr/local/lib/i-inc/acp-env.sh 644
 put "$root/images/employee/launchers/acp-codex" /usr/local/bin/acp-codex 755

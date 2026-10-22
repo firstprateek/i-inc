@@ -781,7 +781,12 @@ export class SessionHost implements AgentBackend {
     const env = await this.o.credentials(info.engine, info);
     // An agent a dead daemon left for this conversation would work in the same folder as the new one.
     await this.o.reap?.(info.employeeId, { cwd: info.cwd });
-    const proc = this.o.launch({ employeeId: info.employeeId, engine: info.engine, cwd: info.cwd, env });
+    const proc = await this.o.launch({
+      employeeId: info.employeeId,
+      engine: info.engine,
+      cwd: info.cwd,
+      env,
+    });
     this.app?.awake(info.employeeId);
     const conn = new AcpConnection(proc, this.o.log);
     live.conn = conn;

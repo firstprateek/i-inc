@@ -738,7 +738,15 @@ export class IncHiring extends LitElement {
           <span><b>Model Switching Rules:</b> When out of tokens or stuck on checks, i.inc automatically pauses or cascades to the fallback engine. You can also specify fine-grained model-switching guidelines in the system prompt above.</span>
         </div>
 
-        ${this.pa ? html`<p class="note">Home data only goes to local engines, so only local engines are offered.</p>` : ""}
+        ${
+          this.pa
+            ? html`<p class="note">Home data only goes to local engines, and a personal assistant's sandbox has no internet, so only local engines are offered.${
+                (this.choices ?? []).length === 0
+                  ? " No local engine is set up yet: add one in Setup (OpenCode on Ollama) first."
+                  : ""
+              }</p>`
+            : ""
+        }
         ${
           editing
             ? ""
