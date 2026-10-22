@@ -664,6 +664,22 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         ) {
           return json({ error: 'sandbox is {"cpus": 6, "memory": "12G"}' }, 400);
         }
+        // Taking a PA out of its team would land it in the shared sandbox (emptying a home team does).
+        const before = d.registry.teams().find((t) => t.id === id);
+        const left = d.registry
+          .employees()
+          .filter(
+            (e) =>
+              isHomeEmployee(e) && before?.members.includes(e.id) && !(members as string[]).includes(e.id),
+          );
+        if (left.length) {
+          return json(
+            {
+              error: `${left.map((e) => e.name).join(", ")} works on home data and needs a sandbox of its own, so it can't be taken out of ${before?.name ?? id} this way`,
+            },
+            409,
+          );
+        }
         // A PA's home data must not share a sandbox (and a Unix user) with anyone else.
         const crowd = sharedHomeProblems(
           b.name,

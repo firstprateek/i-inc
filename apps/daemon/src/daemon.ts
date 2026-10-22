@@ -164,6 +164,7 @@ export class Daemon {
   /** An employee's machine was started by something else (a conversation): it is stopped and cleaned like the rest. */
   noteAwake(id: Id): void {
     this.awake.add(id);
+    this.d.brainFeed?.noteMachineUp(id);
   }
 
   /** Counts a turn as running until it settles. */
@@ -251,6 +252,8 @@ export class Daemon {
         }
         await m.ensureUp(id);
         this.awake.add(id);
+        // A stage that starts right now must not find a stale "the machine is down" in the brain feed.
+        this.d.brainFeed?.noteMachineUp(id);
       },
       ...(stop ? { stop: (id) => stop.call(m, id) } : {}),
       ...(deliverCallback ? { deliverCallback: (team, url) => deliverCallback.call(m, team, url) } : {}),

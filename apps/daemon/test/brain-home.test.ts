@@ -289,7 +289,83 @@ describe("a PA's brain and a shared machine", () => {
   });
 });
 
+describe("both of a PA's copies follow it", () => {
+  async function twoCopies() {
+    const r = await brainRig();
+    r.commit("handbook", { "facts/gh.md": page("GitHub CLI", "gh", "Use gh.") });
+    r.commit("pip", { "home/d.md": page("Dentist", "dentist", "homedata") });
+    await r.feed.sync("pip", true);
+    await r.feed.sync("pip", false);
+    expect(existsSync(r.copy("pip"))).toBe(true);
+    expect(existsSync(r.copy("pip.code"))).toBe(true);
+    // each copy has its own record
+    expect(r.app.deps.db.all("SELECT employee_id FROM brain_synced ORDER BY employee_id")).toEqual([
+      expect.objectContaining({ employee_id: "pip" }),
+      expect.objectContaining({ employee_id: "pip.code" }),
+    ]);
+    return r;
+  }
+
+  it("removes both when the PA moves to another team", async () => {
+    const r = await twoCopies();
+    r.app.deps.registry.addTeam({ id: "errands", name: "Errands", members: [] });
+    expect((await r.call("PUT", "/api/employees/pip", { teamId: "errands" })).status).toBe(200);
+    await r.feed.reconcile();
+    expect(existsSync(r.copy("pip"))).toBe(false);
+    expect(existsSync(r.copy("pip.code"))).toBe(false);
+    expect(r.app.deps.db.all("SELECT * FROM brain_synced")).toEqual([]);
+    const removed = r.runs.filter((x) => x.script.includes("@@removed"));
+    expect(removed.map((x) => x.machine)).toEqual(["inc-home-pip", "inc-home-pip"]);
+  });
+
+  it("removes both when the PA leaves", async () => {
+    const r = await twoCopies();
+    r.app.deps.db.run("DELETE FROM company WHERE kind = 'employee' AND id = 'pip'");
+    await r.feed.reconcile();
+    expect(existsSync(r.copy("pip"))).toBe(false);
+    expect(existsSync(r.copy("pip.code"))).toBe(false);
+    expect(r.app.deps.db.all("SELECT * FROM brain_synced")).toEqual([]);
+  });
+});
+
+describe("emptying a home team", () => {
+  it("is refused, like deleting it, because the PA would land in the shared sandbox", async () => {
+    const r = await brainRig();
+    const res = await r.call("PUT", "/api/teams/home-pip", { name: "Pip's home", members: [] });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/Pip.*home data.*sandbox of its own/);
+    expect(r.app.deps.registry.teamOf("pip").id).toBe("home-pip");
+    // Renaming it, or resizing it, with the PA still in it, is fine; so is emptying an ordinary team.
+    expect(
+      (
+        await r.call("PUT", "/api/teams/home-pip", {
+          name: "Pip",
+          members: ["pip"],
+          sandbox: { cpus: 3, memory: "6G" },
+        })
+      ).status,
+    ).toBe(200);
+    expect((await r.call("PUT", "/api/teams/engineering", { name: "Engineering", members: [] })).status).toBe(
+      200,
+    );
+  });
+});
+
 describe("a stopped machine", () => {
+  it("is started by the daemon right before a stage: the brain feed forgets that it was down", async () => {
+    const r = await brainRig();
+    r.commit("handbook", { "facts/gh.md": page("GitHub CLI", "gh", "Use gh.") });
+    r.setUp(false);
+    expect(await r.feed.sync("ada")).toMatchObject({ ok: false, how: "skipped" });
+    // The machine boots (the "down" answer is only seconds old); the daemon ensures it before the stage.
+    r.machineUp.value = true;
+    const ports = (
+      r.app.daemon as unknown as { ports: { machines: { ensureUp: (id: string) => Promise<void> } } }
+    ).ports;
+    await ports.machines.ensureUp("ada");
+    expect(await r.feed.sync("ada")).toMatchObject({ ok: true, how: "full" });
+  });
+
   it("is not started to copy into: the session goes on without a copy", async () => {
     const r = await brainRig();
     r.commit("handbook", { "facts/gh.md": page("GitHub CLI", "gh", "Use gh.") });

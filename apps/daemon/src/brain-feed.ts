@@ -185,6 +185,11 @@ export class BrainFeed {
     return !allowHome && this.isHome(employeeId) ? `${employeeId}.code` : employeeId;
   }
 
+  /** The daemon started (or checked) this employee's machine: forget any "it is down" it saw before. */
+  noteMachineUp(employeeId: string): void {
+    this.upSeen.delete(this.machineOf(employeeId));
+  }
+
   /** Is the machine running? A copy is never made, or taken out, by starting a machine for it. */
   private async machineIsUp(machine: string): Promise<boolean> {
     if (!this.isUp) return true;
@@ -532,7 +537,7 @@ export class BrainFeed {
       this.o.db.run(
         "INSERT OR REPLACE INTO brain_synced (machine, employee_id, snapshot_id, files, pending, at) VALUES (?, ?, ?, ?, ?, ?)",
         machine,
-        employeeId,
+        copy,
         b.snap.id,
         JSON.stringify(
           Object.fromEntries([...files.values()].map((f) => [f.path, [f.sha, f.tracked ? 1 : 0]])),
