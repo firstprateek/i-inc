@@ -187,7 +187,14 @@ export type GatesResult =
   /** `pushed`: in direct mode, the commit that reached main. */
   | { ok: true; pushed?: string }
   /** `protectedPaths`: the change touches paths that need the owner's OK first. */
-  | { ok: false; conflict: boolean; reason: string; protectedPaths?: string[] };
+  | {
+      ok: false;
+      conflict: boolean;
+      reason: string;
+      protectedPaths?: string[];
+      /** With `protectedPaths`: the change the card is about (see the protected-paths ask in events.ts). */
+      approval?: { sha: string; patchId: string; diff?: string; diffTruncated?: boolean };
+    };
 
 export type CiResult = { ok: true } | { ok: false; reason: string };
 
@@ -197,8 +204,13 @@ export interface GatesOptions {
    * everything (also what an owner's own push left behind: the branch is empty then).
    */
   ownerApproved?: boolean;
-  /** The protected paths the owner has OKed so far. When given, only these are let through. */
+  /** The protected paths the owner has OKed, from the last card they answered. When given, only these are let through. */
   approvedPaths?: string[];
+  /**
+   * What the owner's last OK was for: the commit, a hash of the diff of the protected paths, and the paths. The
+   * host lets a protected change through only if it is exactly this (T68); anything else asks again.
+   */
+  approval?: { sha: string; patchId: string; paths: string[] };
   /** Direct mode: the commit a run before this one was about to push; if it is on main already, it was pushed. */
   pushIntended?: string;
   /**

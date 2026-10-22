@@ -6,6 +6,7 @@ import { ApiError, api, imageRules, refreshNow, type TicketEvent, type TicketVie
 import { assignees, notStarted, optionLabel, waitingLine } from "../assign.ts";
 import { ImagePicker, imagePickerStyles } from "./image-picker.ts";
 import { Loader } from "./loader.ts";
+import { protectedDiff } from "./protected-card.ts";
 import "./transcript.ts";
 import { layoutStyles } from "./layout.ts";
 import { base, check, projectBadge, selectField } from "./shared.ts";
@@ -304,6 +305,7 @@ export class IncTicket extends Loader<Data> {
         case "protected-paths":
           return html`<div class="ask"><b>This change touches protected paths</b>
             <ul>${ask.paths.map((p) => html`<li><code>${p}</code></li>`)}</ul>
+            ${protectedDiff(ask)}
             <p class="muted">It was reviewed, and reaches main once you OK it. GitHub only takes workflow changes from you: run <code>tools/host/push-for-owner.sh</code> first, then OK it.</p>
             <div class="actions">
               <button type="button" class="btn" ?disabled=${this.busy} @click=${() => this.act(() => api.answer(id, "approve"))}>OK it</button>

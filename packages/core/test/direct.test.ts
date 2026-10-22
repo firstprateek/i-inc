@@ -94,6 +94,45 @@ describe("direct mode", () => {
     });
   });
 
+  it("binds the owner's OK to the commit and the diff on the card, and a later card replaces it (T68)", async () => {
+    const p = direct(ports());
+    const card = (n: number) => ({
+      ok: false as const,
+      conflict: false,
+      reason: "touches protected paths",
+      protectedPaths: ["apps/x.ts"],
+      approval: { sha: sha(n), patchId: `patch-${n}`, diff: `+change ${n}`, diffTruncated: true },
+    });
+    p.harness.gates.push(card(1), card(2), { ok: true, pushed: sha(2) });
+    const first = await runTicket(p, refundsTicket({ effort: "low" }));
+    // The card carries what the OK is for: the commit and the diff.
+    expect(first).toEqual({
+      status: "needs-you",
+      ask: {
+        kind: "protected-paths",
+        paths: ["apps/x.ts"],
+        sha: sha(1),
+        patchId: "patch-1",
+        diff: "+change 1",
+        diffTruncated: true,
+      },
+    });
+    await answer(p, "42", "approve");
+    // The run after the OK is told what the OK was for.
+    const second = await runTicket(p, refundsTicket({ effort: "low" }));
+    expect(p.harness.gateOpts.at(-1)).toMatchObject({
+      ownerApproved: true,
+      approval: { sha: sha(1), patchId: "patch-1", paths: ["apps/x.ts"] },
+    });
+    // The host found other content: a new card, whose OK replaces the first (nothing adds up).
+    expect(second).toMatchObject({ status: "needs-you", ask: { sha: sha(2), patchId: "patch-2" } });
+    await answer(p, "42", "approve");
+    expect((await runTicket(p, refundsTicket({ effort: "low" }))).status).toBe("done");
+    expect(p.harness.gateOpts.at(-1)).toMatchObject({
+      approval: { sha: sha(2), patchId: "patch-2", paths: ["apps/x.ts"] },
+    });
+  });
+
   it("has the builder fix red CI on main, and reverts the push if main is still red 2 hours on", async () => {
     const fixed = direct(ports());
     fixed.harness.gates.push({ ok: true, pushed: sha(3) }, { ok: true, pushed: sha(4) });

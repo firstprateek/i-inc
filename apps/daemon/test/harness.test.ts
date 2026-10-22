@@ -2,7 +2,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Ticket } from "@i-inc/core";
+import type { GatesResult, Ticket } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
 import {
   changedScript,
@@ -111,6 +111,17 @@ function withGitHub(work: string, settings: Partial<HarnessSettings> = {}, hideC
     run,
   );
   return { harness, calls, origin, ledger: join(work, "..", "ledger", "pushed-main.jsonl") };
+}
+
+/** The options the runner passes after the owner OKs the card a held run produced (state.ts: the OK is for that change). */
+function okOf(held: GatesResult) {
+  if (held.ok || !held.approval || !held.protectedPaths)
+    throw new Error(`not a card: ${JSON.stringify(held)}`);
+  return {
+    ownerApproved: true,
+    approvedPaths: held.protectedPaths,
+    approval: { sha: held.approval.sha, patchId: held.approval.patchId, paths: held.protectedPaths },
+  };
 }
 
 describe("the machine harness", () => {
@@ -269,12 +280,13 @@ describe("the machine harness in direct mode", () => {
   it("holds a change to protected paths for the owner, and pushes it once approved", async () => {
     const { work, origin } = directRepos(".github/workflows/ci.yml");
     const before = git(origin, "rev-parse", "main").trim();
-    expect(await direct(work).runGates(ticket)).toMatchObject({
-      ok: false,
-      protectedPaths: [".github/workflows/ci.yml"],
-    });
+    const held = await direct(work).runGates(ticket);
+    expect(held).toMatchObject({ ok: false, protectedPaths: [".github/workflows/ci.yml"] });
+    // The card carries the commit and the diff of the protected paths, from the host.
+    expect(held.ok ? "" : held.approval?.diff).toContain("+changed");
+    expect(held.ok ? "" : held.approval?.sha).toBe(git(work, "rev-parse", "HEAD").trim());
     expect(git(origin, "rev-parse", "main").trim()).toBe(before);
-    expect(await direct(work).runGates(ticket, { ownerApproved: true })).toMatchObject({ ok: true });
+    expect(await direct(work).runGates(ticket, okOf(held))).toMatchObject({ ok: true });
   });
 
   it("holds a file moved out of a protected folder, and a protected file with a quote in its name", async () => {
@@ -317,6 +329,21 @@ describe("the machine harness in direct mode", () => {
     ]);
   });
 
+  it("an OK does not carry over to a new run: a new commit, or other content in the same paths, asks again", async () => {
+    const { work, origin } = directRepos(".github/workflows/ci.yml");
+    const gh = withGitHub(work, { policy: () => policy }).harness;
+    const held = await gh.runGates(ticket);
+    const ok = okOf(held);
+    // The builder changes the workflow after the owner's OK (a new run).
+    writeFileSync(join(work, ".github/workflows/ci.yml"), "name: evil\n");
+    git(work, "commit", "-q", "-am", "swap the workflow");
+    const before = git(origin, "rev-parse", "main").trim();
+    const again = await gh.runGates(ticket, ok);
+    expect(again).toMatchObject({ ok: false, protectedPaths: [".github/workflows/ci.yml"] });
+    expect(again.ok ? "" : again.approval?.diff).toContain("name: evil");
+    expect(git(origin, "rev-parse", "main").trim()).toBe(before);
+  });
+
   it("holds protected paths itself: a machine that hides what changed can't push them without the owner", async () => {
     const { work, origin } = directRepos(".github/workflows/ci.yml");
     const before = git(origin, "rev-parse", "main").trim();
@@ -324,8 +351,9 @@ describe("the machine harness in direct mode", () => {
     const held = await liar.runGates(ticket);
     expect(held).toMatchObject({ ok: false, protectedPaths: [".github/workflows/ci.yml"] });
     expect(git(origin, "rev-parse", "main").trim()).toBe(before);
-    // Once the owner approves, it goes.
-    expect(await liar.runGates(ticket, { ownerApproved: true })).toMatchObject({ ok: true });
+    // Once the owner approves, it goes; an OK is not enough without what it was for.
+    expect(await liar.runGates(ticket, { ownerApproved: true })).toMatchObject({ ok: false });
+    expect(await liar.runGates(ticket, okOf(held))).toMatchObject({ ok: true });
   });
 
   it("holds code the host could run for the owner in the repo the deployer deploys, whatever the project's protected paths say", async () => {
@@ -335,13 +363,14 @@ describe("the machine harness in direct mode", () => {
       policy: () => ({ ...policy, protectedPaths: [] }),
       hostExecuted: () => true,
     });
-    expect(await gh.runGates(ticket)).toMatchObject({
+    const held = await gh.runGates(ticket);
+    expect(held).toMatchObject({
       ok: false,
       protectedPaths: expect.arrayContaining(["apps/daemon/src/x.ts"]),
     });
     expect(git(origin, "rev-parse", "main").trim()).toBe(before);
     // The owner's OK: it goes, and the ledger says so, with the paths.
-    expect(await gh.runGates(ticket, { ownerApproved: true })).toMatchObject({ ok: true });
+    expect(await gh.runGates(ticket, okOf(held))).toMatchObject({ ok: true });
     const line = JSON.parse(readFileSync(ledger, "utf8").trim().split("\n")[0] ?? "{}");
     expect(line).toMatchObject({
       ownerApproved: true,
@@ -465,13 +494,16 @@ describe("the machine harness in direct mode", () => {
       policy: () => ({ ...policy, protectedPaths: [".github/", "docs/x"] }),
     }).harness;
     // The OK was for docs/x only: the workflow change is held, and only it is named.
-    const held = await both.runGates(ticket, { ownerApproved: false, approvedPaths: ["docs/x"] });
-    expect(held).toMatchObject({ ok: false, protectedPaths: [".github/workflows/ci.yml"] });
-    expect(
-      await both.runGates(ticket, { approvedPaths: ["docs/x", ".github/workflows/ci.yml"] }),
-    ).toMatchObject({
-      ok: true,
+    const first = await both.runGates(ticket);
+    expect(first).toMatchObject({ ok: false, protectedPaths: [".github/workflows/ci.yml", "docs/x"] });
+    // An OK for docs/x alone (a card that named only it) leaves the workflow change held, and only it is named.
+    const held = await both.runGates(ticket, {
+      ownerApproved: true,
+      approvedPaths: ["docs/x"],
+      approval: { sha: first.ok ? "" : (first.approval?.sha ?? ""), patchId: "x", paths: ["docs/x"] },
     });
+    expect(held).toMatchObject({ ok: false, protectedPaths: [".github/workflows/ci.yml", "docs/x"] });
+    expect(await both.runGates(ticket, okOf(first))).toMatchObject({ ok: true });
   });
 
   it("6.5 works on a default branch with a slash in its name", async () => {
@@ -530,5 +562,48 @@ describe("a script that prints without end", () => {
     expect(r.output).toContain("@@output-limit");
     expect(r.output.length).toBeLessThan(10_000);
     expect(MAX_SCRIPT_OUTPUT).toBe(16 * 1024 * 1024);
+  });
+});
+
+describe("what a machine says is on main", () => {
+  it("is not taken for pushed: the sha it names on an empty rebase must be on main in the host's mirror", async () => {
+    const claimed = "c".repeat(40);
+    let asked: string | undefined;
+    const run: RunScript = async (_e, script) => {
+      if (script.includes("@@changed64")) return { code: 0, output: "" };
+      if (script.includes("git rebase")) return { code: 5, output: `@@empty ${claimed}\n` };
+      return { code: 0, output: "" };
+    };
+    const harness = (landed: boolean) =>
+      new MachineHarness(
+        {
+          recipe: () => ["true"],
+          worktree: () => "/home/employee/work/inc-t7",
+          github: async () => ({}),
+          policy: () => ({ mode: "direct" as const, protectedPaths: [], followUpsPerDay: 3 }),
+          repo: () => "acme/duet",
+          host: {
+            push: async () => {
+              throw new Error("no push");
+            },
+            tips: async () => [],
+            revert: async () => {
+              throw new Error("no revert");
+            },
+            landed: async (r) => {
+              asked = r.sha;
+              return landed;
+            },
+          },
+        },
+        run,
+      );
+    // The host's mirror has not got it on main: it is not "pushed", and nothing downstream runs CI on or reverts it.
+    expect(await harness(false).runGates(ticket, { ownerApproved: true })).toMatchObject({ ok: false });
+    expect(asked).toBe(claimed);
+    expect(await harness(true).runGates(ticket, { ownerApproved: true })).toEqual({
+      ok: true,
+      pushed: claimed,
+    });
   });
 });

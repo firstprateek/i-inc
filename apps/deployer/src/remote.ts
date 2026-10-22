@@ -95,4 +95,19 @@ export class GitRemote implements Remote {
     if (r.code !== 0 || r.truncated) return null;
     return [...new Set(r.stdout.split("\0").filter((f) => f !== ""))];
   }
+
+  async diff(from: string, to: string, current: string): Promise<string | null> {
+    const ok = (x: string) => /^[0-9a-f]{40}(\^)?$/.test(x);
+    if (!ok(from) || !ok(to) || !/^[0-9a-f]{40}$/.test(current)) return null;
+    const r = await this.full(
+      "git",
+      ["diff", "-U0", "--no-color", "--no-renames", "--no-ext-diff", from, to],
+      {
+        cwd: this.releaseDir(current),
+        timeoutMs: 30_000,
+        maxBytes: 4 * 1024 * 1024,
+      },
+    );
+    return r.code === 0 && !r.truncated ? r.stdout : null;
+  }
 }

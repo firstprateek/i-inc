@@ -65,6 +65,11 @@ export interface Remote {
    * running release `current`'s clone, which has the candidate's history.
    */
   changedFiles(sha: string, current: string): Promise<string[] | null>;
+  /**
+   * `git diff -U0 <from> <to>` (renames off), or null when it cannot be told. Read in the running release
+   * `current`'s clone. For telling a revert from any other change.
+   */
+  diff(from: string, to: string, current: string): Promise<string | null>;
 }
 
 /**

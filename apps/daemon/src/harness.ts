@@ -3,7 +3,7 @@
 // because `machine run` re-splits its arguments (M1).
 import { spawn } from "node:child_process";
 import type { ChecksResult, GatesOptions, GatesResult, Harness, ProjectPolicy, Ticket } from "@i-inc/core";
-import { type HostPush, HostPushError } from "./host-push.ts";
+import { type ApprovalCard, type HostPush, HostPushError } from "./host-push.ts";
 import {
   assertRunnable,
   defaultMachineSettings,
@@ -272,12 +272,13 @@ export class MachineHarness implements Harness {
       branch: string;
       lease?: string;
       protect?: { paths: string[]; hostExecuted?: boolean };
-      ownerApproved?: boolean;
-      approvedPaths?: string[];
+      approval?: { sha: string; patchId: string; paths: string[] };
       overrideSecrets?: boolean;
       allowDefaultBranch?: boolean;
     },
-  ): Promise<{ ok: true } | { ok: false; kind: string; reason: string; findings: string[] }> {
+  ): Promise<
+    { ok: true } | { ok: false; kind: string; reason: string; findings: string[]; approval?: ApprovalCard }
+  > {
     const repo = this.s.repo?.(ticket.project);
     const defaultBranch = this.defaultBranch(ticket);
     try {
@@ -294,8 +295,7 @@ export class MachineHarness implements Harness {
           ticket: ticket.id,
           ...(to.lease !== undefined ? { lease: to.lease } : {}),
           ...(to.protect ? { protect: to.protect } : {}),
-          ...(to.ownerApproved ? { ownerApproved: true } : {}),
-          ...(to.approvedPaths ? { approvedPaths: to.approvedPaths } : {}),
+          ...(to.approval ? { approval: to.approval } : {}),
           ...(to.overrideSecrets ? { overrideSecrets: true } : {}),
           ...(to.allowDefaultBranch ? { allowDefaultBranch: true } : {}),
         },
@@ -304,7 +304,13 @@ export class MachineHarness implements Harness {
       return { ok: true };
     } catch (e) {
       if (e instanceof HostPushError)
-        return { ok: false, kind: e.kind, reason: e.message, findings: e.findings };
+        return {
+          ok: false,
+          kind: e.kind,
+          reason: e.message,
+          findings: e.findings,
+          ...(e.approval ? { approval: e.approval } : {}),
+        };
       throw e;
     }
   }
@@ -423,7 +429,10 @@ export class MachineHarness implements Harness {
     const held = files
       .filter((f) => isProtected(f, policy.protectedPaths) || (hostExec && isHostExecuted(f)))
       .filter((f) => (opts.approvedPaths ? !approved.has(f) : !ownerApproved));
-    if (held.length) {
+    // With a host push, the host is the check (it reads the change from the verified bundle and binds the OK to
+    // its content), and the card comes from it, with the diff. This early look, the machine's say-so, is only for
+    // a harness with no host.
+    if (!this.s.host && held.length) {
       return {
         ok: false,
         conflict: false,
@@ -451,7 +460,12 @@ export class MachineHarness implements Harness {
       if (rebased.code === 5) {
         // After the owner's OK, the owner may have pushed it already (push-for-owner.sh).
         const main = lines("empty")[0];
-        if (ownerApproved && main && /^[0-9a-f]{40}$/.test(main)) return { ok: true, pushed: main };
+        if (ownerApproved && main && /^[0-9a-f]{40}$/.test(main)) {
+          // `main` is what the machine says origin/main is: it counts only if the host's mirror has it on main.
+          const repo = this.s.repo?.(ticket.project);
+          const there = this.s.host && repo ? await this.s.host.landed({ repo, branch, sha: main }) : false;
+          if (there) return { ok: true, pushed: main };
+        }
         // Or this ticket pushed it already, and the rebase found nothing left to put on main.
         const pushedBefore = await landed();
         if (pushedBefore) return pushedBefore;
@@ -471,8 +485,7 @@ export class MachineHarness implements Harness {
       const pushed = await this.pushFromMachine(ticket, head, {
         branch,
         protect: { paths: policy.protectedPaths, hostExecuted: hostExec },
-        ownerApproved,
-        ...(opts.approvedPaths ? { approvedPaths: opts.approvedPaths } : {}),
+        ...(opts.approval ? { approval: opts.approval } : {}),
         allowDefaultBranch: true,
         ...(ownerApproved && this.secretsShown.get(ticket.id) === head ? { overrideSecrets: true } : {}),
       });
@@ -481,7 +494,13 @@ export class MachineHarness implements Harness {
         return { ok: true, pushed: head };
       }
       if (pushed.kind === "protected") {
-        return { ok: false, conflict: false, reason: pushed.reason, protectedPaths: pushed.findings };
+        return {
+          ok: false,
+          conflict: false,
+          reason: pushed.reason,
+          protectedPaths: pushed.findings,
+          ...(pushed.approval ? { approval: pushed.approval } : {}),
+        };
       }
       if (pushed.kind === "secrets" && pushed.findings.length) {
         // Asked of the owner like a protected path: "approve" says it is not a secret, and it is pushed.

@@ -663,11 +663,25 @@ async function directGates(c: Step): Promise<void> {
       // new card clears it, so it never reaches a later run).
       ownerApproved: answer === "approve",
       approvedPaths: c.s.approvedPaths,
+      ...(c.s.approval ? { approval: c.s.approval } : {}),
       ...(c.s.pushIntended ? { pushIntended: c.s.pushIntended } : {}),
       onPushIntended: (headSha) => c.emit({ type: "push-intended", at: c.p.clock.now(), headSha }),
     });
     if (!g.ok && g.protectedPaths?.length) {
-      await c.emit(needsYou(c, "gates", { kind: "protected-paths", paths: g.protectedPaths }));
+      await c.emit(
+        needsYou(c, "gates", {
+          kind: "protected-paths",
+          paths: g.protectedPaths,
+          ...(g.approval
+            ? {
+                sha: g.approval.sha,
+                patchId: g.approval.patchId,
+                ...(g.approval.diff !== undefined ? { diff: g.approval.diff } : {}),
+                ...(g.approval.diffTruncated ? { diffTruncated: true } : {}),
+              }
+            : {}),
+        }),
+      );
       return;
     }
     const now = c.p.clock.now();

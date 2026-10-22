@@ -61,7 +61,14 @@ is the commit), or one of that pull request's own commits (the merge-commit meth
 is accepted only if it is docs-only. In the daemon, the repo the deployer deploys (`I_INC_REPO`, default
 `firstprateek/i-inc`) treats every path the host could run as protected, whatever the project's
 `protectedPaths` say: a ticket that changes one waits for your OK (the protected-paths card) before the
-daemon pushes it. A credential-scan finding gets the same card ("<commit> (looks like a credential)"):
+daemon pushes it. The card shows the commit and the diff of those paths (cut at 100 KB, the rest behind
+"Show all"), and your OK is for exactly that: the host works out the commit and a hash of the diff
+(`git patch-id --stable`) from the bundle it verified, and pushes only on an exact match. Other content in
+the same paths, or the same content in another commit, asks again with a new card, and an OK never adds up
+with an earlier one. The ledger records `ownerApproved`, the approved sha and the hash. The daemon reverts a
+commit on main (when CI stays red) only if it is in the ledger as a push of this ticket and is on GitHub's
+main in the host's mirror; the deployer accepts that revert only if the commit it takes back is ledgered
+and the revert's diff is exactly the inverse. A credential-scan finding gets the same card ("<commit> (looks like a credential)"):
 approving says it is not a secret, and the ledger records it. If a candidate has a commit that is none of
 these, the deployer skips it: nothing is built, it is never marked bad, nothing is rolled back; it logs a
 warning, records `skipped-review` in `deploys.jsonl`, and the daemon pushes "A commit on main didn't come

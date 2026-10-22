@@ -107,6 +107,7 @@ export class World {
       descendant in this.descendsAnswer ? (this.descendsAnswer[descendant] ?? null) : true,
     range: async () => ({ shas: [], truncated: false }),
     changedFiles: async () => ["apps/x.ts"],
+    diff: async () => null,
   };
 
   /** What the review says about a candidate main tip; absent: every commit came through review. */

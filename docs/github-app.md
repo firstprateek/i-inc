@@ -214,7 +214,10 @@ It mints one token to look at the repo, never prints it, and revokes it at the e
     deployer deploys, every path the host could run (everything but `docs/**/*.md` and top-level `*.md`,
     never agent instruction files) is protected: the daemon holds the push for your OK, and the deployer
     deploys a commit that changes any of it only if the ledger has it with `ownerApproved`, or it is a
-    commit of a pull request you merged. Host code deploys only with your approval or an owner-merged PR.
+    commit of a pull request you merged. Your approval is for the commit and the diff of the protected paths
+    shown on the card (the host hashes the diff itself), not for the path names. A revert the daemon makes
+    (`hostRevert`) is accepted only for a ledgered commit and only if it is exactly its inverse. Host code
+    deploys only with your approval or an owner-merged PR.
   - The merge is still yours, and the ruleset on `main` is unchanged. The owner's own tool for a
     change the bot may not push (workflows) is still `tools/host/push-for-owner.sh`.
 - `commitIdentity` gives commits the employee's name and the bot's noreply address, such as "Ada

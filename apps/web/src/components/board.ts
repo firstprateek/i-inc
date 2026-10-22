@@ -215,7 +215,7 @@ export class IncBoard extends Loader<BoardData> {
     return html`<div class="card ok-card" aria-label="Waiting for your OK">
       <div class="head"><span class="chip needs">Needs your OK</span>${projectBadge(t.project)}<span>#${t.id}</span>
         <a href="#/ticket/${t.id}" style="margin-left:auto;padding:12px 0">Open</a></div>
-      ${protectedOk(t, a.paths, (fn) => void this.press(fn))}
+      ${protectedOk(t, a, (fn) => void this.press(fn))}
     </div>`;
   }
 

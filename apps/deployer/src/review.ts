@@ -4,7 +4,8 @@
 //     files) is fine: nothing runs it;
 //   - any other commit must be (a) in the daemon's ledger of what it pushed to main WITH `ownerApproved` (the owner
 //     tapped OK on the change in the app; a plain ledgered commit is not enough, because the pipeline's checks and
-//     review run where the builder does) or made by the host to revert one (`hostRevert`); or (b) a commit of a
+//     review run where the builder does) or made by the host to revert a ledgered commit (`hostRevert`, and the
+//     diff is exactly the inverse of that commit's); or (b) a commit of a
 //     pull request into the branch whose `merged_by` is the repo's owner: the squash or merge commit
 //     (`merge_commit_sha`), or one of the PR's own commits (GET /pulls/{n}/commits, the merge-commit method).
 // Anything else is somebody pushing around the owner. The caller skips the candidate: never marks it bad, never
@@ -26,7 +27,7 @@ export interface LedgerReviewOptions {
   branch?: string;
   /** ~/.i-inc/pushed-main.jsonl */
   ledgerPath: string;
-  remote: Pick<Remote, "range" | "changedFiles">;
+  remote: Pick<Remote, "range" | "changedFiles" | "diff">;
   clock: Clock;
   fetch?: typeof fetch;
   /** A read-only GitHub token, if the host has one: calls are then authenticated and rate limits are far roomier. */
@@ -47,8 +48,18 @@ interface PullDetail {
 }
 
 interface LedgerEntry {
-  /** The owner approved the change in the app, or the host made it to revert one. */
+  /** The owner approved the change in the app. */
   approved: boolean;
+  /** The commit this one was made to revert (by the daemon, on the host). */
+  revertOf?: string;
+}
+
+/** A diff with what differs between two diffs that undo each other taken out: blob ids and line numbers. */
+export function shape(diff: string): string {
+  return diff
+    .split("\n")
+    .filter((l) => !l.startsWith("index ") && !l.startsWith("@@"))
+    .join("\n");
 }
 
 export class LedgerReview implements Review {
@@ -126,9 +137,16 @@ export class LedgerReview implements Review {
           e.repo.toLowerCase() === this.repoLower &&
           e.branch === this.branch
         ) {
-          const approved = e.ownerApproved === true || typeof e.hostRevert === "string";
           // A commit pushed twice is approved if either push was.
-          out.set(e.sha, { approved: approved || out.get(e.sha)?.approved === true });
+          const prior = out.get(e.sha);
+          out.set(e.sha, {
+            approved: e.ownerApproved === true || prior?.approved === true,
+            ...(typeof e.hostRevert === "string" && /^[0-9a-f]{40}$/.test(e.hostRevert)
+              ? { revertOf: e.hostRevert }
+              : prior?.revertOf
+                ? { revertOf: prior.revertOf }
+                : {}),
+          });
         }
       } catch {
         // a damaged line
@@ -156,7 +174,9 @@ export class LedgerReview implements Review {
       const files = await this.o.remote.changedFiles(sha, current).catch(() => null);
       if (files === null) return { state: "error", reason: `could not read what ${sha.slice(0, 7)} changes` };
       if (!files.some(isHostExecuted)) continue;
-      if (ledger.get(sha)?.approved === true) continue;
+      const entry = ledger.get(sha);
+      if (entry?.approved === true) continue;
+      if (entry?.revertOf && (await this.isRevertOfLedgered(sha, entry.revertOf, ledger, current))) continue;
       const pr = await this.ownerMerged(sha);
       if (pr.state === "yes") {
         this.remember(sha);
@@ -171,6 +191,24 @@ export class LedgerReview implements Review {
       shas: stray,
       reason: `${stray.map((s) => s.slice(0, 7)).join(", ")} ${stray.length === 1 ? "changes" : "change"} code the host runs without the owner's approval or a pull request the owner merged`,
     };
+  }
+
+  /**
+   * A revert the host made is accepted only if the commit it takes back is itself one the daemon put on this branch
+   * (it is in the ledger) and the revert's diff is exactly the inverse of that commit's: nothing else rides along.
+   */
+  private async isRevertOfLedgered(
+    revert: string,
+    target: string,
+    ledger: Map<string, LedgerEntry>,
+    current: string,
+  ): Promise<boolean> {
+    if (!ledger.has(target)) return false;
+    const [undone, made] = await Promise.all([
+      this.o.remote.diff(target, `${target}^`, current).catch(() => null),
+      this.o.remote.diff(`${revert}^`, revert, current).catch(() => null),
+    ]);
+    return undone !== null && made !== null && undone.trim() !== "" && shape(undone) === shape(made);
   }
 
   private headers(): Record<string, string> {

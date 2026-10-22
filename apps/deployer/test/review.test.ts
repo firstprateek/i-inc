@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { isDocument, isHostExecuted } from "../src/paths.ts";
 import { GitRemote } from "../src/remote.ts";
-import { LedgerReview, MAX_RANGE } from "../src/review.ts";
+import { LedgerReview, MAX_RANGE, shape } from "../src/review.ts";
 import { run } from "../src/shell.ts";
 import type { Remote } from "../src/types.ts";
 import { FakeClock } from "./fakes.ts";
@@ -49,6 +49,8 @@ function guard(o: {
   files?: Record<string, string[] | null>;
   ledger?: { sha: string; extra?: Record<string, unknown>; repo?: string }[];
   truncated?: boolean;
+  /** `git diff -U0 from to`, by "from..to"; absent: the diff cannot be read. */
+  diffs?: Record<string, string | null>;
   token?: string;
   cachePath?: string;
 }) {
@@ -64,9 +66,10 @@ function guard(o: {
         .join("\n")}\n`,
     );
   }
-  const remote: Pick<Remote, "range" | "changedFiles"> = {
+  const remote: Pick<Remote, "range" | "changedFiles" | "diff"> = {
     range: async () => ({ shas: o.range, truncated: o.truncated ?? false }),
     changedFiles: async (s) => (o.files && s in o.files ? (o.files[s] ?? null) : CODE),
+    diff: async (from, to) => o.diffs?.[`${from}..${to}`] ?? null,
   };
   const gh = fakeGitHub();
   const clock = new FakeClock();
@@ -145,9 +148,7 @@ describe("which commits count as reviewed", () => {
     expect((await odd.review.check(sha(0), sha(1))).state).toBe("unreviewed");
   });
 
-  it("a revert the host made is accepted, and a ledger line is read case-insensitively, per repo and branch", async () => {
-    const g = guard({ range: [sha(1)], ledger: [{ sha: sha(1), extra: { hostRevert: sha(9) } }] });
-    expect(await g.review.check(sha(0), sha(1))).toEqual({ state: "ok" });
+  it("a ledger line is read case-insensitively, per repo and branch", async () => {
     const upper = guard({
       range: [sha(1)],
       ledger: [{ sha: sha(1), repo: "FirstPrateek/I-Inc", extra: { ownerApproved: true } }],
@@ -163,6 +164,57 @@ describe("which commits count as reviewed", () => {
       `not json\n${JSON.stringify({ sha: sha(1), repo: REPO, branch: "dev", ownerApproved: true })}\n{"sha":1}\n`,
     );
     expect((await other.review.check(sha(0), sha(1))).state).toBe("unreviewed");
+  });
+
+  it("a revert the host made is accepted only if it takes back a ledgered commit and is exactly its inverse", async () => {
+    const plus =
+      "diff --git a/apps/x.ts b/apps/x.ts\n--- a/apps/x.ts\n+++ b/apps/x.ts\n@@ -1,0 +2 @@\n+evil\n";
+    const minus =
+      "diff --git a/apps/x.ts b/apps/x.ts\n--- a/apps/x.ts\n+++ b/apps/x.ts\n@@ -2 +1,0 @@\n-evil\n";
+    const ledger = (target: string | null) => [
+      { sha: sha(5) },
+      { sha: sha(6), extra: { hostRevert: sha(5) } },
+      ...(target ? [] : []),
+    ];
+    // The inverse (line numbers and blob ids may differ): fine.
+    const ok = guard({
+      range: [sha(6)],
+      ledger: ledger(null),
+      diffs: {
+        [`${sha(5)}..${sha(5)}^`]: `${minus.replace("index", "x")}`,
+        [`${sha(6)}^..${sha(6)}`]: minus.replace("@@ -2 +1,0 @@", "@@ -9 +8,0 @@"),
+      },
+    });
+    // (the daemon-side diff of the target, taken backwards, undoes it; the revert's own diff does the same)
+    expect(await ok.review.check(sha(0), sha(6))).toEqual({ state: "ok" });
+    // The revert also does something else: not accepted.
+    const extra = guard({
+      range: [sha(6)],
+      ledger: ledger(null),
+      diffs: {
+        [`${sha(5)}..${sha(5)}^`]: minus,
+        [`${sha(6)}^..${sha(6)}`]: `${minus}diff --git a/apps/y.ts b/apps/y.ts\n--- a/apps/y.ts\n+++ b/apps/y.ts\n@@ -1,0 +2 @@\n+payload\n`,
+      },
+    });
+    expect(await extra.review.check(sha(0), sha(6))).toMatchObject({ state: "unreviewed", shas: [sha(6)] });
+    // The commit it claims to revert is not one the daemon put on the branch.
+    const stranger = guard({
+      range: [sha(6)],
+      ledger: [{ sha: sha(6), extra: { hostRevert: sha(7) } }],
+      diffs: { [`${sha(7)}..${sha(7)}^`]: minus, [`${sha(6)}^..${sha(6)}`]: minus },
+    });
+    expect(await stranger.review.check(sha(0), sha(6))).toMatchObject({ state: "unreviewed" });
+    // Not the inverse at all (the same direction), or a diff that can't be read.
+    const same = guard({
+      range: [sha(6)],
+      ledger: ledger(null),
+      diffs: { [`${sha(5)}..${sha(5)}^`]: minus, [`${sha(6)}^..${sha(6)}`]: plus },
+    });
+    expect((await same.review.check(sha(0), sha(6))).state).toBe("unreviewed");
+    expect((await guard({ range: [sha(6)], ledger: ledger(null) }).review.check(sha(0), sha(6))).state).toBe(
+      "unreviewed",
+    );
+    void plus;
   });
 
   it("the merge commit of a pull request the repo's owner merged", async () => {
@@ -247,7 +299,7 @@ describe("which commits count as reviewed", () => {
     const none = new LedgerReview({
       repo: REPO,
       ledgerPath: g.ledgerPath,
-      remote: { range: async () => null, changedFiles: async () => [] },
+      remote: { range: async () => null, changedFiles: async () => [], diff: async () => null },
       clock: g.clock,
       fetch: g.gh.f,
     });
@@ -337,6 +389,23 @@ describe("reading the range and the changed files from git", () => {
     const changed = await remote.changedFiles(big, base);
     expect(changed).toHaveLength(301);
     expect(changed).toContain("docs/first.md");
+  });
+
+  it("reads the diff of a commit and of its undoing, to tell a revert from any other change", async () => {
+    const r = repo();
+    const base = r.commit({ "a.ts": "1\n" }, "base");
+    const x = r.commit({ "a.ts": "1\n2\n", "b.ts": "new\n" }, "x");
+    git(r.dir, "revert", "--no-edit", x);
+    const rev = git(r.dir, "rev-parse", "HEAD");
+    const remote = new GitRemote(r.dir, run, "main", () => r.dir);
+    const undone = await remote.diff(x, `${x}^`, base);
+    const made = await remote.diff(`${rev}^`, rev, base);
+    expect(undone).not.toBeNull();
+    expect(shape(undone ?? "")).toBe(shape(made ?? "x"));
+    // A commit that is not the inverse differs.
+    const other = r.commit({ "c.ts": "1\n" }, "other");
+    expect(shape((await remote.diff(`${other}^`, other, base)) ?? "")).not.toBe(shape(undone ?? ""));
+    expect(await remote.diff("nope", x, base)).toBeNull();
   });
 
   it("lists the files a commit changes, both sides of a rename and of a merge", async () => {

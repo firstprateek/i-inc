@@ -12,9 +12,10 @@
 //      (~/.i-inc/pushed-main.jsonl) *before* pushing, which the deployer checks (apps/deployer/src/review.ts).
 // Anything it can't read or check is a refusal, never a push.
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { redactTokens } from "./ahp/sanitize.ts";
 import { MAX_BUNDLE_BYTES } from "./bundle.ts";
 import { isValidRepo, type TokenSource } from "./github.ts";
 import { isHostExecuted, isProtected } from "./paths.ts";
@@ -46,10 +47,28 @@ export class HostPushError extends Error {
     readonly kind: PushFailure,
     /** For "secrets" and "protected": the files and commits it is about (names, never values). */
     readonly findings: string[] = [],
+    /** For "protected": the change the owner is asked to approve. */
+    readonly approval?: ApprovalCard,
   ) {
     super(message);
   }
 }
+
+/** What an owner's OK on a protected change is for, worked out on the host from the verified bundle. */
+export interface ApprovalCard {
+  /** The commit that would be pushed. */
+  sha: string;
+  /** A hash of the diff of the protected paths (git patch-id --stable of each, combined). */
+  patchId: string;
+  /** The diff of those paths, credentials redacted, cut at `DIFF_CAP`. */
+  diff: string;
+  diffTruncated: boolean;
+}
+
+/** The most of a protected diff kept for the card. */
+export const DIFF_CAP = 100_000;
+/** More protected files than this can't be bound to an OK one by one: the owner pushes it (push-for-owner.sh). */
+const MAX_HELD_FILES = 200;
 
 export interface PushRequest {
   /** "owner/name", from the project (never from the sandbox). */
@@ -74,15 +93,12 @@ export interface PushRequest {
    */
   protect?: { paths: string[]; hostExecuted?: boolean };
   /**
-   * The owner approved this change in the app (a needs-you card): protected paths may go. Recorded in the ledger
-   * with the paths that were approved, which is what the deployer looks for.
+   * What the owner OKed on a card (T68): the commit and the hash of the diff of the protected paths. A protected
+   * change goes only if the host, working it out from the bundle it verified, gets exactly this sha and this hash;
+   * anything else (other content in the same paths, the same content in another commit) is refused with a new
+   * card. Recorded in the ledger, which is what the deployer looks for.
    */
-  ownerApproved?: boolean;
-  /**
-   * The protected paths the owner has OKed so far: when given, only these are let through (paths changed beyond
-   * them hold the push), and `ownerApproved` alone covers nothing.
-   */
-  approvedPaths?: string[];
+  approval?: { sha: string; patchId: string; paths: string[] };
   /** The owner said a finding of the credential scan is not a secret: push it anyway (recorded in the ledger). */
   overrideSecrets?: boolean;
   /** Only the direct-mode gates push to the default branch. Any other caller asking is refused. */
@@ -118,7 +134,7 @@ export interface HostPush {
 /** Runs git; a test can watch every call (and the environment it got). */
 export type GitRun = (
   args: string[],
-  o: { env: Record<string, string>; cwd?: string; maxOutput?: number; timeoutMs?: number },
+  o: { env: Record<string, string>; cwd?: string; maxOutput?: number; timeoutMs?: number; input?: string },
 ) => Promise<{ code: number; stdout: string; stderr: string; truncated: boolean }>;
 
 export const gitDefault: GitRun = (args, o) =>
@@ -126,14 +142,18 @@ export const gitDefault: GitRun = (args, o) =>
     const child = spawn("git", args, {
       env: o.env,
       ...(o.cwd ? { cwd: o.cwd } : {}),
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [o.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     });
+    if (o.input !== undefined) {
+      child.stdin?.on("error", () => {});
+      child.stdin?.end(o.input);
+    }
     const max = o.maxOutput ?? 16_000_000;
     let stdout = "";
     let stderr = "";
     let truncated = false;
     const timer = setTimeout(() => child.kill("SIGKILL"), o.timeoutMs ?? 5 * 60_000);
-    child.stdout.on("data", (c: Buffer) => {
+    child.stdout?.on("data", (c: Buffer) => {
       if (stdout.length >= max) {
         truncated = true;
         child.kill("SIGKILL");
@@ -141,7 +161,7 @@ export const gitDefault: GitRun = (args, o) =>
       }
       stdout += c.toString("utf8");
     });
-    child.stderr.on("data", (c: Buffer) => {
+    child.stderr?.on("data", (c: Buffer) => {
       if (stderr.length < 64_000) stderr += c.toString("utf8");
     });
     child.on("error", (e) => {
@@ -258,7 +278,7 @@ export class HostPusher implements HostPush {
     dir: string,
     args: string[],
     env: Record<string, string>,
-    opts: { maxOutput?: number; timeoutMs?: number } = {},
+    opts: { maxOutput?: number; timeoutMs?: number; input?: string } = {},
   ) {
     return this.git([...HostPusher.SAFE, ...args], { env, cwd: dir, ...opts });
   }
@@ -447,8 +467,7 @@ export class HostPusher implements HostPush {
       | "lease"
       | "ticket"
       | "protect"
-      | "ownerApproved"
-      | "approvedPaths"
+      | "approval"
       | "overrideSecrets"
     > & { hostRevert?: string },
     remote: string,
@@ -473,7 +492,7 @@ export class HostPusher implements HostPush {
       fail(`GitHub's ${req.branch} is not where the checks found it`, "behind");
     }
 
-    let approvedPaths: string[] = [];
+    let approved: { patchId: string; paths: string[] } | undefined;
     if (req.protect) {
       const changed = await q([
         "diff",
@@ -489,17 +508,33 @@ export class HostPusher implements HostPush {
       const touched = changed.stdout
         .split("\0")
         .filter((f) => f !== "" && (isProtected(f, paths) || (hostExecuted === true && isHostExecuted(f))));
-      // The owner's OK covers the paths on the card they answered; with no list, all of them.
-      const listed = req.approvedPaths ? new Set(req.approvedPaths) : undefined;
-      const unapproved = touched.filter((f) => (listed ? !listed.has(f) : req.ownerApproved !== true));
-      if (unapproved.length) {
-        throw new HostPushError(
-          `it changes protected paths: ${unapproved.join(", ")}`,
-          "protected",
-          unapproved,
-        );
+      if (touched.length) {
+        // The owner's OK is for this commit and this diff of these paths, worked out here from the bundle that was
+        // verified, never from anything the machine said.
+        if (touched.length > MAX_HELD_FILES) {
+          throw new HostPushError(
+            `it changes ${touched.length} protected files, too many to show for an OK: the owner pushes this one (tools/host/push-for-owner.sh)`,
+            "refused",
+            touched.slice(0, 20),
+          );
+        }
+        const held = await this.heldDiff(dir, remoteTip || EMPTY_TREE, req.sha, touched, plain);
+        const a = req.approval;
+        const covers =
+          a !== undefined &&
+          a.sha === req.sha &&
+          a.patchId === held.patchId &&
+          touched.every((f) => a.paths.includes(f));
+        if (!covers) {
+          throw new HostPushError(`it changes protected paths: ${touched.join(", ")}`, "protected", touched, {
+            sha: req.sha,
+            patchId: held.patchId,
+            diff: held.diff,
+            diffTruncated: held.truncated,
+          });
+        }
+        approved = { patchId: held.patchId, paths: touched };
       }
-      approvedPaths = touched;
     }
 
     // What a push would publish: every commit GitHub lacks, message and patch, and the names of the files.
@@ -582,7 +617,7 @@ export class HostPusher implements HostPush {
     if (this.o.ledger && req.branch === req.defaultBranch) {
       const parents = await q(["rev-list", "--parents", req.sha, ...(remoteTip ? ["--not", ref] : [])]);
       const at = this.now();
-      const approved = req.ownerApproved === true || approvedPaths.length > 0 || secretsOverridden;
+      const isApproved = approved !== undefined || secretsOverridden;
       const entries = parents.stdout
         .split("\n")
         .filter(Boolean)
@@ -596,7 +631,13 @@ export class HostPusher implements HostPush {
             at,
             parents: ps,
             tip: sha === req.sha,
-            ...(approved ? { ownerApproved: true, approvedPaths } : {}),
+            ...(isApproved
+              ? {
+                  ownerApproved: true,
+                  approvedPaths: approved?.paths ?? [],
+                  ...(approved ? { approvedSha: req.sha, approvedPatchId: approved.patchId } : {}),
+                }
+              : {}),
             ...(secretsOverridden ? { secretsOverridden: true } : {}),
             ...(req.hostRevert ? { hostRevert: req.hostRevert } : {}),
           });
@@ -637,6 +678,84 @@ export class HostPusher implements HostPush {
     return { sha: req.sha, pushed: true };
   }
 
+  /** Is this commit in the ledger as one this daemon pushed to the repo's branch (for this ticket, when given)? */
+  private pushedByUs(repo: string, branch: string, sha: string, ticket?: string): boolean {
+    if (!this.o.ledger || !existsSync(this.o.ledger)) return false;
+    let text = "";
+    try {
+      text = readFileSync(this.o.ledger, "utf8");
+    } catch {
+      return false;
+    }
+    for (const line of text.split("\n")) {
+      if (!line.includes(sha)) continue;
+      try {
+        const e = JSON.parse(line) as { sha?: unknown; repo?: unknown; branch?: unknown; ticket?: unknown };
+        if (
+          e.sha === sha &&
+          typeof e.repo === "string" &&
+          e.repo.toLowerCase() === repo.toLowerCase() &&
+          e.branch === branch &&
+          (ticket === undefined || e.ticket === ticket)
+        ) {
+          return true;
+        }
+      } catch {
+        // a damaged line
+      }
+    }
+    return false;
+  }
+
+  /**
+   * The diff of the held files against what GitHub has, and a hash of it: `git patch-id --stable` of each file's
+   * diff, combined in the files' order. The hash binds an OK to the content, not to the names.
+   */
+  private async heldDiff(
+    dir: string,
+    base: string,
+    sha: string,
+    files: string[],
+    env: Record<string, string>,
+  ): Promise<{ patchId: string; diff: string; truncated: boolean }> {
+    const sorted = [...files].sort();
+    const parts: string[] = [];
+    let diff = "";
+    for (const f of sorted) {
+      const d = await this.g(
+        dir,
+        [
+          "--git-dir",
+          dir,
+          "diff",
+          "--no-color",
+          "--no-renames",
+          "--no-ext-diff",
+          "--no-textconv",
+          "--text",
+          base,
+          sha,
+          "--",
+          f,
+        ],
+        env,
+        { maxOutput: 4_000_000 },
+      );
+      if (d.code !== 0) throw new HostPushError(`couldn't read the diff of ${f}`, "git");
+      const id = await this.g(dir, ["--git-dir", dir, "patch-id", "--stable"], env, { input: d.stdout });
+      if (id.code !== 0) throw new HostPushError(`couldn't hash the diff of ${f}`, "git");
+      parts.push(`${f}\0${id.stdout.trim().split(" ")[0] ?? ""}\0${d.truncated ? "cut" : ""}`);
+      if (diff.length <= DIFF_CAP) diff += `${d.stdout}\n`;
+    }
+    const patchId = createHash("sha256").update(parts.join("\n")).digest("hex");
+    const redacted = redactTokens(diff);
+    return {
+      patchId,
+      diff: redacted.slice(0, DIFF_CAP),
+      truncated: redacted.length > DIFF_CAP,
+    };
+  }
+
   async revert(req: {
     repo: string;
     branch: string;
@@ -656,6 +775,22 @@ export class HostPusher implements HostPush {
       const plain = this.env(remote);
       const dir = await this.mirror(req.repo, plain);
       await this.refresh(dir, remote, env, token);
+      // Only a commit this daemon pushed to the branch, for this ticket, and that is on GitHub's branch now. The sha
+      // comes from the ticket's record, which a machine can influence, so it is not taken on its word.
+      if (!this.pushedByUs(req.repo, req.branch, req.sha, req.ticket)) {
+        throw new HostPushError(
+          `${req.sha.slice(0, 7)} is not a commit this daemon pushed to ${req.branch} for this ticket: not reverted`,
+          "refused",
+        );
+      }
+      const onBranch = await this.g(
+        dir,
+        ["--git-dir", dir, "merge-base", "--is-ancestor", req.sha, `refs/remotes/origin/${req.branch}`],
+        plain,
+      );
+      if (onBranch.code !== 0) {
+        throw new HostPushError(`${req.sha.slice(0, 7)} is not on ${req.branch}: not reverted`, "refused");
+      }
       const tmp = join(dir, `revert-${randomBytes(6).toString("hex")}`);
       const bare = (args: string[]) => this.g(dir, ["--git-dir", dir, ...args], plain);
       try {
