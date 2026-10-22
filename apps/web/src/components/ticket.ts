@@ -122,7 +122,10 @@ export class IncTicket extends Loader<Data> {
   private async act(fn: () => Promise<unknown>) {
     this.busy = true;
     try {
-      await fn();
+      const out = await fn();
+      // The daemon may have something to tell the owner ("That PR was already merged").
+      const said = (out as { message?: unknown } | null)?.message;
+      this.actionError = typeof said === "string" ? said : "";
       this.note = "";
       this.adding.clear();
       this.reply.clear();

@@ -362,6 +362,23 @@ describe("a ready ticket's page", () => {
     });
   });
 
+  it("tells the owner when the PR turns out to be merged already", async () => {
+    const root = await page({ mergeOnGitHub: { number: 3, url: "https://github.com/acme/duet/pull/3" } });
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      calls.push({
+        method: init?.method ?? "GET",
+        url,
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      });
+      return new Response(JSON.stringify({ ok: true, merged: true, message: "That PR was already merged" }), {
+        headers: { "content-type": "application/json" },
+      });
+    });
+    [...root.querySelectorAll("button")].find((b) => b.textContent === "Close without merging")?.click();
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+    expect(root.querySelector("[role=alert]")?.textContent).toContain("That PR was already merged");
+  });
+
   it("direct mode is unchanged: Approve and merge, Reject", async () => {
     const root = await page({});
     expect(labels(root)).toEqual(expect.arrayContaining(["Approve and merge", "Reject"]));

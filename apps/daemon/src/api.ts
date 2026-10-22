@@ -2344,12 +2344,19 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
             return json({ error: `decision must be one of ${decisions.join(", ")}` }, 400);
           body = parsed;
         }
-        return act(p.id, "ready", async () => {
+        let alreadyMerged = false;
+        const res = await act(p.id, "ready", async () => {
           // The images come first, so the Build session that follows the decision has them.
           if (images.length) await attachImages(p.id ?? "", images);
           if (body.decision === "approve") await mustBeMerged(p.id ?? "");
+          // "Close without merging" after the owner merged on GitHub: the run records it as merged (the runner
+          // looks at the PR), and the owner is told so.
+          if (body.decision === "reject") alreadyMerged = await prIsMerged(p.id ?? "");
           await decide(ports, p.id ?? "", body.decision, body.note);
         });
+        return alreadyMerged && res.status === 200
+          ? json({ ok: true, merged: true, message: "That PR was already merged" })
+          : res;
       },
     ],
 
@@ -2766,6 +2773,21 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
    * In owner-merges, Approve means "I merged the PR": while the PR is open on GitHub there is nothing to approve,
    * and the ticket closes by itself once it is merged.
    */
+  /** Whether an owner-merges ticket's PR is merged on GitHub now. A look that fails says no (the run looks again). */
+  async function prIsMerged(id: string): Promise<boolean> {
+    const r = d.tickets.get(id);
+    const ws = d.workspace;
+    if (!r || !ws?.prState) return false;
+    if (d.registry.projectPolicy(r.ticket.project).mode !== "owner-merges") return false;
+    const pr = (await daemon.state(id)).pr;
+    if (!pr || pr.number === undefined) return false;
+    try {
+      return (await ws.prState(r.ticket, pr)) === "merged";
+    } catch {
+      return false;
+    }
+  }
+
   async function mustBeMerged(id: string): Promise<void> {
     const r = d.tickets.get(id);
     const ws = d.workspace;

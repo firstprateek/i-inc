@@ -566,6 +566,10 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     if (ws && pr && pr.number !== undefined && c.policy.mode === "owner-merges") {
       if (outcome === "merged" && ws.prState && (await ws.prState(c.ticket, pr)) !== "merged")
         outcome = "done";
+      // "Close without merging" after the owner already merged the PR (within the daemon's watch window) is
+      // still a merge: it is recorded as one, and nothing is closed.
+      if (outcome === "rejected" && ws.prState && (await ws.prState(c.ticket, pr)) === "merged")
+        outcome = "merged";
       if (outcome === "rejected" && ws.closePr) await ws.closePr(c.ticket, pr);
     }
     await c.emit(finished(c, "retro"), { type: "closed", at: c.p.clock.now(), outcome });

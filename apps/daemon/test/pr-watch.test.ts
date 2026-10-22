@@ -66,6 +66,31 @@ describe("a ready owner-merges ticket", () => {
     expect((await app.call("POST", "/api/tickets/1/decide", { decision: "approve" })).status).toBe(409);
   });
 
+  it("records merged, and says so, when the owner taps Close without merging after merging on GitHub", async () => {
+    const { app, ws } = await ready();
+    ws.prStates.set("1", "merged"); // merged on GitHub, within the watch window: the daemon hasn't looked yet
+    const res = await app.call("POST", "/api/tickets/1/decide", { decision: "reject" });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ merged: true, message: "That PR was already merged" });
+    await app.daemon.idle();
+    expect((await app.call("GET", "/api/tickets/1")).body.ticket).toMatchObject({
+      status: "done",
+      outcome: "merged",
+    });
+    expect(ws.closedPrs).toEqual([]);
+    await app.daemon.tick();
+    expect(app.deps.registry.releases().some((r) => r.ticketIds.includes("1"))).toBe(true);
+  });
+
+  it("closes the open PR, and says nothing special, when Close without merging is tapped on an open PR", async () => {
+    const { app, ws } = await ready();
+    const res = await app.call("POST", "/api/tickets/1/decide", { decision: "reject" });
+    expect(res.body).toEqual({ ok: true });
+    await app.daemon.idle();
+    expect((await app.call("GET", "/api/tickets/1")).body.ticket.outcome).toBe("rejected");
+    expect(ws.closedPrs).toEqual(["1"]);
+  });
+
   it("records a PR closed without merging, and leaves the closed PR alone", async () => {
     const { app, ws } = await ready();
     ws.prStates.set("1", "closed");
