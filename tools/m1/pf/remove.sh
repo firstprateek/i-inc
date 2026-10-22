@@ -7,7 +7,7 @@ anchor="com.apple/010.i-inc-machines"
 token_file=/var/run/i-inc-pf.token
 
 pfctl -a "$anchor" -F all
-rm -f /var/run/i-inc-home-machines.table /var/run/i-inc-walls.home
+rm -f /var/run/i-inc-open-machines.table /var/run/i-inc-walls.open
 # Give back our reference; pf stays on if other services (such as vmnet's NAT) still hold one.
 if [ -s "$token_file" ]; then
   pfctl -X "$(cat "$token_file")"

@@ -66,6 +66,16 @@ cmp -s "$live" "$old" && ok "the old plist is back on disk" || bad "the old plis
 grep -q "previous svc.test is loaded again" "$tmp/err" && ok "says so" || bad "says so"
 [ "$(count 'launchctl bootstrap')" -le 12 ] && ok "bounded retries" || bad "bounded retries"
 
+# 5b. launchd never drops the old service: say it is still running, not that it was loaded again.
+reset
+cp "$old" "$live"; launchctl bootstrap gui/501 "$live"
+cp "$old" "$tmp/previous.plist"
+cp "$new" "$live"
+export FAKE_UNLOAD_POLLS=100
+if I_INC_LAUNCHD_WAIT=2 I_INC_LAUNCHD_TRIES=2 launchd_reload gui/501 svc.test "$live" "$tmp/previous.plist" 2>"$tmp/err"; then bad "fails while the old one is stuck"; else ok "fails while the old one is stuck"; fi
+grep -q "never unloaded and is still running" "$tmp/err" && ! grep -q "loaded again" "$tmp/err" && ok "says the old service is still running" || bad "says the old service is still running"
+unset FAKE_UNLOAD_POLLS
+
 # 6. Without a previous plist it fails and leaves the file alone.
 reset
 cp "$broken" "$live"

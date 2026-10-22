@@ -65,9 +65,14 @@ launchd_reload() {
     launchd_wait_gone "$_domain" "$_label" || true
     if launchd_bootstrap "$_domain" "$_label" "$_plist"; then
       echo "the previous $_label is loaded again" >&2
+    elif launchd_loaded "$_domain" "$_label"; then
+      # launchd never dropped it, so it is still the service that was running before.
+      echo "the previous $_label was never unloaded and is still running; the plist on disk is the previous one" >&2
     else
       echo "the previous $_label could not be loaded either: start it by hand with launchctl bootstrap $_domain $_plist" >&2
     fi
+  elif launchd_loaded "$_domain" "$_label"; then
+    echo "$_label is still loaded from before (launchd did not drop it) and has not picked up the new plist" >&2
   fi
   return 1
 }

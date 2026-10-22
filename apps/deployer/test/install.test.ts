@@ -263,6 +263,14 @@ describe("install-deployer.sh and launchd's slow bootout (T66)", () => {
     expect(existsSync(join(agents(), "inc.i.deployer.plist"))).toBe(false);
   });
 
+  it("restores the plist that was running, not an older pre-deployer backup", () => {
+    writeFileSync(join(agents(), "inc.i.daemon.plist.pre-deployer"), "<!-- an older plist -->\n");
+    const r = install(["--apply"], { FAKE_BOOTSTRAP_FAIL: "5" });
+    expect(r.code).toBe(1);
+    expect(readFileSync(join(agents(), "inc.i.daemon.plist"), "utf8")).toBe(daemonPlist());
+    expect(readFileSync(loadedPlist("inc.i.daemon"), "utf8")).toBe(daemonPlist());
+  });
+
   it("--rollback-install waits too", () => {
     expect(install(["--apply"]).code).toBe(0);
     const r = install(["--rollback-install"], { FAKE_UNLOAD_POLLS: "5" });

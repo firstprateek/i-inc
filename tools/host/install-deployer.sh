@@ -154,7 +154,8 @@ else
   say "    $backup already exists: keeping it"
 fi
 new=$(mktemp)
-trap 'rm -f "$new"' EXIT HUP INT TERM
+snapshot=$(mktemp)
+trap 'rm -f "$new" "$snapshot"' EXIT HUP INT TERM
 # An exact edit: only a <string> that is the checkout path itself, or starts with "<checkout>/", is
 # rewritten. (A bare prefix match would also hit ~/i-inc-releases, which starts with ~/i-inc.)
 esc_repo=$(printf '%s' "$repo" | sed 's/[][\.*^$#]/\\&/g')
@@ -171,6 +172,9 @@ else
   if [ "$dry" = 1 ]; then
     say "    \$ write the edited plist shown above to $dplist"
   else
+    # The plist as it is right now, which is what a failed restart must put back: the pre-deployer
+    # backup can be older than the one that has been running.
+    cp "$dplist" "$snapshot"
     cp "$new" "$dplist"
   fi
 fi
@@ -179,14 +183,14 @@ fi
 say "==> 3. restart the daemon from the release and check GET /api/health reports $(printf %s "$head" | cut -c1-7)"
 if [ "$changed" = 1 ] || [ "$dry" = 1 ]; then
   # If the new plist won't load, the old one is put back and loaded: the daemon is never left down.
-  reload inc.i.daemon "$dplist" "$backup" || fail "the daemon would not load from the release: the old plist was put back. See $home/Library/Logs/i-inc-daemon.log"
+  reload inc.i.daemon "$dplist" "$snapshot" || fail "the daemon would not load from the release: the old plist was put back. See $home/Library/Logs/i-inc-daemon.log"
   if [ "$dry" = 0 ]; then
     want=$(basename "$(readlink "$releases/current")")
     if wait_for_version "$want"; then
       say "    the daemon runs release $(printf %s "$want" | cut -c1-7)"
     else
       say "    the daemon did not report version $want: restoring the old plist"
-      cp "$backup" "$dplist"
+      cp "$snapshot" "$dplist"
       reload inc.i.daemon "$dplist" || true
       fail "nothing was installed. See $home/Library/Logs/i-inc-daemon.log"
     fi
@@ -205,7 +209,7 @@ if [ "$dry" = 1 ]; then
   say "      PATH=$path"
 else
   oldep=$(mktemp)
-  trap 'rm -f "$new" "$oldep"' EXIT HUP INT TERM
+  trap 'rm -f "$new" "$snapshot" "$oldep"' EXIT HUP INT TERM
   [ ! -f "$eplist" ] || cp "$eplist" "$oldep"
   sed -e "s#@BUN@#$bun#g" -e "s#@REPO@#$repo#g" -e "s#@RELEASES@#$releases#g" -e "s#@LOG@#$log#g" \
     -e "s#@PATH@#$path#g" "$here/inc.i.deployer.plist" >"$eplist"

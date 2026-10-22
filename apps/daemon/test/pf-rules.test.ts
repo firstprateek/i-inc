@@ -136,8 +136,11 @@ function evaluate(
 
 const rules = parse(source);
 const gateway = "192.168.64.1";
-const home = "192.168.64.5";
+// The engineers' machine is declared (in the table); the PA's sandbox is not. Another address is what a
+// machine that took one for itself would have.
 const engineer = "192.168.64.8";
+const pa = "192.168.64.5";
+const spoofed = "192.168.64.200";
 const inbound = (
   src: string,
   proto: Packet["proto"],
@@ -153,17 +156,16 @@ const inbound = (
   dst,
   ...(dport !== undefined ? { dport } : {}),
 });
-const homeTable = { home_machines: [home] };
-const verdict = (pkt: Packet, tables: Record<string, string[]> = homeTable) =>
-  evaluate(rules, pkt, tables).action;
+const open = { open_machines: [engineer] };
+const verdict = (pkt: Packet, tables: Record<string, string[]> = open) => evaluate(rules, pkt, tables).action;
 
 describe("the machines' pf rules", () => {
   it("parse with pfctl -n, when pfctl is there", () => {
     const dir = mkdtempSync(join(tmpdir(), "i-inc-pf-"));
     try {
-      writeFileSync(join(dir, "home.table"), "");
+      writeFileSync(join(dir, "open.table"), "");
       const copy = join(dir, "rules.pf");
-      writeFileSync(copy, source.replace("/var/run/i-inc-home-machines.table", join(dir, "home.table")));
+      writeFileSync(copy, source.replace("/var/run/i-inc-open-machines.table", join(dir, "open.table")));
       const r = spawnSync("pfctl", ["-a", "com.apple/010.i-inc-machines", "-n", "-f", copy], {
         encoding: "utf8",
       });
@@ -175,53 +177,78 @@ describe("the machines' pf rules", () => {
     }
   });
 
-  it("reads the home machines from the table walls.sh writes", () => {
-    expect(source).toContain('table <home_machines> persist file "/var/run/i-inc-home-machines.table"');
+  it("reads the open machines from the table walls.sh writes", () => {
+    expect(source).toContain('table <open_machines> persist file "/var/run/i-inc-open-machines.table"');
     expect(readFileSync(resolve(import.meta.dirname, "../../../tools/host/walls.sh"), "utf8")).toContain(
-      "i-inc-home-machines.table",
+      "i-inc-open-machines.table",
     );
   });
 
-  describe("a home machine", () => {
-    it("reaches Ollama on the gateway, and takes DHCP", () => {
-      expect(verdict(inbound(home, "tcp", gateway, 11434))).toBe("pass");
+  describe("a machine in the open table (an engineer's)", () => {
+    it("has the internet, DNS and Ollama on the gateway", () => {
+      expect(verdict(inbound(engineer, "tcp", "93.184.216.34", 443))).toBe("pass");
+      expect(verdict(inbound(engineer, "udp", gateway, 53))).toBe("pass");
+      expect(verdict(inbound(engineer, "tcp", gateway, 11434))).toBe("pass");
       expect(verdict(inbound("0.0.0.0", "udp", "255.255.255.255", 67, 68))).toBe("pass");
-      expect(verdict(inbound(home, "udp", gateway, 67, 68))).toBe("pass");
     });
-
-    it("gets no internet, to any address or port", () => {
-      for (const dst of ["1.1.1.1", "93.184.216.34", "8.8.8.8", "140.82.112.3"]) {
-        for (const dport of [443, 80, 22, 53, 11434]) {
-          expect(verdict(inbound(home, "tcp", dst, dport)), `${dst}:${dport}`).toBe("block");
-        }
-      }
-      expect(verdict(inbound(home, "udp", "8.8.8.8", 53))).toBe("block");
-      expect(verdict(inbound(home, "udp", "8.8.8.8", 443))).toBe("block");
-      expect(verdict(inbound(home, "icmp", "8.8.8.8"))).toBe("block");
-    });
-
-    it("gets no DNS, not even from the gateway (a lookup can carry data out)", () => {
-      expect(verdict(inbound(home, "udp", gateway, 53))).toBe("block");
-      expect(verdict(inbound(home, "tcp", gateway, 53))).toBe("block");
-    });
-
-    it("reaches nothing else on the host, the LAN, the tailnet or other machines", () => {
+    it("still reaches nothing on the LAN, the tailnet, the host or other machines", () => {
       for (const [dst, dport] of [
-        [gateway, 22],
-        [gateway, 5000],
-        [gateway, 7420],
-        [gateway, 11435],
-        ["192.168.1.1", 53],
         ["192.168.1.50", 443],
         ["100.100.100.100", 22],
+        [gateway, 22],
+        [gateway, 7420],
+        [pa, 22],
         ["169.254.169.254", 80],
-        [engineer, 22],
-        ["10.0.0.1", 443],
-        ["127.0.0.1", 11434],
       ] as const) {
-        expect(verdict(inbound(home, "tcp", dst, dport)), `${dst}:${dport}`).toBe("block");
+        expect(verdict(inbound(engineer, "tcp", dst, dport)), `${dst}:${dport}`).toBe("block");
       }
     });
+  });
+
+  describe("any other address (a PA's sandbox, an unknown machine, a made-up address)", () => {
+    for (const [who, addr] of [
+      ["a PA's sandbox", pa],
+      ["a machine that gave itself an address", spoofed],
+    ] as const) {
+      it(`${who} reaches Ollama on the gateway, and takes DHCP`, () => {
+        expect(verdict(inbound(addr, "tcp", gateway, 11434))).toBe("pass");
+        expect(verdict(inbound("0.0.0.0", "udp", "255.255.255.255", 67, 68))).toBe("pass");
+        expect(verdict(inbound(addr, "udp", gateway, 67, 68))).toBe("pass");
+      });
+
+      it(`${who} gets no internet, to any address or port`, () => {
+        for (const dst of ["1.1.1.1", "93.184.216.34", "8.8.8.8", "140.82.112.3"]) {
+          for (const dport of [443, 80, 22, 53, 11434]) {
+            expect(verdict(inbound(addr, "tcp", dst, dport)), `${dst}:${dport}`).toBe("block");
+          }
+        }
+        expect(verdict(inbound(addr, "udp", "8.8.8.8", 53))).toBe("block");
+        expect(verdict(inbound(addr, "udp", "8.8.8.8", 443))).toBe("block");
+        expect(verdict(inbound(addr, "icmp", "8.8.8.8"))).toBe("block");
+      });
+
+      it(`${who} gets no DNS, not even from the gateway (a lookup can carry data out)`, () => {
+        expect(verdict(inbound(addr, "udp", gateway, 53))).toBe("block");
+        expect(verdict(inbound(addr, "tcp", gateway, 53))).toBe("block");
+      });
+
+      it(`${who} reaches nothing else on the host, the LAN, the tailnet or other machines`, () => {
+        for (const [dst, dport] of [
+          [gateway, 22],
+          [gateway, 5000],
+          [gateway, 7420],
+          [gateway, 11435],
+          ["192.168.1.1", 53],
+          ["100.100.100.100", 22],
+          ["169.254.169.254", 80],
+          [engineer, 22],
+          ["10.0.0.1", 443],
+          ["127.0.0.1", 11434],
+        ] as const) {
+          expect(verdict(inbound(addr, "tcp", dst, dport)), `${dst}:${dport}`).toBe("block");
+        }
+      });
+    }
 
     it("accepts nothing from outside: only DHCP answers go out to it", () => {
       const out = (
@@ -239,46 +266,29 @@ describe("the machines' pf rules", () => {
         dst,
         dport,
       });
-      expect(verdict(out(gateway, "udp", home, 68, 67))).toBe("pass");
-      expect(verdict(out(gateway, "tcp", home, 22, 50000))).toBe("block");
-      expect(verdict(out("1.1.1.1", "tcp", home, 40000, 443))).toBe("block");
-      expect(verdict(out(engineer, "tcp", home, 22, 50000))).toBe("block");
+      expect(verdict(out(gateway, "udp", pa, 68, 67))).toBe("pass");
+      expect(verdict(out(gateway, "tcp", pa, 22, 50000))).toBe("block");
+      expect(verdict(out("1.1.1.1", "tcp", pa, 40000, 443))).toBe("block");
+      expect(verdict(out(engineer, "tcp", pa, 22, 50000))).toBe("block");
     });
   });
 
-  describe("an engineer's machine, as before", () => {
-    it("has the internet, DNS and Ollama on the gateway", () => {
-      expect(verdict(inbound(engineer, "tcp", "93.184.216.34", 443))).toBe("pass");
-      expect(verdict(inbound(engineer, "udp", gateway, 53))).toBe("pass");
-      expect(verdict(inbound(engineer, "tcp", gateway, 11434))).toBe("pass");
-    });
-    it("still reaches nothing on the LAN, the tailnet, the host or a home machine", () => {
-      expect(verdict(inbound(engineer, "tcp", "192.168.1.50", 443))).toBe("block");
-      expect(verdict(inbound(engineer, "tcp", "100.100.100.100", 22))).toBe("block");
-      expect(verdict(inbound(engineer, "tcp", gateway, 22))).toBe("block");
-      expect(verdict(inbound(engineer, "tcp", home, 22))).toBe("block");
-    });
+  it("is closed when the table is empty: no machine gets the internet until one is declared", () => {
+    for (const addr of [engineer, pa]) {
+      expect(verdict(inbound(addr, "tcp", "93.184.216.34", 443), { open_machines: [] })).toBe("block");
+      expect(verdict(inbound(addr, "udp", gateway, 53), { open_machines: [] })).toBe("block");
+      expect(verdict(inbound(addr, "tcp", gateway, 11434), { open_machines: [] })).toBe("pass");
+    }
   });
 
-  it("walls off only the addresses in the table: this is why the daemon checks the acknowledgement", () => {
-    // The same address with an empty table is just a machine with the internet.
-    expect(verdict(inbound(home, "tcp", "93.184.216.34", 443), { home_machines: [] })).toBe("pass");
-    expect(verdict(inbound(home, "tcp", "93.184.216.34", 443), { home_machines: ["192.168.64.6"] })).toBe(
-      "pass",
-    );
-  });
-
-  it("puts the home rules ahead of every rule that could let a home machine out", () => {
-    const first = rules.rules.findIndex((r) => r.from.includes("<home_machines>") && r.action === "block");
-    expect(first).toBeGreaterThan(-1);
-    const wide = rules.rules.findIndex(
-      (r) => r.action === "pass" && r.to.includes("any") && r.proto === undefined,
-    );
-    expect(first).toBeLessThan(wide);
-    const dns = rules.rules.findIndex((r) => r.toPort?.includes("53"));
-    expect(first).toBeLessThan(dns);
-    expect(rules.rules[first]?.quick).toBe(true);
-    // And every pass for the home table is quick, so a later rule can't override it.
-    for (const r of rules.rules) if (r.from.includes("<home_machines>")) expect(r.quick).toBe(true);
+  it("lets nothing out except through a rule that names the table", () => {
+    for (const r of rules.rules) {
+      if (r.dir !== "in" || r.action !== "pass") continue;
+      const reachesBeyondGateway = !r.to.every((t) => t === gateway || t === "255.255.255.255");
+      if (reachesBeyondGateway && r.af !== "inet6") expect(r.from, r.text).toEqual(["<open_machines>"]);
+    }
+    // And the Ollama rule is the only one for the whole subnet, to the gateway alone.
+    const subnetWide = rules.rules.filter((r) => r.action === "pass" && r.from.includes("192.168.64.0/24"));
+    expect(subnetWide.map((r) => [r.to, r.toPort])).toEqual([[[gateway], ["11434"]]]);
   });
 });

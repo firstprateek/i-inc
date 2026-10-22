@@ -12,9 +12,9 @@ echo "== pf before"
 pfctl -s info 2>/dev/null | head -1
 echo "anchors under com.apple: $(pfctl -a com.apple -s Anchors 2>/dev/null | tr '\n' ' ')"
 
-# The rules read the home machines' addresses from this file (tools/host/walls.sh keeps it). By
-# hand there are none, so an empty one will do.
-[ -f /var/run/i-inc-home-machines.table ] || : >/var/run/i-inc-home-machines.table
+# The rules read the addresses of the machines let out from this file (tools/host/walls.sh keeps it).
+# By hand it starts empty, which lets no machine out: put the addresses of the machines in it.
+[ -f /var/run/i-inc-open-machines.table ] || : >/var/run/i-inc-open-machines.table
 
 echo "== check the rules, then load them into $anchor"
 pfctl -a "$anchor" -n -f "$rules"
