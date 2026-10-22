@@ -203,15 +203,29 @@ export class AcpAgent implements Agent {
       r.onTranscriptItem?.(item);
     };
 
+    let lastEmitAt = 0;
+    let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+
     const flushText = () => {
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        pendingTimer = null;
+      }
       if (!currentTextId || !textBuf) {
         textBuf = "";
         currentTextId = "";
         return;
       }
       emit({ id: currentTextId, kind: "text", text: capText(textBuf, 4096), at: textAt });
+      lastEmitAt = now();
       textBuf = "";
       currentTextId = "";
+    };
+
+    const emitCurrent = () => {
+      if (!currentTextId || !textBuf) return;
+      emit({ id: currentTextId, kind: "text", text: textBuf, at: textAt });
+      lastEmitAt = now();
     };
 
     const appendText = (chunk: string) => {
@@ -225,13 +239,30 @@ export class AcpAgent implements Agent {
       while (Buffer.byteLength(full, "utf8") >= 4096) {
         const itemText = capText(full, 4096);
         emit({ id: currentTextId, kind: "text", text: itemText, at: textAt });
+        lastEmitAt = now();
         full = full.slice(itemText.length);
         currentTextId = `text-${++textId}`;
         textAt = now();
       }
       textBuf = full;
       if (textBuf.length > 0) {
-        emit({ id: currentTextId, kind: "text", text: textBuf, at: textAt });
+        const currentTime = now();
+        if (currentTime - lastEmitAt >= 250) {
+          if (pendingTimer) {
+            clearTimeout(pendingTimer);
+            pendingTimer = null;
+          }
+          emitCurrent();
+        } else if (!pendingTimer) {
+          pendingTimer = setTimeout(
+            () => {
+              pendingTimer = null;
+              emitCurrent();
+            },
+            250 - (currentTime - lastEmitAt),
+          );
+          pendingTimer.unref?.();
+        }
       }
     };
 

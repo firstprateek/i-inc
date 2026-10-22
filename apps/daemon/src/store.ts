@@ -4,6 +4,12 @@ import type { Db } from "./db.ts";
 
 export class SqliteEventStore implements EventStore {
   onAppend?: (ticketId: Id, events: TicketEvent[]) => void;
+  private readonly listeners = new Set<(ticketId: Id, events: TicketEvent[]) => void>();
+
+  subscribe(fn: (ticketId: Id, events: TicketEvent[]) => void): () => void {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
 
   constructor(private readonly db: Db) {}
 
@@ -17,6 +23,9 @@ export class SqliteEventStore implements EventStore {
     this.write(ticketId, events);
     if (events.length > 0) {
       this.onAppend?.(ticketId, events);
+      for (const listener of this.listeners) {
+        listener(ticketId, events);
+      }
     }
   }
 

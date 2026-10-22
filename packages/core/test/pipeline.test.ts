@@ -310,4 +310,23 @@ describe("engines", () => {
     expect(engines).toContain("qwen-moe");
     expect(p.agent.calls.every((c) => c.engine.local)).toBe(true);
   });
+
+  it("caps large outputs on report-ready and checkpoint", async () => {
+    const p = ports();
+    const giantText = "x".repeat(30_000);
+    p.agent.on({ stage: "report" }, { kind: "done", output: giantText });
+    await runTicket(p, refundsTicket());
+    const events = await p.store.read("42");
+    const reportReady = events.find((e) => e.type === "report-ready") as { summary: string } | undefined;
+    expect(reportReady).toBeDefined();
+    expect(reportReady?.summary.length).toBeLessThan(20_000);
+    expect(reportReady?.summary.endsWith("\n...[truncated]")).toBe(true);
+
+    const stageFinished = events.find((e) => e.type === "stage-finished" && e.stage === "report") as
+      | { output?: string }
+      | undefined;
+    expect(stageFinished).toBeDefined();
+    expect(stageFinished?.output?.length).toBeLessThan(20_000);
+    expect(stageFinished?.output?.endsWith("\n...[truncated]")).toBe(true);
+  });
 });

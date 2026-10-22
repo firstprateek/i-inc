@@ -561,4 +561,66 @@ describe("chat", () => {
     );
     expect(line).toBe("Review · Kit unavailable: the sandbox can't start");
   });
+
+  describe("performance and indexing (Group 5)", () => {
+    it("uses indexed lookup for knowledge and avoids queries on unchanged tickets", async () => {
+      const app = await testApp();
+      await app.call("POST", "/api/tickets", refunds);
+      await app.daemon.idle();
+
+      let knowledgeQueries = 0;
+      let eventQueries = 0;
+      const origAll = app.db.all.bind(app.db);
+      app.db.all = <T extends Record<string, unknown>>(
+        sql: string,
+        ...params: (string | number | null | Uint8Array)[]
+      ) => {
+        if (sql.includes("knowledge_applied")) {
+          knowledgeQueries++;
+          expect(sql).not.toContain("LIKE");
+        }
+        if (sql.includes("FROM events WHERE ticket_id")) {
+          eventQueries++;
+        }
+        return origAll(sql, ...params) as T[];
+      };
+
+      // Subsequent tick on unchanged tickets
+      const kBefore = knowledgeQueries;
+      const eBefore = eventQueries;
+      await app.daemon.tick();
+
+      // Unchanged tickets should skip reading events and knowledge_applied
+      expect(knowledgeQueries - kBefore).toBe(0);
+      expect(eventQueries - eBefore).toBe(0);
+
+      // Invalidate ticket 1 by appending an event
+      await app.deps.store.append("1", [
+        { type: "checkpoint", at: Date.now(), stage: "build", note: "testing cache invalidation" },
+      ]);
+      await app.daemon.tick();
+
+      // Since ticket 1 is dirty, events should be read
+      expect(eventQueries - eBefore).toBeGreaterThan(0);
+    });
+
+    it("has indexes for events(type, at) and tickets(created_at, CAST(id AS INTEGER))", async () => {
+      const app = await testApp();
+      const eventIndexes = app.db.all<{ name: string }>("PRAGMA index_list('events')");
+      expect(eventIndexes.some((idx) => idx.name === "idx_events_type_at")).toBe(true);
+
+      const ticketIndexes = app.db.all<{ name: string }>("PRAGMA index_list('tickets')");
+      expect(ticketIndexes.some((idx) => idx.name === "idx_tickets_created_at_id")).toBe(true);
+
+      const eventPlan = app.db.all<{ detail: string }>(
+        "EXPLAIN QUERY PLAN SELECT * FROM events WHERE type = 'report-ready' ORDER BY at",
+      );
+      expect(eventPlan.some((p) => p.detail.includes("idx_events_type_at"))).toBe(true);
+
+      const ticketPlan = app.db.all<{ detail: string }>(
+        "EXPLAIN QUERY PLAN SELECT * FROM tickets ORDER BY created_at, CAST(id AS INTEGER)",
+      );
+      expect(ticketPlan.some((p) => p.detail.includes("idx_tickets_created_at_id"))).toBe(true);
+    });
+  });
 });

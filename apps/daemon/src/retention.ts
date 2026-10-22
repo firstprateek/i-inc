@@ -123,6 +123,7 @@ export function compactTranscripts(
 export interface DbSpace {
   pageSize: number;
   pages: number;
+  totalBytes: number;
   freePages: number;
   freeBytes: number;
   /** Share of the file that is free pages, in percent. */
@@ -138,6 +139,7 @@ export function dbSpace(db: Db): DbSpace {
   return {
     pageSize,
     pages,
+    totalBytes: pages * pageSize,
     freePages,
     freeBytes: freePages * pageSize,
     freePct: pages ? Math.round((freePages / pages) * 1000) / 10 : 0,
@@ -157,13 +159,16 @@ export interface VacuumResult {
  */
 export function vacuumIfNeeded(
   db: Db,
-  o: { freePct: number; minFreeBytes: number; idle: boolean; dryRun?: boolean },
+  o: { freePct: number; minFreeBytes: number; idle: boolean; dryRun?: boolean; maxDbBytes?: number },
 ): VacuumResult {
   const space = dbSpace(db);
   if (space.freePct < o.freePct || space.freeBytes < o.minFreeBytes) {
     return { space, ran: false, reason: "not enough free pages" };
   }
   if (!o.idle) return { space, ran: false, reason: "busy" };
+  if (o.maxDbBytes !== undefined && space.totalBytes > o.maxDbBytes) {
+    return { space, ran: false, reason: "database exceeds synchronous vacuum size cap" };
+  }
   if (o.dryRun) return { space, ran: false, reason: "dry run" };
   db.exec("VACUUM");
   db.exec("PRAGMA wal_checkpoint(TRUNCATE)");

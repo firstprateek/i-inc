@@ -397,6 +397,31 @@ describe("an ACP session", () => {
     );
   });
 
+  it("debounces rapid streaming text chunks into transcript items", async () => {
+    const s = server((method, _params, reply, id) => {
+      if (method === "initialize")
+        reply({ id, result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [] } });
+      if (method === "session/new") {
+        reply({ id, result: { sessionId: "s1" } });
+      }
+      if (method === "session/prompt") {
+        // Send 10 rapid chunks synchronously
+        for (let i = 0; i < 10; i++) {
+          reply(update("agent_message_chunk", { content: { type: "text", text: `part${i} ` } }));
+        }
+        setTimeout(() => reply({ id, result: { stopReason: "end_turn" } }), 20);
+      }
+    });
+    const transcript: { kind: string; text?: string }[] = [];
+    await agent(s).run(request({ engine: claude, onTranscriptItem: (item) => transcript.push(item) }));
+    // Debouncing ensures we didn't emit 10 separate text items
+    const textItems = transcript.filter((item) => item.kind === "text");
+    expect(textItems.length).toBeLessThan(5);
+    // Final text for the chunk id contains all parts
+    const finalText = textItems.at(-1)?.text;
+    expect(finalText).toBe(Array.from({ length: 10 }, (_, i) => `part${i} `).join(""));
+  });
+
   it("fails clearly when Codex doesn't advertise the configured model or effort", async () => {
     const options = [
       {

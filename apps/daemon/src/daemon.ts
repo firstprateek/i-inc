@@ -112,7 +112,24 @@ export class Daemon {
   /** For a waiting ticket blocked by an account or usage cap: when it resets (epoch ms). */
   waitingUntil: Record<Id, number> = {};
 
-  constructor(private readonly d: DaemonDeps) {}
+  private readonly stateCache = new Map<Id, TicketState>();
+  private readonly dirtyTickets = new Set<Id>();
+
+  constructor(private readonly d: DaemonDeps) {
+    this.d.store.subscribe?.((ticketId) => {
+      this.dirtyTickets.add(ticketId);
+      this.stateCache.delete(ticketId);
+    });
+    this.d.tickets.subscribe?.((ticketId) => {
+      this.dirtyTickets.add(ticketId);
+      this.stateCache.delete(ticketId);
+    });
+  }
+
+  invalidate(ticketId: Id): void {
+    this.dirtyTickets.add(ticketId);
+    this.stateCache.delete(ticketId);
+  }
 
   /** Employees waiting for their sandbox's cleanup to finish, with why: shown on their tickets. */
   private readonly holds = new Map<Id, string>();
@@ -368,7 +385,13 @@ export class Daemon {
   }
 
   async state(id: Id): Promise<TicketState> {
-    return fold(await this.d.store.read(id));
+    const cached = this.stateCache.get(id);
+    if (cached && !this.dirtyTickets.has(id)) return cached;
+    const events = await this.d.store.read(id);
+    const s = fold(events);
+    this.stateCache.set(id, s);
+    this.dirtyTickets.delete(id);
+    return s;
   }
 
   private chain: Promise<void> = Promise.resolve();
@@ -394,16 +417,22 @@ export class Daemon {
     const records = this.d.tickets.all();
     const states = new Map<Id, TicketState>();
     for (const r of records) {
-      const events = await this.d.store.read(r.ticket.id);
-      states.set(r.ticket.id, fold(events));
-      this.applyKnowledge(r.ticket.id, events);
-      this.fileFollowUps(r.ticket.id, events);
-      try {
-        await this.sendPushNotifications(r.ticket, events);
-      } catch (err) {
-        this.d.log?.(`push error: ${String(err)}`);
+      let s = this.stateCache.get(r.ticket.id);
+      if (!s || this.dirtyTickets.has(r.ticket.id)) {
+        const events = await this.d.store.read(r.ticket.id);
+        s = fold(events);
+        this.stateCache.set(r.ticket.id, s);
+        this.applyKnowledge(r.ticket.id, events);
+        this.fileFollowUps(r.ticket.id, events);
+        try {
+          await this.sendPushNotifications(r.ticket, events);
+        } catch (err) {
+          this.d.log?.(`push error: ${String(err)}`);
+        }
       }
+      states.set(r.ticket.id, s);
     }
+    this.dirtyTickets.clear();
 
     this.checkAutoReleases(records, states, now);
 
@@ -541,6 +570,9 @@ export class Daemon {
       .then(async (r: RunResult) => {
         this.d.log?.(`ticket ${id}: ${r.status}`);
         const events = await this.d.store.read(id);
+        const s = fold(events);
+        this.stateCache.set(id, s);
+        this.dirtyTickets.delete(id);
         this.applyKnowledge(id, events);
         this.fileFollowUps(id, events);
         await this.sendPushNotifications(record.ticket, events);
@@ -758,11 +790,12 @@ export class Daemon {
   applyKnowledge(ticketId: Id, events: TicketEvent[]): void {
     const due = knowledgeLog(ticketId, events).due;
     if (!due.length) return;
+    const placeholders = due.map(() => "?").join(", ");
     const applied = new Set(
       this.d.db
         .all<{ edit_id: string }>(
-          "SELECT edit_id FROM knowledge_applied WHERE edit_id LIKE ?",
-          `${ticketId}:%`,
+          `SELECT edit_id FROM knowledge_applied WHERE edit_id IN (${placeholders})`,
+          ...due.map((p) => p.id),
         )
         .map((r) => r.edit_id),
     );
