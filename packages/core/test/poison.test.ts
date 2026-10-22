@@ -3,7 +3,6 @@
 import { describe, expect, it } from "vitest";
 import {
   decide,
-  defaultSwitchRules,
   fold,
   knowledgeLog,
   planFor,
@@ -256,7 +255,7 @@ describe("an engine removed from Setup", () => {
   });
 
   it("a failure whose past sessions used a removed engine still reports which one it tried", async () => {
-    const e = { ...ada, switchRules: { ...defaultSwitchRules, onStuck: "fail" as const } };
+    const e = { ...ada, engines: { default: "opus", fallbacks: [] } };
     const p = fakePorts([e], engines);
     const at = p.clock.now();
     p.store.log.set("42", [
