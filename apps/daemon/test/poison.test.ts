@@ -127,7 +127,15 @@ describe("a malformed agent reply", () => {
   it("reads every ticket type this version knows as it was stored, and an unknown one as a chore", async () => {
     const app = await testApp();
     const t = app.deps.tickets.create(
-      { title: "Tend", project: "Duet", type: "tidy", effort: "low", doneWhen: [], assignee: "ada", hold: true },
+      {
+        title: "Tend",
+        project: "Duet",
+        type: "tidy",
+        effort: "low",
+        doneWhen: [],
+        assignee: "ada",
+        hold: true,
+      },
       app.clock.now(),
     );
     expect(app.deps.tickets.get(t.id)?.ticket.type).toBe("tidy");
