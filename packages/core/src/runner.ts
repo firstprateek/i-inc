@@ -482,6 +482,7 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
       try {
         await c.p.workspace.ready(c.ticket, c.s.pr, reportMarkdown(report));
       } catch (err) {
+        if (isPassing(err)) throw err;
         await c.emit(failed(c, "report", `couldn't mark the PR ready: ${errorText(err)}`));
         return;
       }
@@ -878,8 +879,26 @@ function needsYou(c: Step, stage: StageId, ask: NeedsYou): TicketEvent {
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 /** GitHub or the network hiccuped: worth another try at the next tick, not a failed ticket. */
-const passing =
-  /failed: 5\d\d|fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|timed out|Could not resolve host|unable to access/i;
+export const passingRegex =
+  /failed(?::| with HTTP)\s*5\d\d|failed(?::| with HTTP)\s*429|fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|timed out|Could not resolve host|unable to access|the remote end hung up unexpectedly|Connection reset by peer|early EOF|RPC failed|OpenSSL SSL_read|Connection refused/i;
+
+export function isPassing(err: unknown): boolean {
+  if (!err) return false;
+  if (typeof err === "object") {
+    const e = err as {
+      status?: unknown;
+      rateLimited?: unknown;
+      network?: unknown;
+    };
+    if (typeof e.status === "number" && (e.status >= 500 || e.status === 429)) {
+      return true;
+    }
+    if (e.rateLimited || e.network) {
+      return true;
+    }
+  }
+  return passingRegex.test(errorText(err));
+}
 
 /**
  * Makes the ticket's worktree and branch in `employee`'s machine, with its draft PR. A passing
@@ -898,7 +917,7 @@ async function openWorkspace(c: Step, employee: Employee, stage: StageId): Promi
       ...(upTo ? [{ type: "attachments-copied", at, employeeId: employee.id, upTo } as const] : []),
     ];
   } catch (err) {
-    if (passing.test(errorText(err))) throw err;
+    if (isPassing(err)) throw err;
     await c.emit(failed(c, stage, `couldn't open the branch and draft PR: ${errorText(err)}`));
     return null;
   }
@@ -916,7 +935,7 @@ async function copyAttachments(c: Step, employee: Employee): Promise<boolean> {
   try {
     await workspace.attach(c.ticket, employee, ns);
   } catch (err) {
-    if (passing.test(errorText(err))) throw err;
+    if (isPassing(err)) throw err;
     await c.emit(failed(c, c.s.active as StageId, `couldn't copy the owner's images: ${errorText(err)}`));
     return false;
   }
@@ -941,7 +960,7 @@ async function readyHelper(c: Step, employee: Employee): Promise<string | null> 
     await workspace?.checkout?.(c.ticket, employee);
     if (workspace?.attach && ns.length) await workspace.attach(c.ticket, employee, ns);
   } catch (err) {
-    if (passing.test(errorText(err))) throw err;
+    if (isPassing(err)) throw err;
     return `couldn't ready ${employee.name}'s machine: ${errorText(err)}`;
   }
   if (workspace?.attach && ns.length) {

@@ -588,6 +588,13 @@ export class Daemon {
           this.d.log?.(`ticket ${id} waiting: ${e.message}`);
           return;
         }
+        const retryAfterSec =
+          typeof (e as { retryAfterSec?: unknown })?.retryAfterSec === "number"
+            ? (e as { retryAfterSec: number }).retryAfterSec
+            : undefined;
+        if (retryAfterSec && retryAfterSec > 0) {
+          this.waitingUntil[id] = this.d.clock.now() + retryAfterSec * 1000;
+        }
         this.d.log?.(`ticket ${id} stopped: ${String(e)}`);
       })
       .finally(() => {
