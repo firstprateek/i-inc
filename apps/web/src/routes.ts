@@ -60,8 +60,9 @@ export type Route =
   /**
    * An empty id is the company brain (the handbook); otherwise one employee's brain. `changes` is the Brain
    * changes feed (`#/company/brain/changes`): every change agents made to the brain, with one-click undo.
+   * `page` is the page open (`?page=facts/duet.md`; none is the map).
    */
-  | { view: "brain"; id: string; changes?: true }
+  | { view: "brain"; id: string; changes?: true; page?: string }
   /**
    * `#/company/projects` is the list. After it: `add` (pick or confirm a repo to add, `?repo=owner/name`),
    * `new` (start a new project), or a project's id (its page).
@@ -218,12 +219,30 @@ export function redirectFor(hash: string): string | null {
   // when the address is only tidied (case, a trailing slash). Every other address, and an old address that moves
   // to a new one, drops its query.
   const query = hash.includes("?") ? hash.slice(hash.indexOf("?")) : "";
-  const kept = query && queryPages.test(path) && queryPages.test(target) ? `${target}${query}` : target;
+  let kept = query && queryPages.test(path) && queryPages.test(target) ? `${target}${query}` : target;
+  // A brain keeps only the page it names (`?page=`), tidied the same way.
+  if (/^#\/company\/brain(?:\/|$)/i.test(target)) {
+    const page = brainPage(hashQuery(hash).get("page"));
+    kept =
+      page && /^#\/company\/brain(?:\/|$)/i.test(path)
+        ? `${target}?page=${encodeURIComponent(page)}`
+        : target;
+  }
   return kept === hash ? null : kept;
 }
 
 /** The addresses whose query string means something (see redirectFor). */
 const queryPages = /^#\/(?:conversations|company\/projects)(?:\/|$)/i;
+
+/** A page of a brain in an address (`?page=facts/duet.md`): a plain relative markdown path, or nothing. */
+export const brainPage = (v: string | null | undefined): string =>
+  v && /^[\w][\w./-]{0,198}\.md$/.test(v) && !v.includes("..") && !v.includes("//") ? v : "";
+
+/** The address of one brain page (`INDEX.md`, the map, is the brain's own address). */
+export const brainHash = (repo: string, page: string): string =>
+  `#/company/brain${repo && repo !== "handbook" ? `/${encodeURIComponent(repo)}` : ""}${
+    brainPage(page) && page !== "INDEX.md" ? `?page=${encodeURIComponent(page)}` : ""
+  }`;
 
 /** The query of a hash: `#/conversations?new=1&project=Duet` gives `new=1&project=Duet`. */
 export const hashQuery = (hash: string): URLSearchParams => new URLSearchParams(hash.split("?")[1] ?? "");
@@ -273,8 +292,11 @@ export function parse(hash: string): Route {
       break;
     case "company":
       switch (a) {
-        case "brain":
-          return b === "changes" ? { view: "brain", id: "", changes: true } : { view: "brain", id: b ?? "" };
+        case "brain": {
+          if (b === "changes") return { view: "brain", id: "", changes: true };
+          const page = brainPage(hashQuery(full).get("page"));
+          return page ? { view: "brain", id: b ?? "", page } : { view: "brain", id: b ?? "" };
+        }
         case "projects":
           return b === "add" || b === "new"
             ? { view: "projects", flow: b }

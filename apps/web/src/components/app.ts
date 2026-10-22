@@ -770,8 +770,8 @@ export class IncApp extends LitElement {
         if (r.changes)
           return html`<inc-brain-changes role="tabpanel" aria-labelledby="tab-brain"></inc-brain-changes>`;
         return r.id
-          ? html`<inc-knowledge .repo=${r.id} role="tabpanel" aria-labelledby="tab-brain"></inc-knowledge>`
-          : html`<inc-knowledge repo="handbook" role="tabpanel" aria-labelledby="tab-brain"></inc-knowledge>`;
+          ? html`<inc-knowledge .repo=${r.id} .page=${r.page ?? ""} role="tabpanel" aria-labelledby="tab-brain"></inc-knowledge>`
+          : html`<inc-knowledge repo="handbook" .page=${r.page ?? ""} role="tabpanel" aria-labelledby="tab-brain"></inc-knowledge>`;
       case "projects":
         return r.id
           ? html`<inc-project-page .projectId=${r.id} role="tabpanel" aria-labelledby="tab-projects"></inc-project-page>`

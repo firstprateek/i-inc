@@ -90,6 +90,23 @@ const dutyNames: Record<Duty, string> = {
   librarian: "Librarian",
 };
 
+/** An engine id is at most this long (the daemon refuses more). */
+const ENGINE_ID_MAX = 40;
+
+/**
+ * The first id for an engine that nobody has: the slug, else `slug-2`, `slug-3`…. The suffix's room is
+ * reserved before the base is cut, so a slug of any length still yields a new id at every step.
+ */
+export function freeEngineId(slug: string, taken: ReadonlySet<string>): string {
+  const base = slug.slice(0, ENGINE_ID_MAX).replace(/-+$/, "");
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n++) {
+    const suffix = `-${n}`;
+    const id = `${base.slice(0, ENGINE_ID_MAX - suffix.length).replace(/-+$/, "")}${suffix}`;
+    if (!taken.has(id)) return id;
+  }
+}
+
 export class IncHiring extends LitElement {
   static override properties = {
     employeeId: { type: String },
@@ -330,12 +347,19 @@ export class IncHiring extends LitElement {
     const harness = this.newHarness;
     const accountId = this.newAccountId || (this.accounts[0]?.id ?? "local");
     const local = engineIsLocal(harness, accountId);
-    const id = model
+    const slug = model
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-|-$/g, "");
+    // The id is the owner's model name, made plain. An engine already there for the same thing is used
+    // as it is; for something else it is never replaced: the new one gets the next free id.
+    const same = this.engines.find(
+      (e) => e.harness === harness && e.model === model && e.accountId === accountId && e.local === local,
+    );
+    const taken = new Set(this.engines.map((e) => e.id));
+    const id = same?.id ?? freeEngineId(slug, taken);
     try {
-      await setupApi.saveEngine({ id, harness, model, accountId, local });
+      if (!same) await setupApi.saveEngine({ id, harness, model, accountId, local }, { create: true });
       const updatedEngines = await api.engines().catch(() => [] as Engine[]);
       this.engines = updatedEngines;
       this.engine = id;

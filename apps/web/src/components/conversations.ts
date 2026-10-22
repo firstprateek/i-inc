@@ -8,6 +8,7 @@ import { ahp, useAhp } from "../ahp/hub.ts";
 import { type AccountRateLimit, api, type Conversation, refresh, type ShipView } from "../api.ts";
 import { friendlyError } from "../conversations/actions.ts";
 import { cardStyles } from "../conversations/styles.ts";
+import { messageSent } from "../first-run.ts";
 import { live } from "../live.ts";
 import { notifyNeedsYou } from "../needs-you.ts";
 import { draftHash } from "../routes.ts";
@@ -371,7 +372,9 @@ export class IncConversations extends LitElement {
       });
       this.first = { id: c.id, text: d.text, files: d.files, intent: "turn" };
       this.list = [c, ...this.list.filter((x) => x.id !== c.id)];
-      location.hash = `#/conversations/${c.id}`;
+      messageSent(); // the first-run checklist's last step: a first message is on its way
+      // Replace the draft's address: Back must not return to an empty draft that would start a second conversation.
+      location.replace(`#/conversations/${c.id}`);
       return null;
     } catch (e) {
       return friendlyError(e instanceof Error ? e.message : String(e));

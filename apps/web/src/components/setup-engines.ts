@@ -134,6 +134,14 @@ export class IncSetupEngines extends Loader<EnginesData> {
       this.setNote("new-account", { ok: false, text: "Name the account." });
       return;
     }
+    const taken = this.data?.accounts.find((a) => a.id === id);
+    if (taken) {
+      this.setNote("new-account", {
+        ok: false,
+        text: `There is already an account called ${id} (${taken.name}). Pick another id: adding would replace it.`,
+      });
+      return;
+    }
     const fee = f.fee.trim() === "" ? undefined : Number(f.fee);
     const cap = f.cap.trim() === "" ? undefined : Number(f.cap);
     if ((fee !== undefined && !(fee >= 0)) || (cap !== undefined && !(cap >= 0))) {
@@ -143,12 +151,15 @@ export class IncSetupEngines extends Loader<EnginesData> {
     void this.run(
       "new-account",
       async () => {
-        await setupApi.saveAccount({
-          id,
-          name: f.name.trim(),
-          ...(fee !== undefined ? { monthlyFee: fee } : {}),
-          ...(cap !== undefined ? { monthlyCap: cap } : {}),
-        });
+        await setupApi.saveAccount(
+          {
+            id,
+            name: f.name.trim(),
+            ...(fee !== undefined ? { monthlyFee: fee } : {}),
+            ...(cap !== undefined ? { monthlyCap: cap } : {}),
+          },
+          { create: true },
+        );
         this.account = { id: "", name: "", fee: "", cap: "" };
       },
       `Added ${f.name.trim()}`,
@@ -178,16 +189,27 @@ export class IncSetupEngines extends Loader<EnginesData> {
       });
       return;
     }
+    const taken = this.data?.engines.find((x) => x.id === id);
+    if (taken) {
+      this.setNote("new-engine", {
+        ok: false,
+        text: `There is already an engine called ${id} (${taken.model} on ${taken.harness}). Pick another id: adding would replace it, and change what every employee on it runs.`,
+      });
+      return;
+    }
     void this.run(
       "new-engine",
       async () => {
-        await setupApi.saveEngine({
-          id,
-          harness: f.harness,
-          model: f.model.trim(),
-          accountId,
-          local: f.harness === "codex" ? false : f.local,
-        });
+        await setupApi.saveEngine(
+          {
+            id,
+            harness: f.harness,
+            model: f.model.trim(),
+            accountId,
+            local: f.harness === "codex" ? false : f.local,
+          },
+          { create: true },
+        );
         this.engine = { id: "", harness: "claude-code", model: "", accountId: "", local: false };
       },
       `Added ${f.model.trim()}`,
