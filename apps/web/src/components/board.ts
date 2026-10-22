@@ -112,15 +112,19 @@ export class IncBoard extends Loader<BoardData> {
     ...Loader.properties,
     /** The new-ticket dialog is open. */
     creating: { state: true },
+    /** The form was opened before the board loaded: it is mounted from then on (it is mounted when the board has data anyway). */
+    formMounted: { state: true },
     /** The ticket just filed from the dialog, until it is dismissed. */
     filed: { state: true },
   };
   declare creating: boolean;
+  declare formMounted: boolean;
   declare filed: { id: string; title: string } | null;
 
   constructor() {
     super();
     this.creating = false;
+    this.formMounted = false;
     this.filed = null;
   }
 
@@ -149,6 +153,7 @@ export class IncBoard extends Loader<BoardData> {
     if (!d || d.open) return;
     this.filed = null;
     this.creating = true;
+    this.formMounted = true;
     if (typeof d.showModal === "function") d.showModal();
     else d.setAttribute("open", "");
     // The first field takes focus.
@@ -235,7 +240,18 @@ export class IncBoard extends Loader<BoardData> {
     `,
   ];
 
+  /** The header's New ticket button works in every state: while the board loads, and after it failed to. */
   override render() {
+    return html`${this.content()}<dialog class="new-ticket" aria-label="New ticket" @cancel=${() => {
+      this.creating = false;
+    }} @close=${() => {
+      this.creating = false;
+    }} @ticket-filed=${this.onFiled} @ticket-form-close=${this.closeForm}>
+      ${this.formMounted || this.data ? html`<inc-new-ticket modal></inc-new-ticket>` : ""}
+    </dialog>`;
+  }
+
+  private content() {
     if (this.error) return this.failure("the board");
     if (!this.data) return html`<p class="muted">Loading the board…</p>`;
     const { tickets, digest } = this.data;
@@ -258,14 +274,7 @@ export class IncBoard extends Loader<BoardData> {
           ${list.length ? list.map((t) => this.card(t, id === "done" ? reports.get(t.id) : undefined)) : html`<div class="empty">${emptyColumn[id]}</div>`}
         </section>`;
       })}
-    </div>
-    <dialog class="new-ticket" aria-label="New ticket" @cancel=${() => {
-      this.creating = false;
-    }} @close=${() => {
-      this.creating = false;
-    }} @ticket-filed=${this.onFiled} @ticket-form-close=${this.closeForm}>
-      <inc-new-ticket modal></inc-new-ticket>
-    </dialog>`;
+    </div>`;
   }
 
   /** How a finished ticket ended: "Merged · pushed · 2 h ago". */

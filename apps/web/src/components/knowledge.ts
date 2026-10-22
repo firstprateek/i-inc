@@ -110,6 +110,13 @@ export class IncKnowledge extends Loader<KnowledgeData> {
         line-height: 1.4;
       }
       .company-callout a { color: var(--ink); font-weight: 600; text-decoration: underline; }
+      .awaiting-note { margin: 0; font-size: 14px; }
+      .awaiting-note a { color: var(--ink); font-weight: 600; }
+      /* A phone or a finger: the link to Needs you is a 44px target. */
+      @media (max-width: 900px), (pointer: coarse) {
+        .awaiting-note { display: flex; flex-wrap: wrap; align-items: center; column-gap: 4px; }
+        .awaiting-note a { display: inline-flex; align-items: center; min-height: 44px; min-width: 44px; }
+      }
       .wrap { grid-template-rows: auto minmax(0, 1fr); gap: var(--layout-section-gap, 20px) var(--layout-gap, 24px); align-items: stretch; }
       .head { grid-column: 1 / -1; margin: 0; }
       nav { padding: 10px; display: flex; flex-direction: column; gap: 2px; border-right: 1px solid var(--line); }
@@ -216,7 +223,7 @@ export class IncKnowledge extends Loader<KnowledgeData> {
           ${this.actionNotice()}
           ${
             (d.awaiting ?? []).length
-              ? html`<p class="muted awaiting-note" role="status">${(d.awaiting ?? []).length} policy ${(d.awaiting ?? []).length === 1 ? "change waits" : "changes wait"} for your answer in <a href="#/work/needs-you">Needs you</a>.</p>`
+              ? html`<p class="muted awaiting-note" role="status">${(d.awaiting ?? []).length} policy ${(d.awaiting ?? []).length === 1 ? "change waits" : "changes wait"} for your answer in <a href="#/needs-you">Needs you</a>.</p>`
               : ""
           }
           ${

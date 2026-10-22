@@ -9,9 +9,10 @@ import type { IncKnowledge } from "../src/components/knowledge.ts";
 import "../src/components/knowledge.ts";
 import "../src/components/office.ts";
 import { stateLabel } from "../src/components/shared.ts";
+import "../src/components/conv-turn.ts";
 import "../src/components/ticket.ts";
 import { liveText } from "../src/assign.ts";
-import { friendlyWhen } from "../src/time.ts";
+import { atTime } from "../src/time.ts";
 
 const view = (over: Partial<TicketView>): TicketView =>
   ({
@@ -130,7 +131,7 @@ describe("the board and its header action", () => {
     expect(board.querySelector("inc-proposals")).toBeNull();
     expect(board.querySelector(".digest")).toBeNull();
     expect(board.querySelectorAll(".cols > section").length).toBe(4);
-    // the form is only in the dialog
+    // the form is only ever in the dialog
     expect(board.querySelectorAll("inc-new-ticket").length).toBe(1);
     expect(board.querySelector("dialog inc-new-ticket")).not.toBeNull();
     const css = (customElements.get("inc-board") as unknown as { styles: { cssText: string }[] }).styles
@@ -174,6 +175,39 @@ describe("the protected-paths OK (T68), now only in Needs you", () => {
     expect(shown[1]).toContain("THE-END");
     expect(root.querySelector("details summary")?.textContent).toBe("Show all");
     expect([...root.querySelectorAll("button")].some((b) => b.textContent === "OK it")).toBe(true);
+  });
+});
+
+describe("the New ticket button in every state of the board", () => {
+  const open = async (board: ShadowRoot) => {
+    window.dispatchEvent(new Event("i-inc-new-ticket"));
+    await tick();
+    return board.querySelector("dialog") as HTMLDialogElement;
+  };
+
+  it("opens the dialog while the board is still loading", async () => {
+    vi.stubGlobal("fetch", (url: string) =>
+      url === "/api/board" ? new Promise(() => {}) : Promise.resolve(json({ projects: [], employees: [] })),
+    );
+    const el = document.createElement("inc-board");
+    document.body.append(el);
+    await tick();
+    const board = el.shadowRoot as ShadowRoot;
+    expect(board.textContent).toContain("Loading the board");
+    expect((await open(board)).hasAttribute("open")).toBe(true);
+    expect(board.querySelector("dialog inc-new-ticket")).not.toBeNull();
+  });
+
+  it("opens the dialog when the board failed to load", async () => {
+    vi.stubGlobal("fetch", async (url: string) =>
+      url === "/api/board" ? json({ error: "no board today" }, 500) : json({ projects: [], employees: [] }),
+    );
+    const el = document.createElement("inc-board");
+    document.body.append(el);
+    await tick();
+    const board = el.shadowRoot as ShadowRoot;
+    expect(board.textContent).toContain("Couldn't load the board");
+    expect((await open(board)).hasAttribute("open")).toBe(true);
   });
 });
 
@@ -249,19 +283,17 @@ describe("plain statuses, with times in the owner's zone", () => {
   it("words a ticket's resume time in local time on its board card and its page", async () => {
     const t = view({ id: "9", status: "paused", live: "Waiting for tokens", resumesAt: resumes });
     expect(liveText(t)).toMatch(
-      /^Waiting for tokens until (Tomorrow |Yesterday |[A-Z][a-z]{2} \d+, )?2:14\s?AM$/i,
+      /^Waiting for tokens until (tomorrow at |yesterday at |[A-Z][a-z]{2} \d+ at )?2:14\s?AM$/i,
     );
-    expect(liveText(t)).toBe(`Waiting for tokens until ${friendlyWhen(resumes)}`);
+    expect(liveText(t)).toBe(`Waiting for tokens until ${atTime(resumes)}`);
     expect(liveText(t)).not.toMatch(/UTC/);
     tickets = [t];
     const { root } = await mountApp("#/work/board");
     const board = root.querySelector("inc-board")?.shadowRoot as ShadowRoot;
-    expect(board.querySelector(".live")?.textContent).toBe(
-      `Waiting for tokens until ${friendlyWhen(resumes)}`,
-    );
+    expect(board.querySelector(".live")?.textContent).toBe(`Waiting for tokens until ${atTime(resumes)}`);
     document.body.innerHTML = "";
     const page = await mountTicket(t);
-    expect(page.textContent).toContain(`Waiting for tokens until ${friendlyWhen(resumes)}`);
+    expect(page.textContent).toContain(`Waiting for tokens until ${atTime(resumes)}`);
   });
 
   it("shows the timeline in local friendly time, and the token wait as a plain line", async () => {
@@ -278,7 +310,7 @@ describe("plain statuses, with times in the owner's zone", () => {
     const root = await mountTicket(view({ id: "10" }));
     const lines = [...root.querySelectorAll("ol li")].map((l) => l.textContent?.replace(/\s+/g, " ").trim());
     expect(lines[0]).toMatch(/^2:07\s?PM\s*build started$/i);
-    expect(lines[1]).toContain(`Waiting for tokens until ${friendlyWhen(resumes)}`);
+    expect(lines[1]).toContain(`Waiting for tokens until ${atTime(resumes)}`);
     expect(lines.join(" ")).not.toMatch(/coffee|UTC|14:0/i);
   });
 
@@ -287,6 +319,39 @@ describe("plain statuses, with times in the owner's zone", () => {
       view({ id: "11", status: "failed", failure: { stage: "checks", reason: "checks red", tried: [] } }),
     );
     expect(root.querySelector(".ask b")?.textContent).toBe("Failed in checks");
+  });
+});
+
+describe("a usage limit in a conversation", () => {
+  it("words the reset in the owner's zone from the host's moment, not from the agent's UTC text", async () => {
+    const resetsAt = new Date(2026, 9, 22, 2, 14).getTime();
+    const el = document.createElement("inc-conv-turn") as HTMLElement & { updateComplete: Promise<unknown> };
+    Object.assign(el, {
+      employee: "Ada",
+      turn: {
+        id: "t1",
+        state: "error",
+        message: { text: "hi", origin: { kind: "user" } },
+        responseParts: [
+          {
+            kind: "error",
+            id: "e1",
+            resumable: false,
+            error: {
+              errorType: "rate_limited",
+              message: "You've hit your session limit",
+              _meta: { "iinc.resetsAt": resetsAt },
+            },
+          },
+        ],
+      },
+    });
+    document.body.append(el);
+    await tick();
+    await el.updateComplete;
+    const text = el.shadowRoot?.querySelector(".error p")?.textContent ?? "";
+    expect(text).toBe(`You've hit your session limit. It resets ${atTime(resetsAt)}.`);
+    expect(text).not.toMatch(/UTC/);
   });
 });
 
@@ -319,7 +384,7 @@ describe("the Brain page", () => {
     // it says where the proposal is, with a link
     const note = root.querySelector(".awaiting-note") as HTMLElement;
     expect(note.textContent).toContain("1 policy change waits");
-    expect(note.querySelector("a")?.getAttribute("href")).toBe("#/work/needs-you");
+    expect(note.querySelector("a")?.getAttribute("href")).toBe("#/needs-you");
     // the map is still there
     expect(root.textContent).toContain("The handbook.");
   });

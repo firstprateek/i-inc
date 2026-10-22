@@ -973,7 +973,9 @@ describe("when the agent fails", () => {
     const limited = t.host.chatState(c.chat)?.turns[0]?.responseParts.at(-1) as Any;
     expect(limited.error.errorType).toBe("rate_limited");
     expect(limited.error.message).toContain("session limit");
-    expect(limited.error.message).toMatch(/resets \d{4}-\d\d-\d\d \d\d:\d\d UTC/);
+    // no time of day in the words (the agent's is UTC): the reset goes in `_meta` for the app to word locally
+    expect(limited.error.message).not.toMatch(/UTC|resets/);
+    expect(limited.error._meta["iinc.resetsAt"]).toEqual(expect.any(Number));
     expect(t.limits.at(-1)).toMatchObject({ accountId: "claude-pro", limit: { status: "rejected" } });
     // the agent is gone and the sandbox needs a sign-in
     t.sandbox.last.die(1);

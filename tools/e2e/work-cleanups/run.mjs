@@ -274,7 +274,7 @@ try {
     );
     await page.screenshot({ path: join(outDir, `brain-${viewport.width}.png`) });
     await checkFit("Brain");
-    await go("#/work/needs-you", "inc-inbox");
+    await go("#/needs-you", "inc-inbox");
     await sleep(400);
     ok(/handbook policy/.test(await page.evaluate(pageText)), "the policy proposal is a Needs you card");
     await ctx.close();

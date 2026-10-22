@@ -90,6 +90,18 @@ describe("the reason a ticket waits, in plain words", () => {
     expect(waitingLine(reason, until, at)).toBe(line);
   });
 
+  it("words a reset on another day without 'at Tomorrow'", () => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(2, 14, 0, 0);
+    expect(waitingLine("Ada reached its usage cap", tomorrow.getTime())).toMatch(
+      /^Waiting: Ada's usage resets tomorrow at 2:14\s?AM$/i,
+    );
+    expect(waitingLine("Ada waits for claude-pro to reset", tomorrow.getTime())).toMatch(
+      /^Waiting for claude-pro usage to reset tomorrow at 2:14\s?AM$/i,
+    );
+  });
+
   it("offers the owner an assignment only when assigning would help", () => {
     expect(waitsForAssignee(view())).toBe(true);
     expect(

@@ -2,7 +2,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { dayLabel, friendlyWhen, hourLabel, withResume } from "../src/time.ts";
+import { atTime, dayLabel, friendlyWhen, hourLabel, withResume } from "../src/time.ts";
 
 // Local (the test machine's own zone), so the assertions hold in any zone.
 const at = (y: number, mo: number, d: number, h: number, mi = 0) => new Date(y, mo - 1, d, h, mi).getTime();
@@ -26,13 +26,22 @@ describe("friendlyWhen", () => {
   });
 });
 
+describe("atTime", () => {
+  it("reads right after at or until: the time alone today, its own 'at' on another day", () => {
+    expect(atTime(at(2026, 10, 22, 2, 14), NOW)).toMatch(/^2:14\s?AM$/i);
+    expect(atTime(at(2026, 10, 23, 2, 14), NOW)).toMatch(/^tomorrow at 2:14\s?AM$/i);
+    expect(atTime(at(2026, 10, 21, 21, 5), NOW)).toMatch(/^yesterday at 9:05\s?PM$/i);
+    expect(atTime(at(2026, 10, 30, 9, 0), NOW)).toMatch(/^Oct 30 at 9:00\s?AM$/i);
+  });
+});
+
 describe("withResume", () => {
   it('turns "Waiting for tokens" into "Waiting for tokens until 2:14 AM"', () => {
     expect(withResume("Waiting for tokens", at(2026, 10, 22, 14, 14), NOW)).toMatch(
       /^Waiting for tokens until 2:14\s?PM$/i,
     );
     expect(withResume("Waiting for tokens", at(2026, 10, 23, 2, 14), NOW)).toMatch(
-      /until Tomorrow 2:14\s?AM$/i,
+      /until tomorrow at 2:14\s?AM$/i,
     );
   });
   it("leaves a line with no resume time alone", () => {

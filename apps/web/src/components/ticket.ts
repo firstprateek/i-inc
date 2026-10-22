@@ -4,7 +4,7 @@ import type { Employee } from "@i-inc/core";
 import { css, html } from "lit";
 import { ApiError, api, imageRules, refreshNow, type TicketEvent, type TicketView } from "../api.ts";
 import { assignees, liveText, notStarted, optionLabel, waitingLine } from "../assign.ts";
-import { clock, friendlyWhen } from "../time.ts";
+import { atTime, clock } from "../time.ts";
 import { ImagePicker, imagePickerStyles } from "./image-picker.ts";
 import { Loader } from "./loader.ts";
 import { protectedDiff } from "./protected-card.ts";
@@ -456,7 +456,7 @@ export class IncTicket extends Loader<Data> {
       case "checks-ran":
         return e.green ? item("Checks green") : item(`Checks: ${e.failures.length} failing`, "bad");
       case "out-of-tokens":
-        return item(`Waiting for tokens until ${friendlyWhen(e.resetsAt)}`, "you");
+        return item(`Waiting for tokens until ${atTime(e.resetsAt)}`, "you");
       case "engine-switched":
         return item(`Switched engine: ${e.reason}`, "bad");
       case "review-verdict":

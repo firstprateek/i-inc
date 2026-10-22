@@ -30,9 +30,26 @@ export function hourLabel(hour: number): string {
   return d.toLocaleTimeString([], { hour: "numeric", ...(hour % 1 ? { minute: "2-digit" } : {}) });
 }
 
+/**
+ * The words for a moment after "at" or "until", in the owner's zone: "2:14 AM" today, "tomorrow at 2:14 AM",
+ * "Oct 24 at 2:14 AM". It carries its own "at" when the day is not today, so "until" and "at" both read right.
+ */
+export function atTime(ms: number, now = Date.now()): string {
+  const d = new Date(ms);
+  const today = new Date(now);
+  if (sameDay(d, today)) return clockOf(d);
+  const tomorrow = new Date(today);
+  tomorrow.setDate(today.getDate() + 1);
+  if (sameDay(d, tomorrow)) return `tomorrow at ${clockOf(d)}`;
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (sameDay(d, yesterday)) return `yesterday at ${clockOf(d)}`;
+  return `${d.toLocaleDateString([], { month: "short", day: "numeric" })} at ${clockOf(d)}`;
+}
+
 /** What a status line says once it has a resume time: "Waiting for tokens" becomes "Waiting for tokens until 2:14 AM". */
 export function withResume(live: string, resumesAt: number | undefined | null, now = Date.now()): string {
-  return resumesAt ? `${live} until ${friendlyWhen(resumesAt, now)}` : live;
+  return resumesAt ? `${live} until ${atTime(resumesAt, now)}` : live;
 }
 
 /** A date without a time, in the owner's zone: "Oct 22" (with the year when it is not this year). */
