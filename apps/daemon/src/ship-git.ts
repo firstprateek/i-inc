@@ -124,13 +124,16 @@ function check(copy: ShipCopy, remote?: string): void {
  */
 const enter = (copy: ShipCopy, remote: string) => [
   'TOK="${GH_TOKEN:-}"; unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GH_HOST',
-  "unset GIT_SSH GIT_SSH_COMMAND GIT_ASKPASS SSH_ASKPASS GIT_PROXY_COMMAND GIT_EXTERNAL_DIFF GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT",
   `cd ${quote(copy.cwd)} || { echo '@@fail the working copy is not there'; exit 1; }`,
-  "git -c core.hooksPath=/dev/null rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo '@@fail the working copy is not a git folder'; exit 1; }",
-  "export GIT_ATTR_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_NO_REPLACE_OBJECTS=1",
+  // Git gets an allow-listed environment, never this script's own: PATH, a locale, a home that is empty, and
+  // what is named here. Nothing else (GIT_DIR, GIT_NAMESPACE, GIT_COMMON_DIR, GIT_SSH_COMMAND...) gets through.
+  `W=$(mktemp -d); trap 'rm -rf "$W"' EXIT; mkdir "$W/home"`,
+  'BE=(env -i PATH="$PATH" LANG=C.UTF-8 HOME="$W/home" GIT_CONFIG_NOSYSTEM=1 GIT_ATTR_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_TERMINAL_PROMPT=0)',
+  "GX=()",
+  "\"${BE[@]}\" git -c core.hooksPath=/dev/null rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo '@@fail the working copy is not a git folder'; exit 1; }",
   "FA=()",
-  'while IFS= read -r key; do name=${key#filter.}; name=${name%.*}; FA+=(-c "filter.$name.clean=" -c "filter.$name.smudge=" -c "filter.$name.process=" -c "filter.$name.required=false"); done < <(git -c core.hooksPath=/dev/null config --name-only --get-regexp \'^filter[.].*[.](clean|smudge|process)$\' 2>/dev/null | sort -u)',
-  'G() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c commit.gpgsign=false -c core.pager=cat ${FA[@]+"${FA[@]}"} "$@"; }',
+  'while IFS= read -r key; do name=${key#filter.}; name=${name%.*}; FA+=(-c "filter.$name.clean=" -c "filter.$name.smudge=" -c "filter.$name.process=" -c "filter.$name.required=false"); done < <("${BE[@]}" git -c core.hooksPath=/dev/null config --name-only --get-regexp \'^filter[.].*[.](clean|smudge|process)$\' 2>/dev/null | sort -u)',
+  'G() { "${BE[@]}" ${GX[@]+"${GX[@]}"} git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c commit.gpgsign=false -c core.pager=cat ${FA[@]+"${FA[@]}"} "$@"; }',
   `URL=${quote(remote)}`,
   `[ "$(G branch --show-current)" = ${quote(copy.branch)} ] || { echo "@@fail the working copy is on $(G branch --show-current), not ${copy.branch}"; exit 1; }`,
 ];
@@ -138,21 +141,23 @@ const enter = (copy: ShipCopy, remote: string) => [
 /**
  * A clean repository for everything that reads history or touches the network, so nothing in the copy's own
  * `.git` can reach either: a fresh bare repo with no template and a config this script writes (nothing from the
- * system or the user, `HOME` pointed at it), whose only objects are the copy's, through `objects/info/alternates`,
- * and whose only ref (`refs/heads/ship`) is the commit that is scanned and pushed. The copy's config (`url.*.
- * insteadOf`, `core.sshCommand`, `push.followTags`, `push.recurseSubmodules`, credential helpers, proxies), refs
- * (tags), replace objects, grafts and shallow file are not in it. `C` runs git there; `NC` is `C` with the bot's
- * token for one command, as an Authorization header for `$URL`, with no credential helper, no proxy and no ssh.
+ * system or the user, an empty home), whose only objects are the copy's, through `objects/info/alternates`, and
+ * whose only ref (`refs/heads/ship`) is `sha`: the one commit that is scanned and pushed. `sha` is fixed before
+ * the scan (a value the caller holds, or the copy's HEAD read once here) and nothing reads HEAD or the branch
+ * again, so the branch moving under the script changes nothing. The copy's config (`url.*.insteadOf`,
+ * `core.sshCommand`, `push.followTags`, `push.recurseSubmodules`, credential helpers, proxies), refs (tags),
+ * replace objects, grafts and shallow file are not in it. `C` runs git there; `NC` is `C` with the bot's token for
+ * one command, as an Authorization header for `$URL`, with no credential helper, no proxy and no ssh.
  */
-const cleanRepo = [
-  "CLEAN=$(mktemp -d); trap 'rm -rf \"$CLEAN\"' EXIT",
-  'env HOME="$CLEAN" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null XDG_CONFIG_HOME=/dev/null git init --bare -q --template= "$CLEAN/repo" || { echo \'@@fail could not make a scratch repository\'; exit 1; }',
-  'CE=(env HOME="$CLEAN" GIT_DIR="$CLEAN/repo" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null XDG_CONFIG_HOME=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_TERMINAL_PROMPT=0)',
+const cleanRepo = (sha: string) => [
+  '"${BE[@]}" GIT_CONFIG_GLOBAL=/dev/null git init --bare -q --template= "$W/repo" || { echo \'@@fail could not make a scratch repository\'; exit 1; }',
+  'CE=("${BE[@]}" GIT_DIR="$W/repo" GIT_CONFIG_GLOBAL=/dev/null)',
   'C() { "${CE[@]}" git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.pager=cat "$@"; }',
   'NC() { "${CE[@]}" GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="Authorization: Basic $(printf \'x-access-token:%s\' "$TOK" | base64 | tr -d \'\\n\')" GIT_CONFIG_KEY_1=credential.helper GIT_CONFIG_VALUE_1= git -c http.proxy= -c core.hooksPath=/dev/null -c push.followTags=false -c push.recurseSubmodules=no "$@"; }',
-  'printf "%s\\n" "$(G rev-parse --path-format=absolute --git-common-dir)/objects" > "$CLEAN/repo/objects/info/alternates"',
+  'printf "%s\\n" "$(G rev-parse --path-format=absolute --git-common-dir)/objects" > "$W/repo/objects/info/alternates"',
   "C config push.followTags false; C config push.recurseSubmodules no; C config core.fsmonitor false",
-  "SHA=$(G rev-parse HEAD) && C update-ref refs/heads/ship \"$SHA\" || { echo '@@fail could not read the working copy commit'; exit 1; }",
+  `SHA=${sha}`,
+  'C cat-file -e "$SHA^{commit}" 2>/dev/null && C update-ref refs/heads/ship "$SHA" || { echo \'@@fail the commit to ship is not in the working copy\'; exit 1; }',
 ];
 
 /** The most scan text read per section; a bigger change or history is refused, as it cannot be checked. */
@@ -186,32 +191,32 @@ export function inspectScript(copy: ShipCopy, remote: string, nonce: string): st
   return [
     "set -u",
     ...enter(copy, remote),
-    ...cleanRepo,
+    ...cleanRepo("$(G rev-parse HEAD)"),
     `NC fetch --quiet "$URL" ${quote(`+refs/heads/${copy.base}:refs/heads/base`)} 2>/dev/null || echo '@@warn could not fetch ${copy.base}'`,
     "if C rev-parse --verify --quiet refs/heads/base >/dev/null; then base=refs/heads/base; else base=$(C rev-list --max-parents=0 refs/heads/ship | tail -n 1); fi",
     'mb=$(C merge-base "$base" refs/heads/ship 2>/dev/null || echo "$base")',
     // The base's objects are in the clean repo: let the copy read them too, without changing the copy.
-    'export GIT_ALTERNATE_OBJECT_DIRECTORIES="$CLEAN/repo/objects"',
+    'GX=(GIT_ALTERNATE_OBJECT_DIRECTORIES="$W/repo/objects")',
     'echo "@@head $SHA"',
     'echo "@@ahead $(C rev-list --count "$base"..refs/heads/ship 2>/dev/null || echo 0)"',
     `echo "@@remote $(NC ls-remote "$URL" ${quote(`refs/heads/${copy.branch}`)} 2>/dev/null | cut -f1)"`,
-    'export GIT_INDEX_FILE="$CLEAN/index"',
-    "G read-tree HEAD",
+    'GX+=(GIT_INDEX_FILE="$W/index")',
+    'G read-tree "$SHA"',
     "G add -A -- . ':(exclude).inc'",
-    ...section("dirty", "G diff --cached --name-only -z --no-renames --no-ext-diff HEAD"),
+    ...section("dirty", 'G diff --cached --name-only -z --no-renames --no-ext-diff "$SHA"'),
     ...section("numstat", 'G diff --cached --numstat -z --no-renames --no-ext-diff "$mb"'),
-    'G diff --cached --raw -z --abbrev=40 --no-renames --no-ext-diff "$mb" > "$CLEAN/raw"',
-    ...section("raw", 'cat "$CLEAN/raw"'),
+    'G diff --cached --raw -z --abbrev=40 --no-renames --no-ext-diff "$mb" > "$W/raw"',
+    ...section("raw", 'cat "$W/raw"'),
     // New object of each changed file, in the same order: its size, in one command; and which are links to an absolute path.
-    ': > "$CLEAN/shas"; : > "$CLEAN/abs"; i=0',
+    ': > "$W/shas"; : > "$W/abs"; i=0',
     "while IFS= read -r -d '' meta && IFS= read -r -d '' _path; do",
     "  set -- $meta",
-    '  echo "$4" >> "$CLEAN/shas"',
-    '  if [ "$2" = 120000 ]; then t=$(G cat-file -p "$4" 2>/dev/null | head -c 1); [ "$t" = "/" ] && echo "$i" >> "$CLEAN/abs"; fi',
+    '  echo "$4" >> "$W/shas"',
+    '  if [ "$2" = 120000 ]; then t=$(G cat-file -p "$4" 2>/dev/null | head -c 1); [ "$t" = "/" ] && echo "$i" >> "$W/abs"; fi',
     "  i=$((i+1))",
-    'done < "$CLEAN/raw"',
-    ...section("sizes", "G cat-file --batch-check='%(objectsize)' < \"$CLEAN/shas\""),
-    ...section("abs", 'cat "$CLEAN/abs"'),
+    'done < "$W/raw"',
+    ...section("sizes", "G cat-file --batch-check='%(objectsize)' < \"$W/shas\""),
+    ...section("abs", 'cat "$W/abs"'),
     ...section("patch", `G diff --cached -U0 ${diffOpts} "$mb" | head -c ${SCAN_LIMIT + 1}`),
     // Everything a push would publish: each commit's message and patch, not only where the branch ends up.
     `echo ${m("hist-begin")}`,
@@ -251,14 +256,16 @@ export function pushScript(copy: ShipCopy, remote: string, sha: string): string 
   return [
     "set -u",
     ...enter(copy, remote),
-    `[ "$(G rev-parse HEAD)" = ${quote(sha)} ] || { echo '@@fail the working copy changed after it was checked, so nothing was pushed'; exit 1; }`,
-    ...cleanRepo,
+    // The scanned commit, as a value: HEAD and the branch are not read again, so a copy that moves meanwhile
+    // changes nothing about what is sent.
+    ...cleanRepo(quote(sha)),
     // Only the clean repo's one ref goes, to the repo's own address; nothing of the copy's config or refs is in play.
     `if out=$(NC push --quiet "$URL" ${quote(`refs/heads/ship:refs/heads/${copy.branch}`)} 2>&1); then`,
     `  echo ${quote(`@@pushed ${sha}`)}`,
     "else",
     '  echo "$out" | tail -n 5',
-    '  case "$out" in *"fetch first"*|*non-fast-forward*|*rejected*) echo "@@diverged"; exit 7 ;; esac',
+    // A branch GitHub has moved on is the one rejection with its own sentence; any other is said as it is.
+    '  case "$out" in *"[rejected]"*"fetch first"*|*"[rejected]"*"non-fast-forward"*) echo "@@diverged"; exit 7 ;; esac',
     "  exit 1",
     "fi",
   ].join("\n");

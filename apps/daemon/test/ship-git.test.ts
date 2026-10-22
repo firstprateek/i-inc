@@ -511,6 +511,85 @@ describe("real git", () => {
     await expect(w.ship.verify(copy())).rejects.toMatchObject({ code: "secrets" });
   });
 
+  it("pushes exactly the commit that was scanned, even while the branch is flipped to a token-bearing child", async () => {
+    const w = world();
+    w.commit("a", { "first.txt": "first\n" });
+    const A = git(w.cwd, "rev-parse", "HEAD");
+    w.commit("b, with a token", { "b.ts": `export const t = "${TOKEN}";\n` });
+    const B = git(w.cwd, "rev-parse", "HEAD");
+    git(w.cwd, "update-ref", "refs/keep/b", B);
+    git(w.cwd, "reset", "-q", "--hard", A);
+    const flipper = spawn(
+      "bash",
+      [
+        "-c",
+        `while :; do git update-ref refs/heads/conv/ab12cd34 ${B} 2>/dev/null; git update-ref refs/heads/conv/ab12cd34 ${A} 2>/dev/null; done`,
+      ],
+      { cwd: w.cwd, env, stdio: "ignore" },
+    );
+    try {
+      for (let i = 0; i < 12; i++) {
+        // Either the scan sees the child and refuses, or it sees A and A is what goes. Never the child.
+        await w.ship.push(copy()).catch(() => undefined);
+        expect(() => git(w.origin, "cat-file", "-e", B)).toThrow();
+        const at = execFileSync(
+          "git",
+          ["--git-dir", w.origin, "for-each-ref", "--format=%(objectname)", "refs/heads/conv/ab12cd34"],
+          { env, encoding: "utf8" },
+        ).trim();
+        expect(["", A]).toContain(at);
+      }
+    } finally {
+      flipper.kill();
+    }
+  });
+
+  it("says a rejection that isn't about the branch having moved on as what it is", async () => {
+    const w = world();
+    const hook = join(w.origin, "hooks", "pre-receive");
+    mkdirSync(join(w.origin, "hooks"), { recursive: true });
+    writeFileSync(hook, "#!/bin/sh\necho 'policy says no' >&2\nexit 1\n");
+    chmodSync(hook, 0o755);
+    writeFileSync(join(w.cwd, "x.txt"), "x\n");
+    await w.ship.commit(copy(), "feat: x");
+    const err = await w.ship.push(copy()).catch((e) => e);
+    expect(err.code).toBe("git");
+    expect(err.message).toContain("Couldn't push the branch");
+    expect(err.message).toContain("policy says no");
+    expect(err.message).not.toContain("has changes");
+  });
+
+  it("runs git with an allow-listed environment: nothing from the script's own gets through", async () => {
+    const w = world();
+    const marker = join(w.dir, "ext-diff-ran");
+    writeFileSync(join(w.cwd, "x.txt"), "x\n");
+    // Variables that would redirect or reconfigure git, if they got through.
+    const dirty = {
+      GIT_NAMESPACE: "other",
+      GIT_COMMON_DIR: w.dir,
+      GIT_EXTERNAL_DIFF: `sh -c 'touch ${marker}'`,
+      GIT_SSH_COMMAND: `touch ${marker}`,
+      GIT_DIR: join(w.dir, "nope"),
+    };
+    const ship = conversationShip({
+      tokens: { token: async () => "ghs_secret_token_value" },
+      run: async (_e, script, extra) =>
+        bash(
+          script
+            .replaceAll("/home/employee/work", join(w.dir, "home", "employee", "work"))
+            .replaceAll(REMOTE, w.origin),
+          { ...extra, ...dirty },
+        ),
+      prs: {} as never,
+    });
+    const report = await ship.inspect(copy());
+    expect(report.files.map((f) => f.path)).toEqual(["x.txt"]);
+    await ship.commit(copy(), "feat: x");
+    await ship.push(copy());
+    expect(existsSync(marker)).toBe(false);
+    expect(git(w.origin, "rev-parse", "conv/ab12cd34")).toBe(git(w.cwd, "rev-parse", "HEAD"));
+  });
+
   describe("the copy's own .git can't reach the network or the scan", () => {
     /** A second bare repo the copy's config tries to send the push to. */
     const evilOf = (w: ReturnType<typeof world>) => {
