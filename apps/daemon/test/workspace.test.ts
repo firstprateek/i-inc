@@ -9,8 +9,9 @@ import type { Employee, Ticket } from "@i-inc/core";
 import { defaultProjectPolicy, defaultSwitchRules } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
 import { createApi, imageLimits } from "../src/api.ts";
-import { FineGrainedToken, type PullRequests } from "../src/github.ts";
+import type { PullRequests } from "../src/github.ts";
 import type { RunScript } from "../src/harness.ts";
+import { HostPusher } from "../src/host-push.ts";
 import type { AttachmentFile } from "../src/tickets.ts";
 import {
   attachmentScript,
@@ -19,6 +20,7 @@ import {
   GitHubWorkspace,
   openScript,
 } from "../src/workspace.ts";
+import { fakeTokens, READ_TOKEN } from "./fake-tokens.ts";
 import { refunds, testApp } from "./setup.ts";
 
 const home = mkdtempSync(join(tmpdir(), "inc-home-"));
@@ -81,6 +83,20 @@ const script = (origin: string, work: string) =>
     message: "chore: start work on Refunds are counted as spending!",
   });
 
+/**
+ * Pick-up's script in a machine, then what the host does with it: when the script says `@@needpush 1`, a push of
+ * the commit it names (here a plain git push, standing in for the host's push of a verified bundle).
+ */
+async function pickUp(employee: string, origin: string, work: string) {
+  const r = await localScript(employee, script(origin, work));
+  if (r.output.includes("@@needpush 1")) {
+    const head = /^@@head (\w+)$/m.exec(r.output)?.[1] ?? "";
+    git(origin, "config", "receive.denyCurrentBranch", "ignore");
+    git(join(work, "inc-7"), "push", "-q", "origin", `${head}:refs/heads/${branchName(ticket)}`);
+  }
+  return r;
+}
+
 describe("pick-up's git", () => {
   it("names the branch after the ticket", () => {
     expect(branchName(ticket)).toBe("inc/7-refunds-are-counted-as-spending");
@@ -90,8 +106,11 @@ describe("pick-up's git", () => {
   it("clones once, makes the worktree and branch from main, starts it with an empty commit, and pushes", async () => {
     const { root, origin } = setup();
     const work = join(root, "machine-a");
-    const first = await localScript("ada", script(origin, work));
-    expect(first.output).toContain("@@pushed");
+    const first = await pickUp("ada", origin, work);
+    expect(first.output).toContain("@@ready");
+    expect(first.output).toContain("@@needpush 1");
+    // The machine itself never pushes: the script holds no push, only the commit to hand over.
+    expect(script(origin, work)).not.toContain("git push");
     const wt = join(work, "inc-7");
     expect(git(wt, "branch", "--show-current")).toBe("inc/7-refunds-are-counted-as-spending");
     expect(git(wt, "log", "--format=%an <%ae>|%s", "-1")).toBe(
@@ -102,20 +121,20 @@ describe("pick-up's git", () => {
     );
 
     // Again, as after a crash: nothing new.
-    const again = await localScript("ada", script(origin, work));
-    expect(again.output).toContain("@@pushed");
+    const again = await pickUp("ada", origin, work);
+    expect(again.output).toContain("@@needpush 0");
     expect(git(wt, "rev-list", "--count", "origin/main..HEAD")).toBe("1");
 
     // Another machine, as after a handoff: it checks out the branch that's on origin.
     const other = join(root, "machine-b");
-    expect((await localScript("kit", script(origin, other))).output).toContain("@@pushed");
+    expect((await pickUp("kit", origin, other)).output).toContain("@@needpush 0");
     expect(git(join(other, "inc-7"), "rev-parse", "HEAD")).toBe(git(wt, "rev-parse", "HEAD"));
   });
 
   it("writes the owner's images into the worktree, out of git's sight, and is safe to repeat", async () => {
     const { root, origin } = setup();
     const work = join(root, "machine-a");
-    await localScript("ada", script(origin, work));
+    await pickUp("ada", origin, work);
     const wt = join(work, "inc-7");
     // Bigger than one base64 line, with every byte value, so the wrapping and decoding are both tried.
     const data = new Uint8Array(Array.from({ length: 1000 }, (_, i) => i % 256));
@@ -146,7 +165,7 @@ describe("pick-up's git", () => {
   it("lands six images of 10 MB each in the worktree with the same bytes", { timeout: 60_000 }, async () => {
     const { root, origin } = setup();
     const work = join(root, "machine-a");
-    await localScript("ada", script(origin, work));
+    await pickUp("ada", origin, work);
     const wt = join(work, "inc-7");
 
     const app = await testApp();
@@ -221,7 +240,7 @@ describe("the GitHub workspace", () => {
     } as unknown as PullRequests;
     const ws = new GitHubWorkspace({
       project: (name) => (name === "Duet" ? { id: "Duet", repo: "o/duet", checks: ["true"] } : undefined),
-      tokens: new FineGrainedToken("ghs_x"),
+      tokens: fakeTokens(),
       prs,
       identity: async (e) => ({
         name: `${e.name} (i.inc)`,
@@ -232,14 +251,14 @@ describe("the GitHub workspace", () => {
         o.run ??
         (async (_e, _s, env = {}) => {
           seen.push(env);
-          return { code: 0, output: "@@pushed\n" };
+          return { code: 0, output: "@@ready\n@@needpush 0\n" };
         }),
       ...(o.attachments ? { attachments: o.attachments } : {}),
     });
     return { ws, calls, seen };
   }
 
-  it("pushes the branch with the repo's token, then opens the draft", async () => {
+  it("reads with a read-only token (the host pushes), then opens the draft", async () => {
     const { ws, calls, seen } = workspace();
     expect(await ws.open(ticket, ada)).toEqual({
       number: 4,
@@ -247,7 +266,7 @@ describe("the GitHub workspace", () => {
       nodeId: "PR_4",
       branch: "inc/7-refunds-are-counted-as-spending",
     });
-    expect(seen).toEqual([{ GH_TOKEN: "ghs_x" }]);
+    expect(seen).toEqual([{ GH_TOKEN: READ_TOKEN }]);
     expect(calls).toEqual([
       "find o/duet inc/7-refunds-are-counted-as-spending",
       "open o/duet inc/7-refunds-are-counted-as-spending fix: Refunds are counted as spending!",
@@ -269,7 +288,7 @@ describe("the GitHub workspace", () => {
     const { ws } = workspace({
       run: async (_e, script, env = {}) => {
         scripts.push({ script, env });
-        return { code: 0, output: scripts.length === 1 ? "@@pushed\n" : "@@attached\n" };
+        return { code: 0, output: scripts.length === 1 ? "@@ready\n@@needpush 0\n" : "@@attached\n" };
       },
       attachments: () => [
         { n: 1, name: "a.png", mime: "image/png", size: 2, data },
@@ -285,7 +304,7 @@ describe("the GitHub workspace", () => {
     const failing = workspace({
       run: async (_e, script) => ({
         code: script.includes("base64 -d") ? 1 : 0,
-        output: "@@pushed\ndisk full",
+        output: "@@ready\n@@needpush 0\ndisk full",
       }),
       attachments: () => [{ n: 1, name: "a.png", mime: "image/png", size: 2, data }],
     });
@@ -342,7 +361,7 @@ describe("a reviewer's machine", () => {
     const runs: string[] = [];
     const ws = new GitHubWorkspace({
       project: () => ({ id: "Duet", repo: "o/duet", checks: ["true"] }),
-      tokens: new FineGrainedToken("ghs_x"),
+      tokens: fakeTokens(),
       prs: {
         find: async () => ({ number: 4, url: "https://github.com/o/duet/pull/4", nodeId: "PR_4" }),
       } as unknown as PullRequests,
@@ -350,12 +369,13 @@ describe("a reviewer's machine", () => {
         name: `${e.name} (i.inc)`,
         email: "1+i-inc-bot[bot]@users.noreply.github.com",
       }),
-      worktree: (id) => `/MACHINE/work/inc-${id}`,
+      worktree: (id) => `/home/employee/work/inc-${id}`,
       remote: () => origin,
+      host: new HostPusher({ tokens: fakeTokens(), mirrors: join(root, "mirrors"), remote: () => origin }),
       policy: () => ({ ...defaultProjectPolicy, mode }),
       run: (employee, script, extra) => {
         runs.push(employee);
-        return localScript(employee, script.replaceAll("/MACHINE", machine(employee)), extra);
+        return localScript(employee, script.replaceAll("/home/employee", machine(employee)), extra);
       },
       attachments: () => files,
     });
@@ -469,10 +489,10 @@ describe("2.5 looking for a ticket's worktree", () => {
   it("says whether it is a git worktree, and a bare folder (what cleanup leaves) is not", async () => {
     const { root, origin } = setup();
     const work = join(root, "machine-a");
-    expect((await localScript("ada", script(origin, work))).output).toContain("@@pushed");
+    expect((await localScript("ada", script(origin, work))).output).toContain("@@ready");
     const ws = new GitHubWorkspace({
       project: () => ({ id: "Duet", repo: "o/duet", checks: ["true"] }),
-      tokens: new FineGrainedToken("ghs_x"),
+      tokens: fakeTokens(),
       prs: {} as unknown as PullRequests,
       identity: async () => ({ name: "Ada (i.inc)", email: "1+i-inc-bot[bot]@users.noreply.github.com" }),
       worktree: () => join(work, "inc-7"),

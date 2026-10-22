@@ -77,6 +77,96 @@ describe("history must continue", () => {
   });
 });
 
+describe("review gate", () => {
+  const unreviewed = (shas: string[]) => ({
+    state: "unreviewed" as const,
+    shas,
+    reason: `${shas[0]?.slice(0, 7)} is not in the push ledger`,
+  });
+
+  it("skips a candidate with a commit nobody reviewed: no build, never bad, said once, and the owner is told", async () => {
+    const w = new World();
+    w.head = B;
+    w.ci[B] = { state: "success" };
+    w.reviewAnswer[B] = unreviewed([B]);
+    const d = w.deployer();
+    expect((await d.cycle()).action).toBe("unreviewed");
+    expect((await d.cycle()).action).toBe("unreviewed");
+    expect(w.builds).toEqual([]);
+    expect(w.ciCalls).toBe(0);
+    expect(w.cur).toBe(A);
+    // Recorded once, as the daemon reads it for the push; not marked bad.
+    expect(w.store.records).toHaveLength(1);
+    expect(w.store.records[0]).toMatchObject({ sha: B, from: A, outcome: "skipped-review" });
+    expect(w.store.records[0]?.reason).toContain("didn't come through review");
+    expect(w.store.state().bad).toEqual({});
+    expect(w.logs.join("\n")).toContain("WARNING");
+    // Asked once: the second cycle waits for main to move or for the retry time.
+    expect(w.reviewCalls).toEqual([B]);
+  });
+
+  it("looks again when main moves, and deploys a candidate that came through review", async () => {
+    const w = new World();
+    w.head = B;
+    w.reviewAnswer[B] = unreviewed([B]);
+    const d = w.deployer();
+    await d.cycle();
+    w.head = C;
+    w.ci[C] = { state: "success" };
+    expect((await d.cycle()).action).toBe("deployed");
+    expect(w.cur).toBe(C);
+  });
+
+  it("looks at the same tip again after a while (a merge can take a moment to show), and deploys it once it is reviewed", async () => {
+    const w = new World();
+    w.head = B;
+    w.ci[B] = { state: "success" };
+    w.reviewAnswer[B] = unreviewed([B]);
+    const d = w.deployer();
+    expect((await d.cycle()).action).toBe("unreviewed");
+    w.clock.t += 16 * 60_000;
+    delete w.reviewAnswer[B];
+    expect((await d.cycle()).action).toBe("deployed");
+    expect(w.store.state().reviewSkipped).toEqual({});
+    // Still unreviewed after the wait: no second record.
+    const w2 = new World();
+    w2.head = B;
+    w2.reviewAnswer[B] = unreviewed([B]);
+    const d2 = w2.deployer();
+    await d2.cycle();
+    w2.clock.t += 16 * 60_000;
+    expect((await d2.cycle()).action).toBe("unreviewed");
+    expect(w2.store.records).toHaveLength(1);
+    expect(w2.reviewCalls).toEqual([B, B]);
+  });
+
+  it("waits out a rate limit and a GitHub that cannot be read, and deploys neither way", async () => {
+    const w = new World();
+    w.head = B;
+    w.ci[B] = { state: "success" };
+    w.reviewAnswer[B] = { state: "rate-limited", until: w.clock.t + 600_000 };
+    const d = w.deployer();
+    expect((await d.cycle()).action).toBe("rate-limited");
+    w.reviewAnswer[B] = { state: "error", reason: "GitHub unreachable" };
+    expect((await d.cycle()).action).toBe("remote-error");
+    expect(w.builds).toEqual([]);
+    expect(w.store.records).toEqual([]);
+    delete w.reviewAnswer[B];
+    expect((await d.cycle()).action).toBe("deployed");
+  });
+
+  it("deploys such a commit when the owner allowed it with --sha", async () => {
+    const w = new World();
+    w.head = B;
+    w.ci[B] = { state: "success" };
+    w.reviewAnswer[B] = unreviewed([B]);
+    const d = w.deployer();
+    await d.cycle();
+    d.allowRewrite(B);
+    expect((await d.cycle()).action).toBe("deployed");
+  });
+});
+
 describe("CI gate", () => {
   it("waits while CI is pending, then deploys once it is green", async () => {
     const w = new World();

@@ -375,10 +375,21 @@ interface with a scripted fake in tests, like the ACP agent.
     passed on the mini, this document does not claim that a PA's sandbox can't talk to another
     machine, which would be a way out through an engineers' machine.
 - **GitHub** uses a bot identity: one GitHub App, "i.inc bot", installed on the repos you choose.
-  - For each session it mints a 1-hour token. The token can push branches, open and update PRs,
-    read CI, and manage issues; a reviewer's or verifier's can only read. Editing CI/CD workflows,
-    running Actions and Pages are privileged requests: a token that can do them reaches the repo's
-    Actions secrets from GitHub's runners, outside the walls.
+  - **A sandbox never holds a credential that can write.** Agents run with bypassed permissions and
+    can be prompt-injected, and the bot may update `main` (direct mode), which the deployer puts on the
+    host. So a machine is signed in to GitHub with a read-only, 1-hour token limited to the repos its
+    sessions work on (none if a session needs none), renewed while it runs. Every push is made by the
+    daemon on the host, from a git bundle of exactly the commit that was checked, after it has verified
+    the bundle and scanned what it brings for credentials; the write token stays in the daemon's memory.
+    Opening and updating PRs, reading CI and managing issues are the daemon's too. A builder and its
+    reviewer share a machine, so a poisoned builder could fake its own checks and review; therefore, for
+    the repo the deployer puts on the host, a change to anything the host could run (everything but
+    `docs/**/*.md` and top-level `*.md`, never agent instruction files) waits for your one-tap OK, and
+    the deployer deploys such a commit only if the daemon recorded your approval or it is a commit of a
+    pull request you merged. Host code deploys only with your approval or an owner-merged PR; a commit
+    that got there another way is skipped and you are told.
+    Editing CI/CD workflows, running Actions and Pages are privileged requests: a token that can do
+    them reaches the repo's Actions secrets from GitHub's runners, outside the walls.
   - Commits read as "Ada (i.inc)".
   - A ruleset on `main` lets only you update it, through a PR with your approval, so GitHub itself
     enforces that only you merge ([github-app.md](github-app.md)). Your Approve does the merge with

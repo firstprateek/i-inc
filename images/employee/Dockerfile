@@ -92,7 +92,8 @@ RUN claude=$(find /usr/local/lib/node_modules/@agentclientprotocol/claude-agent-
     echo 'export DISABLE_AUTOUPDATER=1' >/etc/profile.d/i-inc.sh && \
     claude --version
 
-# git pushes to GitHub through gh, which uses the session's GH_TOKEN (docs/github-app.md).
+# git reads from GitHub through gh, which holds a READ-ONLY token (docs/github-app.md, T68): a machine never
+# holds a credential that can write, and every push is made by the daemon on the host.
 RUN git config --system init.defaultBranch main && \
     git config --system credential.https://github.com.helper '' && \
     git config --system --add credential.https://github.com.helper '!gh auth git-credential'

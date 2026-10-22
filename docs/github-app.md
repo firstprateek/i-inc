@@ -183,11 +183,43 @@ It mints one token to look at the repo, never prints it, and revokes it at the e
 
 - `readGitHubAppConfig` reads `~/.config/i-inc/github-app.json`, and `readPrivateKey` refuses a key
   that anyone else can read.
-- `GitHubApp.token(repo)` mints a token for the ticket's repo alone: one that can push for the
-  builder, read-only for a reviewer or verifier. A session gets one with at least 50 minutes left.
-- In the machine, `gh`, and git through gh's credential helper, use that token, so they push as the
-  bot. A session that runs past its token's hour loses push; fresh tokens mid-session are still to
-  come (the handoff).
+- **No write token ever enters a sandbox (T68).** An agent runs with bypassed permissions and can be
+  prompt-injected; if its machine could push, a poisoned agent could push to `main` around the
+  review pipeline (the bot may bypass the ruleset, for direct mode), and the deployer would put that
+  code on the host. So:
+  - `GitHubApp.readToken(repos)` (a `scopedToken` with `READ_PERMISSIONS`: contents, pull requests,
+    checks and metadata, all read-only) mints the only token a sandbox gets, limited to the repos its
+    sessions work on (the tickets' and conversations' projects) through the `repositories` and
+    `permissions` fields of `POST /app/installations/{id}/access_tokens`. Never "all repos". A session
+    with no project gets no GitHub sign-in. The machine is signed in with it (`gh auth login`, which
+    git uses through gh's credential helper, as before) and it is renewed every 25 minutes. A
+    stand-in token (`FineGrainedToken`) cannot be narrowed, so it is never put in a sandbox.
+  - `GitHubApp.token(repo)` (write) is for the host alone: the host's push (`host-push.ts`), opening
+    PRs and reading CI. It lives in the daemon's memory.
+  - **Every push is the host's.** The sandbox packs exactly the commit the pipeline checked into a git
+    bundle (`bundle.ts`, built from a sha it was told, in a clean repository) and prints it
+    base64-encoded between markers. The daemon verifies the bundle (`git bundle verify`, one head, the
+    tip is the expected sha, objects checked), unpacks it into a bare mirror
+    (`~/.i-inc/push-mirrors/<owner>/<repo>.git`), scans the commits it brings for credentials with the
+    same scan shipping uses, holds a project's protected paths itself, and pushes from the mirror with
+    the write token in an `http.extraheader` of that one git child (empty HOME, no system or global
+    config, no hooks). The branch and repo come from the daemon's records, never from the sandbox. The
+    default branch is never force-pushed; a ticket's branch is replaced only under
+    `--force-with-lease`. Bundles are capped at 10 MB. Anything it cannot check is a refusal.
+  - **The ledger, and what the deployer trusts.** Every commit the daemon pushes to a repo's default branch
+    is first written to `~/.i-inc/pushed-main.jsonl` (`{sha, repo, branch, ticket, at, parents, tip}`, plus
+    `ownerApproved` and the approved paths when you tapped OK on the change, `secretsOverridden` when you said a
+    scan finding is not a secret, `hostRevert` for a revert the host made). The pipeline's checks and review
+    run where the builder does, so they do not count as review for code the host runs. For the repo the
+    deployer deploys, every path the host could run (everything but `docs/**/*.md` and top-level `*.md`,
+    never agent instruction files) is protected: the daemon holds the push for your OK, and the deployer
+    deploys a commit that changes any of it only if the ledger has it with `ownerApproved`, or it is a
+    commit of a pull request you merged. Your approval is for the commit and the diff of the protected paths
+    shown on the card (the host hashes the diff itself), not for the path names. A revert the daemon makes
+    (`hostRevert`) is accepted only for a ledgered commit and only if it is exactly its inverse. Host code
+    deploys only with your approval or an owner-merged PR.
+  - The merge is still yours, and the ruleset on `main` is unchanged. The owner's own tool for a
+    change the bot may not push (workflows) is still `tools/host/push-for-owner.sh`.
 - `commitIdentity` gives commits the employee's name and the bot's noreply address, such as "Ada
   (i.inc)" with `<id>+i-inc-bot[bot]@users.noreply.github.com`, so GitHub shows them as the App's.
 - `PullRequests` opens the draft at stage 1. At stage 9 it writes the report into the body and marks

@@ -314,7 +314,14 @@ describe("protected paths still wait for the owner", () => {
     await rig.settle();
     const s = await rig.app.daemon.state(id);
     expect(s.status).toBe("needs-you");
-    expect(s.needsYou).toEqual({ kind: "protected-paths", paths: [".github/ci.yml"] });
+    // The card says what the OK is for: the commit, a hash of the diff, and the diff itself.
+    expect(s.needsYou).toMatchObject({
+      kind: "protected-paths",
+      paths: [".github/ci.yml"],
+      sha: expect.stringMatching(/^[0-9a-f]{40}$/),
+      patchId: expect.stringMatching(/^[0-9a-f]{64}$/),
+      diff: expect.stringContaining("+b"),
+    });
     expect(rig.originGit("rev-parse", "main")).toBe(base);
     // Still the ticket's: the conversation can't touch the copy while the owner decides.
     c.say("plain hello", "t9");

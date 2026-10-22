@@ -8,7 +8,8 @@ export type Outcome =
   | "failed-build"
   | "failed-smoke"
   | "skipped-ci"
-  | "skipped-ancestry";
+  | "skipped-ancestry"
+  | "skipped-review";
 
 /** One line of ~/.i-inc/deploys.jsonl (contract C21 in docs/coord.md). */
 export interface DeployRecord {
@@ -50,6 +51,41 @@ export interface Remote {
    * that cannot be told (the objects could not be fetched).
    */
   descends(ancestor: string, descendant: string): Promise<boolean | null>;
+  /**
+   * `git rev-list <ancestor>..<descendant>`, newest first, at most `max` of them (more: the list is cut at `max`
+   * and `truncated` says so), or null when it cannot be told.
+   */
+  range(
+    ancestor: string,
+    descendant: string,
+    max: number,
+  ): Promise<{ shas: string[]; truncated: boolean } | null>;
+  /**
+   * Every path the commit changes (against each parent, for a merge), or null when it cannot be told. Read in the
+   * running release `current`'s clone, which has the candidate's history.
+   */
+  changedFiles(sha: string, current: string): Promise<string[] | null>;
+  /**
+   * `git diff -U0 <from> <to>` (renames off), or null when it cannot be told. Read in the running release
+   * `current`'s clone. For telling a revert from any other change.
+   */
+  diff(from: string, to: string, current: string): Promise<string | null>;
+}
+
+/**
+ * Whether every commit a candidate brings came through review (T68). A commit did if it is in the daemon's
+ * ledger of what it pushed to main, or is the squash or merge commit of a pull request the repo's owner
+ * merged, or touches only docs. Anything else is somebody pushing around the pipeline: not deployed.
+ */
+export type ReviewResult =
+  | { state: "ok" }
+  | { state: "unreviewed"; shas: string[]; reason: string }
+  | { state: "rate-limited"; until: number }
+  | { state: "error"; reason: string };
+
+export interface Review {
+  /** Looks at `git rev-list <current>..<candidate>`. */
+  check(current: string, candidate: string): Promise<ReviewResult>;
 }
 
 export interface Ci {
@@ -115,6 +151,8 @@ export interface State {
   retry: Record<string, { failures: number; transients: number; nextAt: number }>;
   /** Commits whose history does not include the running release, already reported once. */
   ancestrySkipped: string[];
+  /** Tips of main that brought a commit nobody reviewed: reported once, looked at again at `nextAt` (a PR's merge may not show for a while). */
+  reviewSkipped: Record<string, { at: number; nextAt: number }>;
   /** Commits the owner allowed despite that (`--sha`). */
   allowRewrite: string[];
   /** Keys of records already written (sha:outcome:attempt start), so a restart never writes one twice. */

@@ -184,6 +184,7 @@ describe("release folders", () => {
       clock,
       remote,
       ci: { check: async () => ({ state: "success" as const }) },
+      review: { check: async () => ({ state: "ok" as const }) },
       releases: r,
       smoke: { run: async () => ({ ok: true as const }) },
       daemon: { restart: async () => {}, health, launchdState: async () => "running" as const },

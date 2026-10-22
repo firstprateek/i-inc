@@ -190,6 +190,35 @@ describe("the protected-paths card", () => {
     });
   });
 
+  it("shows the commit and the change itself, with the rest behind Show all (T68)", async () => {
+    const long = `diff --git a/apps/x.ts b/apps/x.ts\n${"+let a = 1;\n".repeat(600)}+THE-END\n`;
+    serve([
+      view({
+        id: "5",
+        title: "Change the daemon",
+        status: "needs-you",
+        needsYou: {
+          kind: "protected-paths",
+          paths: ["apps/x.ts"],
+          sha: "abcdef1234567890abcdef1234567890abcdef12",
+          patchId: "p".repeat(64),
+          diff: long,
+          diffTruncated: true,
+        },
+      }),
+    ]);
+    const card = (await mount()).querySelector(".ok-card");
+    expect(card?.textContent).toContain("abcdef1");
+    expect(card?.textContent).toContain("+let a = 1;");
+    // A preview first; the end of the diff is behind "Show all".
+    const shown = [...(card?.querySelectorAll("pre.diff") ?? [])].map((p) => p.textContent ?? "");
+    expect(shown).toHaveLength(2);
+    expect(shown[0]).not.toContain("THE-END");
+    expect(shown[1]).toContain("THE-END");
+    expect(card?.querySelector("details summary")?.textContent).toBe("Show all");
+    expect(card?.textContent).toContain("the rest is cut");
+  });
+
   it("shows nothing extra when no ticket waits on protected paths", async () => {
     serve([view({})]);
     expect((await mount()).querySelector(".ok-card")).toBeNull();

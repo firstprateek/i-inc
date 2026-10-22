@@ -12,7 +12,8 @@ export type DeployOutcome =
   | "failed-build"
   | "failed-smoke"
   | "skipped-ci"
-  | "skipped-ancestry";
+  | "skipped-ancestry"
+  | "skipped-review";
 
 /** One line of ~/.i-inc/deploys.jsonl. */
 export interface DeployEntry {
@@ -31,6 +32,7 @@ const outcomes: readonly string[] = [
   "failed-smoke",
   "skipped-ci",
   "skipped-ancestry",
+  "skipped-review",
 ];
 
 /** No absolute home paths in anything shown to the owner. */
@@ -79,7 +81,13 @@ export function readDeploys(path: string | undefined, limit = 20): DeployEntry[]
   return out;
 }
 
-const failed: readonly DeployOutcome[] = ["rolled-back", "failed-build", "failed-smoke", "skipped-ancestry"];
+const failed: readonly DeployOutcome[] = [
+  "rolled-back",
+  "failed-build",
+  "failed-smoke",
+  "skipped-ancestry",
+  "skipped-review",
+];
 const short = (sha: string | null) => (sha ? sha.slice(0, 7) : "none");
 
 /** Pushes once for each failed deploy it has not announced yet. Survives restarts (push_sent). */
@@ -119,6 +127,12 @@ export class DeployNotifier {
         payload = {
           title: "Rolled back by hand",
           body: `Rolled back by hand to ${short(e.sha)} (left ${short(e.from)})`,
+        };
+      } else if (e.outcome === "skipped-review") {
+        // A commit reached main around the review pipeline (T68): nothing is deployed until the owner looks.
+        payload = {
+          title: "A commit on main didn't come through review",
+          body: `A commit on main didn't come through review: ${short(e.sha)}. Not deployed.`,
         };
       } else if (e.outcome === "skipped-ancestry") {
         payload = {

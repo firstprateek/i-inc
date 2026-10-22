@@ -1,17 +1,19 @@
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Ticket } from "@i-inc/core";
+import type { GatesResult, Ticket } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
 import {
   changedScript,
-  isProtected,
+  type HarnessSettings,
   MachineHarness,
-  pushMainScript,
   type RunScript,
   rebaseScript,
 } from "../src/harness.ts";
+import { HostPusher } from "../src/host-push.ts";
+import { isProtected } from "../src/paths.ts";
+import { fakeTokens, leaksOf, READ_TOKEN, type SandboxCall, WRITE_TOKEN } from "./fake-tokens.ts";
 
 // The scripts run in real bash with real git, standing in for `container machine run -i … bash -s`.
 const env = {
@@ -74,6 +76,54 @@ function repos(ours: string, theirs?: string) {
   return work;
 }
 
+/** Where the sandbox keeps the ticket's worktree (the scripts only accept this shape); the test maps it to `work`. */
+const SANDBOX_WORKTREE = "/home/employee/work/inc-t7";
+
+/**
+ * A harness with GitHub: reads with a read-only token, and pushes through the host, to the local "origin" next to
+ * the worktree. `calls` is every script that went into the "sandbox", for looking for a write token.
+ */
+function withGitHub(work: string, settings: Partial<HarnessSettings> = {}, hideChanges = false) {
+  const origin = join(work, "..", "origin");
+  const calls: SandboxCall[] = [];
+  const run: RunScript = (employeeId, script, extra) => {
+    calls.push({ via: "run", employeeId, script, env: extra });
+    // A machine that says nothing changed, whatever did.
+    if (hideChanges && script.includes("@@changed64")) return Promise.resolve({ code: 0, output: "" });
+    return localScript(employeeId, script.replaceAll(SANDBOX_WORKTREE, work), extra);
+  };
+  const host = new HostPusher({
+    tokens: fakeTokens(),
+    mirrors: join(work, "..", "mirrors"),
+    ledger: join(work, "..", "ledger", "pushed-main.jsonl"),
+    remote: () => origin,
+  });
+  const harness = new MachineHarness(
+    {
+      recipe: () => ["true"],
+      worktree: () => SANDBOX_WORKTREE,
+      github: async () => ({ GH_TOKEN: READ_TOKEN }),
+      host,
+      repo: () => "acme/duet",
+      author: async () => ({ name: "Ada (i.inc)", email: "bot@example.invalid" }),
+      ...settings,
+    },
+    run,
+  );
+  return { harness, calls, origin, ledger: join(work, "..", "ledger", "pushed-main.jsonl") };
+}
+
+/** The options the runner passes after the owner OKs the card a held run produced (state.ts: the OK is for that change). */
+function okOf(held: GatesResult) {
+  if (held.ok || !held.approval || !held.protectedPaths)
+    throw new Error(`not a card: ${JSON.stringify(held)}`);
+  return {
+    ownerApproved: true,
+    approvedPaths: held.protectedPaths,
+    approval: { sha: held.approval.sha, patchId: held.approval.patchId, paths: held.protectedPaths },
+  };
+}
+
 describe("the machine harness", () => {
   it("runs the recipe in the worktree and is green when every step passes", async () => {
     const work = mkdtempSync(join(tmpdir(), "inc-harness-"));
@@ -114,42 +164,45 @@ describe("the machine harness", () => {
     expect(git(work, "branch", "--show-current").trim()).toBe("inc/t7-x");
   });
 
-  it("gates: with GitHub, pushes the rebased branch so the PR shows what passed", async () => {
+  it("gates: with GitHub, the host pushes the rebased branch so the PR shows what passed", async () => {
     const work = repos("ours", "other");
-    const origin = join(work, "..", "origin");
-    const withGitHub = new MachineHarness(
-      {
-        recipe: () => ["true"],
-        worktree: () => work,
-        github: async () => ({ GH_TOKEN: "unused-locally" }),
-      },
-      localScript,
-    );
-    expect(await withGitHub.runGates(ticket)).toEqual({ ok: true });
+    const { harness: gh, calls, origin } = withGitHub(work);
+    expect(await gh.runGates(ticket)).toEqual({ ok: true });
     expect(git(origin, "rev-parse", "inc/t7-x").trim()).toBe(git(work, "rev-parse", "HEAD").trim());
+    // The sandbox's scripts never held a write credential, and none of them pushes.
+    expect(leaksOf(calls)).toEqual([]);
+    expect(calls.map((c) => c.script).join("\n")).not.toMatch(/git push/);
+    expect(JSON.stringify(calls.map((c) => c.env))).not.toContain(WRITE_TOKEN);
   });
 
   it("gates: then waits for CI on the pushed commit, and fails with its reason", async () => {
     const work = repos("ours", "other");
     const seen: string[] = [];
-    const redCi = new MachineHarness(
-      {
-        recipe: () => ["true"],
-        worktree: () => work,
-        github: async () => ({}),
-        ci: async (_ticket, sha) => {
-          seen.push(sha);
-          return { ok: false, reason: "CI failed: Lint, types and tests (failure)" };
-        },
+    const { harness: redCi } = withGitHub(work, {
+      ci: async (_ticket, sha) => {
+        seen.push(sha);
+        return { ok: false, reason: "CI failed: Lint, types and tests (failure)" };
       },
-      localScript,
-    );
+    });
     expect(await redCi.runGates(ticket)).toEqual({
       ok: false,
       conflict: false,
       reason: "CI failed: Lint, types and tests (failure)",
     });
     expect(seen).toEqual([git(work, "rev-parse", "HEAD").trim()]);
+  });
+
+  it("gates: pushes the commit that was rebased, even if a check moves the branch afterwards", async () => {
+    const work = repos("ours", "other");
+    const origin = join(work, "..", "origin");
+    // A check (arbitrary code the project runs) adds a commit with a credential on the branch.
+    const sneaky = `git commit -q --allow-empty -m 'ghp_abcdefghijklmnopqrstuvwxyz0123456789'`;
+    const { harness: gh } = withGitHub(work, { recipe: () => [`cd '${work}' && ${sneaky}`] });
+    const result = await gh.runGates(ticket);
+    expect(result).toEqual({ ok: true });
+    const pushed = git(origin, "rev-parse", "inc/t7-x").trim();
+    expect(git(work, "rev-list", "--count", `${pushed}..HEAD`).trim()).toBe("1");
+    expect(git(origin, "log", "--format=%s", "inc/t7-x")).not.toContain("ghp_");
   });
 
   it("gates: uncommitted work and a branch with no changes are named, not called conflicts", async () => {
@@ -183,10 +236,7 @@ describe("the machine harness", () => {
     git(owner, "commit", "-q", "-m", "owner's fix");
     git(owner, "push", "-q", "origin", "inc/t7-x");
     const ownerSha = git(owner, "rev-parse", "HEAD").trim();
-    const gated = new MachineHarness(
-      { recipe: () => ["true"], worktree: () => work, github: async () => ({}) },
-      localScript,
-    );
+    const { harness: gated } = withGitHub(work);
     const result = await gated.runGates(ticket);
     expect(result).toMatchObject({ ok: false, conflict: false });
     expect(result.ok ? "" : result.reason).toContain(ownerSha);
@@ -216,10 +266,7 @@ describe("the machine harness in direct mode", () => {
     return { work, origin };
   }
   const direct = (work: string, recipe = ["true"]) =>
-    new MachineHarness(
-      { recipe: () => recipe, worktree: () => work, github: async () => ({}), policy: () => policy },
-      localScript,
-    );
+    withGitHub(work, { recipe: () => recipe, policy: () => policy }).harness;
 
   it("rebases on main, runs the checks, and pushes to main", async () => {
     const { work, origin } = directRepos();
@@ -233,12 +280,13 @@ describe("the machine harness in direct mode", () => {
   it("holds a change to protected paths for the owner, and pushes it once approved", async () => {
     const { work, origin } = directRepos(".github/workflows/ci.yml");
     const before = git(origin, "rev-parse", "main").trim();
-    expect(await direct(work).runGates(ticket)).toMatchObject({
-      ok: false,
-      protectedPaths: [".github/workflows/ci.yml"],
-    });
+    const held = await direct(work).runGates(ticket);
+    expect(held).toMatchObject({ ok: false, protectedPaths: [".github/workflows/ci.yml"] });
+    // The card carries the commit and the diff of the protected paths, from the host.
+    expect(held.ok ? "" : held.approval?.diff).toContain("+changed");
+    expect(held.ok ? "" : held.approval?.sha).toBe(git(work, "rev-parse", "HEAD").trim());
     expect(git(origin, "rev-parse", "main").trim()).toBe(before);
-    expect(await direct(work).runGates(ticket, { ownerApproved: true })).toMatchObject({ ok: true });
+    expect(await direct(work).runGates(ticket, okOf(held))).toMatchObject({ ok: true });
   });
 
   it("holds a file moved out of a protected folder, and a protected file with a quote in its name", async () => {
@@ -278,6 +326,120 @@ describe("the machine harness in direct mode", () => {
       "late",
       "theirs",
       "base",
+    ]);
+  });
+
+  it("an OK does not carry over to a new run: a new commit, or other content in the same paths, asks again", async () => {
+    const { work, origin } = directRepos(".github/workflows/ci.yml");
+    const gh = withGitHub(work, { policy: () => policy }).harness;
+    const held = await gh.runGates(ticket);
+    const ok = okOf(held);
+    // The builder changes the workflow after the owner's OK (a new run).
+    writeFileSync(join(work, ".github/workflows/ci.yml"), "name: evil\n");
+    git(work, "commit", "-q", "-am", "swap the workflow");
+    const before = git(origin, "rev-parse", "main").trim();
+    const again = await gh.runGates(ticket, ok);
+    expect(again).toMatchObject({ ok: false, protectedPaths: [".github/workflows/ci.yml"] });
+    expect(again.ok ? "" : again.approval?.diff).toContain("name: evil");
+    expect(git(origin, "rev-parse", "main").trim()).toBe(before);
+  });
+
+  it("holds protected paths itself: a machine that hides what changed can't push them without the owner", async () => {
+    const { work, origin } = directRepos(".github/workflows/ci.yml");
+    const before = git(origin, "rev-parse", "main").trim();
+    const { harness: liar } = withGitHub(work, { policy: () => policy }, true);
+    const held = await liar.runGates(ticket);
+    expect(held).toMatchObject({ ok: false, protectedPaths: [".github/workflows/ci.yml"] });
+    expect(git(origin, "rev-parse", "main").trim()).toBe(before);
+    // Once the owner approves, it goes; an OK is not enough without what it was for.
+    expect(await liar.runGates(ticket, { ownerApproved: true })).toMatchObject({ ok: false });
+    expect(await liar.runGates(ticket, okOf(held))).toMatchObject({ ok: true });
+  });
+
+  it("holds code the host could run for the owner in the repo the deployer deploys, whatever the project's protected paths say", async () => {
+    const { work, origin } = directRepos("apps/daemon/src/x.ts");
+    const before = git(origin, "rev-parse", "main").trim();
+    const { harness: gh, ledger } = withGitHub(work, {
+      policy: () => ({ ...policy, protectedPaths: [] }),
+      hostExecuted: () => true,
+    });
+    const held = await gh.runGates(ticket);
+    expect(held).toMatchObject({
+      ok: false,
+      protectedPaths: expect.arrayContaining(["apps/daemon/src/x.ts"]),
+    });
+    expect(git(origin, "rev-parse", "main").trim()).toBe(before);
+    // The owner's OK: it goes, and the ledger says so, with the paths.
+    expect(await gh.runGates(ticket, okOf(held))).toMatchObject({ ok: true });
+    const line = JSON.parse(readFileSync(ledger, "utf8").trim().split("\n")[0] ?? "{}");
+    expect(line).toMatchObject({
+      ownerApproved: true,
+      approvedPaths: ["apps/daemon/src/x.ts", "file"],
+      ticket: "t7",
+    });
+  });
+
+  it("does not hold a document in that repo, and the host holds code even when the machine hides it", async () => {
+    const docs = directRepos("docs/guide.md");
+    // The repos' first change is to a file named "file"; put it back, so the change is a document alone.
+    writeFileSync(join(docs.work, "file"), git(docs.work, "show", "origin/main:file"));
+    git(docs.work, "commit", "-q", "-am", "put file back");
+    const a = withGitHub(docs.work, {
+      policy: () => ({ ...policy, protectedPaths: [] }),
+      hostExecuted: () => true,
+    });
+    expect(await a.harness.runGates(ticket)).toMatchObject({ ok: true });
+    const code = directRepos("apps/web/x.ts");
+    const b = withGitHub(
+      code.work,
+      { policy: () => ({ ...policy, protectedPaths: [] }), hostExecuted: () => true },
+      true,
+    );
+    expect(await b.harness.runGates(ticket)).toMatchObject({
+      ok: false,
+      protectedPaths: expect.arrayContaining(["apps/web/x.ts"]),
+    });
+  });
+
+  it("asks the owner about a credential the scan found, and pushes it only after the owner says it is not one", async () => {
+    const { work, origin } = directRepos("fixtures.ts");
+    writeFileSync(
+      join(work, "fixtures.ts"),
+      'export const fake = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";\n',
+    );
+    git(work, "commit", "-q", "-am", "fixture");
+    const before = git(origin, "rev-parse", "main").trim();
+    const { harness: gh, ledger } = withGitHub(work, { policy: () => ({ ...policy, protectedPaths: [] }) });
+    const asked = await gh.runGates(ticket);
+    expect(asked).toMatchObject({
+      ok: false,
+      protectedPaths: [expect.stringMatching(/^commit [0-9a-f]{7} \(looks like a credential\)$/)],
+    });
+    expect(JSON.stringify(asked)).not.toContain("ghp_");
+    expect(git(origin, "rev-parse", "main").trim()).toBe(before);
+    // Approved without having been asked about a credential first (another harness): still refused.
+    const fresh = withGitHub(work, { policy: () => ({ ...policy, protectedPaths: [] }) }).harness;
+    expect(await fresh.runGates(ticket, { ownerApproved: true })).toMatchObject({ ok: false });
+    // The owner says it is not a secret.
+    expect(await gh.runGates(ticket, { ownerApproved: true })).toMatchObject({ ok: true });
+    expect(JSON.parse(readFileSync(ledger, "utf8").trim().split("\n")[0] ?? "{}")).toMatchObject({
+      ownerApproved: true,
+      secretsOverridden: true,
+    });
+  });
+
+  it("writes what it pushed to main in the deployer's ledger", async () => {
+    const { work } = directRepos();
+    const { harness: gh, ledger } = withGitHub(work, { policy: () => policy });
+    const result = await gh.runGates(ticket);
+    const head = git(work, "rev-parse", "HEAD").trim();
+    expect(result).toEqual({ ok: true, pushed: head });
+    const lines = readFileSync(ledger, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    expect(lines).toEqual([
+      expect.objectContaining({ sha: head, tip: true, ticket: "t7", repo: "acme/duet", branch: "main" }),
     ]);
   });
 
@@ -328,23 +490,20 @@ describe("the machine harness in direct mode", () => {
     writeFileSync(join(work, "docs/x"), "x\n");
     git(work, "add", "-A");
     git(work, "commit", "-q", "-m", "docs");
-    const both = new MachineHarness(
-      {
-        recipe: () => ["true"],
-        worktree: () => work,
-        github: async () => ({}),
-        policy: () => ({ ...policy, protectedPaths: [".github/", "docs/x"] }),
-      },
-      localScript,
-    );
+    const both = withGitHub(work, {
+      policy: () => ({ ...policy, protectedPaths: [".github/", "docs/x"] }),
+    }).harness;
     // The OK was for docs/x only: the workflow change is held, and only it is named.
-    const held = await both.runGates(ticket, { ownerApproved: false, approvedPaths: ["docs/x"] });
-    expect(held).toMatchObject({ ok: false, protectedPaths: [".github/workflows/ci.yml"] });
-    expect(
-      await both.runGates(ticket, { approvedPaths: ["docs/x", ".github/workflows/ci.yml"] }),
-    ).toMatchObject({
-      ok: true,
+    const first = await both.runGates(ticket);
+    expect(first).toMatchObject({ ok: false, protectedPaths: [".github/workflows/ci.yml", "docs/x"] });
+    // An OK for docs/x alone (a card that named only it) leaves the workflow change held, and only it is named.
+    const held = await both.runGates(ticket, {
+      ownerApproved: true,
+      approvedPaths: ["docs/x"],
+      approval: { sha: first.ok ? "" : (first.approval?.sha ?? ""), patchId: "x", paths: ["docs/x"] },
     });
+    expect(held).toMatchObject({ ok: false, protectedPaths: [".github/workflows/ci.yml", "docs/x"] });
+    expect(await both.runGates(ticket, okOf(first))).toMatchObject({ ok: true });
   });
 
   it("6.5 works on a default branch with a slash in its name", async () => {
@@ -361,23 +520,13 @@ describe("the machine harness in direct mode", () => {
     writeFileSync(join(work, "other"), "ours\n");
     git(work, "add", "other");
     git(work, "commit", "-q", "-m", "ours");
-    const h = new MachineHarness(
-      {
-        recipe: () => ["true"],
-        worktree: () => work,
-        github: async () => ({}),
-        policy: () => policy,
-        defaultBranch: () => "release/1.0",
-      },
-      localScript,
-    );
+    const h = withGitHub(work, { policy: () => policy, defaultBranch: () => "release/1.0" }).harness;
     const result = await h.runGates(ticket);
     const head = git(work, "rev-parse", "HEAD").trim();
     expect(result).toEqual({ ok: true, pushed: head });
     expect(git(origin, "rev-parse", "release/1.0").trim()).toBe(head);
     expect(() => rebaseScript("/w", "release/1.0")).not.toThrow();
     expect(() => changedScript("/w", "release/1.0")).not.toThrow();
-    expect(() => pushMainScript("/w", "release/1.0")).not.toThrow();
     // Still refused: anything git or a shell would read as something else.
     for (const bad of ["a b", "x;rm", "-x", "a..b", "$(x)", "", "a'b"]) {
       expect(() => rebaseScript("/w", bad)).toThrow("not a branch name");
@@ -395,5 +544,66 @@ describe("protected paths match the exact path and everything under it", () => {
     expect(isProtected(".github/workflows-old/x", [".github/workflows"])).toBe(false);
     expect(isProtected("package.json.bak", ["package.json"])).toBe(false);
     expect(isProtected("src/a.ts", [""])).toBe(false);
+  });
+});
+
+describe("a script that prints without end", () => {
+  it("is stopped at the cap and says so, instead of filling the daemon's memory", async () => {
+    const { chmodSync, writeFileSync: write } = await import("node:fs");
+    const bin = join(mkdtempSync(join(tmpdir(), "inc-bin-")), "container");
+    write(bin, "#!/bin/sh\nexec yes 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'\n");
+    chmodSync(bin, 0o755);
+    const { machineScript, MAX_SCRIPT_OUTPUT } = await import("../src/harness.ts");
+    const { defaultMachineSettings } = await import("../src/machines.ts");
+    const { wallsMarker: _, ...noWalls } = defaultMachineSettings;
+    const run = machineScript({ ...noWalls, bin }, async () => "");
+    const r = await run("ada", "true");
+    expect(r.code).toBe(1);
+    expect(r.output).toContain("@@output-limit");
+    expect(r.output.length).toBeLessThan(10_000);
+    expect(MAX_SCRIPT_OUTPUT).toBe(16 * 1024 * 1024);
+  });
+});
+
+describe("what a machine says is on main", () => {
+  it("is not taken for pushed: the sha it names on an empty rebase must be on main in the host's mirror", async () => {
+    const claimed = "c".repeat(40);
+    let asked: string | undefined;
+    const run: RunScript = async (_e, script) => {
+      if (script.includes("@@changed64")) return { code: 0, output: "" };
+      if (script.includes("git rebase")) return { code: 5, output: `@@empty ${claimed}\n` };
+      return { code: 0, output: "" };
+    };
+    const harness = (landed: boolean) =>
+      new MachineHarness(
+        {
+          recipe: () => ["true"],
+          worktree: () => "/home/employee/work/inc-t7",
+          github: async () => ({}),
+          policy: () => ({ mode: "direct" as const, protectedPaths: [], followUpsPerDay: 3 }),
+          repo: () => "acme/duet",
+          host: {
+            push: async () => {
+              throw new Error("no push");
+            },
+            tips: async () => [],
+            revert: async () => {
+              throw new Error("no revert");
+            },
+            landed: async (r) => {
+              asked = r.sha;
+              return landed;
+            },
+          },
+        },
+        run,
+      );
+    // The host's mirror has not got it on main: it is not "pushed", and nothing downstream runs CI on or reverts it.
+    expect(await harness(false).runGates(ticket, { ownerApproved: true })).toMatchObject({ ok: false });
+    expect(asked).toBe(claimed);
+    expect(await harness(true).runGates(ticket, { ownerApproved: true })).toEqual({
+      ok: true,
+      pushed: claimed,
+    });
   });
 });

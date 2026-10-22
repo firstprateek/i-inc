@@ -14,6 +14,8 @@ import {
   type ReleaseInfo,
   type Releases,
   type Remote,
+  type Review,
+  type ReviewResult,
   type Settings,
   type Smoke,
   type SmokeResult,
@@ -103,6 +105,19 @@ export class World {
     },
     descends: async (_ancestor, descendant) =>
       descendant in this.descendsAnswer ? (this.descendsAnswer[descendant] ?? null) : true,
+    range: async () => ({ shas: [], truncated: false }),
+    changedFiles: async () => ["apps/x.ts"],
+    diff: async () => null,
+  };
+
+  /** What the review says about a candidate main tip; absent: every commit came through review. */
+  reviewAnswer: Record<string, ReviewResult> = {};
+  reviewCalls: string[] = [];
+  reviewPort: Review = {
+    check: async (_current, candidate) => {
+      this.reviewCalls.push(candidate);
+      return this.reviewAnswer[candidate] ?? { state: "ok" };
+    },
   };
 
   ciPort: Ci = {
@@ -167,6 +182,7 @@ export class World {
       clock: this.clock,
       remote: this.remote,
       ci: this.ciPort,
+      review: this.reviewPort,
       releases: this.releases,
       smoke: this.smokePort,
       daemon: this.daemon,

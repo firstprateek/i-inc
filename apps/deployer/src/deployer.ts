@@ -10,6 +10,7 @@ import type {
   Outcome,
   Releases,
   Remote,
+  Review,
   Settings,
   Smoke,
   State,
@@ -26,6 +27,7 @@ export type CycleAction =
   | "rate-limited"
   | "ci-error"
   | "remote-error"
+  | "unreviewed"
   | "deferred"
   | Outcome;
 
@@ -38,6 +40,8 @@ export interface DeployerDeps {
   clock: Clock;
   remote: Remote;
   ci: Ci;
+  /** Whether every commit a candidate brings came through review (T68). */
+  review: Review;
   releases: Releases;
   smoke: Smoke;
   daemon: DaemonControl;
@@ -46,6 +50,9 @@ export interface DeployerDeps {
   settings: Settings;
   log: (line: string) => void;
 }
+
+/** How long a tip with an unreviewed commit waits before it is looked at again (a PR's merge can take a moment to show). */
+const reviewRetryMs = 15 * 60_000;
 
 const short = (sha: string | null) => (sha ? sha.slice(0, 7) : "none");
 /** One short line for a log or a push: no absolute home paths (they would show in the UI), no newlines. */
@@ -229,6 +236,55 @@ export class Deployer {
       if (descends === null) {
         this.status(`${short(head)}: could not check that it descends from ${short(current)}, will retry`);
         return { action: "remote-error", sha: head };
+      }
+    }
+
+    // Nothing is deployed that somebody pushed around the pipeline (T68). The owner's `--sha` is the way past.
+    if (!state.allowRewrite.includes(head)) {
+      const held = state.reviewSkipped[head];
+      if (held && this.d.clock.now() < held.nextAt) {
+        this.status(
+          `${short(head)}: not deployed, a commit on main didn't come through review (looking again later)`,
+        );
+        return { action: "unreviewed", sha: head };
+      }
+      const verdict = await this.d.review.check(current, head);
+      switch (verdict.state) {
+        case "ok":
+          if (held) {
+            this.mutate((s) => {
+              delete s.reviewSkipped[head];
+            });
+            this.event(`${short(head)}: every commit came through review now`);
+          }
+          break;
+        case "rate-limited":
+          this.status(
+            `${short(head)}: GitHub rate limit while checking review, backing off until ${new Date(verdict.until).toISOString()}`,
+          );
+          return { action: "rate-limited", sha: head };
+        case "error":
+          this.status(
+            `${short(head)}: could not check that it came through review (${oneLine(verdict.reason)})`,
+          );
+          return { action: "remote-error", sha: head };
+        case "unreviewed": {
+          const now = this.d.clock.now();
+          this.mutate((s) => {
+            s.reviewSkipped[head] = { at: held?.at ?? now, nextAt: now + reviewRetryMs };
+          });
+          if (!held) {
+            const reason = `a commit on main didn't come through review: ${oneLine(verdict.reason)}. Not deployed (it is not marked bad: the next commit on main is looked at again). Allow it with: bun apps/deployer/src/main.ts --once --sha ${head}`;
+            this.record(
+              { at: now, sha: head, from: current, outcome: "skipped-review", reason, durationMs: 0 },
+              `${head}:skipped-review:0`,
+            );
+            this.event(`${short(head)}: WARNING ${reason}`);
+          } else {
+            this.status(`${short(head)}: still not reviewed, not deployed`);
+          }
+          return { action: "unreviewed", sha: head };
+        }
       }
     }
 

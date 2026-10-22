@@ -7,15 +7,18 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { FakeAgent, FakeChat, FakeClock, FakeHelper, FakeMachines } from "@i-inc/core/testing";
+import type { LaunchRequest } from "../src/acp.ts";
 import { createApp } from "../src/app.ts";
 import { seedDemo } from "../src/demo.ts";
 import type { PullRequests } from "../src/github.ts";
 import type { RunScript } from "../src/harness.ts";
+import { HostPusher } from "../src/host-push.ts";
 import { defaultMachineSettings } from "../src/machines.ts";
 import { realPorts } from "../src/real.ts";
 import { FakeSandbox } from "./ahp/fake-acp.ts";
 import { until } from "./ahp/session-rig.ts";
 import { type Any, TestClient, turnStarted } from "./ahp/support.ts";
+import { fakeTokens } from "./fake-tokens.ts";
 
 const { wallsMarker: _, ...noWalls } = defaultMachineSettings;
 
@@ -153,6 +156,7 @@ export async function shipRig(o: RigOptions) {
   git(root, "clone", "-q", "--bare", seed, origin);
 
   const calls: { employeeId: string; script: string; env: Record<string, string> | undefined }[] = [];
+  const launched: LaunchRequest[] = [];
   const local = (script: string, extra: Record<string, string> = {}) =>
     new Promise<{ code: number; output: string }>((resolve) => {
       const child = spawn("bash", ["-s"], { env: { ...env, ...extra }, stdio: ["pipe", "pipe", "pipe"] });
@@ -178,6 +182,15 @@ export async function shipRig(o: RigOptions) {
   };
 
   const sandbox = new FakeSandbox();
+  // The sandbox's token is read-only; the host's write token never leaves the host pusher.
+  const tokens = fakeTokens();
+  const ledger = join(root, "host", "pushed-main.jsonl");
+  const hostPush = new HostPusher({
+    tokens,
+    mirrors: join(root, "host", "mirrors"),
+    ledger,
+    remote: () => origin,
+  });
   const prs = new FakePrs(origin);
   const ciOn: string[] = [];
   const logs: string[] = [];
@@ -185,13 +198,17 @@ export async function shipRig(o: RigOptions) {
     credentials: { "claude-pro": { CLAUDE_CODE_OAUTH_TOKEN: "sk-x" } },
     machine: noWalls,
     exec: async () => "",
-    launch: sandbox.launch,
+    launch: (r) => {
+      launched.push(r);
+      return sandbox.launch(r);
+    },
     runScript,
+    hostPush,
     ...(o.github === false
       ? {}
       : {
           github: {
-            tokens: { token: async () => "ghs_stub_token_0123456789" },
+            tokens,
             slug: "i-inc-bot",
             prs: prs as unknown as PullRequests,
           },
@@ -285,8 +302,11 @@ export async function shipRig(o: RigOptions) {
     prs,
     agent,
     calls,
+    launched,
     logs,
     ciOn,
+    tokens,
+    ledger,
     root,
     work,
     origin,

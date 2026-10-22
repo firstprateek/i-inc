@@ -89,6 +89,11 @@ export interface TicketState {
    * showed and no others: a path that is protected and not in here is asked about again.
    */
   approvedPaths: string[];
+  /**
+   * The change the owner's last OK was for (commit + hash of the diff of the protected paths). It replaces the
+   * one before it: approvals do not add up across pushes.
+   */
+  approval: { sha: string; patchId: string; paths: string[] } | null;
   /** Direct mode: CI went red on a commit this ticket pushed, since when. */
   mainRed: { sha: string; since: number; reason: string } | null;
   /** Time spent running, leaving out time paused, failed or waiting on the owner. */
@@ -145,6 +150,7 @@ export function emptyState(): TicketState {
     pushed: null,
     pushIntended: null,
     approvedPaths: [],
+    approval: null,
     mainRed: null,
   };
 }
@@ -259,8 +265,15 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
       const answered = e.note === undefined ? { answer: e.answer } : { answer: e.answer, note: e.note };
       const next: TicketState = { ...s, status: "running", needsYou: null, lastAnswer: answered };
       if (s.needsYou?.kind === "protected-paths" && e.answer === "approve") {
-        const paths = s.needsYou.paths;
-        next.approvedPaths = [...s.approvedPaths, ...paths.filter((p) => !s.approvedPaths.includes(p))];
+        const ask = s.needsYou;
+        if (ask.sha && ask.patchId) {
+          // An OK for exactly this change; a later one replaces it.
+          next.approvedPaths = ask.paths;
+          next.approval = { sha: ask.sha, patchId: ask.patchId, paths: ask.paths };
+        } else {
+          // A card without a commit (a credential question, an old card): it adds to what was OKed.
+          next.approvedPaths = [...s.approvedPaths, ...ask.paths.filter((p) => !s.approvedPaths.includes(p))];
+        }
       }
       if (s.needsYou?.kind === "stuck") {
         // Whatever answers a stuck card, the stage starts again with its counters at zero, or it would

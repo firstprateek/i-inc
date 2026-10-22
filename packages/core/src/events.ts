@@ -9,7 +9,20 @@ export type NeedsYou =
   | { kind: "stuck"; reason: string }
   | { kind: "proposals"; items: Proposal[] }
   /** Direct mode: the change touches protected paths, so it waits for the owner's OK. */
-  | { kind: "protected-paths"; paths: string[] };
+  | {
+      kind: "protected-paths";
+      paths: string[];
+      /**
+       * What the OK is for (T68): the commit and a hash of the diff of these paths, worked out on the host from
+       * the verified bundle, and the diff itself (redacted, cut at `diffCap`). An OK covers exactly this change:
+       * other content in the same paths, or the same content in another commit, asks again.
+       */
+      sha?: string;
+      patchId?: string;
+      diff?: string;
+      /** The diff was cut: the rest is not shown. */
+      diffTruncated?: boolean;
+    };
 
 /** Duties done for another employee's ticket. */
 export type HelperDuty = "review" | "verify";

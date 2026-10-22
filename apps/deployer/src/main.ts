@@ -22,6 +22,7 @@ import { LaunchdDaemon } from "./daemon.ts";
 import { Deployer } from "./deployer.ts";
 import { FsReleases } from "./releases.ts";
 import { GitRemote } from "./remote.ts";
+import { LedgerReview } from "./review.ts";
 import { run } from "./shell.ts";
 import { ProcessSmoke } from "./smoke.ts";
 import { FileLock, FileStore } from "./store.ts";
@@ -62,6 +63,18 @@ const deployer = new Deployer({
   clock,
   remote,
   ci: new GitHubCi({ repo, checkName: env.I_INC_CI_CHECK ?? "check", clock }),
+  // Only commits that came through review are deployed (T68): the daemon's ledger of what it pushed to main,
+  // pull requests the owner merged, and docs-only commits.
+  review: new LedgerReview({
+    repo,
+    ledgerPath: join(incHome, "pushed-main.jsonl"),
+    remote,
+    clock,
+    // A read-only token makes the calls authenticated (5000 an hour instead of 60); without one, verdicts by pull
+    // request are kept on disk so a restart doesn't ask again.
+    token: () => env.I_INC_GITHUB_TOKEN,
+    cachePath: join(root, "review-cache.json"),
+  }),
   releases,
   smoke: new ProcessSmoke({ clock, releaseDir: (sha) => releases.dir(sha), bun: process.execPath }),
   daemon: new LaunchdDaemon({

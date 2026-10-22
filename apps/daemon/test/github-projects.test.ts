@@ -17,6 +17,9 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
     async token(_repo, _access) {
       return "ghs_fake_installation_token";
     },
+    async readToken() {
+      return "ghs_fake_installation_token";
+    },
   };
 
   it("lists installation repositories and flags already registered ones", async () => {

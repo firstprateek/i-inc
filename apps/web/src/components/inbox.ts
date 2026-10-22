@@ -134,7 +134,7 @@ export class IncInbox extends Loader<{
             ? html`<div class="q">${a.items.length} ${a.items.length === 1 ? "proposal waits" : "proposals wait"} for you.</div>
                 <div class="actions">${btn("Approve all", () => api.answer(t.id, "approve"))}${btn("Decline", () => api.answer(t.id, "reject"), true)}</div>`
             : a.kind === "protected-paths"
-              ? protectedOk(t, a.paths, (fn) => void this.press(fn))
+              ? protectedOk(t, a, (fn) => void this.press(fn))
               : html`<div class="q">${a.reason}</div>
                 <div class="actions">${btn("Keep going", () => api.answer(t.id, "continue"))}</div>`;
     return html`<div class="card item waiting">${this.header(t, a.kind.replace("-", " "))}${body}</div>`;

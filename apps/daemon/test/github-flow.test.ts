@@ -239,7 +239,7 @@ describe("GET /api/github/repos", () => {
       app.daemon,
       {
         ...app.deps,
-        tokens: { token: async () => "t" },
+        tokens: { token: async () => "t", readToken: async () => "t" },
         githubApi: API,
         githubFetch: (async () => {
           throw new TypeError("fetch failed");
@@ -655,6 +655,7 @@ describe("a repo's files are never written over (review of #88)", () => {
         for (let i = 0; i < 4; i++) await (f as typeof fetch)("https://stub.github/mint");
         return "t";
       },
+      readToken: async () => "t",
     };
     const gh = new GitHubProjects(tokens, { now: () => t, fetch: base, api: "https://stub.github" });
     let tripped = false;
