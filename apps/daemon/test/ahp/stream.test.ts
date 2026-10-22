@@ -107,7 +107,7 @@ describe("a part of a reply has a ceiling", () => {
 });
 
 describe("a long streaming turn", () => {
-  it("takes 24 MB of reply in 4 KB pieces without holding the loop for a second or growing past 300 MB", async () => {
+  it("takes 24 MB of reply in 4 KB pieces without holding the loop for five seconds or growing past 300 MB", async () => {
     const t = await rig({ limits: { snapshotMinBytes: 256 * 1024, snapshotMinMs: 5000 } });
     const { chat } = await t.session();
     const c = t.client();

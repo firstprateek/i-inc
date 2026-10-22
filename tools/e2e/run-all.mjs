@@ -7,12 +7,16 @@
 //   pnpm e2e --no-build           # the web app is already built (apps/web/dist)
 //   pnpm e2e --out some/dir       # screenshots under some/dir/<name> (default e2e-out/<name>)
 //
-// Before anything runs, each script is checked for a way out of the repo: an absolute path to someone's home,
-// a global `npm root -g` lookup, NODE_PATH. A script has to work from a clean clone with `pnpm install`, nothing
-// borrowed from the machine it was written on. Exit code 1 when a script fails or breaks that rule.
+// Before anything runs, each script is read for a way out of the repo (a best-effort scan of its text, not a
+// sandbox): it may import only node built-ins, `playwright` by its bare name, and files inside the repo; it may
+// not name an absolute path or a `file:` URL, a `../` path that leaves the repo, or read the home folder,
+// NODE_PATH or the global npm folder. A script has to work from a clean clone with `pnpm install`, nothing
+// borrowed from the machine it was written on. The servers it starts need `bun` on PATH.
+// Exit code 1 when a script fails or breaks that rule.
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { builtinModules } from "node:module";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -39,19 +43,43 @@ if (unknown.length) {
 }
 const chosen = wanted.length ? scripts.filter((s) => wanted.includes(s)) : scripts;
 
-/** What would take a script out of the repo, as [pattern, what it is]. */
-const OUTSIDE = [
-  [/\/(?:Users|home)\/[A-Za-z0-9._-]+\//, "an absolute path in someone's home"],
-  [/\bnpm\b[^\n]*\broot\b[^\n]*-g\b|["']root["'],\s*["']-g["']/, "a lookup in the global npm folder"],
-  [/\bNODE_PATH\b/, "NODE_PATH"],
-  [/homedir\(\)|process\.env\.HOME\b(?!\s*=)/, "the home folder"],
-];
+const inside = (p) => {
+  const r = relative(root, p);
+  return r === "" || (!r.startsWith("..") && !r.startsWith("/"));
+};
+const ROOTS =
+  /^(?:\/(?:Users|home|opt|usr|var|private|tmp|etc|root|mnt|Volumes|Library|Applications|bin|sbin|nix)\b|~[/\\]|file:|[A-Za-z]:[\\/])/;
+const SPECIFIER = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)(["'`])([^"'`\n]+)\1/g;
+const LITERAL = /(["'`])((?:\\.|(?!\1)[^\\\n$])+)\1/g;
+const ENV =
+  /\bNODE_PATH\b|homedir\s*\(|\benv\s*(?:\.\s*HOME\b|\[\s*["'`]HOME["'`]\s*\])|["'`]root["'`]\s*,\s*["'`]-g["'`]|\broot\s+-g\b/;
+
+/** Why a script reaches outside the repo, as a list of sentences (empty when it does not). */
+function wayOut(file) {
+  const text = readFileSync(file, "utf8");
+  const dir = dirname(file);
+  const found = [];
+  for (const [, , spec] of text.matchAll(SPECIFIER)) {
+    if (spec.startsWith(".")) {
+      if (!inside(resolve(dir, spec))) found.push(`imports ${spec}, outside the repo`);
+    } else if (spec !== "playwright" && !spec.startsWith("node:") && !builtinModules.includes(spec)) {
+      found.push(`imports "${spec}" (only node built-ins, "playwright" and files in the repo)`);
+    }
+  }
+  for (const [, , lit] of text.matchAll(LITERAL)) {
+    if (ROOTS.test(lit)) found.push(`names ${lit.slice(0, 40)}, an absolute path`);
+    else if (/^\.\.?\//.test(lit) && !inside(resolve(dir, lit))) found.push(`names ${lit}, outside the repo`);
+  }
+  if (ENV.test(text)) found.push("reads the home folder, NODE_PATH or the global npm folder");
+  return [...new Set(found)];
+}
+
 const problems = [];
 for (const name of chosen) {
   const file = join(here, name, "run.mjs");
-  const text = readFileSync(file, "utf8");
-  for (const [re, what] of OUTSIDE)
-    if (re.test(text)) problems.push(`tools/e2e/${name}/run.mjs uses ${what}`);
+  if (!/\bfrom\s*["']playwright["']/.test(readFileSync(file, "utf8")))
+    problems.push(`tools/e2e/${name}/run.mjs does not import "playwright" by its bare name`);
+  for (const w of wayOut(file)) problems.push(`tools/e2e/${name}/run.mjs ${w}`);
 }
 if (problems.length) {
   for (const p of problems) console.error(`FAIL ${p}`);

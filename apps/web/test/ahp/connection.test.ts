@@ -606,6 +606,8 @@ describe("AhpConnection", () => {
     expect(await conn.probe(500)).toBe(true);
     (h.made[0] as NonNullable<(typeof h.made)[number]>).blackhole = true;
     // On a fake clock: the probe gives up when its own 200 ms are up, not when the 20 s heartbeat is.
+    const statuses: string[] = [];
+    conn.onInfo((i) => statuses.push(i.status));
     vi.useFakeTimers();
     try {
       const probed = conn.probe(200);
@@ -617,6 +619,8 @@ describe("AhpConnection", () => {
       vi.useRealTimers();
     }
     await until(() => conn.info.status === "open" && h.made.length === 2, 3000);
+    // it left "open" when the probe gave up, and came back
+    expect(statuses.findIndex((x) => x !== "open")).toBeGreaterThanOrEqual(0);
   });
 
   it("clears the retry and the ping timers when stopped", async () => {

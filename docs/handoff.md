@@ -110,12 +110,15 @@ Each team's sandbox signs in to harnesses once using host tools:
   2. `pnpm e2e:install` once, which downloads the Chromium that Playwright version drives (into Playwright's own
      cache, `~/Library/Caches/ms-playwright` on a Mac; nothing is added to the repo). CI does not do this: it runs `check`, `typecheck`
      and `test` only.
-  3. `pnpm e2e` builds the web app and runs every script one after another (`pnpm e2e projects ship` runs just those,
-     `--no-build` skips the build, `--out dir` moves the screenshots, default `e2e-out/<name>`). Exit code 1 if one fails.
-  Before it runs anything, `tools/e2e/run-all.mjs` refuses a script that reaches outside the repo (a path in someone's
-  home, the global npm folder, `NODE_PATH`): a script uses the repo's `node_modules`, the repo's files and temporary folders
-  it makes. `PW_CHROMIUM=<path>` points at another Chromium. Bump Playwright to a version at least two weeks old, then
-  `pnpm e2e:install` again (the browser build changes with it).
+  3. `pnpm e2e` builds the web app and runs every script one after another (`pnpm e2e projects conversation-push` runs
+     just those, `--no-build` skips the build, `--out dir` moves the screenshots, default `e2e-out/<name>`). Exit code 1
+     if one fails. The scripts start the daemon and a stand-in GitHub with **`bun`**, so it must be on PATH.
+  Before it runs anything, `tools/e2e/run-all.mjs` reads each script and refuses one that is not self-contained. This is a
+  scan of the script's text, not a sandbox: a script may import only node built-ins, `playwright` by its bare name and
+  files inside the repo, and may not name an absolute path (`/Users`, `/opt`, `/usr`, `~/`, `file:`), a `../` path that
+  leaves the repo, the home folder, `NODE_PATH` or the global npm folder. It uses the repo's `node_modules`, the repo's
+  files and temporary folders it makes. `PW_CHROMIUM=<path>` points at another Chromium. Bump Playwright to a version
+  at least two weeks old, then `pnpm e2e:install` again (the browser build changes with it).
 - **No clocks in the default suite.** A test never asserts that code was fast: busy machines and CI make that fail at
   random. What a test checks instead:
   - *Super-linear behaviour (ReDoS and rescans):* the scanners in `apps/web/src/conversations` report the characters each
