@@ -66,12 +66,18 @@ async function start() {
 const stop = async () => {
   if (!server || server.exitCode !== null) return;
   server.kill("SIGTERM");
-  await until(() => server.exitCode !== null || server.signalCode, "the daemon to stop", 10_000).catch(() => {});
+  await until(() => server.exitCode !== null || server.signalCode, "the daemon to stop", 10_000).catch(
+    () => {},
+  );
 };
 process.on("exit", () => server?.kill("SIGTERM"));
 
 const control = (op) =>
-  fetch(`${base}/__e2e`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ op }) }).then((r) => r.json());
+  fetch(`${base}/__e2e`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ op }),
+  }).then((r) => r.json());
 const getJson = (path) => fetch(`${base}${path}`).then((r) => r.json());
 
 let browser;
@@ -79,39 +85,58 @@ try {
   await start();
   const { id } = await control("run");
   const plan = await until(
-    async () => (await getJson(`/api/tickets/${id}/sessions`)).sessions.find((s) => s.stage === "plan" && s.channel),
+    async () =>
+      (await getJson(`/api/tickets/${id}/sessions`)).sessions.find((s) => s.stage === "plan" && s.channel),
     "the plan stage's session",
   );
   ok(Number.isInteger(plan.id), `the plan stage is session ${plan.id} of ticket #${id}`);
   await until(async () => (await control("poll")).taken >= 1, "the first step");
 
   browser = await chromium.launch(process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {});
-  const desktop = await browser.newContext({ viewport: { width: 1440, height: 900 }, serviceWorkers: "block" });
+  const desktop = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    serviceWorkers: "block",
+  });
   const page = await desktop.newPage();
 
   // 1. The ticket page links the stage.
   await page.goto(`${base}/#/ticket/${id}`);
   const link = page.locator("inc-transcript a.open-session").first();
   await link.waitFor({ timeout: 15_000 });
-  ok((await link.textContent()).includes("Open the session"), "the ticket page offers 'Open the session' on the running stage");
-  ok((await link.getAttribute("href")) === `#/ticket/${id}/session/${plan.id}`, "it links to the session's address");
+  ok(
+    (await link.textContent()).includes("Open the session"),
+    "the ticket page offers 'Open the session' on the running stage",
+  );
+  ok(
+    (await link.getAttribute("href")) === `#/ticket/${id}/session/${plan.id}`,
+    "it links to the session's address",
+  );
   await page.screenshot({ path: join(outDir, "ticket-1440.png") });
 
   // 2. Opened, it is the read-only thread, live.
   await link.click();
   const title = page.locator("inc-conv-thread .head .title");
   await title.waitFor({ timeout: 15_000 });
-  ok((await title.textContent()).trim() === `Watching #${id} · plan`, `the header says "${(await title.textContent()).trim()}"`);
+  ok(
+    (await title.textContent()).trim() === `Watching #${id} · plan`,
+    `the header says "${(await title.textContent()).trim()}"`,
+  );
   const status = page.locator("inc-conv-thread .head .status");
   await until(async () => (await status.textContent()).includes("Live"), "the Live mark");
   ok(true, "a live mark shows while the stage runs");
   ok((await page.locator("inc-conv-composer").count()) === 0, "there is no composer");
-  ok((await page.locator("inc-conv-thread .ro-note").textContent()).includes("Read-only"), "it says it is read-only");
+  ok(
+    (await page.locator("inc-conv-thread .ro-note").textContent()).includes("Read-only"),
+    "it says it is read-only",
+  );
 
   // 3. Parts stream in as the stage works.
   await page.getByText("Looking at the spending sum.").first().waitFor({ timeout: 15_000 });
   ok(true, "the first words of the stage are there");
-  ok((await page.getByText("Find where refunds are counted").count()) > 0, "the plan shows in the context panel");
+  ok(
+    (await page.getByText("Find where refunds are counted").count()) > 0,
+    "the plan shows in the context panel",
+  );
   ok((await page.getByText("Files changed").count()) === 0, "no files changed yet");
   await page.screenshot({ path: join(outDir, "live-1-1440.png") });
   await control("step");
@@ -124,13 +149,20 @@ try {
   await page.getByText("Approach: ignore refunds in the sum.").first().waitFor({ timeout: 15_000 });
   await until(async () => (await status.textContent()).includes("Finished"), "Finished");
   ok(true, "the stage ends and the view says Finished");
-  await page.getByText("1,800").first().waitFor({ timeout: 5_000 }).catch(() => {});
+  await page
+    .getByText("1,800")
+    .first()
+    .waitFor({ timeout: 5_000 })
+    .catch(() => {});
   await page.screenshot({ path: join(outDir, "finished-1440.png") });
 
   // 4. A reload replays it from the store.
   await page.reload();
   await page.getByText("Approach: ignore refunds in the sum.").first().waitFor({ timeout: 15_000 });
-  ok((await page.locator("inc-conv-thread .head .status").textContent()).includes("Finished"), "after a reload the finished stage replays");
+  ok(
+    (await page.locator("inc-conv-thread .head .status").textContent()).includes("Finished"),
+    "after a reload the finished stage replays",
+  );
   ok((await page.locator("inc-conv-composer").count()) === 0, "still no composer");
 
   // 5. And after the daemon restarted.
@@ -156,7 +188,10 @@ try {
   await p.getByText("Approach: ignore refunds in the sum.").first().waitFor({ timeout: 15_000 });
   const sideways = await p.evaluate(() => document.documentElement.scrollWidth > innerWidth);
   ok(!sideways, "no sideways scroll on a phone");
-  ok((await p.locator("inc-ticket-session aside").count()) === 0, "the context is not beside the thread on a phone");
+  ok(
+    (await p.locator("inc-ticket-session aside").count()) === 0,
+    "the context is not beside the thread on a phone",
+  );
   await p.screenshot({ path: join(outDir, "session-390.png") });
   await p.locator('inc-conv-thread [aria-label="Context panel"]').click();
   await p.locator("inc-ticket-session .sheet").waitFor({ timeout: 5_000 });
@@ -165,7 +200,7 @@ try {
   await p.screenshot({ path: join(outDir, "sheet-390.png") });
   await p.keyboard.press("Escape");
   await p.locator("inc-ticket-session .sheet").waitFor({ state: "detached", timeout: 5_000 });
-  await p.locator('inc-conv-thread .back').click();
+  await p.locator("inc-conv-thread .back").click();
   await p.locator("inc-transcript a.open-session").first().waitFor({ timeout: 15_000 });
   ok(p.url().endsWith(`#/ticket/${id}`), "Back returns to the ticket");
 } catch (e) {

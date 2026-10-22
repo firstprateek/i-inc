@@ -41,8 +41,14 @@ const agent: Agent = {
         { content: "Change the sum and add a test", status: "pending", priority: "high" },
       ],
     });
-    say({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "Refunds are negative cents." } });
-    say({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Looking at the spending sum. " } });
+    say({
+      sessionUpdate: "agent_thought_chunk",
+      content: { type: "text", text: "Refunds are negative cents." },
+    });
+    say({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "Looking at the spending sum. " },
+    });
     steps.taken = 1;
     await wait();
     say({
@@ -52,9 +58,20 @@ const agent: Agent = {
       kind: "read",
       status: "completed",
       locations: [{ path: "src/spending.ts" }],
-      content: [{ type: "content", content: { type: "text", text: "export const sum = (xs) => xs.reduce((a, b) => a + b, 0);\n" } }],
+      content: [
+        {
+          type: "content",
+          content: { type: "text", text: "export const sum = (xs) => xs.reduce((a, b) => a + b, 0);\n" },
+        },
+      ],
     });
-    say({ sessionUpdate: "tool_call", toolCallId: "edit-1", title: "Edit src/spending.ts", kind: "edit", status: "pending" });
+    say({
+      sessionUpdate: "tool_call",
+      toolCallId: "edit-1",
+      title: "Edit src/spending.ts",
+      kind: "edit",
+      status: "pending",
+    });
     say({
       sessionUpdate: "tool_call_update",
       toolCallId: "edit-1",
@@ -70,7 +87,10 @@ const agent: Agent = {
     });
     steps.taken = 2;
     await wait();
-    say({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Approach: ignore refunds in the sum." } });
+    say({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "Approach: ignore refunds in the sum." },
+    });
     say({ sessionUpdate: "usage_update", used: 4200, size: 200000 });
     req.onAgentUsage?.({ inputTokens: 1800, outputTokens: 240 });
     steps.taken = 3;
@@ -145,7 +165,9 @@ Bun.serve<WsData>({
       return new Response("websocket upgrade failed", { status: 400 });
     }
     if (new URL(req.url).pathname === "/__e2e") return control(req);
-    return new URL(req.url).pathname.startsWith("/api/") || !existsSync(web) ? app.handle(req) : serveWeb(req);
+    return new URL(req.url).pathname.startsWith("/api/") || !existsSync(web)
+      ? app.handle(req)
+      : serveWeb(req);
   },
   websocket: app.ahp.transport.websocket,
 });
