@@ -1,60 +1,55 @@
 # i.inc — notes for agents
 
-i.inc is a personal company of AI engineers. The owner hires agent employees, each with its own
-machine (a Linux VM) and a brain (a git-backed wiki). They get tickets on a board and return PRs
+i.inc is a personal company of AI engineers. The owner hires agent employees, each with a brain (a
+git-backed wiki), working in its team's sandbox (a walled Linux VM; one per team). They get tickets on a board and return PRs
 that are already checked, reviewed and proven. The spec is [docs/spec.md](docs/spec.md). It is the
 source of truth for behavior, words and safety, so read it before changing anything.
 
 ## Status
 
-M2's core is in `packages/core`, tested against fakes for every port:
-- the In progress loop from an event log (stages per effort, checkpoints and resume, the report);
-- engines (engine per duty, switch rules, the home-data wall);
-- the scheduler (assignments, standing orders, working hours, caps, account headroom);
-- errands and outbound permissions;
-- the owner's decision, follow-ups, the retro and knowledge routing, and handoffs;
-- My desk's spend and bottleneck maths.
+i.inc is built and runs on the owner's Mac mini ([docs/architecture.md](docs/architecture.md) is the current
+picture and wins over the spec where they differ):
+- `packages/core`: the pure pipeline (stages per effort, checkpoints and resume, the report), engines and
+  switch rules, the scheduler, errands and outbound permissions, follow-ups, the retro and knowledge routing,
+  and the brain's page format, maps and retrieval. Tested against fakes for every port.
+- `apps/daemon`: the SQLite event log, the registry, the tick loop, the API, the real ACP client and the Apple
+  container machine provider, the GitHub App, host-side pushes, the AHP host behind Conversations, the brain
+  index, feed and harvest, push notifications, storage clean-up and serving the web app.
+- `apps/deployer`: the separate LaunchAgent that deploys `main` to the mini behind a guard (host code
+  deploys only with the owner's approval or an owner-merged PR).
+- `apps/web`: the PWA, with three areas (Conversations, Work, Company) and a Needs you page.
+- `tools/host`, `tools/m1`: the host scripts (walls, relay, installers, sign-ins); `tools/e2e`: browser runs
+  against a local daemon.
 
-M3 has started:
-- `apps/daemon`: the SQLite event log, the company registry, the tick loop that joins the scheduler to
-  the runner, the API, and serving the web app;
-- `apps/web`: the office, board, ticket, chat, My desk, hiring and inbox views as Lit components, light
-  and dark.
+`I_INC_DEMO=1` still runs the daemon with a scripted agent and a morning's worth of tickets, without a mini.
 
-M4 has started: brains and the handbook as git repos on the host, edits applied from each retro,
-policy changes waiting for the owner, orientation as a new hire's first ticket, and a brain and
-handbook viewer.
+Not built yet: the PA's mail, calendar and web-errand tools (the errand loop and the walls are), agents
+asking the owner questions mid-conversation (no adapter supports it), agent teams talking to each other, and
+MCP tools and skills.
 
-M1 has run on the Mac mini ([docs/m1-runbook.md](docs/m1-runbook.md)), and its answers are in
-[docs/m1-findings.md](docs/m1-findings.md). One test machine, the walls and the Ollama relay run
-there, loaded by hand, until the daemon (M3) sets them up at boot. Its scripts are in `tools/m1/`.
-The daemon has the real ACP client (`apps/daemon/src/acp.ts`) and the Apple container machine
-provider (`apps/daemon/src/machines.ts`), tested against a scripted ACP server; they aren't wired
-into `main.ts` yet, and the provider's start and stop commands still need confirming on the mini.
-The GitHub App and a real harness for checks and gates come next. Until then the daemon runs
-only in demo mode, with the scripted agent and helper model, and a morning's worth of tickets. The
-milestones are in the spec, §14.
-
-**Picking up the work?** Start with [docs/handoff.md](docs/handoff.md): what's done, the open
-questions, and the next steps in order.
+**Picking up the work?** Start with [docs/handoff.md](docs/handoff.md) (operations and how things work) and
+[docs/coord.md](docs/coord.md) (who does what, the API contracts and the log). [docs/audit/T63-report.md](docs/audit/T63-report.md)
+is the last full audit.
 
 ## Where work can happen
 
-- **Cloud sessions** (claude.ai/code on this repo) can work on the spec, the design track, and M2's
-  pipeline core. The core is pure TypeScript, tested against fakes.
+- **Cloud sessions** (claude.ai/code on this repo) can work on the docs, the web app and the pure
+  pipeline core, which are tested against fakes and need only this repo.
 - **Anything that touches the Mac mini** needs a session on the owner's Mac. The mini is on the home
-  tailnet, and cloud sessions can't reach it. That includes M1: Apple container, the `pf` rules,
-  sign-ins, and the daemon's host setup. The steps are in [docs/m1-runbook.md](docs/m1-runbook.md).
+  tailnet, and cloud sessions can't reach it. That includes Apple container, the `pf` rules, sign-ins
+  and the daemon's host setup (see [docs/m1-runbook.md](docs/m1-runbook.md) and `tools/host`).
 
-## Planned layout
+## Layout
 
 | Path | What |
 | --- | --- |
-| `packages/core` | The company: tickets and errands, stages, employees, roles and duties, engines, accounts, scheduling, switch rules, engine per duty, local model pools, the helper-model interface, outbound permissions, goals, report and My desk assembly. Plain TypeScript, no I/O |
-| `apps/daemon` | Runs on the host: the SQLite event log, ACP sessions, the machine provider (Apple container), the GitHub App, the home tools, the API, push |
-| `apps/web` | The office, board, chat, My desk, ticket, report and inbox views (a PWA built from Lit components, light with a dark theme) |
-| `images/employee` | The base image every employee machine is built from |
-| `docs` | The spec, and later the design directions |
+| `packages/core` | The company: tickets and errands, stages, employees, roles and duties, engines, accounts, scheduling, switch rules, engine per duty, the helper-model interface, outbound permissions, the brain's page format, maps and retrieval, report and Usage (spend and bottleneck) assembly. Plain TypeScript, no I/O |
+| `apps/daemon` | Runs on the host: the SQLite event log, ACP sessions, the AHP host, the machine provider (Apple container), the GitHub App and host-side pushes, the brain, the API, push |
+| `apps/deployer` | The automatic deployer LaunchAgent, with its review guard |
+| `apps/web` | The Conversations, Work (board, releases, tickets), Needs you and Company (team, brain, projects, usage, settings) views: a PWA built from Lit components, light with a dark theme |
+| `images/employee` | The base image every team sandbox is built from |
+| `tools` | `host` (walls, relay, installers, sign-ins), `m1` (the first hand-run tests and the walls tests), `github-app`, `e2e`, `ui-check` |
+| `docs` | The spec, the architecture, the handoff, the coordination log, the design docs and the audits |
 
 ## Conventions
 
@@ -76,10 +71,12 @@ questions, and the next steps in order.
   - engine per duty, helper model, My desk, goal.
 
   The product is written "i.inc", and the repo is `i-inc`.
-- Keep the safety model intact. Employees are lenient inside their machine and walled outside it: no
-  LAN, a bot GitHub identity, and only the owner merges. A PA's walls are tighter: home data goes
-  only to local engines, the PA has no internet and no credentials, and what leaves goes through
-  outbound permissions. Any change that weakens a wall needs the owner's explicit approval.
+- Keep the safety model intact. Employees are lenient inside their sandbox and walled outside it: no
+  LAN, a bot GitHub identity, no write credentials in any sandbox (every push is made by the daemon on
+  the host from a verified bundle), and only the owner merges. The team is the trust boundary: one
+  sandbox and one Unix user per team, and agents have root. A PA's walls are tighter: its own
+  sandbox, no root, no internet, home data only to local engines, no credentials, and what leaves goes
+  through outbound permissions. Any change that weakens a wall needs the owner's explicit approval.
 
 ## UI work
 

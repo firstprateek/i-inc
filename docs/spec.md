@@ -13,7 +13,9 @@ it (§7).
 This is the v1 spec and it is still a draft. It is the source of truth for behavior, words and
 safety. "You" always means the owner, the one person who runs the company.
 
-**Status:** design (M0). Nothing is built yet.
+**Status:** built, and in daily use. Milestones M0 to M4 are done, M5 and M6 (the Personal Assistant) are partly
+built. This document is the design. [architecture.md](architecture.md) says what is built and
+wins where they differ, and §16 lists what is not built yet.
 
 **Redesigned on 2026-10-17:** a sandbox per team instead of a machine per employee, signed in once
 to each subscription, and reviewed work pushed straight to main by default instead of a pull
@@ -49,7 +51,8 @@ subscription gets used.
 **Not in scope:**
 
 - agents choosing the work (you do, or your standing orders do);
-- teams;
+- agent teams that coordinate with each other (the only teams are the groups of employees that share a
+  sandbox, and a team is the trust boundary, §5);
 - editing code yourself;
 - activity for its own sake.
 
@@ -153,15 +156,19 @@ Each case is a short story followed by the rule it sets for the design.
    are kept.
 2. **You build the team.** i.inc starts with no employees and makes no assumptions about
    subscriptions. You hire, configure, pause and retire employees, and add accounts, in any number.
-3. **Walls around the machine, not rules on each command.** Inside its VM an employee may do anything,
-   with no permission prompts, and it has the open internet. Safety comes from four things:
-   - the VM boundary;
+3. **Walls around the machine, not rules on each command.** Inside its team's sandbox an employee may do
+   anything, with no permission prompts, and it has the open internet. Safety comes from five things:
+   - the VM boundary, with the team as the trust boundary (one sandbox and one Unix user per team, and
+     agents have root, so teammates' agents trust each other);
    - keeping employees off your home network and tailnet;
-   - a bot GitHub identity;
+   - a bot GitHub identity that is never given write credentials inside a sandbox: every push is made by
+     the daemon on the host (§5);
+   - a guard on what the host itself runs: code deploys only with your approval or from a pull request
+     you merged;
    - one-tap requests for actions that need your own credentials.
 
-   A PA's walls are tighter, because it handles your private data: no internet, local engines only,
-   and no credentials (§7).
+   A PA's walls are tighter, because it handles your private data: a sandbox of its own, no root, no
+   internet, local engines only, and no credentials (§7).
 4. **Code runs the company; agents do the work.** A deterministic state machine schedules,
    checkpoints and escalates. No agent spends tokens coordinating others, and nobody works without a
    ticket, so there are no heartbeats.
@@ -188,7 +195,7 @@ Everything here can be edited later.
 | Fallback engines and switch rules | See "Engines and switching" below |
 | Usage caps | Per ticket, per day and per week. Tokens where the harness reports them; otherwise a share of the account's window, or hours |
 | Defaults | Effort level, and a review preference (for example, prefer a reviewer from another vendor) |
-| Machine | CPUs, memory, disk |
+| Team | Which team's sandbox it works in. The sandbox (CPUs, memory, disk) is the team's, set in Company → Settings → Teams |
 | Projects | The repos it may work on, or Home for a PA |
 | Outbound permissions | For a PA: which kinds of outgoing action need your approval and which it may do by itself (§7) |
 | Standing orders | Tickets it may pick up by itself, e.g. "`chore` tickets labeled `deps`, at most 5 a day" |
@@ -244,8 +251,9 @@ be an explicit opt-in per account.
 
 Once you've made the choices above, i.inc:
 
-1. builds the machine from the base image;
-2. clones the projects;
+1. puts the employee in a team, and so in that team's sandbox (built from the base image the first time;
+   a PA gets a team and a sandbox of its own);
+2. clones the projects when a ticket first needs them;
 3. creates the brain from a template;
 4. if the account is new, shows a sign-in link on your phone.
 
@@ -266,10 +274,11 @@ the same way (the report it started from must be empty).
 Every machine has all the harnesses installed: Claude Code, Antigravity, Codex and OpenCode, each speaking
 ACP. Claude Code and Codex go through maintained adapters, Antigravity through its own ACP server, and OpenCode
 natively. The engine chosen for a session decides which harness runs on which account. Each
-employee's machine signs in to the owner's subscriptions once, at hiring: Claude Code with `claude
-auth login`, Codex with its device-code sign-in, and Antigravity with its own sign-in. The owner chose this over Claude's model-only
+team's sandbox signs in to the owner's subscriptions once, when the team is set up (`tools/host/sign-in-*.sh`):
+Claude Code with `claude auth login`, Codex with its device-code sign-in, and Antigravity with its own
+sign-in. The owner chose this over Claude's model-only
 token (`claude setup-token`), accepting that a full Claude login also reaches the owner's claude.ai
-connectors (mail, calendar, drive) from inside the machine. A token can still be given to any
+connectors (mail, calendar, drive) from inside the sandbox. A token can still be given to any
 account instead, and i.inc then injects it into each session.
 
 Switch rules are set per employee:
@@ -327,6 +336,15 @@ interface with a scripted fake in tests, like the ACP agent.
 
 > Since 2026-10-17, "the machine" is a **team's sandbox**, shared by the team's employees and signed
 > in once to each subscription ([architecture.md](architecture.md)). The walls are unchanged.
+
+- **The team is the trust boundary (decided in T67, 2026-10-21).** A team has one sandbox and one Unix user,
+  and its agents have root, because they need to install things and run Docker. Root can read every user's
+  files, so a Unix user per employee would isolate nothing unless root went, and that would break ordinary
+  work; a machine per employee would reverse the sandbox-per-team decision. So the agents of one team trust
+  each other: a prompt-injected agent can read and change a teammate's working copies and brain copy.
+  What must not be shared is not: a PA gets its own team and sandbox (no root, no internet; T66, below),
+  brain edits made while a teammate's session overlapped are marked untrusted (§5, "The brain"), and no
+  write credential is in any sandbox (below).
 
 - **Inside the machine** the harness runs in its bypass mode: Claude Code bypassPermissions,
   OpenCode allow-all, and Antigravity's equivalent. i.inc's ACP client also approves any
@@ -394,29 +412,33 @@ interface with a scripted fake in tests, like the ACP agent.
     (`ifconfig bridge100 hostfilter`). Until the owner has run the verification in docs/handoff.md,
     this is designed and tested against a model of pf, not proven on the mini.
 - **GitHub** uses a bot identity: one GitHub App, "i.inc bot", installed on the repos you choose.
-  - **A sandbox never holds a credential that can write.** Agents run with bypassed permissions and
+  - **A sandbox never holds a credential that can write (T68).** Agents run with bypassed permissions and
     can be prompt-injected, and the bot may update `main` (direct mode), which the deployer puts on the
-    host. So a machine is signed in to GitHub with a read-only, 1-hour token limited to the repos its
+    host. So a machine is signed in to GitHub with a read-only token limited to the repos its
     sessions work on (none if a session needs none), renewed while it runs. Every push is made by the
-    daemon on the host, from a git bundle of exactly the commit that was checked, after it has verified
-    the bundle and scanned what it brings for credentials; the write token stays in the daemon's memory.
-    Opening and updating PRs, reading CI and managing issues are the daemon's too. A builder and its
-    reviewer share a machine, so a poisoned builder could fake its own checks and review; therefore, for
-    the repo the deployer puts on the host, a change to anything the host could run (everything but
-    `docs/**/*.md` and top-level `*.md`, never agent instruction files) waits for your one-tap OK, and
-    the deployer deploys such a commit only if the daemon recorded your approval or it is a commit of a
-    pull request you merged. Host code deploys only with your approval or an owner-merged PR; a commit
-    that got there another way is skipped and you are told.
+    daemon on the host, from a git bundle of exactly the commit that was checked (the checked sha, nothing
+    else), after it has verified the bundle and scanned what it brings for credentials; the write token
+    stays in the daemon's memory. Opening and updating PRs, reading CI and managing issues are the
+    daemon's too.
+  - **Direct mode is advisory against a poisoned agent.** A builder and its reviewer share a sandbox, and
+    the checks run there too, so a poisoned builder could fake its own checks and review. Therefore, in
+    the repo the mini runs (i-inc), any change to code the host executes (everything but `docs/**/*.md`
+    and top-level `*.md`, never agent instruction files) waits for your one-tap OK, which is bound to the
+    exact commit sha and the patch-id of the diff shown on the card. The deployer deploys a commit only if
+    it is docs-only, or the daemon's ledger records your approval of it, or it belongs to a pull request
+    you merged. Anything else is skipped and you are told.
     Editing CI/CD workflows, running Actions and Pages are privileged requests: a token that can do
     them reaches the repo's Actions secrets from GitHub's runners, outside the walls.
   - Commits read as "Ada (i.inc)".
-  - A ruleset on `main` lets only you update it, through a PR with your approval, so GitHub itself
-    enforces that only you merge ([github-app.md](github-app.md)). Your Approve does the merge with
-    your account.
-- **Privileged requests.** Sometimes an employee needs something beyond its powers, such as a deploy
-  secret, a repo setting or a new repo. It then files a Needs you card naming the exact action. You
-  tap Approve, and i.inc does it with your account. This way employees can still set up CI/CD from
-  start to finish.
+  - A ruleset on `main` limits who may update it ([github-app.md](github-app.md)): in owner-merges mode only
+    you merge, on GitHub, and GitHub itself enforces it. Such a ticket closes by itself when it sees the
+    PR merged; its card shows "Merge on GitHub" and "Close without merging". (Approve doing the merge
+    with your account is not built.)
+- **Privileged requests (not built yet).** Sometimes an employee needs something beyond its powers, such as a
+  deploy secret, a repo setting or a new repo. The design is a Needs you card naming the exact action, which
+  you approve and i.inc does with your account, so employees can still set up CI/CD from start to finish.
+  Today an agent says so in its report and you do it yourself (a workflow change with
+  `tools/host/push-for-owner.sh`).
 - **Audit:** every tool call in the ACP stream is logged, so you audit afterwards instead of approving
   beforehand.
 
@@ -442,9 +464,12 @@ Knowledge comes in two layers, shared and personal:
 
 - **The handbook** is the company's shared brain: facts useful to every employee, such as how a tool
   behaves, a pattern that works, or where things are. It has two kinds of page:
-  - **facts**, which any employee adds at a task boundary; the edit applies at once, shows on My
-    desk, and you can revert it;
-  - **policies** (how the company works), whose changes wait for your approval.
+  - **facts**, which any employee adds at a task boundary; the edit applies at once and you can revert
+    it from the Brain changes feed;
+  - **policies** (how the company works). An edit to a policy page that an agent makes in its brain copy
+    applies without approval too (owner's decision, T58): the change sends you a push and can be reverted.
+    A retro that proposes a policy as JSON (an employee whose brain copy is unavailable) still waits for
+    your approval, as do proposals that were already waiting.
 - **The brain** is the employee's own: its personality and working style, and lessons tied to its
   role or duty, such as what you tend to flag in a review, or an engine's quirks.
 
