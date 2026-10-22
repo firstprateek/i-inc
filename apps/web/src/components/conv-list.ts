@@ -1,5 +1,5 @@
-// The conversation list: "Needs you", "Running" and "Recent", with a row menu (rename, archive) and the
-// New conversation form (an employee, a project or none). Rows are buttons that open the conversation.
+// The conversation list: "Needs you", "Running" and "Recent", with a row menu (rename, archive) and a New
+// conversation button (which opens the draft in the centre pane). Rows are buttons that open the conversation.
 import type { Employee } from "@i-inc/core";
 import { css, html, LitElement, nothing } from "lit";
 import type { Conversation } from "../api.ts";
@@ -12,93 +12,65 @@ import {
   visible,
 } from "../conversations/model.ts";
 import { cardStyles } from "../conversations/styles.ts";
-import { avatar, base, projectBadge, selectField } from "./shared.ts";
-
-export interface CreateDetail {
-  employeeId: string;
-  project: string | null;
-}
+import { avatar, base, projectBadge } from "./shared.ts";
 
 export class IncConvList extends LitElement {
   static override properties = {
     items: { attribute: false },
     employees: { attribute: false },
-    projects: { attribute: false },
     selected: { type: String },
     now: { type: Number },
     loading: { type: Boolean },
     error: { type: String },
     showArchived: { type: Boolean },
-    preset: { attribute: false },
-    ready: { type: Boolean },
-    presetNote: { state: true },
-    form: { state: true },
+    drafting: { type: Boolean },
     menu: { state: true },
     rove: { state: true },
     renaming: { state: true },
     filter: { state: true },
-    pickEmployee: { state: true },
-    pickProject: { state: true },
   };
   declare items: Conversation[];
   declare employees: Employee[];
-  declare projects: string[];
   declare selected: string;
   declare now: number;
   declare loading: boolean;
   declare error: string;
   declare showArchived: boolean;
-  /** Opens the form with this employee and project chosen (from `#/conversations?new=1&project=<id>`). */
-  declare preset: { employee: string; project: string } | undefined;
-  /** The employees and projects have arrived, so a preset can be checked against them. */
-  declare ready: boolean;
-  declare presetNote: string;
-  declare form: boolean;
+  /** The New conversation screen is open in the centre pane. */
+  declare drafting: boolean;
   declare menu: string | null;
   /** The row that is the list's one tab stop; arrow keys move between rows. */
   declare rove: string;
   declare renaming: string | null;
   declare filter: string;
-  declare pickEmployee: string;
-  declare pickProject: string;
 
   constructor() {
     super();
     this.items = [];
     this.employees = [];
-    this.projects = [];
     this.selected = "";
     this.now = Date.now();
     this.loading = false;
     this.error = "";
     this.showArchived = false;
-    this.preset = undefined;
-    this.ready = false;
-    this.presetNote = "";
-    this.form = false;
+    this.drafting = false;
     this.menu = null;
     this.rove = "";
     this.renaming = null;
     this.filter = "";
-    this.pickEmployee = "";
-    this.pickProject = "";
   }
 
   static override styles = [
     base,
     cardStyles,
-    selectField,
     css`
       :host { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; }
       .top { flex: none; display: flex; flex-direction: column; gap: 10px; padding: 0 2px 10px; }
       .new { width: 100%; }
-      input[type="search"], input.rename, select { font-size: 16px; }
+      input[type="search"], input.rename { font-size: 16px; }
       input[type="search"], input.rename { font-family: var(--body); min-height: 44px; box-sizing: border-box; width: 100%; padding: 0 12px; border-radius: 12px;
         border: 1px solid var(--control-edge); background: var(--surface); color: var(--ink); }
-      input:focus-visible, select:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 1px; }
-      form.create { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--line-strong); border-radius: 14px; background: var(--surface); }
-      form.create label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 700; color: var(--ink-2); }
-      form.create .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+      input:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 1px; }
       .groups { flex: 1 1 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 2px 8px; }
       h3 { font: 800 12px var(--body); text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink-2); margin: 12px 4px 6px; display: flex; align-items: center; gap: 8px; }
       h3 .n { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--neutral-bg); color: var(--neutral-fg); }
@@ -128,8 +100,8 @@ export class IncConvList extends LitElement {
       .renamer { flex: 1 1 auto; padding: 8px 6px 8px 10px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
       .foot { flex: none; display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 2px 0; border-top: 1px solid var(--line); margin-top: 4px; }
       .foot a { color: var(--ink-2); font-size: 13px; font-weight: 600; min-height: 44px; display: inline-flex; align-items: center; }
-      .empty { padding: 28px 12px; text-align: center; display: flex; flex-direction: column; gap: 10px; align-items: center; }
-      .empty h2 { font-size: 20px; } .empty p { margin: 0; color: var(--ink-2); line-height: 1.5; font-size: 14.5px; }
+      /* An empty list is one small muted line: the centre pane carries the invitation. */
+      .none { margin: 10px 4px; color: var(--ink-2); font-size: 13.5px; }
       .skel { height: 60px; border-radius: 14px; background: var(--sunken); margin: 4px 0; animation: pulse 1.4s ease-in-out infinite; }
       @keyframes pulse { 50% { opacity: 0.5; } }
       .problem { color: var(--alarm-fg); font-weight: 600; font-size: 14px; margin: 0; }
@@ -159,54 +131,6 @@ export class IncConvList extends LitElement {
     if (at < 0) return;
     e.preventDefault();
     buttons[Math.max(0, Math.min(buttons.length - 1, at + (e.key === "ArrowDown" ? 1 : -1)))]?.focus();
-  };
-
-  override willUpdate(changed: Map<string, unknown>): void {
-    const preset = this.preset;
-    if (changed.has("preset") && preset) this.form = true;
-    if (changed.has("preset") && !preset) this.presetNote = "";
-    if (changed.has("employees") && this.employees[0] && !this.pickEmployee)
-      this.pickEmployee = this.employees[0].id;
-    if (preset && !this.ready && changed.has("preset")) {
-      // Until the employees and projects arrive, show what the address asked for.
-      this.pickProject = preset.project;
-      if (preset.employee) this.pickEmployee = preset.employee;
-    }
-    if (
-      preset &&
-      this.ready &&
-      (changed.has("preset") || changed.has("ready") || changed.has("employees") || changed.has("projects"))
-    ) {
-      const known = this.employees.some((e) => e.id === preset.employee);
-      const project = preset.project && this.projects.includes(preset.project) ? preset.project : "";
-      // An unknown project or employee is said so, and the form falls back to No project and the first employee.
-      this.presetNote = [
-        preset.employee && !known ? "That employee isn't available." : "",
-        preset.project && !project ? "That project isn't available." : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
-      if (known) this.pickEmployee = preset.employee;
-      else if (project) {
-        const e = this.employees.find((x) => !x.projects?.length || x.projects.includes(project));
-        if (e) this.pickEmployee = e.id;
-      }
-      this.pickProject = project;
-    }
-  }
-
-  private projectChoices(): string[] {
-    const e = this.who(this.pickEmployee);
-    return e?.projects?.length ? e.projects : this.projects;
-  }
-
-  private submitCreate = (ev: Event) => {
-    ev.preventDefault();
-    if (!this.pickEmployee) return;
-    this.emit<CreateDetail>("conv-create", {
-      employeeId: this.pickEmployee,
-      project: this.pickProject || null,
-    });
   };
 
   /** The row a Tab lands on: the one last focused, else the open one, else the first. */
@@ -295,31 +219,9 @@ export class IncConvList extends LitElement {
         )
       : this.items;
     const groups = groupConversations(items);
-    const projects = this.projectChoices();
     return html`
       <div class="top">
-        <button class="btn new" type="button" aria-expanded=${this.form ? "true" : "false"} @click=${() => {
-          this.form = !this.form;
-        }}>New conversation</button>
-        ${
-          this.form
-            ? html`<form class="create" @submit=${this.submitCreate} aria-label="New conversation">
-                ${this.presetNote ? html`<p class="problem" role="status">${this.presetNote} Pick one below.</p>` : nothing}
-                <label>Employee<select .value=${this.pickEmployee} @change=${(e: Event) => {
-                  this.pickEmployee = (e.target as HTMLSelectElement).value;
-                  this.pickProject = "";
-                }}>${this.employees.map((e) => html`<option value=${e.id} ?selected=${e.id === this.pickEmployee}>${e.name} · ${e.role}</option>`)}</select></label>
-                <label>Project<select .value=${this.pickProject} @change=${(e: Event) => {
-                  this.pickProject = (e.target as HTMLSelectElement).value;
-                }}><option value="" ?selected=${!this.pickProject}>No project</option>${projects.map((p) => html`<option value=${p} ?selected=${p === this.pickProject}>${p}</option>`)}</select></label>
-                <div class="btns"><button class="btn" type="submit" ?disabled=${!this.pickEmployee}>Start</button>
-                  <button class="btn ghost" type="button" @click=${() => {
-                    this.form = false;
-                  }}>Cancel</button></div>
-                <span class="sub">Nothing is created until you send the first message.</span>
-              </form>`
-            : nothing
-        }
+        <button class="btn new" type="button" aria-current=${this.drafting ? "page" : "false"} @click=${() => this.emit("conv-new")}>New conversation</button>
         ${
           this.items.length > 5
             ? html`<input type="search" placeholder="Search conversations" aria-label="Search conversations" .value=${this.filter}
@@ -340,8 +242,7 @@ export class IncConvList extends LitElement {
               : this.loading && !this.items.length
                 ? html`<div aria-busy="true" aria-label="Loading conversations"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>`
                 : !groups.length
-                  ? html`<div class="empty"><h2>${q ? "Nothing matches" : this.showArchived ? "No archived conversations" : "No conversations yet"}</h2>
-                    <p>${q ? "Try a different word." : "Start a conversation with an employee about a project. They can read the code, make changes on their own copy, and ask you before anything risky."}</p></div>`
+                  ? html`<p class="none" role="status">${q ? "Nothing matches." : this.showArchived ? "No archived conversations." : "No conversations yet."}</p>`
                   : groups.map(
                       (
                         g,

@@ -83,6 +83,6 @@ describe("closeStaleNotifications", () => {
     expect(conversationOf("#/conversations/ab12cd34")).toBe("ab12cd34");
     expect(conversationOf("#/conversations/AB12CD34?card=tc1")).toBe("ab12cd34");
     expect(conversationOf("#/conversations")).toBe("");
-    expect(conversationOf("#/work/needs-you")).toBe("");
+    expect(conversationOf("#/needs-you")).toBe("");
   });
 });

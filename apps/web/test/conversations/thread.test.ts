@@ -543,31 +543,6 @@ describe("the thread", () => {
     expect(el.stick).toBe(true); // another conversation opens at its end
   });
 
-  it("a draft with an unknown project says so, lets the person pick one, and forgets the last draft's notice", async () => {
-    const h = hosts();
-    setAhp(new AhpConnection({ connect: h.connect, clientId: "me", pingMs: 0 }));
-    const el = document.createElement("inc-conv-thread") as IncConvThread;
-    el.employee = ada;
-    el.draft = { employee: "ada", project: "" };
-    el.draftNote =
-      "That project isn't available — starting without a project. Pick one below if you want one.";
-    el.draftProjects = ["Duet", "Other"];
-    document.body.append(el);
-    await el.updateComplete;
-    const root = el.shadowRoot as ShadowRoot;
-    expect(root.querySelector(".empty .notice")?.textContent).toContain("starting without a project");
-    const select = must<HTMLSelectElement>(root.querySelector(".empty select"));
-    expect([...select.options].map((o) => o.value)).toEqual(["", "Duet", "Other"]);
-    select.value = "Duet";
-    select.dispatchEvent(new Event("change"));
-    expect(location.hash).toBe("#/conversations/new/ada/Duet");
-    // a notice from the previous draft does not follow the person to the next one
-    (el as Any).notice = "The host didn't accept that: something";
-    el.draft = { employee: "kit", project: "" };
-    await el.updateComplete;
-    expect(root.querySelector(".notice[role='alert']")).toBeNull();
-  });
-
   it("renders only a window of a long chat, and pages the rest in", async () => {
     const h = hosts();
     const turns = Array.from({ length: 70 }, (_, i) => ({

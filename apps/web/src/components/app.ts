@@ -34,7 +34,6 @@ import "./inbox.ts";
 import "./hiring.ts";
 import "./chat.ts";
 import "./conversations.ts";
-import "./getting-started.ts";
 import "./brain-changes.ts";
 import "./knowledge.ts";
 import "./offline.ts";
@@ -60,20 +59,20 @@ const accountIcon = html`<svg width="18" height="18" viewBox="0 0 24 24" fill="n
 const PHONE_TABS = [
   { id: "conversations", label: "Conversations", to: "conversations", icon: conversationsIcon },
   { id: "work", label: "Work", to: "work/board", icon: workIcon },
-  { id: "needs-you", label: "Needs you", to: "work/needs-you", icon: inboxIcon },
+  { id: "needs-you", label: "Needs you", to: "needs-you", icon: inboxIcon },
   { id: "company", label: "Company", to: "company/team", icon: companyIcon },
 ] as const;
 
-/** Which phone tab a route lights up: Needs you is Work's own tab, so Work lights up for the rest. */
+/** Which phone tab a route lights up: Needs you is a destination of its own, the rest sit in an area. */
 export function phoneTabOf(r: Route): (typeof PHONE_TABS)[number]["id"] {
-  if (r.view === "work" && r.tab === "needs-you") return "needs-you";
-  return areaOf(r);
+  return areaOf(r) ?? "needs-you";
 }
 
 const AREA_SUBTITLES: Record<string, string> = {
   conversations: "Talk with an employee about any project.",
-  work: "What is happening, what needs you, and what shipped.",
+  work: "What is happening and what shipped.",
   company: "Who works here, what they know, and where they work.",
+  "needs-you": "What is waiting for your answer, and what is ready for you.",
 };
 
 export class IncApp extends LitElement {
@@ -449,12 +448,12 @@ export class IncApp extends LitElement {
       nav.areas a { display: inline-flex; align-items: center; min-height: 44px; box-sizing: border-box; padding: 0 16px;
         border-radius: 999px; font-weight: 600; font-size: 15px; text-decoration: none; }
       nav.areas a[aria-current="page"] { background: var(--ink); color: var(--on-ink); }
-      /* A filter chip, not a place: pressed means Work is showing only what needs you. Work stays the
-         highlighted area; the chip gets an outline, never the filled "current" look. */
+      /* Needs you is a destination of its own, a link like the areas: outlined, with its count, and the filled
+         "current" look when it is the page you are on. */
       .needs-link { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; box-sizing: border-box; padding: 0 14px;
         border-radius: 999px; border: 1px solid var(--line-strong); background: transparent; color: var(--ink);
-        font: 600 15px var(--body); white-space: nowrap; }
-      .needs-link[aria-pressed="true"] { background: var(--sunken); border: 2px solid var(--ink); padding: 0 13px; }
+        font: 600 15px var(--body); white-space: nowrap; text-decoration: none; }
+      .needs-link[aria-current="page"] { background: var(--ink); color: var(--on-ink); border-color: var(--ink); }
       .count { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; padding: 0 6px;
         box-sizing: border-box; border-radius: 999px; font-size: 12px; font-weight: 800; background: var(--neutral-bg); color: var(--neutral-fg); }
       .count.some { background: var(--needs-bg); color: var(--needs-fg); border: 1px solid var(--needs-edge); }
@@ -660,7 +659,7 @@ export class IncApp extends LitElement {
   private renderTabs() {
     const r = this.route;
     const area = areaOf(r);
-    if (area === "conversations" || r.view === "ticket") return "";
+    if (area === null || area === "conversations" || r.view === "ticket") return "";
     const active = tabOf(r);
     const work = area === "work";
     const items: { id: string; label: string; href: string }[] = work
@@ -673,7 +672,7 @@ export class IncApp extends LitElement {
           t,
         ) => html`<a role="tab" id="tab-${t.id}" href=${t.href} aria-selected=${t.id === active ? "true" : "false"}
           aria-current=${t.id === active ? "page" : "false"} tabindex=${t.id === active ? "0" : "-1"}
-          >${t.label}${t.id === "needs-you" && this.needsCount ? html` <span class="count some" aria-label="${this.needsCount} waiting">${this.needsCount}</span>` : ""}</a>`,
+          >${t.label}</a>`,
       )}
     </div>`;
   }
@@ -681,7 +680,7 @@ export class IncApp extends LitElement {
   /** The heading's subtitle and actions: a sentence on what the area is for, and its main action. */
   private renderHeadExtras() {
     const r = this.route;
-    const area = areaOf(r);
+    const area = areaOf(r) ?? "needs-you";
     if (r.view === "ticket") {
       return html`<a slot="subtitle" class="back" href="#/work/board">← Back to Work</a>`;
     }
@@ -729,7 +728,7 @@ export class IncApp extends LitElement {
       ><span class="tab-pill" aria-hidden="true">${t.icon}${n ? html`<span class="tab-badge">${n}</span>` : ""}</span><span class="tab-label">${t.label}</span></button>`;
     };
     const area = areaOf(this.route);
-    const needsActive = this.route.view === "work" && this.route.tab === "needs-you";
+    const needsActive = this.route.view === "needs-you";
 
     return html`
       <header @click=${this.onHeaderClick}>
@@ -737,13 +736,12 @@ export class IncApp extends LitElement {
         <nav class="areas" aria-label="Areas">
           ${AREAS.map((a) => html`<a href=${a.href} aria-current=${a.id === area ? "page" : "false"}>${a.label}</a>`)}
         </nav>
-        <button class="needs-link" type="button" aria-pressed=${needsActive ? "true" : "false"}
-          aria-label=${count ? `Needs you, ${count} waiting` : "Needs you"}
-          @click=${() => this.navigate(needsActive ? "work/board" : "work/needs-you")}>Needs you${
+        <a class="needs-link" href="#/needs-you" aria-current=${needsActive ? "page" : "false"}
+          aria-label=${count ? `Needs you, ${count} waiting` : "Needs you"}>Needs you${
             count === null
               ? ""
               : html`<span class="count ${count ? "some" : ""}" aria-hidden="true">${count}</span>`
-          }</button>
+          }</a>
         <span class="spacer"></span>
         <div class="account-wrap">
           <button class="icon account-trigger" type="button" aria-label="Account menu" aria-haspopup="menu"
@@ -784,13 +782,13 @@ export class IncApp extends LitElement {
       case "conversations":
         return r.old
           ? html`<div class="conv-host"><a class="old-note" href="#/conversations">← Back to conversations</a><inc-chat .employeeId=${r.id}></inc-chat></div>`
-          : html`<div class="conv-host"><inc-getting-started></inc-getting-started><inc-conversations .selectedId=${r.id} .card=${r.card ?? ""} .draft=${r.draft} .form=${r.form}></inc-conversations></div>`;
+          : html`<div class="conv-host"><inc-conversations .selectedId=${r.id} .card=${r.card ?? ""} .draft=${r.draft}></inc-conversations></div>`;
+      case "needs-you":
+        return html`<inc-inbox></inc-inbox>`;
       case "work":
         return r.tab === "board"
           ? html`<inc-board role="tabpanel" aria-labelledby="tab-board"></inc-board>`
-          : r.tab === "needs-you"
-            ? html`<inc-inbox role="tabpanel" aria-labelledby="tab-needs-you"></inc-inbox>`
-            : html`<inc-desk show="releases" role="tabpanel" aria-labelledby="tab-releases"></inc-desk>`;
+          : html`<inc-desk show="releases" role="tabpanel" aria-labelledby="tab-releases"></inc-desk>`;
       case "ticket":
         return html`<inc-ticket .ticketId=${r.id}></inc-ticket>`;
       case "team":

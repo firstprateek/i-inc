@@ -11,12 +11,12 @@ import { cardStyles } from "../conversations/styles.ts";
 import { messageSent } from "../first-run.ts";
 import { live } from "../live.ts";
 import { notifyNeedsYou } from "../needs-you.ts";
-import { draftHash } from "../routes.ts";
 import type { SendDetail } from "./conv-composer.ts";
-import type { CreateDetail } from "./conv-list.ts";
+import type { DraftPick, IncConvDraft } from "./conv-draft.ts";
 import type { ShipDone, ShipKind } from "./conv-ship.ts";
 import { base } from "./shared.ts";
 import "./conv-context.ts";
+import "./conv-draft.ts";
 import "./conv-list.ts";
 import "./conv-ship.ts";
 import "./conv-thread.ts";
@@ -30,7 +30,6 @@ export class IncConversations extends LitElement {
     selectedId: { type: String },
     card: { type: String },
     draft: { attribute: false },
-    form: { attribute: false },
     first: { state: true },
     list: { state: true },
     loading: { state: true },
@@ -55,10 +54,8 @@ export class IncConversations extends LitElement {
   declare selectedId: string;
   /** `?card=<id>`: the card a notification opened; the thread brings it into view. */
   declare card: string;
-  /** `#/conversations/new/<employee>[/<project>]`: a conversation the first message will create. */
+  /** `#/conversations/new/<employee>[/<project>]` or `?new=1&...`: the New conversation screen, preset. */
   declare draft: { employee: string; project: string } | undefined;
-  /** `#/conversations?new=1&...`: the New conversation form, open and preset. */
-  declare form: { employee: string; project: string } | undefined;
   /** The first message of a conversation just created, until its thread has sent it. */
   declare first: { id: string; text: string; files: File[]; intent: "turn" } | undefined;
   declare list: Conversation[];
@@ -132,7 +129,7 @@ export class IncConversations extends LitElement {
       .list-pane { border-right: 1px solid var(--line); padding-right: 12px; }
       .ctx-pane { border-left: 1px solid var(--line); padding-left: 12px; }
       .none { margin: auto; max-width: 44ch; text-align: center; display: flex; flex-direction: column; gap: 10px; align-items: center; padding: 0 16px; }
-      .none h2 { font-size: 24px; } .none p { margin: 0; color: var(--ink-2); line-height: 1.5; }
+      .none p { margin: 0; color: var(--ink-2); line-height: 1.5; }
       .drawer { position: absolute; top: 0; bottom: 0; right: 0; width: min(360px, 92%); z-index: 15; background: var(--ground); border-left: 1px solid var(--line-strong);
         padding: 0 12px; box-shadow: -12px 0 32px rgba(0,0,0,0.16); display: flex; flex-direction: column; }
       .backdrop { position: fixed; inset: 0; z-index: 90; background: rgba(0,0,0,0.4); }
@@ -362,13 +359,12 @@ export class IncConversations extends LitElement {
   // ───────────────────────────── actions ─────────────────────────────
 
   /** The draft's first message: it makes the conversation, then the new thread sends the message. */
-  private createFromDraft = async (d: SendDetail): Promise<string | null> => {
-    const draft = this.draftView()?.draft;
-    if (!draft) return "There is no conversation to start.";
+  private createFromDraft = async (d: SendDetail, pick: DraftPick): Promise<string | null> => {
+    if (!pick.employee) return "There is no conversation to start.";
     try {
       const c = await api.createConversation({
-        employeeId: draft.employee,
-        ...(draft.project ? { project: draft.project } : {}),
+        employeeId: pick.employee,
+        ...(pick.project ? { project: pick.project } : {}),
       });
       this.first = { id: c.id, text: d.text, files: d.files, intent: "turn" };
       this.list = [c, ...this.list.filter((x) => x.id !== c.id)];
@@ -381,28 +377,21 @@ export class IncConversations extends LitElement {
     }
   };
 
-  /** The projects the draft's employee works on (all of them when the employee has no list). */
-  private draftProjectChoices(): string[] {
-    const e = this.employees.find((x) => x.id === this.draft?.employee);
-    return e?.projects?.length ? e.projects : this.projects;
-  }
+  /** New conversation: the draft in the centre pane, ready to type in. */
+  private newConversation = () => {
+    if (this.selectedId || this.phone) location.hash = "#/conversations?new=1";
+    void this.updateComplete.then(() =>
+      requestAnimationFrame(() => {
+        this.renderRoot.querySelector<IncConvDraft>("inc-conv-draft")?.focusComposer();
+      }),
+    );
+  };
 
-  /** The draft as the screen can honour it: an unknown project becomes "no project", and the owner is told. */
-  private draftView(): { draft: { employee: string; project: string }; note: string } | undefined {
-    const d = this.draft;
-    if (!d) return undefined;
-    if (!this.ready) return { draft: d, note: "" };
-    const employee = this.employees.find((e) => e.id === d.employee);
-    const knownProject = !d.project || this.projects.includes(d.project);
-    const note = [
-      employee ? "" : "That employee isn't available.",
-      knownProject
-        ? ""
-        : "That project isn't available — starting without a project. Pick one below if you want one.",
-    ]
-      .filter(Boolean)
-      .join(" ");
-    return { draft: { employee: d.employee, project: knownProject ? d.project : "" }, note };
+  /** Nothing is open, so the centre pane is the draft (a phone shows the list instead while there are conversations). */
+  private showDraft(): boolean {
+    if (this.selectedId) return false;
+    if (!this.phone) return true;
+    return !!this.draft || (!this.loading && !this.list.length && !this.listError && !this.showArchived);
   }
 
   private focusComposer() {
@@ -516,12 +505,11 @@ export class IncConversations extends LitElement {
     const drawer = open && !this.wide && !phone;
     // While the phone's sheet is open, everything behind it is out of reach (of Tab and of a screen reader).
     const modal = (phone && this.sheet && !!conv) || !!this.dialog;
-    const list = html`<inc-conv-list class="pane list-pane" ?inert=${modal} ?hidden=${phone && (!!this.selectedId || !!this.draft)} .items=${this.list} .employees=${this.employees}
-      .projects=${this.projects} .selected=${this.selectedId} .now=${this.now} .loading=${this.loading} .error=${this.listError}
-      .showArchived=${this.showArchived} .preset=${this.form} .ready=${this.ready}
-      @conv-create=${(e: CustomEvent<CreateDetail>) => {
-        location.hash = draftHash(e.detail.employeeId, e.detail.project);
-      }}
+    const drafting = this.showDraft();
+    const list = html`<inc-conv-list class="pane list-pane" ?inert=${modal} ?hidden=${phone && (!!this.selectedId || drafting)} .items=${this.list} .employees=${this.employees}
+      .selected=${this.selectedId} .now=${this.now} .loading=${this.loading} .error=${this.listError}
+      .showArchived=${this.showArchived} .drafting=${drafting}
+      @conv-new=${this.newConversation}
       @conv-rename=${(e: CustomEvent<{ id: string; title: string }>) => void this.patch(e.detail.id, { title: e.detail.title })}
       @conv-archive=${(e: CustomEvent<{ id: string; archived: boolean }>) => void this.patch(e.detail.id, { archived: e.detail.archived })}
       @conv-toggle-archived=${() => {
@@ -532,7 +520,7 @@ export class IncConversations extends LitElement {
         this.loading = true;
         void this.loadList();
       }}></inc-conv-list>`;
-    const thread = html`<section class="pane thread-pane" ?inert=${modal} ?hidden=${phone && !this.selectedId && !this.draft} aria-label="Conversation">
+    const thread = html`<section class="pane thread-pane" ?inert=${modal} ?hidden=${phone && !this.selectedId && !drafting} aria-label="Conversation">
       ${this.lost ? html`<p class="lost" role="alert">${this.lost}</p>` : nothing}
       ${
         conv
@@ -543,14 +531,10 @@ export class IncConversations extends LitElement {
                 void this.updateComplete.then(() => requestAnimationFrame(() => this.focusComposer()));
               }}
               @conv-toggle-context=${this.toggleContext}></inc-conv-thread>`
-          : this.draft
-            ? html`<inc-conv-thread .draft=${this.draftView()?.draft} .draftNote=${this.draftView()?.note ?? ""} .draftProjects=${this.draftProjectChoices()}
-                .employee=${this.employees.find((e) => e.id === this.draft?.employee)}
-                .phone=${phone} .onCreate=${this.createFromDraft}></inc-conv-thread>`
-            : this.selectedId && this.loading
-              ? html`<div class="none" aria-busy="true"><p>Loading…</p></div>`
-              : html`<div class="none"><h2>${this.list.length ? "Pick a conversation" : "Start a conversation"}</h2>
-                <p>${this.list.length ? "Choose one from the list, or start a new one." : "Start a conversation with an employee about a project. Ask a question, or tell them what to change, and watch them work."}</p></div>`
+          : this.selectedId && !this.lost
+            ? html`<div class="none" aria-busy="true"><p>Loading…</p></div>`
+            : html`<inc-conv-draft .employees=${this.employees} .projects=${this.projects} .preset=${this.draft} .ready=${this.ready}
+                .phone=${phone} .back=${phone && !!this.list.length} .onCreate=${this.createFromDraft}></inc-conv-draft>`
       }
     </section>`;
     const context = conv

@@ -9,11 +9,13 @@ import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, normalize } from "node:path";
 import { FakeAgent, FakeChat, FakeHarness, FakeHelper, FakeMachines } from "@i-inc/core/testing";
+import { agentsFromRegistry } from "./ahp/conversations.ts";
 import { SessionHost } from "./ahp/session-host.ts";
 import type { WsData } from "./ahp/transport.ts";
 import { createApp } from "./app.ts";
 import { configDir, readCredentials, webToken } from "./config.ts";
 import { seedDemo, seedDemoLater, seedDemoProposals, seedDemoTickets } from "./demo.ts";
+import { demoLaunch } from "./demo-agent.ts";
 import { resolveVersion } from "./deploys.ts";
 import { GitHubApp, readGitHubAppConfig } from "./github.ts";
 import { installGuards, serverError } from "./guards.ts";
@@ -104,6 +106,22 @@ const app = demo
       harness,
       helper: new FakeHelper(),
       chat: new FakeChat(),
+      // Conversations: a scripted agent in the daemon's own process (demo-agent.ts), no sandbox needed.
+      ahpBackend: (registry) =>
+        new SessionHost({
+          launch: demoLaunch,
+          agents: () => agentsFromRegistry(registry),
+          engine: (id) => registry.engines().find((e) => e.id === id),
+          teamOf: (employeeId) => registry.teamOf(employeeId).id,
+          workingCopy: async () => {},
+          credentials: () => ({}),
+          effort: () => "medium",
+          onUsage: (u) => registry.recordUsage(u),
+          onRateLimit: (accountId, limit) => registry.setAccountRateLimit(accountId, limit),
+          cancelGraceMs: 300,
+          startTimeoutMs: 5000,
+          log,
+        }),
     })
   : await createApp({
       ...common,

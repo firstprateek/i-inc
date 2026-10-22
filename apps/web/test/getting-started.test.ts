@@ -375,18 +375,19 @@ describe("the Getting started checklist", () => {
 });
 
 describe("the checklist on Conversations", () => {
-  it("is on the Conversations screen above the conversations, and nowhere else", async () => {
+  it("is in the centre of the new conversation screen, under the composer, and nowhere else", async () => {
     serve();
     location.hash = "#/conversations";
     const app = new IncApp();
     document.body.append(app);
     for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0));
+    // not above the conversations (that pushed the page down once it had loaded)
     const host = app.shadowRoot?.querySelector(".conv-host");
-    expect([...(host?.children ?? [])].map((c) => c.tagName.toLowerCase())).toEqual([
-      "inc-getting-started",
-      "inc-conversations",
-    ]);
-    for (const hash of ["#/work/board", "#/company/team", "#/work/needs-you"]) {
+    expect([...(host?.children ?? [])].map((c) => c.tagName.toLowerCase())).toEqual(["inc-conversations"]);
+    const draft = host?.querySelector("inc-conversations")?.shadowRoot?.querySelector("inc-conv-draft");
+    const box = draft?.shadowRoot?.querySelector(".draft");
+    expect([...(box?.children ?? [])].at(-1)?.tagName.toLowerCase()).toBe("inc-getting-started");
+    for (const hash of ["#/work/board", "#/company/team", "#/needs-you"]) {
       location.hash = hash;
       window.dispatchEvent(new HashChangeEvent("hashchange"));
       await app.updateComplete;

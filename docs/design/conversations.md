@@ -187,8 +187,12 @@ shapes against a real adapter on the mini first.
 ## The screen (laptop first)
 
 - **Left: conversation list.** Grouped as "Needs you" (a pending permission or question),
-  "Running" and "Recent", plus a **New conversation** button that asks for an employee, a project
-  (or none) and starts on the first message.
+  "Running" and "Recent", plus a **New conversation** button that opens the draft in the centre
+  pane (no form in the list).
+- **Centre, nothing open: New conversation.** One centred composer, like Claude's chat, with the
+  employee (default: last used), the project (last used, or none) and the mode (the employee's
+  remembered one, else bypass) as pickers; the conversation is created on the first send. It is also
+  the view when the owner has no conversations or has not opened one.
 - **Centre: the thread.** Markdown with highlighted code; reasoning collapsed under "Thinking";
   tool calls as compact one-line cards (Read, Edit, Run, Search…) that expand to input and output;
   edits show a diff; long terminal output is truncated with "show all"; errors carry Retry.

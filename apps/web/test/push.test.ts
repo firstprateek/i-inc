@@ -518,7 +518,7 @@ describe("the service worker and a conversation's notification (T65)", () => {
   });
 
   it("opens the card: an open window is focused, moved to the address and told it, so iOS (no navigate) gets there too", async () => {
-    const open = client("https://app.test/#/work/needs-you");
+    const open = client("https://app.test/#/needs-you");
     const w = loadWorker([open]);
     await w.click(needsYou.url);
     expect(open.focus).toHaveBeenCalled();
