@@ -9,13 +9,11 @@ type Any = any;
 const employees: Any[] = [
   { id: "ada", name: "Ada", role: "Engineer", projects: ["Duet"], tint: 0 },
   { id: "kit", name: "Kit", role: "Engineer", projects: ["Other"], tint: 1 },
-  { id: "zed", name: "Zed", role: "Designer", tint: 2 },
 ];
 
 async function mount(over: Partial<IncConvList> = {}) {
   const el = document.createElement("inc-conv-list") as IncConvList;
   el.employees = employees;
-  el.projects = ["Duet", "Other"];
   Object.assign(el, over);
   document.body.append(el);
   await el.updateComplete;
@@ -26,60 +24,47 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-describe("the New conversation form", () => {
-  it("opens preset to a project from the address, with an employee who works on it", async () => {
-    const el = await mount({ ready: true, preset: { employee: "", project: "Other" } });
-    await el.updateComplete;
-    const form = el.shadowRoot?.querySelector("form.create");
-    expect(form).not.toBeNull();
-    const [who, project] = [...(form?.querySelectorAll("select") ?? [])] as HTMLSelectElement[];
-    expect(project?.value).toBe("Other");
-    expect(who?.value).toBe("kit");
-  });
-
-  it("keeps a named employee, and Start only asks for a draft: nothing is created", async () => {
-    const el = await mount({ ready: true, preset: { employee: "zed", project: "Duet" } });
-    await el.updateComplete;
-    const seen: unknown[] = [];
-    el.addEventListener("conv-create", (e) => seen.push((e as CustomEvent).detail));
-    must<HTMLFormElement>(el.shadowRoot?.querySelector("form.create")).dispatchEvent(
-      new Event("submit", { cancelable: true }),
-    );
-    expect(seen).toEqual([{ employeeId: "zed", project: "Duet" }]);
-  });
-
-  it("says so and falls back to No project when the address names a project that isn't there", async () => {
-    const el = await mount({ ready: true, preset: { employee: "", project: "nope-unknown" } });
-    await el.updateComplete;
-    const form = el.shadowRoot?.querySelector("form.create");
-    const [who, project] = [...(form?.querySelectorAll("select") ?? [])] as HTMLSelectElement[];
-    expect(form?.textContent).toContain("That project isn't available.");
-    expect(form?.textContent).not.toContain("nope-unknown");
-    expect(project?.value).toBe("");
-    expect(who?.value).toBe("ada");
-  });
-
-  it("says so when the employee isn't there either, and picks the first", async () => {
-    const el = await mount({ ready: true, preset: { employee: "ghost", project: "Duet" } });
-    await el.updateComplete;
-    const form = el.shadowRoot?.querySelector("form.create");
-    expect(form?.textContent).toContain("That employee isn't available.");
-    expect(must<HTMLSelectElement>(form?.querySelectorAll("select")[1]).value).toBe("Duet");
-  });
-
-  it("does not judge the address before the employees and projects have arrived", async () => {
-    const el = await mount({
-      ready: false,
-      projects: [],
-      employees: [],
-      preset: { employee: "ada", project: "Duet" },
-    });
-    await el.updateComplete;
-    expect(el.shadowRoot?.querySelector("form.create")?.textContent).not.toContain("isn't available");
-  });
-
-  it("stays closed until asked for", async () => {
+describe("the New conversation button", () => {
+  it("asks the screen for the draft in the centre pane: no form opens in the list", async () => {
     const el = await mount();
+    let asked = 0;
+    el.addEventListener("conv-new", () => asked++);
+    const btn = must<HTMLButtonElement>(el.shadowRoot?.querySelector("button.new"));
+    expect(btn.textContent?.trim()).toBe("New conversation");
+    btn.click();
+    await el.updateComplete;
+    expect(asked).toBe(1);
+    // the list has no form, selects or Start button of its own
     expect(el.shadowRoot?.querySelector("form.create")).toBeNull();
+    expect(el.shadowRoot?.querySelector("select")).toBeNull();
+    expect(el.shadowRoot?.querySelector("button[aria-expanded]")).toBeNull();
+  });
+
+  it("is the current page while the draft is open", async () => {
+    const el = await mount({ drafting: true });
+    expect(el.shadowRoot?.querySelector("button.new")?.getAttribute("aria-current")).toBe("page");
+    el.drafting = false;
+    await el.updateComplete;
+    expect(el.shadowRoot?.querySelector("button.new")?.getAttribute("aria-current")).toBe("false");
+  });
+});
+
+describe("an empty list", () => {
+  it("is one small muted line: the centre pane carries the invitation", async () => {
+    const el = await mount({ items: [], loading: false });
+    const root = el.shadowRoot as ShadowRoot;
+    expect(root.querySelector("p.none")?.textContent).toBe("No conversations yet.");
+    // no big heading, no second paragraph of advice
+    expect(root.querySelector(".groups h2")).toBeNull();
+    expect(root.querySelectorAll(".groups p").length).toBe(1);
+    const css = (customElements.get("inc-conv-list") as unknown as { styles: { cssText: string }[] }).styles
+      .map((c) => c.cssText)
+      .join("\n");
+    expect(css).toMatch(/\.none \{[^}]*color: var\(--ink-2\)[^}]*font-size: 13\.5px/);
+  });
+
+  it("says so for archived conversations and for a search with no match", async () => {
+    const el = await mount({ items: [], loading: false, showArchived: true });
+    expect(el.shadowRoot?.querySelector("p.none")?.textContent).toBe("No archived conversations.");
   });
 });

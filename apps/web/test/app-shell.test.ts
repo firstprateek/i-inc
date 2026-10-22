@@ -71,7 +71,7 @@ describe("routeTitle", () => {
     expect(t("#/conversations/ab12cd34")).toBe("Conversations · i.inc");
     expect(t("#/conversations/old/ada")).toBe("Old chat · Conversations · i.inc");
     expect(t("#/work/board")).toBe("Board · Work · i.inc");
-    expect(t("#/work/needs-you")).toBe("Needs you · Work · i.inc");
+    expect(t("#/needs-you")).toBe("Needs you · i.inc");
     expect(t("#/work/releases")).toBe("Releases · Work · i.inc");
     expect(t("#/ticket/12")).toBe("Ticket #12 · Work · i.inc");
     expect(t("#/company/team")).toBe("Team · Company · i.inc");
@@ -83,7 +83,7 @@ describe("routeTitle", () => {
     expect(t("#/company/settings/engines")).toBe("Engines and accounts · Settings · Company · i.inc");
     expect(t("#/company/settings")).toBe("Teams · Settings · Company · i.inc");
     // an old hash is titled as the page it redirects to
-    expect(t("#/inbox")).toBe("Needs you · Work · i.inc");
+    expect(t("#/inbox")).toBe("Needs you · i.inc");
     vi.unstubAllGlobals();
   });
 
@@ -91,7 +91,7 @@ describe("routeTitle", () => {
     expect(routeName({ view: "work", tab: "board" }).long).toBe("Work");
     expect(routeName({ view: "usage" }).long).toBe("Company");
     expect(routeName({ view: "ticket", id: "9" }).short).toBe("#9");
-    expect(routeTitle({ view: "work", tab: "needs-you" })).toBe("Needs you · Work · i.inc");
+    expect(routeTitle({ view: "needs-you" })).toBe("Needs you · i.inc");
   });
 });
 
@@ -208,7 +208,7 @@ describe("the shell", () => {
     state.top = 222;
     await go("#/work/board");
     state.top = 333;
-    await go("#/work/needs-you");
+    await go("#/needs-you");
     const memory = (app as unknown as { memory: ScrollMemory }).memory;
     // The board's first visit (111) and second visit (333, saved on leaving) are separate entries.
     expect(memory.size).toBe(3);
@@ -297,7 +297,7 @@ describe("the shell", () => {
 
   it("tapping the tab you are on scrolls main to the top", async () => {
     phone(true);
-    const { root, state } = await mount("#/work/needs-you");
+    const { root, state } = await mount("#/needs-you");
     state.top = 500;
     (root.querySelector('.tabs button[aria-selected="true"]') as HTMLButtonElement).click();
     expect(state.top).toBe(0);
@@ -310,7 +310,7 @@ describe("the shell", () => {
       "#/company/usage",
       "#/company/team",
       "#/conversations/ada",
-      "#/work/needs-you",
+      "#/needs-you",
       "#/company/settings/engines",
       "#/work/board",
     ])

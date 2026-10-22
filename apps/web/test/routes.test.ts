@@ -42,14 +42,14 @@ describe("parse", () => {
       "#/conversations/new/ada/my%20repo",
       { view: "conversations", id: "", draft: { employee: "ada", project: "my repo" } },
     ],
-    ["#/conversations?new=1", { view: "conversations", id: "", form: { employee: "", project: "" } }],
+    ["#/conversations?new=1", { view: "conversations", id: "", draft: { employee: "", project: "" } }],
     [
       "#/conversations?new=1&project=Duet",
-      { view: "conversations", id: "", form: { employee: "", project: "Duet" } },
+      { view: "conversations", id: "", draft: { employee: "", project: "Duet" } },
     ],
     [
       "#/conversations?new=1&project=my%20repo&employee=kit",
-      { view: "conversations", id: "", form: { employee: "kit", project: "my repo" } },
+      { view: "conversations", id: "", draft: { employee: "kit", project: "my repo" } },
     ],
     ["#/conversations?x=1", { view: "conversations", id: "" }],
     ["#/conversations/old/ada", { view: "conversations", id: "ada", old: true }],
@@ -57,7 +57,9 @@ describe("parse", () => {
     ["#/conversations/ada", { view: "conversations", id: "ada", old: true }],
     ["#/work", { view: "work", tab: "board" }],
     ["#/work/board", { view: "work", tab: "board" }],
-    ["#/work/needs-you", { view: "work", tab: "needs-you" }],
+    ["#/needs-you", { view: "needs-you" }],
+    // Needs you was a Work tab: the old address is the top-level page now
+    ["#/work/needs-you", { view: "needs-you" }],
     ["#/work/releases", { view: "work", tab: "releases" }],
     ["#/work/nonsense", { view: "work", tab: "board" }],
     ["#/ticket/12", { view: "ticket", id: "12" }],
@@ -83,10 +85,10 @@ describe("parse", () => {
     }
   });
 
-  it("opens Conversations on a desktop and Work → Needs you on a phone when there is no hash", () => {
+  it("opens Conversations on a desktop and Needs you on a phone when there is no hash", () => {
     phone(true);
-    expect(parse("")).toEqual({ view: "work", tab: "needs-you" });
-    expect(parse("#/")).toEqual({ view: "work", tab: "needs-you" });
+    expect(parse("")).toEqual({ view: "needs-you" });
+    expect(parse("#/")).toEqual({ view: "needs-you" });
     phone(false);
     expect(parse("")).toEqual({ view: "conversations", id: "" });
     expect(parse("#/nothing-here")).toEqual({ view: "conversations", id: "" });
@@ -97,7 +99,7 @@ describe("parse", () => {
 describe("old hashes keep working", () => {
   // Every hash from before the three areas, and the canonical hash it lands on.
   const legacy: [string, string][] = [
-    ["#/inbox", "#/work/needs-you"],
+    ["#/inbox", "#/needs-you"],
     ["#/office", "#/company/team"],
     ["#/board", "#/work/board"],
     ["#/chat", "#/conversations/old"],
@@ -170,16 +172,18 @@ describe("old hashes keep working", () => {
 
 describe("redirectFor: tidying, mistyped and unknown hashes", () => {
   it.each([
-    ["#/Inbox", "#/work/needs-you"],
-    ["#/INBOX", "#/work/needs-you"],
-    ["#/inbox?x=1", "#/work/needs-you"],
-    ["#/inbox/", "#/work/needs-you"],
+    ["#/Inbox", "#/needs-you"],
+    ["#/INBOX", "#/needs-you"],
+    ["#/inbox?x=1", "#/needs-you"],
+    ["#/inbox/", "#/needs-you"],
     ["#/Chat/Ada", "#/conversations/old/Ada"],
     ["#/chat/ada?draft=1", "#/conversations/old/ada"],
     ["#/Setup/Projects", "#/company/projects"],
     ["#/Setup/Engines", "#/company/settings/engines"],
     ["#/Work/Board", "#/work/board"],
-    ["#/work/Needs-You", "#/work/needs-you"],
+    ["#/work/Needs-You", "#/needs-you"],
+    ["#/Needs-You", "#/needs-you"],
+    ["#/work/needs-you?x=1", "#/needs-you"],
     ["#/work/nonsense", "#/work/board"],
     ["#/Company/Settings/Sandboxes", "#/company/settings/sandboxes"],
     ["#/company/settings/nonsense", "#/company/settings/teams"],
@@ -203,7 +207,7 @@ describe("redirectFor: tidying, mistyped and unknown hashes", () => {
       phone(false);
       expect(redirectFor(h), h).toBe("#/conversations");
       phone(true);
-      expect(redirectFor(h), h).toBe("#/work/needs-you");
+      expect(redirectFor(h), h).toBe("#/needs-you");
     }
   });
 
@@ -222,13 +226,14 @@ describe("redirectFor: tidying, mistyped and unknown hashes", () => {
       "#/conversations/new/ada/Duet",
       "#/conversations?new=1",
       "#/conversations?new=1&project=Duet",
+      "#/needs-you",
     ])
       expect(redirectFor(h), h).toBeNull();
   });
 
   it("the home hash is the phone home on a phone and Conversations on a laptop", () => {
     phone(true);
-    expect(homeHash()).toBe("#/work/needs-you");
+    expect(homeHash()).toBe("#/needs-you");
     phone(false);
     expect(homeHash()).toBe("#/conversations");
   });
@@ -236,7 +241,7 @@ describe("redirectFor: tidying, mistyped and unknown hashes", () => {
   it("the app rewrites a bogus hash to the home route in place, without a new history entry", async () => {
     for (const [onPhone, home] of [
       [false, "#/conversations"],
-      [true, "#/work/needs-you"],
+      [true, "#/needs-you"],
     ] as const) {
       phone(onPhone);
       vi.stubGlobal("fetch", () => new Promise(() => {}));
@@ -253,17 +258,20 @@ describe("redirectFor: tidying, mistyped and unknown hashes", () => {
     }
   });
 
-  it.each(["#/Inbox", "#/inbox?x=1"])("the app rewrites %s to Work → Needs you", async (hash) => {
-    phone(false);
-    vi.stubGlobal("fetch", () => new Promise(() => {}));
-    history.replaceState(null, "", "/");
-    location.hash = hash;
-    const app = new IncApp();
-    document.body.append(app);
-    await app.updateComplete;
-    expect(location.hash).toBe("#/work/needs-you");
-    app.remove();
-  });
+  it.each(["#/Inbox", "#/inbox?x=1", "#/work/needs-you"])(
+    "the app rewrites %s to Needs you",
+    async (hash) => {
+      phone(false);
+      vi.stubGlobal("fetch", () => new Promise(() => {}));
+      history.replaceState(null, "", "/");
+      location.hash = hash;
+      const app = new IncApp();
+      document.body.append(app);
+      await app.updateComplete;
+      expect(location.hash).toBe("#/needs-you");
+      app.remove();
+    },
+  );
 });
 
 describe("areas and tabs", () => {
@@ -271,6 +279,8 @@ describe("areas and tabs", () => {
     expect(areaOf(parse("#/conversations/ada"))).toBe("conversations");
     expect(areaOf(parse("#/work/releases"))).toBe("work");
     expect(areaOf(parse("#/ticket/3"))).toBe("work");
+    // Needs you is a destination of its own, in no area
+    expect(areaOf(parse("#/needs-you"))).toBeNull();
     for (const h of [
       "#/company",
       "#/company/team/hiring",
@@ -282,8 +292,8 @@ describe("areas and tabs", () => {
       expect(areaOf(parse(h))).toBe("company");
   });
 
-  it("names the tab each route sits under; a ticket sits on none", () => {
-    expect(tabOf(parse("#/work/needs-you"))).toBe("needs-you");
+  it("names the tab each route sits under; a ticket and Needs you sit on none", () => {
+    expect(tabOf(parse("#/needs-you"))).toBeNull();
     expect(tabOf(parse("#/ticket/3"))).toBeNull();
     expect(tabOf(parse("#/company/team/hiring/ada"))).toBe("team");
     expect(tabOf(parse("#/company/brain/ada"))).toBe("brain");
@@ -294,14 +304,14 @@ describe("areas and tabs", () => {
 
   it("has the tabs the plan names, in order", () => {
     expect(AREAS.map((a) => a.label)).toEqual(["Conversations", "Work", "Company"]);
-    expect(WORK_TABS.map(([, l]) => l)).toEqual(["Board", "Needs you", "Releases"]);
+    expect(WORK_TABS.map(([, l]) => l)).toEqual(["Board", "Releases"]);
     expect(COMPANY_TABS.map(([, l]) => l)).toEqual(["Team", "Brain", "Projects", "Usage", "Settings"]);
   });
 });
 
 describe("the route layout language", () => {
   it.each([
-    ["work/needs-you", "page"],
+    ["needs-you", "page"],
     ["work/releases", "page"],
     ["ticket/12", "page"],
     ["company/team/hiring", "page"],
@@ -353,7 +363,7 @@ describe("the route layout language", () => {
   it("keeps the layout mapping centralized for route state", () => {
     expect(layoutForRoute(parse("#/work/board"))).toBe("wide");
     expect(layoutForRoute(parse("#/company/settings/engines"))).toBe("split");
-    expect(layoutForRoute(parse("#/work/needs-you"))).toBe("page");
+    expect(layoutForRoute(parse("#/needs-you"))).toBe("page");
     expect(layoutForRoute(parse("#/board"))).toBe("wide");
     expect(routeName(parse("#/chat/ada")).long).toBe("Conversations");
   });
@@ -462,7 +472,7 @@ describe("project addresses and queries (T62)", () => {
     expect(parse("#/conversations?new=1&project=Duet")).toEqual({
       view: "conversations",
       id: "",
-      form: { employee: "", project: "Duet" },
+      draft: { employee: "", project: "Duet" },
     });
     expect(hashQuery("#/conversations?new=1&project=Duet").get("project")).toBe("Duet");
     expect(hashQuery("#/conversations").get("project")).toBeNull();
@@ -475,7 +485,7 @@ describe("project addresses and queries (T62)", () => {
     expect(parse("#/Conversations?new=1")).toEqual({
       view: "conversations",
       id: "",
-      form: { employee: "", project: "" },
+      draft: { employee: "", project: "" },
     });
   });
 

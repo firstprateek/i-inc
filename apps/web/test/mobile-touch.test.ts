@@ -179,7 +179,7 @@ describe("T27: Mobile bug hunt & touch regression tests (390x844)", () => {
   });
 
   it("router parses the phone default to Work → Needs you on a 390x844 viewport", () => {
-    expect(parse("")).toEqual({ view: "work", tab: "needs-you" });
+    expect(parse("")).toEqual({ view: "needs-you" });
   });
 
   it("tap-every-tab suite: tapping each mobile tab navigates correctly and never breaks routing", async () => {
@@ -227,10 +227,10 @@ describe("T27: Mobile bug hunt & touch regression tests (390x844)", () => {
     expect(conversationsBtn.getAttribute("aria-selected")).toBe("false");
     expect(app.shadowRoot?.querySelector("inc-office")).not.toBeNull();
 
-    // 5. Tap Needs you: returns to #/work/needs-you
+    // 5. Tap Needs you: returns to #/needs-you
     needsBtn.click();
     await app.updateComplete;
-    expect(location.hash).toBe("#/work/needs-you");
+    expect(location.hash).toBe("#/needs-you");
     expect(needsBtn.getAttribute("aria-current")).toBe("page");
     expect(needsBtn.getAttribute("aria-selected")).toBe("true");
     expect(companyBtn.getAttribute("aria-selected")).toBe("false");

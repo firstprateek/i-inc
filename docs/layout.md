@@ -1,6 +1,7 @@
 # Web layout language
 
-The web app has three areas, each with its own tabs, and three route templates from `apps/web/src/components/layout.ts`. They are a shared
+The web app has three areas, each with its own tabs, plus one top-level page of its own (Needs you), and three route
+templates from `apps/web/src/components/layout.ts`. They are a shared
 layout vocabulary, not per-screen width guesses. The route-to-template map is `layoutForRoute()` in
 `components/app.ts`; authenticated route headings, including loading and offline states, stay in the
 same frame. A failed request never takes a view away: the frame has a `notice` slot above the
@@ -9,31 +10,38 @@ refresh" notice with a retry, and the view stays mounted with its data and anyth
 (`components/loader.ts` keeps `data` on a failed refresh, drops out-of-order answers, and guards
 button presses with `press()`). The unauthenticated login screen uses the Page frame too.
 
-## Areas and tabs (T61)
+## Areas, tabs and Needs you (T61, T64)
 
-The app has three areas. The route model lives in `apps/web/src/routes.ts`; the shell is `components/app.ts`.
+The app has three areas and one destination of its own. The route model lives in `apps/web/src/routes.ts`; the shell is
+`components/app.ts`.
 
-| Area | Hash | Tabs (each a hash) |
+| Where | Hash | Tabs (each a hash) |
 | --- | --- | --- |
-| **Conversations** | `#/conversations[/<id>]` | none; hosts the Conversations screen (below) and, until done or dismissed, the Getting started checklist |
-| **Work** | `#/work` (Board) | Board `#/work/board` · Needs you `#/work/needs-you` · Releases `#/work/releases`; a ticket is `#/ticket/<id>` and lights Work |
+| **Conversations** | `#/conversations[/<id>]` | none; hosts the Conversations screen (below). Its centre pane is the New conversation screen when nothing is open, and carries the Getting started checklist under the composer until it is done or dismissed |
+| **Work** | `#/work` (Board) | Board `#/work/board` · Releases `#/work/releases`; a ticket is `#/ticket/<id>` and lights Work |
 | **Company** | `#/company` (Team) | Team `#/company/team` (and `/hiring[/<id>]`) · Brain `#/company/brain[/<id>]` · Projects `#/company/projects` · Usage `#/company/usage` · Settings `#/company/settings[/teams\|engines\|sandboxes\|notifications]` |
+| **Needs you** (in no area) | `#/needs-you` | none: one page, titled "Needs you" |
 
-- **Top bar (laptop):** Conversations · Work · Company, a **Needs you (n)** badge that opens Work → Needs you,
-  and the account menu (theme, sign out). The laptop opens on Conversations.
-- **Phone tabs (bottom bar):** Conversations · Work · Needs you · Company. The phone opens on Work → Needs you.
-  The header keeps only the mark and the account menu.
+Needs you is **one top-level destination**, not a tab: it shows what waits for the owner (conversations asking for a
+permission, tickets at a gate, unassigned tickets, follow-up proposals, brain policy proposals) and what is ready to approve.
+
+- **Top bar (laptop):** Conversations · Work · Company, a **Needs you (n)** link to `#/needs-you` (outlined; filled
+  and `aria-current="page"` while you are on it, with no area highlighted), and the account menu (theme, sign out).
+  The laptop opens on Conversations.
+- **Phone tabs (bottom bar):** Conversations · Work · Needs you · Company; Needs you goes to `#/needs-you` and lights
+  there. The phone opens on Needs you. The header keeps only the mark and the account menu.
 - **Tab row:** one per area, in the page header (the `tabs` slot of `IncLayout`, so Page, Wide and Split share
   it). It is `role="tablist"` with one tab stop: Left/Right/Home/End move between tabs, Space or Enter opens one.
   Tabs are at least 44px tall; on a narrow screen the strip scrolls sideways rather than wrapping. The
-  Needs you count is the same number everywhere (`needs-you.ts`).
-- **Old hashes** (`#/inbox`, `#/office`, `#/board`, `#/chat`, `#/desk`, `#/handbook`, `#/brain/<id>`,
+  Needs you count is the same number everywhere (`needs-you.ts`). Needs you has no tab row (its heading block is
+  the shorter one a ticket has).
+- **Old hashes** (`#/inbox`, `#/work/needs-you`, `#/office`, `#/board`, `#/chat`, `#/desk`, `#/handbook`, `#/brain/<id>`,
   `#/hiring`, `#/setup/*`, `#/more`) are rewritten in place (`history.replaceState`) by `legacyTarget()`. Push
   links (`#/ticket/<id>`, `#/ticket/<id>/assign`) are unchanged.
 - **Templates by route:** Conversations, Brain and Settings are Split; the board and Team are Wide;
   Needs you, Releases, tickets, hiring, Projects and Usage are Page (`layoutForRoute()`).
 - **Words:** conversation, ticket, employee, team, project, brain. The browser title is
-  `<tab> · <area> · i.inc` (for example `Board · Work · i.inc`).
+  `<tab> · <area> · i.inc` (for example `Board · Work · i.inc`); Needs you is `Needs you · i.inc`.
 
 ## Conversations screen (T60)
 
@@ -45,8 +53,18 @@ change.
 | --- | --- |
 | 1200px and up | List (260-300px) · thread (flexible, content up to 820px) · context panel (280-340px, collapsible, remembered in `localStorage`) |
 | 768-1199px | List · thread; the context panel is a drawer over the right edge, closed until asked for |
-| Under 768px | One column. `#/conversations` is the list on its own; `#/conversations/<id>` is the thread with a back button; the context panel is a bottom sheet (72dvh, with a backdrop, focus on its close button, Escape closes) |
+| Under 768px | One column. `#/conversations` is the list on its own (the New conversation screen instead while there are no conversations); `#/conversations/<id>` is the thread with a back button; the context panel is a bottom sheet (72dvh, with a backdrop, focus on its close button, Escape closes) |
 
+- **New conversation, like Claude's chat:** with nothing open (no conversations yet, or none selected) the centre
+  pane is the **New conversation screen** (`conv-draft.ts`): one centred column, top-aligned at a fixed place, with the
+  employee and project pickers above the composer and the mode picker inside it. Defaults: the employee and project last
+  used (`localStorage`, `prefs.ts`), else the first employee and no project; the mode the employee last ran in, else bypass
+  permissions. The agent's own mode list is known only once its session is open, so until then the picker shows the
+  remembered mode's label (and the list the agent offered last time), and the thread's own picker takes over. The
+  conversation is created when the first message is sent. The left column has no form: **New conversation** only opens
+  this screen (on a phone, `#/conversations?new=1`) and the list's empty state is one small muted line, "No
+  conversations yet". The Getting started checklist is a compact card **below the composer**, so it appears after it has
+  loaded without moving anything above it (it is not above the conversations any more).
 - **Heading:** the route's heading is one short line (`dense`, no subtitle; layout.md's allowance for a route with no
   tab row). On a phone's thread view it is visually hidden (still read by a screen reader), since Back and the
   thread's title replace it. While the composer has focus on a phone the tab bar steps aside (no gap above the keyboard).

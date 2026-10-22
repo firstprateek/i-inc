@@ -99,7 +99,7 @@ describe("mobile app tab bar (T25)", () => {
 
     needs.click();
     await app.updateComplete;
-    expect(location.hash).toBe("#/work/needs-you");
+    expect(location.hash).toBe("#/needs-you");
     expect(selected()).toEqual([needs]);
   });
 
@@ -123,7 +123,7 @@ describe("mobile app tab bar (T25)", () => {
 
     await go("#/work/releases");
     expect(work.getAttribute("aria-selected")).toBe("true");
-    await go("#/work/needs-you");
+    await go("#/needs-you");
     expect(needs.getAttribute("aria-selected")).toBe("true");
     expect(work.getAttribute("aria-selected")).toBe("false");
 

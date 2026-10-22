@@ -96,7 +96,9 @@ describe("the top bar", () => {
       ["Work", "#/work/board"],
       ["Company", "#/company/team"],
     ]);
-    expect(root.querySelector("header button.needs-link")).not.toBeNull();
+    // Needs you is a destination of its own: a link in the top bar, not a button or a Work tab
+    const needs = root.querySelector("header a.needs-link");
+    expect(needs?.getAttribute("href")).toBe("#/needs-you");
     expect(root.querySelector(".account-trigger")).not.toBeNull();
     expect(root.querySelector(".all-views-trigger")).toBeNull();
     expect(root.querySelector(".pin-btn")).toBeNull();
@@ -107,7 +109,7 @@ describe("the top bar", () => {
     ["#/conversations/ada", "Conversations"],
     ["#/work/board", "Work"],
     ["#/work/releases", "Work"],
-    ["#/work/needs-you", "Work"],
+    ["#/needs-you", null],
     ["#/ticket/12", "Work"],
     ["#/ticket/12/assign", "Work"],
     ["#/company/team", "Company"],
@@ -116,15 +118,18 @@ describe("the top bar", () => {
     ["#/company/projects", "Company"],
     ["#/company/usage", "Company"],
     ["#/company/settings/engines", "Company"],
-    ["#/inbox", "Work"],
+    ["#/inbox", null],
+    ["#/work/needs-you", null],
     ["#/setup/engines", "Company"],
     ["#/chat/ada", "Conversations"],
   ])("%s highlights %s", async (hash, area) => {
     const { root } = await mount(hash);
-    expect(current(root, 'header nav[aria-label="Areas"] a')).toEqual([area]);
+    // Needs you lights its own link and no area
+    expect(current(root, 'header nav[aria-label="Areas"] a')).toEqual(area ? [area] : []);
+    expect(current(root, "header .needs-link")).toEqual(area ? [] : [expect.stringContaining("Needs you")]);
   });
 
-  it("opens on Conversations on a laptop and on Work → Needs you on a phone", async () => {
+  it("opens on Conversations on a laptop and on Needs you on a phone", async () => {
     let { root } = await mount("");
     expect(current(root, 'header nav[aria-label="Areas"] a')).toEqual(["Conversations"]);
     expect(root.querySelector("inc-conversations")).not.toBeNull();
@@ -137,18 +142,18 @@ describe("the top bar", () => {
 });
 
 describe("the logo", () => {
-  it("goes to Conversations on a laptop and to Work → Needs you on a phone", async () => {
+  it("goes to Conversations on a laptop and to Needs you on a phone", async () => {
     let { root } = await mount("#/company/team");
     expect(root.querySelector("header .mark")?.getAttribute("href")).toBe("#/conversations");
     document.body.innerHTML = "";
     phone(true);
     ({ root } = await mount("#/company/team"));
-    expect(root.querySelector("header .mark")?.getAttribute("href")).toBe("#/work/needs-you");
+    expect(root.querySelector("header .mark")?.getAttribute("href")).toBe("#/needs-you");
   });
 });
 
 describe("the account menu's Show getting started", () => {
-  it("is offered only after the checklist was dismissed, and brings it back on Conversations", async () => {
+  it("is offered only after the checklist was dismissed, and brings it back in the new conversation screen", async () => {
     const { app, root } = await mount("#/work/board");
     const items = () => [...root.querySelectorAll('.account-menu [role="menuitem"]')].map((i) => text(i));
     (root.querySelector(".account-trigger") as HTMLButtonElement).click();
@@ -167,7 +172,10 @@ describe("the account menu's Show getting started", () => {
     expect(localStorage.getItem("i-inc-getting-started-dismissed")).toBeNull();
     expect(location.hash).toBe("#/conversations");
     expect(root.querySelector(".account-menu")).toBeNull();
-    expect(root.querySelector("inc-getting-started")).not.toBeNull();
+    // it lives in the centre of Conversations, under the composer
+    const draft = root.querySelector("inc-conversations")?.shadowRoot?.querySelector("inc-conv-draft");
+    expect(draft?.shadowRoot?.querySelector("inc-getting-started")).not.toBeNull();
+    expect(root.querySelector(".conv-host > inc-getting-started")).toBeNull();
   });
 });
 
@@ -187,7 +195,7 @@ describe("the Needs you count", () => {
     expect(needsYouCount(tickets, [], [{ id: "a" } as never, { id: "b" } as never])).toBe(4);
   });
 
-  it("shows the count in the top bar and opens Work → Needs you", async () => {
+  it("shows the count in the top bar link, which opens the Needs you page", async () => {
     serve(
       [
         ticket({ id: "1", status: "needs-you", needsYou: { kind: "plan-gate", plan: "x" } }),
@@ -196,15 +204,17 @@ describe("the Needs you count", () => {
       [{ id: "p", ticketId: "4", author: "G", at: 0, page: "m", text: "t" }],
     );
     const { app, root } = await mount("#/work/board");
-    const badge = root.querySelector("header .needs-link") as HTMLButtonElement;
-    expect(badge.getAttribute("aria-pressed")).toBe("false");
-    badge.click();
+    const badge = root.querySelector("header .needs-link") as HTMLAnchorElement;
+    expect(badge.getAttribute("aria-current")).toBe("false");
+    expect(badge.getAttribute("href")).toBe("#/needs-you");
+    location.hash = badge.getAttribute("href") as string;
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
     await settle(app);
-    expect(location.hash).toBe("#/work/needs-you");
+    expect(badge.getAttribute("aria-current")).toBe("page");
     expect(badge.querySelector(".count")?.textContent).toBe("3");
     expect(badge.getAttribute("aria-label")).toBe("Needs you, 3 waiting");
-    // the Needs you tab carries it too
-    expect(text(root.querySelector('[role="tablist"] a[href="#/work/needs-you"]'))).toBe("Needs you 3");
+    // it is no Work tab any more
+    expect(root.querySelector('[role="tablist"] a[href="#/needs-you"]')).toBeNull();
   });
 
   it("includes open follow-up proposals in the badge", async () => {
@@ -217,23 +227,32 @@ describe("the Needs you count", () => {
     const { root } = await mount("#/work/board");
     expect(root.querySelector("header .needs-link .count")?.textContent).toBe("0");
     expect(root.querySelector("header .needs-link .count.some")).toBeNull();
-    expect(text(root.querySelector('[role="tablist"] a[href="#/work/needs-you"]'))).toBe("Needs you");
   });
 
-  it("is a filter chip: pressed on Needs you, with Work still the one current area, and unpressing goes back to the board", async () => {
-    const { app, root } = await mount("#/work/needs-you");
-    const chip = root.querySelector("header .needs-link") as HTMLButtonElement;
-    expect(chip.getAttribute("aria-pressed")).toBe("true");
-    expect(chip.hasAttribute("aria-current")).toBe(false);
-    expect(current(root, 'header nav[aria-label="Areas"] a')).toEqual(["Work"]);
-    expect(current(root, "header .needs-link")).toEqual([]);
-    chip.click();
-    await settle(app);
-    expect(location.hash).toBe("#/work/board");
-    expect(chip.getAttribute("aria-pressed")).toBe("false");
-    // on any other page it is not pressed
+  it("is a destination of its own: current on Needs you with no area highlighted, and not current anywhere else", async () => {
+    const { root } = await mount("#/needs-you");
+    const link = root.querySelector("header .needs-link") as HTMLAnchorElement;
+    expect(link.getAttribute("aria-current")).toBe("page");
+    expect(current(root, 'header nav[aria-label="Areas"] a')).toEqual([]);
+    // no tab row of its own, and the heading is "Needs you"
+    expect(root.querySelector('[role="tablist"].subnav')).toBeNull();
+    expect(text(root.querySelector("#view-heading"))).toBe("Needs you");
+    expect(root.querySelector("inc-inbox")).not.toBeNull();
+    document.body.innerHTML = "";
     const other = (await mount("#/company/team")).root.querySelector("header .needs-link");
-    expect(other?.getAttribute("aria-pressed")).toBe("false");
+    expect(other?.getAttribute("aria-current")).toBe("false");
+  });
+
+  it("is the same link on a phone: the bottom tab goes to Needs you and lights up there", async () => {
+    phone(true);
+    const { app, root } = await mount("#/work/board");
+    const tab = [...root.querySelectorAll(".tabs button")].find((b) =>
+      text(b)?.startsWith("Needs you"),
+    ) as HTMLElement;
+    tab.click();
+    await settle(app);
+    expect(location.hash).toBe("#/needs-you");
+    expect(current(root, ".tabs button")).toEqual(["Needs you"]);
   });
 
   it("updates when the daemon says something changed", async () => {
@@ -248,17 +267,16 @@ describe("the Needs you count", () => {
 });
 
 describe("each area's tab row", () => {
-  it("Work has Board, Needs you and Releases", async () => {
+  it("Work has Board and Releases only: Needs you is not a Work tab", async () => {
     const { root } = await mount("#/work/releases");
     const list = root.querySelector('[role="tablist"].subnav') as HTMLElement;
     expect(list.getAttribute("aria-label")).toBe("Work sections");
     const tabs = [...list.querySelectorAll('a[role="tab"]')];
     expect(tabs.map((t) => [text(t), t.getAttribute("href")])).toEqual([
       ["Board", "#/work/board"],
-      ["Needs you", "#/work/needs-you"],
       ["Releases", "#/work/releases"],
     ]);
-    expect(tabs.map((t) => t.getAttribute("aria-selected"))).toEqual(["false", "false", "true"]);
+    expect(tabs.map((t) => t.getAttribute("aria-selected"))).toEqual(["false", "true"]);
     expect(root.querySelector("inc-desk")?.getAttribute("show")).toBe("releases");
   });
 
@@ -331,22 +349,14 @@ describe("each area's tab row", () => {
     const press = (target: HTMLElement, key: string) =>
       target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, composed: true }));
     press(tabs[0] as HTMLElement, "ArrowRight");
-    press(tabs[1] as HTMLElement, "ArrowRight");
-    press(tabs[2] as HTMLElement, "ArrowRight"); // wraps
+    press(tabs[1] as HTMLElement, "ArrowRight"); // wraps
     press(tabs[0] as HTMLElement, "ArrowLeft"); // wraps back
-    press(tabs[1] as HTMLElement, "End");
-    press(tabs[2] as HTMLElement, "Home");
-    expect(focus.mock.calls.map((c) => c[0])).toEqual([
-      "Needs you",
-      "Releases",
-      "Board",
-      "Releases",
-      "Releases",
-      "Board",
-    ]);
+    press(tabs[0] as HTMLElement, "End");
+    press(tabs[1] as HTMLElement, "Home");
+    expect(focus.mock.calls.map((c) => c[0])).toEqual(["Releases", "Board", "Releases", "Releases", "Board"]);
     const click = vi.fn((e: Event) => e.preventDefault());
-    (tabs[2] as HTMLElement).addEventListener("click", click);
-    press(tabs[2] as HTMLElement, " ");
+    (tabs[1] as HTMLElement).addEventListener("click", click);
+    press(tabs[1] as HTMLElement, " ");
     expect(click).toHaveBeenCalledOnce();
   });
 
@@ -362,7 +372,7 @@ describe("the browser title", () => {
     const { app } = await mount("#/work/board");
     expect(document.title).toBe("Board · Work · i.inc");
     for (const [hash, title] of [
-      ["#/work/needs-you", "Needs you · Work · i.inc"],
+      ["#/needs-you", "Needs you · i.inc"],
       ["#/company/usage", "Usage · Company · i.inc"],
       ["#/conversations/old/ada", "Old chat · Conversations · i.inc"],
       ["#/conversations/ab12cd34", "Conversations · i.inc"],

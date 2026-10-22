@@ -42,6 +42,7 @@ export function enterSends(
 export class IncConvComposer extends LitElement {
   static override properties = {
     session: { attribute: false },
+    modes: { attribute: false },
     chat: { attribute: false },
     conversationId: { type: String },
     name: { type: String },
@@ -58,6 +59,8 @@ export class IncConvComposer extends LitElement {
     fileProblem: { state: true },
   };
   declare session: SessionState | undefined;
+  /** The mode picker of a conversation not started yet (there is no session to read it from). */
+  declare modes: Picker | undefined;
   declare chat: ChatState | undefined;
   declare conversationId: string;
   declare name: string;
@@ -111,7 +114,7 @@ export class IncConvComposer extends LitElement {
       .box { border: 1px solid var(--control-edge); border-radius: 18px; background: var(--surface); padding: 8px 10px 6px; display: flex; flex-direction: column; gap: 6px; }
       .box:focus-within { outline: 3px solid var(--reviewing-mark); outline-offset: 1px; }
       .box.drag { border-style: dashed; background: var(--sunken); }
-      textarea { font: 16px/1.45 var(--body); color: var(--ink); background: transparent; border: 0; resize: none; width: 100%; box-sizing: border-box; min-height: 28px;
+      textarea { font: 16px/1.45 var(--body); color: var(--ink); background: transparent; border: 0; resize: none; width: 100%; box-sizing: border-box; min-height: 44px;
         max-height: 40vh; padding: 4px 4px; outline: none; }
       textarea::placeholder { color: var(--ink-2); }
       .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -388,7 +391,7 @@ export class IncConvComposer extends LitElement {
   override render() {
     const running = this.running;
     const hasInput = !!this.text.trim() || this.allFiles().length > 0;
-    const mode = modePicker(this.session);
+    const mode = this.modes ?? modePicker(this.session);
     const others = otherPickers(this.session);
     const tooBig = checkOutgoing(this.text, this.allFiles());
     const dis = !!this.blocked || !!tooBig;

@@ -166,10 +166,17 @@ describe("the first message of a new conversation", () => {
     const replace = vi.spyOn(location, "replace").mockImplementation(() => {});
     const el = await mount<HTMLElement & { draft?: unknown }>("inc-conversations");
     const create = el as unknown as {
-      createFromDraft(d: { text: string; files: File[]; intent: string }): Promise<string | null>;
+      createFromDraft(
+        d: { text: string; files: File[]; intent: string },
+        pick: { employee: string; project: string },
+      ): Promise<string | null>;
     };
-    (el as { draft?: unknown }).draft = { employee: "ada", project: "" };
-    expect(await create.createFromDraft({ text: "hello", files: [], intent: "turn" })).toBeNull();
+    expect(
+      await create.createFromDraft(
+        { text: "hello", files: [], intent: "turn" },
+        { employee: "ada", project: "" },
+      ),
+    ).toBeNull();
     expect(replace).toHaveBeenCalledWith("#/conversations/ab12cd34");
     expect(location.hash).not.toBe("#/conversations/ab12cd34"); // no new history entry
     // and it counts as the first-run checklist's last step

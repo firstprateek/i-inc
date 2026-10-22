@@ -34,10 +34,10 @@ import {
 } from "../conversations/model.ts";
 import { cardStyles } from "../conversations/styles.ts";
 import { OPEN_CARD_EVENT } from "../register-sw.ts";
-import { draftHash } from "../routes.ts";
 import { avatar, base, projectBadge, selectField } from "./shared.ts";
 import "./conv-composer.ts";
 import "./conv-turn.ts";
+import { modeKey, rememberModes } from "../conversations/prefs.ts";
 import type { SendDetail } from "./conv-composer.ts";
 import type { InputDetail } from "./conv-question.ts";
 import type { ConfirmDetail } from "./conv-tool.ts";
@@ -45,8 +45,7 @@ import type { ConfirmDetail } from "./conv-tool.ts";
 const WINDOW = 30;
 const PAGE = 20;
 
-/** The per-employee default mode, remembered when the owner changes it. */
-export const modeKey = (employeeId: string) => `i-inc-conv-mode:${employeeId}`;
+export { modeKey };
 
 /** A message sent and not yet confirmed, with the id it was sent under. */
 interface Sent {
@@ -60,11 +59,7 @@ interface Sent {
 export class IncConvThread extends LitElement {
   static override properties = {
     conv: { attribute: false },
-    draft: { attribute: false },
-    draftNote: { type: String },
-    draftProjects: { attribute: false },
     first: { attribute: false },
-    onCreate: { attribute: false },
     employee: { attribute: false },
     phone: { type: Boolean },
     contextOpen: { type: Boolean },
@@ -79,15 +74,8 @@ export class IncConvThread extends LitElement {
     loadingOlder: { state: true },
   };
   declare conv: Conversation | undefined;
-  /** A conversation not made yet: the first message creates it (the screen does, through `onCreate`). */
-  declare draft: { employee: string; project: string } | undefined;
-  /** What is wrong with the draft's address (an unknown employee or project), in a sentence. */
-  declare draftNote: string;
-  /** The projects this employee can be asked about, for the draft's project picker. */
-  declare draftProjects: string[];
   /** The message that made this conversation, sent once its chat is loaded. */
   declare first: SendDetail | undefined;
-  declare onCreate: ((d: SendDetail) => Promise<string | null>) | undefined;
   declare employee: Employee | undefined;
   declare phone: boolean;
   declare contextOpen: boolean;
@@ -117,7 +105,6 @@ export class IncConvThread extends LitElement {
   private resizer: ResizeObserver | undefined;
   private baselined = false;
   private firstSent = false;
-  private draftKey = "";
   private cardVisible = false;
   private openedId = "";
   /** How many past turns the last render showed. */
@@ -133,8 +120,6 @@ export class IncConvThread extends LitElement {
   constructor() {
     super();
     this.phone = false;
-    this.draftNote = "";
-    this.draftProjects = [];
     this.contextOpen = false;
     this.card = "";
     this.cardNote = "";
@@ -369,15 +354,6 @@ export class IncConvThread extends LitElement {
   override willUpdate(changed: Map<string, unknown>): void {
     const conv = this.conv;
     const key = conv ? `${conv.id}|${conv.ahpSession}|${conv.ahpChat}` : "";
-    if (changed.has("draft")) {
-      // A different draft (the route changed): what was said about the last one is stale.
-      const d = this.draft;
-      const dk = d ? `${d.employee}|${d.project}` : "";
-      if (dk !== this.draftKey) {
-        this.draftKey = dk;
-        this.notice = null;
-      }
-    }
     if (changed.has("conv") && key !== this.wired) {
       this.unwatch();
       this.wired = key;
@@ -457,6 +433,8 @@ export class IncConvThread extends LitElement {
     const chat = ahp().chat(conv.ahpChat);
     const picker = modePicker(ahp().session(conv.ahpSession));
     if (!chat || !picker) return;
+    // The modes this agent offers, kept so the next New conversation can list them before its session opens.
+    rememberModes(conv.employeeId, picker.choices);
     this.modeApplied = true;
     if (chat.turns.length || chat.activeTurn) return;
     let want: string | null = null;
@@ -915,47 +893,9 @@ export class IncConvThread extends LitElement {
     return idx;
   }
 
-  /** A conversation that does not exist yet: who it is with, an invitation, and a composer that creates it. */
-  private renderDraft(d: { employee: string; project: string }) {
-    const name = this.employee?.name ?? d.employee;
-    return html`
-      <div class="head">
-        ${
-          this.phone
-            ? html`<button class="back" type="button" aria-label="Back to conversations" @click=${() => {
-                location.hash = "#/conversations";
-              }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></button>`
-            : nothing
-        }
-        ${this.employee ? avatar({ name: this.employee.name, tint: this.employee.tint ?? 0 }, 36) : nothing}
-        <div class="who"><h2 class="title">New conversation</h2>
-          <div class="meta"><span>${name}</span>${d.project ? projectBadge(d.project) : html`<span>No project</span>`}</div></div>
-      </div>
-      <div class="stage"><div class="scroller" tabindex="-1"><div class="inner">
-        <div class="empty"><h2>Start a conversation with ${name}</h2>
-          <p>${d.project ? `Ask ${name} about ${d.project}, or tell them what to change.` : `Ask ${name} anything, or tell them what to do.`} The conversation is created when you send your first message; leave this page and nothing is kept.</p>
-          <p>Attach a screenshot or a text file by pasting or dropping it.</p>
-          ${this.draftNote ? html`<p class="notice" role="status">${this.draftNote}</p>` : nothing}
-          ${
-            this.draftProjects.length
-              ? html`<label class="pick">Project <select aria-label="Project for this conversation" @change=${(
-                  e: Event,
-                ) => {
-                  location.hash = draftHash(d.employee, (e.target as HTMLSelectElement).value || null);
-                }}><option value="" ?selected=${!d.project}>No project</option>${this.draftProjects.map(
-                  (p) => html`<option value=${p} ?selected=${p === d.project}>${p}</option>`,
-                )}</select></label>`
-              : nothing
-          }</div>
-      </div></div></div>
-      <div class="dock">
-        <inc-conv-composer .conversationId=${`draft:${d.employee}:${d.project}`} .name=${name} .blocked=${/employee/.test(this.draftNote) ? "Pick an employee from the list first." : ""} .onSend=${this.onCreate}></inc-conv-composer>
-      </div>`;
-  }
-
   override render() {
     const conv = this.conv;
-    if (!conv) return this.draft ? this.renderDraft(this.draft) : nothing;
+    if (!conv) return nothing;
     const c = ahp();
     const chat = c.chat(conv.ahpChat);
     const session = c.session(conv.ahpSession);

@@ -10,10 +10,9 @@ export const AREAS: readonly { id: Area; label: string; href: string }[] = [
   { id: "company", label: "Company", href: "#/company/team" },
 ];
 
-/** Work's tabs: the board, what needs the owner, and releases. */
+/** Work's tabs: the board and releases. What needs the owner is its own top-level page (`#/needs-you`). */
 export const WORK_TABS = [
   ["board", "Board"],
-  ["needs-you", "Needs you"],
   ["releases", "Releases"],
 ] as const;
 export type WorkTab = (typeof WORK_TABS)[number][0];
@@ -48,12 +47,16 @@ export type Route =
       old?: true;
       /** `#/conversations/<id>?card=<toolCallId or requestId>`: the card a notification opened (T65). */
       card?: string;
-      /** `#/conversations/new/<employee>[/<project>]`: a conversation not made yet; it starts with the first message. */
+      /**
+       * `#/conversations/new/<employee>[/<project>]` or `#/conversations?new=1[&employee=<id>][&project=<id>]`: a
+       * conversation not made yet, shown as the centred composer; the first message creates it. An empty employee
+       * or project means the last used (or none).
+       */
       draft?: { employee: string; project: string };
-      /** `#/conversations?new=1[&employee=<id>][&project=<id>]`: the New conversation form, open and preset. */
-      form?: { employee: string; project: string };
     }
   | { view: "work"; tab: WorkTab }
+  /** What needs the owner: one top-level page, in no area and with no tab row. */
+  | { view: "needs-you" }
   | { view: "ticket"; id: string }
   | { view: "team" }
   | { view: "hiring"; id?: string }
@@ -71,12 +74,15 @@ export type Route =
   | { view: "usage" }
   | { view: "settings"; section: Section };
 
-export const areaOf = (r: Route): Area =>
-  r.view === "conversations"
-    ? "conversations"
-    : r.view === "work" || r.view === "ticket"
-      ? "work"
-      : "company";
+/** The area a route is in; Needs you is a destination of its own, in none. */
+export const areaOf = (r: Route): Area | null =>
+  r.view === "needs-you"
+    ? null
+    : r.view === "conversations"
+      ? "conversations"
+      : r.view === "work" || r.view === "ticket"
+        ? "work"
+        : "company";
 
 /** The tab a route sits under, or null for a page that is in an area but on no tab (a ticket). */
 export function tabOf(r: Route): WorkTab | CompanyTab | null {
@@ -118,14 +124,14 @@ const onPhone = () =>
   typeof matchMedia === "function" && matchMedia(`(max-width: ${LAYOUT_BREAKPOINTS.phone}px)`).matches;
 
 /** Where the app opens with no hash, and where the logo goes: Conversations on a laptop, Needs you on a phone. */
-export const homeHash = () => (onPhone() ? "#/work/needs-you" : "#/conversations");
+export const homeHash = () => (onPhone() ? "#/needs-you" : "#/conversations");
 
 /** Old hashes (before the three areas) and the canonical hash each one lands on. */
 export function legacyTarget(hash: string): string | null {
   const [, view, id] = hash.split("/");
   switch (view) {
     case "inbox":
-      return "#/work/needs-you";
+      return "#/needs-you";
     case "board":
       return "#/work/board";
     case "office":
@@ -184,13 +190,18 @@ export function redirectFor(hash: string): string | null {
                   : `#/conversations/old/${a}`;
         break;
       }
+      case "needs-you":
+        out = "#/needs-you";
+        break;
       case "work":
         out =
           rest[0] === undefined
             ? "#/work"
-            : isWorkTab(lower(rest[0]))
-              ? `#/work/${lower(rest[0])}`
-              : "#/work/board";
+            : lower(rest[0]) === "needs-you"
+              ? "#/needs-you"
+              : isWorkTab(lower(rest[0]))
+                ? `#/work/${lower(rest[0])}`
+                : "#/work/board";
         break;
       case "ticket":
         out = rest[0] ? `#/${tail(v, rest[0], lower(rest[1]) === "assign" ? "assign" : undefined)}` : null;
@@ -249,7 +260,7 @@ export const hashQuery = (hash: string): URLSearchParams => new URLSearchParams(
 
 /** Where the app opens with no hash. */
 export function homeRoute(): Route {
-  return onPhone() ? { view: "work", tab: "needs-you" } : { view: "conversations", id: "" };
+  return onPhone() ? { view: "needs-you" } : { view: "conversations", id: "" };
 }
 
 /** The address of a conversation about to start: the first message creates it. */
@@ -290,10 +301,12 @@ function parseHash(hash: string): Route {
         return {
           view: "conversations",
           id: "",
-          form: { employee: q.get("employee") ?? "", project: q.get("project") ?? "" },
+          draft: { employee: q.get("employee") ?? "", project: q.get("project") ?? "" },
         };
       return { view: "conversations", id: a ?? "" };
     }
+    case "needs-you":
+      return { view: "needs-you" };
     case "work":
       return { view: "work", tab: isWorkTab(a) ? a : "board" };
     case "ticket":
@@ -341,6 +354,8 @@ export function routeName(r: Route): { long: string; short: string } {
       return same("Conversations");
     case "work":
       return same("Work");
+    case "needs-you":
+      return same("Needs you");
     case "ticket":
       return r.id ? { long: `Ticket #${r.id}`, short: `#${r.id}` } : same("Ticket");
     default:
@@ -361,6 +376,8 @@ function titleParts(r: Route): string[] {
           : ["Conversations"];
     case "work":
       return [tab(WORK_TABS, r.tab), "Work"];
+    case "needs-you":
+      return ["Needs you"];
     case "ticket":
       return [r.id ? `Ticket #${r.id}` : "Ticket", "Work"];
     case "team":
