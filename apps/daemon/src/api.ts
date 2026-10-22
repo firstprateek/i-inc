@@ -6,6 +6,8 @@
 // for a ticket, must carry a custom header, which needs a preflight too (see isUpload).
 
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import {
   type AccountCost,
   type AgentHarness,
@@ -36,7 +38,7 @@ import {
   type TicketState,
 } from "@i-inc/core";
 import { ConversationError } from "./ahp/conversations.ts";
-import { authorized, hostAllowed, originAllowed, same } from "./auth.ts";
+import { credential, hostAllowed, originAllowed, same, sessionCookie } from "./auth.ts";
 import { type BrainChange, RevertError } from "./brain-harvest.ts";
 import { ACCEPTED_LABEL, type Daemon, type DaemonDeps } from "./daemon.ts";
 import { readDeploys } from "./deploys.ts";
@@ -66,6 +68,7 @@ import { type ProposalStatus, RECOVERED_BODY } from "./proposals.ts";
 import { type NotifySettings, notifyKeys, notifySettings, type PushSubscription } from "./push.ts";
 import { defaultTeam, type Project } from "./registry.ts";
 import { ShipError } from "./ship.ts";
+import { clientKey, GuessLimit } from "./throttle.ts";
 import type { NewAttachment, NewTicket } from "./tickets.ts";
 import { defaultTimeoutSettings, readTimeoutSettings, timeoutSettings } from "./timeouts.ts";
 import {
@@ -79,13 +82,23 @@ import {
   type TicketView,
   ticketView,
 } from "./views.ts";
+import { SESSION_MS, WebSessions } from "./web-sessions.ts";
 
 export interface ApiOptions {
   /**
-   * When set, every request needs the token: as the `i_inc` cookie the web app gets from
-   * `POST /api/login`, or as `Authorization: Bearer <token>`. Real mode always sets one.
+   * When set, every request needs a login: the `i_inc` session cookie the web app gets from
+   * `POST /api/login`, or `Authorization: Bearer <token>` (scripts, the deployer). Real mode always sets
+   * one. The first-run signup needs a setup code too (`setupCodePath`).
    */
   token?: string;
+  /** Browser sessions (web-sessions.ts). Default: made over the app's database. */
+  webSessions?: WebSessions;
+  /**
+   * Where the one-time setup code is written (mode 0600) while no owner account exists. The code is also
+   * logged. Whoever can read the daemon's log or this file, and so is already the owner of the machine,
+   * can create the owner account; nobody else on the tailnet can.
+   */
+  setupCodePath?: string;
   /** The Host headers it answers, such as "127.0.0.1:7420". Unset: any (tests). */
   hosts?: string[];
   /** Heartbeat interval for SSE in ms. Default 25_000. */
@@ -94,6 +107,12 @@ export interface ApiOptions {
   version?: string;
   /** ~/.i-inc/deploys.jsonl, which the deployer writes, for GET /api/deploys. */
   deploysPath?: string;
+}
+
+/** An open /api/events stream tied to a browser session. */
+interface EventStream {
+  /** Ends the stream if its session is gone. */
+  check(): void;
 }
 
 type Handler = (req: Request, params: Record<string, string>) => Promise<Response>;
@@ -346,6 +365,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     return out;
   };
 
+  const eventStreams = new Set<EventStream>();
   const routes: [string, string, Handler][] = [
     [
       "GET",
@@ -363,14 +383,25 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       async (req) => {
         const encoder = new TextEncoder();
         let closed = false;
+        // A stream opened with a browser session ends with it: signed out, or expired.
+        const session =
+          opts.token && credential(req, opts.token, sessions) === "session" ? sessionCookie(req) : undefined;
+        const alive = () => session === undefined || sessions.valid(session);
+        const tracked: EventStream = {
+          check: () => {
+            if (!alive()) onAbort();
+          },
+        };
         let timer: ReturnType<typeof setInterval> | null = null;
         let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
 
         const onTicket = (id: Id) => {
+          if (!alive()) return onAbort();
           send(`event: ticket\ndata: ${JSON.stringify({ id })}\n\n`);
         };
 
         const onOffice = () => {
+          if (!alive()) return onAbort();
           send("event: office\ndata: {}\n\n");
         };
 
@@ -393,6 +424,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
             d.live.off("office", onOffice);
           }
           req.signal?.removeEventListener("abort", onAbort);
+          eventStreams.delete(tracked);
         };
 
         const send = (chunk: string) => {
@@ -424,6 +456,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
               }
 
               req.signal?.addEventListener("abort", onAbort);
+              if (session !== undefined) eventStreams.add(tracked);
 
               send(": connected\n\n");
 
@@ -434,6 +467,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
 
               const interval = opts.heartbeatMs ?? 25_000;
               timer = setInterval(() => {
+                if (!alive()) return onAbort();
                 send(": keepalive\n\n");
               }, interval);
               timer.unref?.();
@@ -2735,6 +2769,98 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     return json({ ok: true });
   }
 
+  const sessions = opts.webSessions ?? new WebSessions(d.db, () => d.clock.now());
+  // Open /api/events streams that ride on a browser session: signing out closes them at once.
+  sessions.onRevoke(() => {
+    for (const st of [...eventStreams]) st.check();
+  });
+
+  // The one-time setup code for the first-run signup: made when the daemon starts without an owner,
+  // written to a file only the machine's owner can read (the log says where, not what), and gone once the
+  // owner account exists. Wrong guesses are limited per client; only a flood of them from everywhere
+  // changes the code, so one peer on the tailnet can't keep invalidating it.
+  let setupCode: string | undefined;
+  /** Per client: this many wrong codes in this long, and it waits. */
+  const setupGuesses = new GuessLimit(5, 10 * 60_000, () => d.clock.now());
+  // Across every client: 20 wrong codes in all, and signup is refused for an hour. The code changes at most
+  // once an hour, when that ceiling is hit, so a flood can neither guess it nor keep invalidating it.
+  const setupCeiling = new GuessLimit(20, 3600_000, () => d.clock.now(), 3600_000);
+  function newSetupCode() {
+    const alphabet = "abcdefghjkmnpqrstuvwxyz23456789"; // no 0/o/1/l/i
+    const bytes = randomBytes(12);
+    const chars = Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
+    setupCode = `${chars.slice(0, 4)}-${chars.slice(4, 8)}-${chars.slice(8, 12)}`;
+    if (opts.setupCodePath) {
+      try {
+        mkdirSync(dirname(opts.setupCodePath), { recursive: true });
+        // A fresh file each time, created with its mode (never a readable file written then tightened).
+        rmSync(opts.setupCodePath, { force: true });
+        writeFileSync(opts.setupCodePath, `${setupCode}\n`, { mode: 0o600, flag: "wx" });
+        chmodSync(opts.setupCodePath, 0o600);
+      } catch (e) {
+        d.log?.(
+          `could not write the setup code to ${opts.setupCodePath}: ${e instanceof Error ? e.message : e}`,
+        );
+      }
+      d.log?.(
+        `no owner account yet: create it in the web app with the setup code in ${opts.setupCodePath} (cat it)`,
+      );
+    } else {
+      d.log?.(`no owner account yet: create it in the web app with the setup code ${setupCode}`);
+    }
+  }
+  function clearSetupCode() {
+    setupCode = undefined;
+    if (opts.setupCodePath) rmSync(opts.setupCodePath, { force: true });
+  }
+  if (opts.token && !getOwner()) newSetupCode();
+  else if (opts.setupCodePath) rmSync(opts.setupCodePath, { force: true });
+
+  /** Is the code (or the daemon token itself) a proof the caller is the machine's owner? */
+  function setupProof(given: unknown): boolean {
+    if (typeof given !== "string" || !given || !opts.token) return false;
+    const code = given.trim();
+    if (same(code, opts.token)) return true;
+    if (setupCode && same(code.toLowerCase(), setupCode)) return true;
+    return false;
+  }
+
+  // Password and token logins: wrong guesses are limited per client too, before any password is hashed.
+  const loginGuesses = new GuessLimit(10, 10 * 60_000, () => d.clock.now());
+  // Across every client: 100 wrong passwords or tokens in an hour, and logins are refused for 15 minutes.
+  const loginCeiling = new GuessLimit(100, 3600_000, () => d.clock.now(), 15 * 60_000);
+  const tooMany = (seconds: number) =>
+    json({ error: "too many wrong tries: wait a few minutes", code: "throttled" }, 429, {
+      "retry-after": String(seconds),
+    });
+
+  const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+  /** The Host without its port: `iinc.tail.ts.net`, `127.0.0.1`, `[::1]`. */
+  const hostName = (req: Request): string => {
+    const h = (req.headers.get("host") ?? new URL(req.url).host).toLowerCase();
+    return h.startsWith("[") ? h.slice(0, h.indexOf("]") + 1) : (h.split(":")[0] ?? h);
+  };
+  /** Secure on every cookie unless the browser reached the daemon on its own machine (plain http on loopback). */
+  const secureCookie = (req: Request): boolean =>
+    !LOOPBACK.has(hostName(req)) ||
+    (req.headers.get("x-forwarded-proto") ?? "").split(",")[0]?.trim() === "https";
+
+  /** The cookie for a session token. HttpOnly: scripts can't read it; Strict: other sites can't send it. */
+  function cookieFor(req: Request, value: string, maxAge: number): string {
+    return `i_inc=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${secureCookie(req) ? "; Secure" : ""}`;
+  }
+
+  /** Signs a browser in: a new session, its cookie. Never the daemon token. */
+  function startSession(req: Request, body: unknown, status: number): Response {
+    const s = sessions.create();
+    return json(body, status, { "set-cookie": cookieFor(req, s.token, s.maxAge) });
+  }
+
+  // A browser still holding the daemon token as its cookie (from before sessions) is swapped for a session
+  // on its next request, once a minute at most per token (a script sending that cookie gets none: it
+  // doesn't send Sec-Fetch headers).
+  let swapped: { at: number; token: string; maxAge: number } | undefined;
+
   function getOwner(): { username: string; password_hash: string } | undefined {
     const [row] = d.db.all<{ username: string; password_hash: string }>(
       "SELECT username, password_hash FROM owner_account WHERE id = 1",
@@ -2742,7 +2868,42 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     return row;
   }
 
-  return async function handle(req: Request): Promise<Response> {
+  /** The session cookie to hand back with this response, if the browser's one needs replacing or renewing. */
+  function refreshedCookie(req: Request, how: ReturnType<typeof credential>): string | undefined {
+    if (!opts.token) return undefined;
+    if (how === "session") {
+      const raw = sessionCookie(req);
+      if (raw && sessions.renew(raw)) return cookieFor(req, raw, SESSION_MS / 1000);
+    }
+    if (how === "legacy-cookie" && req.headers.has("sec-fetch-site")) {
+      const at = d.clock.now();
+      if (!swapped || at - swapped.at > 60_000) swapped = { at, ...sessions.create() };
+      return cookieFor(req, swapped.token, swapped.maxAge);
+    }
+    return undefined;
+  }
+
+  async function handle(req: Request, conn?: { peer?: string | undefined }): Promise<Response> {
+    const how = opts.token ? credential(req, opts.token, sessions) : undefined;
+    const res = await dispatch(req, how, conn?.peer);
+    if (res.status === 401 || res.headers.has("set-cookie")) return res;
+    const cookie = refreshedCookie(req, how);
+    if (!cookie) return res;
+    try {
+      res.headers.append("set-cookie", cookie);
+      return res;
+    } catch {
+      const headers = new Headers(res.headers);
+      headers.append("set-cookie", cookie);
+      return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+    }
+  }
+
+  async function dispatch(
+    req: Request,
+    how: ReturnType<typeof credential>,
+    peer?: string,
+  ): Promise<Response> {
     const path = new URL(req.url).pathname;
     const authStatus = req.method === "GET" && path === "/api/auth";
     // The deployer polls this without a login. It says nothing but the release's sha, whether work is
@@ -2751,15 +2912,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     const signup = req.method === "POST" && path === "/api/signup";
     const login = req.method === "POST" && path === "/api/login";
     const logout = req.method === "POST" && path === "/api/logout";
-    if (
-      opts.token &&
-      !authStatus &&
-      !healthCheck &&
-      !signup &&
-      !login &&
-      !logout &&
-      !authorized(req, opts.token)
-    ) {
+    if (opts.token && !authStatus && !healthCheck && !signup && !login && !logout && !how) {
       return json({ error: "unauthorized" }, 401);
     }
     const host = req.headers.get("host") ?? "";
@@ -2773,14 +2926,41 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       }
     }
     if (authStatus) {
-      return json({ initialized: getOwner() !== undefined });
+      const initialized = getOwner() !== undefined;
+      // setupCodeRequired: the signup form needs the code the daemon logged (or its token).
+      return json({ initialized, setupCodeRequired: !initialized && !!opts.token });
     }
     if (healthCheck) {
       return json({ ok: true, version: opts.version ?? "unknown", busy: daemon.busy(), startedAt });
     }
     if (signup) {
       if (getOwner()) return json({ error: "owner account already exists" }, 409);
-      const body = (await req.json().catch(() => ({}))) as { username?: unknown; password?: unknown };
+      const body = (await req.json().catch(() => ({}))) as {
+        username?: unknown;
+        password?: unknown;
+        setupCode?: unknown;
+      };
+      // Nobody can claim the company without the code the daemon printed (or its token).
+      const who = clientKey(req, peer);
+      if (opts.token && !(how === "bearer" || how === "session")) {
+        const wait = Math.max(setupGuesses.retryAfter(who), setupCeiling.retryAfter("all"));
+        if (wait) return tooMany(wait);
+      }
+      if (opts.token && !(how === "bearer" || how === "session" || setupProof(body.setupCode))) {
+        if (typeof body.setupCode === "string" && body.setupCode) {
+          setupGuesses.fail(who);
+          if (setupCeiling.fail("all")) newSetupCode();
+          await new Promise((r) => setTimeout(r, 1000)); // slows guessing
+          return json({ error: "that's not the setup code", code: "setup-code" }, 403);
+        }
+        return json(
+          {
+            error: "enter the setup code the daemon logged (or is in the setup-code file)",
+            code: "setup-code",
+          },
+          403,
+        );
+      }
       const username = typeof body.username === "string" ? body.username.trim() : "";
       if (!username) return json({ error: "username is required" }, 400);
       if (typeof body.password !== "string" || body.password.length < 8) {
@@ -2792,7 +2972,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         hashPassword(body.password),
         d.clock.now(),
       );
-      return jsonWithCookie({ ok: true, username }, 201, opts.token);
+      clearSetupCode();
+      return opts.token ? startSession(req, { ok: true, username }, 201) : json({ ok: true, username }, 201);
     }
     if (login) {
       const body = (await req.json().catch(() => ({}))) as {
@@ -2800,6 +2981,9 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         password?: unknown;
         token?: unknown;
       };
+      const who = clientKey(req, peer);
+      const wait = Math.max(loginGuesses.retryAfter(who), loginCeiling.retryAfter("all"));
+      if (wait) return tooMany(wait);
       if (body.username !== undefined || body.password !== undefined) {
         const owner = getOwner();
         if (!owner) return json({ error: "create an owner account first" }, 400);
@@ -2809,24 +2993,27 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           body.username.trim() !== owner.username ||
           !verifyPassword(body.password, owner.password_hash)
         ) {
+          loginGuesses.fail(who);
+          loginCeiling.fail("all");
+          await new Promise((r) => setTimeout(r, 1000)); // slows guessing
           return json({ error: "wrong username or password" }, 401);
         }
-        return jsonWithCookie({ ok: true }, 200, opts.token);
+        loginGuesses.clear(who);
+        return opts.token ? startSession(req, { ok: true }, 200) : json({ ok: true });
       }
       if (!opts.token || typeof body.token !== "string" || !same(body.token, opts.token)) {
+        loginGuesses.fail(who);
+        loginCeiling.fail("all");
         await new Promise((r) => setTimeout(r, 1000)); // slows guessing
         return json({ error: "that's not the token" }, 401);
       }
-      return jsonWithCookie({ ok: true }, 200, opts.token);
+      return startSession(req, { ok: true }, 200);
     }
     if (logout) {
-      return new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: {
-          "content-type": "application/json",
-          "set-cookie": "i_inc=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
-        },
-      });
+      // The session is revoked here, not just forgotten by the browser: a copy of its cookie stops working.
+      const raw = sessionCookie(req);
+      if (raw) sessions.revoke(raw);
+      return json({ ok: true }, 200, { "set-cookie": cookieFor(req, "", 0) });
     }
     const url = new URL(req.url);
     for (const [method, pattern, handler] of routes) {
@@ -2846,7 +3033,9 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       }
     }
     return json({ error: "not found" }, 404);
-  };
+  }
+
+  return handle;
 }
 
 function hashPassword(password: string): string {
@@ -3075,21 +3264,9 @@ function changeView(c: BrainChange, who: (id: string) => { id: string; name: str
   };
 }
 
-function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-}
-
-function jsonWithCookie(body: unknown, status: number, token?: string): Response {
+function json(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: {
-      "content-type": "application/json",
-      ...(token
-        ? {
-            // HttpOnly: the page's scripts can't read it; Strict: other sites can't send it.
-            "set-cookie": `i_inc=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`,
-          }
-        : {}),
-    },
+    headers: { "content-type": "application/json", ...headers },
   });
 }

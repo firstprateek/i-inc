@@ -10,12 +10,16 @@ export class IncLogin extends LitElement {
     initialized: { state: true },
     username: { state: true },
     password: { state: true },
+    setupCode: { state: true },
+    setupCodeRequired: { state: true },
     error: { state: true },
     busy: { state: true },
   };
   declare initialized: boolean;
   declare username: string;
   declare password: string;
+  declare setupCode: string;
+  declare setupCodeRequired: boolean;
   declare error: string | null;
   declare busy: boolean;
 
@@ -24,18 +28,28 @@ export class IncLogin extends LitElement {
     this.initialized = true;
     this.username = "";
     this.password = "";
+    this.setupCode = "";
+    this.setupCodeRequired = false;
     this.error = null;
     this.busy = false;
   }
 
   override async connectedCallback(): Promise<void> {
     super.connectedCallback();
+    this.titleNow();
     try {
-      const { initialized } = await authStatus();
+      const { initialized, setupCodeRequired } = await authStatus();
       this.initialized = initialized;
+      this.setupCodeRequired = !initialized && setupCodeRequired === true;
+      this.titleNow();
     } catch {
       // Keep default sign-in view if status check fails.
     }
+  }
+
+  /** The tab says where you are: the app's last route title would be wrong here. */
+  private titleNow() {
+    document.title = `${this.initialized ? "Sign in" : "Create owner account"} · i.inc`;
   }
 
   private async submit(event: Event) {
@@ -46,8 +60,11 @@ export class IncLogin extends LitElement {
     const data = new FormData(form);
     const username = (this.username || String(data.get("username") ?? "")).trim();
     const password = this.password || String(data.get("password") ?? "");
+    const setupCode = (this.setupCode || String(data.get("setupCode") ?? "")).trim();
     try {
-      const res = this.initialized ? await login(username, password) : await signup(username, password);
+      const res = this.initialized
+        ? await login(username, password)
+        : await signup(username, password, this.setupCodeRequired ? setupCode : undefined);
       if (res.ok) {
         location.reload();
       } else {
@@ -113,6 +130,8 @@ export class IncLogin extends LitElement {
         background: var(--surface, var(--paper-2));
         color: var(--ink);
       }
+      .hint { font-weight: 400; font-size: 13px; color: var(--ink-2); }
+      .hint code { font: 12px ui-monospace, monospace; overflow-wrap: anywhere; }
       .error {
         color: var(--alarm-fg);
         margin: 0;
@@ -181,6 +200,33 @@ export class IncLogin extends LitElement {
             }}
           />
         </label>
+        ${
+          this.setupCodeRequired
+            ? html`<label>
+                Setup code
+                <input
+                  name="setupCode"
+                  type="text"
+                  autocomplete="one-time-code"
+                  autocapitalize="none"
+                  autocorrect="off"
+                  spellcheck="false"
+                  enterkeyhint="next"
+                  aria-label="Setup code"
+                  aria-describedby="setup-hint"
+                  required
+                  .value=${this.setupCode}
+                  @input=${(e: InputEvent) => {
+                    this.setupCode = (e.target as HTMLInputElement).value;
+                  }}
+                />
+                <span id="setup-hint" class="hint"
+                  >The daemon logged this code when it started with no owner. On the Mac mini:
+                  <code>cat ~/.i-inc/setup-code</code></span
+                >
+              </label>`
+            : ""
+        }
         ${this.error ? html`<p id="login-error" class="error" role="alert">${this.error}</p>` : ""}
         <button type="submit" ?disabled=${this.busy}>${submitLabel}</button>
       </form>

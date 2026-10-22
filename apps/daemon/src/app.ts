@@ -37,6 +37,7 @@ import type { ShipPort } from "./ship-git.ts";
 import { type MachineOps, Storage, type StoragePaths } from "./storage.ts";
 import { SqliteEventStore } from "./store.ts";
 import { Tickets } from "./tickets.ts";
+import { WebSessions } from "./web-sessions.ts";
 
 /**
  * A port, or a way to make it from the registry (real mode's recipes and usage live there) and the
@@ -198,6 +199,7 @@ export async function createApp(o: AppOptions) {
   };
   depsRef = deps;
   const token = o.token;
+  const webSessions = o.webSessions ?? new WebSessions(db, () => o.clock.now());
   const backend: AgentBackend = o.ahpBackend
     ? make(o.ahpBackend)
     : new NoAgentBackend(() => agentsFromRegistry(registry));
@@ -235,7 +237,7 @@ export async function createApp(o: AppOptions) {
     if (kind === "settings") conversationPush.settingsChanged();
   };
   const transport = new AhpTransport(host, {
-    ...(token ? { token } : {}),
+    ...(token ? { token, sessions: webSessions } : {}),
     ...(o.hosts ? { hosts: o.hosts } : {}),
     ...(o.ahpDeferredAuth ? { deferredAuth: true } : {}),
   });
@@ -317,7 +319,8 @@ export async function createApp(o: AppOptions) {
   daemon.ensureKnowledge();
   brain.refresh();
   const handle = createApi(daemon, deps, {
-    ...(o.token ? { token: o.token } : {}),
+    ...(o.token ? { token: o.token, webSessions } : {}),
+    ...(o.setupCodePath ? { setupCodePath: o.setupCodePath } : {}),
     ...(o.hosts ? { hosts: o.hosts } : {}),
     ...(o.heartbeatMs !== undefined ? { heartbeatMs: o.heartbeatMs } : {}),
     ...(o.version ? { version: o.version } : {}),

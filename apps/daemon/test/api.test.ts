@@ -1,4 +1,7 @@
 // Owner account signup, username + password login, and token compatibility.
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { FakeMachines } from "@i-inc/core/testing";
 import { describe, expect, it } from "vitest";
 import { createApi } from "../src/api.ts";
@@ -7,10 +10,13 @@ import { refunds, testApp } from "./setup.ts";
 describe("owner signup and login API", () => {
   async function guardedApp() {
     const app = await testApp();
+    const setupCodePath = join(mkdtempSync(join(tmpdir(), "i-inc-setup-")), "setup-code");
     const handle = createApi(app.daemon, app.deps, {
       token: "s3cret-token",
       hosts: ["127.0.0.1:7420"],
+      setupCodePath,
     });
+    const setupCode = () => readFileSync(setupCodePath, "utf8").trim();
     const send = async (
       method: string,
       path: string,
@@ -35,32 +41,35 @@ describe("owner signup and login API", () => {
       const data = (await res.json()) as Record<string, unknown>;
       return { status: res.status, body: data, headers: res.headers };
     };
-    return { app, send };
+    return { app, send, setupCode, setupCodePath, handle };
   }
 
   it("reports initialized=false before signup and initialized=true after signup, without needing the token", async () => {
-    const { send } = await guardedApp();
+    const { send, setupCode } = await guardedApp();
     expect((await send("GET", "/api/board")).status).toBe(401);
 
     const before = await send("GET", "/api/auth");
     expect(before.status).toBe(200);
-    expect(before.body).toEqual({ initialized: false });
+    expect(before.body).toEqual({ initialized: false, setupCodeRequired: true });
 
     const created = await send("POST", "/api/signup", {
       username: "  owner  ",
       password: "correct-horse-battery",
+      setupCode: setupCode(),
     });
     expect(created.status).toBe(201);
     expect(created.body).toEqual({ ok: true, username: "owner" });
     const cookie = created.headers.get("set-cookie") ?? "";
-    expect(cookie).toContain("i_inc=s3cret-token");
+    // a session of its own, never the daemon token
+    expect(cookie).toMatch(/^i_inc=[A-Za-z0-9_-]{40,};/);
+    expect(cookie).not.toContain("s3cret-token");
     expect(cookie).toContain("HttpOnly");
     expect(cookie).toContain("SameSite=Strict");
-    expect(cookie).toContain("Max-Age=31536000");
+    expect(cookie).toContain("Max-Age=2592000");
 
     const after = await send("GET", "/api/auth");
     expect(after.status).toBe(200);
-    expect(after.body).toEqual({ initialized: true });
+    expect(after.body).toEqual({ initialized: true, setupCodeRequired: false });
 
     const board = await send("GET", "/api/board", undefined, {
       cookie: cookie.split(";")[0] as string,
@@ -69,11 +78,13 @@ describe("owner signup and login API", () => {
   });
 
   it("validates username and password length on signup and rejects duplicate signup with 409", async () => {
-    const { send } = await guardedApp();
+    const { send, setupCode } = await guardedApp();
+    const code = setupCode();
 
     const emptyUser = await send("POST", "/api/signup", {
       username: "   ",
       password: "long-enough-password",
+      setupCode: code,
     });
     expect(emptyUser.status).toBe(400);
     expect(emptyUser.body.error).toBeTruthy();
@@ -81,6 +92,7 @@ describe("owner signup and login API", () => {
     const shortPass = await send("POST", "/api/signup", {
       username: "owner",
       password: "short",
+      setupCode: code,
     });
     expect(shortPass.status).toBe(400);
     expect(shortPass.body.error).toBeTruthy();
@@ -88,6 +100,7 @@ describe("owner signup and login API", () => {
     const ok = await send("POST", "/api/signup", {
       username: "owner",
       password: "long-enough-password",
+      setupCode: code,
     });
     expect(ok.status).toBe(201);
 
@@ -100,7 +113,7 @@ describe("owner signup and login API", () => {
   });
 
   it("logs in with username + password, rejects wrong credentials, and keeps token login working", async () => {
-    const { send } = await guardedApp();
+    const { send, setupCode } = await guardedApp();
 
     // Password login before signup fails with 400.
     const beforeSignup = await send("POST", "/api/login", {
@@ -113,6 +126,7 @@ describe("owner signup and login API", () => {
     await send("POST", "/api/signup", {
       username: "owner",
       password: "long-enough-password",
+      setupCode: setupCode(),
     });
 
     const wrongPass = await send("POST", "/api/login", {
@@ -135,13 +149,14 @@ describe("owner signup and login API", () => {
     });
     expect(okLogin.status).toBe(200);
     expect(okLogin.body).toEqual({ ok: true });
-    expect(okLogin.headers.get("set-cookie")).toContain("i_inc=s3cret-token");
+    expect(okLogin.headers.get("set-cookie")).not.toContain("s3cret-token");
+    expect(okLogin.headers.get("set-cookie")).toMatch(/^i_inc=[A-Za-z0-9_-]{40,}; HttpOnly; SameSite=Strict/);
 
     // Existing { token } login and Bearer header still work.
     const tokenLogin = await send("POST", "/api/login", { token: "s3cret-token" });
     expect(tokenLogin.status).toBe(200);
     expect(tokenLogin.body).toEqual({ ok: true });
-    expect(tokenLogin.headers.get("set-cookie")).toContain("i_inc=s3cret-token");
+    expect(tokenLogin.headers.get("set-cookie")).not.toContain("s3cret-token");
 
     const bearerBoard = await send("GET", "/api/board", undefined, {
       authorization: "Bearer s3cret-token",
