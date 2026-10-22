@@ -224,3 +224,30 @@ describe("unsaved project edits", () => {
     expect(el.shadowRoot?.textContent).not.toContain("Unsaved changes");
   });
 });
+
+describe("the next free engine id", () => {
+  it("adds a suffix, and for a slug at the 40-character limit shortens the base instead of looping", async () => {
+    const { freeEngineId } = await import("../src/components/hiring.ts");
+    expect(freeEngineId("opus", new Set())).toBe("opus");
+    expect(freeEngineId("opus", new Set(["opus"]))).toBe("opus-2");
+    expect(freeEngineId("opus", new Set(["opus", "opus-2", "opus-3"]))).toBe("opus-4");
+    const forty = "a".repeat(40);
+    const taken = new Set([forty]);
+    const next = freeEngineId(forty, taken);
+    expect(next).toBe(`${"a".repeat(38)}-2`);
+    expect(next.length).toBe(40);
+    taken.add(next);
+    expect(freeEngineId(forty, taken)).toBe(`${"a".repeat(38)}-3`);
+    // 39 characters, and a base cut so its end would be a dash
+    const thirtyNine = `${"b".repeat(37)}-cd`;
+    const t2 = new Set([thirtyNine, `${"b".repeat(37)}-2`.slice(0, 39)]);
+    const id = freeEngineId(thirtyNine, t2);
+    expect(t2.has(id)).toBe(false);
+    expect(id.length).toBeLessThanOrEqual(40);
+    // many collisions at the limit still end, with ids that are all different
+    const many = new Set([forty]);
+    for (let i = 0; i < 120; i++) many.add(freeEngineId(forty, many));
+    expect(many.size).toBe(121);
+    for (const id of many) expect(id).toMatch(/^[a-z0-9-]{1,40}$/);
+  });
+});

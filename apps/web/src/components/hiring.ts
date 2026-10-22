@@ -90,6 +90,23 @@ const dutyNames: Record<Duty, string> = {
   librarian: "Librarian",
 };
 
+/** An engine id is at most this long (the daemon refuses more). */
+const ENGINE_ID_MAX = 40;
+
+/**
+ * The first id for an engine that nobody has: the slug, else `slug-2`, `slug-3`…. The suffix's room is
+ * reserved before the base is cut, so a slug of any length still yields a new id at every step.
+ */
+export function freeEngineId(slug: string, taken: ReadonlySet<string>): string {
+  const base = slug.slice(0, ENGINE_ID_MAX).replace(/-+$/, "");
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n++) {
+    const suffix = `-${n}`;
+    const id = `${base.slice(0, ENGINE_ID_MAX - suffix.length).replace(/-+$/, "")}${suffix}`;
+    if (!taken.has(id)) return id;
+  }
+}
+
 export class IncHiring extends LitElement {
   static override properties = {
     employeeId: { type: String },
@@ -340,8 +357,7 @@ export class IncHiring extends LitElement {
       (e) => e.harness === harness && e.model === model && e.accountId === accountId && e.local === local,
     );
     const taken = new Set(this.engines.map((e) => e.id));
-    let id = same?.id ?? slug;
-    for (let n = 2; !same && taken.has(id); n++) id = `${slug}-${n}`.slice(0, 40);
+    const id = same?.id ?? freeEngineId(slug, taken);
     try {
       if (!same) await setupApi.saveEngine({ id, harness, model, accountId, local }, { create: true });
       const updatedEngines = await api.engines().catch(() => [] as Engine[]);
