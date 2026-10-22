@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import type { Engine, Id, SessionRequest } from "@i-inc/core";
+import { type Engine, type Id, type SessionRequest, ShuttingDown } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
 import {
   AcpAgent,
@@ -755,13 +755,10 @@ describe("a ticket's agent and the daemon's end", () => {
     expect(s.proc.stdin.writableEnded).toBe(true);
     // (the sandboxes are swept for what ignored this by the caller, once, by machine)
     expect(order).toEqual(["reap ada /home/employee/work/inc-42", "launch"]);
-    // the session that was running ends as stuck, not hung, and nothing new starts
-    expect(await running).toMatchObject({ kind: "stuck" });
-    expect(await a.run(request())).toEqual({
-      kind: "stuck",
-      reason: "the daemon is stopping",
-      startup: true,
-    });
+    // the session that was running ends as ShuttingDown (not stuck, so nothing is written to the
+    // ticket), and nothing new starts
+    await expect(running).rejects.toBeInstanceOf(ShuttingDown);
+    await expect(a.run(request())).rejects.toBeInstanceOf(ShuttingDown);
     expect(order).toHaveLength(2);
   });
 });

@@ -73,6 +73,18 @@ export class StartupError extends Error {
   }
 }
 
+/**
+ * The daemon is stopping (SIGTERM, a deploy, a kickstart). A session that ends because of it says
+ * nothing about the ticket, so the runner lets it through without an event and the ticket carries
+ * on from its log when the daemon is back.
+ */
+export class ShuttingDown extends Error {
+  constructor() {
+    super("the daemon is stopping");
+    this.name = "ShuttingDown";
+  }
+}
+
 /** Makes sure an employee's machine is up before a session runs on it. */
 export interface MachineProvider {
   ensureUp(employeeId: Id): Promise<void>;

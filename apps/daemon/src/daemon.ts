@@ -28,6 +28,7 @@ import {
   runTicket,
   type SessionOutcome,
   type SessionRequest,
+  ShuttingDown,
   type Snapshot,
   type StageId,
   StartupError,
@@ -744,7 +745,14 @@ export class Daemon {
         // A stage finished or wants a helper: someone may be free now, or a reviewer is needed.
         if (r.status !== "paused") void this.tick().catch(() => {});
       })
-      .catch((e: unknown) => this.runFailed(id, e))
+      .catch((e: unknown) => {
+        if (e instanceof ShuttingDown) {
+          // The daemon is stopping, not the ticket: no events, no back-off, so it stays running and resumes.
+          this.d.log?.(`ticket ${id}: paused for the daemon's stop, resumes when it is back`);
+          return;
+        }
+        return this.runFailed(id, e);
+      })
       .finally(() => {
         this.running.delete(id);
         this.sessions.delete(id);

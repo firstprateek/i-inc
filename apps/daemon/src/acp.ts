@@ -8,15 +8,16 @@
 // urgent message.
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
-import type {
-  Agent,
-  Duty,
-  Engine,
-  Id,
-  SessionOutcome,
-  SessionRequest,
-  SessionTranscriptItem,
-  Ticket,
+import {
+  type Agent,
+  type Duty,
+  type Engine,
+  type Id,
+  type SessionOutcome,
+  type SessionRequest,
+  type SessionTranscriptItem,
+  ShuttingDown,
+  type Ticket,
 } from "@i-inc/core";
 import { StartupError } from "@i-inc/core";
 import { describeMs, guardStdin } from "./proc.ts";
@@ -185,9 +186,21 @@ export class AcpAgent implements Agent {
     return { transient: this.transient.size };
   }
 
+  /**
+   * Runs a session to the end of its step. While the daemon is stopping it throws `ShuttingDown`
+   * instead of any outcome: the agent's end (its stdin closed, then killed) is the daemon's doing, not the
+   * ticket's, so nothing about it may reach the log as a stuck, switched or failed ticket. The ticket
+   * stays running and the scheduler resumes it when the daemon returns.
+   */
   async run(r: SessionRequest): Promise<SessionOutcome> {
+    if (this.shuttingDown) throw new ShuttingDown();
+    const outcome = await this.session(r);
+    if (this.shuttingDown) throw new ShuttingDown();
+    return outcome;
+  }
+
+  private async session(r: SessionRequest): Promise<SessionOutcome> {
     const now = this.o.now ?? Date.now;
-    if (this.shuttingDown) return stuck("the daemon is stopping", true);
     const cwd = this.o.cwdFor(r.ticket.id);
     const limits = { ...defaultTimeoutsMs, ...this.o.timeouts?.() };
     let proc: AgentProcess;
