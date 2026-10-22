@@ -54,7 +54,7 @@ mkdir -p "$home_dir" 2>/dev/null || down "can't make $home_dir"
 if [ "$(id -u)" = 0 ]; then
   owner=$(cat "$lib/owner" 2>/dev/null || true)
   case "$owner" in
-    "" | *[!a-z0-9_-]* | -*) owner="" ;;
+    "" | *[!A-Za-z0-9._-]* | -*) owner="" ;;
   esac
   if [ -n "$owner" ] && id "$owner" >/dev/null 2>&1; then
     chown "$owner" "$home_dir" && chmod 755 "$home_dir"

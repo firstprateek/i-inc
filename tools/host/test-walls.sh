@@ -112,6 +112,33 @@ fresh
 (export FAKE_PF_OFF=1; walls) || true
 [ ! -f "$run/i-inc-walls.ok" ] && ok "pf off drops the marker" || bad "pf off drops the marker"
 
+# As root, the owner's folder is made for the account install-walls.sh recorded, and only for a plain name.
+mkdir -p "$tmp/rootbin"
+cat >"$tmp/rootbin/id" <<'FAKE'
+#!/bin/sh
+[ "${1:-}" = "-u" ] && { echo 0; exit 0; }
+[ "${1:-}" = "padi" ] && exit 0
+exit 1
+FAKE
+cat >"$tmp/rootbin/chown" <<'FAKE'
+#!/bin/sh
+echo "chown $*" >>"$FAKE_CHOWN_LOG"
+FAKE
+chmod +x "$tmp/rootbin/id" "$tmp/rootbin/chown"
+export FAKE_CHOWN_LOG="$tmp/chown.log"
+fresh
+echo padi >"$lib/owner"; : >"$FAKE_CHOWN_LOG"
+(PATH="$tmp/rootbin:$PATH"; walls) || true
+grep -q "chown padi $run/i-inc" "$FAKE_CHOWN_LOG" && ok "the folder is the owner's" || bad "the folder is the owner's"
+fresh
+echo 'x; touch /tmp/pwned' >"$lib/owner"; : >"$FAKE_CHOWN_LOG"
+(PATH="$tmp/rootbin:$PATH"; walls) || true
+! grep -q "pwned\|chown x" "$FAKE_CHOWN_LOG" && grep -q "no owner" "$tmp/out" && ok "a bad owner name is not used" || bad "a bad owner name is not used"
+fresh
+: >"$FAKE_CHOWN_LOG"
+(PATH="$tmp/rootbin:$PATH"; walls) || true
+grep -q "no owner" "$tmp/out" && [ -f "$run/i-inc-walls.ok" ] && ok "with no owner recorded the walls still stand" || bad "with no owner recorded the walls still stand"
+
 # The table file in the real rules is the one walls.sh writes, and the subnet it accepts is the rules'.
 grep -q 'file "/var/run/i-inc-home-machines.table"' "$root/tools/m1/pf/i-inc-machines.pf" && ok "the rules read the table walls.sh writes" || bad "the rules read the table walls.sh writes"
 grep -q 'machines    = "192.168.64.0/24"' "$root/tools/m1/pf/i-inc-machines.pf" && grep -q '192\\.168\\.64\\\.' "$root/tools/host/walls.sh" && ok "walls.sh and the rules agree on the subnet" || bad "walls.sh and the rules agree on the subnet"

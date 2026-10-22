@@ -5,7 +5,7 @@
 # and the daemon writes its list of home machines there (see walls.sh).
 # It also installs inc.i.restart, a restart on the 1st of each month at 05:15.
 # Undo it: sudo launchctl bootout system/inc.i.walls, delete /Library/LaunchDaemons/inc.i.walls.plist,
-# /usr/local/lib/i-inc and /var/run/i-inc-walls.ok, then sudo sh tools/m1/pf/remove.sh.
+# /usr/local/lib/i-inc, /var/run/i-inc and /var/run/i-inc-walls.*, then sudo sh tools/m1/pf/remove.sh.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 # launchd_reload waits for launchd to drop a job before bootstrapping it again (launchd.sh).
@@ -13,7 +13,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 [ "$(id -u)" = 0 ] || { echo "run it with sudo" >&2; exit 1; }
 owner=${SUDO_USER:-}
 case "$owner" in
-  "" | root | *[!a-z0-9_-]* | -*) echo "run it with sudo from the owner's own account (SUDO_USER is '${owner}')" >&2; exit 1 ;;
+  "" | root | *[!A-Za-z0-9._-]* | -*) echo "run it with sudo from the owner's own account (SUDO_USER is '${owner}')" >&2; exit 1 ;;
 esac
 id "$owner" >/dev/null 2>&1 || { echo "no account $owner" >&2; exit 1; }
 
@@ -41,5 +41,6 @@ sleep 2
 tail -n 3 /var/log/i-inc-walls.log
 if [ -f /var/run/i-inc-walls.ok ]; then
   echo "the walls are up, and come back at boot"
-  echo "home machines the walls hold now: $(grep -c . /var/run/i-inc-walls.home 2>/dev/null || echo 0) (a home machine is walled once the daemon has declared it: docs/handoff.md)"
+  held=$(grep -c . /var/run/i-inc-walls.home 2>/dev/null || true)
+  echo "home machines the walls hold now: ${held:-0} (a home machine is walled once the daemon has declared it: docs/handoff.md)"
 else echo "the walls are NOT up" >&2; exit 1; fi
