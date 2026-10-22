@@ -10,7 +10,7 @@ import type { Engine, SessionRequest, Ticket } from "@i-inc/core";
 import { fold } from "@i-inc/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ACP_TIMED_OUT, AcpAgent, type AgentProcess } from "../src/acp.ts";
-import { guards, isFatal } from "../src/guards.ts";
+import { guards, isFatal, serverError } from "../src/guards.ts";
 import { MachineHarness, machineScript, TIMED_OUT } from "../src/harness.ts";
 import {
   AppleMachines,
@@ -126,6 +126,15 @@ describe("process-level handlers", () => {
     expect(logs.join("\n")).toContain("EPIPE");
     expect(logs.join("\n")).toContain("a timer callback threw");
     expect(exits).toEqual([]);
+  });
+
+  it("a request whose handler throws gets plain JSON, not Bun's development page with paths", async () => {
+    const logs: string[] = [];
+    const res = serverError((m) => logs.push(m))(new Error("boom at /Users/padi/secret.ts"));
+    expect(res.status).toBe(500);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(await res.json()).toEqual({ error: "something went wrong on our side" });
+    expect(logs.join("\n")).toContain("/Users/padi/secret.ts");
   });
 
   it("leave for a state they cannot work in", () => {

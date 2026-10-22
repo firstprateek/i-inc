@@ -2,6 +2,8 @@
 // before it is stored, and a bad event already in a log can't break the fold or the scheduler.
 import { describe, expect, it } from "vitest";
 import {
+  decide,
+  defaultSwitchRules,
   fold,
   knowledgeLog,
   planFor,
@@ -116,10 +118,13 @@ describe("agent replies are checked before they are stored", () => {
       { stage: "retro", employee: "grace" },
       { kind: "done", output: '{"edits":[null, 7, {"layer":"brain","page":5,"text":"x"}]}' },
     );
-    const result = await runTicket(p, refundsTicket());
-    expect(result.status).toBe("ready");
+    expect((await runTicket(p, refundsTicket())).status).toBe("ready");
+    await decide(p, "42", "approve");
+    expect((await runTicket(p, refundsTicket())).status).toBe("done");
     const proposed = (await p.store.read("42")).filter((e) => e.type === "knowledge-proposed");
+    expect(proposed.length).toBeGreaterThan(0);
     for (const e of proposed) expect(e).toMatchObject({ apply: [], awaitOwner: [] });
+    expect((await p.store.read("42")).some((e) => e.type === "reply-flagged")).toBe(true);
   });
 
   it("an errand's proposals with an unknown action are refused as unreadable", async () => {
@@ -250,10 +255,19 @@ describe("an engine removed from Setup", () => {
     expect(switched).toMatchObject({ to: "gemini" });
   });
 
-  it("a failure whose past sessions used a removed engine still reports", async () => {
-    const p = fakePorts([ada], engines);
+  it("a failure whose past sessions used a removed engine still reports which one it tried", async () => {
+    const e = { ...ada, switchRules: { ...defaultSwitchRules, onStuck: "fail" as const } };
+    const p = fakePorts([e], engines);
+    const at = p.clock.now();
+    p.store.log.set("42", [
+      { type: "ticket-created", at, ticketId: "42" },
+      { type: "stage-started", at, stage: "pickup" },
+      { type: "stage-finished", at, stage: "pickup" },
+      { type: "stage-started", at, stage: "build" },
+      { type: "session-started", at, stage: "build", employeeId: "ada", engineId: "gone", resume: false },
+    ]);
     p.agent.on({ stage: "build" }, { kind: "stuck", reason: "lost" });
     const result = await runTicket(p, refundsTicket({ effort: "low" }));
-    expect(result.status).not.toBe("running");
+    expect(result).toMatchObject({ status: "failed", tried: expect.arrayContaining(["gone"]) });
   });
 });

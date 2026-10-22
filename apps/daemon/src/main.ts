@@ -16,7 +16,7 @@ import { configDir, readCredentials, webToken } from "./config.ts";
 import { seedDemo, seedDemoLater, seedDemoProposals, seedDemoTickets } from "./demo.ts";
 import { resolveVersion } from "./deploys.ts";
 import { GitHubApp, readGitHubAppConfig } from "./github.ts";
-import { installGuards } from "./guards.ts";
+import { installGuards, serverError } from "./guards.ts";
 import { AppleMachines, defaultMachineSettings, wallsUp } from "./machines.ts";
 import { realPorts } from "./real.ts";
 import { checkpoint } from "./retention.ts";
@@ -214,10 +214,7 @@ const server = Bun.serve<WsData>({
   // Never Bun's development error page: it prints source excerpts and absolute paths. A route that
   // throws answers with a plain JSON error, and the log has the details.
   development: false,
-  error: (err) => {
-    log(`request failed: ${err instanceof Error ? (err.stack ?? err.message) : err}`);
-    return Response.json({ error: "something went wrong on our side" }, { status: 500 });
-  },
+  error: serverError(log),
   fetch: (req, server) => {
     // Conversations speak AHP over a WebSocket on this same port (src/ahp/transport.ts).
     if (app.ahp.transport.matches(req)) {

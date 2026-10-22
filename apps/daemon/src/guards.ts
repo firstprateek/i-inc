@@ -66,3 +66,15 @@ export function installGuards(o: GuardOptions): void {
   process.on("unhandledRejection", (reason) => g.unhandledRejection(reason));
   process.on("uncaughtException", (err) => g.uncaughtException(err));
 }
+
+/**
+ * What the HTTP server answers when a request's handler throws (Bun.serve `error`): plain JSON, with
+ * the details in the log. Without it Bun serves its development error page, source excerpts and
+ * absolute paths included (T63, audit 4.3; main.ts also sets `development: false`).
+ */
+export function serverError(log: (msg: string) => void): (err: unknown) => Response {
+  return (err) => {
+    log(`request failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+    return Response.json({ error: "something went wrong on our side" }, { status: 500 });
+  };
+}
