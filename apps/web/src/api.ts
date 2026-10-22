@@ -206,16 +206,21 @@ export async function call<T>(
   return data;
 }
 
-export async function authStatus(): Promise<{ initialized: boolean }> {
+export async function authStatus(): Promise<{ initialized: boolean; setupCodeRequired?: boolean }> {
   const res = await send("/api/auth");
-  return (await res.json()) as { initialized: boolean };
+  return (await res.json()) as { initialized: boolean; setupCodeRequired?: boolean };
 }
 
-export async function signup(username: string, password: string): Promise<{ ok: boolean; error?: string }> {
+/** Creates the owner account. `setupCode` is the one-time code the daemon logged (older daemons need none). */
+export async function signup(
+  username: string,
+  password: string,
+  setupCode?: string,
+): Promise<{ ok: boolean; error?: string }> {
   const res = await send("/api/signup", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ username, password, ...(setupCode ? { setupCode } : {}) }),
   });
   const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
   return res.ok ? { ok: true } : { ok: false, ...(data.error ? { error: data.error } : {}) };

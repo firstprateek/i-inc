@@ -43,6 +43,9 @@ const common = {
     : process.env.I_INC_DEMO === "1"
       ? {}
       : { token: webToken() }),
+  // While no owner account exists, the one-time setup code for the first-run signup is logged and
+  // written here (mode 0600): read it with `cat ~/.i-inc/setup-code`.
+  setupCodePath: join(home, "setup-code"),
   // The Host headers it answers: its own address, plus any in I_INC_HOSTS (comma-separated).
   hosts: [
     `${host}:${port}`,

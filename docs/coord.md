@@ -122,10 +122,24 @@ Heartbeat comment every 25 s.
 "status"?: string, "at": number }], "brain"?: BrainUse[] }] }`, newest last; text capped at 4 KB per item.
 `brain` (T57) is the brain pages that session was given or opened, see C19; absent when there were none.
 
-**C5 Owner auth & sign-out** → `GET /api/auth` → `{ "initialized": boolean }`;
-`POST /api/signup` `{ "username", "password" }` → `201 { "ok": true, "username" }` (sets `i_inc` cookie; `409` once initialized);
-`POST /api/login` `{ "username", "password" }` or `{ "token" }` → `{ "ok": true }` (sets `i_inc` cookie);
-`POST /api/logout` → `{ "ok": true }` (clears `i_inc` cookie).
+**C5 Owner auth, sessions & sign-out** → a login is a **session**, not the daemon token. `POST /api/login` and
+`POST /api/signup` set `i_inc=<random session token>; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000`, plus `Secure` when
+the request came over https (`X-Forwarded-Proto: https`, an `https://` `Origin`, or a TLS request). The daemon keeps only the
+sha-256 of the token in `web_sessions` (`id_hash`, `created_at`, `expires_at`); a session lasts 30 days and each use renews
+it, at most once a day, by sending the cookie again. `Authorization: Bearer <daemon token>` is unchanged (scripts, the
+deployer) and never gets a cookie. The AHP upgrade accepts the same session cookie.
+`GET /api/auth` → `{ "initialized": boolean, "setupCodeRequired": boolean }` (`setupCodeRequired` is true while there is no
+owner and the daemon has a token; older daemons omit it);
+`POST /api/signup` `{ "username", "password", "setupCode" }` → `201 { "ok": true, "username" }` (sets a session cookie; `409`
+once initialized; **`403 { "error", "code": "setup-code" }`** without a right `setupCode`). The setup code is made when the daemon
+starts with a token and no owner: logged, and written to `~/.i-inc/setup-code` (mode 0600). It is one-time (deleted when the
+owner exists), is changed after five wrong guesses, and the daemon token is accepted in its place. Demo mode (no token) needs none;
+`POST /api/login` `{ "username", "password" }` or `{ "token" }` → `{ "ok": true }` (sets a session cookie);
+`POST /api/logout` → `{ "ok": true }` (**revokes** the session server-side and clears the `i_inc` cookie).
+**Upgrading:** a browser still holding the old cookie (the daemon token itself) keeps working, and on its next request (a
+browser: one that sends `Sec-Fetch-Site`) the daemon answers with a session cookie in its place, so nobody has to sign in again.
+That old cookie stays accepted, because it is the daemon token; to cut off an old copy, replace `~/.config/i-inc/web-token`
+and restart.
 
 **C6 Employee update** → `PUT /api/employees/:id` with partial `Employee` (`name`, `role`, `duties`,
 `engines`, `switchRules`, `projects`, `standingOrders`, `workingHours`, `outbound`) → `{ "employee": Employee }`.

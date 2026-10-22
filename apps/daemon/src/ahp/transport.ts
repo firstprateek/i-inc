@@ -15,6 +15,8 @@ import type { AhpHost, Conn, Socket } from "./host.ts";
 export interface TransportOptions {
   /** The login token. Unset: no login (demo mode and tests), like the REST API. */
   token?: string;
+  /** Live browser sessions: the `i_inc` cookie may hold one (sessions.ts). */
+  sessions?: { valid(raw: string): boolean };
   /** The Host headers it answers, such as "127.0.0.1:7420". Unset: any. */
   hosts?: string[];
   /** Let a client upgrade without credentials and push the token with `authenticate` instead. */
@@ -73,7 +75,7 @@ export class AhpTransport {
       }),
     });
     let authed = true;
-    if (this.o.token && !authorized(req, this.o.token)) {
+    if (this.o.token && !authorized(req, this.o.token, this.o.sessions)) {
       if (!this.o.deferredAuth) return no(401, "unauthorized");
       authed = false;
     }

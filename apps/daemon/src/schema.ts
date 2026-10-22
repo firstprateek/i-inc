@@ -56,6 +56,12 @@ export function migrate(db: Db): void {
       password_hash TEXT NOT NULL,
       created_at INTEGER NOT NULL
     );
+    -- Browser logins: the sha-256 of a random session token (the cookie), never the token itself.
+    CREATE TABLE IF NOT EXISTS web_sessions (
+      id_hash TEXT PRIMARY KEY,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS push_sent (
       key TEXT PRIMARY KEY,
       at INTEGER NOT NULL

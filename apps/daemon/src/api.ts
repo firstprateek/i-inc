@@ -6,6 +6,8 @@
 // for a ticket, must carry a custom header, which needs a preflight too (see isUpload).
 
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import {
   type AccountCost,
   type AgentHarness,
@@ -36,7 +38,7 @@ import {
   type TicketState,
 } from "@i-inc/core";
 import { ConversationError } from "./ahp/conversations.ts";
-import { authorized, hostAllowed, originAllowed, same } from "./auth.ts";
+import { credential, hostAllowed, originAllowed, same, sessionCookie } from "./auth.ts";
 import { type BrainChange, RevertError } from "./brain-harvest.ts";
 import { ACCEPTED_LABEL, type Daemon, type DaemonDeps } from "./daemon.ts";
 import { readDeploys } from "./deploys.ts";
@@ -79,13 +81,23 @@ import {
   type TicketView,
   ticketView,
 } from "./views.ts";
+import { SESSION_MS, WebSessions } from "./web-sessions.ts";
 
 export interface ApiOptions {
   /**
-   * When set, every request needs the token: as the `i_inc` cookie the web app gets from
-   * `POST /api/login`, or as `Authorization: Bearer <token>`. Real mode always sets one.
+   * When set, every request needs a login: the `i_inc` session cookie the web app gets from
+   * `POST /api/login`, or `Authorization: Bearer <token>` (scripts, the deployer). Real mode always sets
+   * one. The first-run signup needs a setup code too (`setupCodePath`).
    */
   token?: string;
+  /** Browser sessions (web-sessions.ts). Default: made over the app's database. */
+  webSessions?: WebSessions;
+  /**
+   * Where the one-time setup code is written (mode 0600) while no owner account exists. The code is also
+   * logged. Whoever can read the daemon's log or this file, and so is already the owner of the machine,
+   * can create the owner account; nobody else on the tailnet can.
+   */
+  setupCodePath?: string;
   /** The Host headers it answers, such as "127.0.0.1:7420". Unset: any (tests). */
   hosts?: string[];
   /** Heartbeat interval for SSE in ms. Default 25_000. */
@@ -2735,6 +2747,75 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     return json({ ok: true });
   }
 
+  const sessions = opts.webSessions ?? new WebSessions(d.db, () => d.clock.now());
+
+  // The one-time setup code for the first-run signup: made when the daemon starts without an owner,
+  // logged and written to a file only the machine's owner can read, rotated after a few wrong guesses,
+  // and gone once the owner account exists.
+  let setupCode: string | undefined;
+  let setupFailures = 0;
+  const SETUP_GUESSES = 5;
+  function newSetupCode() {
+    const alphabet = "abcdefghjkmnpqrstuvwxyz23456789"; // no 0/o/1/l/i
+    const bytes = randomBytes(12);
+    const chars = Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
+    setupCode = `${chars.slice(0, 4)}-${chars.slice(4, 8)}-${chars.slice(8, 12)}`;
+    setupFailures = 0;
+    if (opts.setupCodePath) {
+      try {
+        mkdirSync(dirname(opts.setupCodePath), { recursive: true });
+        writeFileSync(opts.setupCodePath, `${setupCode}\n`, { mode: 0o600 });
+      } catch (e) {
+        d.log?.(
+          `could not write the setup code to ${opts.setupCodePath}: ${e instanceof Error ? e.message : e}`,
+        );
+      }
+    }
+    d.log?.(
+      `no owner account yet: create it in the web app with the setup code ${setupCode}${
+        opts.setupCodePath ? ` (also in ${opts.setupCodePath})` : ""
+      }`,
+    );
+  }
+  function clearSetupCode() {
+    setupCode = undefined;
+    if (opts.setupCodePath) rmSync(opts.setupCodePath, { force: true });
+  }
+  if (opts.token && !getOwner()) newSetupCode();
+  else if (opts.setupCodePath) rmSync(opts.setupCodePath, { force: true });
+
+  /** Is the code (or the daemon token itself) a proof the caller is the machine's owner? */
+  function setupProof(given: unknown): boolean {
+    if (typeof given !== "string" || !given || !opts.token) return false;
+    const code = given.trim();
+    if (same(code, opts.token)) return true;
+    if (setupCode && same(code.toLowerCase(), setupCode)) return true;
+    return false;
+  }
+
+  /** A browser asked over https (a tailnet address served by `tailscale serve`, or a direct TLS request)? */
+  function overHttps(req: Request): boolean {
+    if (new URL(req.url).protocol === "https:") return true;
+    if ((req.headers.get("x-forwarded-proto") ?? "").split(",")[0]?.trim() === "https") return true;
+    return (req.headers.get("origin") ?? "").startsWith("https://");
+  }
+
+  /** The cookie for a session token. HttpOnly: scripts can't read it; Strict: other sites can't send it. */
+  function cookieFor(req: Request, value: string, maxAge: number): string {
+    return `i_inc=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${overHttps(req) ? "; Secure" : ""}`;
+  }
+
+  /** Signs a browser in: a new session, its cookie. Never the daemon token. */
+  function startSession(req: Request, body: unknown, status: number): Response {
+    const s = sessions.create();
+    return json(body, status, { "set-cookie": cookieFor(req, s.token, s.maxAge) });
+  }
+
+  // A browser still holding the daemon token as its cookie (from before sessions) is swapped for a session
+  // on its next request, once a minute at most per token (a script sending that cookie gets none: it
+  // doesn't send Sec-Fetch headers).
+  let swapped: { at: number; token: string; maxAge: number } | undefined;
+
   function getOwner(): { username: string; password_hash: string } | undefined {
     const [row] = d.db.all<{ username: string; password_hash: string }>(
       "SELECT username, password_hash FROM owner_account WHERE id = 1",
@@ -2742,7 +2823,38 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     return row;
   }
 
-  return async function handle(req: Request): Promise<Response> {
+  /** The session cookie to hand back with this response, if the browser's one needs replacing or renewing. */
+  function refreshedCookie(req: Request, how: ReturnType<typeof credential>): string | undefined {
+    if (!opts.token) return undefined;
+    if (how === "session") {
+      const raw = sessionCookie(req);
+      if (raw && sessions.renew(raw)) return cookieFor(req, raw, SESSION_MS / 1000);
+    }
+    if (how === "legacy-cookie" && req.headers.has("sec-fetch-site")) {
+      const at = d.clock.now();
+      if (!swapped || at - swapped.at > 60_000) swapped = { at, ...sessions.create() };
+      return cookieFor(req, swapped.token, swapped.maxAge);
+    }
+    return undefined;
+  }
+
+  async function handle(req: Request): Promise<Response> {
+    const how = opts.token ? credential(req, opts.token, sessions) : undefined;
+    const res = await dispatch(req, how);
+    if (res.status === 401 || res.headers.has("set-cookie")) return res;
+    const cookie = refreshedCookie(req, how);
+    if (!cookie) return res;
+    try {
+      res.headers.append("set-cookie", cookie);
+      return res;
+    } catch {
+      const headers = new Headers(res.headers);
+      headers.append("set-cookie", cookie);
+      return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+    }
+  }
+
+  async function dispatch(req: Request, how: ReturnType<typeof credential>): Promise<Response> {
     const path = new URL(req.url).pathname;
     const authStatus = req.method === "GET" && path === "/api/auth";
     // The deployer polls this without a login. It says nothing but the release's sha, whether work is
@@ -2751,15 +2863,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     const signup = req.method === "POST" && path === "/api/signup";
     const login = req.method === "POST" && path === "/api/login";
     const logout = req.method === "POST" && path === "/api/logout";
-    if (
-      opts.token &&
-      !authStatus &&
-      !healthCheck &&
-      !signup &&
-      !login &&
-      !logout &&
-      !authorized(req, opts.token)
-    ) {
+    if (opts.token && !authStatus && !healthCheck && !signup && !login && !logout && !how) {
       return json({ error: "unauthorized" }, 401);
     }
     const host = req.headers.get("host") ?? "";
@@ -2773,14 +2877,36 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       }
     }
     if (authStatus) {
-      return json({ initialized: getOwner() !== undefined });
+      const initialized = getOwner() !== undefined;
+      // setupCodeRequired: the signup form needs the code the daemon logged (or its token).
+      return json({ initialized, setupCodeRequired: !initialized && !!opts.token });
     }
     if (healthCheck) {
       return json({ ok: true, version: opts.version ?? "unknown", busy: daemon.busy(), startedAt });
     }
     if (signup) {
       if (getOwner()) return json({ error: "owner account already exists" }, 409);
-      const body = (await req.json().catch(() => ({}))) as { username?: unknown; password?: unknown };
+      const body = (await req.json().catch(() => ({}))) as {
+        username?: unknown;
+        password?: unknown;
+        setupCode?: unknown;
+      };
+      // Nobody can claim the company without the code the daemon printed (or its token).
+      if (opts.token && !(how === "bearer" || how === "session" || setupProof(body.setupCode))) {
+        if (typeof body.setupCode === "string" && body.setupCode) {
+          setupFailures += 1;
+          if (setupFailures >= SETUP_GUESSES) newSetupCode();
+          await new Promise((r) => setTimeout(r, 1000)); // slows guessing
+          return json({ error: "that's not the setup code", code: "setup-code" }, 403);
+        }
+        return json(
+          {
+            error: "enter the setup code the daemon logged (or is in the setup-code file)",
+            code: "setup-code",
+          },
+          403,
+        );
+      }
       const username = typeof body.username === "string" ? body.username.trim() : "";
       if (!username) return json({ error: "username is required" }, 400);
       if (typeof body.password !== "string" || body.password.length < 8) {
@@ -2792,7 +2918,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         hashPassword(body.password),
         d.clock.now(),
       );
-      return jsonWithCookie({ ok: true, username }, 201, opts.token);
+      clearSetupCode();
+      return opts.token ? startSession(req, { ok: true, username }, 201) : json({ ok: true, username }, 201);
     }
     if (login) {
       const body = (await req.json().catch(() => ({}))) as {
@@ -2811,22 +2938,19 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         ) {
           return json({ error: "wrong username or password" }, 401);
         }
-        return jsonWithCookie({ ok: true }, 200, opts.token);
+        return opts.token ? startSession(req, { ok: true }, 200) : json({ ok: true });
       }
       if (!opts.token || typeof body.token !== "string" || !same(body.token, opts.token)) {
         await new Promise((r) => setTimeout(r, 1000)); // slows guessing
         return json({ error: "that's not the token" }, 401);
       }
-      return jsonWithCookie({ ok: true }, 200, opts.token);
+      return startSession(req, { ok: true }, 200);
     }
     if (logout) {
-      return new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: {
-          "content-type": "application/json",
-          "set-cookie": "i_inc=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
-        },
-      });
+      // The session is revoked here, not just forgotten by the browser: a copy of its cookie stops working.
+      const raw = sessionCookie(req);
+      if (raw) sessions.revoke(raw);
+      return json({ ok: true }, 200, { "set-cookie": cookieFor(req, "", 0) });
     }
     const url = new URL(req.url);
     for (const [method, pattern, handler] of routes) {
@@ -2846,7 +2970,9 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       }
     }
     return json({ error: "not found" }, 404);
-  };
+  }
+
+  return handle;
 }
 
 function hashPassword(password: string): string {
@@ -3075,21 +3201,9 @@ function changeView(c: BrainChange, who: (id: string) => { id: string; name: str
   };
 }
 
-function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-}
-
-function jsonWithCookie(body: unknown, status: number, token?: string): Response {
+function json(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: {
-      "content-type": "application/json",
-      ...(token
-        ? {
-            // HttpOnly: the page's scripts can't read it; Strict: other sites can't send it.
-            "set-cookie": `i_inc=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`,
-          }
-        : {}),
-    },
+    headers: { "content-type": "application/json", ...headers },
   });
 }
