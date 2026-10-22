@@ -196,3 +196,29 @@ describe("the index's look at HEAD", () => {
     }
   });
 });
+
+describe("the removal script's guard", () => {
+  it("takes out a copy folder wherever the sandbox keeps copies, and nothing near the root", async () => {
+    const { removeScript } = await import("../src/brain-snapshot.ts");
+    for (const ok of [
+      "/home/employee/brain/pip",
+      "/home/employee/brain/pip.code",
+      "/tmp/sbx/pip",
+      "/var/folders/x/T/sbx/pip",
+    ]) {
+      expect(removeScript(ok)).toContain(`rm -rf -- '${ok}'`);
+    }
+    for (const bad of [
+      "/",
+      "/home",
+      "/tmp",
+      "/home/employee",
+      "relative/path",
+      "/home/employee/brain/../../x",
+      "/a b/c/d",
+      "/tmp/x'y/z",
+    ]) {
+      expect(() => removeScript(bad)).toThrow();
+    }
+  });
+});

@@ -120,8 +120,14 @@ export function applyScript(o: ApplyOptions): string {
 }
 
 /** Takes a whole copy out of a sandbox (the employee moved to another team, left, or may not have one). */
+/** At least three folders deep (`/home/employee/brain/<id>` is four; `/tmp/x/<id>` is the least a test uses). */
 export function removeScript(rootDir: string): string {
-  if (!root.test(rootDir) || rootDir.split("/").length < 5) throw new Error(`not a copy folder: ${rootDir}`);
+  if (
+    !root.test(rootDir) ||
+    rootDir.split("/").length < 4 ||
+    rootDir.split("/").some((p) => p === ".." || p === ".")
+  )
+    throw new Error(`not a copy folder: ${rootDir}`);
   return `rm -rf -- '${rootDir}' && echo @@removed\n`;
 }
 
