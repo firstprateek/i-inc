@@ -9,7 +9,7 @@ import type { ConnectionInfo, Rejection } from "../ahp/connection.ts";
 import { ahp } from "../ahp/hub.ts";
 import { startPresence } from "../ahp/presence.ts";
 import { ActionType } from "../ahp/wire.ts";
-import type { Conversation } from "../api.ts";
+import type { Conversation, ShipView } from "../api.ts";
 import { isNearBottom } from "../chat-scroll.ts";
 import {
   answerInput,
@@ -69,6 +69,8 @@ export class IncConvThread extends LitElement {
     contextOpen: { type: Boolean },
     card: { type: String },
     cardNote: { state: true },
+    ship: { attribute: false },
+    shipMenu: { state: true },
     info: { state: true },
     stick: { state: true },
     notice: { state: true },
@@ -92,6 +94,9 @@ export class IncConvThread extends LitElement {
   declare card: string;
   /** Said when that card was answered already ("Already answered on another device"). */
   declare cardNote: string;
+  /** What shipping says (C22b): the ticket that has the working copy, the PR, and whether each button can be pressed. */
+  declare ship: ShipView | undefined;
+  declare shipMenu: boolean;
   declare info: ConnectionInfo;
   declare stick: boolean;
   declare notice: string | null;
@@ -132,6 +137,7 @@ export class IncConvThread extends LitElement {
     this.contextOpen = false;
     this.card = "";
     this.cardNote = "";
+    this.shipMenu = false;
     this.info = ahp().info;
     this.stick = true;
     this.notice = null;
@@ -158,6 +164,20 @@ export class IncConvThread extends LitElement {
       .status { font-size: 12px; font-weight: 800; padding: 2px 10px; border-radius: 999px; background: var(--neutral-bg); color: var(--neutral-fg); white-space: nowrap; }
       .status.needs { background: var(--needs-bg); color: var(--needs-fg); border: 1px solid var(--needs-edge); }
       .status.run { background: var(--working-bg); color: var(--working-fg); border: 1px solid var(--working-edge); }
+      .ship-wrap { position: relative; flex: none; }
+      .ship-menu { position: absolute; right: 0; top: 50px; z-index: 30; width: min(300px, calc(100vw - 32px)); padding: 6px; border-radius: 14px; background: var(--surface);
+        border: 1px solid var(--line); box-shadow: 0 12px 32px rgba(0,0,0,0.18); display: flex; flex-direction: column; }
+      .ship-menu .mi { all: unset; box-sizing: border-box; min-height: 44px; padding: 6px 14px; display: flex; flex-direction: column; justify-content: center; gap: 1px; border-radius: 10px;
+        font: 600 15px var(--body); cursor: pointer; color: var(--ink); }
+      .ship-menu .mi small { font: 400 12.5px var(--body); color: var(--ink-2); }
+      .ship-menu .mi:hover { background: var(--sunken); }
+      .ship-menu .mi:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: -3px; }
+      .ship-menu .mi[aria-disabled="true"] { opacity: 0.55; cursor: default; }
+      .ship-menu .why { margin: 4px 14px 8px; font-size: 12.5px; line-height: 1.4; color: var(--ink-2); }
+      .ship-menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; width: 100%; }
+      .held { flex: none; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; padding: 8px 12px; border-radius: 12px; background: var(--working-bg);
+        color: var(--working-fg); font-weight: 600; font-size: 14px; border: 1px solid var(--working-edge); }
+      .held a { color: inherit; font-weight: 800; text-underline-offset: 2px; display: inline-flex; align-items: center; min-height: 44px; }
       .banner { flex: none; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; padding: 8px 12px; border-radius: 12px; background: var(--banner-bg);
         color: var(--banner-fg); font-weight: 600; font-size: 14px; border: 1px solid var(--needs-edge); }
       .banner button { margin-left: auto; }
@@ -201,6 +221,8 @@ export class IncConvThread extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback();
+    document.addEventListener("click", this.closeShipMenu);
+    document.addEventListener("keydown", this.shipMenuKey, true);
     const c = ahp();
     this.info = c.info;
     this.offs = [
@@ -235,6 +257,8 @@ export class IncConvThread extends LitElement {
   };
 
   override disconnectedCallback(): void {
+    document.removeEventListener("click", this.closeShipMenu);
+    document.removeEventListener("keydown", this.shipMenuKey, true);
     for (const off of this.offs) off();
     this.offs = [];
     for (const t of this.probes) clearTimeout(t);
@@ -247,6 +271,87 @@ export class IncConvThread extends LitElement {
     clearTimeout(this.noteTimer);
     removeEventListener(OPEN_CARD_EVENT, this.onOpenCard);
     super.disconnectedCallback();
+  }
+
+  private closeShipMenu = (e?: Event) => {
+    if (!this.shipMenu) return;
+    // A click inside the menu or on its button is handled by them.
+    if (e?.composedPath().some((n) => n instanceof Element && n.classList?.contains("ship-wrap"))) return;
+    this.shipMenu = false;
+  };
+
+  private shipMenuKey = (e: KeyboardEvent) => {
+    if (!this.shipMenu) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      this.shipMenu = false;
+      this.focusShipButton();
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      const items = [...(this.shadowRoot?.querySelectorAll<HTMLElement>(".ship-menu .mi") ?? [])];
+      if (!items.length) return;
+      e.preventDefault();
+      const at = items.indexOf(this.shadowRoot?.activeElement as HTMLElement);
+      items[(at + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus();
+    }
+  };
+
+  /** Puts focus back on the Ship button (after its menu or its dialog closes). */
+  focusShipButton(): void {
+    this.shadowRoot?.querySelector<HTMLElement>(".ship-btn")?.focus();
+  }
+
+  private openShip(kind: "ticket" | "pr" | "takeback") {
+    this.shipMenu = false;
+    this.dispatchEvent(new CustomEvent("conv-ship", { detail: { kind }, bubbles: true, composed: true }));
+  }
+
+  /** The ticket that has this conversation's working copy, if one does. */
+  private heldTicket(conv: Conversation): string | undefined {
+    const t = this.ship?.ticket ?? conv.ship?.ticket;
+    return t?.held ? t.id || "…" : undefined;
+  }
+
+  private shipControl(conv: Conversation) {
+    if (!conv.project) return nothing;
+    const ship = this.ship;
+    const held = this.heldTicket(conv);
+    const direct = ship?.mode === "direct";
+    const canTicket = ship ? ship.canTicket : !held;
+    const canPr = ship ? ship.canPr : !held;
+    const prUrl = ship?.pr?.url ?? conv.ship?.pr?.url;
+    const prNo = ship?.pr?.number ?? conv.ship?.pr?.number;
+    return html`<div class="ship-wrap">
+      <button class="tool-btn ship-btn" type="button" aria-label="Ship this work" aria-haspopup="menu" aria-expanded=${this.shipMenu ? "true" : "false"} title="Ship this work: a ticket or a PR"
+        @click=${() => {
+          this.shipMenu = !this.shipMenu;
+          if (this.shipMenu)
+            void this.updateComplete.then(() =>
+              this.shadowRoot?.querySelector<HTMLElement>(".ship-menu .mi")?.focus(),
+            );
+        }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4M7 9l5-5 5 5M4 15v4a1 1 0 001 1h14a1 1 0 001-1v-4"/></svg></button>
+      ${
+        this.shipMenu
+          ? html`<div class="ship-menu" role="menu" aria-label="Ship this work">
+            <button class="mi" type="button" role="menuitem" aria-disabled=${canTicket ? "false" : "true"}
+              @click=${() => canTicket && this.openShip("ticket")}>Make this a ticket
+              <small>${direct ? "Checks and a review, then main" : "Checks and a review, then a PR for you"}</small></button>
+            ${
+              direct
+                ? nothing
+                : html`<button class="mi" type="button" role="menuitem" aria-disabled=${canPr ? "false" : "true"}
+              @click=${() => canPr && this.openShip("pr")}>${ship?.pr ? "Update the PR" : "Open a PR"}
+              <small>A draft, without i.inc's review</small></button>`
+            }
+            ${!canTicket && ship?.reason ? html`<p class="why">${ship.reason}</p>` : direct && ship?.reason ? html`<p class="why">${ship.reason}</p>` : nothing}
+            ${ship?.ticket?.canTakeBack ? html`<button class="mi" type="button" role="menuitem" @click=${() => this.openShip("takeback")}>Take the work back<small>End ticket #${ship.ticket.id} and carry on here</small></button>` : nothing}
+            ${held || prUrl ? html`<hr />` : nothing}
+            ${held ? html`<a class="mi" role="menuitem" href="#/ticket/${held}" @click=${() => (this.shipMenu = false)}>Open ticket #${held}</a>` : nothing}
+            ${prUrl ? html`<a class="mi" role="menuitem" href=${prUrl} target="_blank" rel="noopener" @click=${() => (this.shipMenu = false)}>Open PR #${prNo} on GitHub</a>` : nothing}
+          </div>`
+          : nothing
+      }
+    </div>`;
   }
 
   private unwatch() {
@@ -854,6 +959,7 @@ export class IncConvThread extends LitElement {
     const turns = chat ? chat.turns.slice(idx) : [];
     const more = chat && (idx > 0 || !!chat.turnsNextCursor);
     const pending = firstPending(chat);
+    const held = this.heldTicket(conv);
     const blocked =
       this.info.status !== "open"
         ? this.info.status === "failed"
@@ -861,7 +967,9 @@ export class IncConvThread extends LitElement {
           : "Reconnecting to the host… your message will wait here."
         : gone
           ? "This conversation is no longer on the host."
-          : "";
+          : held
+            ? `This work is now ticket #${held}. ${name} can't change the code until it is done. You can write to it again then.`
+            : "";
     const empty = chat && !chat.turns.length && !chat.activeTurn;
     return html`
       <div class="head">
@@ -879,10 +987,17 @@ export class IncConvThread extends LitElement {
             ${conv.branch ? html`<code>${conv.branch}</code>` : nothing}
             <span class="status ${live.needs ? "needs" : live.running ? "run" : ""}">${status}</span></div>
         </div>
+        ${this.shipControl(conv)}
         <button class="tool-btn" type="button" aria-label="Context panel" aria-pressed=${this.contextOpen ? "true" : "false"} title="Context: plan, files, usage"
           @click=${() => this.dispatchEvent(new CustomEvent("conv-toggle-context", { bubbles: true, composed: true }))}>
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg></button>
       </div>
+      ${
+        held
+          ? html`<div class="held" role="status"><span>This work is now ticket #${held}${this.ship?.ticket?.live ? `: ${this.ship.ticket.live}` : ""}. ${name} is paused until it is done.</span>
+              <a href="#/ticket/${held}">Open the ticket</a></div>`
+          : nothing
+      }
       ${
         this.info.status !== "open"
           ? html`<div class="banner" role="status">${this.info.status === "failed" ? this.info.error : this.info.everOpen ? "Reconnecting…" : "Connecting…"}

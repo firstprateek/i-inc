@@ -119,6 +119,8 @@ export class IncTicket extends Loader<Data> {
       .wrap { display: flex; flex-direction: column; gap: var(--layout-section-gap, 20px); align-items: stretch; }
       .main { flex-grow: 1; min-width: 0; padding: 26px 30px; display: flex; flex-direction: column; gap: 18px; }
       .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+      .from { margin: -6px 0 0; font-size: 14px; color: var(--ink-2); display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: baseline; overflow-wrap: anywhere; }
+      .from a { color: var(--reviewing-fg); font-weight: 600; text-underline-offset: 2px; display: inline-flex; align-items: center; min-height: 44px; }
       h2 { font-size: 24px; letter-spacing: -0.4px; overflow-wrap: anywhere; }
       dd, ol li span, .ask code { overflow-wrap: anywhere; }
       dl { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 12px 20px; margin: 0; font-size: 15px; line-height: 1.5; }
@@ -183,6 +185,7 @@ export class IncTicket extends Loader<Data> {
           <span class="muted" style="font-size:13px;font-weight:700">#${t.id}</span>
         </div>
         <h2>${t.title}</h2>
+        ${this.fromConversation(t)}
         ${this.images(t)}
         ${t.waiting ? html`<p class="waits"><i aria-hidden="true"></i><span>${waitingLine(t.waiting, t.waitingUntil)}</span></p>` : ""}
         ${this.error ? html`<p role="alert">${this.error}</p>` : ""}
@@ -196,6 +199,18 @@ export class IncTicket extends Loader<Data> {
         <ol>${events.map((e) => this.line(e)).filter((x) => x !== null)}</ol>
       </aside>
     </div>`;
+  }
+
+  /** A ticket made from a conversation says so, and links back to it. */
+  private fromConversation(t: TicketView) {
+    const from = t.fromConversation;
+    if (!from) return "";
+    return html`<p class="from">From conversation
+      ${
+        from.title === null
+          ? html`<span>(no longer there)</span>`
+          : html`<a href="#/conversations/${encodeURIComponent(from.id)}">${from.title}</a>`
+      }</p>`;
   }
 
   /** The owner's images, each opening at full size. */

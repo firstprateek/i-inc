@@ -87,7 +87,9 @@ export function changedScript(worktree: string, branch = "main"): string {
   return [
     `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
     `git fetch --quiet origin ${branch} || { echo '@@fail git fetch'; exit 1; }`,
-    `git diff --name-only "$(git merge-base origin/${branch} HEAD)" | sed 's/^/@@changed /'`,
+    // No rename detection: a file moved out of a protected folder is a deletion there as well as an addition
+    // elsewhere, and both paths count. NUL-separated and encoded, so a name with a quote, tab or newline is exact.
+    `git diff --name-only -z --no-renames --no-ext-diff "$(git merge-base origin/${branch} HEAD)" | while IFS= read -r -d '' f; do printf '@@changed64 %s\\n' "$(printf %s "$f" | base64 | tr -d '\\n')"; done`,
   ].join("\n");
 }
 
@@ -310,7 +312,9 @@ export class MachineHarness implements Harness {
 
     const changed = await this.run(ticket.assignee, changedScript(worktree, branch), env);
     if (changed.code !== 0) return no(`couldn't read the change: ${changed.output.trim().slice(-300)}`);
-    const files = [...changed.output.matchAll(/^@@changed (.+)$/gm)].map((m) => m[1] as string);
+    const files = [...changed.output.matchAll(/^@@changed64 (\S*)$/gm)].map((m) =>
+      Buffer.from(m[1] as string, "base64").toString("utf8"),
+    );
     const touched = files.filter((f) => isProtected(f, policy.protectedPaths));
     if (touched.length && !ownerApproved) {
       return {

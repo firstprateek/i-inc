@@ -344,6 +344,9 @@ export class SessionHost implements AgentBackend {
     }
     // The brain goes in after the owner's message, as its own block.
     if (brain.text) blocks = [blocks[0] as Json, { type: "text", text: brain.text }, ...blocks.slice(1)];
+    // What a ticket did to the branch while this conversation was away, said once, ahead of everything.
+    const note = this.app?.takeNote?.(live.info.id);
+    if (note) blocks = [{ type: "text", text: note }, ...blocks];
     try {
       const done = await conn.request("session/prompt", { sessionId, prompt: blocks });
       if (!done.error) {
@@ -363,6 +366,14 @@ export class SessionHost implements AgentBackend {
       const team = live.info.team;
       setTimeout(() => this.wake(team), 0).unref?.();
     }
+  }
+
+  hold(session: string): boolean {
+    const live = this.lives.get(session) ?? this.adopt(session);
+    if (!live) return true; // nothing of this conversation is running
+    if (live.run || live.starting || live.opening || this.h.hasActiveTurn(live.chat)) return false;
+    this.suspend(live, "its work became a ticket");
+    return true;
   }
 
   /**

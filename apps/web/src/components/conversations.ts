@@ -5,16 +5,19 @@
 import type { Employee } from "@i-inc/core";
 import { css, html, LitElement, nothing } from "lit";
 import { ahp, useAhp } from "../ahp/hub.ts";
-import { type AccountRateLimit, api, type Conversation, refresh } from "../api.ts";
+import { type AccountRateLimit, api, type Conversation, refresh, type ShipView } from "../api.ts";
 import { friendlyError } from "../conversations/actions.ts";
 import { cardStyles } from "../conversations/styles.ts";
+import { live } from "../live.ts";
 import { notifyNeedsYou } from "../needs-you.ts";
 import { draftHash } from "../routes.ts";
 import type { SendDetail } from "./conv-composer.ts";
 import type { CreateDetail } from "./conv-list.ts";
+import type { ShipDone, ShipKind } from "./conv-ship.ts";
 import { base } from "./shared.ts";
 import "./conv-context.ts";
 import "./conv-list.ts";
+import "./conv-ship.ts";
 import "./conv-thread.ts";
 
 const CONTEXT_KEY = "i-inc-conv-context";
@@ -45,6 +48,8 @@ export class IncConversations extends LitElement {
     kb: { state: true },
     sheet: { state: true },
     ready: { state: true },
+    ship: { state: true },
+    dialog: { state: true },
   };
   declare selectedId: string;
   /** `?card=<id>`: the card a notification opened; the thread brings it into view. */
@@ -69,6 +74,10 @@ export class IncConversations extends LitElement {
   declare kb: number;
   declare sheet: boolean;
   declare ready: boolean;
+  /** Shipping (C22b) for the selected conversation: its ticket and PR, and what can be pressed. */
+  declare ship: ShipView | undefined;
+  /** The ship dialog, while it is open. */
+  declare dialog: { kind: ShipKind } | null;
   declare limit: AccountRateLimit | undefined;
   declare accountName: string;
   declare info: ReturnType<typeof ahp>["info"];
@@ -80,6 +89,11 @@ export class IncConversations extends LitElement {
   private clock: ReturnType<typeof setInterval> | undefined;
   private loadToken = 0;
   private fetched = new Set<string>();
+  private shipToken = 0;
+  private shipFor = "";
+  private shipTimer: ReturnType<typeof setTimeout> | undefined;
+  private shipPoll: ReturnType<typeof setInterval> | undefined;
+  private opener: HTMLElement | null = null;
 
   constructor() {
     super();
@@ -99,6 +113,8 @@ export class IncConversations extends LitElement {
     this.kb = 0;
     this.sheet = false;
     this.ready = false;
+    this.ship = undefined;
+    this.dialog = null;
     this.accountName = "";
     this.info = ahp().info;
   }
@@ -148,6 +164,23 @@ export class IncConversations extends LitElement {
       c.onRoster(() => this.scheduleReload(500)),
     ];
     refresh.addEventListener("refresh", this.onRefresh);
+    // A ticket changed: if it is this conversation's, its stage and status are news.
+    this.offs.push(
+      live.subscribe("ticket", () => {
+        clearTimeout(this.shipTimer);
+        this.shipTimer = setTimeout(() => {
+          if (this.ship?.ticket || this.ship?.pr || this.selected()?.ship) {
+            void this.loadShip();
+            void this.loadList();
+          }
+        }, 400);
+      }),
+    );
+    this.shipPoll = setInterval(() => {
+      const s = this.ship;
+      if (s?.ticket?.held || s?.pr?.checks?.state === "pending" || s?.pr?.checks?.state === "none")
+        void this.loadShip();
+    }, 30_000);
     for (const q of [PHONE, WIDE]) {
       const mq = matchMedia(q);
       const fn = () => this.layout();
@@ -178,6 +211,8 @@ export class IncConversations extends LitElement {
     window.visualViewport?.removeEventListener("resize", this.onViewport);
     document.removeEventListener("keydown", this.sheetKey, true);
     clearTimeout(this.reloadTimer);
+    clearTimeout(this.shipTimer);
+    clearInterval(this.shipPoll);
     clearInterval(this.clock);
     super.disconnectedCallback();
   }
@@ -232,6 +267,7 @@ export class IncConversations extends LitElement {
       }
     }
     if (changed.has("selectedId") || changed.has("list")) void this.ensureSelected();
+    if (changed.has("selectedId") || changed.has("list")) this.syncShip();
   }
 
   // ───────────────────────────── data ─────────────────────────────
@@ -278,6 +314,28 @@ export class IncConversations extends LitElement {
     const account = this.sideData?.office?.accounts?.find((a) => a.id === engine?.accountId);
     this.limit = engine ? this.sideData?.office?.rateLimits?.[engine.accountId] : undefined;
     this.accountName = account?.name ?? "";
+  }
+
+  /** The selected conversation changed: look at what shipping says about it (a project's only). */
+  private syncShip() {
+    const conv = this.selected();
+    const id = conv?.project ? conv.id : "";
+    if (id === this.shipFor) return;
+    this.shipFor = id;
+    this.ship = undefined;
+    if (id) void this.loadShip();
+  }
+
+  private async loadShip(): Promise<void> {
+    const id = this.shipFor;
+    if (!id) return;
+    const token = ++this.shipToken;
+    try {
+      const ship = await api.ship(id);
+      if (token === this.shipToken && id === this.shipFor) this.ship = ship;
+    } catch {
+      // The panel works without it: the buttons ask again when pressed, and the dialog says what is wrong.
+    }
   }
 
   private selected(): Conversation | undefined {
@@ -367,6 +425,32 @@ export class IncConversations extends LitElement {
     }
   }
 
+  private openShip = (e: CustomEvent<{ kind: ShipKind; from?: string }>) => {
+    // From the panel, focus goes back to the button that was pressed; from the header, to the Ship button.
+    this.opener = e.detail.from === "context" ? ((e.composedPath()[0] ?? null) as HTMLElement | null) : null;
+    this.dialog = { kind: e.detail.kind };
+  };
+
+  private closeShip = () => {
+    this.dialog = null;
+    const opener = this.opener;
+    this.opener = null;
+    void this.updateComplete.then(() => {
+      // Back to the button that opened it: the header's, or the one in the panel.
+      if (opener?.isConnected) opener.focus();
+      else
+        this.renderRoot
+          .querySelector("inc-conv-thread")
+          ?.shadowRoot?.querySelector<HTMLElement>(".ship-btn")
+          ?.focus();
+    });
+  };
+
+  private shipped = (_e: CustomEvent<ShipDone>) => {
+    void this.loadShip();
+    void this.loadList();
+  };
+
   private toggleContext = () => {
     const open = this.ctxOpen();
     this.ctx = open ? "closed" : "open";
@@ -396,7 +480,7 @@ export class IncConversations extends LitElement {
    * the document, in the capture phase, so it holds even if focus has strayed out of the sheet.
    */
   private sheetKey = (e: KeyboardEvent) => {
-    if (!this.sheet) return;
+    if (!this.sheet || this.dialog) return;
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
@@ -428,7 +512,7 @@ export class IncConversations extends LitElement {
     const inline = open && this.wide && !phone;
     const drawer = open && !this.wide && !phone;
     // While the phone's sheet is open, everything behind it is out of reach (of Tab and of a screen reader).
-    const modal = phone && this.sheet && !!conv;
+    const modal = (phone && this.sheet && !!conv) || !!this.dialog;
     const list = html`<inc-conv-list class="pane list-pane" ?inert=${modal} ?hidden=${phone && (!!this.selectedId || !!this.draft)} .items=${this.list} .employees=${this.employees}
       .projects=${this.projects} .selected=${this.selectedId} .now=${this.now} .loading=${this.loading} .error=${this.listError}
       .showArchived=${this.showArchived} .preset=${this.form} .ready=${this.ready}
@@ -449,7 +533,7 @@ export class IncConversations extends LitElement {
       ${this.lost ? html`<p class="lost" role="alert">${this.lost}</p>` : nothing}
       ${
         conv
-          ? html`<inc-conv-thread .conv=${conv} .employee=${employee} .phone=${phone} .contextOpen=${open} .card=${this.card}
+          ? html`<inc-conv-thread .conv=${conv} .employee=${employee} .phone=${phone} .contextOpen=${open} .card=${this.card} .ship=${this.ship}
               .first=${this.first?.id === conv.id ? this.first : undefined}
               @conv-first-sent=${() => {
                 this.first = undefined;
@@ -467,10 +551,10 @@ export class IncConversations extends LitElement {
       }
     </section>`;
     const context = conv
-      ? html`<inc-conv-context .conv=${conv} .employee=${employee} .limit=${this.limit} .accountName=${this.accountName} .closable=${!inline}
+      ? html`<inc-conv-context .conv=${conv} .employee=${employee} .ship=${this.ship} .limit=${this.limit} .accountName=${this.accountName} .closable=${!inline}
           @conv-toggle-context=${this.toggleContext}></inc-conv-context>`
       : nothing;
-    return html`<div class="screen ${phone ? "phone" : ""} ${inline ? "ctx wide" : ""}">
+    return html`<div class="screen ${phone ? "phone" : ""} ${inline ? "ctx wide" : ""}" @conv-ship=${this.openShip}>
       ${list}${thread}
       ${inline ? html`<aside class="pane ctx-pane" aria-label="Context">${context}</aside>` : nothing}
       ${drawer ? html`<aside class="drawer" aria-label="Context">${context}</aside>` : nothing}
@@ -479,7 +563,13 @@ export class IncConversations extends LitElement {
           ? html`<div class="backdrop" @click=${() => {
               this.sheet = false;
             }}></div>
-            <div class="sheet" role="dialog" aria-modal="true" aria-label="Conversation context" ><span class="grab" aria-hidden="true"></span>${context}</div>`
+            <div class="sheet" role="dialog" aria-modal="true" aria-label="Conversation context" ?inert=${!!this.dialog}><span class="grab" aria-hidden="true"></span>${context}</div>`
+          : nothing
+      }
+      ${
+        this.dialog && conv
+          ? html`<inc-conv-ship .conv=${conv} .employee=${employee} .kind=${this.dialog.kind} .ship=${this.ship}
+              @conv-ship-close=${this.closeShip} @conv-ship-done=${this.shipped}></inc-conv-ship>`
           : nothing
       }
     </div>`;

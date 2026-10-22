@@ -70,6 +70,8 @@ export interface TicketView {
   pushed?: boolean;
   /** The owner's images, each with the URL that serves it. */
   attachments?: (TicketAttachment & { url: string })[];
+  /** Made from a conversation ("Make this a ticket"); `title` is null when that conversation is gone. */
+  fromConversation?: { id: string; title: string | null };
 }
 
 export type EmployeeState =
@@ -165,4 +167,76 @@ export interface KnowledgeView {
   awaiting?: PolicyProposal[];
   /** A brain only. */
   employee?: Person & { role: string };
+}
+
+// ── shipping a conversation's work (T62b, contract C22b) ──
+
+export type ShipMode = "direct" | "owner-merges";
+
+/** What a conversation's row says about its ticket and PR. */
+export interface ShipBrief {
+  ticket: { id: Id; held: boolean } | null;
+  pr: { number: number; url: string } | null;
+}
+
+export interface ShipFile {
+  path: string;
+  added: number;
+  removed: number;
+  binary?: true;
+}
+
+export interface ShipChecks {
+  state: "none" | "pending" | "success" | "failure";
+  total: number;
+  passed: number;
+  failed: number;
+  pending: number;
+}
+
+export interface ShipView {
+  project: string | null;
+  mode: ShipMode | null;
+  /** "Make this a ticket" can be pressed. */
+  canTicket: boolean;
+  /** "Open a PR" can be pressed (owner-merges projects only). */
+  canPr: boolean;
+  /** Why neither can, as a sentence. */
+  reason?: string;
+  ticket: {
+    id: Id;
+    title: string;
+    status: TicketView["status"];
+    stage: string | null;
+    live: string;
+    /** The conversation can't change its working copy: the ticket has it. */
+    held: boolean;
+    outcome: TicketView["outcome"];
+    /** It waits for the owner, so the work can be taken back from it. */
+    canTakeBack?: boolean;
+  } | null;
+  pr: {
+    number: number;
+    url: string;
+    state: "open" | "closed" | "merged" | "unknown";
+    draft: boolean;
+    checks: ShipChecks | null;
+    problem?: string;
+  } | null;
+  /** Only with `?preview=1`: what shipping would commit, and where it would go. */
+  copy?: {
+    branch: string;
+    files: ShipFile[];
+    uncommitted: number;
+    ahead: number;
+    protectedPaths: string[];
+    pushed: boolean;
+    blockers: string[];
+    /** Binary files that can't be scanned for credentials: the owner confirms them before anything is shipped. */
+    binaries: { path: string; size: number }[];
+  };
+  /** Only with `?preview=1` and no copy: why the working copy couldn't be read. */
+  problem?: string;
+  /** Only with `?preview=1`: what the confirm dialog starts with. */
+  suggestion?: { title: string; doneWhen: string[]; description: string };
 }

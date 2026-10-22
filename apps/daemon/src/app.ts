@@ -31,6 +31,8 @@ import { type PushService, WebPushSender } from "./push.ts";
 import { Registry } from "./registry.ts";
 import { migrate } from "./schema.ts";
 import { SessionStore } from "./sessions.ts";
+import { Shipping } from "./ship.ts";
+import type { ShipPort } from "./ship-git.ts";
 import { type MachineOps, Storage, type StoragePaths } from "./storage.ts";
 import { SqliteEventStore } from "./store.ts";
 import { Tickets } from "./tickets.ts";
@@ -77,6 +79,8 @@ export interface AppOptions extends ApiOptions {
   trimMachines?: boolean;
   /** What runs the agents behind conversations. Default: nothing yet (the session host, T59b). */
   ahpBackend?: FromRegistry<AgentBackend>;
+  /** The git side of shipping a conversation's work (T62b); absent without GitHub. */
+  ship?: FromRegistry<ShipPort>;
   ahpLimits?: Partial<TransportLimits>;
   /** Timings of the conversation pushes (T65), for tests: the grace, the re-look, a long reply, the scheduler. */
   ahpPush?: Partial<
@@ -211,6 +215,26 @@ export async function createApp(o: AppOptions) {
     ...(o.ahpDeferredAuth ? { deferredAuth: true } : {}),
   });
   const daemon = new Daemon(deps);
+  // Shipping a conversation's work (T62b): a ticket made from it, or a PR. Needs GitHub.
+  if (o.ship) {
+    deps.shipping = new Shipping({
+      db,
+      clock: o.clock,
+      registry,
+      tickets,
+      store,
+      conversations,
+      host,
+      backend,
+      port: make(o.ship),
+      live,
+      ensureUp: (employeeId) => deps.machines.ensureUp(employeeId),
+      awake: (employeeId) => daemon.noteAwake(employeeId),
+      tick: () => daemon.tick(),
+      running: (id) => daemon.isRunning(id),
+      ...(o.log ? { log: o.log } : {}),
+    });
+  }
   const ops = deps.machines as unknown as Partial<MachineOps>;
   const storage = new Storage({
     db,
@@ -231,7 +255,8 @@ export async function createApp(o: AppOptions) {
     machineBusy: (machine) => daemon.machineBusy(machine),
     hostBusy: () => daemon.busy(),
     ticketActive: (id) => daemon.isRunning(id),
-    archivedConversations: () => conversations.forCleanup(),
+    // A copy a ticket is working in is not cleaned away, archived or not.
+    archivedConversations: () => conversations.forCleanup().filter((c) => !deps.shipping?.holds(c.id)),
     copiesGone: (ids) => conversations.copiesGone(ids),
     footprint: () => ({
       ...daemon.footprint(),
@@ -249,7 +274,11 @@ export async function createApp(o: AppOptions) {
     const live = () => backend.liveEmployees?.() ?? [];
     daemon.onMachineBusy((machine) => live().some((e) => storage.machineOf(e) === machine));
   }
-  backend.attachApp?.({ storage, awake: (id) => daemon.noteAwake(id) });
+  backend.attachApp?.({
+    storage,
+    awake: (id) => daemon.noteAwake(id),
+    takeNote: (conversationId) => deps.shipping?.takeNote(conversationId),
+  });
   // The index follows every commit from here on, including the first commits of a new install's
   // repos; then one look at each repo's HEAD brings in whatever changed while the daemon was down
   // (nothing, usually: it costs one `git rev-list` a repo, and an install's first boot has nothing

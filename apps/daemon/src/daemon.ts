@@ -45,6 +45,7 @@ import type { Proposals } from "./proposals.ts";
 import type { NotificationPayload, PushService } from "./push.ts";
 import type { Registry } from "./registry.ts";
 import { capText, type SessionStore } from "./sessions.ts";
+import type { Shipping } from "./ship.ts";
 import type { Storage } from "./storage.ts";
 import type { SqliteEventStore } from "./store.ts";
 import type { TicketRecord, Tickets } from "./tickets.ts";
@@ -81,6 +82,8 @@ export interface DaemonDeps {
   log?: (msg: string) => void;
   /** Conversations over AHP (src/ahp); absent in the few places that build deps by hand. */
   conversations?: ConversationService;
+  /** Shipping a conversation's work as a ticket or a PR (T62b); absent without GitHub. */
+  shipping?: Shipping;
 }
 
 /** What the daemon asks of storage when it decides to stop a machine (storage.ts, T52). */

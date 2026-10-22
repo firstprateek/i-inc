@@ -10,6 +10,7 @@ import type { Clock, Employee, Engine, Id } from "@i-inc/core";
 import { type AgentInfo, AhpErrorCodes, JsonRpcErrorCodes } from "@microsoft/agent-host-protocol";
 import type { Db } from "../db.ts";
 import type { Registry } from "../registry.ts";
+import type { ShipBrief } from "../view-types.ts";
 import { type AhpHost, DEFAULT_TITLE, RpcError } from "./host.ts";
 import {
   ActionType,
@@ -39,6 +40,8 @@ export interface Conversation {
 
 /** A conversation as the REST API shows it: the row plus what the host knows right now. */
 export interface ConversationView extends Conversation {
+  /** Present once the work was handed to a ticket or opened as a PR. */
+  ship?: ShipBrief;
   /** The AHP status bits of the session (see wire.ts SessionStatus). */
   status: number;
   /** Something is waiting for the owner: a permission or a question. */
@@ -183,6 +186,9 @@ export class ConversationService {
     return before;
   }
 
+  /** Set by shipping: what to say about a conversation's ticket and PR in its row. */
+  shipBrief: ((id: string) => ShipBrief | undefined) | undefined;
+
   /** Where an employee's conversations run (a machine name), for the cleanup to find their copies. */
   machineOf: ((employeeId: Id) => string | undefined) | undefined;
 
@@ -318,8 +324,10 @@ export class ConversationService {
   private view(c: Conversation): ConversationView {
     const sum = this.host.summary(c.ahpSession);
     const status = sum?.status ?? SessionStatus.Idle;
+    const ship = this.shipBrief?.(c.id);
     return {
       ...c,
+      ...(ship ? { ship } : {}),
       status,
       needsYou: activity(status) === SessionStatus.InputNeeded,
       running:
@@ -331,6 +339,14 @@ export class ConversationService {
   get(id: string): ConversationView | undefined {
     const [r] = this.db.all<Row>("SELECT * FROM conversations WHERE id = ? AND disposed_at IS NULL", id);
     return r ? this.view(toConversation(r)) : undefined;
+  }
+
+  byChat(chat: string): Conversation | undefined {
+    const [r] = this.db.all<Row>(
+      "SELECT * FROM conversations WHERE ahp_chat = ? AND disposed_at IS NULL",
+      chat,
+    );
+    return r ? toConversation(r) : undefined;
   }
 
   bySession(session: string): Conversation | undefined {

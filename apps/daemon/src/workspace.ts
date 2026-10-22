@@ -74,6 +74,8 @@ export function isSafeWorkDir(cwd: unknown): cwd is string {
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
 
 export const branchName = (ticket: Ticket) => {
+  // A ticket made from a conversation works on the conversation's own branch.
+  if (ticket.branch) return ticket.branch;
   const slug = ticket.title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
@@ -353,6 +355,8 @@ export class GitHubWorkspace implements Workspace {
       ...who,
       message: `chore: start work on ${ticket.title}`,
       push: !direct,
+      // A conversation's branch may hold commits GitHub lacks (direct mode never pushes): they stay.
+      ...(ticket.conversation ? { local: "keep" as const } : {}),
     });
     const r = await this.o.run(builder.id, script, { GH_TOKEN: token });
     if (r.code !== 0 || !r.output.includes(direct ? "@@ready" : "@@pushed")) {
