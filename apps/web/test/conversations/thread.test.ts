@@ -513,6 +513,24 @@ describe("the thread", () => {
     expect(root().querySelector(".banner")?.textContent).toMatch(/Connecting|Reconnecting/);
   });
 
+  it("does not add a second banner when the shell already says the daemon can't be reached", async () => {
+    const { report } = await import("../../src/connection.ts");
+    const { c, root } = await setup();
+    c.stop();
+    await tick(10);
+    const el = root().host as IncConvThread;
+    await el.updateComplete;
+    expect(root().querySelector(".banner")).not.toBeNull(); // the host alone is down: the thread says so
+    report(false); // now the shell's banner covers it
+    await tick(2);
+    await el.updateComplete;
+    expect(root().querySelector(".banner")).toBeNull();
+    report(true);
+    await tick(2);
+    await el.updateComplete;
+    expect(root().querySelector(".banner")?.textContent).toMatch(/Connecting|Reconnecting/);
+  });
+
   it("does not move the reader when the list refreshes the conversation's row, only when another is opened", async () => {
     const { el } = await setup();
     el.stick = false; // reading further up

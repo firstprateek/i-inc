@@ -322,7 +322,9 @@ describe("another ticket's page", () => {
     el.ticketId = "999";
     await settle(el);
     expect(el.shadowRoot?.textContent).not.toContain("Fourth ticket");
-    expect(el.shadowRoot?.textContent).toContain("no such ticket");
+    // #97's not-found page, not the daemon's raw sentence
+    expect(el.shadowRoot?.textContent).toContain("There is no ticket #999");
+    expect(el.shadowRoot?.textContent).not.toContain("no such ticket");
   });
 
   it("does not let #1's late answer land on #4", async () => {
@@ -393,5 +395,48 @@ describe("a half-written ticket", () => {
     await settle(el);
     el = await open();
     expect(el.shadowRoot.querySelector<HTMLInputElement>('input[name="title"]')?.value).toBe("");
+  });
+});
+
+describe("a 404 on a loader view", () => {
+  it("says it isn't there in words, never the daemon's raw sentence", async () => {
+    vi.stubGlobal("fetch", async (url: string) =>
+      url === "/api/board" ? json({ error: "no such board" }, 404) : json({ proposals: [], tickets: [] }),
+    );
+    const board = await mount<HTMLElement>("inc-board");
+    expect(board.shadowRoot?.textContent).toContain("The board isn't there. It may have been removed.");
+    expect(board.shadowRoot?.textContent).not.toContain("no such board");
+  });
+});
+
+describe("the conversations list while the daemon can't be reached", () => {
+  it("leaves the explaining to the shell's banner: no second 'Can't reach i.inc' and no empty-state lie", async () => {
+    vi.stubGlobal("fetch", async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    location.hash = "#/conversations";
+    const app = await mount<HTMLElement>("inc-app");
+    await until(() => app.shadowRoot?.querySelector("inc-offline"));
+    await settle(app);
+    const reach = (root: Document | ShadowRoot | Element): number => {
+      let n = 0;
+      const walk = (r: ParentNode) => {
+        for (const e of r.querySelectorAll("*")) {
+          if (e.shadowRoot) walk(e.shadowRoot);
+          if (e.children.length === 0 && /Can't reach i\.inc/.test(e.textContent ?? "")) n++;
+        }
+      };
+      walk(root as ParentNode);
+      return n;
+    };
+    // one banner heading, nowhere else
+    expect(reach(document)).toBe(1);
+    const text = (function all(r: ParentNode): string {
+      let t = "";
+      for (const e of r.querySelectorAll("*")) if (e.shadowRoot) t += all(e.shadowRoot);
+      return t + ((r as Element).textContent ?? "");
+    })(document);
+    expect(text).not.toContain("Reconnecting");
+    expect(text).not.toContain("No conversations yet");
   });
 });

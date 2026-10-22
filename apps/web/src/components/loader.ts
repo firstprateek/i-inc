@@ -6,7 +6,7 @@
 // view that has nothing to show yet because its first load failed, and `failure()` draws that with a
 // retry button too. An answer that arrives out of order (a slow response to an older request) is dropped.
 import { html, LitElement, nothing } from "lit";
-import { type RefreshScope, refresh, refreshNow } from "../api.ts";
+import { ApiError, type RefreshScope, refresh, refreshNow } from "../api.ts";
 import { isOffline } from "../connection.ts";
 
 /** What a view tells the shell, so one banner covers every view: `detail` is the message, or null once it's fine. */
@@ -32,6 +32,8 @@ export abstract class Loader<T> extends LitElement {
   declare pressing: boolean;
   /** Set by a view of one ticket: it refetches for live events about that ticket only. */
   declare ticketId?: string;
+  /** The HTTP status behind `error` (404: nothing there), when it was the daemon that refused. */
+  protected errorStatus: number | null = null;
   private loadSeq = 0;
 
   constructor() {
@@ -57,12 +59,15 @@ export abstract class Loader<T> extends LitElement {
       if (seq !== this.loadSeq) return; // a newer request has been made: this answer is out of date
       this.data = data;
       this.error = null;
+      this.errorStatus = null;
       this.report(null);
     } catch (e) {
       if (seq !== this.loadSeq) return;
       const message = e instanceof Error ? e.message : String(e);
-      if (this.data === null) this.error = message;
-      else this.report(message);
+      if (this.data === null) {
+        this.error = message;
+        this.errorStatus = e instanceof ApiError ? e.status : null;
+      } else this.report(message);
     }
   }
 
@@ -71,6 +76,7 @@ export abstract class Loader<T> extends LitElement {
     this.loadSeq++; // an answer to the old request must not land
     this.data = null;
     this.error = null;
+    this.errorStatus = null;
     this.actionError = null;
     this.report(null);
   }
@@ -116,8 +122,16 @@ export abstract class Loader<T> extends LitElement {
    */
   protected failure(what = "this page") {
     const offline = isOffline();
+    const cap = `${what[0]?.toUpperCase()}${what.slice(1)}`;
+    // A view with a page of its own for "no such thing" (the ticket, a brain) shows that before it gets here;
+    // for any other 404 the daemon's raw sentence ("no such employee") is not shown.
+    const text = offline
+      ? `Nothing has loaded yet. ${cap} loads when i.inc answers.`
+      : this.errorStatus === 404
+        ? `${cap} isn't there. It may have been removed.`
+        : `Couldn't load ${what}: ${this.error}`;
     return html`<div class="load-error" role="alert">
-      <span>${offline ? `Nothing has loaded yet. ${what[0]?.toUpperCase()}${what.slice(1)} loads when i.inc answers.` : `Couldn't load ${what}: ${this.error}`}</span>
+      <span>${text}</span>
       <button class="btn ghost" type="button" @click=${() => void this.reload()}>Try again</button>
     </div>`;
   }
