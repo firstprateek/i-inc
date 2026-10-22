@@ -175,7 +175,13 @@ export function realPorts(o: RealOptions): Pick<
   // work (reaper.ts), and the sandboxes are swept once at startup.
   let reapOnce: Reap | undefined;
   const reap = (registry: Registry): Reap => {
-    reapOnce ??= reaper(run(registry), o.log, (employeeId) => machineOf(teams(registry), employeeId));
+    reapOnce ??= reaper(
+      run(registry),
+      o.log,
+      (employeeId) => machineOf(teams(registry), employeeId),
+      // A machine whose launcher is older than the release's is updated before the launch (machines.ts).
+      (machine) => machines?.updateLauncher(machine) ?? Promise.resolve(),
+    );
     return reapOnce;
   };
 

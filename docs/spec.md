@@ -328,7 +328,7 @@ interface with a scripted fake in tests, like the ACP agent.
 - **Network:**
   - The employee has open outbound internet: packages, docs, web search, GitHub and model APIs. A
     PA is the exception: it has no internet at all (§7).
-  - It can't reach your LAN, your tailnet, other machines or other services on the host. The
+  - It can't reach your LAN, your tailnet, other machines (T70) or other services on the host. The
     exceptions are i.inc's API and Ollama, plus the DHCP and DNS every machine needs. Ollama stays
     on loopback, and machines reach it through a relay on their gateway, so nothing outside the
     machines can reach it. IPv6 is refused rather than walled off, because the LAN's prefix
@@ -369,11 +369,22 @@ interface with a scripted fake in tests, like the ACP agent.
     that isn't installed (which includes any name with a registry host) are refused, and the request body is
     parsed and re-written so what is checked is what Ollama reads, so a sandbox can't make the host fetch from, or send a prompt to,
     a server of its choosing.
-  - **Not verified: one machine reaching another.** Traffic between two machines on the bridge may be
-    switched at layer 2 and never meet pf, and a broadcast to `255.255.255.255:67` (the DHCP rule) may
-    reach other machines. `tools/m1/walls-test.sh` with `OTHER_MACHINE=<ip>` tests both; until it has
-    passed on the mini, this document does not claim that a PA's sandbox can't talk to another
-    machine, which would be a way out through an engineers' machine.
+  - **Machines can't reach each other (T70; verify after install).** The machines share one bridge,
+    and macOS switches a frame from one machine to another without handing it to the host's IP stack, so
+    pf's rules on the bridge never saw it: two machines could reach each other over TCP, UDP and ping, and
+    a PA's sandbox could hand data to an engineers' machine that has the internet. macOS has no
+    `pfil_bridge` sysctl for this; the bridge's own filter flags (`IFBF_FILT_MEMBER | IFBF_FILT_ONLYIP`,
+    set by `tools/host/bridge-filter.sh` through the kernel's `BRDGSFILT` call) make pf run on each
+    member interface, and the rules drop, there, any frame to or from another machine's address
+    (unicast, broadcast, multicast, IPv4 or IPv6, any protocol) and any frame that is not ARP or IP. The
+    host keeps what every machine needs from it: DHCP, DNS for open machines, the Ollama relay. The
+    walls job sets the flags and reads them back every minute, and takes the marker away (so no machine
+    runs) if they don't hold, a bridge member isn't one the rules name, or the member rules aren't loaded.
+    Not covered: a machine with raw-socket root crafting frames with forged source addresses to another
+    machine's hardware address and a destination that isn't a machine's; engineers' machines have that
+    root, a PA's sandbox doesn't. Closing it would take per-machine MAC and address locks on the bridge
+    (`ifconfig bridge100 hostfilter`). Until the owner has run the verification in docs/handoff.md,
+    this is designed and tested against a model of pf, not proven on the mini.
 - **GitHub** uses a bot identity: one GitHub App, "i.inc bot", installed on the repos you choose.
   - **A sandbox never holds a credential that can write.** Agents run with bypassed permissions and
     can be prompt-injected, and the bot may update `main` (direct mode), which the deployer puts on the
@@ -584,7 +595,7 @@ shorter loop:
 - **No open internet.** Unlike an engineer's machine, a PA's machine reaches only i.inc's API and
   Ollama. Whatever it prepares can only leave through a proposal you see. Today that is Ollama
   only (i.inc's API port joins it when the daemon serves one to machines), enforced by the walls
-  described in §5, apart from the unverified machine-to-machine path noted there. Because the sandbox has no internet, only a local engine can
+  described in §5, including the block on traffic between machines (verify after install: docs/handoff.md, T70). Because the sandbox has no internet, only a local engine can
   run in it: hiring or editing a PA refuses any duty's engine, fallbacks included, that isn't a
   local one. If none is set up, it says so ("none is set up yet: add one in Setup"), and the hiring
   form says the same; the local engine is OpenCode on Ollama (`tools/m1/install-harnesses.sh`), added

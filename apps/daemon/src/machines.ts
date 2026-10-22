@@ -9,7 +9,9 @@
 // "notFound" for a missing one. `machine create` boots the new machine itself. `machine stop` also
 // succeeds on a machine that's already stopped.
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   type AgentHarness,
   type Id,
@@ -91,7 +93,85 @@ export interface MachineSettings {
   wall?: EgressWall;
   /** The limits in timeouts.ts as the owner has them now, read at each call (milliseconds). */
   timeouts?: () => Partial<TimeoutsMs>;
+  /**
+   * The release's employee image folder (images/employee), where the launchers a machine is updated from
+   * are read. Absent: the one beside this code, which is the release the daemon runs from.
+   */
+  imageDir?: string;
 }
+
+/** The release's images/employee, relative to this file (apps/daemon/src). */
+export const releaseImageDir = fileURLToPath(new URL("../../../images/employee/", import.meta.url));
+
+/** A file the launcher update puts in a machine: the same files and modes as tools/host/update-machine.sh. */
+export interface LauncherFile {
+  path: string;
+  mode: "644" | "755";
+  content: Buffer;
+  /** In the employee's home, owned by the employee, rather than root's. */
+  employee?: boolean;
+}
+
+/**
+ * Reads from the image folder what a machine's launcher is made of: acp-env.sh (644), every launchers/acp-*
+ * (755) and claude-settings.json (the employee's ~/.claude/settings.json). Throws if a piece is missing.
+ */
+export function launcherFiles(dir: string): LauncherFile[] {
+  const files: LauncherFile[] = [
+    { path: "/usr/local/lib/i-inc/acp-env.sh", mode: "644", content: readFileSync(`${dir}/acp-env.sh`) },
+  ];
+  const names = readdirSync(`${dir}/launchers`)
+    .filter((n) => /^acp-[a-z0-9-]+$/.test(n))
+    .sort();
+  if (names.length === 0) throw new Error(`no launchers in ${dir}/launchers`);
+  for (const n of names) {
+    files.push({ path: `/usr/local/bin/${n}`, mode: "755", content: readFileSync(`${dir}/launchers/${n}`) });
+  }
+  files.push({
+    path: "~/.claude/settings.json",
+    mode: "644",
+    content: readFileSync(`${dir}/claude-settings.json`),
+    employee: true,
+  });
+  return files;
+}
+
+/**
+ * The script that writes those files in a machine as root (`machine run -u root -i ... bash -s`, as
+ * update-machine.sh does, since a PA's sandbox has its user's sudo taken away), each written beside its
+ * place and moved over it so a launch never reads half a file, then checks the sums, modes and the notes
+ * marker, and says `@@launcher-updated` only if all hold. The contents are base64 and the paths fixed.
+ */
+export function launcherUpdateScript(files: LauncherFile[], user: string): string {
+  if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(user)) throw new Error(`not a user name: ${user}`);
+  const home = `/home/${user}`;
+  const place = (f: LauncherFile) => (f.employee ? f.path.replace("~", home) : f.path);
+  const lines = [
+    "set -u",
+    "ok=1",
+    'put() { mkdir -p "$(dirname "$3")" && printf %s "$4" | base64 -d >"$3.inc-new" && chmod "$2" "$3.inc-new" && { [ "$1" = root ] || chown "$(stat -c %u:%g ' +
+      home +
+      ')" "$3.inc-new"; } && mv -f "$3.inc-new" "$3" || ok=0; }',
+    'chk() { [ "$(sha256sum "$2" 2>/dev/null | cut -d" " -f1)" = "$1" ] && [ "$(stat -c %a "$2" 2>/dev/null)" = "$3" ] || ok=0; }',
+    `mkdir -p ${home}/.claude && chown "$(stat -c %u:%g ${home})" ${home}/.claude`,
+  ];
+  for (const f of files) {
+    lines.push(
+      `put ${f.employee ? "employee" : "root"} ${f.mode} ${place(f)} '${f.content.toString("base64")}'`,
+    );
+  }
+  for (const f of files) {
+    lines.push(`chk ${createHash("sha256").update(f.content).digest("hex")} ${place(f)} ${f.mode}`);
+  }
+  lines.push(
+    "grep -q inc-agents /usr/local/lib/i-inc/acp-env.sh || ok=0",
+    'if [ "$ok" = 1 ]; then echo @@launcher-updated; else echo @@launcher-update-failed; fi',
+  );
+  return `${lines.join("\n")}\n`;
+}
+
+/** After a failed update, no new try for this long (the next sweep or probe that finds the launcher old tries again). */
+const LAUNCHER_RETRY_MS = 10 * 60_000;
 
 export const defaultMachineSettings: MachineSettings = {
   bin: "/usr/local/bin/container",
@@ -360,6 +440,9 @@ export class AppleMachines implements MachineProvider {
   private readonly lastLogged = new Map<string, string>();
   /** The tail of each machine's queue: boots and stops of one machine run one at a time (`locked`). */
   private readonly locks = new Map<string, Promise<unknown>>();
+  /** Machines whose launcher is being updated now, and when a failed update may be tried again (monotonic). */
+  private readonly launcherBusy = new Set<string>();
+  private readonly launcherRetry = new Map<string, number>();
 
   private readonly exec: Exec;
 
@@ -813,6 +896,53 @@ export class AppleMachines implements MachineProvider {
     );
   }
 
+  /**
+   * Copies the release's launchers into a machine whose launcher is older than the release (a machine made
+   * from an older image: images/employee/README.md), as tools/host/update-machine.sh does by hand. Called
+   * when a sweep or the sign-in probe reports `@@launcher old`. It respects the walls (`assertRunnable`:
+   * the marker and the acknowledgement) and never starts a machine: one that isn't running is left until
+   * its next boot, when the next sweep finds the launcher old again. It logs once when it succeeds, and
+   * once per failure (with ten minutes before the next try). It never throws.
+   */
+  async updateLauncher(machine: string): Promise<"updated" | "skipped" | "failed"> {
+    if (!/^inc-[a-z0-9-]{1,32}$/.test(machine)) return "skipped";
+    if (this.launcherBusy.has(machine)) return "skipped";
+    const retryAt = this.launcherRetry.get(machine);
+    if (retryAt !== undefined && this.mono() < retryAt) return "skipped";
+    this.launcherBusy.add(machine);
+    try {
+      try {
+        await assertRunnable(this.s, this.exec, machine);
+      } catch {
+        return "skipped"; // the walls aren't up for it: nothing runs in it, this included
+      }
+      const row = (await this.listMachines()).find((m) => m.name === machine);
+      if (row?.state !== "running") return "skipped";
+      const files = launcherFiles(this.s.imageDir ?? releaseImageDir);
+      const out = await this.exec(
+        this.s.bin,
+        ["machine", "run", "-i", "-u", "root", "-n", machine, "--", "bash", "-s"],
+        { input: launcherUpdateScript(files, this.s.user) },
+      );
+      if (!out.includes("@@launcher-updated"))
+        throw new Error(`the copy did not check out: ${out.trim().slice(-200)}`);
+      noteLauncher(machine, true);
+      this.launcherRetry.delete(machine);
+      this.log?.(
+        `${machine}: its launcher was older than the release's, so the daemon copied acp-env.sh, ${files.length - 2} launchers and the Claude settings into it`,
+      );
+      return "updated";
+    } catch (e) {
+      this.launcherRetry.set(machine, this.mono() + LAUNCHER_RETRY_MS);
+      this.log?.(
+        `${machine}: couldn't update its launcher (${e instanceof Error ? e.message : e}); trying again in ten minutes, or run tools/host/update-machine.sh ${machine.replace(/^inc-/, "")}`,
+      );
+      return "failed";
+    } finally {
+      this.launcherBusy.delete(machine);
+    }
+  }
+
   /** How many entries the long-lived maps hold, for GET /api/storage and the leak test. */
   footprint(): Record<string, number> {
     return {
@@ -940,9 +1070,10 @@ export class AppleMachines implements MachineProvider {
       codex: found.has("codex"),
       github: found.has("github"),
     };
-    // A launcher from before agent notes: said once in the log, and shown in Setup (reaper.ts).
+    // A launcher from before agent notes: said once in the log, and shown in Setup (reaper.ts). The
+    // daemon updates it from the release, in the background (this probe is Setup's, not a launch's).
     if (found.has("agentnotes") || found.has("noagentnotes")) {
-      noteLauncher(machine, found.has("agentnotes"), this.log);
+      if (noteLauncher(machine, found.has("agentnotes"), this.log)) void this.updateLauncher(machine);
     }
     this.signedInCache.set(machine, result);
     return result;
