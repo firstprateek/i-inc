@@ -291,7 +291,10 @@ export class IncTicket extends Loader<Data> {
               <button type="button" class="btn ghost" ?disabled=${this.busy} @click=${() => this.act(() => api.answer(id, "reject"))}>Decline</button>
             </div></div>`;
         case "stuck":
-          return html`<div class="ask"><b>Stuck</b><p>${ask.reason}</p></div>`;
+          return html`<div class="ask"><b>Stuck</b><p>${ask.reason}</p>
+            <div class="actions">
+              <button type="button" class="btn" ?disabled=${this.busy} @click=${() => this.act(() => api.answer(id, "continue"))}>Keep going</button>
+            </div></div>`;
         case "protected-paths":
           return html`<div class="ask"><b>This change touches protected paths</b>
             <ul>${ask.paths.map((p) => html`<li><code>${p}</code></li>`)}</ul>

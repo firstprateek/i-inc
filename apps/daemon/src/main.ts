@@ -104,6 +104,9 @@ const app = demo
       ...(real as NonNullable<typeof real>),
     });
 
+// SQLite's quick integrity check. A failure is logged and pushed to the owner, and the daemon serves on.
+await app.storage.checkIntegrity();
+
 if (!demo) {
   if (!appConfig) log("no GitHub App yet (docs/github-app.md): tickets get no branch or PR");
   if (app.deps.registry.projects().length === 0) {
@@ -150,6 +153,13 @@ if (real) {
     .then(() => real.sweepAgents())
     .then((n) => n && log(`stopped ${n} agent(s) an earlier daemon left running`))
     .catch((err) => log(`sweeping for leftover agents failed: ${err}`));
+}
+// Machines an earlier daemon left running are recorded, so the idle sweep in the first tick can stop them.
+if (!demo) {
+  await app.daemon
+    .adoptRunning()
+    .then((ids) => ids.length && log(`machines already running: ${ids.join(", ")}`))
+    .catch((err) => log(`couldn't list the running machines: ${err}`));
 }
 // A first tick that fails is logged (tick() never rejects) and the daemon serves anyway; the next tick
 // tries again. Nothing in the database may keep it from coming up.

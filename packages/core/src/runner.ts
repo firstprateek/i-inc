@@ -154,7 +154,7 @@ export async function decide(p: Ports, ticketId: Id, decision: Decision, note?: 
 export async function answer(
   p: Ports,
   ticketId: Id,
-  answer: "approve" | "reject" | "builder" | "reviewer",
+  answer: "approve" | "reject" | "builder" | "reviewer" | "continue",
   note?: string,
 ): Promise<void> {
   const event: TicketEvent =
@@ -291,8 +291,11 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
       return;
     }
     const result = await c.p.harness.runChecks(c.ticket);
-    await c.emit({ type: "checks-ran", at: c.p.clock.now(), green: result.green, failures: result.failures });
-    if (result.green) await c.emit(finished(c, "checks"));
+    // One append, so a stop between the result and the stage's end can't leave a green run unrecorded as done.
+    await c.emit(
+      { type: "checks-ran", at: c.p.clock.now(), green: result.green, failures: result.failures },
+      ...(result.green ? [finished(c, "checks")] : []),
+    );
   },
 
   async prove(c) {
@@ -327,8 +330,10 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
       await c.emit(failed(c, "prove", `the verifier's proof could not be read${quoteOf(out)}`));
       return;
     }
-    await c.emit({ type: "proof", at: c.p.clock.now(), items });
-    if (items.every((i) => i.pass)) await c.emit(finished(c, "prove"));
+    await c.emit(
+      { type: "proof", at: c.p.clock.now(), items },
+      ...(items.every((i) => i.pass) ? [finished(c, "prove")] : []),
+    );
   },
 
   async review(c) {
@@ -344,7 +349,11 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
           "The owner sided with the reviewer. Fix the findings.",
         );
         if (out === null) return;
-        await c.emit({ type: "addressed", at: c.p.clock.now(), round: r.round, disputed: null });
+        await c.emit(
+          { type: "addressed", at: c.p.clock.now(), round: r.round, disputed: null },
+          finished(c, "review", `settled by the owner: ${c.s.lastAnswer.answer}`),
+        );
+        return;
       }
       await c.emit(finished(c, "review", `settled by the owner: ${c.s.lastAnswer.answer}`));
       return;
@@ -387,15 +396,17 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
         await c.emit(failed(c, "review", `the review could not be read${quoteOf(out)}`));
         return;
       }
-      await c.emit({
-        type: "review-verdict",
-        at: c.p.clock.now(),
-        reviewerId: reviewer.id,
-        round: r.round + 1,
-        approved: verdict.approved,
-        findings: verdict.findings,
-      });
-      if (verdict.approved) await c.emit(finished(c, "review"));
+      await c.emit(
+        {
+          type: "review-verdict",
+          at: c.p.clock.now(),
+          reviewerId: reviewer.id,
+          round: r.round + 1,
+          approved: verdict.approved,
+          findings: verdict.findings,
+        },
+        ...(verdict.approved ? [finished(c, "review")] : []),
+      );
       return;
     }
 
@@ -647,7 +658,14 @@ async function directGates(c: Step): Promise<void> {
   }
   let sha = c.s.pushed && !red ? c.s.pushed : undefined;
   if (!sha) {
-    const g = await c.p.harness.runGates(c.ticket, { ownerApproved: answer === "approve" });
+    const g = await c.p.harness.runGates(c.ticket, {
+      // The OK that just came covers the paths on the card it answered, and only those (gates-ran or a
+      // new card clears it, so it never reaches a later run).
+      ownerApproved: answer === "approve",
+      approvedPaths: c.s.approvedPaths,
+      ...(c.s.pushIntended ? { pushIntended: c.s.pushIntended } : {}),
+      onPushIntended: (headSha) => c.emit({ type: "push-intended", at: c.p.clock.now(), headSha }),
+    });
     if (!g.ok && g.protectedPaths?.length) {
       await c.emit(needsYou(c, "gates", { kind: "protected-paths", paths: g.protectedPaths }));
       return;
@@ -670,7 +688,8 @@ async function directGates(c: Step): Promise<void> {
       await c.emit({ type: "main-red", at: now, sha, reason: ci.reason });
       return;
     }
-    await c.emit({ type: "ci-green", at: now, sha });
+    await c.emit({ type: "ci-green", at: now, sha }, finished(c, "gates"));
+    return;
   }
   await c.emit(finished(c, "gates"));
 }
@@ -792,8 +811,11 @@ async function session(
     const pr = await openWorkspace(c, employee, stage);
     if (!pr) return null;
     await c.emit(...pr);
-  } else if (isAssignee && c.s.pr && c.s.prFor === employee.id && !(await copyAttachments(c, employee))) {
-    return null;
+  } else if (isAssignee && c.s.pr && c.s.prFor === employee.id) {
+    const worktree = await reopenIfGone(c, employee, stage);
+    if (worktree === "failed") return null;
+    // (A reopened worktree has every image already.)
+    if (worktree === "there" && !(await copyAttachments(c, employee))) return null;
   } else if (helperDuty && !isAssignee && c.p.workspace && c.s.pr) {
     // A reviewer or verifier may be on another team's machine: it gets the branch and the images too.
     const why = await readyHelper(c, employee);
@@ -986,6 +1008,37 @@ async function openWorkspace(c: Step, employee: Employee, stage: StageId): Promi
     await c.emit(failed(c, stage, `couldn't open the branch and draft PR: ${errorText(err)}`));
     return null;
   }
+}
+
+/** A builder who has been away this long may have lost their worktree to cleanup. */
+const awayMs = 60 * 60_000;
+
+/**
+ * Before a builder's session after a gap, looks for the ticket's worktree and makes it again if it is
+ * gone (storage cleanup removes the worktrees of old tickets, and a retried ticket would otherwise
+ * build in an empty folder that is not a git repo). `open` is safe to repeat. "failed": it couldn't,
+ * and the ticket with it; a passing hiccup is thrown.
+ */
+async function reopenIfGone(
+  c: Step,
+  employee: Employee,
+  stage: StageId,
+): Promise<"there" | "reopened" | "failed"> {
+  const workspace = c.p.workspace;
+  const last = c.s.lastSessionAt[employee.id];
+  if (!workspace?.present || last === undefined || c.p.clock.now() - last < awayMs) return "there";
+  let there = true;
+  try {
+    there = await workspace.present(c.ticket, employee);
+  } catch (err) {
+    // The look is advisory: only a hiccup worth another tick stops the session.
+    if (isPassing(err)) throw err;
+  }
+  if (there) return "there";
+  const pr = await openWorkspace(c, employee, stage);
+  if (!pr) return "failed";
+  await c.emit(...pr);
+  return "reopened";
 }
 
 /**

@@ -4,7 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Ticket } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
-import { MachineHarness, type RunScript } from "../src/harness.ts";
+import {
+  changedScript,
+  isProtected,
+  MachineHarness,
+  pushMainScript,
+  type RunScript,
+  rebaseScript,
+} from "../src/harness.ts";
 
 // The scripts run in real bash with real git, standing in for `container machine run -i … bash -s`.
 const env = {
@@ -281,5 +288,112 @@ describe("the machine harness in direct mode", () => {
     await direct(work).revert(ticket, sha);
     expect(git(origin, "log", "-1", "--format=%s", "main").trim()).toBe('Revert "ours"');
     expect(git(origin, "show", "main:file").trim()).toBe("base");
+  });
+
+  it("2.3 tells the runner which commit it is about to push, before it pushes, and takes a landed push as pushed on replay", async () => {
+    const { work, origin } = directRepos();
+    const before = git(origin, "rev-parse", "main").trim();
+    const intended: string[] = [];
+    const first = await direct(work).runGates(ticket, {
+      // Called before the push: main has not moved yet.
+      onPushIntended: async (sha) => {
+        intended.push(sha);
+        expect(git(origin, "rev-parse", "main").trim()).toBe(before);
+      },
+    });
+    const head = git(work, "rev-parse", "HEAD").trim();
+    expect(first).toEqual({ ok: true, pushed: head });
+    expect(intended).toEqual([head]);
+
+    // The daemon stopped before it wrote `pushed`. Run again: without the note it is "no changes"...
+    const lost = await direct(work).runGates(ticket);
+    expect(lost).toMatchObject({ ok: false, reason: expect.stringContaining("no changes") });
+    // ...and with it, the commit is on main, so the ticket carries on to CI and the report.
+    expect(await direct(work).runGates(ticket, { pushIntended: head })).toEqual({ ok: true, pushed: head });
+  });
+
+  it("2.3 does not take a commit that never reached main for pushed", async () => {
+    const { work } = directRepos();
+    const unpushed = git(work, "rev-parse", "HEAD").trim();
+    const result = await direct(work).runGates(ticket, { pushIntended: unpushed });
+    // It is pushed by this run, as for any ticket.
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.pushed).toBe(git(work, "rev-parse", "HEAD").trim());
+    expect(result.ok && result.pushed).not.toBe(unpushed);
+  });
+
+  it("6.1 lets through only the protected paths the owner OKed, and asks about a new one", async () => {
+    const { work } = directRepos(".github/workflows/ci.yml");
+    execFileSync("mkdir", ["-p", join(work, "docs")]);
+    writeFileSync(join(work, "docs/x"), "x\n");
+    git(work, "add", "-A");
+    git(work, "commit", "-q", "-m", "docs");
+    const both = new MachineHarness(
+      {
+        recipe: () => ["true"],
+        worktree: () => work,
+        github: async () => ({}),
+        policy: () => ({ ...policy, protectedPaths: [".github/", "docs/x"] }),
+      },
+      localScript,
+    );
+    // The OK was for docs/x only: the workflow change is held, and only it is named.
+    const held = await both.runGates(ticket, { ownerApproved: false, approvedPaths: ["docs/x"] });
+    expect(held).toMatchObject({ ok: false, protectedPaths: [".github/workflows/ci.yml"] });
+    expect(
+      await both.runGates(ticket, { approvedPaths: ["docs/x", ".github/workflows/ci.yml"] }),
+    ).toMatchObject({
+      ok: true,
+    });
+  });
+
+  it("6.5 works on a default branch with a slash in its name", async () => {
+    const root = mkdtempSync(join(tmpdir(), "inc-harness-"));
+    const origin = join(root, "origin");
+    const work = join(root, "work");
+    git(root, "init", "-q", "-b", "release/1.0", origin);
+    writeFileSync(join(origin, "file"), "base\n");
+    git(origin, "add", "file");
+    git(origin, "commit", "-q", "-m", "base");
+    git(origin, "config", "receive.denyCurrentBranch", "updateInstead");
+    git(root, "clone", "-q", origin, work);
+    git(work, "switch", "-q", "-c", "inc/t7-x");
+    writeFileSync(join(work, "other"), "ours\n");
+    git(work, "add", "other");
+    git(work, "commit", "-q", "-m", "ours");
+    const h = new MachineHarness(
+      {
+        recipe: () => ["true"],
+        worktree: () => work,
+        github: async () => ({}),
+        policy: () => policy,
+        defaultBranch: () => "release/1.0",
+      },
+      localScript,
+    );
+    const result = await h.runGates(ticket);
+    const head = git(work, "rev-parse", "HEAD").trim();
+    expect(result).toEqual({ ok: true, pushed: head });
+    expect(git(origin, "rev-parse", "release/1.0").trim()).toBe(head);
+    expect(() => rebaseScript("/w", "release/1.0")).not.toThrow();
+    expect(() => changedScript("/w", "release/1.0")).not.toThrow();
+    expect(() => pushMainScript("/w", "release/1.0")).not.toThrow();
+    // Still refused: anything git or a shell would read as something else.
+    for (const bad of ["a b", "x;rm", "-x", "a..b", "$(x)", "", "a'b"]) {
+      expect(() => rebaseScript("/w", bad)).toThrow("not a branch name");
+    }
+  });
+});
+
+describe("protected paths match the exact path and everything under it", () => {
+  it("6.4 treats an entry with or without a trailing slash alike", () => {
+    expect(isProtected(".github/workflows/ci.yml", [".github/workflows"])).toBe(true);
+    expect(isProtected(".github/workflows/ci.yml", [".github/workflows/"])).toBe(true);
+    expect(isProtected(".github/workflows", [".github/workflows"])).toBe(true);
+    expect(isProtected("package.json", ["package.json"])).toBe(true);
+    // A longer name with the same start is not under it.
+    expect(isProtected(".github/workflows-old/x", [".github/workflows"])).toBe(false);
+    expect(isProtected("package.json.bak", ["package.json"])).toBe(false);
+    expect(isProtected("src/a.ts", [""])).toBe(false);
   });
 });

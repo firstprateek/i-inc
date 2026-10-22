@@ -328,6 +328,9 @@ export class SessionHost implements AgentBackend {
     if (!live)
       return { kind: "error", errorType: "no_session", message: "This conversation's session is gone." };
     live.lastActive = this.now();
+    // A full disk loses what the agent just did: a new turn waits for room (one already running goes on).
+    const lowDisk = this.app?.storage.lowDisk?.();
+    if (lowDisk) return { kind: "error", errorType: "disk_low", message: `Not started: ${lowDisk}.` };
     try {
       await this.ensureRunning(live, run);
     } catch (e) {

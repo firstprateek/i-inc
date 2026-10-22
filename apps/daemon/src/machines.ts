@@ -353,6 +353,8 @@ export class AppleMachines implements MachineProvider {
   private readonly faults = new Map<string, SandboxFault>();
   private readonly attempts = new Map<string, number>();
   private readonly lastLogged = new Map<string, string>();
+  /** The tail of each machine's queue: boots and stops of one machine run one at a time (`locked`). */
+  private readonly locks = new Map<string, Promise<unknown>>();
 
   private readonly exec: Exec;
 
@@ -373,15 +375,43 @@ export class AppleMachines implements MachineProvider {
       });
   }
 
+  /**
+   * Runs `fn` after everything already queued for this machine, and holds the machine until it ends. Two
+   * employees of one team starting together boot it once (the second finds it up), and a stop never
+   * lands in the middle of a boot or under a boot that follows it. `fn` must not call `locked` for the
+   * same machine again (it would wait for itself): `bootWithRecovery`, `secure` and the recovery's
+   * `machine stop` are for callers that already hold it.
+   */
+  private async locked<T>(name: string, fn: () => Promise<T>): Promise<T> {
+    const before = this.locks.get(name) ?? Promise.resolve();
+    const run = before.then(fn);
+    const tail = run.then(
+      () => {},
+      () => {},
+    );
+    this.locks.set(name, tail);
+    try {
+      return await run;
+    } finally {
+      if (this.locks.get(name) === tail) this.locks.delete(name);
+    }
+  }
+
   async ensureUp(employeeId: Id): Promise<void> {
     assertWalls(this.s);
     const name = machineOf(this.s, employeeId);
     this.preflight(name);
+    await this.locked(name, () => this.bringUp(name, employeeId));
+  }
+
+  /** `ensureUp` once it holds the machine's lock: the machine may be up already by now. */
+  private async bringUp(name: string, employeeId: Id): Promise<void> {
     const working = this.up.get(name);
     if (working) {
       // Already up: its address and its lack of root are checked again, since it may have been restarted.
       await this.secure(name, false);
-      working.add(employeeId);
+      // The set may have been replaced by a failed check meanwhile; add to what is there.
+      this.claim(name, employeeId);
       return;
     }
     const currentTime = this.now();
@@ -413,7 +443,40 @@ export class AppleMachines implements MachineProvider {
     }
     // Before anything is run in it: a home machine loses its user's root, and the walls must have its address.
     await this.secure(name, true);
-    this.up.set(name, new Set([employeeId]));
+    this.claim(name, employeeId);
+  }
+
+  /**
+   * At startup, `up` is empty although the machines an earlier daemon started may still be running, and
+   * `stop` is a no-op for what it doesn't know. This records, for each of these employees, whether their
+   * machine is running now, so the daemon's idle sweep can stop it. Returns those employees.
+   */
+  async adopt(employeeIds: Id[]): Promise<Id[]> {
+    const running = new Set(
+      parseMachineListing(await this.exec(this.s.bin, ["machine", "ls"]))
+        .filter((r) => r.state === "running")
+        .map((r) => r.name),
+    );
+    const adopted: Id[] = [];
+    for (const id of employeeIds) {
+      let name: string;
+      try {
+        name = machineOf(this.s, id);
+      } catch {
+        continue;
+      }
+      if (!running.has(name)) continue;
+      await this.locked(name, async () => this.claim(name, id));
+      adopted.push(id);
+    }
+    return adopted;
+  }
+
+  /** Records that an employee works in a machine, next to whoever already does. */
+  private claim(name: string, employeeId: Id): void {
+    const working = this.up.get(name) ?? new Set<Id>();
+    working.add(employeeId);
+    this.up.set(name, working);
   }
 
   /**
@@ -517,18 +580,21 @@ export class AppleMachines implements MachineProvider {
       this.log?.(
         `[sandbox:${name}] the walls don't hold it (its address is let out, or it has root), so it is stopped`,
       );
-      this.up.delete(name);
-      try {
-        await this.exec(this.s.bin, ["machine", "stop", name]);
-      } catch (err) {
-        this.log?.(`[sandbox:${name}] couldn't stop it: ${err}`);
-      }
+      await this.locked(name, async () => {
+        this.up.delete(name);
+        try {
+          await this.exec(this.s.bin, ["machine", "stop", name]);
+        } catch (err) {
+          this.log?.(`[sandbox:${name}] couldn't stop it: ${err}`);
+        }
+      });
     }
     return stop;
   }
 
   /**
-   * Boots a machine with safe recovery and exponential backoff on failure (T50).
+   * Boots a machine with safe recovery and exponential backoff on failure (T50). The caller holds the
+   * machine's lock (`locked`): the recovery's `machine stop` must not kill a boot another call just made.
    */
   private async bootWithRecovery(name: string): Promise<void> {
     try {
@@ -625,8 +691,10 @@ export class AppleMachines implements MachineProvider {
     try {
       // A home machine is booted only if the walls are ready for it, and is secured like any other boot.
       this.preflight(machine);
-      await this.bootWithRecovery(machine);
-      await this.secure(machine, true);
+      await this.locked(machine, async () => {
+        await this.bootWithRecovery(machine);
+        await this.secure(machine, true);
+      });
     } catch {
       // faults will be updated if it fails
     }
@@ -656,10 +724,14 @@ export class AppleMachines implements MachineProvider {
   /** Done with the machine for now; it stops once nobody else is working in it. */
   async stop(employeeId: Id): Promise<void> {
     const name = machineOf(this.s, employeeId);
-    const working = this.up.get(name);
-    if (!working?.delete(employeeId) || working.size > 0) return;
-    this.up.delete(name);
-    await this.exec(this.s.bin, ["machine", "stop", name]);
+    // After any boot of this machine that is under way: the employee who asked for that boot is in the
+    // set by then, so the machine isn't stopped under them.
+    await this.locked(name, async () => {
+      const working = this.up.get(name);
+      if (!working?.delete(employeeId) || working.size > 0) return;
+      this.up.delete(name);
+      await this.exec(this.s.bin, ["machine", "stop", name]);
+    });
   }
 
   /**
@@ -674,8 +746,12 @@ export class AppleMachines implements MachineProvider {
       .map((line) => line.trim().split(/\s+/))
       .filter((cols) => cols[0]?.startsWith("inc-") && cols.includes("running"))
       .map((cols) => cols[0] as string);
-    for (const name of names) await this.exec(this.s.bin, ["machine", "stop", name]);
-    this.up.clear();
+    for (const name of names) {
+      await this.locked(name, async () => {
+        this.up.delete(name);
+        await this.exec(this.s.bin, ["machine", "stop", name]);
+      });
+    }
     return names;
   }
 

@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import type { Engine, Id, SessionRequest } from "@i-inc/core";
+import { type Engine, type Id, type SessionRequest, ShuttingDown } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
 import {
   AcpAgent,
@@ -724,6 +724,55 @@ describe("an ACP session", () => {
   });
 });
 
+describe("6.3 what the agent says goes into logs and reasons redacted and cut", () => {
+  const secret = `ghp_${"A1b2C3d4".repeat(5)}`;
+
+  it("redacts and caps an error from the agent in the stuck reason", async () => {
+    const noisy = `boom ${secret} ${"x".repeat(5000)} sk-live-1234567890abcdef tail`;
+    const s = server(
+      claudeLike((reply, id) => setTimeout(() => reply({ id, error: { code: -32603, message: noisy } }), 5)),
+    );
+    const out = await agent(s).run(request());
+    expect(out.kind).toBe("stuck");
+    const reason = out.kind === "stuck" ? out.reason : "";
+    expect(reason).toContain("boom [redacted]");
+    expect(reason).not.toContain(secret);
+    expect(reason.length).toBeLessThanOrEqual(500);
+  });
+
+  it("redacts a token that straddles the cut", async () => {
+    const message = `${"y ".repeat(246)}${secret}`; // the token starts just before character 500
+    const s = server(
+      claudeLike((reply, id) => setTimeout(() => reply({ id, error: { code: -32603, message } }), 5)),
+    );
+    const out = await agent(s).run(request());
+    const reason = out.kind === "stuck" ? out.reason : "";
+    expect(reason).not.toMatch(/ghp_|A1b2C3d4/);
+  });
+
+  it("redacts and cuts the stderr lines it logs", async () => {
+    const logged: string[] = [];
+    const s = server(
+      claudeLike((reply, id) => {
+        (s.proc.stderr as unknown as PassThrough).write(`error: token ${secret} ${"z".repeat(1000)}\n`);
+        setTimeout(() => reply({ id, result: { stopReason: "end_turn" } }), 20);
+      }),
+    );
+    const a = new AcpAgent({
+      launch: () => s.proc,
+      credentials: () => ({}),
+      cwdFor: (id) => `/home/employee/work/inc-${id}`,
+      now: () => 1_000,
+      log: (m) => logged.push(m),
+    });
+    await a.run(request());
+    const line = logged.find((l) => l.startsWith("acp stderr:")) ?? "";
+    expect(line).toContain("[redacted]");
+    expect(line).not.toContain(secret);
+    expect(line.length).toBeLessThanOrEqual("acp stderr: ".length + 300);
+  });
+});
+
 describe("a ticket's agent and the daemon's end", () => {
   it("looks for an agent an earlier daemon left in the ticket's folder before it starts one, and ends its sessions when the daemon stops", async () => {
     const order: string[] = [];
@@ -755,13 +804,10 @@ describe("a ticket's agent and the daemon's end", () => {
     expect(s.proc.stdin.writableEnded).toBe(true);
     // (the sandboxes are swept for what ignored this by the caller, once, by machine)
     expect(order).toEqual(["reap ada /home/employee/work/inc-42", "launch"]);
-    // the session that was running ends as stuck, not hung, and nothing new starts
-    expect(await running).toMatchObject({ kind: "stuck" });
-    expect(await a.run(request())).toEqual({
-      kind: "stuck",
-      reason: "the daemon is stopping",
-      startup: true,
-    });
+    // the session that was running ends as ShuttingDown (not stuck, so nothing is written to the
+    // ticket), and nothing new starts
+    await expect(running).rejects.toBeInstanceOf(ShuttingDown);
+    await expect(a.run(request())).rejects.toBeInstanceOf(ShuttingDown);
     expect(order).toHaveLength(2);
   });
 });

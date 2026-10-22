@@ -82,6 +82,13 @@ export interface TicketState {
   prFor: Id | null;
   /** Direct mode: the last commit this ticket pushed to main. */
   pushed: string | null;
+  /** Direct mode: the commit about to be pushed to main, written first; cleared once `pushed` lands. */
+  pushIntended: string | null;
+  /**
+   * Protected paths the owner has OKed, from the cards they answered. An OK covers the paths that card
+   * showed and no others: a path that is protected and not in here is asked about again.
+   */
+  approvedPaths: string[];
   /** Direct mode: CI went red on a commit this ticket pushed, since when. */
   mainRed: { sha: string; since: number; reason: string } | null;
   /** Time spent running, leaving out time paused, failed or waiting on the owner. */
@@ -136,6 +143,8 @@ export function emptyState(): TicketState {
     workedMs: 0,
     lastAt: null,
     pushed: null,
+    pushIntended: null,
+    approvedPaths: [],
     mainRed: null,
   };
 }
@@ -237,23 +246,45 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
         },
       };
     case "gates-ran":
-      return { ...s, fixDue: e.conflict, gateConflicts: e.conflict ? s.gateConflicts + 1 : s.gateConflicts };
-    case "needs-you":
-      return { ...s, status: "needs-you", interrupted: false, needsYou: e.ask, lastAnswer: null };
-    case "owner-answered":
+      // The owner's answer was for the run it came before: it never carries over to the next one.
       return {
         ...s,
-        status: "running",
-        needsYou: null,
-        lastAnswer: e.note === undefined ? { answer: e.answer } : { answer: e.answer, note: e.note },
+        fixDue: e.conflict,
+        gateConflicts: e.conflict ? s.gateConflicts + 1 : s.gateConflicts,
+        lastAnswer: null,
       };
+    case "needs-you":
+      return { ...s, status: "needs-you", interrupted: false, needsYou: e.ask, lastAnswer: null };
+    case "owner-answered": {
+      const answered = e.note === undefined ? { answer: e.answer } : { answer: e.answer, note: e.note };
+      const next: TicketState = { ...s, status: "running", needsYou: null, lastAnswer: answered };
+      if (s.needsYou?.kind === "protected-paths" && e.answer === "approve") {
+        const paths = s.needsYou.paths;
+        next.approvedPaths = [...s.approvedPaths, ...paths.filter((p) => !s.approvedPaths.includes(p))];
+      }
+      if (s.needsYou?.kind === "stuck") {
+        // Whatever answers a stuck card, the stage starts again with its counters at zero, or it would
+        // come straight back to the same card. The answer isn't a verdict on anything, so no stage reads
+        // it as one (a decline is the exception: it still fails the ticket where a stage reads it).
+        return {
+          ...next,
+          checkFailures: 0,
+          proofFailures: 0,
+          gateConflicts: 0,
+          lastAnswer: e.answer === "reject" ? answered : null,
+        };
+      }
+      return next;
+    }
     case "proposals-sorted":
       return { ...s, interrupted: false, proposals: { auto: e.auto, ask: e.ask, off: e.off } };
     case "proposals-decided":
     case "policy-decided":
       return s;
+    case "push-intended":
+      return { ...s, pushIntended: e.headSha };
     case "pushed":
-      return { ...s, pushed: e.sha };
+      return { ...s, pushed: e.sha, pushIntended: null };
     case "main-red":
       return {
         ...s,
@@ -268,8 +299,19 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
       return s;
     case "retried":
       // The owner trying again also forgets which helpers couldn't start: they may be fixed by now.
+      // Trying again also starts the failure counters over, or a ticket that failed on its checks, proof or
+      // rebase would be failed again at once, with no new session.
       return s.status === "failed"
-        ? { ...s, status: "running", failure: null, unavailable: {}, interrupted: s.active !== null }
+        ? {
+            ...s,
+            status: "running",
+            failure: null,
+            unavailable: {},
+            interrupted: s.active !== null,
+            checkFailures: 0,
+            proofFailures: 0,
+            gateConflicts: 0,
+          }
         : s;
     case "pr-opened":
       return { ...s, pr: e.pr, prFor: e.employeeId ?? null };

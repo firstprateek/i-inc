@@ -685,6 +685,10 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
     expect(isValidBranch("feat*")).toBe(false);
     expect(isValidBranch("feat\\slash")).toBe(false);
     expect(isValidBranch("a".repeat(101))).toBe(false);
+    // What the sandbox scripts would not take (workspace.ts, isSafeRefName) is refused here too.
+    expect(isValidBranch("feat$x")).toBe(false);
+    expect(isValidBranch("a;b")).toBe(false);
+    expect(isValidBranch("a'b")).toBe(false);
   });
 
   it("ensures UpstreamGitHubError detail property is non-enumerable", () => {

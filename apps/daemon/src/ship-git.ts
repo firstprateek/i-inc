@@ -103,14 +103,13 @@ export interface ShipPort {
   prs: ShipPrs;
 }
 
-const SAFE_BASE = /^[A-Za-z0-9_.-]{1,100}$/;
 /** The remote shipping talks to: GitHub's address of the repo, or (tests) a path. */
 const SAFE_REMOTE = /^(https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\.git|\/[A-Za-z0-9._/-]+)$/;
 
 function check(copy: ShipCopy, remote?: string): void {
   if (!isSafeWorkDir(copy.cwd)) throw new Error(`not a safe folder: ${String(copy.cwd)}`);
   if (!isSafeRefName(copy.branch)) throw new Error(`not a branch name: ${String(copy.branch)}`);
-  if (!SAFE_BASE.test(copy.base)) throw new Error(`not a branch name: ${String(copy.base)}`);
+  if (!isSafeRefName(copy.base)) throw new Error(`not a branch name: ${String(copy.base)}`);
   if (remote !== undefined && !SAFE_REMOTE.test(remote)) throw new Error(`not a remote: ${remote}`);
 }
 

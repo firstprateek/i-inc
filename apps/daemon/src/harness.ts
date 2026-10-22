@@ -2,7 +2,7 @@
 // the builder's machine. Scripts go in on stdin through `container machine run -i … -- bash -s`,
 // because `machine run` re-splits its arguments (M1).
 import { spawn } from "node:child_process";
-import type { ChecksResult, GatesResult, Harness, ProjectPolicy, Ticket } from "@i-inc/core";
+import type { ChecksResult, GatesOptions, GatesResult, Harness, ProjectPolicy, Ticket } from "@i-inc/core";
 import {
   assertRunnable,
   defaultMachineSettings,
@@ -14,6 +14,7 @@ import {
 } from "./machines.ts";
 import { describeMs, guardStdin, stopGroup, trackGroup } from "./proc.ts";
 import { defaultTimeoutsMs, type TimeoutsMs } from "./timeouts.ts";
+import { isSafeRefName } from "./workspace.ts";
 
 /**
  * Runs a script in an employee's machine and resolves with its exit code and output. Variables in
@@ -124,7 +125,7 @@ export interface HarnessSettings {
 
 /** Direct mode: the files this ticket's work changes, against where it left main. */
 export function changedScript(worktree: string, branch = "main"): string {
-  if (!/^[A-Za-z0-9_.-]{1,100}$/.test(branch)) throw new Error(`not a branch name: ${branch}`);
+  if (!isSafeRefName(branch)) throw new Error(`not a branch name: ${branch}`);
   return [
     `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
     `git fetch --quiet origin ${branch} || { echo '@@fail git fetch'; exit 1; }`,
@@ -136,7 +137,7 @@ export function changedScript(worktree: string, branch = "main"): string {
 
 /** Direct mode: pushes the rebased work to main, or says main moved since the rebase. */
 export function pushMainScript(worktree: string, branch = "main"): string {
-  if (!/^[A-Za-z0-9_.-]{1,100}$/.test(branch)) throw new Error(`not a branch name: ${branch}`);
+  if (!isSafeRefName(branch)) throw new Error(`not a branch name: ${branch}`);
   return [
     `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
     `if out=$(git push --quiet origin HEAD:${branch} 2>&1); then`,
@@ -152,7 +153,7 @@ export function pushMainScript(worktree: string, branch = "main"): string {
 /** Direct mode: takes a commit back out of main, from a scratch worktree beside the ticket's. */
 export function revertScript(worktree: string, sha: string, branch = "main"): string {
   if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`not a commit: ${sha}`);
-  if (!/^[A-Za-z0-9_.-]{1,100}$/.test(branch)) throw new Error(`not a branch name: ${branch}`);
+  if (!isSafeRefName(branch)) throw new Error(`not a branch name: ${branch}`);
   return [
     `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
     "tmp=$(mktemp -d)",
@@ -168,9 +169,34 @@ export function revertScript(worktree: string, sha: string, branch = "main"): st
   ].join("\n");
 }
 
-/** Whether a changed file falls under one of a project's protected paths (a prefix or an exact file). */
+/**
+ * Whether a changed file falls under one of a project's protected paths. An entry protects that exact
+ * path and everything under it, with or without a trailing slash: `.github/workflows` and
+ * `.github/workflows/` both hold `.github/workflows/ci.yml`, and neither holds `.github/workflows-old`.
+ */
 export const isProtected = (file: string, paths: string[]) =>
-  paths.some((p) => (p.endsWith("/") ? file.startsWith(p) : file === p));
+  paths.some((p) => {
+    const dir = p.replace(/\/+$/, "");
+    return dir !== "" && (file === dir || file.startsWith(`${dir}/`));
+  });
+
+/** Direct mode: says `@@landed` if the commit is on main already (an ancestor of origin/main), else `@@not-landed`. */
+export function landedScript(worktree: string, sha: string, branch = "main"): string {
+  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`not a commit: ${sha}`);
+  if (!isSafeRefName(branch)) throw new Error(`not a branch name: ${branch}`);
+  return [
+    `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
+    `git fetch --quiet origin ${branch} || { echo '@@fail git fetch'; exit 1; }`,
+    `if git merge-base --is-ancestor ${sha} origin/${branch} 2>/dev/null; then echo @@landed; else echo @@not-landed; fi`,
+  ].join("\n");
+}
+
+/** The worktree's HEAD, for the write-ahead note before a push. */
+export const headScript = (worktree: string): string =>
+  [
+    `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
+    'echo "@@head $(git rev-parse HEAD)"',
+  ].join("\n");
 
 const safeId = /^[A-Za-z0-9_-]{1,64}$/;
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -196,7 +222,7 @@ export function checksScript(worktree: string, recipe: string[], tail: number): 
 
 /** Fetches main and rebases onto it. A conflict aborts the rebase and says so. */
 export function rebaseScript(worktree: string, branch = "main"): string {
-  if (!/^[A-Za-z0-9_.-]{1,100}$/.test(branch)) throw new Error(`not a branch name: ${branch}`);
+  if (!isSafeRefName(branch)) throw new Error(`not a branch name: ${branch}`);
   return [
     `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
     // Uncommitted work would stop the rebase, and isn't a conflict.
@@ -292,9 +318,9 @@ export class MachineHarness implements Harness {
     return readChecks(code, output);
   }
 
-  async runGates(ticket: Ticket, opts: { ownerApproved?: boolean } = {}): Promise<GatesResult> {
+  async runGates(ticket: Ticket, opts: GatesOptions = {}): Promise<GatesResult> {
     const policy = this.s.policy?.(ticket.project);
-    if (policy?.mode === "direct") return this.directGates(ticket, policy, opts.ownerApproved === true);
+    if (policy?.mode === "direct") return this.directGates(ticket, policy, opts);
     const env = (await this.s.github?.(ticket)) ?? {};
     const branch = this.defaultBranch(ticket);
     const rebased = await this.run(ticket.assignee, rebaseScript(this.worktree(ticket), branch), env);
@@ -346,28 +372,40 @@ export class MachineHarness implements Harness {
    * Direct mode's gates (decided 2026-10-17): protected paths wait for the owner; then rebase on
    * main, checks, and a push to main. If main moves in between, rebase and try again, up to 3 times.
    */
-  private async directGates(
-    ticket: Ticket,
-    policy: ProjectPolicy,
-    ownerApproved: boolean,
-  ): Promise<GatesResult> {
+  private async directGates(ticket: Ticket, policy: ProjectPolicy, opts: GatesOptions): Promise<GatesResult> {
+    const ownerApproved = opts.ownerApproved === true;
     const env = (await this.s.github?.(ticket)) ?? {};
     const worktree = this.worktree(ticket);
     const branch = this.defaultBranch(ticket);
     const no = (reason: string): GatesResult => ({ ok: false, conflict: false, reason });
+
+    // A run before this one wrote down the commit it was about to push. If that commit is on main now,
+    // the push landed and only its record was lost (a stop, a crash, a lost reply): carry on from there.
+    const landed = async (): Promise<GatesResult | null> => {
+      if (!opts.pushIntended) return null;
+      const out = await this.run(ticket.assignee, landedScript(worktree, opts.pushIntended, branch), env);
+      return out.output.includes("@@landed") ? { ok: true, pushed: opts.pushIntended } : null;
+    };
+    const earlier = await landed();
+    if (earlier) return earlier;
 
     const changed = await this.run(ticket.assignee, changedScript(worktree, branch), env);
     if (changed.code !== 0) return no(`couldn't read the change: ${changed.output.trim().slice(-300)}`);
     const files = [...changed.output.matchAll(/^@@changed64 (\S*)$/gm)].map((m) =>
       Buffer.from(m[1] as string, "base64").toString("utf8"),
     );
-    const touched = files.filter((f) => isProtected(f, policy.protectedPaths));
-    if (touched.length && !ownerApproved) {
+    // The owner's OK covers the paths on the card they answered, and no others. Without a list (an
+    // `ownerApproved` alone) it covers all, as it always did.
+    const approved = new Set(opts.approvedPaths);
+    const held = files
+      .filter((f) => isProtected(f, policy.protectedPaths))
+      .filter((f) => (opts.approvedPaths ? !approved.has(f) : !ownerApproved));
+    if (held.length) {
       return {
         ok: false,
         conflict: false,
-        reason: `it changes protected paths: ${touched.join(", ")}`,
-        protectedPaths: touched,
+        reason: `it changes protected paths: ${held.join(", ")}`,
+        protectedPaths: held,
       };
     }
 
@@ -387,12 +425,22 @@ export class MachineHarness implements Harness {
         // After the owner's OK, the owner may have pushed it already (push-for-owner.sh).
         const main = lines("empty")[0];
         if (ownerApproved && main && /^[0-9a-f]{40}$/.test(main)) return { ok: true, pushed: main };
+        // Or this ticket pushed it already, and the rebase found nothing left to put on main.
+        const pushedBefore = await landed();
+        if (pushedBefore) return pushedBefore;
         return no(`the branch has no changes beyond ${branch}`);
       }
       if (rebased.code !== 0) return no(`couldn't rebase on ${branch}: ${rebased.output.trim().slice(-300)}`);
       const checks = await this.runChecks(ticket);
       if (!checks.green)
         return no(`the checks fail after rebasing on ${branch}: ${checks.failures.join("; ")}`);
+      // Written first, so a stop after the push but before its record can be told from a push that never happened.
+      if (opts.onPushIntended) {
+        const head = /^@@head ([0-9a-f]{40})$/m.exec(
+          (await this.run(ticket.assignee, headScript(worktree), env)).output,
+        )?.[1];
+        if (head) await opts.onPushIntended(head);
+      }
       const pushed = await this.run(ticket.assignee, pushMainScript(worktree, branch), env);
       const sha = /^@@pushed ([0-9a-f]{40})$/m.exec(pushed.output)?.[1];
       if (sha) return { ok: true, pushed: sha };

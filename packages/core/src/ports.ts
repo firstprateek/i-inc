@@ -73,11 +73,28 @@ export class StartupError extends Error {
   }
 }
 
+/**
+ * The daemon is stopping (SIGTERM, a deploy, a kickstart). A session that ends because of it says
+ * nothing about the ticket, so the runner lets it through without an event and the ticket carries
+ * on from its log when the daemon is back.
+ */
+export class ShuttingDown extends Error {
+  constructor() {
+    super("the daemon is stopping");
+    this.name = "ShuttingDown";
+  }
+}
+
 /** Makes sure an employee's machine is up before a session runs on it. */
 export interface MachineProvider {
   ensureUp(employeeId: Id): Promise<void>;
   /** Stops a machine whose employee has nothing running (spec §12: memory returns only on restart). */
   stop?(employeeId: Id): Promise<void>;
+  /**
+   * At startup: of these employees, those whose machine an earlier daemon left running. They are
+   * recorded as up, so `stop` can stop them once nothing uses them (a restart forgets what it started).
+   */
+  adopt?(employeeIds: Id[]): Promise<Id[]>;
   /** Delivers an OAuth callback URL into a team's sandbox (e.g. Antigravity sign-in). */
   deliverCallback?(teamId: Id, url: string): Promise<void>;
   /** Checks sandbox VM state and sign-ins for a team. */
@@ -174,6 +191,23 @@ export type GatesResult =
 
 export type CiResult = { ok: true } | { ok: false; reason: string };
 
+export interface GatesOptions {
+  /**
+   * The owner has just answered a protected-paths card with OK. With no `approvedPaths`, that covers
+   * everything (also what an owner's own push left behind: the branch is empty then).
+   */
+  ownerApproved?: boolean;
+  /** The protected paths the owner has OKed so far. When given, only these are let through. */
+  approvedPaths?: string[];
+  /** Direct mode: the commit a run before this one was about to push; if it is on main already, it was pushed. */
+  pushIntended?: string;
+  /**
+   * Direct mode: called with the commit about to be pushed to main, and awaited before the push. The
+   * runner writes it to the log, so a stop between the push and its `pushed` event can be told from no push.
+   */
+  onPushIntended?: (headSha: string) => Promise<void>;
+}
+
 /** Deterministic work the harness does itself: the project recipe and the final gates. */
 export interface Harness {
   runChecks(ticket: Ticket): Promise<ChecksResult>;
@@ -181,7 +215,7 @@ export interface Harness {
    * The final gates. In direct mode: rebase on main, checks, then push to main, unless the change
    * touches protected paths and the owner hasn't approved it.
    */
-  runGates(ticket: Ticket, opts?: { ownerApproved?: boolean }): Promise<GatesResult>;
+  runGates(ticket: Ticket, opts?: GatesOptions): Promise<GatesResult>;
   /** Direct mode: CI on the commit pushed to main. */
   watchCi?(ticket: Ticket, sha: string): Promise<CiResult>;
   /** Direct mode: takes a commit back out of main, when its CI stayed red too long. */
@@ -200,6 +234,12 @@ export interface Harness {
  */
 export interface Workspace {
   open(ticket: Ticket, builder: Employee): Promise<PullRequestRef>;
+  /**
+   * Whether the ticket's worktree is still in `employee`'s machine, by a cheap look (`git rev-parse`).
+   * Cleanup removes the worktrees of old tickets, and a ticket retried after that must not build in a
+   * bare folder: the runner calls `open` again when this says no.
+   */
+  present?(ticket: Ticket, employee: Employee): Promise<boolean>;
   /** Copies the ticket's images numbered `ns` into the worktree in `employee`'s machine. */
   attach?(ticket: Ticket, employee: Employee, ns: number[]): Promise<void>;
   /**
