@@ -269,7 +269,7 @@ export const api = {
       tag ? { tag } : {},
     ),
   ticket: (id: string) => call<{ ticket: TicketView; events: TicketEvent[] }>("GET", `/api/tickets/${id}`),
-  answer: (id: string, answer: "approve" | "reject" | "builder" | "reviewer", note?: string) =>
+  answer: (id: string, answer: "approve" | "reject" | "builder" | "reviewer" | "continue", note?: string) =>
     call("POST", `/api/tickets/${id}/answer`, note ? { answer, note } : { answer }),
   engines: () => call<{ engines: Engine[] }>("GET", "/api/engines").then((r) => r.engines),
   hire: (e: Partial<Employee> & { teamId?: string }) =>

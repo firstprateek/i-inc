@@ -3010,7 +3010,7 @@ async function readObject(req: Request): Promise<Record<string, unknown> | null>
   }
 }
 
-const answers = ["approve", "reject", "builder", "reviewer"] as const;
+const answers = ["approve", "reject", "builder", "reviewer", "continue"] as const;
 const decisions = ["approve", "changes", "reject"] as const;
 
 /** A decide body whose `decision` is one of the three the owner can make (and whose note, if any, is text). */

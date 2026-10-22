@@ -389,6 +389,18 @@ export class GitHubWorkspace implements Workspace {
     return { number: pr.number, url: pr.url, nodeId: pr.nodeId, branch, ...(note ? { note } : {}) };
   }
 
+  /** Whether the ticket's worktree is in the employee's machine, by `git rev-parse` (a bare folder is not one). */
+  async present(ticket: Ticket, employee: Employee): Promise<boolean> {
+    const worktree = this.o.worktree(ticket.id);
+    const r = await this.o.run(
+      employee.id,
+      `if git -C ${quote(worktree)} rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo @@present; else echo @@missing; fi`,
+    );
+    if (r.code !== 0)
+      throw new Error(`couldn't look for ${employee.name}'s worktree: ${r.output.trim().slice(-200)}`);
+    return r.output.includes("@@present");
+  }
+
   /**
    * Checks the branch out in a reviewer's or verifier's machine. Direct mode keeps the branch in
    * the builder's machine, so there is nothing to fetch: the images alone are copied there.

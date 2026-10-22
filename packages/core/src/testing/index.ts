@@ -19,6 +19,7 @@ import type {
   Company,
   EngineBlock,
   EventStore,
+  GatesOptions,
   GatesResult,
   Harness,
   HelperModel,
@@ -133,6 +134,14 @@ export class FakeWorkspace implements Workspace {
   readonly checkedOut: { ticketId: Id; employeeId: Id }[] = [];
   /** Every open, checkout and attach, in order. */
   readonly calls: string[] = [];
+  /** Whose worktrees are gone (cleanup removed them); `open` brings them back. */
+  readonly gone = new Set<Id>();
+  /** Every look for a worktree, by whose machine. */
+  readonly looked: Id[] = [];
+  async present(_ticket: Ticket, employee: Employee): Promise<boolean> {
+    this.looked.push(employee.id);
+    return !this.gone.has(employee.id);
+  }
   failOpen: string | null = null;
   failAttach: string | null = null;
   failCheckout: string | null = null;
@@ -140,6 +149,7 @@ export class FakeWorkspace implements Workspace {
     if (this.failOpen) throw new Error(this.failOpen);
     this.opened.push(ticket.id);
     this.openedFor.push(builder.id);
+    this.gone.delete(builder.id);
     this.calls.push(`open ${builder.id}`);
     return {
       number: Number(ticket.id),
@@ -274,10 +284,18 @@ export class FakeHarness implements Harness {
     return this.checksFor.get(ticket.id)?.shift() ?? this.checks.shift() ?? { green: true, failures: [] };
   }
   /** What each gates run was told: whether the owner approved protected paths. */
-  readonly gateOpts: { ownerApproved?: boolean }[] = [];
-  async runGates(_: Ticket, opts: { ownerApproved?: boolean } = {}): Promise<GatesResult> {
+  readonly gateOpts: GatesOptions[] = [];
+  /** Set to a commit: the next gates run reports it as about to be pushed, then throws `Crash` after the push. */
+  crashAfterPushOf: string | null = null;
+  async runGates(_: Ticket, opts: GatesOptions = {}): Promise<GatesResult> {
     this.gateRuns++;
     this.gateOpts.push(opts);
+    const crash = this.crashAfterPushOf;
+    if (crash) {
+      this.crashAfterPushOf = null;
+      await opts.onPushIntended?.(crash);
+      throw new Crash();
+    }
     return this.gates.shift() ?? { ok: true };
   }
   /** CI results on commits pushed to main, in order; green when the queue is empty. */

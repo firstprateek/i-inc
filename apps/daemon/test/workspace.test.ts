@@ -2,7 +2,7 @@
 // origin, with HOME in a temp folder so it can't touch the real global git config.
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Employee, Ticket } from "@i-inc/core";
@@ -462,5 +462,26 @@ describe("a reviewer's machine", () => {
     expect(() => checkoutScript({ remote: "o", repoDir: "/r", worktree: "/w", branch: "a b" })).toThrow(
       /not a branch name/,
     );
+  });
+});
+
+describe("2.5 looking for a ticket's worktree", () => {
+  it("says whether it is a git worktree, and a bare folder (what cleanup leaves) is not", async () => {
+    const { root, origin } = setup();
+    const work = join(root, "machine-a");
+    expect((await localScript("ada", script(origin, work))).output).toContain("@@pushed");
+    const ws = new GitHubWorkspace({
+      project: () => ({ id: "Duet", repo: "o/duet", checks: ["true"] }),
+      tokens: new FineGrainedToken("ghs_x"),
+      prs: {} as unknown as PullRequests,
+      identity: async () => ({ name: "Ada (i.inc)", email: "1+i-inc-bot[bot]@users.noreply.github.com" }),
+      worktree: () => join(work, "inc-7"),
+      run: localScript,
+    });
+    expect(await ws.present(ticket, ada)).toBe(true);
+    // Cleanup removes the worktree; a later copy of the images makes the folder again, empty.
+    rmSync(join(work, "inc-7"), { recursive: true });
+    mkdirSync(join(work, "inc-7", ".inc"), { recursive: true });
+    expect(await ws.present(ticket, ada)).toBe(false);
   });
 });

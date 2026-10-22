@@ -240,6 +240,8 @@ export function isValidBranch(branch: string): boolean {
     if (code <= 32 || code === 127) return false;
   }
   if (/[~^:?*[]/.test(b)) return false;
+  // Plain characters only: the branch goes into scripts run in a sandbox (harness.ts, isSafeRefName).
+  if (!/^[A-Za-z0-9._/-]+$/.test(b)) return false;
   const parts = b.split("/");
   for (const part of parts) {
     if (!part) return false;

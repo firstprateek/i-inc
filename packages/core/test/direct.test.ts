@@ -88,7 +88,10 @@ describe("direct mode", () => {
     });
     await answer(p, "42", "approve");
     expect((await runTicket(p, refundsTicket({ effort: "low" }))).status).toBe("done");
-    expect(p.harness.gateOpts.at(-1)).toEqual({ ownerApproved: true });
+    expect(p.harness.gateOpts.at(-1)).toMatchObject({
+      ownerApproved: true,
+      approvedPaths: [".github/workflows/ci.yml"],
+    });
   });
 
   it("has the builder fix red CI on main, and reverts the push if main is still red 2 hours on", async () => {

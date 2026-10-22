@@ -47,7 +47,8 @@ export type TicketEvent =
   | {
       type: "owner-answered";
       at: number;
-      answer: "approve" | "reject" | "builder" | "reviewer";
+      /** "continue": keep going on a stuck card (the stage's failure counters start again). */
+      answer: "approve" | "reject" | "builder" | "reviewer" | "continue";
       note?: string;
     }
   | { type: "proposals-sorted"; at: number; auto: Proposal[]; ask: Proposal[]; off: Proposal[] }
@@ -55,6 +56,12 @@ export type TicketEvent =
   /** The branch is ready in `employeeId`'s machine (absent on events from before handoffs did this). */
   | { type: "pr-opened"; at: number; pr: PullRequestRef; employeeId?: Id }
   | { type: "report-ready"; at: number; summary: string }
+  /**
+   * Direct mode, written before the push to main: this commit is about to be pushed. If the daemon
+   * stops between the push and `pushed`, the next run finds `headSha` already on main and carries on
+   * to CI and the report instead of failing the ticket for having "no changes".
+   */
+  | { type: "push-intended"; at: number; headSha: string }
   /** Direct mode: the work reached main as this commit. */
   | { type: "pushed"; at: number; sha: string }
   /** Direct mode: CI failed on a commit this ticket pushed; the builder fixes it, or it's reverted. */
