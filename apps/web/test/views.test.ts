@@ -151,6 +151,26 @@ describe("the inbox", () => {
     });
   });
 
+  it("offers Keep going on a stuck ticket, and sends the continue answer", async () => {
+    serve([
+      view({
+        id: "5",
+        status: "needs-you",
+        needsYou: { kind: "stuck", reason: "3 failed check runs" },
+        title: "Alerts",
+      }),
+    ]);
+    const root = await mount("inc-inbox");
+    expect(root.textContent).toContain("3 failed check runs");
+    [...root.querySelectorAll("button")].find((b) => b.textContent === "Keep going")?.click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).toContainEqual({
+      method: "POST",
+      url: "/api/tickets/5/answer",
+      body: { answer: "continue" },
+    });
+  });
+
   it("puts a proposed handbook policy with the rest, and approves it in one tap", async () => {
     serve([view({})], {
       pages: [],
