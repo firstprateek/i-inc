@@ -153,7 +153,7 @@ describe.skipIf(!hasBun)("AHP on Bun.serve", () => {
     it("leaves other sessions and bearer-token sockets alone", async () => {
       const a = await session();
       const b = await session();
-      const wsA = await open({ cookie: `i_inc=${a}` });
+      await open({ cookie: `i_inc=${a}` });
       const wsB = await open({ cookie: `i_inc=${b}` });
       const wsTok = await open({ authorization: "Bearer tok" });
       const stateB = closing(wsB);
