@@ -14,6 +14,7 @@ const view = (over: Partial<TicketView>): TicketView => ({
   project: "Duet",
   type: "fix",
   effort: "medium",
+  doneWhen: [],
   assignee: { id: "ada", name: "Ada", tint: 0 },
   column: "in-progress",
   status: "running",
@@ -97,7 +98,7 @@ describe("the board", () => {
       { name: "Review", titles: ["CSV import"] },
       { name: "Done", titles: [] },
     ]);
-    expect(root.textContent).toContain("Waiting: Juno starts at 22:00");
+    expect(root.textContent).toContain("Waiting: Juno starts at 10 PM");
     expect(root.querySelectorAll(".strip i.cur")).toHaveLength(1);
   });
 
@@ -109,7 +110,7 @@ describe("the board", () => {
       placeholder: s.querySelector(".empty")?.textContent?.trim() ?? null,
     }));
     expect(placeholders).toEqual([
-      { name: "To do", placeholder: "No tickets waiting. Add one with the form above." },
+      { name: "To do", placeholder: "No tickets waiting. Add one with New ticket." },
       { name: "In progress", placeholder: null },
       { name: "Review", placeholder: "Nothing to review. Finished work waits here for your OK." },
       { name: "Done", placeholder: "Nothing shipped yet. Approved tickets land here." },

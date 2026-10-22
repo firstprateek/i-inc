@@ -74,6 +74,7 @@ export function ticketView(
   }
 
   const pushed = events.some((e) => e.type === "pushed") || Boolean(s.pushed);
+  const { live, resumesAt } = liveInfo(events, registry);
   // Rows the store could not read back stand in the log as placeholders (store.ts).
   const unreadable = events.filter((e) => e.type === "unreadable").length;
 
@@ -83,12 +84,15 @@ export function ticketView(
     project: r.ticket.project,
     type: r.ticket.type,
     effort: r.ticket.effort,
+    doneWhen: r.ticket.doneWhen,
+    ...(r.ticket.reason ? { reason: r.ticket.reason } : {}),
     assignee,
     column: columnOf(s),
     status: s.created ? s.status : "queued",
     held: r.hold,
     stages,
-    live: liveLine(events, registry),
+    live,
+    ...(resumesAt !== undefined ? { resumesAt } : {}),
     needsYou: s.needsYou,
     waiting,
     ...(waiting && waitingUntil ? { waitingUntil } : {}),
@@ -155,16 +159,28 @@ function nameOf(registry: Registry, id: Id): string {
 
 /** The card's live status line, from the latest meaningful event. */
 export function liveLine(events: TicketEvent[], registry: Registry): string {
+  return liveInfo(events, registry).live;
+}
+
+/**
+ * The live line, and when the ticket resumes if that line is about waiting for tokens (epoch ms). The line
+ * never carries a time of day: the web app shows `resumesAt` in the owner's own time zone ("Waiting for tokens
+ * until 2:14 AM"), which the daemon cannot know.
+ */
+export function liveInfo(events: TicketEvent[], registry: Registry): { live: string; resumesAt?: number } {
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i];
     if (!e) continue;
     // An event that can't be described (stored before replies were checked) is passed over.
     try {
       const line = describe(e, registry);
-      if (line !== null) return line;
+      if (line !== null)
+        return e.type === "out-of-tokens" && Number.isFinite(e.resetsAt)
+          ? { live: line, resumesAt: e.resetsAt }
+          : { live: line };
     } catch {}
   }
-  return "Queued";
+  return { live: "Queued" };
 }
 
 function describe(e: TicketEvent, registry: Registry): string | null {
@@ -172,7 +188,7 @@ function describe(e: TicketEvent, registry: Registry): string | null {
     case "checks-ran":
       return e.green ? "Checks green" : `Checks · ${e.failures.length} failing`;
     case "out-of-tokens":
-      return `Out of tokens · resumes ${new Date(e.resetsAt).toISOString().slice(11, 16)} UTC`;
+      return "Waiting for tokens";
     case "engine-switched":
       return `Switched to ${modelOf(registry, e.to)}: ${e.reason}`;
     case "review-verdict":
@@ -240,7 +256,13 @@ export function officeView(
         role: e.role,
         engine,
         state: "reviewing" as const,
-        ticket: { id: reviewed.id, title: reviewed.title, project: reviewed.project, live: reviewed.live },
+        ticket: {
+          id: reviewed.id,
+          title: reviewed.title,
+          project: reviewed.project,
+          live: reviewed.live,
+          ...(reviewed.resumesAt !== undefined ? { resumesAt: reviewed.resumesAt } : {}),
+        },
       };
     }
     const off = e.workingHours && !withinHours(e.workingHours, localHour);
@@ -261,7 +283,13 @@ export function officeView(
     }
     if (off && !current && !reviewing) state = "off";
     const ticket = current
-      ? { id: current.id, title: current.title, project: current.project, live: current.live }
+      ? {
+          id: current.id,
+          title: current.title,
+          project: current.project,
+          live: current.live,
+          ...(current.resumesAt !== undefined ? { resumesAt: current.resumesAt } : {}),
+        }
       : null;
     return { id: e.id, name: e.name, tint: e.tint ?? 0, role: e.role, engine, state, ticket };
   });

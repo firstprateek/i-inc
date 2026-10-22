@@ -72,7 +72,8 @@ describe("the reason a ticket waits, in plain words", () => {
     ["unassigned, and no standing order covers it", undefined, "Waiting: nobody is assigned yet"],
     ["assignee ghost doesn't work here", undefined, "Waiting: ghost doesn't work on this project"],
     ["Ada is busy", undefined, "Waiting: Ada is busy with another ticket"],
-    ["Juno is off until 22:00", undefined, "Waiting: Juno starts at 22:00"],
+    ["Juno is off until 22:00", undefined, "Waiting: Juno starts at 10 PM"],
+    ["Juno is off until 7:00", undefined, "Waiting: Juno starts at 7 AM"],
     ["Ada waits for claude-pro to reset", 1, "Waiting for claude-pro usage to reset at 3:40 PM"],
     ["Ada waits for claude-pro to reset", undefined, "Waiting for claude-pro usage to reset"],
     ["Ada reached its usage cap", 1, "Waiting: Ada's usage resets at 3:40 PM"],
@@ -87,6 +88,18 @@ describe("the reason a ticket waits, in plain words", () => {
   ];
   it.each(table)("%s", (reason, until, line) => {
     expect(waitingLine(reason, until, at)).toBe(line);
+  });
+
+  it("words a reset on another day without 'at Tomorrow'", () => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(2, 14, 0, 0);
+    expect(waitingLine("Ada reached its usage cap", tomorrow.getTime())).toMatch(
+      /^Waiting: Ada's usage resets tomorrow at 2:14\s?AM$/i,
+    );
+    expect(waitingLine("Ada waits for claude-pro to reset", tomorrow.getTime())).toMatch(
+      /^Waiting for claude-pro usage to reset tomorrow at 2:14\s?AM$/i,
+    );
   });
 
   it("offers the owner an assignment only when assigning would help", () => {

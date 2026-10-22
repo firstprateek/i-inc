@@ -53,7 +53,14 @@ export interface OpenedSession {
 export type TurnOutcome =
   | { kind: "complete" }
   | { kind: "cancelled" }
-  | { kind: "error"; errorType: string; message: string; resumable?: boolean };
+  | {
+      kind: "error";
+      errorType: string;
+      message: string;
+      resumable?: boolean;
+      /** When a usage limit resets (epoch ms): sent in the error's `_meta` for the app to word in the owner's time zone. */
+      resetsAt?: number;
+    };
 
 /** One running turn. The backend streams chat actions into it and returns the outcome. */
 export interface TurnRun {

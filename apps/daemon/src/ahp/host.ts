@@ -289,6 +289,9 @@ function carriesAttachment(msg: Json): boolean {
 }
 const isObj = (v: unknown): v is Json => typeof v === "object" && v !== null && !Array.isArray(v);
 
+/** The `_meta` key of a usage-limit error: when it resets (epoch ms). The app words the time in the owner's zone. */
+export const RESETS_AT_META = "iinc.resetsAt";
+
 export class AhpHost {
   readonly store: AhpStore;
   readonly limits: TransportLimits;
@@ -2196,7 +2199,11 @@ export class AhpHost {
         part: {
           kind: ResponsePartKind.Error,
           resumable: outcome.resumable ?? false,
-          error: { errorType: outcome.errorType, message: outcome.message },
+          error: {
+            errorType: outcome.errorType,
+            message: outcome.message,
+            ...(outcome.resetsAt ? { _meta: { [RESETS_AT_META]: outcome.resetsAt } } : {}),
+          },
         },
       });
     }

@@ -8,6 +8,7 @@ import { ResponsePartKind, TurnState } from "../ahp/wire.ts";
 import { MarkdownCache } from "../conversations/markdown.ts";
 import { durationText, usageLine, visible } from "../conversations/model.ts";
 import { cardStyles, markdownStyles } from "../conversations/styles.ts";
+import { atTime } from "../time.ts";
 import "./conv-question.ts";
 import "./conv-tool.ts";
 
@@ -127,6 +128,13 @@ export class IncConvTurn extends LitElement {
     })}</div>`;
   }
 
+  /** A usage limit's reset, worded in the owner's time zone (the host sends the moment, not the words). */
+  private resets(e: { message: string; _meta?: Record<string, unknown> | undefined }): string {
+    const at = e._meta?.["iinc.resetsAt"];
+    if (typeof at !== "number" || !Number.isFinite(at)) return "";
+    return `${/[.!?]$/.test(e.message.trim()) ? "" : "."} It resets ${atTime(at)}.`;
+  }
+
   private renderPart(p: ResponsePart, last: boolean, turn: AnyTurn) {
     switch (p.kind) {
       case ResponsePartKind.Markdown:
@@ -142,7 +150,7 @@ export class IncConvTurn extends LitElement {
       case ResponsePartKind.SystemNotification:
         return html`<p class="sys">${visible(typeof p.content === "string" ? p.content : p.content.markdown, true)}</p>`;
       case ResponsePartKind.Error:
-        return html`<div class="error" role="alert"><p>${visible(p.error.message, true)}</p>
+        return html`<div class="error" role="alert"><p>${visible(p.error.message, true)}${this.resets(p.error)}</p>
           ${!this.active ? html`<div><button class="cbtn" type="button" @click=${() => this.retry(turn.message.text)}>Retry</button></div>` : nothing}</div>`;
       default:
         return nothing;

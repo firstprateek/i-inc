@@ -1,5 +1,6 @@
 import { css, html } from "lit";
 import { type AccountCost, type AccountRateLimit, api, type DeskEntry } from "../api.ts";
+import { withResume } from "../time.ts";
 import { LAYOUT_BREAKPOINTS, layoutStyles } from "./layout.ts";
 import { Loader } from "./loader.ts";
 import { avatar, base, projectBadge, stateLabel } from "./shared.ts";
@@ -209,7 +210,7 @@ export class IncOffice extends Loader<Data> {
       <div class="scene" aria-hidden="true">
         ${e.state === "off" ? "" : avatar(e, 52)}
         <div class="top"></div>
-        <div class="screen ${off ? "off" : ""}">${off ? "" : (e.ticket?.live ?? "")}</div>
+        <div class="screen ${off ? "off" : ""}">${off ? "" : e.ticket ? withResume(e.ticket.live, e.ticket.resumesAt) : ""}</div>
       </div>
       <div class="row"><span class="name">${e.name}</span><span class="grow"></span><span class="chip ${tone}">${label}</span></div>
       <div class="ticket">${e.ticket ? html`#${e.ticket.id} ${e.ticket.title} · ${projectBadge(e.ticket.project)}` : "No ticket right now"}</div>

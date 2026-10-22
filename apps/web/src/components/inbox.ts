@@ -17,6 +17,9 @@ export class IncInbox extends Loader<{
   conversations: Conversation[];
   names: Record<string, string>;
 }> {
+  /** Proposals have been on screen: the component stays after the last is decided, so it can say so and keep focus. */
+  private sawProposals = false;
+
   protected fetch = async () => {
     const conversations = await waitingConversations();
     return {
@@ -72,11 +75,12 @@ export class IncInbox extends Loader<{
     const proposals = this.data.proposals;
     const conversations = this.data.conversations;
     const n = needsYouCount(this.data.tickets, policies, proposals, conversations);
+    if (proposals.length) this.sawProposals = true;
     return html`
       ${this.actionNotice()}
       <p class="summary">${n ? `${n} ${n === 1 ? "thing needs" : "things need"} you` : "Nothing needs you"}</p>
       <div class="list">${conversations.map((c) => this.conversation(c))}${needs.map((t) => this.ask(t))}${unassigned.map((t) => this.unassigned(t))}${policies.map((p) => this.policy(p))}</div>
-      ${proposals.length ? html`<inc-proposals class="proposed" .proposals=${proposals}></inc-proposals>` : ""}
+      ${proposals.length || this.sawProposals ? html`<inc-proposals class="proposed" .proposals=${proposals}></inc-proposals>` : ""}
       ${ready.length ? html`<h2>Ready for you</h2><div class="list">${ready.map((t) => this.ready(t))}</div>` : ""}
       ${!n && !ready.length ? this.allClear() : ""}
     `;

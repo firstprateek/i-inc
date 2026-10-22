@@ -5,6 +5,7 @@
 // one click (a new commit, "reverted by owner").
 import { css, html, nothing } from "lit";
 import { api, type BrainChangesView, type BrainChangeView } from "../api.ts";
+import { friendlyWhen } from "../time.ts";
 import { Loader } from "./loader.ts";
 import { base, selectField } from "./shared.ts";
 
@@ -30,8 +31,7 @@ export function pageName(c: Pick<BrainChangeView, "slug" | "path">): string {
 }
 
 function when(at: number): string {
-  const d = new Date(at);
-  return `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${d.toTimeString().slice(0, 5)}`;
+  return friendlyWhen(at);
 }
 
 export class IncBrainChanges extends Loader<BrainChangesView> {

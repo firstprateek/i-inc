@@ -1,13 +1,12 @@
 // The board (spec §10): To do → In progress → Review → Done, across projects and Home.
 import { css, html } from "lit";
-import { api, type ProposalView, type TicketEvent, type TicketView } from "../api.ts";
-import { waitingLine, waitsForAssignee } from "../assign.ts";
-import { Loader } from "./loader.ts";
-import "./new-ticket.ts";
-import "./proposals.ts";
+import { api, type TicketEvent, type TicketView } from "../api.ts";
+import { liveText, waitingLine, waitsForAssignee } from "../assign.ts";
 import { LAYOUT_BREAKPOINTS, layoutStyles } from "./layout.ts";
-import { protectedOk } from "./protected-card.ts";
+import { Loader } from "./loader.ts";
+import { NEW_TICKET_EVENT } from "./new-ticket.ts";
 import { avatar, base, projectBadge } from "./shared.ts";
+import "./new-ticket.ts";
 
 /** A board ticket. `createdBy` is the agent that filed it, when the daemon says so (owner tickets have none). */
 export type BoardTicket = TicketView & { createdBy?: NonNullable<TicketView["assignee"]> | null };
@@ -24,12 +23,11 @@ export interface DigestRow {
 
 interface BoardData {
   tickets: BoardTicket[];
+  /** The last report of each recently finished ticket, by ticket id; the card in the Done column shows it. */
   digest: DigestRow[];
-  proposals: ProposalView[];
 }
 
-const DIGEST_ROWS = 5;
-const DIGEST_LOOKUPS = 8;
+const DIGEST_LOOKUPS = 12;
 
 /** The ticket's last report, from its event log. Null while it has none. */
 export function digestRow(t: TicketView, events: TicketEvent[]): DigestRow | null {
@@ -68,7 +66,7 @@ export function digestRow(t: TicketView, events: TicketEvent[]): DigestRow | nul
   };
 }
 
-/** The last few finished tickets' reports, newest first. Looks at the most recent few only. */
+/** The reports of the most recently finished tickets, newest first. Looks at the most recent few only. */
 export async function loadDigest(tickets: TicketView[]): Promise<DigestRow[]> {
   const finished = tickets
     .filter((t) => t.column === "done" || t.status === "failed" || t.status === "ready")
@@ -82,10 +80,7 @@ export async function loadDigest(tickets: TicketView[]): Promise<DigestRow[]> {
         .catch(() => null),
     ),
   );
-  return rows
-    .filter((r): r is DigestRow => r !== null)
-    .sort((a, b) => b.at - a.at)
-    .slice(0, DIGEST_ROWS);
+  return rows.filter((r): r is DigestRow => r !== null).sort((a, b) => b.at - a.at);
 }
 
 /** "5 min ago", "3 h ago", "2 d ago". */
@@ -106,48 +101,107 @@ const columns: [TicketView["column"], string, string][] = [
 
 /** An empty column says what to do next, in one sentence. */
 const emptyColumn: Record<string, string> = {
-  todo: "No tickets waiting. Add one with the form above.",
+  todo: "No tickets waiting. Add one with New ticket.",
   "in-progress": "Nothing running. Tickets land here once an employee starts.",
   review: "Nothing to review. Finished work waits here for your OK.",
   done: "Nothing shipped yet. Approved tickets land here.",
 };
 
 export class IncBoard extends Loader<BoardData> {
+  static override properties = {
+    ...Loader.properties,
+    /** The new-ticket dialog is open. */
+    creating: { state: true },
+    /** The form was opened before the board loaded: it is mounted from then on (it is mounted when the board has data anyway). */
+    formMounted: { state: true },
+    /** The ticket just filed from the dialog, until it is dismissed. */
+    filed: { state: true },
+  };
+  declare creating: boolean;
+  declare formMounted: boolean;
+  declare filed: { id: string; title: string } | null;
+
+  constructor() {
+    super();
+    this.creating = false;
+    this.formMounted = false;
+    this.filed = null;
+  }
+
   protected fetch = async () => {
-    const [tickets, proposals]: [BoardTicket[], ProposalView[]] = await Promise.all([
-      api.board(),
-      api.proposals(),
-    ]);
-    return { tickets, proposals, digest: await loadDigest(tickets) };
+    const tickets: BoardTicket[] = await api.board();
+    return { tickets, digest: await loadDigest(tickets) };
+  };
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    // The header's New ticket button.
+    window.addEventListener(NEW_TICKET_EVENT, this.openForm);
+  }
+
+  override disconnectedCallback(): void {
+    window.removeEventListener(NEW_TICKET_EVENT, this.openForm);
+    super.disconnectedCallback();
+  }
+
+  private dialog(): HTMLDialogElement | null {
+    return this.renderRoot?.querySelector<HTMLDialogElement>("dialog.new-ticket") ?? null;
+  }
+
+  private openForm = () => {
+    const d = this.dialog();
+    if (!d || d.open) return;
+    this.filed = null;
+    this.creating = true;
+    this.formMounted = true;
+    if (typeof d.showModal === "function") d.showModal();
+    else d.setAttribute("open", "");
+    // The first field takes focus.
+    void this.updateComplete.then(() => {
+      const form = d.querySelector("inc-new-ticket") as
+        | (HTMLElement & { updateComplete?: Promise<unknown> })
+        | null;
+      void form?.updateComplete?.then(() =>
+        form.shadowRoot?.querySelector<HTMLInputElement>("input[name=title]")?.focus(),
+      );
+    });
+  };
+
+  private closeForm = () => {
+    const d = this.dialog();
+    if (d?.open) {
+      if (typeof d.close === "function") d.close();
+      else d.removeAttribute("open");
+    }
+    this.creating = false;
+  };
+
+  private onFiled = (e: Event) => {
+    this.filed = (e as CustomEvent<{ id: string; title: string }>).detail;
+    this.closeForm();
   };
 
   static override styles = [
     base,
     layoutStyles,
     css`
-      .top { display: flex; flex-direction: column; gap: var(--layout-section-gap, 20px); margin-bottom: var(--layout-section-gap, 20px); }
-      .top h2 { font-size: 18px; }
-      .ok-card { padding: 13px 15px; display: flex; flex-direction: column; gap: 10px; background: var(--needs-surface); border: 2px solid var(--needs-edge); }
-      .ok-card .q { font-size: 16px; font-weight: 700; line-height: 1.3; overflow-wrap: anywhere; }
-      .ok-card .head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; color: var(--ink-2); }
-      .ok-card .actions { display: flex; gap: 8px; }
-      .ok-card .actions .btn:first-child { flex-grow: 1; }
-      .digest { padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; }
-      .digest ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
-      .digest a { display: flex; gap: 8px; align-items: center; min-height: 44px; text-decoration: none; padding: 4px 0; border-top: 1px solid var(--line); font-size: 14px; }
-      .digest li:first-child a { border-top: 0; }
-      .digest .title { flex: 1 1 0; min-width: 0; font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .digest .meta { color: var(--ink-2); font-size: 13px; white-space: nowrap; }
-      .digest .chip { min-width: 62px; justify-content: center; }
       .err { background: var(--needs-bg); color: var(--needs-fg); border: 1px solid var(--alarm); border-radius: 10px; padding: 10px 12px; font-size: 14px; overflow-wrap: anywhere; }
       .by { font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px; color: var(--reviewing-fg); background: var(--reviewing-bg); border-radius: 999px; padding: 2px 9px; }
-      @media (max-width: 520px) {
-        .digest a { display: grid; grid-template-columns: auto 1fr; column-gap: 10px; row-gap: 0; align-items: center; padding: 6px 0; }
-        .digest .chip { grid-row: span 2; align-self: center; }
-        .digest .title { white-space: normal; overflow: visible; }
-        .digest .meta { grid-column: 2; }
-      }
+      .filed { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; padding: 8px 8px 8px 14px; border-radius: 12px;
+        background: var(--working-bg); color: var(--working-fg); font-size: 14px; }
+      .filed a { font-weight: 700; }
+      .filed .btn { flex: none; min-width: 44px; }
       .cols { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; align-items: start; min-width: 0; }
+      /* The report of a finished ticket, on its card in the Done column (and on any card that has one). */
+      .report { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; color: var(--ink-2); }
+      /* The new-ticket form is a dialog: centred on a laptop, a sheet on a phone. */
+      dialog.new-ticket { border: 1px solid var(--line-strong); border-radius: 22px; background: var(--ground); color: var(--ink); padding: 16px 18px 18px;
+        width: min(560px, calc(100vw - 32px)); max-height: min(90dvh, 820px); overflow-y: auto; overscroll-behavior: contain; box-sizing: border-box;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3); }
+      dialog.new-ticket::backdrop { background: rgba(0, 0, 0, 0.45); }
+      @media (max-width: 600px) {
+        dialog.new-ticket { width: 100%; max-width: 100%; margin: auto 0 0; border-radius: 22px 22px 0 0; max-height: 92dvh; padding-bottom: max(18px, env(safe-area-inset-bottom)); }
+      }
       section { background: var(--sunken); border-radius: 22px; padding: 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
       h2 { font-size: 20px; padding: 2px 4px; display: flex; gap: 8px; align-items: center; min-width: 0; }
       h2 span { font-size: 14px; color: var(--ink-2); font-family: var(--body); font-weight: 600; }
@@ -186,50 +240,50 @@ export class IncBoard extends Loader<BoardData> {
     `,
   ];
 
+  /** The header's New ticket button works in every state: while the board loads, and after it failed to. */
   override render() {
+    return html`${this.content()}<dialog class="new-ticket" aria-label="New ticket" @cancel=${() => {
+      this.creating = false;
+    }} @close=${() => {
+      this.creating = false;
+    }} @ticket-filed=${this.onFiled} @ticket-form-close=${this.closeForm}>
+      ${this.formMounted || this.data ? html`<inc-new-ticket modal></inc-new-ticket>` : ""}
+    </dialog>`;
+  }
+
+  private content() {
     if (this.error) return this.failure("the board");
     if (!this.data) return html`<p class="muted">Loading the board…</p>`;
-    const { tickets, digest, proposals } = this.data;
-    const oks = tickets.filter((t) => t.needsYou?.kind === "protected-paths");
-    return html`<div class="top layout-page-band">
+    const { tickets, digest } = this.data;
+    const reports = new Map(digest.map((r) => [r.id, r]));
+    return html`
       ${this.actionError ? html`<div class="err" role="alert">${this.actionError}</div>` : ""}
-      ${oks.map((t) => this.okCard(t))}
-      <inc-new-ticket></inc-new-ticket>
-      <inc-proposals .proposals=${proposals}></inc-proposals>
-      ${digest.length ? this.digestList(digest) : ""}
-    </div>
+      ${
+        this.filed
+          ? html`<div class="filed" role="status"><span>Filed <a href="#/ticket/${this.filed.id}">#${this.filed.id}</a>: ${this.filed.title}</span>
+              <button type="button" class="btn ghost" @click=${() => {
+                this.filed = null;
+              }}>Dismiss</button></div>`
+          : ""
+      }
     <div class="cols">
       ${columns.map(([id, name, dotCls]) => {
         const list = tickets.filter((t) => t.column === id);
         return html`<section aria-label=${name}>
           <h2><span class="col-dot ${dotCls}" aria-hidden="true"></span>${name}<span>${list.length}</span></h2>
-          ${list.length ? list.map((t) => this.card(t)) : html`<div class="empty">${emptyColumn[id]}</div>`}
+          ${list.length ? list.map((t) => this.card(t, id === "done" ? reports.get(t.id) : undefined)) : html`<div class="empty">${emptyColumn[id]}</div>`}
         </section>`;
       })}
     </div>`;
   }
 
-  private okCard(t: BoardTicket) {
-    const a = t.needsYou;
-    if (a?.kind !== "protected-paths") return "";
-    return html`<div class="card ok-card" aria-label="Waiting for your OK">
-      <div class="head"><span class="chip needs">Needs your OK</span>${projectBadge(t.project)}<span>#${t.id}</span>
-        <a href="#/ticket/${t.id}" style="margin-left:auto;padding:12px 0">Open</a></div>
-      ${protectedOk(t, a, (fn) => void this.press(fn))}
-    </div>`;
+  /** How a finished ticket ended: "Merged · pushed · 2 h ago". */
+  private reportLine(r: DigestRow) {
+    return html`<div class="report"><span class="chip ${r.outcome === "Failed" ? "alarm" : r.outcome === "Ready" ? "needs" : r.outcome === "Merged" || r.outcome === "Done" ? "done" : ""}">${r.outcome}</span>
+      <span><span class="note">${r.note}</span> · ${ago(r.at)}</span></div>`;
   }
 
-  private digestList(rows: DigestRow[]) {
-    return html`<div class="card digest"><h2>Recent reports</h2>
-      <ul>${rows.map(
-        (r) => html`<li><a href="#/ticket/${r.id}">
-          <span class="chip ${r.outcome === "Failed" ? "alarm" : r.outcome === "Ready" ? "needs" : r.outcome === "Merged" || r.outcome === "Done" ? "done" : ""}">${r.outcome}</span>
-          <span class="title">${r.title}</span>
-          <span class="meta"><span class="note">${r.note}</span> · ${ago(r.at)}</span></a></li>`,
-      )}</ul></div>`;
-  }
-
-  private card(t: BoardTicket) {
+  private card(t: BoardTicket, report?: DigestRow) {
     const needs = t.status === "needs-you";
     const statusCls = needs
       ? "waiting"
@@ -262,9 +316,12 @@ export class IncBoard extends Loader<BoardData> {
       ${
         t.waiting
           ? html`<div class="waits"><i aria-hidden="true"></i><span>${waitingLine(t.waiting, t.waitingUntil)}</span></div>`
-          : html`<div class="live">${t.status === "queued" ? "Queued" : t.live}</div>`
+          : report
+            ? "" // the report line below says how it ended
+            : html`<div class="live">${liveText(t)}</div>`
       }
       ${t.assignee ? html`<div class="who">${avatar(t.assignee, 24)} ${t.assignee.name}</div>` : ""}
+      ${report ? this.reportLine(report) : ""}
     </a>`;
     // The Assign… link sits beside the card link (a link can't hold another): it opens the ticket's
     // "Who should do this?" card.

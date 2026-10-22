@@ -2,6 +2,7 @@
 // whichever view shows releases: <inc-deploys></inc-deploys>.
 import { css, html } from "lit";
 import { call } from "../api.ts";
+import { friendlyWhen } from "../time.ts";
 import { Loader } from "./loader.ts";
 import { base } from "./shared.ts";
 
@@ -31,7 +32,7 @@ const names: Record<Deploy["outcome"], string> = {
   "skipped-review": "Skipped: not reviewed",
 };
 
-const when = (at: number) => new Date(at).toISOString().slice(0, 16).replace("T", " ");
+const when = (at: number) => friendlyWhen(at);
 const took = (ms: number) =>
   ms < 1000 ? "" : ms < 90_000 ? `${Math.round(ms / 1000)} s` : `${Math.round(ms / 60_000)} min`;
 

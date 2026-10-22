@@ -80,17 +80,40 @@ describe("My desk view and releases (T33)", () => {
     bothPending?: boolean;
     // Fail only for this project's release (the others succeed).
     failFor?: string;
+    // Add the "General" row (tickets that belong to no project), with this many unreleased tickets.
+    general?: number;
   }) {
-    const data = overrides?.bothPending
-      ? {
-          ...deskData,
-          pendingReleases: deskData.pendingReleases.map((p) =>
-            p.id === "i-inc"
-              ? { ...p, pendingTickets: [{ id: "5", title: "Tidy", pushed: "sha5555555" }] }
-              : p,
-          ),
-        }
-      : deskData;
+    const withGeneral = (d: typeof deskData) =>
+      overrides?.general === undefined
+        ? d
+        : {
+            ...d,
+            pendingReleases: [
+              ...d.pendingReleases,
+              {
+                project: "General",
+                id: "General",
+                repo: "demo/general",
+                pendingTickets: Array.from({ length: overrides.general }, (_, i) => ({
+                  id: String(20 + i),
+                  title: `Tidy ${i}`,
+                  pushed: "sha9999999",
+                })),
+              },
+            ],
+          };
+    const data = withGeneral(
+      overrides?.bothPending
+        ? {
+            ...deskData,
+            pendingReleases: deskData.pendingReleases.map((p) =>
+              p.id === "i-inc"
+                ? { ...p, pendingTickets: [{ id: "5", title: "Tidy", pushed: "sha5555555" }] }
+                : p,
+            ),
+          }
+        : deskData,
+    );
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       calls.push({
         method: init?.method ?? "GET",
@@ -192,24 +215,44 @@ describe("My desk view and releases (T33)", () => {
     expect(root.querySelector(".learned a")?.getAttribute("href")).toBe("#/company/brain");
   });
 
-  it("disables Cut release when a project has no pending tickets", async () => {
+  it("offers Cut release only for a project with unreleased tickets, and says Up to date for the rest", async () => {
     serveDesk();
     const { root } = await mount();
 
     const projects = root.querySelectorAll(".release-project");
     expect(projects.length).toBe(2);
 
-    // Duet has 2 pending tickets -> enabled
+    // Duet has 2 pending tickets -> the button, and their count
     const duetBtn = projects[0]?.querySelector("button.release-btn") as HTMLButtonElement;
     expect(duetBtn).toBeTruthy();
     expect(duetBtn.disabled).toBe(false);
     expect(duetBtn.textContent).toContain("Cut release");
+    expect(projects[0]?.textContent).toContain("2 unreleased tickets");
 
-    // i-inc has 0 pending tickets -> disabled with ghost class
-    const iincBtn = projects[1]?.querySelector("button.release-btn") as HTMLButtonElement;
-    expect(iincBtn).toBeTruthy();
-    expect(iincBtn.disabled).toBe(true);
+    // i-inc has 0 pending tickets -> no button at all, just "Up to date"
+    expect(projects[1]?.querySelector("button")).toBeNull();
     expect(projects[1]?.textContent).toContain("Up to date");
+    expect(projects[1]?.textContent).not.toContain("0 unreleased");
+    expect(projects[1]?.textContent).not.toContain("Cut release");
+  });
+
+  it('calls the tickets that belong to no project "No project", and leaves that row out when it is empty', async () => {
+    serveDesk({ general: 0 });
+    let { root } = await mount();
+    expect(root.querySelectorAll(".release-project").length).toBe(2);
+    expect(root.textContent).not.toContain("General");
+    expect(root.textContent).not.toContain("No project");
+    document.body.innerHTML = "";
+
+    serveDesk({ general: 2 });
+    ({ root } = await mount());
+    const rows = [...root.querySelectorAll(".release-project")];
+    expect(rows.length).toBe(3);
+    const general = rows[2] as Element;
+    expect(general.textContent).toContain("No project");
+    expect(general.textContent).not.toContain("General");
+    expect(general.textContent).toContain("2 unreleased tickets");
+    expect(general.querySelector("button.release-btn")).not.toBeNull();
   });
 
   it("handles cutting a release with in-flight loading state", async () => {

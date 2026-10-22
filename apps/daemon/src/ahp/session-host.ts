@@ -1201,7 +1201,14 @@ export class SessionHost implements AgentBackend {
         return {
           kind: "error",
           errorType: "rate_limited",
-          message: `${upstreamReason(done.error)}${resetsAt ? ` It resets ${new Date(resetsAt).toISOString().slice(0, 16).replace("T", " ")} UTC.` : ""}`,
+          // The agent's own words name a time in UTC: when the reset is known it goes in `resetsAt`, and the app
+          // words it in the owner's time zone.
+          message: resetsAt
+            ? upstreamReason(done.error)
+                .replace(/\s*[·.,;-]?\s*resets\b.*$/i, "")
+                .trim()
+            : upstreamReason(done.error),
+          ...(resetsAt ? { resetsAt } : {}),
         };
       }
       if (done.error.code === -32000 || /authentication required|sign.?in/i.test(text)) {

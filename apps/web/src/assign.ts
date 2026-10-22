@@ -2,6 +2,7 @@
 // new-ticket form, the ticket page, the board and the inbox share one rule.
 import type { Employee } from "@i-inc/core";
 import type { TicketView } from "./api.ts";
+import { atTime, hourLabel, withResume } from "./time.ts";
 
 /** An employee who may work on the project (`projects` absent means all) and builds tickets. */
 export function assignable(employees: Employee[], project: string): Employee[] {
@@ -48,8 +49,8 @@ export function waitsForAssignee(t: Pick<TicketView, "status" | "waiting" | "ass
 
 export const UNASSIGNED = "unassigned, and no standing order covers it";
 
-const clock = (at: number): string =>
-  new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+/** The owner's own time zone, friendly: "2:14 AM", or "tomorrow at 2:14 AM" when it is not today. */
+const clock = (at: number): string => atTime(at);
 
 /**
  * The scheduler's reason in plain words, as a calm status line. Only reasons the daemon sends are
@@ -60,12 +61,13 @@ export function waitingLine(
   until?: number | null,
   at: (ms: number) => string = clock,
 ): string {
-  const when = until ? ` at ${at(until)}` : "";
+  // "at 2:14 AM", but "tomorrow at 2:14 AM" (the time carries its own "at" when it is not today)
+  const when = until ? (/ at /.test(at(until)) ? ` ${at(until)}` : ` at ${at(until)}`) : "";
   // Each rule: the scheduler's wording, and the clause that reads after "Waiting: ".
   const rules: [RegExp, (m: string[]) => string][] = [
     [/^assignee (.+) doesn't work here$/, (m) => `${m[1]} doesn't work on this project`],
     [/^(.+) is busy$/, (m) => `${m[1]} is busy with another ticket`],
-    [/^(.+) is off until (\d+):00$/, (m) => `${m[1]} starts at ${m[2]}:00`],
+    [/^(.+) is off until (\d+):00$/, (m) => `${m[1]} starts at ${hourLabel(Number(m[2]))}`],
     [
       /^(.+) reached its usage cap$/,
       (m) => (until ? `${m[1]}'s usage resets${when}` : `${m[1]} reached the usage cap`),
@@ -86,3 +88,7 @@ export function waitingLine(
   const c = clause(reason);
   return c.startsWith("for ") ? `Waiting ${c}` : `Waiting: ${c}`;
 }
+
+/** A ticket's status line with its resume time in the owner's zone: "Waiting for tokens until 2:14 AM". */
+export const liveText = (t: Pick<TicketView, "live" | "status" | "resumesAt">): string =>
+  t.status === "queued" ? "Queued" : withResume(t.live, t.resumesAt);
