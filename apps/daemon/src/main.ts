@@ -38,7 +38,7 @@ installGuards({ log, exit: (code) => process.exit(code) });
 const common = {
   knowledgeDir: join(home, "knowledge"),
   brainIndexPath: join(home, "brain-index.db"),
-  clock: { now: () => Date.now() },
+  clock: { now: () => Date.now(), monotonic: () => performance.now() },
   // Real mode always needs the login token (config.ts), so the daemon can be served on the tailnet.
   ...(process.env.I_INC_TOKEN
     ? { token: process.env.I_INC_TOKEN }

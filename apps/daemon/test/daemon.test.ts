@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { TicketEvent } from "@i-inc/core";
 import { FakeWorkspace } from "@i-inc/core/testing";
 import { describe, expect, it } from "vitest";
+import { localDayStart } from "../src/daemon.ts";
 import { liveInfo, liveLine } from "../src/views.ts";
 import { refunds, testApp } from "./setup.ts";
 
@@ -672,100 +673,183 @@ describe("chat", () => {
       await new Promise((r) => setTimeout(r, 50));
       expect(app.daemon.waitingUntil["1"]).toBe(app.clock.now() + 60_000);
     });
+  });
+});
 
-    it("does not suppress auto-releases when a previous release timestamp is in the future (Group 7.2)", async () => {
+describe("clocks, schedules and critical paths (T63 groups 7 and 8)", () => {
+  it("does not suppress auto-releases when a previous release timestamp is in the future (Group 7.2)", async () => {
+    const app = await testApp();
+    // Enable autoRelease on Duet
+    app.deps.registry.addProject({ id: "Duet", repo: "firstprateek/duet", checks: [], autoRelease: true });
+
+    // Record an existing release with timestamp far in the future
+    const futureTime = app.clock.now() + 10_000_000;
+    app.deps.registry.recordRelease({
+      project: "Duet",
+      tag: "v-future",
+      at: futureTime,
+      ticketIds: [],
+      commits: [],
+    });
+
+    // Complete a ticket so it is merged
+    await app.call("POST", "/api/tickets", refunds);
+    await app.daemon.idle();
+    await app.call("POST", "/api/tickets/1/decide", { decision: "approve" });
+    await app.daemon.idle();
+
+    // Trigger a tick to check auto-releases
+    await app.daemon.tick();
+
+    const releases = app.deps.registry.releases().filter((r) => r.project === "Duet");
+    // The future release must not suppress releasing ticket 1
+    expect(releases.some((r) => r.ticketIds.includes("1"))).toBe(true);
+  });
+
+  it("is idempotent: does not re-apply knowledge edits already in knowledge_applied (Group 8.6)", async () => {
+    const app = await testApp();
+    let applyCalls = 0;
+    const origApply = app.deps.knowledge.apply.bind(app.deps.knowledge);
+    app.deps.knowledge.apply = (edit, getEmployee) => {
+      applyCalls++;
+      return origApply(edit, getEmployee);
+    };
+
+    const event: TicketEvent = {
+      type: "knowledge-proposed",
+      at: app.clock.now(),
+      employeeId: "ada",
+      apply: [{ layer: "brain", page: "tools/test-page", text: "some knowledge" }],
+      awaitOwner: [],
+    };
+
+    // First call applies knowledge
+    app.daemon.applyKnowledge("1", [event]);
+    expect(applyCalls).toBe(1);
+
+    // Second call does nothing because edit is already recorded in knowledge_applied
+    app.daemon.applyKnowledge("1", [event]);
+    expect(applyCalls).toBe(1);
+  });
+
+  it("coalesces concurrent ticks into a single running pass (Group 8.8)", async () => {
+    const app = await testApp();
+    let passCalls = 0;
+    // @ts-expect-error accessing private pass
+    const origPass = app.daemon.pass.bind(app.daemon);
+    // @ts-expect-error accessing private pass
+    app.daemon.pass = async () => {
+      passCalls++;
+      await new Promise((r) => setTimeout(r, 20));
+      return origPass();
+    };
+    // Fire 5 ticks concurrently
+    const ticks = [
+      app.daemon.tick(),
+      app.daemon.tick(),
+      app.daemon.tick(),
+      app.daemon.tick(),
+      app.daemon.tick(),
+    ];
+    await Promise.all(ticks);
+    // Concurrent ticks coalesce so pass is only run at most twice
+    expect(passCalls).toBeLessThanOrEqual(2);
+  });
+
+  it("does not stop the machine of an employee who is busy (Group 8.10)", async () => {
+    const app = await testApp();
+    const machines = app.deps.machines as unknown as { started: string[]; stopped: string[] };
+    // @ts-expect-error accessing private awake
+    app.daemon.awake.add("ada");
+    // @ts-expect-error accessing private awake
+    app.daemon.awake.add("kit");
+
+    // @ts-expect-error accessing private sleepIdle
+    await app.daemon.sleepIdle(new Set(["ada"]));
+
+    // Ada is busy, so Ada's machine must NOT be stopped! Kit is not busy, so Kit is stopped.
+    expect(machines.stopped).not.toContain("ada");
+    expect(machines.stopped).toContain("kit");
+  });
+
+  // The "next try" of a ticket that threw is a wait in this process: it is counted on the monotonic clock,
+  // so wall time stepping (NTP, a sleeping laptop) neither stretches it nor ends it early (T63 7.2).
+  it("backs a failing ticket off on the monotonic clock, not on wall time (Group 7.2)", async () => {
+    const app = await testApp();
+    const ws = new FakeWorkspace();
+    let opens = 0;
+    ws.open = async () => {
+      opens++;
+      throw Object.assign(new Error("GitHub 502"), { status: 502 });
+    };
+    app.deps.workspace = ws;
+    await app.call("POST", "/api/tickets", refunds);
+    await app.daemon.idle();
+    expect(opens).toBe(1); // backoff: 30 s
+
+    // Wall time jumps 10 hours back, and a minute really passes: the backoff is over.
+    app.clock.step(-600);
+    app.clock.advance(1);
+    app.daemon.run("1");
+    await app.daemon.idle();
+    expect(opens).toBe(2); // backoff: 60 s
+
+    // Wall time jumps 10 hours ahead, but no time passes: it is still backing off.
+    app.clock.step(600);
+    app.daemon.run("1");
+    await app.daemon.idle();
+    expect(opens).toBe(2);
+  });
+
+  it("budgets 'today' on the owner's local day, not the UTC day (Group 7.2)", async () => {
+    const zone = process.env.TZ;
+    process.env.TZ = "Asia/Kolkata"; // UTC+5:30, no daylight saving
+    try {
       const app = await testApp();
-      // Enable autoRelease on Duet
-      app.deps.registry.addProject({ id: "Duet", repo: "firstprateek/duet", checks: [], autoRelease: true });
-
-      // Record an existing release with timestamp far in the future
-      const futureTime = app.clock.now() + 10_000_000;
-      app.deps.registry.recordRelease({
-        project: "Duet",
-        tag: "v-future",
-        at: futureTime,
-        ticketIds: [],
-        commits: [],
-      });
-
-      // Complete a ticket so it is merged
       await app.call("POST", "/api/tickets", refunds);
+      await app.call("POST", "/api/tickets", { ...refunds, title: "Refunds again" });
       await app.daemon.idle();
-      await app.call("POST", "/api/tickets/1/decide", { decision: "approve" });
-      await app.daemon.idle();
+      // The FakeClock says 2026-09-27 21:40 UTC, which is 03:10 on the 28th at the daemon's host.
+      // Ticket 1 was picked at 22:30 on the 27th there (17:00 UTC: the same UTC day), ticket 2 at 00:30 on the 28th.
+      app.deps.tickets.assign("1", "ada", Date.UTC(2026, 8, 27, 17, 0));
+      app.deps.tickets.assign("2", "ada", Date.UTC(2026, 8, 27, 19, 0));
+      // @ts-expect-error accessing private pickedUpToday
+      expect(app.daemon.pickedUpToday(app.clock.now())).toEqual({ ada: 1 });
+      expect(localDayStart(app.clock.now())).toBe(Date.UTC(2026, 8, 27, 18, 30));
+    } finally {
+      if (zone === undefined) delete process.env.TZ;
+      else process.env.TZ = zone;
+    }
+  });
 
-      // Trigger a tick to check auto-releases
-      await app.daemon.tick();
-
-      const releases = app.deps.registry.releases().filter((r) => r.project === "Duet");
-      // The future release must not suppress releasing ticket 1
-      expect(releases.some((r) => r.ticketIds.includes("1"))).toBe(true);
+  // The owner's click arrives while the ticket's last run is still finishing its after-run steps: `run` used to
+  // do nothing then, and the owner's action waited for the next 30 s tick (T63 7.3).
+  it("runs a ticket again as soon as the run that was finishing when the owner acted is over (Group 7.3)", async () => {
+    const app = await testApp();
+    const ws = new FakeWorkspace();
+    const open = ws.open.bind(ws);
+    let opens = 0;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
     });
+    ws.open = async (t, e) => {
+      opens++;
+      if (opens === 1) {
+        await gate;
+        throw Object.assign(new Error("GitHub 502"), { status: 502 });
+      }
+      return open(t, e);
+    };
+    app.deps.workspace = ws;
+    await app.call("POST", "/api/tickets", refunds);
+    for (let i = 0; i < 200 && opens < 1; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(opens).toBe(1);
 
-    it("is idempotent: does not re-apply knowledge edits already in knowledge_applied (Group 8.6)", async () => {
-      const app = await testApp();
-      let applyCalls = 0;
-      const origApply = app.deps.knowledge.apply.bind(app.deps.knowledge);
-      app.deps.knowledge.apply = (edit, getEmployee) => {
-        applyCalls++;
-        return origApply(edit, getEmployee);
-      };
-
-      const event: TicketEvent = {
-        type: "knowledge-proposed",
-        at: app.clock.now(),
-        employeeId: "ada",
-        apply: [{ layer: "brain", page: "tools/test-page", text: "some knowledge" }],
-        awaitOwner: [],
-      };
-
-      // First call applies knowledge
-      app.daemon.applyKnowledge("1", [event]);
-      expect(applyCalls).toBe(1);
-
-      // Second call does nothing because edit is already recorded in knowledge_applied
-      app.daemon.applyKnowledge("1", [event]);
-      expect(applyCalls).toBe(1);
-    });
-
-    it("coalesces concurrent ticks into a single running pass (Group 8.8)", async () => {
-      const app = await testApp();
-      let passCalls = 0;
-      // @ts-expect-error accessing private pass
-      const origPass = app.daemon.pass.bind(app.daemon);
-      // @ts-expect-error accessing private pass
-      app.daemon.pass = async () => {
-        passCalls++;
-        await new Promise((r) => setTimeout(r, 20));
-        return origPass();
-      };
-      // Fire 5 ticks concurrently
-      const ticks = [
-        app.daemon.tick(),
-        app.daemon.tick(),
-        app.daemon.tick(),
-        app.daemon.tick(),
-        app.daemon.tick(),
-      ];
-      await Promise.all(ticks);
-      // Concurrent ticks coalesce so pass is only run at most twice
-      expect(passCalls).toBeLessThanOrEqual(2);
-    });
-
-    it("does not stop the machine of an employee who is busy (Group 8.10)", async () => {
-      const app = await testApp();
-      const machines = app.deps.machines as unknown as { started: string[]; stopped: string[] };
-      // @ts-expect-error accessing private awake
-      app.daemon.awake.add("ada");
-      // @ts-expect-error accessing private awake
-      app.daemon.awake.add("kit");
-
-      // @ts-expect-error accessing private sleepIdle
-      await app.daemon.sleepIdle(new Set(["ada"]));
-
-      // Ada is busy, so Ada's machine must NOT be stopped! Kit is not busy, so Kit is stopped.
-      expect(machines.stopped).not.toContain("ada");
-      expect(machines.stopped).toContain("kit");
-    });
+    app.daemon.run("1", { force: true }); // the run is still going: this used to be dropped
+    release();
+    await app.daemon.idle();
+    expect(opens).toBe(2);
+    expect((await app.call("GET", "/api/tickets/1")).body.ticket.status).toBe("ready");
   });
 });

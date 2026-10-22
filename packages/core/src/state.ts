@@ -94,8 +94,11 @@ export interface TicketState {
    * one before it: approvals do not add up across pushes.
    */
   approval: { sha: string; patchId: string; paths: string[] } | null;
-  /** Direct mode: CI went red on a commit this ticket pushed, since when. */
-  mainRed: { sha: string; since: number; reason: string } | null;
+  /**
+   * Direct mode: CI went red on a commit this ticket pushed, since when, and how many fixes the builder
+   * has pushed since (the revert waits for at least one: downtime is not a failed fix).
+   */
+  mainRed: { sha: string; since: number; reason: string; fixes: number } | null;
   /** Time spent running, leaving out time paused, failed or waiting on the owner. */
   workedMs: number;
   /** When the last event happened, for `workedMs`. */
@@ -297,12 +300,23 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
     case "push-intended":
       return { ...s, pushIntended: e.headSha };
     case "pushed":
-      return { ...s, pushed: e.sha, pushIntended: null };
+      // A push while main is red is the builder's fix going out.
+      return {
+        ...s,
+        pushed: e.sha,
+        pushIntended: null,
+        mainRed: s.mainRed ? { ...s.mainRed, fixes: s.mainRed.fixes + 1 } : null,
+      };
     case "main-red":
       return {
         ...s,
         fixDue: true,
-        mainRed: { sha: s.mainRed?.sha ?? e.sha, since: s.mainRed?.since ?? e.at, reason: e.reason },
+        mainRed: {
+          sha: s.mainRed?.sha ?? e.sha,
+          since: s.mainRed?.since ?? e.at,
+          reason: e.reason,
+          fixes: s.mainRed?.fixes ?? 0,
+        },
       };
     case "reverted":
       return { ...s, mainRed: null, fixDue: false };

@@ -34,11 +34,21 @@ import type {
 import type { StageId } from "../stages.ts";
 
 export class FakeClock implements Clock {
+  private mono = 0;
   constructor(private t = Date.UTC(2026, 8, 27, 21, 40)) {}
   now(): number {
     return this.t;
   }
+  monotonic(): number {
+    return this.mono;
+  }
+  /** Time passes: both clocks move. */
   advance(minutes: number): void {
+    this.t += minutes * 60_000;
+    this.mono += minutes * 60_000;
+  }
+  /** Wall time is set forward or back (a negative `minutes`) while no time passes: the monotonic clock stays. */
+  step(minutes: number): void {
     this.t += minutes * 60_000;
   }
 }
@@ -128,6 +138,10 @@ export class FakeWorkspace implements Workspace {
   /** Whose machine each open was for. */
   readonly openedFor: Id[] = [];
   readonly readied: { ticketId: Id; pr: PullRequestRef; report: string }[] = [];
+  /** What GitHub says about each ticket's PR; a ticket not listed has an open one. */
+  readonly prStates = new Map<Id, "open" | "closed" | "merged">();
+  /** The tickets whose PR was closed, in order. */
+  readonly closedPrs: Id[] = [];
   /** The images copied in after pick-up, by whose machine. */
   readonly attached: { ticketId: Id; employeeId: Id; ns: number[] }[] = [];
   /** The branch checked out in a reviewer's or verifier's machine, by whose machine, in order. */
@@ -170,6 +184,13 @@ export class FakeWorkspace implements Workspace {
   }
   async ready(ticket: Ticket, pr: PullRequestRef, report: string): Promise<void> {
     this.readied.push({ ticketId: ticket.id, pr, report });
+  }
+  async prState(ticket: Ticket): Promise<"open" | "closed" | "merged"> {
+    return this.prStates.get(ticket.id) ?? "open";
+  }
+  async closePr(ticket: Ticket): Promise<void> {
+    if ((this.prStates.get(ticket.id) ?? "open") === "open") this.prStates.set(ticket.id, "closed");
+    this.closedPrs.push(ticket.id);
   }
 }
 

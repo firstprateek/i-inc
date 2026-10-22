@@ -37,6 +37,22 @@ const snap = (over: Partial<Snapshot>): Snapshot => ({
 });
 
 describe("a stage that needs a helper", () => {
+  // T63 7.3: the scheduler decided from a snapshot that is seconds old by the time it acts.
+  it("drops an assignment for a duty the ticket no longer waits for", async () => {
+    const p = ports();
+    const ticket = refundsTicket();
+    await runTicket(p, ticket, { helpers: "scheduler" });
+    expect(fold(await p.store.read("42")).waitingFor?.duty).toBe("verify");
+
+    expect(await assignHelper(p, "42", "review", "grace")).toBe(false);
+    expect(await assignHelper(p, "42", "verify", "quinn")).toBe(true);
+    // Quinn is already on it: a second, stale assignment (the same one picked again) changes nothing.
+    const before = (await p.store.read("42")).length;
+    expect(await assignHelper(p, "42", "verify", "pip")).toBe(false);
+    expect((await p.store.read("42")).length).toBe(before);
+    expect(fold(await p.store.read("42")).helpers.verify).toBe("quinn");
+  });
+
   it("waits for the scheduler, then runs with the employee it picked", async () => {
     const p = ports();
     const ticket = refundsTicket();

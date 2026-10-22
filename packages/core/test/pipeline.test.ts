@@ -339,6 +339,5 @@ describe("engines", () => {
     ];
     const s = fold(events);
     expect(s.workedMs).toBe(0);
-    expect(s.workedMs).toBeGreaterThanOrEqual(0);
   });
 });

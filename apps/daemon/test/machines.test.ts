@@ -329,6 +329,46 @@ describe("AppleMachines recovery, exponential backoff, and state change logging"
     expect(status.retryAt).toBe(fault2?.retryAt);
   });
 
+  // T63 7.2: a clock stepped back or forward must neither stretch nor skip a boot backoff.
+  it("waits out a boot backoff on the monotonic clock, whatever wall time does", async () => {
+    const calls: string[] = [];
+    const exec: Exec = async (_bin, args) => {
+      calls.push(args.join(" "));
+      if (args[0] === "machine" && args[1] === "run") {
+        throw new Error('hostname(s) already exist: ["inc-ada.machine."]');
+      }
+      return "";
+    };
+    let wall = 1_000_000;
+    let mono = 5_000;
+    const m = new AppleMachines(
+      noWalls,
+      exec,
+      async () => {},
+      () => wall,
+      () => {},
+      () => mono,
+    );
+    await expect(m.ensureUp("ada")).rejects.toBeInstanceOf(StartupError);
+    expect(m.sandboxFault("ada")?.attempts).toBe(1); // backoff: 30 s
+
+    // Wall time jumps 10 hours ahead, but only 1 s really passed: still backing off.
+    wall += 10 * 3_600_000;
+    mono += 1_000;
+    calls.length = 0;
+    await expect(m.ensureUp("ada")).rejects.toBeInstanceOf(StartupError);
+    expect(calls).toHaveLength(0);
+    expect(m.sandboxFault("ada")).toBeDefined();
+
+    // Wall time jumps 10 hours back, and 31 s really passed: the backoff is over and the boot is tried again.
+    wall -= 20 * 3_600_000;
+    mono += 30_000;
+    expect(m.sandboxFault("ada")).toBeUndefined();
+    await expect(m.ensureUp("ada")).rejects.toBeInstanceOf(StartupError);
+    expect(calls.some((c) => c.startsWith("machine run"))).toBe(true);
+    expect(m.sandboxFault("ada")?.attempts).toBe(2);
+  });
+
   it("retrySandbox clears backoff and attempts immediate boot", async () => {
     let failBoot = true;
     const calls: string[] = [];

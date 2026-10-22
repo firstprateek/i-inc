@@ -217,7 +217,13 @@ describe("pick-up's git", () => {
 
 describe("the GitHub workspace", () => {
   function workspace(
-    o: { run?: RunScript; existing?: boolean; draft?: boolean; attachments?: () => AttachmentFile[] } = {},
+    o: {
+      run?: RunScript;
+      existing?: boolean;
+      draft?: boolean;
+      attachments?: () => AttachmentFile[];
+      state?: "open" | "closed" | "merged";
+    } = {},
   ) {
     const calls: string[] = [];
     const seen: Record<string, string>[] = [];
@@ -236,6 +242,13 @@ describe("the GitHub workspace", () => {
       isDraft: async () => o.draft ?? true,
       markReady: async (_repo: string, id: string) => {
         calls.push(`ready ${id}`);
+      },
+      get: async (_repo: string, n: number) => {
+        calls.push(`get ${n}`);
+        return { number: n, state: o.state ?? "open" };
+      },
+      close: async (_repo: string, n: number) => {
+        calls.push(`close ${n}`);
       },
     } as unknown as PullRequests;
     const ws = new GitHubWorkspace({
@@ -337,6 +350,22 @@ describe("the GitHub workspace", () => {
     const done = workspace({ draft: false });
     await done.ws.ready(ticket, pr, "## report");
     expect(done.calls).toEqual(["body 4"]);
+  });
+
+  // T63 7.1: "merged" is what GitHub says, and a rejected PR is closed there.
+  it("reads where the PR stands on GitHub, and closes only an open one", async () => {
+    const pr = { number: 4, url: "u", nodeId: "PR_4", branch: "b" };
+    for (const state of ["open", "closed", "merged"] as const) {
+      const w = workspace({ state });
+      expect(await w.ws.prState(ticket, pr)).toBe(state);
+      await w.ws.closePr(ticket, pr);
+      expect(w.calls.filter((c) => c.startsWith("close"))).toEqual(state === "open" ? ["close 4"] : []);
+    }
+    // Direct mode has no PR: nothing to ask, nothing to close.
+    const none = workspace();
+    expect(await none.ws.prState(ticket, { branch: "b" })).toBe("merged");
+    await none.ws.closePr(ticket, { branch: "b" });
+    expect(none.calls).toEqual([]);
   });
 });
 

@@ -160,6 +160,40 @@ describe("direct mode", () => {
     expect(red.harness.reverted).toEqual([sha(5)]);
   });
 
+  // T63 7.2: the 2 hours are wall time since the red. Downtime or a long pause must not revert main before the
+  // builder has had one go at fixing it.
+  it("lets the builder try a fix before reverting, even when the daemon was down for longer than 2 hours", async () => {
+    const p = direct(ports());
+    p.harness.gates.push({ ok: true, pushed: sha(5) }, { ok: true, pushed: sha(6) });
+    p.harness.ci.push({ ok: false, reason: "CI failed: Lint, types and tests (failure)" });
+    // The daemon is stopped for 5 hours right after the red CI is recorded.
+    const append = p.store.append.bind(p.store);
+    p.store.append = async (id, events) => {
+      await append(id, events);
+      if (events.some((e) => e.type === "main-red")) p.clock.advance(5 * 60);
+    };
+    const result = await runTicket(p, refundsTicket({ effort: "low" }));
+    expect(result.status).toBe("done");
+    expect(p.harness.reverted).toEqual([]);
+    expect(p.agent.calls.filter((c) => c.stage === "gates")).toHaveLength(1);
+  });
+
+  it("still reverts when the fix doesn't turn main green, once the 2 hours are over", async () => {
+    const p = direct(ports());
+    p.harness.gates.push({ ok: true, pushed: sha(5) }, { ok: true, pushed: sha(6) });
+    p.harness.watchCi = async () => ({ ok: false, reason: "CI failed: Lint, types and tests (failure)" });
+    const append = p.store.append.bind(p.store);
+    p.store.append = async (id, events) => {
+      await append(id, events);
+      if (events.some((e) => e.type === "main-red")) p.clock.advance(5 * 60);
+    };
+    const result = await runTicket(p, refundsTicket({ effort: "low" }));
+    expect(result).toMatchObject({ status: "failed" });
+    // One fix session, then main is still red and the limit is long past.
+    expect(p.agent.calls.filter((c) => c.stage === "gates")).toHaveLength(1);
+    expect(p.harness.reverted).toEqual([sha(5)]);
+  });
+
   it("resumes watching CI after a restart without pushing a second time", async () => {
     const p = direct(ports());
     let gateCalls = 0;

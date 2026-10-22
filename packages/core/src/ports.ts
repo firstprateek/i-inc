@@ -14,7 +14,18 @@ import type {
 import type { StageId } from "./stages.ts";
 
 export interface Clock {
+  /** Wall time, epoch ms. It can step either way (NTP, a sleeping laptop, a manual change). */
   now(): number;
+  /**
+   * Milliseconds on a clock that never steps back and does not follow wall time changes. Only
+   * differences between two readings mean anything, and only within one process. Absent: wall time.
+   */
+  monotonic?(): number;
+}
+
+/** The clock's monotonic reading, or its wall time where it has no monotonic one. For waits that live in memory. */
+export function monotonicNow(clock: Clock): number {
+  return clock.monotonic ? clock.monotonic() : clock.now();
 }
 
 export interface EventStore {
@@ -99,7 +110,7 @@ export interface MachineProvider {
   deliverCallback?(teamId: Id, url: string): Promise<void>;
   /** Checks sandbox VM state and sign-ins for a team. */
   inspectSandbox?(team: Id, size: { cpus: number; memory: string }): Promise<SandboxStatus>;
-  /** The boot failure holding an employee's sandbox in backoff, if there is one. Reads memory only. */
+  /** The boot failure holding an employee's sandbox in backoff, only while it is still backing off. Reads memory only. */
   sandboxFault?(employeeId: Id): SandboxFault | undefined;
   /**
    * Whether an employee's sandbox is signed in to a harness, from the last probe: undefined when it
@@ -260,6 +271,13 @@ export interface Workspace {
    */
   checkout?(ticket: Ticket, employee: Employee): Promise<void>;
   ready(ticket: Ticket, pr: PullRequestRef, report: string): Promise<void>;
+  /**
+   * Where the ticket's PR stands on GitHub. The owner merges it there, then clicks Approve: i.inc
+   * records "merged" only when GitHub says so. Absent: the owner's word is taken (no PR to ask).
+   */
+  prState?(ticket: Ticket, pr: PullRequestRef): Promise<"open" | "closed" | "merged">;
+  /** Closes the ticket's PR on GitHub (the owner rejected the work). A merged or closed PR is left alone. */
+  closePr?(ticket: Ticket, pr: PullRequestRef): Promise<void>;
 }
 
 export interface Company {
