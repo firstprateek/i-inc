@@ -146,7 +146,8 @@ describe("the tick loop", () => {
 
     const board = (await app.call("GET", "/api/board")).body.tickets;
     expect(board[0]).toMatchObject({ status: "paused", column: "in-progress" });
-    expect(board[0].live).toMatch(/^Out of tokens/);
+    expect(board[0].live).toBe("Waiting for tokens");
+    expect(board[0].resumesAt).toEqual(expect.any(Number)); // the app words the time in the owner's zone
     expect(board[1]).toMatchObject({ status: "ready", assignee: { id: "qwen", name: "Qwen" } });
 
     const office = (await app.call("GET", "/api/office")).body.employees;
