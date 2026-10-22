@@ -12,8 +12,8 @@ import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, normalize } from "node:path";
 import { FakeAgent, FakeChat, FakeHarness, FakeHelper, FakeMachines } from "@i-inc/core/testing";
-import { createApp } from "../src/app.ts";
 import type { WsData } from "../src/ahp/transport.ts";
+import { createApp } from "../src/app.ts";
 import { seedDemo } from "../src/demo.ts";
 import { createGitHubStub, type StubOptions, stubApp } from "../test/github-stub.ts";
 
