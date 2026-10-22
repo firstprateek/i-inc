@@ -513,7 +513,10 @@ host, so the brain is copied in, never served:
 Writing back: the agent's edits to its copy are collected after a session (a ticket ends, a conversation
 goes idle or ends, or you say "remember this"), checked, and committed with no approval. Every change
 shows in Company → Brain → Changes with a one-click revert, and a daily "Tend the brain" ticket for an
-employee with the librarian duty merges duplicates and prunes. The design is in
+employee with the librarian duty merges duplicates and prunes. Because a team shares a Unix user, an agent
+could have edited a teammate's copy: when another employee of the same team had a session running since
+the copy was last collected or delivered, every change of that harvest is marked untrusted (the feed's
+badge, `source: external` in the page). Nothing is blocked; revert is the remedy. The design is in
 [design/brain.md](design/brain.md).
 
 Your review feedback is the richest material for learning. A Reviewer learns what you care about
@@ -743,11 +746,14 @@ Qwen   Senior Eng · Local qwen3   ✓ Done           #11 Bump deps · fintrack 
   | Logical | Bounded attempts, then an honest report |
   | Silent | No ACP activity for N minutes: cancel, resume once, then escalate |
 
-- **No fixed team size.** Machines sleep when idle and wake when work arrives. Each host runs at most
-  K machines at once, and the rest wait in the queue. K is a host setting that defaults to what the
-  host's RAM allows. More hosts, such as a Mac Studio or cloud VMs, raise K.
-- **Machines can be rebuilt; brains are kept.** There's a reset button and a nightly base-image
-  update. Brains and the handbook are git repos on the host, with local backups.
+- **No fixed team size.** Machines sleep when idle and wake when work arrives. The design caps the machines
+  awake at once per host at K, with the rest waiting in the queue, K defaulting to what the host's RAM allows
+  and more hosts raising it (the cap is not built; idle machines sleep, and at most three conversations are
+  live per team).
+- **Machines can be rebuilt; brains are kept.** Rebuilding is manual (`tools/host/update-machine.sh`); a
+  reset button and a nightly base-image update are not built. Brains and the handbook are git repos on the
+  host. The database has a daily backup (`i-inc.db.autobak-<date>`, 30 days) and a quick integrity check at
+  startup.
 - **Audit:** every stage keeps its full transcript, each ticket has a timeline, and brain changes are
   commits.
 - **Tests:** a scripted fake ACP agent and a fake machine provider cover these cases, and the tests run
