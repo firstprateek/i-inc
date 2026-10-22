@@ -150,7 +150,7 @@ export class IncSetupSandboxes extends Loader<Data> {
   ];
 
   override render() {
-    if (this.error) return html`<p role="alert">The daemon isn't answering: ${this.error}</p>`;
+    if (this.error) return this.failure("the sandboxes");
     if (!this.data) return html`<p class="muted">Loading sandboxes…</p>`;
     const list = this.data.sandboxes;
     if (!list) return html`<p class="note">Sandbox status isn't available yet.</p>`;

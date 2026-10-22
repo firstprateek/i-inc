@@ -1,6 +1,6 @@
-import { css, html, LitElement } from "lit";
+import { css, html, LitElement, nothing } from "lit";
 import { ahp, useAhp } from "../ahp/hub.ts";
-import { logout, refresh } from "../api.ts";
+import { logout, refresh, refreshNow } from "../api.ts";
 import { connection, isOffline } from "../connection.ts";
 import { isDismissed, showGettingStarted } from "../first-run.ts";
 import { startLiveUpdates } from "../live.ts";
@@ -24,6 +24,7 @@ import {
 } from "../routes.ts";
 import { arrive, ScrollMemory, stampEntry } from "../scroll-memory.ts";
 import { LAYOUT_BREAKPOINTS } from "./layout.ts";
+import type { LoadState } from "./loader.ts";
 import { base } from "./shared.ts";
 import "./office.ts";
 import "./board.ts";
@@ -274,7 +275,36 @@ export class IncApp extends LitElement {
 
   private onConnection = () => {
     this.offline = isOffline();
+    // Back online: whatever failed while the daemon was away loads again.
+    if (!this.offline) refreshNow();
   };
+
+  /** Views that couldn't refresh (and kept their data), by view: one banner for all of them. */
+  private stale = new Map<EventTarget, string>();
+
+  private onLoadState = (e: Event) => {
+    const { source, message } = (e as CustomEvent<LoadState>).detail;
+    if (message === null) this.stale.delete(source);
+    else this.stale.set(source, message);
+    this.requestUpdate();
+  };
+
+  /** The refresh failures still worth showing: from views that are still on the page. */
+  private staleMessage(): string | null {
+    for (const source of [...this.stale.keys()]) if (!(source as Node).isConnected) this.stale.delete(source);
+    return this.stale.values().next().value ?? null;
+  }
+
+  private notice() {
+    if (this.offline) return html`<inc-offline slot="notice"></inc-offline>`;
+    const message = this.staleMessage();
+    return message
+      ? html`<div slot="notice" class="load-error" role="alert">
+          <span>Couldn't refresh: ${message}. Showing what was last loaded.</span>
+          <button class="btn ghost" type="button" @click=${() => refreshNow()}>Try again</button>
+        </div>`
+      : nothing;
+  }
 
   private onDocumentClick = (e: MouseEvent) => {
     if (!this.accountOpen) return;
@@ -733,12 +763,13 @@ export class IncApp extends LitElement {
           }
         </div>
       </header>
-      <main tabindex="-1" @conv-focus=${this.onComposerFocus}>
+      <main tabindex="-1" @conv-focus=${this.onComposerFocus} @load-state=${this.onLoadState}>
         <inc-layout .kind=${layoutForRoute(this.route)} ?dense=${this.route.view === "conversations"} ?hide-heading=${this.threadOnPhone()}>
           <h1 id="view-heading" tabindex="-1" slot="heading">${routeName(this.route).long}</h1>
           ${this.renderHeadExtras()}
           ${this.renderTabs()}
-          ${this.offline ? html`<inc-offline></inc-offline>` : this.view()}
+          ${this.notice()}
+          ${this.view()}
         </inc-layout>
       </main>
       <nav class="tabs" role="tablist" aria-label="Areas">

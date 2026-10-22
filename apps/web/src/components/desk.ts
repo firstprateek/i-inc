@@ -135,7 +135,7 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
   }
 
   override render() {
-    if (this.error) return html`<p role="alert">The daemon isn't answering: ${this.error}</p>`;
+    if (this.error) return this.failure("My desk");
     if (!this.data)
       return html`<p class="muted">Loading ${this.show === "releases" ? "releases" : "usage"}…</p>`;
     const d = this.data;

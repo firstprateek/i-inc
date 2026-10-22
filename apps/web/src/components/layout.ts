@@ -120,6 +120,13 @@ export class IncLayout extends LitElement {
       :host([hide-heading]) .page-header { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
         clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
       .content { width: 100%; min-width: 0; box-sizing: border-box; }
+      /* A banner the shell puts above the view (the daemon can't be reached, a refresh failed): the view
+         under it stays mounted. Empty, it takes no room. */
+      .notice { width: 100%; min-width: 0; box-sizing: border-box; }
+      .frame.page .notice { max-width: var(--page-width, 840px); margin-inline: auto; }
+      .frame.wide .notice { max-width: var(--wide-width, 1400px); margin-inline: auto; }
+      .frame.split .notice { flex: none; }
+      ::slotted([slot="notice"]) { display: block; margin: 0 0 12px; }
       .frame.wide .content { max-width: var(--wide-width, 1400px); margin-inline: auto; }
       .frame.split .page-header { max-width: none; margin-inline: 0; flex: none; }
       .frame.split .content { display: flex; flex: 1 1 0; min-height: 0; overflow: hidden; }
@@ -132,7 +139,8 @@ export class IncLayout extends LitElement {
       }
       @media (max-width: ${LAYOUT_BREAKPOINTS.phone}px) {
         .frame.split .page-header,
-        .frame.split .content { padding-inline: var(--layout-mobile-gutter, 16px); }
+        .frame.split .content,
+        .frame.split .notice { padding-inline: var(--layout-mobile-gutter, 16px); }
         .frame.split .page-header { padding-top: 12px; }
       }
       @media (max-width: ${LAYOUT_BREAKPOINTS.phone}px) and (max-height: 640px) {
@@ -149,6 +157,7 @@ export class IncLayout extends LitElement {
         <div class="page-actions"><slot name="actions"></slot></div>
         <div class="page-tabs"><slot name="tabs"></slot></div>
       </header>
+      <div class="notice"><slot name="notice"></slot></div>
       <div class="content"><slot></slot></div>
     </section>`;
   }

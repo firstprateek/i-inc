@@ -262,7 +262,16 @@ export const cardParam = (v: string | null): string => (v && /^[\w.:@/+=#~-]{1,2
 /** A conversation's id in an address. */
 export const CONVERSATION_ID = /^[0-9a-f]{8}$/i;
 
+/** An address that can't be read (a truncated link) opens home rather than killing the app. */
 export function parse(hash: string): Route {
+  try {
+    return parseHash(hash);
+  } catch {
+    return homeRoute();
+  }
+}
+
+function parseHash(hash: string): Route {
   const full = redirectFor(hash) ?? hash;
   const [, view, a, b, c] = full.split("?")[0]?.split("/") ?? [];
   switch (view) {
@@ -272,7 +281,7 @@ export function parse(hash: string): Route {
         return {
           view: "conversations",
           id: "",
-          draft: { employee: decodeURIComponent(b), project: c ? decodeURIComponent(c) : "" },
+          draft: { employee: safeDecode(b), project: c ? safeDecode(c) : "" },
         };
       const q = hashQuery(full);
       const card = a !== undefined && a !== "new" ? cardParam(q.get("card")) : "";

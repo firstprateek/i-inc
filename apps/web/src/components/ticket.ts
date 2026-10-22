@@ -88,13 +88,19 @@ export class IncTicket extends Loader<Data> {
     super.disconnectedCallback();
   }
 
-  override updated(changed: Map<string, unknown>): void {
+  override willUpdate(changed: Map<string, unknown>): void {
+    // Another ticket: drop the last one's body at once, so its text never sits under the new heading
+    // while the new ticket loads (or for good, when there is no such ticket).
     if (changed.has("ticketId") && changed.get("ticketId") !== undefined) {
       this.pick = "";
       this.anchored = false;
       this.missing = false;
+      this.resetLoad();
       void this.reload();
     }
+  }
+
+  override updated(): void {
     // "Assign…" on a board card opens #/ticket/<id>/assign: bring the card into view and focus it.
     if (!this.anchored && location.hash.endsWith("/assign")) {
       const card = this.renderRoot.querySelector<HTMLElement>("#assign");
@@ -116,7 +122,7 @@ export class IncTicket extends Loader<Data> {
       refreshNow();
       this.dispatchEvent(new CustomEvent("changed", { bubbles: true, composed: true }));
     } catch (e) {
-      this.error = e instanceof Error ? e.message : String(e);
+      this.actionError = e instanceof Error ? e.message : String(e);
     } finally {
       this.busy = false;
     }
@@ -192,7 +198,7 @@ export class IncTicket extends Loader<Data> {
         <p class="muted">It may have been removed, or the address is wrong.</p>
         <div><a class="btn" href="#/work/board">Back to the board</a></div></section>`;
     }
-    if (this.error && !this.data) return html`<p role="alert">${this.error}</p>`;
+    if (this.error) return this.failure(`ticket #${this.ticketId}`);
     if (!this.data) return html`<p class="muted">Loading the ticket…</p>`;
     const { ticket: t, events } = this.data;
     return html`<div class="wrap">
@@ -205,7 +211,7 @@ export class IncTicket extends Loader<Data> {
         ${this.fromConversation(t)}
         ${this.images(t)}
         ${t.waiting ? html`<p class="waits"><i aria-hidden="true"></i><span>${waitingLine(t.waiting, t.waitingUntil)}</span></p>` : ""}
-        ${this.error ? html`<p role="alert">${this.error}</p>` : ""}
+        ${this.actionError ? html`<p role="alert">${this.actionError}</p>` : ""}
         ${notStarted(t) ? this.assignCard(t) : ""}
         ${this.body(t)}
         ${t.status !== "done" && t.status !== "ready" ? this.addImages(t) : ""}

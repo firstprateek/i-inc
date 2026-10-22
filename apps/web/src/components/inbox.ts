@@ -1,13 +1,6 @@
 // Work → Needs you (spec §10): what needs you and what's ready, each answerable in one tap.
 import { css, html } from "lit";
-import {
-  api,
-  type Conversation,
-  type PolicyProposal,
-  type ProposalView,
-  refreshNow,
-  type TicketView,
-} from "../api.ts";
+import { api, type Conversation, type PolicyProposal, type ProposalView, type TicketView } from "../api.ts";
 import { waitingLine, waitsForAssignee } from "../assign.ts";
 import { visible } from "../conversations/model.ts";
 import { needsYouCount, waitingConversations } from "../needs-you.ts";
@@ -36,15 +29,6 @@ export class IncInbox extends Loader<{
         : {},
     };
   };
-
-  private async act(fn: () => Promise<unknown>) {
-    try {
-      await fn();
-      refreshNow();
-    } catch (e) {
-      this.error = e instanceof Error ? e.message : String(e);
-    }
-  }
 
   static override styles = [
     base,
@@ -78,7 +62,7 @@ export class IncInbox extends Loader<{
   ];
 
   override render() {
-    if (this.error) return html`<p role="alert">${this.error}</p>`;
+    if (this.error) return this.failure("what needs you");
     if (!this.data) return html`<p class="muted">Loading what needs you…</p>`;
     const needs = this.data.tickets.filter((t) => t.status === "needs-you");
     const ready = this.data.tickets.filter((t) => t.status === "ready");
@@ -89,6 +73,7 @@ export class IncInbox extends Loader<{
     const conversations = this.data.conversations;
     const n = needsYouCount(this.data.tickets, policies, proposals, conversations);
     return html`
+      ${this.actionNotice()}
       <p class="summary">${n ? `${n} ${n === 1 ? "thing needs" : "things need"} you` : "Nothing needs you"}</p>
       <div class="list">${conversations.map((c) => this.conversation(c))}${needs.map((t) => this.ask(t))}${unassigned.map((t) => this.unassigned(t))}${policies.map((p) => this.policy(p))}</div>
       ${proposals.length ? html`<inc-proposals class="proposed" .proposals=${proposals}></inc-proposals>` : ""}
@@ -136,7 +121,7 @@ export class IncInbox extends Loader<{
     const a = t.needsYou;
     if (!a) return "";
     const btn = (label: string, fn: () => Promise<unknown>, ghost = false) =>
-      html`<button type="button" class="btn ${ghost ? "ghost" : ""}" @click=${() => this.act(fn)}>${label}</button>`;
+      html`<button type="button" class="btn ${ghost ? "ghost" : ""}" ?disabled=${this.pressing} @click=${() => this.press(fn)}>${label}</button>`;
     const body =
       a.kind === "plan-gate"
         ? html`<div class="q">The plan for “${t.title}” waits at the gate.</div>
@@ -149,7 +134,7 @@ export class IncInbox extends Loader<{
             ? html`<div class="q">${a.items.length} ${a.items.length === 1 ? "proposal waits" : "proposals wait"} for you.</div>
                 <div class="actions">${btn("Approve all", () => api.answer(t.id, "approve"))}${btn("Decline", () => api.answer(t.id, "reject"), true)}</div>`
             : a.kind === "protected-paths"
-              ? protectedOk(t, a.paths, (fn) => void this.act(fn))
+              ? protectedOk(t, a.paths, (fn) => void this.press(fn))
               : html`<div class="q">${a.reason}</div>
                 <div class="actions">${btn("Keep going", () => api.answer(t.id, "continue"))}</div>`;
     return html`<div class="card item waiting">${this.header(t, a.kind.replace("-", " "))}${body}</div>`;
@@ -170,8 +155,8 @@ export class IncInbox extends Loader<{
       <div class="who"><span><b>${p.author}</b> · handbook policy · ${p.page}</span></div>
       <div class="q">${p.text}</div>
       <div class="actions">
-        <button type="button" class="btn" @click=${() => this.act(() => api.decidePolicy(p.id, true))}>Approve</button>
-        <button type="button" class="btn ghost" @click=${() => this.act(() => api.decidePolicy(p.id, false))}>Decline</button>
+        <button type="button" class="btn" ?disabled=${this.pressing} @click=${() => this.press(() => api.decidePolicy(p.id, true))}>Approve</button>
+        <button type="button" class="btn ghost" ?disabled=${this.pressing} @click=${() => this.press(() => api.decidePolicy(p.id, false))}>Decline</button>
       </div></div>`;
   }
 
@@ -179,7 +164,7 @@ export class IncInbox extends Loader<{
     return html`<div class="card item">${this.header(t, "report")}
       <div class="q">${t.title}</div>
       <div class="actions">
-        <button type="button" class="btn" @click=${() => this.act(() => api.decide(t.id, "approve"))}>Approve</button>
+        <button type="button" class="btn" ?disabled=${this.pressing} @click=${() => this.press(() => api.decide(t.id, "approve"))}>Approve</button>
         <a class="btn ghost" href="#/ticket/${t.id}" style="display:inline-flex;align-items:center;text-decoration:none">Report</a>
       </div></div>`;
   }

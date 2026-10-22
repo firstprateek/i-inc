@@ -102,7 +102,7 @@ export class IncProjectPage extends Loader<ProjectDetail> {
   protected override willUpdate(changed: Map<PropertyKey, unknown>): void {
     if (changed.has("projectId") && this.isConnected && this.loadedId && this.loadedId !== this.projectId) {
       this.draft = null;
-      this.data = null;
+      this.resetLoad();
       this.note = null;
       this.ticketOpen = false;
       void this.reload();
