@@ -210,7 +210,7 @@ describe("first-run signup needs the setup code", () => {
     expect((await direct(9)).status).toBe(429);
   }, 20_000);
 
-  it("tells tailnet users apart by login when Tailscale names one", async () => {
+  it("ignores identity headers such as Tailscale-User-Login: varying one cannot dodge the limit", async () => {
     const t = await rig();
     const as = (login: string, i: number) =>
       t.send(
@@ -219,9 +219,8 @@ describe("first-run signup needs the setup code", () => {
         { username: "x", password: "long-enough-password", setupCode: `bad${i}` },
         { "x-forwarded-for": "100.64.0.9", "tailscale-user-login": login },
       );
-    await Promise.all(Array.from({ length: 5 }, (_, i) => as("a@example.com", i)));
-    expect((await as("a@example.com", 9)).status).toBe(429);
-    expect((await as("b@example.com", 9)).status).toBe(403);
+    await Promise.all(Array.from({ length: 5 }, (_, i) => as(`a${i}@example.com`, i)));
+    expect((await as("someone-else@example.com", 9)).status).toBe(429);
   }, 20_000);
 
   it("writes the code file with mode 0600 every time, replacing an old readable one", async () => {
@@ -308,6 +307,42 @@ describe("a login is a session, not the daemon token", () => {
     expect((await t.send("POST", "/api/login", right, { "x-forwarded-for": "100.64.0.5" })).status).toBe(429);
     expect((await t.send("POST", "/api/login", right, { "x-forwarded-for": "100.64.0.6" })).status).toBe(200);
   }, 20_000);
+
+  it("ignores Tailscale-User-Login on password logins too", async () => {
+    const t = await rig({ owner: true });
+    const wrong = (i: number) =>
+      t.send(
+        "POST",
+        "/api/login",
+        { username: "owner", password: "wrong-password" },
+        { "x-forwarded-for": "100.64.0.5", "tailscale-user-login": `u${i}@example.com` },
+      );
+    await Promise.all(Array.from({ length: 10 }, (_, i) => wrong(i)));
+    expect((await wrong(99)).status).toBe(429);
+  }, 30_000);
+
+  it("caps wrong passwords across all clients: 100 in an hour, then logins are refused for 15 minutes", async () => {
+    const t = await rig({ owner: true });
+    const wrong = (i: number) =>
+      t.send(
+        "POST",
+        "/api/login",
+        { username: "owner", password: "wrong-password" },
+        { "x-forwarded-for": `100.64.${Math.floor(i / 200)}.${i % 200}` },
+      );
+    // 100 clients, one wrong password each: none is limited on its own
+    const wave = await Promise.all(Array.from({ length: 100 }, (_, i) => wrong(i)));
+    expect(wave.every((r) => r.status === 401)).toBe(true);
+    // now everyone waits, even with the right password, from a fresh client
+    const right = { username: "owner", password: "long-enough-password" };
+    const refused = await t.send("POST", "/api/login", right, { "x-forwarded-for": "100.64.9.9" });
+    expect(refused.status).toBe(429);
+    expect(Number(refused.headers.get("retry-after"))).toBeGreaterThan(800);
+    t.app.clock.advance(14);
+    expect((await t.send("POST", "/api/login", right, { "x-forwarded-for": "100.64.9.9" })).status).toBe(429);
+    t.app.clock.advance(2);
+    expect((await t.send("POST", "/api/login", right, { "x-forwarded-for": "100.64.9.9" })).status).toBe(200);
+  }, 60_000);
 
   it("is not dodged by spoofed X-Forwarded-For prefixes on password logins", async () => {
     const t = await rig({ owner: true });

@@ -2827,6 +2827,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
 
   // Password and token logins: wrong guesses are limited per client too, before any password is hashed.
   const loginGuesses = new GuessLimit(10, 10 * 60_000, () => d.clock.now());
+  // Across every client: 100 wrong passwords or tokens in an hour, and logins are refused for 15 minutes.
+  const loginCeiling = new GuessLimit(100, 3600_000, () => d.clock.now(), 15 * 60_000);
   const tooMany = (seconds: number) =>
     json({ error: "too many wrong tries: wait a few minutes", code: "throttled" }, 429, {
       "retry-after": String(seconds),
@@ -2980,7 +2982,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         token?: unknown;
       };
       const who = clientKey(req, peer);
-      const wait = loginGuesses.retryAfter(who);
+      const wait = Math.max(loginGuesses.retryAfter(who), loginCeiling.retryAfter("all"));
       if (wait) return tooMany(wait);
       if (body.username !== undefined || body.password !== undefined) {
         const owner = getOwner();
@@ -2992,6 +2994,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           !verifyPassword(body.password, owner.password_hash)
         ) {
           loginGuesses.fail(who);
+          loginCeiling.fail("all");
           await new Promise((r) => setTimeout(r, 1000)); // slows guessing
           return json({ error: "wrong username or password" }, 401);
         }
@@ -3000,6 +3003,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       }
       if (!opts.token || typeof body.token !== "string" || !same(body.token, opts.token)) {
         loginGuesses.fail(who);
+        loginCeiling.fail("all");
         await new Promise((r) => setTimeout(r, 1000)); // slows guessing
         return json({ error: "that's not the token" }, 401);
       }

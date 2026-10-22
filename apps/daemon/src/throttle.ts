@@ -6,8 +6,9 @@ const LOOPBACK_PEERS = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1", "localho
 /**
  * Who is asking. A client controls `X-Forwarded-For` (it can send any list), so only the hop the daemon's
  * own proxy appended counts, and only when the connection really came from that proxy on loopback
- * (`tailscale serve`, one hop): the LAST entry, with the tailnet login when Tailscale names one. Any other
- * peer is identified by its socket address and its headers are ignored. No `peer` (tests, calling the
+ * (`tailscale serve`, one hop): the LAST entry. Any other peer is identified by its socket address and its
+ * headers are ignored. Identity headers such as `Tailscale-User-Login` are NOT part of the key: whatever a
+ * proxy passes through from the client could be varied to dodge the limit. No `peer` (tests, calling the
  * handler directly) is taken to be the proxy.
  */
 export function clientKey(req: Request, peer?: string): string {
@@ -17,9 +18,7 @@ export function clientKey(req: Request, peer?: string): string {
     ?.split(",")
     .map((h) => h.trim())
     .filter(Boolean);
-  const hop = hops?.at(-1) ?? "local";
-  const login = req.headers.get("tailscale-user-login")?.trim();
-  return login ? `${login}|${hop}` : hop;
+  return hops?.at(-1) ?? "local";
 }
 
 export class GuessLimit {
