@@ -1,5 +1,5 @@
 import { css, html, type TemplateResult } from "lit";
-import { ApiError, api, type KnowledgeView, type NamedChange, type Page, refreshNow } from "../api.ts";
+import { ApiError, api, type KnowledgeView, type NamedChange, type Page } from "../api.ts";
 import { safeHref } from "../conversations/markdown.ts";
 import { brainHash } from "../routes.ts";
 import { setupApi } from "../setup-api.ts";
@@ -24,7 +24,16 @@ export interface KnowledgeData extends KnowledgeView {
 }
 
 export class IncKnowledge extends Loader<KnowledgeData> {
-  static override properties = { ...Loader.properties, repo: {}, page: {}, missing: { state: true } };
+  static override properties = {
+    ...Loader.properties,
+    repo: {},
+    /** The page open, from the address (`?page=`); empty is the map. */
+    page: {},
+    missing: { state: true },
+    confirming: { state: true },
+  };
+  /** The commit whose Revert was pressed and waits for a yes. */
+  declare confirming: string | null;
   /** "handbook", or an employee id for their brain. */
   declare repo: string;
   /** The page open, as the address says (`?page=`); empty is the map (INDEX.md). */
@@ -37,6 +46,7 @@ export class IncKnowledge extends Loader<KnowledgeData> {
     this.repo = "handbook";
     this.page = "";
     this.missing = false;
+    this.confirming = null;
   }
 
   protected fetch = async (): Promise<KnowledgeData> => {
@@ -72,22 +82,14 @@ export class IncKnowledge extends Loader<KnowledgeData> {
   override updated(changed: Map<string, unknown>): void {
     if (changed.has("repo") && changed.get("repo") !== undefined) {
       this.missing = false;
-      this.data = null;
+      this.confirming = null;
+      this.resetLoad();
       void this.reload();
     }
   }
 
   private get key() {
     return this.repo === "handbook" ? "handbook" : `brain:${this.repo}`;
-  }
-
-  private async act(fn: () => Promise<unknown>) {
-    try {
-      await fn();
-      refreshNow();
-    } catch (e) {
-      this.error = e instanceof Error ? e.message : String(e);
-    }
   }
 
   static override styles = [
@@ -176,7 +178,7 @@ export class IncKnowledge extends Loader<KnowledgeData> {
         <div><a class="btn" href="#/company/team">See the team</a></div></div></div>`;
     }
     if (this.error)
-      return html`<div class="wrap layout-split"><div class="work-state" role="alert">${this.error}</div></div>`;
+      return html`<div class="wrap layout-split"><div class="work-state">${this.failure(this.repo === "handbook" ? "the handbook" : "the brain")}</div></div>`;
     if (!this.data)
       return html`<div class="wrap layout-split"><div class="work-state muted" role="status">Opening ${this.repo === "handbook" ? "the handbook" : "the brain"}…</div></div>`;
     const d = this.data;
@@ -210,13 +212,14 @@ export class IncKnowledge extends Loader<KnowledgeData> {
           )}
         </nav>
         <div class="col layout-split-work">
+          ${this.actionNotice()}
           ${(d.awaiting ?? []).map(
             (p) => html`<section class="card waiting" aria-label="Policy change from ${p.author}">
               <b>${p.author} proposes a change to the ${p.page} policy</b>
               <blockquote>${p.text}</blockquote>
               <div class="row">
-                <button type="button" class="btn" @click=${() => this.act(() => api.decidePolicy(p.id, true))}>Approve</button>
-                <button type="button" class="btn ghost" @click=${() => this.act(() => api.decidePolicy(p.id, false))}>Decline</button>
+                <button type="button" class="btn" ?disabled=${this.pressing} @click=${() => this.press(() => api.decidePolicy(p.id, true))}>Approve</button>
+                <button type="button" class="btn ghost" ?disabled=${this.pressing} @click=${() => this.press(() => api.decidePolicy(p.id, false))}>Decline</button>
               </div>
             </section>`,
           )}
@@ -280,7 +283,17 @@ export class IncKnowledge extends Loader<KnowledgeData> {
       <span class=${c.reverted ? "undone" : ""}>${describe(c.subject)}</span>
       ${
         c.author && !c.reverted && !c.revert
-          ? html`<button type="button" class="btn ghost" @click=${() => this.act(() => api.revert(this.key, c.commit))}>Revert</button>`
+          ? this.confirming === c.commit
+            ? html`<span class="row"><button type="button" class="btn" ?disabled=${this.pressing} @click=${() =>
+                this.press(async () => {
+                  await api.revert(this.key, c.commit);
+                  this.confirming = null;
+                })}>Yes, revert</button><button type="button" class="btn ghost" @click=${() => {
+                this.confirming = null;
+              }}>Keep it</button></span>`
+            : html`<button type="button" class="btn ghost" ?disabled=${this.pressing} aria-label="Revert: ${describe(c.subject)}" @click=${() => {
+                this.confirming = c.commit;
+              }}>Revert</button>`
           : html`<span></span>`
       }
       <small>${who} · ${when(c.at)}${c.reverted ? " · reverted" : ""}</small>

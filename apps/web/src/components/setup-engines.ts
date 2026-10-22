@@ -217,7 +217,7 @@ export class IncSetupEngines extends Loader<EnginesData> {
   }
 
   override render() {
-    if (this.error) return html`<p role="alert">The daemon isn't answering: ${this.error}</p>`;
+    if (this.error) return this.failure("the engines");
     if (!this.data) return html`<p class="muted">Loading engines…</p>`;
     const { engines, accounts } = this.data;
     const name = (id: string) => accounts.find((a) => a.id === id)?.name ?? id;

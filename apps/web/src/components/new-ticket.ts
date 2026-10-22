@@ -5,6 +5,7 @@ import type { Employee } from "@i-inc/core";
 import { css, html, LitElement } from "lit";
 import { api, imageRules, type NewTicketBody, refreshNow, type TicketView } from "../api.ts";
 import { assignees, NOBODY_LABEL, optionLabel } from "../assign.ts";
+import { draftMemo } from "../drafts.ts";
 import { ImagePicker, imagePickerStyles } from "./image-picker.ts";
 import { base, selectField } from "./shared.ts";
 
@@ -22,6 +23,10 @@ const kinds: [Kind, string][] = [
   ["chore", "Chore"],
   ["errand", "Errand"],
 ];
+
+/** Keys of the new-ticket form's unsent text in the draft store (drafts.ts forgets them at sign-out). */
+const DRAFT_TITLE = "new-ticket:title";
+const DRAFT_DETAILS = "new-ticket:details";
 
 const memo = {
   get(key: string): string | null {
@@ -86,8 +91,9 @@ export class IncNewTicket extends LitElement {
     this.project = memo.get("project") ?? "";
     this.kind = (kinds.find(([k]) => k === memo.get("kind"))?.[0] ?? "feat") as Kind;
     this.effort = (efforts.find(([e]) => e === memo.get("effort"))?.[0] ?? "medium") as Effort;
-    this.title = "";
-    this.details = "";
+    // A half-written ticket survives a reload, like a chat draft (and goes with sign-out).
+    this.title = draftMemo.get(DRAFT_TITLE) ?? "";
+    this.details = draftMemo.get(DRAFT_DETAILS) ?? "";
     this.busy = false;
     this.error = null;
     this.filed = null;
@@ -209,6 +215,8 @@ export class IncNewTicket extends LitElement {
       this.filed = { id: ticket.id, title };
       this.title = "";
       this.details = "";
+      draftMemo.set(DRAFT_TITLE, "");
+      draftMemo.set(DRAFT_DETAILS, "");
       this.picker.clear();
       refreshNow();
     } catch (err) {
@@ -243,12 +251,14 @@ export class IncNewTicket extends LitElement {
             placeholder="What should the team do?" .value=${this.title}
             @input=${(e: InputEvent) => {
               this.title = (e.target as HTMLInputElement).value;
+              draftMemo.set(DRAFT_TITLE, this.title);
             }} />
         </label>
         <label>Details (optional, one done-when per line)
           <textarea name="details" rows="3" autocapitalize="sentences" .value=${this.details}
             @input=${(e: InputEvent) => {
               this.details = (e.target as HTMLTextAreaElement).value;
+              draftMemo.set(DRAFT_DETAILS, this.details);
             }}></textarea>
         </label>
         <div class="pair">

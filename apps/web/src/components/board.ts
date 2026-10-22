@@ -1,6 +1,6 @@
 // The board (spec §10): To do → In progress → Review → Done, across projects and Home.
 import { css, html } from "lit";
-import { api, type ProposalView, refreshNow, type TicketEvent, type TicketView } from "../api.ts";
+import { api, type ProposalView, type TicketEvent, type TicketView } from "../api.ts";
 import { waitingLine, waitsForAssignee } from "../assign.ts";
 import { Loader } from "./loader.ts";
 import "./new-ticket.ts";
@@ -121,24 +121,6 @@ export class IncBoard extends Loader<BoardData> {
     return { tickets, proposals, digest: await loadDigest(tickets) };
   };
 
-  static override properties = { ...Loader.properties, actionError: { state: true } };
-  declare actionError: string | null;
-
-  constructor() {
-    super();
-    this.actionError = null;
-  }
-
-  private async act(fn: () => Promise<unknown>) {
-    try {
-      await fn();
-      this.actionError = null;
-      refreshNow();
-    } catch (e) {
-      this.actionError = e instanceof Error ? e.message : String(e);
-    }
-  }
-
   static override styles = [
     base,
     layoutStyles,
@@ -205,7 +187,7 @@ export class IncBoard extends Loader<BoardData> {
   ];
 
   override render() {
-    if (this.error) return html`<p role="alert">The daemon isn't answering: ${this.error}</p>`;
+    if (this.error) return this.failure("the board");
     if (!this.data) return html`<p class="muted">Loading the board…</p>`;
     const { tickets, digest, proposals } = this.data;
     const oks = tickets.filter((t) => t.needsYou?.kind === "protected-paths");
@@ -233,7 +215,7 @@ export class IncBoard extends Loader<BoardData> {
     return html`<div class="card ok-card" aria-label="Waiting for your OK">
       <div class="head"><span class="chip needs">Needs your OK</span>${projectBadge(t.project)}<span>#${t.id}</span>
         <a href="#/ticket/${t.id}" style="margin-left:auto;padding:12px 0">Open</a></div>
-      ${protectedOk(t, a.paths, (fn) => void this.act(fn))}
+      ${protectedOk(t, a.paths, (fn) => void this.press(fn))}
     </div>`;
   }
 

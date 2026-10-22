@@ -91,7 +91,7 @@ export class IncOffice extends Loader<Data> {
   ];
 
   override render() {
-    if (this.error) return html`<p role="alert">The daemon isn't answering: ${this.error}</p>`;
+    if (this.error) return this.failure("the office");
     if (!this.data)
       return html`<p class="muted">${this.show === "meters" ? "Loading accounts…" : "Loading your team…"}</p>`;
     if (this.show === "meters") {

@@ -11,6 +11,7 @@ import { startPresence } from "../ahp/presence.ts";
 import { ActionType } from "../ahp/wire.ts";
 import type { Conversation, ShipView } from "../api.ts";
 import { isNearBottom } from "../chat-scroll.ts";
+import { connection, isOffline } from "../connection.ts";
 import {
   answerInput,
   attachmentOf,
@@ -221,6 +222,7 @@ export class IncConvThread extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback();
+    connection.addEventListener("change", this.onConnection);
     document.addEventListener("click", this.closeShipMenu);
     document.addEventListener("keydown", this.shipMenuKey, true);
     const c = ahp();
@@ -256,7 +258,11 @@ export class IncConvThread extends LitElement {
     this.openCard();
   };
 
+  /** The shell's "Can't reach i.inc" banner covers a daemon that is down: no second banner here for the stream. */
+  private onConnection = () => this.requestUpdate();
+
   override disconnectedCallback(): void {
+    connection.removeEventListener("change", this.onConnection);
     document.removeEventListener("click", this.closeShipMenu);
     document.removeEventListener("keydown", this.shipMenuKey, true);
     for (const off of this.offs) off();
@@ -1010,7 +1016,7 @@ export class IncConvThread extends LitElement {
           : nothing
       }
       ${
-        this.info.status !== "open"
+        this.info.status !== "open" && !isOffline()
           ? html`<div class="banner" role="status">${this.info.status === "failed" ? this.info.error : this.info.everOpen ? "Reconnecting…" : "Connecting…"}
               ${this.info.attempt > 1 && this.info.error ? html`<span>${this.info.error}</span>` : nothing}
               <button class="cbtn" type="button" @click=${() => ahp().retryNow()}>Retry now</button></div>`

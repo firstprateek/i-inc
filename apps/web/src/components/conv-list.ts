@@ -3,6 +3,7 @@
 import type { Employee } from "@i-inc/core";
 import { css, html, LitElement, nothing } from "lit";
 import type { Conversation } from "../api.ts";
+import { connection, isOffline } from "../connection.ts";
 import {
   GROUP_LABEL,
   groupConversations,
@@ -270,11 +271,16 @@ export class IncConvList extends LitElement {
   override connectedCallback(): void {
     super.connectedCallback();
     document.addEventListener("click", this.closeMenu);
+    connection.addEventListener("change", this.onConnection);
   }
   override disconnectedCallback(): void {
     document.removeEventListener("click", this.closeMenu);
+    connection.removeEventListener("change", this.onConnection);
     super.disconnectedCallback();
   }
+  /** The shell's banner says the daemon can't be reached; the list doesn't say it again. */
+  private onConnection = () => this.requestUpdate();
+
   private closeMenu = () => {
     if (this.menu) this.menu = null;
   };
@@ -325,19 +331,23 @@ export class IncConvList extends LitElement {
       </div>
       <div class="groups" @keydown=${this.onKeydown}>
         ${
-          this.error
-            ? html`<p class="problem" role="alert">${this.error}</p><button class="btn ghost" type="button" @click=${() => this.emit("conv-reload")}>Try again</button>`
-            : this.loading && !this.items.length
-              ? html`<div aria-busy="true" aria-label="Loading conversations"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>`
-              : !groups.length
-                ? html`<div class="empty"><h2>${q ? "Nothing matches" : this.showArchived ? "No archived conversations" : "No conversations yet"}</h2>
+          this.error && isOffline()
+            ? this.items.length
+              ? nothing // the list stays as it was; the shell's banner explains
+              : html`<p class="muted" role="status">Conversations load when i.inc answers.</p>`
+            : this.error
+              ? html`<p class="problem" role="alert">${this.error}</p><button class="btn ghost" type="button" @click=${() => this.emit("conv-reload")}>Try again</button>`
+              : this.loading && !this.items.length
+                ? html`<div aria-busy="true" aria-label="Loading conversations"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>`
+                : !groups.length
+                  ? html`<div class="empty"><h2>${q ? "Nothing matches" : this.showArchived ? "No archived conversations" : "No conversations yet"}</h2>
                     <p>${q ? "Try a different word." : "Start a conversation with an employee about a project. They can read the code, make changes on their own copy, and ask you before anything risky."}</p></div>`
-                : groups.map(
-                    (
-                      g,
-                    ) => html`<h3 class="g-${g.group}" id="g-${g.group}">${GROUP_LABEL[g.group]} <span class="n">${g.items.length}</span></h3>
+                  : groups.map(
+                      (
+                        g,
+                      ) => html`<h3 class="g-${g.group}" id="g-${g.group}">${GROUP_LABEL[g.group]} <span class="n">${g.items.length}</span></h3>
                       <ul aria-labelledby="g-${g.group}">${g.items.map((c) => this.row(c))}</ul>`,
-                  )
+                    )
         }
       </div>
       <div class="foot">

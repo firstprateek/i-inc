@@ -3,7 +3,11 @@
 The web app has three areas, each with its own tabs, and three route templates from `apps/web/src/components/layout.ts`. They are a shared
 layout vocabulary, not per-screen width guesses. The route-to-template map is `layoutForRoute()` in
 `components/app.ts`; authenticated route headings, including loading and offline states, stay in the
-same frame. The unauthenticated login screen uses the Page frame too.
+same frame. A failed request never takes a view away: the frame has a `notice` slot above the
+content, where the shell puts the "Can't reach i.inc" banner (`components/offline.ts`) or a "Couldn't
+refresh" notice with a retry, and the view stays mounted with its data and anything typed into it
+(`components/loader.ts` keeps `data` on a failed refresh, drops out-of-order answers, and guards
+button presses with `press()`). The unauthenticated login screen uses the Page frame too.
 
 ## Areas and tabs (T61)
 

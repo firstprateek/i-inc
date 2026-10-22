@@ -50,6 +50,12 @@ export const base = css`
   }
   a.card:active, button.card:active { transform: scale(0.98); opacity: 0.85; }
   .muted { color: var(--ink-2); }
+  /* A failed load or button press, inline: the reason, and a way to try again. The view's data stays. */
+  .load-error { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 0 12px; padding: 12px 16px;
+    box-sizing: border-box; background: var(--needs-surface); color: var(--ink);
+    border: 1px solid var(--needs-edge); border-radius: var(--radius); font-size: 14px; line-height: 1.4;
+    overflow-wrap: anywhere; }
+  .load-error > span { flex: 1 1 14rem; min-width: 0; }
   /* Selected controls set a foreground for their background; helper copy must follow it. */
   [aria-pressed="true"] .muted, [aria-checked="true"] .muted { color: inherit; }
   .btn {
