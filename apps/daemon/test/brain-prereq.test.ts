@@ -198,27 +198,57 @@ describe("the index's look at HEAD", () => {
 });
 
 describe("the removal script's guard", () => {
-  it("takes out a copy folder wherever the sandbox keeps copies, and nothing near the root", async () => {
+  it("removes exactly <base>/<copy>, for a production base and a Linux-style temp base", async () => {
     const { removeScript } = await import("../src/brain-snapshot.ts");
-    for (const ok of [
-      "/home/employee/brain/pip",
-      "/home/employee/brain/pip.code",
-      "/tmp/sbx/pip",
-      "/var/folders/x/T/sbx/pip",
-    ]) {
-      expect(removeScript(ok)).toContain(`rm -rf -- '${ok}'`);
-    }
-    for (const bad of [
+    expect(removeScript("/home/employee/brain", "pip")).toBe(
+      "rm -rf -- '/home/employee/brain/pip' && echo @@removed\n",
+    );
+    expect(removeScript("/home/employee/brain", "pip.code")).toContain("'/home/employee/brain/pip.code'");
+    expect(removeScript("/tmp/i-inc-sbx-abc123", "ada")).toContain("'/tmp/i-inc-sbx-abc123/ada'");
+    expect(removeScript("/var/folders/gd/T/sbx/", "kit")).toContain("'/var/folders/gd/T/sbx/kit'");
+  });
+
+  it("refuses an empty, dotted, slashed or odd copy name, so the base itself can never be removed", async () => {
+    const { removeScript } = await import("../src/brain-snapshot.ts");
+    for (const copy of [
+      "",
+      ".",
+      "..",
+      "a/b",
+      "../x",
       "/",
-      "/home",
-      "/tmp",
-      "/home/employee",
-      "relative/path",
-      "/home/employee/brain/../../x",
-      "/a b/c/d",
-      "/tmp/x'y/z",
+      "/x",
+      "x/",
+      ".code",
+      "pip.code.code",
+      "-x",
+      "A",
+      "a b",
+      "a'b",
+      "a;b",
+      "x".repeat(70),
     ]) {
-      expect(() => removeScript(bad)).toThrow();
+      expect(() => removeScript("/home/employee/brain", copy), JSON.stringify(copy)).toThrow(
+        /not a copy name/,
+      );
     }
+    for (const base of ["", "/", "relative/brain", "/home/employee/../x", "/a b", "/x'y"]) {
+      expect(() => removeScript(base, "pip"), JSON.stringify(base)).toThrow(/not a brain folder/);
+    }
+  });
+
+  it("is what the feed sends: a copy removed from the configured base", async () => {
+    const r = await brainRig();
+    r.commit("ada", { "tools/x.md": page("X", "x", "x") });
+    await r.feed.sync("ada");
+    await r.feed.removeCopy("ada", "inc-engineering");
+    expect(existsSync(r.copy("ada"))).toBe(false);
+    expect(existsSync(r.sandbox)).toBe(true);
+    // A bad copy name never reaches a machine.
+    const runs = r.runs.length;
+    expect(await r.feed.removeCopy("", "inc-engineering")).toBe(false);
+    expect(await r.feed.removeCopy("../x", "inc-engineering")).toBe(false);
+    expect(r.runs.length).toBe(runs);
+    expect(existsSync(r.sandbox)).toBe(true);
   });
 });

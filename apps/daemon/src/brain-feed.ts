@@ -591,7 +591,7 @@ export class BrainFeed {
       return false;
     }
     try {
-      const r = await this.run(employeeId, removeScript(this.rootOf(copy)), machine);
+      const r = await this.run(employeeId, removeScript(this.o.home ?? brainHome, copy), machine);
       if (r.code !== 0 || !r.output.includes("@@removed"))
         throw new Error(r.output.trim().slice(-120) || "failed");
       this.o.db.run("DELETE FROM brain_synced WHERE machine = ? AND employee_id = ?", machine, copy);

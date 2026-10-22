@@ -120,15 +120,21 @@ export function applyScript(o: ApplyOptions): string {
 }
 
 /** Takes a whole copy out of a sandbox (the employee moved to another team, left, or may not have one). */
-/** At least three folders deep (`/home/employee/brain/<id>` is four; `/tmp/x/<id>` is the least a test uses). */
-export function removeScript(rootDir: string): string {
-  if (
-    !root.test(rootDir) ||
-    rootDir.split("/").length < 4 ||
-    rootDir.split("/").some((p) => p === ".." || p === ".")
-  )
-    throw new Error(`not a copy folder: ${rootDir}`);
-  return `rm -rf -- '${rootDir}' && echo @@removed\n`;
+/** A copy's name: an employee id, or a PA's second copy (`<id>.code`). */
+const copyName = /^[a-z0-9][a-z0-9-]{0,62}(\.code)?$/;
+
+/**
+ * Removes exactly `<base>/<copy>` and nothing else: `base` is the brain folder the daemon is configured with
+ * (`/home/employee/brain`), `copy` must be a plain copy name. An empty, `.`, `..` or slashed name is refused,
+ * so the base itself (every copy, with any edits not yet collected) can never be removed by a mistake.
+ */
+export function removeScript(base: string, copy: string): string {
+  if (!root.test(base) || base === "/" || base.split("/").some((p) => p === ".." || p === ".")) {
+    throw new Error(`not a brain folder: ${base}`);
+  }
+  if (!copyName.test(copy)) throw new Error(`not a copy name: ${copy}`);
+  const dir = `${base.replace(/\/+$/, "")}/${copy}`;
+  return `rm -rf -- '${dir}' && echo @@removed\n`;
 }
 
 /** Asks whether the sandbox still holds exactly this snapshot (it can be wiped by a storage clean-up). */
