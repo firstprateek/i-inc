@@ -9,6 +9,7 @@ import { IncApp } from "../src/components/app.ts";
 import { IncLayout } from "../src/components/layout.ts";
 import "../src/login.ts";
 import { IncLogin } from "../src/login.ts";
+import { answer } from "./daemon-board.ts";
 
 const web = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p: string) => readFileSync(join(web, p), "utf8");
@@ -206,8 +207,7 @@ describe("tab stops on the board", () => {
       ...Array.from({ length: 5 }, (_, i) => ticket(i + 20, "todo")),
     ];
     vi.stubGlobal("fetch", async (url: string) => {
-      const body =
-        url === "/api/board" ? { tickets } : url === "/api/proposals?status=open" ? { proposals: [] } : {};
+      const body = answer({ tickets }, url) ?? {};
       return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
     });
   });
