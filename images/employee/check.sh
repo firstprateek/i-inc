@@ -33,6 +33,7 @@ try node node --version
 try pnpm pnpm --version
 try git git --version
 try gh gh --version
+try ripgrep rg --version
 try "Claude's ACP adapter" node -p \
   'require("/usr/local/lib/node_modules/@agentclientprotocol/claude-agent-acp/package.json").version'
 try "Codex's ACP adapter" codex-acp --version

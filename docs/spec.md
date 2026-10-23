@@ -253,6 +253,13 @@ The employee's first ticket is orientation. It reads each project's `CLAUDE.md` 
 project pages in its brain. Like every session, it gets the handbook's map and the pages that match
 its task in its brief, and a copy of the handbook in its machine (§5, "The brain").
 
+**Orientation closes only when its done-when is met.** When the session ends, the daemon collects what the
+employee wrote in its brain copy and checks the pages it was asked for: a page under `projects/` for each
+project, or for a PA the two pages of §7. If one is missing, the employee gets one more session with a brief
+that says what it did not write and how. If that fails too, the ticket goes to Needs you with the reason, and
+"Keep going" gives it two more sessions; it is never marked done. The daily tidy-up is held to its done-when
+the same way (the report it started from must be empty).
+
 ### Engines and switching: identity is memory
 
 Every machine has all the harnesses installed: Claude Code, Antigravity, Codex and OpenCode, each speaking
@@ -600,6 +607,17 @@ shorter loop:
   local one. If none is set up, it says so ("none is set up yet: add one in Setup"), and the hiring
   form says the same; the local engine is OpenCode on Ollama (`tools/m1/install-harnesses.sh`), added
   as an engine in Setup.
+- **A PA works on a small model, in a machine with nothing to install.** Every PA brief and every turn of a
+  PA's conversation starts with a short note on its machine: no internet, no sudo, no installs, which tools it
+  has (a shell, git, node, jq, grep, its file tools, the `brain` command, and `rg`) and which it has not. The
+  brain section it carries is cut for its small window: 40 map lines and 1,500 tokens of pages (at most 3),
+  against 150 lines and 3,000 tokens (5 pages) for a cloud engine. The local engine's window is 32,768 tokens
+  (`OLLAMA_CONTEXT_LENGTH` on the host, `limit.context` in OpenCode's config); Ollama's default of 4,096 would
+  cut the front of every prompt without a word. Its orientation is its own, in short numbered jobs with the
+  exact path and the page format to copy: read its home brain and the handbook's non-code pages, write
+  `reference/how-i-help-at-home` (with a "My tools" section where it records what works offline) and a starter
+  `patterns/errands`. The owner can check it works with `apps/daemon/scripts/converse.ts` (docs/handoff.md,
+  "Checking a PA works").
 - **Web work is split off.** A flight search needs the internet but not your mail. The PA files a
   **web errand** with a structured brief (for example: from, to, dates, cabin, preferences). A fresh,
   throwaway session with open internet and no home data runs it, on any engine, and returns the

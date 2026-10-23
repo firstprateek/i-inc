@@ -13,9 +13,11 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
+  type BrainBudget,
   type BrainUse,
   brainHome,
   buildMap,
+  cloudBrainBudget,
   conversationQuery,
   fitMaps,
   isHomeEmployee,
@@ -855,7 +857,12 @@ export class BrainFeed {
    * The maps for a prompt: only pages that are in the copy, each scope's cut to its share of about 150
    * lines in all (closest scope first).
    */
-  private maps(employeeId: string, scopes: Scope[], allowHome: boolean): PromptMap[] {
+  private maps(
+    employeeId: string,
+    scopes: Scope[],
+    allowHome: boolean,
+    budget: BrainBudget = cloudBrainBudget,
+  ): PromptMap[] {
     const built = this.build(employeeId, allowHome);
     return fitMaps(
       scopes.map((scope) => {
@@ -882,6 +889,7 @@ export class BrainFeed {
           lines,
         };
       }),
+      budget.mapLines,
     );
   }
 
@@ -890,12 +898,19 @@ export class BrainFeed {
     query: string,
     exclude: string[],
     allowHome = true,
+    budget: BrainBudget = cloudBrainBudget,
   ): RetrievedPage[] {
     this.index.refresh();
     const scopes = this.readable(employeeId, allowHome);
     // The personality page is the role instructions, which the brief already carries; it stays in the
     // map and the copy, but is never what a task "matches".
-    return retrieve(this.index, { query, scopes, exclude: [...exclude, `brain:${employeeId}:personality`] });
+    return retrieve(this.index, {
+      query,
+      scopes,
+      exclude: [...exclude, `brain:${employeeId}:personality`],
+      k: budget.pages,
+      tokenBudget: budget.tokens,
+    });
   }
 
   /**
@@ -909,16 +924,18 @@ export class BrainFeed {
     query: TicketQueryInput;
     /** The session may carry home data (a PA's own brain): an errand or orientation, not code work. Default: yes. */
     allowHome?: boolean;
+    /** How much brain to carry: a local engine's small window gets less. Default: the cloud budget. */
+    budget?: BrainBudget;
   }): Promise<BrainContext> {
     if (!this.enabled) return { text: "", pages: [], copy: false, maps: false };
     const allowHome = i.allowHome ?? true;
     const report = await this.sync(i.employeeId, allowHome);
     const scopes = this.readable(i.employeeId, allowHome);
-    const pages = this.retrieveFor(i.employeeId, ticketQuery(i.query), [], allowHome);
+    const pages = this.retrieveFor(i.employeeId, ticketQuery(i.query), [], allowHome, i.budget);
     const hints = report.ok ? this.hints(i.employeeId, this.copyId(i.employeeId, allowHome)) : [];
     const text = renderBrainPrompt(
       {
-        maps: this.maps(i.employeeId, scopes, allowHome),
+        maps: this.maps(i.employeeId, scopes, allowHome, i.budget),
         pages,
         snapshot: report.ok,
         search: report.search !== false,
@@ -951,6 +968,8 @@ export class BrainFeed {
     fresh?: boolean;
     /** The conversation may carry home data (a PA's own brain): it has no project, so nothing leaves the chat. Default: yes. */
     allowHome?: boolean;
+    /** How much brain to carry: a local engine's small window gets less. Default: the cloud budget. */
+    budget?: BrainBudget;
   }): Promise<BrainContext & { conversationPages: BrainUse[]; commit: () => void }> {
     if (!this.enabled) {
       return { text: "", pages: [], copy: false, maps: false, conversationPages: [], commit: () => {} };
@@ -961,7 +980,7 @@ export class BrainFeed {
     const earlier = this.turnsOf(i.conversation).filter((t) => t.unit !== i.turn);
     // Pages the agent was given or opened itself are in its context already.
     const sent = i.fresh ? [] : earlier.flatMap((t) => t.body.pages.map((p) => `${p.scope}:${p.slug}`));
-    const maps = this.maps(i.employeeId, scopes, allowHome);
+    const maps = this.maps(i.employeeId, scopes, allowHome, i.budget);
     // Each map is sent again only when its own lines changed (or the agent has lost its memory).
     const mapHashes: Record<string, string> = {};
     for (const m of maps) mapHashes[m.scope] = hash(JSON.stringify(m.lines));
@@ -973,6 +992,7 @@ export class BrainFeed {
       conversationQuery({ message: i.message, title: i.title, project: i.project }),
       sent,
       allowHome,
+      i.budget,
     );
     const uses = usesOf(pages);
     const hints = report.ok ? this.hints(i.employeeId, this.copyId(i.employeeId, allowHome)) : [];

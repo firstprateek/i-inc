@@ -7,6 +7,7 @@ import {
   assignHelper,
   type BacklogItem,
   type BrainState,
+  brainBudgetFor,
   type ChatSession,
   type Clock,
   type Company,
@@ -405,6 +406,8 @@ export class Daemon {
               sessionId,
               // A PA's own brain is home data: it goes into errands and orientation, never into code work.
               allowHome: req.ticket.type === "errand" || req.ticket.type === "orientation",
+              // A local engine's window is small: it gets a smaller brain section.
+              budget: brainBudgetFor(req.engine),
               query: {
                 title: req.ticket.title,
                 project: req.ticket.project,

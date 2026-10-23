@@ -309,6 +309,105 @@ service is gone after `bootout`, retries a `bootstrap` that fails with error 5, 
 that was running back and loads it. The deployer installer restores the plist it replaced, not the older
 pre-deployer backup. The deployer's own restart (`launchctl kickstart -k`) never boots out, so it needed no change.
 
+### Checking a PA works (T71)
+
+**What was wrong (2026-10-22).** Pip's orientation ticket #18 ran two globs, tried `sudo apt update && sudo apt
+install ripgrep` (no root, no internet), said it could not go on, and the ticket still closed as **done** with only
+`INDEX.md` and `personality.md` in its brain. Four things were wrong, and each has a fix:
+
+1. **Done-when was not checked.** Orientation closed whenever the session returned. Now (core `closeIfDone`, the
+   daemon's `brainState`) the session's brain copy is collected when it ends and the pages it was asked for are
+   looked for. A miss runs one more session whose brief says what is missing, with the exact path and the page
+   format. A second miss puts the ticket in **Needs you** with the reason (a "stuck" card: "Keep going" gives two
+   more sessions, "Decline" fails the ticket). The tidy-up is checked the same way: its report must come out empty.
+   Other ticket types that close without their done-when being checked (reported, not changed here):
+   - **low-effort code tickets** (both modes) have no `prove` stage, so their done-when is only what the reviewer
+     reads;
+   - **medium and high tickets with nobody on the team who has the verify duty** skip `prove` ("no one on the team
+     has the verify duty") and go on;
+   - **errands** (`work` → proposals → retro) never check their done-when;
+   - an owner's "Approve" in owner-merges mode, and tickets filed by agents as follow-ups, carry free text that no
+     stage reads against the result.
+2. **A PA's orientation was the engineers'** ("a page for each project"; it has none). Now `homeOrientationTask`
+   (core `home.ts`): four short jobs, every file's exact path, and the page to copy. It leaves
+   `reference/how-i-help-at-home` (with a "My tools" section where it records what works offline) and
+   `patterns/errands` in its own brain.
+3. **The brief never said what the machine lacks.** Every PA brief and every turn of a PA's conversation now
+   starts with `offlineNotes`: no internet, no sudo, no installs, the tools it has and the ones it hasn't, and
+   "use `grep -rn` if `rg` is missing". OpenCode's own glob and grep tools run on ripgrep and try to download it
+   when it is not on the path, which cannot work offline: that, more than the brief, is probably why Pip's globs
+   found nothing. So `rg` is now in the image.
+4. **The small model's window.** Nothing set one. Ollama's default window is 4,096 tokens, and the
+   OpenAI-compatible endpoint OpenCode talks to cannot change it per request; a prompt that does not fit is cut
+   from the front without an error. The numbers (tokens, characters / 4; OpenCode's own system prompt and tool
+   list are an estimate, not measured):
+
+   | | PA, local budget | the same brief with a cloud budget |
+   | --- | --- | --- |
+   | OpenCode's prompt and tools | about 10,000 | about 10,000 |
+   | the PA's orientation brief (task, offline notes, ticket) | about 900 | about 900 |
+   | map lines | 40 (about 1,000) | 150 (about 3,750) |
+   | matching pages | at most 3, 1,500 | at most 5, 3,000 |
+   | the brain section's own words | about 400 | about 400 |
+   | **total** | **about 14,000** | **about 18,000** |
+
+   Both are over 4,096 (so the window must be raised), the cloud-sized one leaves little room in 16,384, and the
+   local one uses under half of 32,768 with room for tool output and the reply. Hence: **32,768**
+   (`localContextTokens` in core), `limit.context` 32768 / `limit.output` 4096 in `images/employee/opencode.json`,
+   and the local budget in `localBrainBudget` (core). Its memory: the key-value cache of qwen3:8b is about 147 KB
+   a token, **4.8 GB** at 32,768 (half with `OLLAMA_KV_CACHE_TYPE=q8_0` and `OLLAMA_FLASH_ATTENTION=1`), on top of
+   the model's 5 GB. If the mini cannot spare that, use 16,384 and tell me: the budget must be cut again.
+
+**Host steps after this is deployed** (the daemon deploys itself; these are the parts it cannot do):
+
+```bash
+# 1. Give Ollama the window (the Ollama app: set it and restart it; Homebrew: in its service environment).
+launchctl setenv OLLAMA_CONTEXT_LENGTH 32768        # then quit and reopen Ollama
+# after a PA has run once, this shows the loaded model with context_length 32768:
+curl -s http://127.0.0.1:11434/api/ps
+
+# 2. ripgrep and OpenCode's config into the machines that exist. No rebuild, no recreate, no restart:
+sh tools/host/fetch-rg.sh                 # downloads ripgrep 14.1.1 (linux arm64) to ~/.cache/i-inc/rg, checks its SHA-256
+sh tools/host/update-machine.sh home-pip  # the team id of each sandbox: engineering, company, home-pip
+# (it also copies the launchers and OpenCode's config, and copies rg only where `rg` is missing)
+
+# 3. Only for machines made from now on, if you want the image itself to carry them:
+container build -t local/i-inc-employee:latest images/employee
+```
+
+The binary is copied like the launchers are, so an existing machine needs neither a rebuild nor recreating.
+Today `update-machine.sh` is a manual step: when T70's launcher auto-update lands it can copy `rg` and
+`opencode.json` in the same pass (the files are `~/.cache/i-inc/rg` and `images/employee/opencode.json`).
+
+**Talking to a PA from the host.** `apps/daemon/scripts/converse.ts` is the smoke test: it opens a conversation
+the way the web app does, sends one message, streams what comes back and puts the conversation away.
+
+```bash
+bun apps/daemon/scripts/converse.ts --employee pip "What can you do in your machine? Check rg and git."
+bun apps/daemon/scripts/converse.ts --employee ada --project Duet --keep "read the README and say what it is"
+#   --allow          approve permission requests (the default is to deny them and say so)
+#   --keep           leave the conversation in the list instead of archiving it
+#   --timeout 120    seconds to wait for the turn to end (default 300)
+#   --url, --token-file   another daemon, another token file (defaults: http://127.0.0.1:7420, ~/.config/i-inc/web-token)
+```
+
+It reads the bearer token from `~/.config/i-inc/web-token` (the file must be owner-only, like the daemon's own
+check) and never prints it. It prints the reply, `[tool] …` lines and `[permission] … -> denied|allowed` lines, then
+`turn: complete · parts: N · tokens: X in, Y out · conversation <id>`. Exit codes: 0 the turn completed; 1 it was
+cancelled or failed, or the daemon refused (an employee who is not there); 2 a timeout (the turn is cancelled) or the
+daemon could not be reached; 64 a bad command line. A good first check of Pip: *"Run `date`, `git --version` and
+`rg --version`, then say which worked."* It should run all three, report `rg` as there, and not mention sudo.
+
+**Running orientation again.** Pip's #18 is done and thin. File a new one, with the PA done-when:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $(cat ~/.config/i-inc/web-token)" \
+  http://127.0.0.1:7420/api/employees/pip/orientation
+# → {"orientation":"<ticket id>"}; follow it on the board. It ends done, or in Needs you with what is missing.
+```
+
+Then read what Pip wrote in Company → Brain (`reference/how-i-help-at-home`, `patterns/errands`).
+
 ### End-to-end checks and the test suite (`tools/e2e`, `pnpm test`)
 - **End to end:** each `tools/e2e/<name>/run.mjs` drives the real web app in Chromium against a local daemon in a scratch
   HOME, with stand-ins for GitHub and the agents (no real credentials; screenshots at 1440x900 and 390x844, light and

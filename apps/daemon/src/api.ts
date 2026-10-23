@@ -173,6 +173,22 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     return { id, made: true };
   };
   /** The employees who work in a team's sandbox. */
+  /** An employee's orientation ticket (spec §5, "Hiring"): a PA's is about its home, an engineer's about its projects. */
+  const fileOrientation = (who: Employee) => {
+    const pa = isHomeEmployee(who);
+    return d.tickets.create(
+      {
+        title: `Orientation for ${who.name}`,
+        project: pa ? "Home" : (who.projects?.[0] ?? "General"),
+        type: "orientation",
+        effort: "low",
+        doneWhen: orientationDoneWhen(pa),
+        assignee: who.id,
+        priority: 100,
+      },
+      d.clock.now(),
+    );
+  };
   const membersOf = (teamId: string): Employee[] => {
     const team = d.registry.teams().find((t) => t.id === teamId);
     return d.registry.employees().filter((e) => team?.members.includes(e.id));
@@ -1905,21 +1921,27 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         }
         // A brain from the template, and orientation as the first ticket (spec §5, "Hiring").
         d.knowledge.ensureBrain(hire);
-        const pa = isHomeEmployee(hire);
-        const orientation = d.tickets.create(
-          {
-            title: `Orientation for ${hire.name}`,
-            project: pa ? "Home" : (hire.projects?.[0] ?? "General"),
-            type: "orientation",
-            effort: "low",
-            doneWhen: orientationDoneWhen(pa),
-            assignee: hire.id,
-            priority: 100,
-          },
-          d.clock.now(),
-        );
+        const orientation = fileOrientation(hire);
         await daemon.tick();
         return json({ employee: d.registry.employee(hire.id), orientation: orientation.id }, 201);
+      },
+    ],
+
+    // Orientation again (T71): a fresh orientation ticket for an employee whose first one didn't leave what it should.
+    [
+      "POST",
+      "/api/employees/:id/orientation",
+      async (_req, { id = "" }) => {
+        let who: Employee;
+        try {
+          who = d.registry.employee(id);
+        } catch {
+          return json({ error: `no employee ${id}` }, 404);
+        }
+        d.knowledge.ensureBrain(who);
+        const orientation = fileOrientation(who);
+        await daemon.tick();
+        return json({ orientation: orientation.id }, 201);
       },
     ],
 

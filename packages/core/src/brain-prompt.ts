@@ -189,6 +189,30 @@ function pagesListed(lines: string[]): number {
 /** The most map lines a brief carries in all, across the scopes. */
 export const mapLinesTotal = 150;
 
+/** How much brain a brief or turn carries: map lines in all, tokens of matching pages, and how many pages. */
+export interface BrainBudget {
+  mapLines: number;
+  tokens: number;
+  pages: number;
+}
+
+/** A cloud engine has room for the whole brain section: about 150 map lines and 3,000 tokens of pages. */
+export const cloudBrainBudget: BrainBudget = { mapLines: mapLinesTotal, tokens: 3000, pages: 5 };
+
+/**
+ * A local engine (OpenCode on a small Ollama model, spec §7) reads a window of `localContextTokens` that
+ * OpenCode's own system prompt and tool list already fill by a third; so its brain section is cut to about 40%
+ * of a cloud one (about 2,900 tokens against 7,100): 40 map lines (about 1,000 tokens), 1,500 tokens of pages,
+ * at most 3 pages.
+ */
+export const localBrainBudget: BrainBudget = { mapLines: 40, tokens: 1500, pages: 3 };
+
+/** The context window (tokens) the local engine is set up with: `OLLAMA_CONTEXT_LENGTH` on the host and `limit.context` in OpenCode's config (docs/handoff.md, "Checking a PA works"). */
+export const localContextTokens = 32768;
+
+export const brainBudgetFor = (engine: { local: boolean }): BrainBudget =>
+  engine.local ? localBrainBudget : cloudBrainBudget;
+
 /**
  * The maps a prompt carries, cut to `total` lines altogether: the closest scope first (own brain, then
  * team, then company), each later scope keeping at least one line. A map that doesn't fit ends with a
