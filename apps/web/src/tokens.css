@@ -350,3 +350,16 @@ body {
 html {
   scrollbar-color: var(--scroll-thumb) transparent;
 }
+
+/* Less motion for anyone who asked for it. Nothing in the page's own (light) DOM sets motion, so this needs no
+   override of the cascade; each component's shadow root repeats it, forcefully, through shared.ts base. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms;
+    animation-iteration-count: 1;
+    transition-duration: 0.01ms;
+    scroll-behavior: auto;
+  }
+}

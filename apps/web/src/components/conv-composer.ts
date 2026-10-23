@@ -121,7 +121,8 @@ export class IncConvComposer extends LitElement {
       .row .grow { flex: 1 1 auto; }
       .pickers { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
       .pickers label { display: inline-flex; align-items: center; min-width: 0; }
-      .pickers select { min-height: 44px; font-size: 14px; font-weight: 600; width: auto; max-width: 190px; border-radius: 999px; padding-left: 14px; }
+      /* 16px: iOS zooms the page when a field under 16px takes focus. */
+      .pickers select { min-height: 44px; font-size: 16px; font-weight: 600; width: auto; max-width: 190px; border-radius: 999px; padding-left: 14px; }
       .icon { flex: none; width: 44px; height: 44px; border-radius: 50%; border: 0; background: transparent; color: var(--ink-2); display: inline-grid; place-items: center; cursor: pointer; }
       .icon:hover { background: var(--sunken); color: var(--ink); }
       .icon:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 1px; }

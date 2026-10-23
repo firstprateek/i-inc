@@ -70,9 +70,12 @@ async function cacheFirst(request) {
   const hit = await cache.match(request);
   if (hit) return hit;
   const response = await fetch(request);
-  // Only remember real files. The daemon answers an unknown path with index.html, which isn't one.
+  // Only remember real files. The daemon answers an unknown path with index.html, which isn't one. A 206
+  // (a range of a file) is `ok` but cannot be cached: put() rejects it, so only a whole 200 is kept.
   const type = response.headers.get("content-type") ?? "";
-  if (response.ok && !type.includes("text/html")) cache.put(request, response.clone());
+  if (response.status === 200 && !type.includes("text/html")) {
+    cache.put(request, response.clone()).catch(() => {});
+  }
   return response;
 }
 
@@ -120,7 +123,11 @@ self.addEventListener("notificationclick", (event) => {
   event.waitUntil(
     (async () => {
       const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-      const open = windows.find((c) => new URL(c.url).origin === self.location.origin);
+      // The window being looked at, not whichever is listed first: with two open (a browser tab and the
+      // installed app) the tap would otherwise focus one in the background.
+      const ours = windows.filter((c) => new URL(c.url).origin === self.location.origin);
+      const open =
+        ours.find((c) => c.focused) ?? ours.find((c) => c.visibilityState === "visible") ?? ours[0];
       if (open) {
         const focused = (await open.focus().catch(() => null)) ?? open;
         // A change of #hash is a same-document navigation, so the open app just moves to the ticket.
@@ -134,4 +141,48 @@ self.addEventListener("notificationclick", (event) => {
       await self.clients.openWindow(target);
     })(),
   );
+});
+
+// ---- A subscription the browser replaced (T63) ----
+//
+// Browsers rotate push subscriptions (and drop them): the old endpoint goes dead and the daemon keeps trying
+// it, so pushes stop without a word. When the browser says so, subscribe again with the daemon's key and
+// tell the daemon the new endpoint (and to forget the old one). The page is not needed for any of it.
+
+/** The VAPID key is base64url; subscribe() wants the bytes. */
+function keyBytes(key) {
+  const b64 = key.replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+async function postJson(path, body) {
+  return fetch(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+async function resubscribe(event) {
+  let sub = event.newSubscription;
+  if (!sub) {
+    const res = await fetch("/api/push/key");
+    const key = res.ok ? (await res.json().catch(() => null))?.publicKey : "";
+    if (!key) return; // the daemon has no push now: nothing to subscribe to
+    sub = await self.registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: keyBytes(key),
+    });
+  }
+  const told = await postJson("/api/push/subscribe", sub.toJSON());
+  if (told.ok && event.oldSubscription && event.oldSubscription.endpoint !== sub.endpoint) {
+    await postJson("/api/push/unsubscribe", { endpoint: event.oldSubscription.endpoint }).catch(() => {});
+  }
+}
+
+self.addEventListener("pushsubscriptionchange", (event) => {
+  event.waitUntil(resubscribe(event).catch(() => {}));
 });

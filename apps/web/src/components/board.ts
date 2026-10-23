@@ -237,9 +237,9 @@ export class IncBoard extends Loader<BoardData> {
       ${columns.map(([id, name, dotCls]) => {
         const list = cols[id].tickets;
         const hidden = cols[id].total - list.length;
-        return html`<section aria-label=${name}>
+        return html`<section aria-label=${name} @keydown=${this.onCardKey} @focusin=${(e: FocusEvent) => this.rove(id, e)}>
           <h2><span class="col-dot ${dotCls}" aria-hidden="true"></span>${name}<span>${cols[id].total}</span></h2>
-          ${list.length ? list.map((t) => this.card(t, id === "done" ? reports[t.id] : undefined)) : html`<div class="empty">${emptyColumn[id]}</div>`}
+          ${list.length ? list.map((t, i) => this.card(t, id === "done" ? reports[t.id] : undefined, this.stop(id, t, i))) : html`<div class="empty">${emptyColumn[id]}</div>`}
           ${
             hidden > 0
               ? html`<button type="button" class="btn ghost more" ?disabled=${this.pressing}
@@ -258,7 +258,41 @@ export class IncBoard extends Loader<BoardData> {
       <span><span class="note">${r.note}</span> · ${ago(r.at)}</span></div>`;
   }
 
-  private card(t: BoardTicket, report?: DigestRow) {
+  /** The card each column keeps as its one tab stop (the one last focused, else the first). */
+  private roving: Partial<Record<TicketView["column"], string>> = {};
+
+  private stop(column: TicketView["column"], t: BoardTicket, index: number): 0 | -1 {
+    const list = this.data?.columns[column].tickets ?? [];
+    const keep = this.roving[column];
+    const at = keep && list.some((x) => x.id === keep) ? keep : list[0]?.id;
+    return (keep ? t.id === at : index === 0) ? 0 : -1;
+  }
+
+  /** Remembers which card of a column has the focus, so Tab returns to it. */
+  private rove(column: TicketView["column"], e: FocusEvent): void {
+    const card = e
+      .composedPath()
+      .find((n): n is HTMLAnchorElement => n instanceof HTMLAnchorElement && n.classList.contains("t"));
+    const id = card?.getAttribute("href")?.replace("#/ticket/", "");
+    if (!id || this.roving[column] === id) return;
+    this.roving[column] = id;
+    this.requestUpdate();
+  }
+
+  /** Up and Down, Home and End move between a column's cards; Tab leaves the column (a board is not 1,000 tab stops). */
+  private onCardKey = (e: KeyboardEvent) => {
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+    const section = e.currentTarget as HTMLElement;
+    const cards = [...section.querySelectorAll<HTMLAnchorElement>("a.card.t")];
+    const at = cards.findIndex((c) => c === e.composedPath()[0] || c.contains(e.composedPath()[0] as Node));
+    if (at < 0) return;
+    e.preventDefault();
+    const to =
+      e.key === "Home" ? 0 : e.key === "End" ? cards.length - 1 : at + (e.key === "ArrowDown" ? 1 : -1);
+    cards[Math.max(0, Math.min(cards.length - 1, to))]?.focus();
+  };
+
+  private card(t: BoardTicket, report?: DigestRow, tab: 0 | -1 = 0) {
     const needs = t.status === "needs-you";
     const statusCls = needs
       ? "waiting"
@@ -270,7 +304,7 @@ export class IncBoard extends Loader<BoardData> {
             ? "review"
             : "";
     const assign = waitsForAssignee(t);
-    const card = html`<a class="card t ${statusCls} ${assign ? "has-assign" : ""}" href="#/ticket/${t.id}">
+    const card = html`<a class="card t ${statusCls} ${assign ? "has-assign" : ""}" href="#/ticket/${t.id}" tabindex=${tab}>
       <div class="row">
         <span class="tag">${t.type}</span>${projectBadge(t.project)}<span class="grow"></span>
         ${needs ? html`<span class="chip needs">Needs you</span>` : ""}${t.held ? html`<span class="chip">On hold</span>` : ""}<span class="muted" style="font-size:12px;font-weight:700">#${t.id}</span>

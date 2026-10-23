@@ -23,26 +23,27 @@ describe("mobile app tab bar (T25)", () => {
     document.body.innerHTML = "";
   });
 
-  it("renders the four areas as buttons with role='tab' and type='button', not link elements", async () => {
+  it("renders the four areas as links in a navigation landmark, not a tablist of buttons", async () => {
     const app = new IncApp();
     document.body.append(app);
     await app.updateComplete;
 
     const nav = app.shadowRoot?.querySelector(".tabs");
     expect(nav).not.toBeNull();
-    expect(nav?.getAttribute("role")).toBe("tablist");
-    expect(nav?.getAttribute("aria-label")).toBe("Areas");
+    expect(nav?.tagName.toLowerCase()).toBe("nav");
+    expect(nav?.getAttribute("role")).toBeNull();
+    // Not the same name as the header's "Areas" navigation.
+    expect(nav?.getAttribute("aria-label")).toBe("Primary");
+    expect(app.shadowRoot?.querySelector("header nav")?.getAttribute("aria-label")).toBe("Areas");
 
-    const links = nav?.querySelectorAll("a");
-    expect(links?.length).toBe(0);
-
-    const buttons = [...(nav?.querySelectorAll("button") ?? [])];
+    expect(nav?.querySelectorAll("button").length).toBe(0);
+    const buttons = [...(nav?.querySelectorAll("a") ?? [])];
     expect(buttons.length).toBe(4);
 
-    for (const btn of buttons) {
-      expect(btn.tagName.toLowerCase()).toBe("button");
-      expect(btn.getAttribute("type")).toBe("button");
-      expect(btn.getAttribute("role")).toBe("tab");
+    for (const link of buttons) {
+      expect(link.getAttribute("role")).toBeNull();
+      expect(link.getAttribute("aria-selected")).toBeNull();
+      expect(link.getAttribute("href")).toMatch(/^#\//);
     }
 
     expect(buttons.map((b) => b.querySelector(".tab-label")?.textContent?.trim())).toEqual([
@@ -53,23 +54,22 @@ describe("mobile app tab bar (T25)", () => {
     ]);
   });
 
-  it("sets aria-current='page' and aria-selected='true' on the active tab, and 'false' on inactive tabs", async () => {
+  it("marks the active tab aria-current='page' and the others 'false', with no aria-selected", async () => {
     // The phone's home is Work → Needs you.
     const app = new IncApp();
     document.body.append(app);
     await app.updateComplete;
 
-    const buttons = [...(app.shadowRoot?.querySelectorAll<HTMLButtonElement>(".tabs button") ?? [])];
+    const buttons = [...(app.shadowRoot?.querySelectorAll<HTMLAnchorElement>(".tabs a") ?? [])];
     const [conversations, work, needs, company] = buttons;
     if (!conversations || !work || !needs || !company) throw new Error("Missing tabs");
 
     expect(needs.getAttribute("aria-current")).toBe("page");
-    expect(needs.getAttribute("aria-selected")).toBe("true");
-
     for (const inactive of [conversations, work, company]) {
       expect(inactive.getAttribute("aria-current")).toBe("false");
-      expect(inactive.getAttribute("aria-selected")).toBe("false");
     }
+    // One signal, not two: a link is "current", only a tab is "selected".
+    for (const t of buttons) expect(t.getAttribute("aria-selected")).toBeNull();
   });
 
   it("clicking a tab navigates via location.hash and activates the tab", async () => {
@@ -77,10 +77,10 @@ describe("mobile app tab bar (T25)", () => {
     document.body.append(app);
     await app.updateComplete;
 
-    const buttons = [...(app.shadowRoot?.querySelectorAll<HTMLButtonElement>(".tabs button") ?? [])];
+    const buttons = [...(app.shadowRoot?.querySelectorAll<HTMLAnchorElement>(".tabs a") ?? [])];
     const [conversations, work, needs, company] = buttons;
     if (!conversations || !work || !needs || !company) throw new Error("Missing tabs");
-    const selected = () => buttons.filter((b) => b.getAttribute("aria-selected") === "true");
+    const selected = () => buttons.filter((b) => b.getAttribute("aria-current") === "page");
 
     work.click();
     await app.updateComplete;
@@ -110,7 +110,7 @@ describe("mobile app tab bar (T25)", () => {
     document.body.append(app);
     await app.updateComplete;
 
-    const buttons = [...(app.shadowRoot?.querySelectorAll<HTMLButtonElement>(".tabs button") ?? [])];
+    const buttons = [...(app.shadowRoot?.querySelectorAll<HTMLAnchorElement>(".tabs a") ?? [])];
     const [, work, needs, company] = buttons;
     if (!work || !needs || !company) throw new Error("Missing tabs");
     const go = async (hash: string) => {
@@ -119,14 +119,14 @@ describe("mobile app tab bar (T25)", () => {
       await app.updateComplete;
     };
 
-    expect(work.getAttribute("aria-selected")).toBe("true");
-    expect(needs.getAttribute("aria-selected")).toBe("false");
+    expect(work.getAttribute("aria-current")).toBe("page");
+    expect(needs.getAttribute("aria-current")).toBe("false");
 
     await go("#/work/releases");
-    expect(work.getAttribute("aria-selected")).toBe("true");
+    expect(work.getAttribute("aria-current")).toBe("page");
     await go("#/needs-you");
-    expect(needs.getAttribute("aria-selected")).toBe("true");
-    expect(work.getAttribute("aria-selected")).toBe("false");
+    expect(needs.getAttribute("aria-current")).toBe("page");
+    expect(work.getAttribute("aria-current")).toBe("false");
 
     for (const h of [
       "#/company/settings/teams",
@@ -135,7 +135,7 @@ describe("mobile app tab bar (T25)", () => {
       "#/company/usage",
     ]) {
       await go(h);
-      expect(company.getAttribute("aria-selected")).toBe("true");
+      expect(company.getAttribute("aria-current")).toBe("page");
     }
   });
 
@@ -182,7 +182,7 @@ describe("mobile app tab bar (T25)", () => {
     document.body.append(app);
     await app.updateComplete;
 
-    const buttons = [...(app.shadowRoot?.querySelectorAll<HTMLButtonElement>(".tabs button") ?? [])];
+    const buttons = [...(app.shadowRoot?.querySelectorAll<HTMLAnchorElement>(".tabs a") ?? [])];
     expect(buttons.length).toBe(4);
 
     for (const btn of buttons) {
@@ -232,7 +232,7 @@ describe("mobile app tab bar (T25)", () => {
     document.body.append(app);
     await new Promise((r) => setTimeout(r, 20));
     await app.updateComplete;
-    const needs = app.shadowRoot?.querySelectorAll<HTMLButtonElement>(".tabs button")[2];
+    const needs = app.shadowRoot?.querySelectorAll<HTMLAnchorElement>(".tabs a")[2];
     expect(needs?.querySelector(".tab-badge")?.textContent).toBe("2");
     expect(needs?.getAttribute("aria-label")).toBe("Needs you, 2 waiting");
   });

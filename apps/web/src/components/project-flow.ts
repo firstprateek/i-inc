@@ -26,6 +26,7 @@ import {
   TEMPLATES,
   type TemplateId,
 } from "../github-projects.ts";
+import { web } from "../links.ts";
 import { type MergeMode, policyDefaults, setupApi } from "../setup-api.ts";
 import { listEditor } from "../setup-shared.ts";
 import { modePicker, problemBox, projectStyles } from "./project-parts.ts";
@@ -372,7 +373,7 @@ export class IncProjectFlow extends LitElement {
               </ul>`
       }
       <div class="row">
-        <a class="link" href=${this.status?.links.manage ?? "https://github.com/settings/installations"} target="_blank" rel="noopener noreferrer">Give i.inc access to more repos<span aria-hidden="true">&nbsp;↗</span></a>
+        <a class="link" href=${web(this.status?.links.manage ?? "https://github.com/settings/installations")} target="_blank" rel="noopener noreferrer">Give i.inc access to more repos<span aria-hidden="true">&nbsp;↗</span></a>
         <button class="btn ghost" type="button" ?disabled=${this.checking} @click=${() => this.refreshList()}>${this.checking ? "Checking GitHub…" : "Refresh"}</button>
       </div>
       ${this.listNote ? html`<p class="callout needs" role="status">${this.listNote}</p>` : ""}
@@ -427,7 +428,7 @@ export class IncProjectFlow extends LitElement {
           <h2>i.inc can't see ${repo}</h2>
           <p>The bot only sees the repos you give it. Add this one on GitHub, then come back and press Refresh.</p>
           <div class="row">
-            <a class="btn" href=${this.status?.links.manage ?? "https://github.com/settings/installations"} target="_blank" rel="noopener noreferrer">Give i.inc access<span class="sr"> (opens GitHub)</span></a>
+            <a class="btn" href=${web(this.status?.links.manage ?? "https://github.com/settings/installations")} target="_blank" rel="noopener noreferrer">Give i.inc access<span class="sr"> (opens GitHub)</span></a>
             <button class="btn ghost" type="button" ?disabled=${this.checking} @click=${() => this.refreshList()}>${this.checking ? "Checking GitHub…" : "Refresh"}</button>
             <a class="link" href=${ADD_PROJECT_HREF}>Pick another repo</a>
           </div>
@@ -915,13 +916,13 @@ export class IncProjectFlow extends LitElement {
             : manual
               ? html`<ol class="how">
                   <li>Open GitHub's new-repository page. The name and visibility are filled in${account ? html`; choose <b>${account}</b> as the owner` : ""}.
-                    <div style="margin-top:8px"><a class="btn" href=${newRepoLink(d.name, d.visibility)} target="_blank" rel="noopener noreferrer">Open GitHub to create ${d.name}<span class="sr"> (opens GitHub)</span></a></div></li>
+                    <div style="margin-top:8px"><a class="btn" href=${web(newRepoLink(d.name, d.visibility))} target="_blank" rel="noopener noreferrer">Open GitHub to create ${d.name}<span class="sr"> (opens GitHub)</span></a></div></li>
                   <li><b>Create it empty:</b> leave “Add a README”, “.gitignore” and “licence” switched off, so i.inc can fill it.</li>
                   <li>${
                     this.status?.installation?.repositorySelection === "all"
                       ? "The i.inc bot can see all repos on this account, so there is nothing more to do."
                       : html`Make sure the i.inc bot can see it: add it on the bot's GitHub settings.
-                          <div><a class="link" href=${this.status?.links.manage ?? "https://github.com/settings/installations"} target="_blank" rel="noopener noreferrer">Open the bot's GitHub settings<span aria-hidden="true">&nbsp;↗</span><span class="sr"> (opens GitHub)</span></a></div>`
+                          <div><a class="link" href=${web(this.status?.links.manage ?? "https://github.com/settings/installations")} target="_blank" rel="noopener noreferrer">Open the bot's GitHub settings<span aria-hidden="true">&nbsp;↗</span><span class="sr"> (opens GitHub)</span></a></div>`
                   }</li>
                   <li>Come back here. i.inc looks for it every ${Math.round(this.pollMs / 1000)} seconds while this page is open.</li>
                 </ol>

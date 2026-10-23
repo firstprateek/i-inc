@@ -10,6 +10,7 @@ export class IncLogin extends LitElement {
     initialized: { state: true },
     username: { state: true },
     password: { state: true },
+    reveal: { state: true },
     setupCode: { state: true },
     setupCodeRequired: { state: true },
     error: { state: true },
@@ -18,6 +19,8 @@ export class IncLogin extends LitElement {
   declare initialized: boolean;
   declare username: string;
   declare password: string;
+  /** The password is shown as text (the owner asked; off again after signing in). */
+  declare reveal: boolean;
   declare setupCode: string;
   declare setupCodeRequired: boolean;
   declare error: string | null;
@@ -28,6 +31,7 @@ export class IncLogin extends LitElement {
     this.initialized = true;
     this.username = "";
     this.password = "";
+    this.reveal = false;
     this.setupCode = "";
     this.setupCodeRequired = false;
     this.error = null;
@@ -106,6 +110,10 @@ export class IncLogin extends LitElement {
         letter-spacing: -0.3px;
         margin: 0;
       }
+      /* The checkbox is a 44px target with its words. */
+      label.reveal { flex-direction: row; align-items: center; gap: 10px; min-height: 44px; font-weight: 600; }
+      label.reveal input { width: 22px; min-height: 22px; height: 22px; padding: 0; accent-color: var(--ink); }
+      .brand { font: 700 16px var(--display); letter-spacing: -0.2px; color: var(--ink-2); margin: 0 0 4px; }
       .sub {
         margin: 0;
         color: var(--ink-2);
@@ -123,7 +131,7 @@ export class IncLogin extends LitElement {
         min-height: 44px;
         box-sizing: border-box;
         padding: 0 12px;
-        border: 1px solid var(--line-strong, var(--line));
+        border: 1px solid var(--control-edge);
         border-radius: 12px;
         font: inherit;
         font-size: 16px;
@@ -167,6 +175,7 @@ export class IncLogin extends LitElement {
       <h1 slot="heading">${title}</h1>
       <p slot="subtitle">${subtitle}</p>
       <form id="login" @submit=${this.submit}>
+        <p class="brand" aria-hidden="true">i.inc</p>
         <label>
           Username
           <input
@@ -189,7 +198,7 @@ export class IncLogin extends LitElement {
           Password
           <input
             name="password"
-            type="password"
+            type=${this.reveal ? "text" : "password"}
             autocomplete=${passwordAutocomplete}
             enterkeyhint="go"
             aria-label="Password"
@@ -199,6 +208,12 @@ export class IncLogin extends LitElement {
               this.password = (e.target as HTMLInputElement).value;
             }}
           />
+        </label>
+        <label class="reveal">
+          <input type="checkbox" .checked=${this.reveal} @change=${(e: Event) => {
+            this.reveal = (e.target as HTMLInputElement).checked;
+          }} />
+          Show password
         </label>
         ${
           this.setupCodeRequired

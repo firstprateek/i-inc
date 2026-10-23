@@ -6,6 +6,7 @@ import { imageRules, refresh, refreshNow } from "../api.ts";
 import { hasNewFromOthers, isNearBottom, newFromOthers } from "../chat-scroll.ts";
 import { draftMemo } from "../drafts.ts";
 import { messageSent } from "../first-run.ts";
+import { api as apiHref } from "../links.ts";
 import { showLogin } from "../login.ts";
 import { forget, ImagePicker, imagePickerStyles, type Picked } from "./image-picker.ts";
 import { LAYOUT_BREAKPOINTS, layoutStyles } from "./layout.ts";
@@ -645,7 +646,7 @@ export class IncChat extends LitElement {
       .me .sent-images img { display: block; width: 88px; height: 88px; object-fit: cover; border-radius: 10px; background: var(--surface); }
       .me .sent-images a { display: block; border-radius: 10px; }
       textarea { flex-grow: 1; min-width: 0; font: 16px/1.4 var(--body); min-height: 46px; max-height: min(180px, 26vh); max-height: min(180px, 26dvh); padding: 11px 16px; border-radius: 20px;
-        border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); resize: none; box-sizing: border-box; overflow-y: auto; }
+        border: 1px solid var(--control-edge); background: var(--surface); color: var(--ink); resize: none; box-sizing: border-box; overflow-y: auto; }
       textarea:focus { outline: none; border-color: var(--ink); }
       .send { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
         min-width: 40px; min-height: 40px; width: 44px; height: 44px; padding: 0; border-radius: 50%;
@@ -658,7 +659,7 @@ export class IncChat extends LitElement {
       .project .tag { margin: 0; }
       .project label { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; color: var(--ink-2); }
       .project select { font: 16px/1.2 var(--body); min-height: 44px; max-width: 100%; padding: 0 12px; border-radius: 12px;
-        border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); box-sizing: border-box; }
+        border: 1px solid var(--control-edge); background: var(--surface); color: var(--ink); box-sizing: border-box; }
       .project select:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
       .ticket .btn:disabled { opacity: 0.4; cursor: default; }
       .project .hint { flex-basis: 100%; color: var(--ink-2); }
@@ -802,7 +803,7 @@ export class IncChat extends LitElement {
       return html`<ul class="sent-images">${sent.ns.map((n) => {
         const url = `/api/tickets/${sent.ticketId}/attachments/${n}`;
         const name = `image ${n} on #${sent.ticketId}`;
-        return html`<li><a href=${url} target="_blank" rel="noopener" aria-label="Open ${name}"><img src=${url} alt=${name} loading="lazy" /></a></li>`;
+        return html`<li><a href=${apiHref(url)} target="_blank" rel="noopener" aria-label="Open ${name}"><img src=${url} alt=${name} loading="lazy" /></a></li>`;
       })}</ul>`;
     }
     if (!e.picked?.length) return "";

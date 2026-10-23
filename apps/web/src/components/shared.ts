@@ -30,6 +30,17 @@ export const base = css`
     cursor: pointer; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
   }
   button:disabled, [aria-disabled="true"] { cursor: default; }
+  /* The browser default is 4.44:1 on the surface; placeholders stay at the secondary ink (4.5:1 or more). */
+  ::placeholder { color: var(--ink-2); opacity: 1; }
+  /* Motion is off for anyone who asked the system for less of it: nothing pulses, slides or scales (the old
+     chat's dots, the tab bar's press, the hiring and proposal transitions, the quota bars). */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important; animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important; scroll-behavior: auto !important;
+    }
+    a.card:active, button.card:active { transform: none; }
+  }
   /* One thin, themed scrollbar for every scroller in the app (scrollbar-color inherits from :root;
      the ::-webkit-scrollbar rules are for browsers without the standard properties). */
   * { scrollbar-width: thin; }

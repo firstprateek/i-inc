@@ -49,7 +49,20 @@ export async function pushState(env: PushEnv = browserEnv()): Promise<PushState>
   if (!supported(env, reg) || !env.notification || !reg) return "unsupported";
   if (env.notification.permission === "denied") return "denied";
   const sub = await reg.pushManager.getSubscription().catch(() => null);
-  return sub && env.notification.permission === "granted" ? "on" : "off";
+  if (!sub || env.notification.permission !== "granted") return "off";
+  // A subscription made for another key (the daemon's VAPID key changed) can never receive a push, however
+  // "on" the browser says it is: it needs turning on again. If the daemon can't be asked, trust the browser.
+  const key = await serverKey().catch(() => undefined);
+  return key && !sameKey(sub, key) ? "off" : "on";
+}
+
+/** Whether a subscription was made with this VAPID key. A browser that doesn't say is taken to match. */
+export function sameKey(sub: Pick<PushSubscription, "options">, key: string): boolean {
+  const have = sub.options?.applicationServerKey;
+  if (!have) return true;
+  const a = new Uint8Array(have);
+  const b = keyBytes(key);
+  return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
 /** The VAPID key is base64url; pushManager.subscribe wants the bytes. */
@@ -96,6 +109,13 @@ export async function enablePush(env: PushEnv = browserEnv()): Promise<PushState
 
   const key = await serverKey();
   if (!key) return "unavailable";
+  // An old subscription made for another key stops subscribe() ("different applicationServerKey"): drop it, here
+  // and in the daemon, and make a new one.
+  const old = await reg.pushManager.getSubscription().catch(() => null);
+  if (old && !sameKey(old, key)) {
+    await post("/api/push/unsubscribe", { endpoint: old.endpoint }).catch(() => {});
+    await old.unsubscribe().catch(() => false);
+  }
   const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) });
   const res = await post("/api/push/subscribe", sub.toJSON());
   if (!res.ok) {

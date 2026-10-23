@@ -299,7 +299,7 @@ describe("the shell", () => {
     phone(true);
     const { root, state } = await mount("#/needs-you");
     state.top = 500;
-    (root.querySelector('.tabs button[aria-selected="true"]') as HTMLButtonElement).click();
+    (root.querySelector('.tabs a[aria-current="page"]') as HTMLButtonElement).click();
     expect(state.top).toBe(0);
   });
 

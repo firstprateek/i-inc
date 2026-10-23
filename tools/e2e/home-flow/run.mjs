@@ -177,7 +177,7 @@ try {
 
     // 1. Needs you is one destination.
     if (mobile) {
-      await page.locator('.tabs button:has-text("Needs you")').click();
+      await page.locator('.tabs a:has-text("Needs you")').click();
     } else {
       await page.locator("header a.needs-link").click();
     }
@@ -188,7 +188,7 @@ try {
     ok(true, `the tab title is "${await page.title()}"`);
     ok((await page.locator('[role="tablist"].subnav').count()) === 0, "it has no tab row");
     const current = mobile
-      ? await page.locator('.tabs button[aria-current="page"]').allTextContents()
+      ? await page.locator('.tabs a[aria-current="page"]').allTextContents()
       : await page.locator("header a.needs-link[aria-current=page]").allTextContents();
     ok(current.length === 1 && current[0].includes("Needs you"), "its link or tab is the current one");
     await page.screenshot({ path: join(outDir, `needs-you-${viewport.width}.png`) });

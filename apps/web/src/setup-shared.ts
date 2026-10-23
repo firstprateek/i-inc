@@ -15,10 +15,10 @@ export const setupStyles = css`${layoutStyles}
     padding: 0; margin: 0; min-width: 0; }
   legend { padding: 0; font-size: 13px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px; }
   input[type="text"], input[type="number"], select { font: 16px var(--body); min-height: 44px; padding: 0 12px; border-radius: 10px;
-    border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); min-width: 0; box-sizing: border-box; width: 100%; }
+    border: 1px solid var(--control-edge); background: var(--surface); color: var(--ink); min-width: 0; box-sizing: border-box; width: 100%; }
   input.mono { font-family: var(--mono); font-size: 16px; }
   .row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-  .seg { display: flex; border: 1px solid var(--line-strong); border-radius: 999px; overflow: hidden; }
+  .seg { display: flex; border: 1px solid var(--control-edge); border-radius: 999px; overflow: hidden; }
   .seg button { flex: 1; font: 600 14px var(--body); min-height: 44px; padding: 0 14px; border: none; background: transparent;
     color: var(--ink); cursor: pointer; }
   .seg button[aria-pressed="true"] { background: var(--ink); color: var(--on-ink); }

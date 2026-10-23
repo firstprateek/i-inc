@@ -90,7 +90,7 @@ describe("opening the board with 1,000 tickets", () => {
       expect(p, never).not.toContain(never);
     }
     expect(p.filter((x) => /^\/api\/tickets\//.test(x))).toEqual([]);
-    expect(log.length).toBeLessThanOrEqual(5);
+    expect(log.length).toBeLessThanOrEqual(6);
     // It was 2.6 MB.
     expect(total()).toBeLessThan(150_000);
   });

@@ -5,6 +5,7 @@
 // one click (a new commit, "reverted by owner").
 import { css, html, nothing } from "lit";
 import { api, type BrainChangesView, type BrainChangeView } from "../api.ts";
+import { app } from "../links.ts";
 import { friendlyWhen } from "../time.ts";
 import { Loader } from "./loader.ts";
 import { base, selectField } from "./shared.ts";
@@ -184,7 +185,7 @@ export class IncBrainChanges extends Loader<BrainChangesView> {
           ${c.reverted ? html`<span class="tag">reverted by owner</span>` : nothing}
         </span>
       </div>
-      <p class="who">${c.employee.name} · <a href=${c.source.url}>${c.source.kind === "ticket" ? `ticket #${c.source.id}` : "conversation"}</a> · ${when(c.at)}</p>
+      <p class="who">${c.employee.name} · <a href=${app(c.source.url)}>${c.source.kind === "ticket" ? `ticket #${c.source.id}` : "conversation"}</a> · ${when(c.at)}</p>
       ${refused && c.reason ? html`<p class="reason">${c.reason}</p>` : nothing}
       ${c.notes.length ? html`<p class="notes">${c.notes.join(" · ")}</p>` : nothing}
       ${c.diff ? (refused ? html`<details><summary>Show what was proposed</summary>${this.diff(c.diff)}</details>` : this.diff(c.diff)) : nothing}

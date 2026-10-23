@@ -453,7 +453,7 @@ describe("the phone tab bar", () => {
     location.hash = "#/more";
     const root = await mount("inc-app");
     expect(location.hash).toBe("#/company/team");
-    const tabs = [...(root.querySelectorAll(".tabs button") as NodeListOf<HTMLButtonElement>)];
+    const tabs = [...(root.querySelectorAll(".tabs a") as NodeListOf<HTMLButtonElement>)];
     expect(tabs.map((a) => a.querySelector(".tab-label")?.textContent?.trim())).toEqual([
       "Conversations",
       "Work",
@@ -461,7 +461,7 @@ describe("the phone tab bar", () => {
       "Company",
     ]);
     expect(tabs[3]?.getAttribute("aria-current")).toBe("page");
-    expect(tabs[3]?.getAttribute("aria-selected")).toBe("true");
+    expect(tabs[3]?.getAttribute("aria-selected")).toBeNull();
     const rowTabs = [...(root.querySelectorAll('[role="tablist"] a') as NodeListOf<HTMLAnchorElement>)];
     expect(rowTabs.map((a) => a.getAttribute("href"))).toEqual([
       "#/company/team",

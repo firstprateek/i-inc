@@ -2,6 +2,7 @@ import { css, html, LitElement, nothing } from "lit";
 import { logout, refresh, refreshNow } from "../api.ts";
 import { connection, isOffline } from "../connection.ts";
 import { isDismissed, showGettingStarted } from "../first-run.ts";
+import { canInstall, installSignal, needsIosInstall, promptInstall } from "../install.ts";
 import { startLiveUpdates } from "../live.ts";
 import { loadNeedsYouCount, needsYouSignal } from "../needs-you.ts";
 import {
@@ -22,6 +23,7 @@ import {
   workTabHref,
 } from "../routes.ts";
 import { arrive, ScrollMemory, stampEntry } from "../scroll-memory.ts";
+import { UPDATE_EVENT, updateAvailable, updates, watchForUpdates } from "../update-check.ts";
 import { LAYOUT_BREAKPOINTS } from "./layout.ts";
 import type { LoadState } from "./loader.ts";
 import { NEW_TICKET_EVENT } from "./new-ticket-event.ts";
@@ -70,7 +72,16 @@ export class IncApp extends LitElement {
     accountOpen: { state: true },
     needsCount: { state: true },
     loadFailed: { state: true },
+    outdated: { state: true },
+    installable: { state: true },
+    iosHelp: { state: true },
   };
+  /** The browser offered to install i.inc and the owner has not yet. */
+  declare installable: boolean;
+  /** The Add to Home Screen steps are open in the account menu (iPhone). */
+  declare iosHelp: boolean;
+  /** The daemon runs a newer release than this page: offer a reload. */
+  declare outdated: boolean;
   /** The route's code could not be loaded (the network, or a newer build replaced its file). */
   declare loadFailed: boolean;
   declare route: Route;
@@ -80,6 +91,7 @@ export class IncApp extends LitElement {
   /** How many things wait for the owner; null until the first answer. */
   declare needsCount: number | null;
   private stopLive: (() => void) | null = null;
+  private stopUpdates: (() => void) | null = null;
   // Scroll and focus across navigation (see scroll-memory.ts). <main> is the one scroll container.
   private memory = new ScrollMemory();
   private currentKey = "";
@@ -106,6 +118,9 @@ export class IncApp extends LitElement {
     this.accountOpen = false;
     this.needsCount = null;
     this.loadFailed = false;
+    this.outdated = false;
+    this.installable = canInstall();
+    this.iosHelp = false;
   }
 
   /**
@@ -135,6 +150,10 @@ export class IncApp extends LitElement {
     document.addEventListener("click", this.onDocumentClick);
     document.addEventListener("keydown", this.onDocumentKeydown);
     this.stopLive = startLiveUpdates();
+    this.stopUpdates = watchForUpdates();
+    updates.addEventListener(UPDATE_EVENT, this.onUpdate);
+    installSignal.addEventListener("change", this.onInstall);
+    this.outdated = updateAvailable();
     applyTheme(this.theme);
     // The shell keeps each page's scroll position itself, so the browser must not guess.
     try {
@@ -230,6 +249,10 @@ export class IncApp extends LitElement {
     document.removeEventListener("keydown", this.onDocumentKeydown);
     this.stopLive?.();
     this.stopLive = null;
+    this.stopUpdates?.();
+    this.stopUpdates = null;
+    updates.removeEventListener(UPDATE_EVENT, this.onUpdate);
+    installSignal.removeEventListener("change", this.onInstall);
     super.disconnectedCallback();
   }
 
@@ -308,11 +331,36 @@ export class IncApp extends LitElement {
     this.renderRoot.querySelector<HTMLElement>("#view-heading")?.focus({ preventScroll: true });
   }
 
+  /** The first Tab stop: past the header and its navigation, to the page's heading (a hash link would change the route). */
+  private skipToContent = () => {
+    this.renderRoot.querySelector<HTMLElement>("#view-heading")?.focus();
+  };
+
+  private onInstall = () => {
+    this.installable = canInstall();
+  };
+
+  private install = async () => {
+    this.accountOpen = false;
+    await promptInstall();
+  };
+
+  private onUpdate = () => {
+    this.outdated = true;
+  };
+
   private onPhoneChange = () => this.requestUpdate();
 
   private onVisible = () => {
     if (document.visibilityState === "visible" && this.needsStale) void this.loadNeeds();
   };
+
+  /** A tab-bar link: the page you are on goes to the top, anywhere else it navigates (with a modified click left to the browser). */
+  private onTabClick(e: MouseEvent, to: string): void {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    this.navigate(to);
+  }
 
   private onConnection = () => {
     this.offline = isOffline();
@@ -338,6 +386,13 @@ export class IncApp extends LitElement {
 
   private notice() {
     if (this.offline) return html`<inc-offline slot="notice"></inc-offline>`;
+    // A page whose own code couldn't load already says the app may have been updated, with a Reload of its own.
+    if (this.outdated && !this.loadFailed) {
+      return html`<div slot="notice" class="load-error" role="status">
+        <span>i.inc was updated. Reload to use the new version.</span>
+        <button class="btn" type="button" @click=${() => location.reload()}>Reload</button>
+      </div>`;
+    }
     const message = this.staleMessage();
     return message
       ? html`<div slot="notice" class="load-error" role="alert">
@@ -482,7 +537,11 @@ export class IncApp extends LitElement {
         padding: 20px max(var(--layout-gutter), calc((100% - var(--wide-width)) / 2), env(safe-area-inset-right)) 28px max(var(--layout-gutter), calc((100% - var(--wide-width)) / 2), env(safe-area-inset-left));
       }
       main:focus, #view-heading:focus { outline: none; }
-      header a, header button, .tabs button { -webkit-tap-highlight-color: transparent; cursor: pointer; }
+      /* Off screen until it has the focus; then it sits over the header's corner. */
+      .skip { position: absolute; top: 8px; left: 8px; z-index: 100; transform: translateY(-200%); min-height: 44px; padding: 0 18px;
+        border: 0; border-radius: 999px; background: var(--ink); color: var(--on-ink); font: 700 15px var(--body); cursor: pointer; }
+      .skip:focus { transform: none; outline: 3px solid var(--reviewing-mark); outline-offset: 2px; }
+      header a, header button, .tabs a { -webkit-tap-highlight-color: transparent; cursor: pointer; }
       .mark { font-family: var(--display); font-weight: 700; font-size: 28px; letter-spacing: -0.8px; text-decoration: none;
         min-height: 44px; display: inline-flex; align-items: center; }
       nav.areas { display: flex; align-items: center; gap: 4px; }
@@ -505,6 +564,7 @@ export class IncApp extends LitElement {
         color: var(--ink); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
       .icon:focus-visible, .account-menu button:focus-visible, nav.areas a:focus-visible, .needs-link:focus-visible,
       .mark:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 2px; }
+      .menu-help { margin: 0; padding: 8px 12px; font-size: 13px; line-height: 1.4; color: var(--ink-2); max-width: 260px; }
       .account-menu { position: absolute; top: calc(100% + 8px); right: 0; z-index: 100; min-width: 200px; max-width: calc(100vw - 32px);
         box-sizing: border-box; padding: 6px; display: flex; flex-direction: column; gap: 2px; background: var(--surface);
         border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.14), 0 2px 8px rgba(0, 0, 0, 0.06); }
@@ -527,6 +587,8 @@ export class IncApp extends LitElement {
       /* A 44px target that takes the room of a one-line subtitle, so a ticket's header is as tall as any other. */
       .back { display: inline-block; padding: 12px 0; margin: -12px 0; font-weight: 600; font-size: 15px; line-height: 1.4; text-decoration: none; }
       @media (max-width: 600px), (max-height: 520px) { [slot="subtitle"]:not(.back) { display: none; } }
+      /* One action fits beside a phone's title; the second is offered in the page (so the tab row stays put). */
+      @media (max-width: 600px) { .phone-hide { display: none !important; } }
 
       /* The conversation screen: the first-run checklist (when there is one) above the conversations. */
       .conv-host { display: flex; flex-direction: column; gap: 12px; height: 100%; min-height: 0; }
@@ -582,8 +644,7 @@ export class IncApp extends LitElement {
             -webkit-backdrop-filter: blur(20px) saturate(180%);
           }
         }
-        .tabs button,
-        .tabs [role="tab"] {
+        .tabs a {
           position: relative;
           display: flex;
           flex-direction: column;
@@ -596,8 +657,9 @@ export class IncApp extends LitElement {
           border: none;
           background: transparent;
           color: var(--ink-2);
+          text-decoration: none;
           font-family: inherit;
-          font-size: 11px;
+          font-size: 12px;
           font-weight: 600;
           text-decoration: none;
           cursor: pointer;
@@ -608,10 +670,12 @@ export class IncApp extends LitElement {
           -webkit-tap-highlight-color: transparent;
           transition: transform 0.08s ease, opacity 0.08s ease;
         }
-        .tabs button:active,
-        .tabs [role="tab"]:active {
+        .tabs a:active {
           transform: scale(0.92);
           opacity: 0.7;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .tabs a:active { transform: none; }
         }
         .tab-pill {
           position: relative;
@@ -636,27 +700,22 @@ export class IncApp extends LitElement {
           font-size: 11px; font-weight: 800; line-height: 1; background: var(--needs-bg); color: var(--needs-fg); border: 1px solid var(--needs-edge);
         }
         .tab-label {
-          font-size: 11px;
+          font-size: 12px;
           line-height: 1.1;
           letter-spacing: -0.1px;
         }
-        .tabs button[aria-current="page"],
-        .tabs [role="tab"][aria-current="page"],
-        .tabs button[aria-selected="true"],
-        .tabs [role="tab"][aria-selected="true"] {
+        .tabs a[aria-current="page"] {
           background: transparent;
           color: var(--ink);
           font-weight: 800;
           text-decoration: none;
         }
-        .tabs button[aria-selected="true"] .tab-pill,
-        .tabs [role="tab"][aria-selected="true"] .tab-pill {
+        .tabs a[aria-current="page"] .tab-pill {
           background: var(--ink);
           color: var(--on-ink);
           box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
         }
-        .tabs button:focus-visible,
-        .tabs [role="tab"]:focus-visible {
+        .tabs a:focus-visible {
           outline: 2px solid var(--reviewing-mark);
           outline-offset: -2px;
         }
@@ -713,7 +772,7 @@ export class IncApp extends LitElement {
         (
           t,
         ) => html`<a role="tab" id="tab-${t.id}" href=${t.href} aria-selected=${t.id === active ? "true" : "false"}
-          aria-current=${t.id === active ? "page" : "false"} tabindex=${t.id === active ? "0" : "-1"}
+          tabindex=${t.id === active ? "0" : "-1"}
           >${t.label}</a>`,
       )}
     </div>`;
@@ -736,7 +795,7 @@ export class IncApp extends LitElement {
           : r.view === "team"
             ? html`<a slot="actions" class="btn" href="#/company/team/hiring">Hire someone</a>`
             : r.view === "projects" && !r.id && !r.flow
-              ? html`<a slot="actions" class="btn ghost" href="#/company/projects/add">Add a repo</a><a slot="actions" class="btn" href="#/company/projects/new">New project</a>`
+              ? html`<a slot="actions" class="btn ghost phone-hide" href="#/company/projects/add">Add a repo</a><a slot="actions" class="btn" href="#/company/projects/new">New project</a>`
               : r.view === "projects"
                 ? html`<a slot="actions" class="btn ghost" href="#/company/projects">All projects</a>`
                 : r.view === "hiring"
@@ -778,20 +837,21 @@ export class IncApp extends LitElement {
     const tab = (t: (typeof PHONE_TABS)[number]) => {
       const active = tabRoute === t.id;
       const n = t.id === "needs-you" ? count : null;
-      return html`<button
-        type="button"
-        role="tab"
-        aria-selected=${active ? "true" : "false"}
+      // Links, not buttons: they go somewhere, and they are announced as the current page (a tab bar that is
+      // not a tablist: no panel belongs to a tab).
+      return html`<a
+        href="#/${t.to}"
         aria-current=${active ? "page" : "false"}
         aria-label=${n ? `${t.label}, ${n} waiting` : t.label}
-        @click=${() => this.navigate(t.to)}
-      ><span class="tab-pill" aria-hidden="true">${t.icon}${n ? html`<span class="tab-badge">${n}</span>` : ""}</span><span class="tab-label">${t.label}</span></button>`;
+        @click=${(e: MouseEvent) => this.onTabClick(e, t.to)}
+      ><span class="tab-pill" aria-hidden="true">${t.icon}${n ? html`<span class="tab-badge">${n}</span>` : ""}</span><span class="tab-label">${t.label}</span></a>`;
     };
     const area = areaOf(this.route);
     const needsActive = this.route.view === "needs-you";
 
     return html`
       <header @click=${this.onHeaderClick}>
+        <button class="skip" type="button" @click=${this.skipToContent}>Skip to content</button>
         <a class="mark" href=${homeHash()}>i.inc</a>
         <nav class="areas" aria-label="Areas">
           ${AREAS.map((a) => html`<a href=${a.href} aria-current=${a.id === area ? "page" : "false"}>${a.label}</a>`)}
@@ -815,6 +875,21 @@ export class IncApp extends LitElement {
                       ? html`<button type="button" role="menuitem" @click=${() => this.showGettingStarted()}>Show getting started</button>`
                       : ""
                   }
+                  ${
+                    this.installable
+                      ? html`<button type="button" role="menuitem" @click=${this.install}>Install i.inc as an app</button>`
+                      : needsIosInstall()
+                        ? html`<button type="button" role="menuitem" aria-expanded=${this.iosHelp ? "true" : "false"}
+                            @click=${() => {
+                              this.iosHelp = !this.iosHelp;
+                            }}>Add to Home Screen</button>
+                          ${
+                            this.iosHelp
+                              ? html`<p class="menu-help" role="note">Tap Share in Safari, then Add to Home Screen. Open i.inc from the Home Screen to get notifications.</p>`
+                              : ""
+                          }`
+                        : ""
+                  }
                   <button type="button" role="menuitem" @click=${() => logout()}>Sign out</button>
                 </div>`
               : ""
@@ -830,7 +905,7 @@ export class IncApp extends LitElement {
           ${this.view()}
         </inc-layout>
       </main>
-      <nav class="tabs" role="tablist" aria-label="Areas">
+      <nav class="tabs" aria-label="Primary">
         ${PHONE_TABS.map(tab)}
       </nav>
     `;

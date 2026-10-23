@@ -440,7 +440,7 @@ describe("the tab bar", () => {
     const app = new IncApp();
     document.body.append(app);
     await app.updateComplete;
-    const tabs = [...(app.shadowRoot?.querySelectorAll(".tabs button") ?? [])];
+    const tabs = [...(app.shadowRoot?.querySelectorAll(".tabs a") ?? [])];
     expect(tabs.map((a) => a.querySelector(".tab-label")?.textContent?.trim())).toEqual([
       "Conversations",
       "Work",
@@ -448,7 +448,7 @@ describe("the tab bar", () => {
       "Company",
     ]);
     const company = tabs[3] as HTMLButtonElement;
-    expect(company.getAttribute("role")).toBe("tab");
+    expect(company.getAttribute("href")).toBe("#/company/team");
     company.click();
     await new Promise((r) => setTimeout(r, 0));
     await app.updateComplete;

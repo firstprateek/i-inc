@@ -90,10 +90,27 @@ change height between tabs or areas**. Only the content below follows its templa
 band of about 840px centred inside that frame; Wide and Split use the whole frame. So the Conversations, Work and
 Company headings start at the same x (20px at 1440, 260px at 1920) and the same y, and the Company tab row stays
 where it is when you switch Team, Brain, Projects, Usage and Settings. To keep this true:
+- the title sits in a 44px band at the top of the header (`::slotted([slot="heading"])` in `layout.ts`), whatever the
+  route puts beside or under it, and Conversations' shorter heading differs only in font size, so the title is at the
+  same y on every route and size (a ticket's too);
+- an area's header holds at most as many actions as fit beside a phone's title: Projects keeps "New project" there and
+  shows "Add a repo" in the page below 600px, so the tab row is at the same y on every Company tab;
 - every route has the same top padding (`main`, including a route that owns its scrolling);
 - the heading block is at least 44px tall, so a route with an action button and one without place the title alike;
 - put the action in the `actions` slot and the tab row in the `tabs` slot; never add a per-route width or margin to a header;
 - a route with no tab row (Conversations, a ticket) has a shorter header, but its title is at the same x and y.
+
+## Navigation and focus (T63)
+
+- **Skip link:** the first Tab stop is "Skip to content" (in the header, off screen until focused); it moves focus to the
+  page heading without touching the hash route.
+- **Phone tab bar:** `<nav aria-label="Primary">` of links (`aria-current="page"`), not a tablist; the header's
+  navigation is "Areas". An area's tab row is the one `role="tablist"`, with `aria-selected` only.
+- **Board:** each column is one Tab stop (roving tabindex; Up/Down/Home/End move between its cards).
+- **Form controls:** every input, select and textarea edge is `--control-edge` (3:1), placeholders are `--ink-2`,
+  fields are 16px (iOS zooms below that), and checkboxes are named by a label that is the 44px card.
+- **Motion:** `prefers-reduced-motion: reduce` turns animations and transitions off everywhere (`base` in `shared.ts`
+  for each component, `tokens.css` for the page).
 
 ## Templates
 

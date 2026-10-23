@@ -7,6 +7,7 @@ import { loadNeedsYou, needsYouCount } from "../needs-you.ts";
 import { layoutStyles } from "./layout.ts";
 import { Loader } from "./loader.ts";
 import "./proposals.ts";
+import { web } from "../links.ts";
 import { protectedOk } from "./protected-card.ts";
 import { avatar, base, projectBadge } from "./shared.ts";
 
@@ -171,7 +172,7 @@ export class IncInbox extends Loader<{
       ${
         t.mergeOnGitHub
           ? html`<div class="actions">
-        <a class="btn" href=${t.mergeOnGitHub.url} target="_blank" rel="noopener noreferrer" style="display:inline-flex;align-items:center;text-decoration:none">Merge on GitHub</a>
+        <a class="btn" href=${web(t.mergeOnGitHub.url)} target="_blank" rel="noopener noreferrer" style="display:inline-flex;align-items:center;text-decoration:none">Merge on GitHub</a>
         <button type="button" class="btn ghost" ?disabled=${this.pressing} @click=${() => this.press(() => api.decide(t.id, "reject"))}>Close without merging</button>
         <a class="btn ghost" href="#/ticket/${t.id}" style="display:inline-flex;align-items:center;text-decoration:none">Report</a>
       </div>

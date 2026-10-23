@@ -6,6 +6,7 @@ import type { Employee } from "@i-inc/core";
 import { css, html, LitElement, nothing } from "lit";
 import { api, type Conversation, type ShipView } from "../api.ts";
 import { cardStyles } from "../conversations/styles.ts";
+import { web } from "../links.ts";
 import { base } from "./shared.ts";
 
 export type ShipKind = "ticket" | "pr" | "takeback";
@@ -381,7 +382,7 @@ export class IncConvShip extends LitElement {
             ? html`<p><b>Done.</b> This work is now ticket #${r.ticketId}. ${this.name()} is paused on this conversation's files while it runs; you can follow it here or on the ticket.</p>
             <a href="#/ticket/${r.ticketId}" data-main>Open ticket #${r.ticketId}</a>`
             : html`<p><b>Done.</b> Pull request #${r.pr?.number} is open as a draft. Its checks show in the context panel.</p>
-            <a href=${r.pr?.url ?? "#"} target="_blank" rel="noopener" data-main>Open it on GitHub</a>`
+            <a href=${web(r.pr?.url)} target="_blank" rel="noopener" data-main>Open it on GitHub</a>`
       }
     </div>`;
   }
