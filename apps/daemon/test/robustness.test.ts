@@ -22,6 +22,7 @@ import {
 import { describeMs, killGroup, stopTracked, trackedCount } from "../src/proc.ts";
 import { defaultTimeoutSettings, defaultTimeoutsMs, timeoutsMs } from "../src/timeouts.ts";
 import { refunds, testApp } from "./setup.ts";
+import { upExec } from "./up.ts";
 
 const { wallsMarker: _, ...noWalls } = defaultMachineSettings;
 
@@ -52,7 +53,7 @@ describe("a write to a child that has already exited", () => {
   const big = "x".repeat(8 * 1024 * 1024);
 
   it("machineScript resolves with the child's exit code instead of crashing on EPIPE", async () => {
-    const run = machineScript({ ...noWalls, bin: fakeBin("echo gone; exit 3") });
+    const run = machineScript({ ...noWalls, bin: fakeBin("echo gone; exit 3") }, upExec());
     const r = await run("ada", big);
     expect(r.code).toBe(3);
     expect(r.output).toContain("gone");
@@ -64,8 +65,10 @@ describe("a write to a child that has already exited", () => {
   });
 
   it("a launched agent's stdin is guarded, so a message after it exits is not fatal", async () => {
-    const proc = await machineLaunch(noWalls, (_bin, _args) =>
-      spawn("sh", ["-c", "exit 1"], { stdio: ["pipe", "pipe", "pipe"] }),
+    const proc = await machineLaunch(
+      noWalls,
+      (_bin, _args) => spawn("sh", ["-c", "exit 1"], { stdio: ["pipe", "pipe", "pipe"] }),
+      upExec(),
     )({
       employeeId: "ada",
       engine: { id: "opus", harness: "claude-code", model: "Opus", accountId: "a", local: false },
@@ -174,7 +177,10 @@ describe("machineScript timeout", () => {
     const pidfile = join(dir, "pid");
     const bin = fakeBin(`sleep 300 &\necho $! > ${pidfile}\nwait`);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-    const done = machineScript({ ...noWalls, bin, timeouts: () => ({ scriptMs: 60_000 }) })("ada", "true");
+    const done = machineScript({ ...noWalls, bin, timeouts: () => ({ scriptMs: 60_000 }) }, upExec())(
+      "ada",
+      "true",
+    );
     // Wait for the grandchild to exist (an event, not a delay), then let the deadline pass.
     await vi.waitFor(() => expect(existsSync(pidfile) && readFileSync(pidfile, "utf8").trim()).toBeTruthy());
     const pid = Number(readFileSync(pidfile, "utf8"));
@@ -190,7 +196,7 @@ describe("machineScript timeout", () => {
     const dir = mkdtempSync(join(tmpdir(), "inc-shutdown-"));
     const pidfile = join(dir, "pid");
     const bin = fakeBin(`sleep 300 &\necho $! > ${pidfile}\nwait`);
-    const done = machineScript({ ...noWalls, bin })("ada", "true");
+    const done = machineScript({ ...noWalls, bin }, upExec())("ada", "true");
     await vi.waitFor(() => expect(existsSync(pidfile) && readFileSync(pidfile, "utf8").trim()).toBeTruthy());
     const pid = Number(readFileSync(pidfile, "utf8"));
     expect(trackedCount()).toBeGreaterThan(0);
@@ -235,10 +241,13 @@ describe("machineScript timeout", () => {
   });
 
   it("reads the output the child wrote right before it exited", async () => {
-    const run = machineScript({
-      ...noWalls,
-      bin: fakeBin("i=0; while [ $i -lt 2000 ]; do echo line$i; i=$((i+1)); done; echo @@green"),
-    });
+    const run = machineScript(
+      {
+        ...noWalls,
+        bin: fakeBin("i=0; while [ $i -lt 2000 ]; do echo line$i; i=$((i+1)); done; echo @@green"),
+      },
+      upExec(),
+    );
     const r = await run("ada", "true");
     expect(r.output.trim().endsWith("@@green")).toBe(true);
   });

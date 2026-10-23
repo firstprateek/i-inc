@@ -16,6 +16,7 @@ import {
   type MachineSettings,
 } from "../src/machines.ts";
 import { scriptEnded, scriptStarted, scriptsRunning } from "../src/proc.ts";
+import { upExec } from "./up.ts";
 
 const { wallsMarker: _, ...noWalls } = defaultMachineSettings;
 
@@ -571,7 +572,7 @@ describe("machineScript counts as work while it runs", () => {
       writeFileSync(bin, `#!/bin/sh\nwhile [ ! -e ${dir}/go ]; do sleep 0.02; done\n`);
       chmodSync(bin, 0o755);
       const before = scriptsRunning();
-      const run = machineScript({ ...noWalls, bin })("ada", "true");
+      const run = machineScript({ ...noWalls, bin }, upExec())("ada", "true");
       await vi.waitFor(() => expect(scriptsRunning()).toBe(before + 1));
       writeFileSync(join(dir, "go"), "");
       await run;

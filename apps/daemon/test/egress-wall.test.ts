@@ -332,18 +332,18 @@ describe("the old walls (the daemon is deployed, install-walls.sh has not been r
     rmSync(wall.ack, { force: true });
   });
 
-  it("runs an engineers' machine exactly as before: no declaration, no extra look, a launch that answers at once", async () => {
+  it("runs an engineers' machine as before: no declaration and no walls look, only the machine ls every run makes", async () => {
     const m = make();
     await m.ensureUp("ada");
     await expect(m.runIn("inc-ada", "true")).resolves.toBeDefined();
     const l = launchOf("ada");
-    const proc = l.run();
-    expect(proc).not.toBeInstanceOf(Promise); // synchronous, as it always was
+    await l.run();
     expect(l.spawned).toHaveLength(1);
     expect(readDeclared()).toBeUndefined();
     await expect(machineScript(settings, exec)("ada", "true")).rejects.toThrow(/ENOENT/); // got through to the binary
-    // The only looks at `machine ls` are the ones the old code made itself (runIn checks the machine runs).
-    expect(calls.filter((c) => c.args[1] === "ls")).toHaveLength(1);
+    // The only looks at `machine ls` are the ones every run makes, inside the machine's queue, to see that it is
+    // running (T75): runIn's, the launch's and the script's. No walls look: the walls are the old ones.
+    expect(calls.filter((c) => c.args[1] === "ls")).toHaveLength(3);
     expect(sleeps).toEqual([]);
     expect(await m.watchHome()).toEqual([]);
   });

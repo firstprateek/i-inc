@@ -294,7 +294,12 @@ async function shutdown(signal: string): Promise<void> {
   stopping = true;
   log(`${signal}: stopping`);
   // No restart of the container service starts while the daemon leaves (container-recovery.ts).
-  if (app.deps.machines instanceof AppleMachines) app.deps.machines.closeRecovery();
+  if (app.deps.machines instanceof AppleMachines) {
+    app.deps.machines.closeRecovery();
+    // And no `machine stop` from here on: none may land beside the sweeps and scripts that are ending (T75).
+    // The machines stay up; the next daemon adopts them and stops them when idle.
+    app.deps.machines.closeQueue();
+  }
   const hard = setTimeout(() => {
     log("shutdown took too long: leaving");
     process.exit(1);

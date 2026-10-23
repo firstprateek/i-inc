@@ -1258,6 +1258,8 @@ export class Daemon {
         await this.d.machines.stop(id);
       } catch (e) {
         this.d.log?.(`machine for ${id} didn't stop: ${String(e)}`);
+        // Still in use (a script or session outlasted the stop's wait): it is asleep-checked again next pass.
+        if (e instanceof Error && e.name === "MachineBusy") this.awake.add(id);
       }
     }
   }

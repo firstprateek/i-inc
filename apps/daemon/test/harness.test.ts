@@ -556,7 +556,8 @@ describe("a script that prints without end", () => {
     const { machineScript, MAX_SCRIPT_OUTPUT } = await import("../src/harness.ts");
     const { defaultMachineSettings } = await import("../src/machines.ts");
     const { wallsMarker: _, ...noWalls } = defaultMachineSettings;
-    const run = machineScript({ ...noWalls, bin }, async () => "");
+    const { upExec } = await import("./up.ts");
+    const run = machineScript({ ...noWalls, bin }, upExec());
     const r = await run("ada", "true");
     expect(r.code).toBe(1);
     expect(r.output).toContain("@@output-limit");

@@ -25,6 +25,7 @@ import {
 import type { AgentProcess, Launch } from "./acp.ts";
 import { type RecoveryOptions, ServiceRecovery } from "./container-recovery.ts";
 import { type EgressWall, isHomeMachine, WallError, type WallRow } from "./egress-wall.ts";
+import { HISTORY_LEN, MachineBusy, MachineNotRunning, type MachineQueue, queueFor } from "./machine-queue.ts";
 import { describeMs, guardStdin, scriptsRunning, stopGroup, trackGroup } from "./proc.ts";
 import { launcherNeedsUpdate, newAgentId, noteLauncher, trackAgent } from "./reaper.ts";
 import { defaultTimeoutsMs, type TimeoutsMs } from "./timeouts.ts";
@@ -100,6 +101,11 @@ export interface MachineSettings {
   gate?: () => string | null;
   /** The limits in timeouts.ts as the owner has them now, read at each call (milliseconds). */
   timeouts?: () => Partial<TimeoutsMs>;
+  /**
+   * The queue every `container` command for one machine goes through (machine-queue.ts, T75). Absent: one is made
+   * per settings object, so the provider, `machineScript` and `machineLaunch` built from the same settings share it.
+   */
+  queue?: MachineQueue;
   /**
    * The release's employee image folder (images/employee), where the launchers a machine is updated from
    * are read. Absent: the one beside this code, which is the release the daemon runs from.
@@ -305,6 +311,27 @@ export async function removeRoot(s: MachineSettings, exec: Exec, machine: string
 }
 
 /**
+ * Throws {@link MachineNotRunning} unless `machine ls` shows the machine running. Called inside the machine's
+ * queue (machine-queue.ts) and before anything else that runs in the machine: `machine run` boots a stopped
+ * machine, and a boot that comes with a stop is what leaves a machine's hostname stuck (T75).
+ */
+export async function assertRunning(s: MachineSettings, exec: Exec, machine: string): Promise<void> {
+  const row = parseMachineListing(await exec(s.bin, ["machine", "ls"])).find((r) => r.name === machine);
+  if (row?.state !== "running") throw new MachineNotRunning(machine);
+}
+
+/**
+ * Everything that must hold before a command runs in a machine, in order: the walls and the container service
+ * allow it, the machine is running (never booted by the command), and the walls' checks of this machine pass.
+ * The caller holds a lease on the machine (`MachineQueue.use`).
+ */
+export async function guardRun(s: MachineSettings, exec: Exec, machine: string): Promise<void> {
+  assertWalls(s);
+  await assertRunning(s, exec, machine);
+  await assertRunnable(s, exec, machine);
+}
+
+/**
  * The checks before anything runs in a machine, and so before every launch (spec §5 and §7): the walls
  * are up and, once the new walls are installed, the machine's live address is where the walls' acknowledgement
  * says it should be (let out for an engineers' machine, shut in for a PA's sandbox), and a PA's sandbox
@@ -450,8 +477,14 @@ export class AppleMachines implements MachineProvider {
   private readonly retryMono = new Map<string, number>();
   private readonly attempts = new Map<string, number>();
   private readonly lastLogged = new Map<string, string>();
-  /** The tail of each machine's queue: boots and stops of one machine run one at a time (`locked`). */
-  private readonly locks = new Map<string, Promise<unknown>>();
+  /**
+   * Every `container` command for one machine goes through this queue (machine-queue.ts, T75): boots and
+   * other changes one at a time, scripts and sessions as leases, and a stop only when nothing else for the
+   * machine is under way. Shared with `machineScript` and `machineLaunch` through the settings.
+   */
+  readonly queue: MachineQueue;
+  /** Home machines the walls refused after a boot: stopped (through the queue) once the boot's hold ends. */
+  private readonly stopAfter = new Set<string>();
   /** Machines whose launcher is being updated now, and when a failed update may be tried again (monotonic). */
   private readonly launcherBusy = new Set<string>();
   private readonly launcherRetry = new Map<string, number>();
@@ -469,6 +502,7 @@ export class AppleMachines implements MachineProvider {
     /** A clock that never steps (for the backoff). Absent: `now`. */
     private readonly mono: () => number = now,
   ) {
+    this.queue = queueFor(s);
     // Every `container` command has a limit (timeouts.ts): a frozen container service must not hold a
     // ticket, and with it a deploy, for ever. A call that names its own limit keeps it.
     this.exec = (bin, args, opts) =>
@@ -480,32 +514,36 @@ export class AppleMachines implements MachineProvider {
   }
 
   /**
-   * Runs `fn` after everything already queued for this machine, and holds the machine until it ends. Two
-   * employees of one team starting together boot it once (the second finds it up), and a stop never
-   * lands in the middle of a boot or under a boot that follows it. `fn` must not call `locked` for the
-   * same machine again (it would wait for itself): `bootWithRecovery`, `secure` and the recovery's
-   * `machine stop` are for callers that already hold it.
+   * Runs `fn` as a lease on the machine: beside other scripts, never beside a stop, and only if the machine is
+   * running (it is never booted for `fn`: a chore waits for the next boot). `fn` runs commands with the raw
+   * `exec`, since it holds the lease already. Rejects with {@link MachineNotRunning} when the machine is down.
    */
-  private async locked<T>(name: string, fn: () => Promise<T>): Promise<T> {
-    const before = this.locks.get(name) ?? Promise.resolve();
-    const run = before.then(fn);
-    const tail = run.then(
-      () => {},
-      () => {},
-    );
-    this.locks.set(name, tail);
-    try {
-      return await run;
-    } finally {
-      if (this.locks.get(name) === tail) this.locks.delete(name);
-    }
+  private async leased<T>(machine: string, label: string, fn: () => Promise<T>): Promise<T> {
+    return this.queue.use(machine, label, async () => {
+      await guardRun(this.s, this.exec, machine);
+      return fn();
+    });
   }
 
   async ensureUp(employeeId: Id): Promise<void> {
     assertWalls(this.s);
     const name = machineOf(this.s, employeeId);
     this.preflight(name);
-    await this.locked(name, () => this.bringUp(name, employeeId));
+    try {
+      await this.queue.serial(name, "ensureUp", () => this.bringUp(name, employeeId));
+    } finally {
+      await this.stopRefused(name);
+    }
+  }
+
+  /** A home machine the walls refused is stopped, now that the boot's hold is over (a stop can't be taken inside it). */
+  private async stopRefused(name: string): Promise<void> {
+    if (!this.stopAfter.delete(name)) return;
+    try {
+      await this.queue.stop(name, "walls refused it", () => this.exec(this.s.bin, ["machine", "stop", name]));
+    } catch (err) {
+      this.log?.(`[sandbox:${name}] couldn't stop it after the walls refused it: ${err}`);
+    }
   }
 
   /**
@@ -523,14 +561,10 @@ export class AppleMachines implements MachineProvider {
       now: this.now,
       mono: this.mono,
       ...(this.log ? { log: this.log } : {}),
-      // No boot or stop is under way either, and nothing else is: the daemon says the rest.
-      // (One-off scripts, such as brain copies and the reaper's sweeps, and a launcher update count too.)
+      // No boot, stop, script or session is under way either (the machine queue is empty), and nothing else is:
+      // the daemon says the rest. (A launcher update counts too.)
       idle: async () =>
-        this.locks.size === 0 &&
-        this.launcherBusy.size === 0 &&
-        this.inFlight === 0 &&
-        scriptsRunning() === 0 &&
-        (await o.idle()),
+        this.queue.idle && this.launcherBusy.size === 0 && scriptsRunning() === 0 && (await o.idle()),
       stopMachines: () => this.stopAll(),
       forget: (machine) => this.forgetFault(machine),
       retry: (employeeId) => this.ensureUp(employeeId),
@@ -635,12 +669,7 @@ export class AppleMachines implements MachineProvider {
    * machine is running now, so the daemon's idle sweep can stop it. Returns those employees.
    */
   async adopt(employeeIds: Id[]): Promise<Id[]> {
-    const running = new Set(
-      parseMachineListing(await this.exec(this.s.bin, ["machine", "ls"]))
-        .filter((r) => r.state === "running")
-        .map((r) => r.name),
-    );
-    const adopted: Id[] = [];
+    const byMachine = new Map<string, Id[]>();
     for (const id of employeeIds) {
       let name: string;
       try {
@@ -648,11 +677,28 @@ export class AppleMachines implements MachineProvider {
       } catch {
         continue;
       }
-      if (!running.has(name)) continue;
-      await this.locked(name, async () => this.claim(name, id));
-      adopted.push(id);
+      byMachine.set(name, [...(byMachine.get(name) ?? []), id]);
     }
-    return adopted;
+    // Each machine is looked at inside its queue, behind any boot or stop already under way: the startup
+    // chores (sign-out, sweeps, home checks) and the first idle pass are queued the same way.
+    const adoptedMachines = new Set<string>();
+    for (const [name, members] of byMachine) {
+      await this.queue.serial(name, "adopt", async () => {
+        const row = parseMachineListing(await this.exec(this.s.bin, ["machine", "ls"])).find(
+          (r) => r.name === name,
+        );
+        if (row?.state !== "running") return;
+        for (const id of members) this.claim(name, id);
+        adoptedMachines.add(name);
+      });
+    }
+    return employeeIds.filter((id) => {
+      try {
+        return adoptedMachines.has(machineOf(this.s, id));
+      } catch {
+        return false;
+      }
+    });
   }
 
   /** Records that an employee works in a machine, next to whoever already does. */
@@ -728,13 +774,8 @@ export class AppleMachines implements MachineProvider {
     } catch (err) {
       const why = err instanceof Error ? err.message : String(err);
       this.up.delete(name);
-      if (home) {
-        try {
-          await this.exec(this.s.bin, ["machine", "stop", name]);
-        } catch {
-          // already stopped
-        }
-      }
+      // Stopped by the caller once its hold on the machine ends: a stop can't be taken from inside one.
+      if (home) this.stopAfter.add(name);
       this.wallFailure(name, why);
     }
     this.clearWallFault(name);
@@ -753,33 +794,45 @@ export class AppleMachines implements MachineProvider {
     for (const r of rows) {
       if (!r.home || r.state !== "running" || stop.includes(r.name)) continue;
       try {
-        if (!(await isRootless(this.s, this.exec, r.name))) {
+        // A lease like any script's: the machine may have stopped since the listing, and is not booted for this.
+        // (Not `leased`: its walls check would refuse a machine that has root, which is what is looked for here.)
+        const hasRoot = await this.queue.use(r.name, "root check", async () => {
+          assertWalls(this.s);
+          await assertRunning(this.s, this.exec, r.name);
+          if (await isRootless(this.s, this.exec, r.name)) return false;
           await removeRoot(this.s, this.exec, r.name);
-          if (!(await isRootless(this.s, this.exec, r.name))) stop.push(r.name);
-        }
+          return !(await isRootless(this.s, this.exec, r.name));
+        });
+        if (hasRoot) stop.push(r.name);
       } catch (err) {
+        if (err instanceof MachineNotRunning) continue;
         this.log?.(`[sandbox:${r.name}] couldn't check it for root: ${err}`);
       }
     }
+    const stopped: string[] = [];
     for (const name of stop) {
       this.log?.(
         `[sandbox:${name}] the walls don't hold it (its address is let out, or it has root), so it is stopped`,
       );
-      await this.locked(name, async () => {
-        this.up.delete(name);
-        try {
+      try {
+        await this.queue.stop(name, "walls", async () => {
+          this.up.delete(name);
           await this.exec(this.s.bin, ["machine", "stop", name]);
-        } catch (err) {
-          this.log?.(`[sandbox:${name}] couldn't stop it: ${err}`);
-        }
-      });
+        });
+        stopped.push(name);
+      } catch (err) {
+        // Busy: a session still holds it. Nothing is killed; the next look (thirty seconds on) tries again.
+        this.log?.(`[sandbox:${name}] couldn't stop it: ${err}`);
+      }
     }
-    return stop;
+    return stopped;
   }
 
   /**
    * Boots a machine with safe recovery and exponential backoff on failure (T50). The caller holds the
-   * machine's lock (`locked`): the recovery's `machine stop` must not kill a boot another call just made.
+   * machine's serial hold (`queue.serial`): the recovery's `machine stop` must not kill a boot another call just
+   * made. (The machine is not running when it fails to boot, so no lease is held on it: that stop lands beside
+   * no script.)
    */
   private async bootWithRecovery(name: string, employeeId?: Id): Promise<void> {
     try {
@@ -818,6 +871,13 @@ export class AppleMachines implements MachineProvider {
           throw recoveryErr;
         }
         const failure = classifyBootFailure(recoveryErr || err);
+        // A stuck hostname should now be rare (T75). When one happens, the machine's latest queue operations say
+        // what stood beside its last stop.
+        if (failure.kind === "stale-hostname") {
+          this.log?.(
+            `[sandbox:${name}] STALE HOSTNAME: the container service holds ${name}'s hostname from an earlier boot (${failure.message.slice(0, 160)}). Its last ${HISTORY_LEN} queue operations: ${this.queue.describeHistory(name)}`,
+          );
+        }
         const attempts = (this.attempts.get(name) ?? 0) + 1;
         this.attempts.set(name, attempts);
         const backoffMs = Math.min(30_000 * 2 ** (attempts - 1), 600_000);
@@ -924,13 +984,14 @@ export class AppleMachines implements MachineProvider {
     try {
       // A home machine is booted only if the walls are ready for it, and is secured like any other boot.
       this.preflight(machine);
-      await this.locked(machine, async () => {
+      await this.queue.serial(machine, "retry", async () => {
         await this.bootWithRecovery(machine);
         await this.secure(machine, true);
       });
     } catch {
       // faults will be updated if it fails
     }
+    await this.stopRefused(machine);
     return this.inspectSandbox(team, size);
   }
 
@@ -954,38 +1015,73 @@ export class AppleMachines implements MachineProvider {
     }
   }
 
-  /** Done with the machine for now; it stops once nobody else is working in it. */
+  /**
+   * Done with the machine for now; it stops once nobody else is working in it. The stop waits for every script
+   * and session in the machine to end, for a bounded time (machine-queue.ts): past it the machine is left
+   * running, the employee is recorded as working in it again so the next idle pass tries again, and this
+   * rejects with {@link MachineBusy}. Nothing is killed.
+   */
   async stop(employeeId: Id): Promise<void> {
     const name = machineOf(this.s, employeeId);
     // After any boot of this machine that is under way: the employee who asked for that boot is in the
     // set by then, so the machine isn't stopped under them.
-    await this.locked(name, async () => {
+    const last = await this.queue.serial(name, "release", async () => {
       const working = this.up.get(name);
-      if (!working?.delete(employeeId) || working.size > 0) return;
-      this.up.delete(name);
-      await this.exec(this.s.bin, ["machine", "stop", name]);
+      if (!working?.delete(employeeId)) return false;
+      // The (empty) set stays until the stop: a start that comes in between finds the machine up and joins it.
+      return working.size === 0;
     });
+    if (!last) return;
+    try {
+      await this.queue.stop(name, "idle", async () => {
+        const working = this.up.get(name);
+        if (working && working.size > 0) return; // someone started working in it meanwhile
+        this.up.delete(name);
+        await this.exec(this.s.bin, ["machine", "stop", name]);
+      });
+    } catch (err) {
+      // Not stopped: the employee is recorded as working in it again, so the next idle pass tries again.
+      if (err instanceof MachineBusy) this.claim(name, employeeId);
+      throw err;
+    }
   }
 
   /**
    * Stops every running employee machine, including ones an earlier daemon started: what the daemon
-   * does when the walls go down. Returns the machines it stopped.
+   * does when the walls go down. Each stop goes through the machine's queue and looks at the machine again
+   * inside it. Returns the machines it stopped (one that is busy, or is stopped by someone else first, is left out).
    */
   async stopAll(): Promise<string[]> {
     const listing = await this.exec(this.s.bin, ["machine", "ls"]);
-    const names = listing
-      .split("\n")
-      .slice(1)
-      .map((line) => line.trim().split(/\s+/))
-      .filter((cols) => cols[0]?.startsWith("inc-") && cols.includes("running"))
-      .map((cols) => cols[0] as string);
+    const names = parseMachineListing(listing)
+      .filter((r) => r.state === "running")
+      .map((r) => r.name);
+    const stopped: string[] = [];
     for (const name of names) {
-      await this.locked(name, async () => {
-        this.up.delete(name);
-        await this.exec(this.s.bin, ["machine", "stop", name]);
-      });
+      try {
+        await this.queue.stop(name, "stop-all", async () => {
+          const row = parseMachineListing(await this.exec(this.s.bin, ["machine", "ls"])).find(
+            (r) => r.name === name,
+          );
+          if (row?.state !== "running") return;
+          this.up.delete(name);
+          await this.exec(this.s.bin, ["machine", "stop", name]);
+          stopped.push(name);
+        });
+      } catch (err) {
+        if (!(err instanceof MachineBusy)) throw err;
+        this.log?.(`[sandbox:${name}] ${err.message}`);
+      }
     }
-    return names;
+    return stopped;
+  }
+
+  /**
+   * The daemon is leaving (SIGTERM): no stop is issued from now on, so none lands beside the sweeps and scripts
+   * that are ending. The machines stay running; the next daemon adopts them and stops them when idle.
+   */
+  closeQueue(): void {
+    this.queue.close();
   }
 
   /** Employees whose machines this daemon started and hasn't stopped. */
@@ -1009,14 +1105,12 @@ export class AppleMachines implements MachineProvider {
   /**
    * Runs a script in a machine that's already running, as the employee user, with the script on
    * stdin. It never boots a machine: `machine run` would, so a machine that isn't running is refused
-   * (T52: cleaning must not wake a machine).
+   * (T52: cleaning must not wake a machine; T75: a boot beside a stop leaves its hostname stuck). It holds a
+   * lease on the machine, so no stop is issued while it runs, and it looks at `machine ls` inside the lease.
    */
   async runIn(machine: string, script: string, timeoutMs = 15 * 60_000): Promise<string> {
     if (!/^inc-[a-z0-9-]{1,32}$/.test(machine)) throw new Error(`not a machine name: ${machine}`);
-    await assertRunnable(this.s, this.exec, machine);
-    const row = (await this.listMachines()).find((m) => m.name === machine);
-    if (row?.state !== "running") throw new Error(`${machine} isn't running, so nothing is run in it`);
-    return this.counted(() =>
+    return this.leased(machine, "runIn", () =>
       this.exec(this.s.bin, ["machine", "run", "-i", "-u", this.s.user, "-n", machine, "--", "bash", "-s"], {
         input: script,
         timeoutMs,
@@ -1024,22 +1118,11 @@ export class AppleMachines implements MachineProvider {
     );
   }
 
-  /** Commands in machines that this provider itself runs now (a script, a sign-in probe, a callback): work for the restart's idle check. */
-  private inFlight = 0;
-  private async counted<T>(fn: () => Promise<T>): Promise<T> {
-    this.inFlight++;
-    try {
-      return await fn();
-    } finally {
-      this.inFlight--;
-    }
-  }
-
   /**
    * Copies the release's launchers into a machine whose launcher is older than the release (a machine made
    * from an older image: images/employee/README.md), as tools/host/update-machine.sh does by hand. Called
    * when a sweep or the sign-in probe reports `@@launcher old`. It respects the walls (`assertRunnable`:
-   * the marker and the acknowledgement) and never starts a machine: one that isn't running is left until
+   * the marker and the acknowledgement), holds a lease like any script, and never starts a machine: one that isn't running is left until
    * its next boot, when the next sweep finds the launcher old again. It logs once when it succeeds, and
    * once per failure (with ten minutes before the next try). It never throws.
    */
@@ -1050,19 +1133,25 @@ export class AppleMachines implements MachineProvider {
     if (retryAt !== undefined && this.mono() < retryAt) return "skipped";
     this.launcherBusy.add(machine);
     try {
-      try {
-        await assertRunnable(this.s, this.exec, machine);
-      } catch {
-        return "skipped"; // the walls aren't up for it: nothing runs in it, this included
-      }
-      const row = (await this.listMachines()).find((m) => m.name === machine);
-      if (row?.state !== "running") return "skipped";
       const files = launcherFiles(this.s.imageDir ?? releaseImageDir);
-      const out = await this.exec(
-        this.s.bin,
-        ["machine", "run", "-i", "-u", "root", "-n", machine, "--", "bash", "-s"],
-        { input: launcherUpdateScript(files, this.s.user) },
-      );
+      let skipped = false;
+      const out = await this.queue.use(machine, "launcher update", async () => {
+        try {
+          await guardRun(this.s, this.exec, machine);
+        } catch {
+          // Not running (left until its next boot), or the walls aren't up for it: nothing runs in it, this included.
+          skipped = true;
+          return "";
+        }
+        return this.exec(
+          this.s.bin,
+          ["machine", "run", "-i", "-u", "root", "-n", machine, "--", "bash", "-s"],
+          {
+            input: launcherUpdateScript(files, this.s.user),
+          },
+        );
+      });
+      if (skipped) return "skipped";
       if (!out.includes("@@launcher-updated"))
         throw new Error(`the copy did not check out: ${out.trim().slice(-200)}`);
       noteLauncher(machine, true);
@@ -1095,8 +1184,7 @@ export class AppleMachines implements MachineProvider {
 
   async deliverCallback(teamId: Id, url: string): Promise<void> {
     const machine = machineName(teamId);
-    await assertRunnable(this.s, this.exec, machine);
-    await this.counted(() =>
+    await this.leased(machine, "callback", () =>
       this.exec(
         this.s.bin,
         ["machine", "run", "-i", "-u", this.s.user, "-n", machine, "-e", "CALLBACK_URL", "--", "bash", "-s"],
@@ -1155,11 +1243,12 @@ export class AppleMachines implements MachineProvider {
         : "stopped";
 
     let signedIn = this.signedInCache.get(machine) ?? defaultSignedIn;
-    if (wallsUp(this.s) && state === "running" && (await this.runnable(machine))) {
+    if (wallsUp(this.s) && state === "running") {
       try {
-        signedIn = await this.probeSignIn(machine);
+        // A lease, and a second look at `machine ls` inside it: a machine that stopped since the listing is not probed.
+        signedIn = await this.leased(machine, "sign-in probe", () => this.probeSignIn(machine));
       } catch {
-        // keep cached or fallback
+        // keep cached or fallback (the walls don't let anything run in it, or it isn't running now)
       }
     }
 
@@ -1182,16 +1271,6 @@ export class AppleMachines implements MachineProvider {
     };
   }
 
-  /** Whether the walls let anything run in the machine now. */
-  private async runnable(machine: string): Promise<boolean> {
-    try {
-      await assertRunnable(this.s, this.exec, machine);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   private async probeSignIn(
     machine: string,
   ): Promise<{ claude: boolean; antigravity: boolean; codex: boolean; github: boolean }> {
@@ -1200,10 +1279,11 @@ export class AppleMachines implements MachineProvider {
     const input =
       'export PATH="$HOME/.local/bin:$PATH"; ' +
       "[ -s ~/.claude/.credentials.json ] && echo claude; [ -s ~/.gemini/antigravity-acp/acp_token.json ] && echo antigravity; codex login status >/dev/null 2>&1 && echo codex; [ -s ~/.config/gh/hosts.yml ] && echo github; if grep -q inc-agents /usr/local/lib/i-inc/acp-env.sh 2>/dev/null; then echo agentnotes; else echo noagentnotes; fi; true\n";
-    const output = await this.counted(() =>
-      this.exec(this.s.bin, ["machine", "run", "-i", "-u", this.s.user, "-n", machine, "--", "bash", "-s"], {
-        input,
-      }),
+    // The caller holds a lease on the machine (`leased`).
+    const output = await this.exec(
+      this.s.bin,
+      ["machine", "run", "-i", "-u", this.s.user, "-n", machine, "--", "bash", "-s"],
+      { input },
     );
     const found = new Set(output.split(/\s+/).filter(Boolean));
     const result = {
@@ -1269,7 +1349,7 @@ export const launchers: Record<string, string> = {
 export type Spawn = (bin: string, args: string[], env: NodeJS.ProcessEnv) => ChildProcessWithoutNullStreams;
 
 // Detached, so the agent's whole process group can be stopped (killGroup).
-const spawnDefault: Spawn = (bin, args, env) =>
+export const spawnDefault: Spawn = (bin, args, env) =>
   spawn(bin, args, { env, stdio: ["pipe", "pipe", "pipe"], detached: true });
 
 /**
@@ -1288,19 +1368,28 @@ export function machineLaunch(
   execRaw: Exec = execDefault,
 ): Launch {
   const exec = withDefaultTimeout(s, execRaw);
+  const queue = queueFor(s);
   return ({ employeeId, engine, cwd, env }) => {
     const machine = machineOf(s, employeeId);
-    // With the new walls (or for a home machine) the live address is checked first, which takes a look at
-    // `machine ls`, so the launch is asynchronous then. With the old walls an engineers' machine starts at once.
-    const checked = needsLiveCheck(s, machine);
-    if (!checked) {
-      assertWalls(s);
-      return start();
-    }
-    return assertRunnable(s, exec, machine).then(start);
+    const launcher = launchers[engine.harness];
+    // A session holds a lease on its machine from the launch until its client exits: no stop is issued beside
+    // it, and `machine ls` is looked at inside the lease, so a stopped machine is never booted by a launch
+    // (the sandbox is brought up first, by `ensureUp`). With the new walls (or for a home machine) the live
+    // address is checked too.
+    return (async (): Promise<AgentProcess> => {
+      const end = await queue.lease(machine, `session ${engine.harness}`);
+      try {
+        assertWalls(s);
+        await assertRunning(s, exec, machine);
+        if (needsLiveCheck(s, machine)) await assertRunnable(s, exec, machine);
+        return start(end);
+      } catch (err) {
+        end(err instanceof Error ? err.message.slice(0, 120) : String(err).slice(0, 120));
+        throw err;
+      }
+    })();
 
-    function start(): AgentProcess {
-      const launcher = launchers[engine.harness];
+    function start(end: (result?: string) => void): AgentProcess {
       if (!launcher) throw new Error(`no ACP launcher for ${engine.harness}`);
       // The launcher notes this token, the pid and the start time in the sandbox (reaper.ts), so an
       // agent that outlives the daemon can be found and stopped.
@@ -1312,10 +1401,13 @@ export function machineLaunch(
       const flags = Object.keys(vars).flatMap((name) => ["-e", name]);
       const child = run(
         s.bin,
-        ["machine", "run", "-i", "-u", s.user, "-n", machineOf(s, employeeId), ...flags, "--", launcher],
+        ["machine", "run", "-i", "-u", s.user, "-n", machine, ...flags, "--", launcher],
         { ...process.env, ...vars },
       );
       const exited = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
+      // The lease ends with the session's client (or with a client that never started).
+      void exited.then(() => end("ended"));
+      child.on("error", (err) => end(err.message));
       trackAgent(agentId, exited);
       trackGroup(child);
       // The agent exits when its machine goes away; a write after that must not crash the daemon.

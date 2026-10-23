@@ -1,16 +1,18 @@
 // The real harness (spec §6, stages 4 and 8): the project's check recipe and the final gates, run in
 // the builder's machine. Scripts go in on stdin through `container machine run -i … -- bash -s`,
 // because `machine run` re-splits its arguments (M1).
-import { spawn } from "node:child_process";
 import type { ChecksResult, GatesOptions, GatesResult, Harness, ProjectPolicy, Ticket } from "@i-inc/core";
 import { type ApprovalCard, type HostPush, HostPushError } from "./host-push.ts";
+import { MachineNotRunning, queueFor } from "./machine-queue.ts";
 import {
-  assertRunnable,
   defaultMachineSettings,
   type Exec,
   execDefault,
+  guardRun,
   type MachineSettings,
   machineOf,
+  type Spawn,
+  spawnDefault,
   withDefaultTimeout,
 } from "./machines.ts";
 import { isHostExecuted, isProtected } from "./paths.ts";
@@ -40,32 +42,67 @@ export const TIMED_OUT = 124;
 /** The most a script's output is kept: past it the script is stopped and its output ends with `@@output-limit`. */
 export const MAX_SCRIPT_OUTPUT = 16 * 1024 * 1024;
 
+/**
+ * The script runner. Every script holds a lease on its machine (machine-queue.ts), so no `machine stop` is
+ * issued while one runs, and it looks at `machine ls` inside the lease: **a script never boots a stopped
+ * machine** (`machine run` would, and a boot beside a stop leaves the machine's hostname stuck: T75). A script
+ * for a machine that isn't running rejects with {@link MachineNotRunning}; a chore skips it and tries again
+ * after the next boot.
+ *
+ * With `ensureUp`, the runner is for work that needs the machine (ticket stages, a conversation's working
+ * copy): a script for the employee's own machine brings it up first, through the queue, and then runs.
+ */
 export function machineScript(
   s: MachineSettings = defaultMachineSettings,
   exec: Exec = execDefault,
+  ensureUp?: (employeeId: string) => Promise<void>,
+  /** Starts the `container` client; a test stands in for it. */
+  start: Spawn = spawnDefault,
 ): RunScript {
   // The walls' look at `machine ls` has a limit too.
   const look = withDefaultTimeout(s, exec);
+  const queue = queueFor(s);
   return async (employeeId, script, env = {}, opts = {}) => {
     if (opts.machine !== undefined && !/^inc-[a-z0-9-]{1,32}$/.test(opts.machine)) {
       throw new Error(`not a machine name: ${opts.machine}`);
     }
     const machine = opts.machine ?? machineOf(s, employeeId);
-    await assertRunnable(s, look, machine);
     const names = Object.keys(env);
     const bad = names.find((name) => !/^[A-Z_][A-Z0-9_]*$/.test(name));
     if (bad) throw new Error(`can't pass ${bad} into a machine`);
+    const attempt = () =>
+      queue.use(machine, "script", async () => {
+        await guardRun(s, look, machine);
+        return runScript(s, start, machine, script, env, opts);
+      });
+    try {
+      return await attempt();
+    } catch (err) {
+      if (!(err instanceof MachineNotRunning) || !ensureUp || machine !== machineOf(s, employeeId)) throw err;
+      await ensureUp(employeeId);
+      return attempt();
+    }
+  };
+}
+
+/** Runs a script in a machine through `machine run … bash -s`; the caller holds a lease and has checked the machine is up. */
+function runScript(
+  s: MachineSettings,
+  start: Spawn,
+  machine: string,
+  script: string,
+  env: Record<string, string>,
+  opts: { timeoutMs?: number },
+): Promise<{ code: number; output: string }> {
+  {
+    const names = Object.keys(env);
     const flags = names.flatMap((name) => ["-e", name]);
     const args = ["machine", "run", "-i", "-u", s.user, "-n", machine, ...flags, "--", "bash", "-s"];
     const limit = opts.timeoutMs ?? s.timeouts?.().scriptMs ?? defaultTimeoutsMs.scriptMs;
     scriptStarted();
     const finished = new Promise<{ code: number; output: string }>((resolve, reject) => {
       // Detached, so the child leads a process group that a timeout can stop as a whole.
-      const child = spawn(s.bin, args, {
-        env: { ...process.env, ...env },
-        stdio: ["pipe", "pipe", "pipe"],
-        detached: true,
-      });
+      const child = start(s.bin, args, { ...process.env, ...env });
       trackGroup(child);
       let output = "";
       let settled = false;
@@ -118,7 +155,7 @@ export function machineScript(
     return finished.finally(() => {
       scriptEnded();
     });
-  };
+  }
 }
 
 export interface HarnessSettings {

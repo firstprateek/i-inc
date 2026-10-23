@@ -19,6 +19,7 @@ import {
 import { machineScript } from "../src/harness.ts";
 import { AppleMachines, defaultMachineSettings, machineLaunch, workDir } from "../src/machines.ts";
 import type { AccountRateLimit } from "../src/registry.ts";
+import { upExec } from "./up.ts";
 
 // The defaults, without the walls' marker, which exists only on the mini (a test below covers it).
 const { wallsMarker: _, ...noWalls } = defaultMachineSettings;
@@ -875,7 +876,7 @@ describe("Apple container machines", () => {
     expect(m.running()).toEqual([]);
   });
 
-  it("passes the credential with -e, so it's in no command line", () => {
+  it("passes the credential with -e, so it's in no command line", async () => {
     const seen: { bin: string; args: string[]; env: NodeJS.ProcessEnv }[] = [];
     const fakeChild = () =>
       Object.assign(new EventEmitter(), {
@@ -890,10 +891,11 @@ describe("Apple container machines", () => {
         seen.push({ bin, args, env });
         return fakeChild();
       },
+      upExec(),
     );
     // A value a login shell would split or interpret is fine: it never passes through one.
     const token = "sk-token; curl evil $(x)";
-    launch({
+    await launch({
       employeeId: "ada",
       engine: claude,
       cwd: "/home/employee/work/inc-1",
@@ -924,18 +926,22 @@ describe("Apple container machines", () => {
     expect(call?.env.I_INC_CWD).toBe("/home/employee/work/inc-1");
   });
 
-  it("starts Codex with the dedicated ACP launcher", () => {
+  it("starts Codex with the dedicated ACP launcher", async () => {
     const seen: string[][] = [];
-    const launch = machineLaunch(noWalls, (_bin, args) => {
-      seen.push(args);
-      return Object.assign(new EventEmitter(), {
-        stdin: new PassThrough(),
-        stdout: new PassThrough(),
-        stderr: new PassThrough(),
-        kill: () => true,
-      }) as unknown as ChildProcessWithoutNullStreams;
-    });
-    launch({
+    const launch = machineLaunch(
+      { ...noWalls }, // its own queue: the session this starts holds a lease on inc-ada for good
+      (_bin, args) => {
+        seen.push(args);
+        return Object.assign(new EventEmitter(), {
+          stdin: new PassThrough(),
+          stdout: new PassThrough(),
+          stderr: new PassThrough(),
+          kill: () => true,
+        }) as unknown as ChildProcessWithoutNullStreams;
+      },
+      upExec(),
+    );
+    await launch({
       employeeId: "ada",
       engine: { ...claude, id: "codex", harness: "codex" },
       cwd: "/home/employee/work/inc-1",
@@ -944,13 +950,17 @@ describe("Apple container machines", () => {
     expect(seen[0]?.at(-1)).toBe("acp-codex");
   });
 
-  it("refuses a variable name that isn't one, and an employee id that isn't one", () => {
-    const launch = machineLaunch(noWalls, () => {
-      throw new Error("never started");
-    });
-    expect(() => launch({ employeeId: "ada", engine: claude, cwd: "/w", env: { "A=B": "x" } })).toThrow(
-      "can't pass A=B into a machine",
+  it("refuses a variable name that isn't one, and an employee id that isn't one", async () => {
+    const launch = machineLaunch(
+      noWalls,
+      () => {
+        throw new Error("never started");
+      },
+      upExec(),
     );
+    await expect(
+      launch({ employeeId: "ada", engine: claude, cwd: "/w", env: { "A=B": "x" } }),
+    ).rejects.toThrow("can't pass A=B into a machine");
     expect(() => launch({ employeeId: "../x", engine: claude, cwd: "/w", env: {} })).toThrow(
       "not an employee id",
     );
@@ -972,11 +982,15 @@ describe("the walls", () => {
       return "";
     });
     await expect(machines.ensureUp("ada")).rejects.toThrow("the walls aren't up");
-    expect(() =>
-      machineLaunch(s, () => {
-        throw new Error("never started");
-      })({ employeeId: "ada", engine: claude, cwd: "/w", env: {} }),
-    ).toThrow("the walls aren't up");
+    await expect(
+      machineLaunch(
+        s,
+        () => {
+          throw new Error("never started");
+        },
+        upExec(),
+      )({ employeeId: "ada", engine: claude, cwd: "/w", env: {} }),
+    ).rejects.toThrow("the walls aren't up");
     await expect(machineScript(s)("ada", "true")).rejects.toThrow("the walls aren't up");
     expect(exec).toEqual([]);
 
