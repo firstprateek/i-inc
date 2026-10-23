@@ -137,13 +137,14 @@ export function encryptPayload(
   const sharedSecret = server.computeSecret(clientPub);
 
   const keyInfo = Buffer.concat([Buffer.from("WebPush: info\0", "utf8"), clientPub, serverPub]);
-  const ikm = hkdfSync("sha256", sharedSecret, authSecret, keyInfo, 32);
+  // hkdfSync returns an ArrayBuffer, which Bun's createCipheriv refuses as a key or IV: wrap each one.
+  const ikm = Buffer.from(hkdfSync("sha256", sharedSecret, authSecret, keyInfo, 32));
 
   const salt = randomBytes(16);
   const cekInfo = Buffer.from("Content-Encoding: aes128gcm\0", "utf8");
   const nonceInfo = Buffer.from("Content-Encoding: nonce\0", "utf8");
-  const cek = hkdfSync("sha256", ikm, salt, cekInfo, 16);
-  const nonce = hkdfSync("sha256", ikm, salt, nonceInfo, 12);
+  const cek = Buffer.from(hkdfSync("sha256", ikm, salt, cekInfo, 16));
+  const nonce = Buffer.from(hkdfSync("sha256", ikm, salt, nonceInfo, 12));
 
   const recordSize = 4096;
   const header = Buffer.concat([
@@ -208,7 +209,12 @@ export class WebPushSender implements PushService {
 
   async send(notification: NotificationPayload): Promise<void> {
     const subs = this.registry.pushSubscriptions();
-    await Promise.allSettled(subs.map((sub) => this.sendToSubscription(sub, notification)));
+    const results = await Promise.allSettled(subs.map((sub) => this.sendToSubscription(sub, notification)));
+    for (const r of results) {
+      // A notification that can't be built (not a delivery error) would otherwise vanish without a trace.
+      if (r.status === "rejected")
+        console.warn("[push] not sent:", r.reason instanceof Error ? r.reason.message : "unknown");
+    }
   }
 
   private async sendToSubscription(sub: PushSubscription, notification: NotificationPayload): Promise<void> {
