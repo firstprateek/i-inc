@@ -12,18 +12,21 @@ Merged on `main` and live on the mini:
 
 | Area | What's there |
 | --- | --- |
-| Access & auth | Tailscale Service `svc:iinc` serves HTTPS on standard port 443 at `https://iinc.<tailnet>.ts.net` (`I_INC_HOSTS` configured; old `:8443` removed). Owner auth via `POST /api/signup`, `POST /api/login`, `POST /api/logout`, `GET /api/auth` with `scrypt` hashing in SQLite, a server-side session in the `i_inc` cookie (HttpOnly, SameSite=Strict, Secure over https; sign-out revokes it), bearer token for scripts, and a one-time setup code (`~/.i-inc/setup-code`) for the first-run signup |
-| Engines & sandboxes | Teams share a sandbox (`inc-<team>`, 12G, 6 CPUs) with Claude (`claude-code`) and Antigravity (Google AI Pro, `antigravity`) signed in once; Codex (`codex`) support added, sandbox provisioning and owner sign-in pending; Antigravity OAuth callback relay (`POST /api/teams/:id/antigravity-callback`); OpenCode (`opencode`, `local: true`) using local Ollama via the container gateway relay (port 11434); local `OllamaHelper` (yes/no & intent classification) and `OllamaChat` (1:1 chat) |
-| Isolation & safety | Sandbox inspection (`GET /api/sandboxes`, C1) without booting stopped VMs on read; sandbox DNS filter (`apps/daemon/src/dns.ts`) refusing `.ts.net` and `.local`; firewall walls (`pf`) refreshed every minute; monthly scheduled host restart |
+| Access & auth | Tailscale Service `svc:iinc` serves HTTPS on standard port 443 at `https://iinc.<tailnet>.ts.net` (`I_INC_HOSTS` configured). Owner auth via `POST /api/signup`, `POST /api/login`, `POST /api/logout`, `GET /api/auth`: `scrypt` hashing in SQLite, **a per-login server-side session** in the `i_inc` cookie (HttpOnly, SameSite=Strict, Secure over https; sign-out revokes it and closes its open sockets), bearer token for scripts and the deployer, **a one-time setup code** (`~/.i-inc/setup-code`) for the first-run signup, and per-client limits on wrong logins and setup guesses (T63, contract C5) |
+| Engines & sandboxes | Teams share a sandbox (`inc-<team>`, 12G, 6 CPUs) with Claude (`claude-code`), Antigravity (Google AI Pro, `antigravity`) and Codex (`codex`) signed in once per sandbox; Antigravity OAuth callback relay (`POST /api/teams/:id/antigravity-callback`); OpenCode (`opencode`, `local: true`) using local Ollama via the container gateway relay (port 11434); local `OllamaHelper` (yes/no & intent classification) and `OllamaChat` (the old small-model chat). A personal assistant gets a team and sandbox of its own (no root, no internet, T66) |
+| Isolation & safety | Sandbox inspection (`GET /api/sandboxes`, C1) without booting stopped VMs on read; sandbox DNS filter (`apps/daemon/src/dns.ts`) refusing `.ts.net` and `.local`; firewall walls (`pf`) refreshed every minute and **closed unless opened** (T66); monthly scheduled host restart. **The team is the trust boundary** (T67: one sandbox and one Unix user per team, agents have root; machine-to-machine traffic is blocked by the bridge filter, T70, verified on the mini on 2026-10-22). **No write credentials in sandboxes** (T68): read-only repo-scoped tokens, every push made on the host from a verified bundle, host-executed code in the repo the mini runs needs the owner's OK, and the deployer deploys only ledgered owner-approved, owner-merged-PR or docs-only commits |
 | Caps & releases | Account `monthlyCap` and live Claude rate-limit utilization meters (`GET /api/accounts`, `GET /api/office`); project releases (`GET /api/releases`, `POST /api/projects/:id/release`, `autoRelease` setting, `<inc-desk>`) |
 | Web Push | Backend VAPID key file in `~/.config/i-inc/vapid.json`, dedicated `push_sent` SQLite table preventing duplicate notifications, startup baseline, 5 s timeout, triggering on `needs-you`, `report-ready`, and `main-red` (C2); web Push opt-in UI and service worker push handler (PR #46 merged) |
 | Live updates | Server-Sent Events stream (`GET /api/events`, C3, daemon PR #40 merged) broadcasting `ticket` and `office` updates with `: keepalive` heartbeats every 25 s, `x-accel-buffering: no`, and `highWaterMark: 64` backpressure handling; web app refetches reactively from the event stream (web PR #44 merged) |
 | Session transcripts | Session lifecycle & transcript storage (`GET /api/tickets/:id/sessions`, C4, PR #43 merged); transcript view on ticket page (`<inc-transcript>`, PR #45 merged) with failure isolation, secret redaction, and 500 items/session cap; broadened redaction for AWS AKIA IDs, URL credentials, unpadded base64, YAML/CLI flags, and single-quoted JSON without over-redacting keyboard keys (PR #54 merged) |
 | Web application | Mobile pass (1440x900 & 390x844, light/dark), installable PWA (manifest, icons, offline shell service worker), Setup screens (`<inc-setup>`), per-duty engine assignment in hiring (`<inc-hiring>`), phone board (`<inc-board>`), push notification opt-in, mobile bottom tab bar (`role="tab"`, haptic press, 44px+ targets, PR #50), instant optimistic chat with thinking indicator & retry (PR #49), Company brain / Handbook discoverability & team sections (PR #51), office tab route fix (PR #48), mobile touch audit & tap regression suite (PR #52), test teardown hygiene & ui-check sse stream fix (PR #53), engine edit + delete routes for engines, accounts, teams, projects (C11, PR #55), and images on a new ticket (#12: picked or pasted in `<inc-new-ticket>`, sent as one multipart `POST /api/tickets` with the `x-i-inc-upload` header, PNG/JPEG/WebP/GIF checked by their bytes, at most 6 of 10 MB, stored in `ticket_attachments`, served by `GET /api/tickets/:id/attachments/:n`, thumbnails on the ticket page, and copied to `<worktree>/.inc/attachments/` at pick-up, which the brief lists), and images added later (#15: `POST /api/tickets/:id/attachments` for any ticket that isn't done, and `POST /api/tickets/:id/decide` as multipart for a "Not quite" reply, with the same checks and 24 per ticket; an `owner-attached` event tells a run that's under way, which copies them in with `Workspace.attach` before the builder's next session and says so in that brief; the picker is the shared `ImagePicker` controller), and images with a chat message (#16: `GET /api/chat/:id` returns the employee's `current` ticket and how many images it has; when there is one, `<inc-chat>` offers an image button and paste, labelled "For #N"; `POST /api/chat/:id` as multipart, a `message` JSON field naming the ticket plus `image` files, skips the helper and goes to that ticket as `owner-attached` and then `owner-message`, with the same checks; a ticket that's no longer current gets a 409 with the new `current`; images with no text record no note; the owner's chat entry keeps the image numbers for its thumbnails), and images for a reviewer or verifier (#17: before its session, `Workspace.checkout` checks the branch out in its own machine, from origin, as a worktree marked `i-inc.copy` that later rounds reset to the new push, leaving a builder's worktree on a shared machine alone; then `Workspace.attach` copies the images it doesn't have yet; if that fails, the seat is skipped as `helper-unavailable`; direct mode keeps the branch in the builder's machine, so only the images reach a reviewer on another team) |
+| Conversations, brain, deploys | Conversations on the AHP host (bypass mode is the default; "Open the session" watches or replays any ticket stage, T69); the indexed brain with retrieval into every brief and turn, harvested edits (no approval) with a changes feed, revert and a daily tidy-up, teammate-overlap edits marked untrusted (T56 to T58); three areas (Conversations, Work, Company) with Needs you as a page of its own (T61, T64); GitHub projects flow (T62); automatic deploys with the guard (T54 and T68); the T63 audit fixes (see [audit/T63-report.md](audit/T63-report.md)): bad-data and hang survival, resume after a graceful stop, daily database backup, a low-disk gate |
 | Dogfooding | Project `i-inc` registered on the mini in direct mode (`checks`: install, check, typecheck, test; `autoRelease: false`; protected paths set) and assigned to Ada; first ticket #7 completed autonomously end-to-end (Ada build on Claude, Gemini review, direct push to main `d7239dc`, CI green, retro knowledge recorded, follow-ups #8 and #9 filed) |
 
-All tasks T1–T27 and pipeline maintenance PRs #53–#55 are merged to `main` and deployed live on the Mac mini.
-All tests pass (`pnpm check && pnpm typecheck && pnpm test` — 408 tests passing across 41 test files).
+The task list and its status are in [coord.md](coord.md); `main` deploys itself to the Mac mini (below). CI
+runs `pnpm check`, `pnpm typecheck` and `pnpm test`; `pnpm e2e` (browser runs against a local daemon) is run by hand.
+This table is a summary and the rows for older work (the images rows especially) use the names they had then:
+the Office is now Company → Team, the Board is Work → Board, and Setup is Company → Settings.
 
 ## Operations
 
@@ -79,16 +82,13 @@ asked without credentials (60 calls an hour, waited out when used up); give the 
 in `I_INC_GITHUB_TOKEN` to ask with one, and verdicts by pull request are kept in
 `~/i-inc-releases/review-cache.json`.
 
-**Rolling this out (T68).** The deployer runs from `~/i-inc` and does not update itself, so once this PR is
-merged and deployed by hand: `cd ~/i-inc && git pull --ff-only && launchctl kickstart -k
-gui/$(id -u)/inc.i.deployer` (or, if automatic deploys are still paused:
-`launchctl bootstrap gui/501 ~/Library/LaunchAgents/inc.i.deployer.plist`). Commits that older daemons
-pushed to main before the ledger existed are in no ledger: if the running release is older than that,
-the first candidate may list some code commits that neither the ledger nor an owner-merged PR explains.
-That candidate is skipped and you are told; look at it, and deploy it once with `--once --sha <full sha>`.
-After that the ledger covers what the daemon pushes.
+**The deployer does not update itself (T68).** It runs from `~/i-inc`, so after a change under `apps/deployer`
+(the T68 guard was one) pull there and `launchctl kickstart -k gui/$(id -u)/inc.i.deployer`. T68 is deployed and
+automatic deploys are running with the guard. Commits that older daemons pushed to main before the ledger existed
+are in no ledger: if a candidate lists some code commits that neither the ledger nor an owner-merged PR explains,
+it is skipped and you are told; look at it, and deploy it once with `--once --sha <full sha>`.
 
-- **See deploys:** My desk → Releases → Deploys (the last 8), `GET /api/deploys` (the last 20),
+- **See deploys:** Work → Releases → Deploys (the last 8), `GET /api/deploys` (the last 20),
   `tail -n 5 ~/.i-inc/deploys.jsonl` (`{at, sha, from, outcome, reason, durationMs}`, outcome is one of
   `deployed`, `rolled-back`, `failed-build`, `failed-smoke`, `skipped-ci`, `skipped-ancestry`, `skipped-review`), and one line per state change
   in `~/Library/Logs/i-inc-deployer.log`. `curl -s http://127.0.0.1:7420/api/health` says which sha is
@@ -191,7 +191,7 @@ machines keep their internet. The design, and why:
   This covers agents, scripts (brain copies, checks), callbacks and the sign-in probe, and refuses a machine that
   isn't running (`machine run` would boot it). A machine that woke at a new address waits, up to 90 s, until the
   walls let it out (declared at once, taken up when the file changes or within a minute); a ticket then shows why
-  and Setup > Sandboxes shows the reason. A 30-second watch also declares machines that woke on their own.
+  and Company → Settings → Sandboxes shows the reason. A 30-second watch also declares machines that woke on their own.
 - **A PA's sandbox has no root.** When the daemon creates or boots one it first runs a fixed script as root
   (`machine run -u root`) that deletes the sudoers entry, removes the user from the groups that are root in all but
   name (sudo, admin, wheel, docker, lxd, adm, disk) and leaves an empty immutable `/etc/sudoers.d/employee`; then
@@ -204,7 +204,7 @@ machines keep their internet. The design, and why:
 - **Rolling out.** `main` deploys itself, the new rules arrive only when you run `install-walls.sh`. Until
   `/var/run/i-inc-walls.open` exists the daemon treats the walls as the old ones: engineers' machines run exactly
   as today (no extra checks), and a PA's sandbox is refused with "the walls need updating: run `sudo sh
-  tools/host/install-walls.sh`" in the log, in Setup > Sandboxes and in any PA ticket. Once the file appears the
+  tools/host/install-walls.sh`" in the log, in Company → Settings → Sandboxes and in any PA ticket. Once the file appears the
   new rules are assumed to be loaded and every machine is checked.
 - **Ollama.** The relay `tools/m1/ollama-forward.mjs` is no longer a TCP pipe: it is an HTTP proxy that allows
   `/api/chat`, `/api/generate`, `/api/embed`, `/api/embeddings`, `/api/tags`, `/api/show`, `/api/ps`,
@@ -229,7 +229,7 @@ machines keep their internet. The design, and why:
   at most, 10 minutes without a byte once a call is in. A request with `model`/`name` keys spelt any other way, or
   with a non-plain key, is refused, and what is forwarded is the parsed object written out again. A model installed
   locally with a registry host in its name (`hf.co/…`) is served; anything not installed is not.
-- **One machine reaching another (T70; verify after install).** Two machines on the bridge could reach each other
+- **One machine reaching another (T70, verified on the mini on 2026-10-22: TCP and ping blocked both ways, open machines keep internet, DNS, Ollama and DHCP, a 100 MB download completes).** Two machines on the bridge could reach each other
   (TCP, UDP, ping), because macOS switches the frames between the machines' `vmenetN` interfaces without running
   pf on them. macOS has no `net.link.bridge.pfil_*` sysctl (those are FreeBSD's; `sysctl -a | grep net.link.bridge`
   has none). The bridge has filter flags instead, which only the `BRDGSFILT` ioctl sets and `ifconfig bridge100`
@@ -490,12 +490,12 @@ When macOS or Apple's container framework terminates abruptly or gets out of syn
 2. Once idle it takes a daemon-wide lock: every new launch, script and boot, on any machine, waits with "the container service is being restarted". It stops all running machines, runs `container system stop`, then `container system start`, and polls `container machine ls` until the API server answers (2 minutes at most). `GET /api/health` reports `busy: true` for this part, so the deployer's drain waits for it. A restart never begins while the daemon is busy or leaving (SIGTERM).
 3. The restart recreates `bridge100` with its filter flags at 0. Launches stay blocked until `walls.sh` (root, every minute) has run since the restart: `/var/run/i-inc-walls.ok` (which it touches only after checking the rules, the table and the bridge's filter flags in the same run) and, with the new walls installed, `/var/run/i-inc-walls.open` must both be newer than the restart. The walls marker and the home-machine acknowledgements then gate every launch as always.
 4. The failed boots are tried again. If a name is still stuck, the old "restart the container service on the Mac mini" message stands and the owner gets a push ("A sandbox is stuck"). At most one automatic restart per 30 minutes (the window survives a daemon restart).
-5. Every restart is logged (`[container] …`) and kept as an event on Setup > Sandboxes ("restarted the container service at 14:02 to clear a stuck machine name"; `GET /api/sandboxes/service-events`, newest first, last 20). A restart that itself fails, or a walls job that doesn't answer afterwards, is an event and a push too.
+5. Every restart is logged (`[container] …`) and kept as an event on Company → Settings → Sandboxes ("restarted the container service at 14:02 to clear a stuck machine name"; `GET /api/sandboxes/service-events`, newest first, last 20). A restart that itself fails, or a walls job that doesn't answer afterwards, is an event and a push too.
 
 6. "Restart in progress" is written to the database before `container system stop`. At startup, before the first launch (launches wait for it), a daemon checks that `container machine ls` answers: if not, it runs `container system start` and waits; if a restart is on record, it takes it as finished; either way it waits for the walls job as in step 3 and records a "resumed" event. So a deploy or crash in the middle of a restart cannot leave the service stopped. If it can't start the service, the owner gets a push.
 7. "Idle" also includes one-off scripts in machines (brain copies, the reaper's sweeps, sign-ins) and a launcher update.
 
-If the machine still enters persistent `stale-hostname` backoff (visible in Setup > Sandboxes and ticket waiting line), or the daemon asks for you:
+If the machine still enters persistent `stale-hostname` backoff (visible in Company → Settings → Sandboxes and ticket waiting line), or the daemon asks for you:
 1. **Never delete** the machine, its volumes, or disks.
 2. Ask the owner before restarting the container daemon on the host.
 3. Once approved, restart the Apple container service on the Mac mini:
@@ -506,7 +506,7 @@ If the machine still enters persistent `stale-hostname` backoff (visible in Setu
    ```sh
    container machine ls
    ```
-5. In i.inc web under Setup > Sandboxes, click **Retry now** (or call `POST /api/sandboxes/:team/retry`) to immediately wake the team sandbox and resume tickets at their current stage.
+5. In i.inc web under Company → Settings → Sandboxes, click **Retry now** (or call `POST /api/sandboxes/:team/retry`) to immediately wake the team sandbox and resume tickets at their current stage.
 
 **The root-removal script is idempotent (T73).** A personal assistant's sandbox loses its user's sudo at every boot (`removeRootScript`). It leaves `/etc/sudoers.d/<user>` empty and immutable (`chattr +i`), so it clears the flag (`chattr -i`) before it removes or rewrites any grant file; before this, the second boot failed with "rm: cannot remove … Operation not permitted" and the assistant's ticket waited for ever.
 
@@ -578,7 +578,7 @@ answer it when it asks. The screen is the web app's AHP client (`apps/web/src/ah
   (ACP cannot inject into a running one): press Stop to do that.
 - **It asks you:** a permission card shows the command or the file diff and the agent's own options (Allow once, Always
   allow, Deny). The first answer from any device wins; the other devices show "Allowed on another device". A pending
-  card counts in the Needs you badge and is listed in Work > Needs you, which opens the conversation at the card.
+  card counts in the Needs you badge and is listed on the Needs you page, which opens the conversation at the card.
 - **Right panel** (the button in the thread header; remembered): project and branch, the plan, files changed (open one
   for its diff), brain pages used (from the session's `_meta["iinc.brain"]`: each page with its scope, marked "opened"
   when the agent read it itself and "untrusted" when it was built from outside content), usage and the
@@ -592,8 +592,8 @@ answer it when it asks. The screen is the web app's AHP client (`apps/web/src/ah
   in a reply is plain text.
 - **Reconnecting:** if the host goes away a "Reconnecting..." banner shows and sending waits; the screen replays what
   it missed from the last `serverSeq` (or takes a fresh snapshot) and carries on.
-- **Old chat** (the footer of the list, `#/conversations/old/<employee>`) is the previous small-model chat. It goes in
-  the release after this one.
+- **Old chat** (the footer of the list, `#/conversations/old/<employee>`) is the previous small-model chat. It is
+  still there and is meant to go.
 - **Trying it without real agents:** `apps/daemon/test/ahp/e2e-server.ts` runs the real daemon over the scripted fake
   agent and a fake Exec (`I_INC_HOME=<scratch dir> PORT=7611 bun apps/daemon/test/ahp/e2e-server.ts`, after building
   `apps/web`). Prompts starting `slow`, `hang`, `markdown`, `burst N` and `longtools` pick what it does.
@@ -712,8 +712,9 @@ that applies it in the sandbox), `brain-tar.ts`, `brain-cli.cjs` (the `brain` co
   a folder. A copy is removed from the machine an employee moved away from (also when they leave), but never by
   starting a stopped machine: the removal stays recorded and is done when the machine is up. Ordinary employees of one
   team still share a Unix user, so an agent could read a colleague's folder under `/home/employee/brain/` with its
-  own tools; the daemon never puts one employee's brain in another's folder or prompt, and making it impossible needs
-  a user per employee in the image (an owner decision, not done). The PA's sandbox's egress wall (spec §7) is
+  own tools; the daemon never puts one employee's brain in another's folder or prompt. A user per employee was
+  decided against (T67, see the coord log): agents have root, so it would isolate nothing, and the team is the
+  trust boundary. The PA's sandbox's egress wall (spec §7) is
   T66, below.
 - **What the sandbox image must have.** Nothing is installed by the daemon, so these must be in the image (the current
   one has them, checked by reading the Dockerfile, not on a live machine): `bash`, `git` 2.28 or later, GNU `tar`,
@@ -801,13 +802,14 @@ net is the **Brain changes** feed (Company → Brain → Changes, `#/company/bra
   something. Its brief ends with the report; its edits go through the same harvest (more deletions allowed). It tends
   the scopes its employee may write; another employee's personal brain and other teams' sections are tended by them.
   Pages are called unused only after use has been counted for 60 days (`brain-tracking-since` in `storage_state`).
-- **The shared Unix user (known gap).** A team shares one sandbox and one Unix user, so an agent can write in a
+- **The shared Unix user (decided: the team is the trust boundary, T67).** A team shares one sandbox and one Unix user, so an agent can write in a
   colleague's copy, and that copy is harvested as the colleague's. File times can't be trusted (the agent can `touch`
   them), so the daemon uses what it knows: when another employee of the same team had a ticket stage (`ticket_sessions`)
   or a conversation turn (`brain_activity`) running since this copy was last collected or delivered, every change of
   that harvest is marked untrusted (`source: external` in the page, the feed's badge, the note "possibly edited by a
-  teammate (shared sandbox)", and the policy push says so). Nothing is blocked. **The real fix is a Unix user per
-  employee** (filed as its own task); until then the mark is a hint, and revert is the remedy.
+  teammate (shared sandbox)", and the policy push says so). Nothing is blocked. A Unix user per
+  employee is not planned (agents have root, so it would isolate nothing; T67 is "won't do"): the mark is a hint, and
+  revert is the remedy.
 - **Other things that make a harvest untrusted:** the ticket names a GitHub issue or pull request (or is labelled
   `issue`), or the session made a web fetch (an ACP `fetch` tool call, a web fetch or search tool, `curl` or `wget` of a
   URL): `brain_external`.
@@ -875,23 +877,25 @@ curl -X PUT -H 'content-type: application/json' -d '{"sandboxCleanupDays":7}' $B
 A machine that isn't running is skipped, with the reason in the answer.
 
 **Not done.** Container images and build cache on the host (`container image ls` and its prune) are
-a manual step; the commands weren't confirmed on the mini. Conversations' working copies
-(`conv-<id>`, T59) need adding to `cleanupScript` when they exist. Whether `git fetch` works inside a copy (it needs the sandbox's GitHub sign-in as a git credential) is unconfirmed on the mini; if it doesn't, a merged ticket's dirty copy waits for `unpushedKeepDays`. The tick reads every ticket's
-events each 30 seconds, so its cost grows with the number of tickets (for T63).
+a manual step; the commands weren't confirmed on the mini. Whether `git fetch` works inside a copy (it needs the sandbox's GitHub sign-in as a git credential) is unconfirmed on the mini; if it doesn't, a merged ticket's dirty copy waits for `unpushedKeepDays`. (The tick used to
+read every ticket's events every 30 seconds; since T63 it folds only tickets that changed.)
 
 ## Next steps, in order
 
-1. **Verify live experience on phone:**
-   - Access `https://iinc.<tailnet>.ts.net/` on mobile: test PWA install, Push notification opt-in, live SSE updates on ticket board, and session transcript drawer.
+1. **Verify on a real phone:** PWA install, push (tickets and conversations, T65), live updates, the Needs you
+   page and Open the session. Everything is tested against fakes and desktop Chromium; none of it has been tried on
+   an iPhone or Android device.
 2. **Check ticket images on the mini and an iPhone (#14):** checked on Linux, but not yet on the mini.
    The two steps are in [m1-findings.md, "M3: ticket images"](m1-findings.md#m3-ticket-images-14).
-3. **Continue dogfooding follow-up tickets:**
-   - Watch Ada pick up and run filed follow-up tickets #8 ("Reset chat state in willUpdate...") and #9 ("Keep chat draft per employee...").
+3. **Audit leftovers:** see [audit/T63-report.md](audit/T63-report.md) ("Left on purpose"), and T72 in
+   [coord.md](coord.md) (done-when for low-effort and no-verifier tickets).
+5. **Future work (not built):** agents asking questions mid-conversation, agent teams, MCP tools and skills, the
+   PA's mail and calendar tools. The list is spec §16.
 
 ## Decisions already made (don't reopen)
 
 - **Views and UI:**
-  - three views: office, board and 1:1 chat;
+  - three areas, Conversations, Work (Board, Releases) and Company, with Needs you as a page of its own (T61, T64);
   - a PA arrives in v1, after the GitHub loop works (M6);
   - light by default with a dark theme, and Lit components.
 - **Engines:**
@@ -924,6 +928,15 @@ events each 30 seconds, so its cost grows with the number of tickets (for T63).
   2 rounds; protected paths (workflows, release config) need the owner; red main is fixed by the same
   ticket or reverted after 2 hours; agents file follow-ups within a daily budget; the owner cuts
   releases for now; Hermes stays off.
+- **The trust boundary is the team (T67, 2026-10-21).** One sandbox and one Unix user per team, and agents have
+  root; per-employee Unix users were decided against. A PA gets its own home team and sandbox, no root, no internet (T66).
+- **No write credentials in sandboxes (T68, 2026-10-22).** Sandboxes hold read-only repo-scoped tokens; every push is
+  made on the host from a verified bundle at the checked sha; in the repo the mini runs, host-executed code waits for
+  the owner's one-tap OK bound to the exact sha and patch-id; the deployer deploys only ledgered owner-approved,
+  owner-merged-PR or docs-only commits. Direct mode runs checks and review in the builder's own sandbox, so against a
+  poisoned agent they are advisory.
+- **Owner-merges tickets close when the PR is merged on GitHub** (#110): "Merge on GitHub" and "Close without merging".
+- **Conversations default to the agent's bypass mode** (2026-10-20); the brain updates itself without approval.
 - **The repo is public:**
   - no secrets, tokens, account names or home addresses in it;
   - no model identifiers in commits or PRs;

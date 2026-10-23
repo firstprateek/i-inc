@@ -1,6 +1,6 @@
 # Brain (V1 design): an indexed LLM wiki
 
-Status: approved 2026-10-20. Built: the page format, index and maps (T56, #78); the snapshot into sandboxes, automatic retrieval into briefs and turns, and pages-used visibility (T57). Writing by diff harvest, the Brain changes feed with revert and the daily tidy-up (T58, see handoff.md).
+Status: approved 2026-10-20, and fully built: the page format, index and maps (T56, #78); the snapshot into sandboxes, automatic retrieval into every brief and turn, and pages-used visibility (T57); writing by diff harvest with no approval, the Brain changes feed with revert, the daily tidy-up, and teammate-overlap edits marked untrusted (T58, see handoff.md). Not built: embeddings, a Sources inbox, the brain as an MCP server (see "Later").
 
 ## Goal
 
@@ -10,7 +10,7 @@ linked markdown wiki with a SQLite search index, in the spirit of
 [Karpathy's LLM wiki](https://venturebeat.com/data/karpathy-shares-llm-knowledge-base-architecture-that-bypasses-rag-with-an)
 and the owner's own `~/llm-wiki`. Vector RAG can come later as a boost, not the foundation.
 
-## What is wrong today
+## What was wrong before V1 (historical)
 
 - Pages live as git repos on the mini (`~/.i-inc/knowledge/handbook` and `brains/<employee>`), and
   retros append at most two lessons per ticket.
