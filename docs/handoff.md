@@ -229,11 +229,23 @@ machines keep their internet. The design, and why:
   at most, 10 minutes without a byte once a call is in. A request with `model`/`name` keys spelt any other way, or
   with a non-plain key, is refused, and what is forwarded is the parsed object written out again. A model installed
   locally with a registry host in its name (`hf.co/…`) is served; anything not installed is not.
-- **Not verified, so not claimed: one machine reaching another.** L2-switched traffic between two machines on the
-  bridge may never meet pf. `tools/m1/walls-test.sh` with `OTHER_MACHINE=<ip>` tests TCP and ping to another
-  machine and sends a broadcast to `255.255.255.255:67` (to see whether the DHCP rule's broadcast reaches other
-  machines: run `nc -ul 67` as root in the other machine first). Until that has passed on the mini, treat a PA's
-  sandbox as able to reach other machines on the bridge, and through them the internet.
+- **One machine reaching another (T70; verify after install).** Two machines on the bridge could reach each other
+  (TCP, UDP, ping), because macOS switches the frames between the machines' `vmenetN` interfaces without running
+  pf on them. macOS has no `net.link.bridge.pfil_*` sysctl (those are FreeBSD's; `sysctl -a | grep net.link.bridge`
+  has none). The bridge has filter flags instead, which only the `BRDGSFILT` ioctl sets and `ifconfig bridge100`
+  shows (`ipfilter enabled flags 0x6`). `tools/host/bridge-filter.sh` sets them (0x2 member filter, 0x4 IP only),
+  `walls.sh` does it every minute and reads them back, and the rules now block any frame between two machines'
+  addresses on the member interfaces (`vmenet0` to `vmenet31`, named in the rules because pf has no interface
+  groups). The host keeps DHCP, DNS (open machines) and Ollama. If the flags don't hold, a bridge member isn't named
+  or the member rules aren't loaded, `walls.sh` drops the marker and no machine runs. What this can't stop: forged
+  source addresses sent by a machine with raw-socket root to another machine's hardware address (see spec §5).
+  Rollback: `sudo launchctl bootout system/inc.i.walls; sudo sh tools/m1/pf/remove.sh` (clears the flags too), or
+  `sudo sh /usr/local/lib/i-inc/walls.sh --off` for the flags alone.
+- **Old launchers update themselves (T70).** A machine made from an image older than the release (its launcher writes
+  no agent notes) is updated by the daemon when a sweep or the sign-in probe finds it: the release's
+  `images/employee/acp-env.sh`, `launchers/acp-*` and `claude-settings.json` are copied in as root, checked and logged
+  once (`its launcher was older than the release's…`). It waits for the walls, and never starts a stopped machine:
+  it happens the next time the machine is up. `tools/host/update-machine.sh <team>` still works by hand.
 
 **Owner steps (once, on the mini).** Nothing needs creating at user level. Do it when no ticket is running: right
 after the walls reload, each engineers' machine is shut in until the daemon declares it (up to half a minute).
@@ -241,7 +253,7 @@ after the walls reload, each engineers' machine is shut in until the daemon decl
 1. `cd ~/i-inc && git pull` (the daemon deploys itself; the host scripts come from this checkout).
 2. `sh tools/host/install-relay.sh` (as yourself) installs the allowlisting relay and restarts it.
 3. `sudo sh tools/host/install-walls.sh` (from your own account, not a root shell: it needs `SUDO_USER`) loads the new
-   rules, `walls.sh` and its plist (with a watch on the daemon's list), and records you as the owner of
+   rules, `walls.sh`, `bridge-filter.sh` (T70) and the plist (with a watch on the daemon's list), and records you as the owner of
    `/var/run/i-inc`. It ends with `the walls are up` and `open machines the walls hold now: 0`; within half a minute
    the daemon declares the running machines and the count follows.
 4. Verify.
@@ -255,8 +267,20 @@ after the walls reload, each engineers' machine is shut in until the daemon decl
    `14 as wanted, 0 not` (internet, by name and by address, and DNS blocked; only Ollama open). As the user,
    `sudo -n true` must fail there: `container machine run -u employee -n inc-home-<id> -- sudo -n true` prints
    "a password is required".
-   (d) With a second machine running, add `OTHER_MACHINE=<its address>` to (c); it ends `17 as wanted, 0 not` if
-   machines can't reach each other (and prints what happened to the broadcast). Report the result here.
+   (d) **Machine to machine (T70).** First check the bridge: `ifconfig bridge100 | grep ipfilter` says
+   `ipfilter enabled flags 0x6`, `tail /var/log/i-inc-walls.log` has `bridge100 filters frames between machines`
+   and no `walls down`, and `sudo pfctl -a com.apple/010.i-inc-machines -s rules | grep -c vmenet` is not 0. Then, with a
+   second machine running (read both addresses in `container machine ls`), start a listener in it, from the host:
+   `container machine run -i -u employee -n <other machine> -- bash -s <<'EOF'` with the node one-liner and the
+   `cat /tmp/listener.log; ss -ltn | grep ':7777 '` lines at the top of `tools/m1/walls-test.sh` (the log must say
+   `listening`; `listen failed` means the proof below is void). Then, in the first machine, add
+   `OTHER_LISTENER=<other machine's address>:7777` to (b) or (c): it ends `17 as wanted, 0 not` (the 14 of (b) or (c),
+   the DHCP lease, TCP to the listener timing out, and ping), and with `OTHER_MACHINE=<address>` as well, `20 as wanted,
+   0 not`. A line saying `refused` is not a pass. Then in the other machine `cat /tmp/listener.log` must show no
+   `connection from`, and `pkill -f createServer` stops the listener. Also, in the first machine, `curl -4 https://example.com`,
+   a DNS lookup and `curl http://192.168.64.1:11434/api/tags` still work (for an open machine), and a build with
+   `container build` still has its internet. If anything that worked before is now blocked, run the rollback above and
+   report which. Report the result here.
    (e) From a machine, `curl -s -X POST http://192.168.64.1:11434/api/pull -d '{"name":"evil.example/x/y"}'` answers
    403 `that call is not allowed`, and `curl -s http://192.168.64.1:11434/api/tags` still lists the models.
 

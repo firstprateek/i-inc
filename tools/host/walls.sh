@@ -21,6 +21,16 @@
 # A bad line in the owner's file can only open an address in the machines' subnet, and the daemon
 # checks every address it launches into against what pf holds. An address that leaves the table has
 # its connections killed (pfctl -k), since pf keeps the state of a connection a rule once passed.
+#
+# Machine to machine (T70): the machines share one bridge, and macOS switches a frame between two of its
+# members without running pf on it unless the bridge's filter flags ask for that. So each run also sets
+# bridge100's flags to 0x6 (IFBF_FILT_MEMBER | IFBF_FILT_ONLYIP, through tools/host/bridge-filter.sh;
+# macOS has no pfil_* sysctl) and reads them back with ifconfig. Flags that don't read back as 0x6, a
+# bridge member that the rules' interface list doesn't name (vmenet0 to vmenet31), or rules without the
+# member section all count as down. The flags are the bridge's, so a bridge100 made anew starts at 0
+# and is set again on the next run, within a minute. With no bridge100 yet there is nothing to switch.
+# `sh walls.sh --off` gives the flags back (0) and takes the marker away; the job would put them
+# back, so bootout the job first (tools/m1/pf/remove.sh does all of it).
 set -u
 run=${I_INC_WALLS_RUN:-/var/run}
 lib=${I_INC_WALLS_LIB:-/usr/local/lib/i-inc}
@@ -32,12 +42,29 @@ decl_dir=$run/i-inc
 declared=$decl_dir/open-machines
 table=$run/i-inc-open-machines.table
 ack=$run/i-inc-walls.open
+bridge=bridge100
+bridge_flags_wanted=6
+bridge_filter=${I_INC_WALLS_BRIDGE_FILTER:-$lib/bridge-filter.sh}
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 down() {
   rm -f "$ok" "$ack"
   echo "$(now) walls down: $*"
   exit 1
 }
+
+# bridge100's filter flags as ifconfig shows them ("ipfilter enabled flags 0x2"): a number, or nothing.
+bridge_flags() {
+  ifconfig "$bridge" 2>/dev/null | sed -n 's/.*ipfilter[ a-z]* flags \(0x[0-9a-fA-F]*\).*/\1/p' | head -n 1
+}
+
+if [ "${1:-}" = "--off" ]; then
+  rm -f "$ok" "$ack"
+  if ifconfig "$bridge" >/dev/null 2>&1; then
+    sh "$bridge_filter" "$bridge" 0 || { echo "$(now) can't clear $bridge's filter flags" >&2; exit 1; }
+  fi
+  echo "$(now) walls off: $bridge's filter flags are 0, the marker is gone"
+  exit 0
+fi
 
 # The open machines' addresses the daemon declared, checked line by line. A line that isn't exactly
 # an address of 192.168.64.0/24 (not the network's, the gateway's or the broadcast address) is dropped.
@@ -95,6 +122,9 @@ printf '%s\n' "$anchor_rules" | grep -q "block return in" || down "the anchor is
 # hand, lets every machine out).
 printf '%s\n' "$anchor_rules" | grep -q "from <open_machines> to any" ||
   down "the anchor has no rule for the open machines"
+# The rules for frames switched between machines (an older file has none).
+printf '%s\n' "$anchor_rules" | grep -q "quick on [^ ]* inet from any to <peers>" ||
+  down "the anchor has no rule for traffic between machines"
 # What pf holds must be what was declared: the table is read back, not assumed.
 loaded=$(pfctl -a "$anchor" -t open_machines -T show 2>/dev/null | tr -d ' \t' | sed '/^$/d' | sort -u) ||
   down "can't read the open machines' table"
@@ -112,6 +142,25 @@ done
 # interface, they'd match nothing, so that counts as down too.
 gw_if=$(ifconfig | awk '/^[a-z0-9]+:/ { i = $1; sub(":", "", i) } /inet 192\.168\.64\.1 / { print i }')
 [ -z "$gw_if" ] || [ "$gw_if" = bridge100 ] || down "the machines' gateway is on $gw_if, not bridge100"
+# Frames between machines reach pf only if the bridge hands them to it.
+if ifconfig "$bridge" >/dev/null 2>&1; then
+  for member in $(ifconfig "$bridge" | awk '$1 == "member:" { print $2 }'); do
+    case "$member" in
+      vmenet[0-9] | vmenet[12][0-9] | vmenet3[01]) ;;
+      *) down "$bridge has a member, $member, that the rules' interface list does not name" ;;
+    esac
+  done
+  flags=$(bridge_flags)
+  [ -n "$flags" ] || down "can't read $bridge's filter flags from ifconfig"
+  if [ $((flags & bridge_flags_wanted)) -ne "$bridge_flags_wanted" ]; then
+    out=$(sh "$bridge_filter" "$bridge" "$bridge_flags_wanted" 2>&1) ||
+      down "can't set $bridge's filter flags: $out"
+    flags=$(bridge_flags)
+    [ -n "$flags" ] && [ $((flags & bridge_flags_wanted)) -eq "$bridge_flags_wanted" ] ||
+      down "$bridge's filter flags read back as '${flags:-nothing}', not 0x$bridge_flags_wanted"
+    echo "$(now) $bridge filters frames between machines (flags $flags)"
+  fi
+fi
 # The acknowledgement for the daemon: the addresses pf lets out, rewritten
 # every run so its age says the job is alive.
 printf '%s' "$loaded" | sed '/^$/d' >"$ack.new" && chmod 644 "$ack.new" && mv -f "$ack.new" "$ack" ||

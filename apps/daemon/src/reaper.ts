@@ -115,25 +115,41 @@ export type Reap = (employeeId: Id, o?: ReapOptions) => Promise<string[]>;
 /** Machines whose launcher writes no notes (made before agent notes existed): no leftover agent there can be found. */
 const oldLauncher = new Set<string>();
 
-/** The launcher check in a sweep's or a probe's output: logged once per machine, and shown in Setup. */
-export function noteLauncher(machine: string, current: boolean, log?: (m: string) => void): void {
+/**
+ * The launcher check in a sweep's or a probe's output: logged once per machine, and shown in Setup. Returns
+ * whether the launcher is old, so the caller can have the machine updated (`AppleMachines.updateLauncher`).
+ */
+export function noteLauncher(machine: string, current: boolean, log?: (m: string) => void): boolean {
   if (current) {
     oldLauncher.delete(machine);
-    return;
+    return false;
   }
-  if (oldLauncher.has(machine)) return;
-  oldLauncher.add(machine);
-  log?.(
-    `${machine}: its launcher writes no agent notes, so an agent left running by a crash can't be found. Needs update: run tools/host/update-machine.sh ${machine.replace(/^inc-/, "")} on the host`,
-  );
+  if (!oldLauncher.has(machine)) {
+    oldLauncher.add(machine);
+    log?.(
+      `${machine}: its launcher writes no agent notes, so an agent left running by a crash can't be found. The daemon updates it from the release (or run tools/host/update-machine.sh ${machine.replace(/^inc-/, "")} on the host)`,
+    );
+  }
+  return true;
 }
+
+/** Updates a machine's launcher from the release, if it can (machines.ts `updateLauncher`); it never throws. */
+export type UpdateLauncher = (machine: string) => Promise<unknown>;
 
 /** Does this machine need `tools/host/update-machine.sh`? Known once a sweep or a probe has looked. */
 export const launcherNeedsUpdate = (machine: string): boolean => oldLauncher.has(machine);
 
-function readLauncher(machine: string, output: string, log?: (m: string) => void): void {
+/** Reads the launcher line of a sweep, and has an old launcher updated before the caller goes on. */
+async function readLauncher(
+  machine: string,
+  output: string,
+  log?: (m: string) => void,
+  update?: UpdateLauncher,
+): Promise<void> {
   const m = /@@launcher (current|old)/.exec(output);
-  if (m) noteLauncher(machine, m[1] === "current", log);
+  if (m && noteLauncher(machine, m[1] === "current", log) && update) {
+    await update(machine).catch(() => {});
+  }
 }
 
 /** Launches wait for the startup sweep, so an agent started in its window is never in its way. */
@@ -149,6 +165,7 @@ export function reaper(
   run: RunInMachine,
   log?: (m: string) => void,
   machineOf?: (employeeId: Id) => string,
+  update?: UpdateLauncher,
 ): Reap {
   return async (employeeId, o = {}) => {
     try {
@@ -159,7 +176,8 @@ export function reaper(
         ...(o.cwd ? { I_INC_SWEEP_CWD: o.cwd } : {}),
       };
       const r = await run(employeeId, SWEEP_SCRIPT, env);
-      if (machineOf) readLauncher(machineOf(employeeId), r.output, log);
+      // An old launcher is updated first, so the launch that follows this sweep uses the release's.
+      if (machineOf) await readLauncher(machineOf(employeeId), r.output, log, update);
       const reaped = r.output
         .split("\n")
         .filter((l) => l.startsWith("@@reaped "))
@@ -182,6 +200,8 @@ export async function reapMachines(
   machines: {
     listMachines(): Promise<{ name: string; state: string }[]>;
     runIn(m: string, s: string, t?: number): Promise<string>;
+    /** A machine whose launcher is old is updated here (never started for it: only running ones are swept). */
+    updateLauncher?: UpdateLauncher;
   },
   log?: (m: string) => void,
   o: { all?: boolean; timeoutMs?: number } = {},
@@ -201,7 +221,7 @@ export async function reapMachines(
               `export I_INC_KEEP='${keep}'\n${SWEEP_SCRIPT}`,
               o.timeoutMs ?? 60_000,
             );
-            readLauncher(m.name, out, log);
+            await readLauncher(m.name, out, log, machines.updateLauncher?.bind(machines));
             for (const line of out.split("\n").filter((l) => l.startsWith("@@reaped "))) {
               n++;
               log?.(`stopped an agent left running in ${m.name} by an earlier daemon (pid ${line.slice(9)})`);

@@ -15,12 +15,25 @@
 # PA's sandbox by its network, and a rule that named the PA's address would be open to any address
 # the sandbox took for itself. So the rules name who is let out, and everyone else is shut in.
 #
+# Between machines nothing passes (T70). The machines share one bridge, bridge100, and the bridge
+# switches a frame from one machine's vmenetN to another's without handing it to the host's IP stack, so
+# the rules on bridge100 below never saw it. macOS runs pf on bridged frames only when the bridge's
+# filter flags are set (IFBF_FILT_MEMBER, plus IFBF_FILT_ONLYIP; there is no net.link.bridge.pfil_*
+# sysctl on macOS, tools/host/bridge-filter.sh sets the flags and walls.sh checks them every minute).
+# pf then runs on each member interface: `in` on the one a frame arrives on, `out` on each one it is
+# switched to. The first section of rules below is for those hooks. They are all blocks, plus one last
+# `pass ... no state` so a frame that is none of those leaves no state of its own behind: states are
+# made by the rules on bridge100 alone, as before (a state made on a member could let a frame past
+# the rules on bridge100).
+#
 # What every machine gets:
 #   - from the host, DHCP and Ollama (through the relay, tools/m1/ollama-forward.mjs, which allows
 #     only chat, generate and embedding calls on models already installed);
-#   - nothing else: not the LAN, the tailnet, other machines or the rest of the host, no DNS (a lookup
-#     through the host's resolver is a way out for what a machine has read), no IPv6 beyond
-#     neighbour discovery, and no connections opened to it.
+#   - nothing else: not the LAN, the tailnet, other machines (unicast, broadcast or multicast; TCP,
+#     UDP or ping) or the rest of the host, no DNS (a lookup through the host's resolver is a way out
+#     for what a machine has read), no IPv6 at all (the member rules drop it; the neighbour-discovery
+#     passes on bridge100 below are kept for the day the machines get a v6 network), and no
+#     connections opened to it.
 # What a machine in <open_machines> also gets:
 #   - DNS from the host, and the internet over IPv4, each new connection logged to pflog0.
 # i.inc's API port joins Ollama's once the daemon serves one to machines.
@@ -30,14 +43,45 @@ machines    = "192.168.64.0/24"
 gateway     = "192.168.64.1"
 ollama_port = "11434"
 
+# The bridge's member interfaces, one per machine (vmnet adds a vmenetN for each running machine and
+# reuses the lowest free number). pf matches `on` by exact interface name and macOS has no interface
+# groups, so the names are listed; a name that doesn't exist yet is fine (pfctl accepts it, and the rule
+# applies once the interface does). walls.sh refuses to stand if bridge100 has a member outside this list.
+members     = "{ vmenet0, vmenet1, vmenet2, vmenet3, vmenet4, vmenet5, vmenet6, vmenet7, vmenet8, \
+  vmenet9, vmenet10, vmenet11, vmenet12, vmenet13, vmenet14, vmenet15, vmenet16, vmenet17, \
+  vmenet18, vmenet19, vmenet20, vmenet21, vmenet22, vmenet23, vmenet24, vmenet25, vmenet26, \
+  vmenet27, vmenet28, vmenet29, vmenet30, vmenet31 }"
+
 # Everything that isn't the internet: private and link-local ranges (the LAN, the machines, the
 # host), the tailnet (100.64.0.0/10), loopback, multicast and reserved space.
 table <not_internet> const { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, \
   172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 }
 
+# The machines' addresses without the gateway's: what a frame from or to another machine names. The
+# host (192.168.64.1) is not a peer: it keeps DHCP, DNS for open machines and the Ollama relay.
+table <peers> const { 192.168.64.0/24, !192.168.64.1 }
+
 # The addresses of the machines let out (one IPv4 address a line), written by walls.sh before it
 # loads this file. `persist` keeps the table when no rule uses it.
 table <open_machines> persist file "/var/run/i-inc-open-machines.table"
+
+# Frames switched between machines (pf on the bridge's member interfaces, see above). A frame to
+# a machine's address is dropped as it comes in, whatever its source address says (a machine can
+# claim any); a frame from a machine's address is dropped on its way out of a member, which catches
+# a frame sent to another machine's hardware address with some other destination address, and the
+# flood of a broadcast. Host traffic is never "from a peer", and a reply to a machine comes from
+# its destination, so none of this touches the internet, DNS, Ollama or DHCP. Plain `drop`, not
+# `return`: no reply is made up for a frame that is only passing through.
+block drop in log quick on $members inet from any to <peers>
+block drop out log quick on $members inet from <peers> to any
+# Broadcast and multicast from anything but the host reach every other machine, whatever their source
+# (a DHCP request is from 0.0.0.0). The host still gets its copy of a DHCP request: that goes to
+# bridge100, not out of a member. The host's own broadcasts (DHCP offers) and multicast pass.
+block drop out quick on $members inet from ! $gateway to 255.255.255.255
+block drop out quick on $members inet from ! $gateway to 224.0.0.0/4
+# IPv6 between machines is a path for link-local addresses, and nothing here uses IPv6.
+block drop quick on $members inet6 all
+pass quick on $members all no state
 
 # From the machines. DHCP and Ollama on the host come first, since the host is in <not_internet>.
 # DNS and the internet are for <open_machines> only.
