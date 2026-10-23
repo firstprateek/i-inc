@@ -40,14 +40,17 @@ function reportsOf(items: BoardItem[]): Record<Id, DigestRow> {
   return out;
 }
 
-const clamp = (n: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, Math.floor(n)));
+/** `n` within [lo, hi]; a value that is not a number at all (`?limit=abc` is NaN) is `fallback`. */
+const clamp = (n: number, lo: number, hi: number, fallback: number = lo): number =>
+  Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.floor(n))) : fallback;
 
 export function boardSummary(
   items: BoardItem[],
   limits: { limit?: number; doneLimit?: number } = {},
+  maxId = 0,
 ): BoardSummaryView {
-  const limit = clamp(limits.limit ?? COLUMN_LIMIT, 1, MAX_PAGE);
-  const doneLimit = clamp(limits.doneLimit ?? DONE_LIMIT, 1, MAX_PAGE);
+  const limit = clamp(limits.limit ?? COLUMN_LIMIT, 1, MAX_PAGE, COLUMN_LIMIT);
+  const doneLimit = clamp(limits.doneLimit ?? DONE_LIMIT, 1, MAX_PAGE, DONE_LIMIT);
   const columns = {} as Record<Column, BoardColumnView>;
   const shown: BoardItem[] = [];
   for (const c of COLUMNS) {
@@ -56,7 +59,7 @@ export function boardSummary(
     shown.push(...page);
     columns[c] = { total: all.length, tickets: page.map((i) => i.view) };
   }
-  return { columns, reports: reportsOf(shown) };
+  return { columns, reports: reportsOf(shown), maxId };
 }
 
 /** One more page of a column. */
@@ -68,8 +71,8 @@ export function boardColumn(
 ): BoardColumnView & { reports: Record<Id, DigestRow> } {
   const all = ordered(items, column);
   const page = all.slice(
-    clamp(offset, 0, all.length),
-    clamp(offset, 0, all.length) + clamp(limit, 1, MAX_PAGE),
+    clamp(offset, 0, all.length, 0),
+    clamp(offset, 0, all.length, 0) + clamp(limit, 1, MAX_PAGE, COLUMN_LIMIT),
   );
   return { total: all.length, tickets: page.map((i) => i.view), reports: reportsOf(page) };
 }

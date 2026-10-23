@@ -19,6 +19,8 @@ export interface BoardData {
   columns: Record<Column, BoardColumn>;
   /** How each loaded Done card ended, by ticket id. */
   reports: Record<string, DigestRow>;
+  /** The highest ticket id the daemon had when this was built: a card above it that is not on screen is new. */
+  maxId: number;
 }
 
 /** Cards a "Show more" adds. */
@@ -36,7 +38,7 @@ const before = (column: Column, a: string, b: string): boolean =>
 export function fromSummary(s: BoardSummaryView): BoardData {
   const columns = {} as Record<Column, BoardColumn>;
   for (const c of COLUMN_IDS) columns[c] = { total: s.columns[c].total, tickets: s.columns[c].tickets };
-  return { columns, reports: { ...s.reports } };
+  return { columns, reports: { ...s.reports }, maxId: s.maxId ?? 0 };
 }
 
 /** Every loaded ticket, flat. */
@@ -70,6 +72,7 @@ export function appendPage(
       [column]: { total: page.total, tickets: [...d.columns[column].tickets, ...more] },
     },
     reports: { ...d.reports, ...page.reports },
+    maxId: d.maxId,
   };
 }
 
@@ -79,12 +82,11 @@ export function appendPage(
  */
 export function applyCards(
   d: BoardData,
-  cards: { tickets: BoardTicket[]; reports: Record<string, DigestRow>; gone: string[] },
+  cards: { tickets: BoardTicket[]; reports: Record<string, DigestRow>; gone: string[]; maxId?: number },
 ): BoardData | null {
   const columns = {} as Record<Column, BoardColumn>;
   for (const c of COLUMN_IDS) columns[c] = { total: d.columns[c].total, tickets: [...d.columns[c].tickets] };
   const reports = { ...d.reports };
-  const maxId = Math.max(0, ...allTickets(d).map((t) => num(t.id)));
 
   const remove = (id: string): Column | null => {
     for (const c of COLUMN_IDS) {
@@ -110,8 +112,10 @@ export function applyCards(
       col.tickets[at] = card; // same column: replaced where it stands
     } else {
       const was = remove(card.id);
-      if (was === null && num(card.id) <= maxId) {
-        // Not on screen and not new: it is somewhere in a column that isn't fully loaded.
+      if (was === null && num(card.id) <= d.maxId) {
+        // Not on screen, and it existed when the board was loaded: it is somewhere in a column that isn't fully
+        // loaded, and where it came from is not known, so the totals can't be adjusted. (A ticket above the
+        // daemon's highest id at that time is new, however high its number.)
         return null;
       }
       if (was) columns[was].total = Math.max(0, columns[was].total - 1);
@@ -130,5 +134,5 @@ export function applyCards(
     if (cards.reports[card.id]) reports[card.id] = cards.reports[card.id] as DigestRow;
     else delete reports[card.id];
   }
-  return { columns, reports };
+  return { columns, reports, maxId: Math.max(d.maxId, ...cards.tickets.map((c) => num(c.id))) };
 }

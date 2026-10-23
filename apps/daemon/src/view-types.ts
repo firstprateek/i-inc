@@ -302,6 +302,8 @@ export interface BoardColumnView {
 export interface BoardSummaryView {
   columns: Record<Column, BoardColumnView>;
   reports: Record<Id, DigestRow>;
+  /** The highest ticket id when it was built: a ticket above it, that the board did not load, is new. */
+  maxId: number;
   unreadable?: { id: Id; reason: string }[];
 }
 

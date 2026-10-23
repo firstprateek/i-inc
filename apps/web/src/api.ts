@@ -292,7 +292,7 @@ export const api = {
     ),
   /** The cards of these tickets alone, for a live update; `gone` are ids that no longer exist. */
   boardCards: (ids: string[]) =>
-    call<{ tickets: TicketView[]; reports: Record<string, DigestRow>; gone: string[] }>(
+    call<{ tickets: TicketView[]; reports: Record<string, DigestRow>; gone: string[]; maxId: number }>(
       "GET",
       `/api/board/cards?ids=${ids.map(encodeURIComponent).join(",")}`,
     ),

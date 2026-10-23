@@ -12,13 +12,17 @@ import {
 const t = (id: string, column: TicketView["column"]): TicketView =>
   ({ id, title: `T${id}`, column, status: "running", project: "Duet" }) as TicketView;
 
-const board = (cols: Partial<Record<TicketView["column"], { total: number; ids: string[] }>>): BoardData => {
+const board = (
+  cols: Partial<Record<TicketView["column"], { total: number; ids: string[] }>>,
+  maxId?: number,
+): BoardData => {
   const columns = {} as BoardSummaryView["columns"];
   for (const c of ["todo", "in-progress", "review", "done"] as const) {
     const x = cols[c] ?? { total: 0, ids: [] };
     columns[c] = { total: x.total, tickets: x.ids.map((id) => t(id, c)) };
   }
-  return fromSummary({ columns, reports: {} });
+  const loaded = Object.values(cols).flatMap((c) => c.ids.map(Number));
+  return fromSummary({ columns, reports: {}, maxId: maxId ?? Math.max(0, ...loaded) });
 };
 const ids = (d: BoardData, c: TicketView["column"]) => d.columns[c].tickets.map((x) => x.id);
 const none = { reports: {}, gone: [] as string[] };
@@ -71,6 +75,21 @@ describe("applyCards", () => {
   it("asks for a reload for an older ticket it never loaded: it cannot tell where it was", () => {
     const d = board({ todo: { total: 50, ids: ["10", "11", "12"] } });
     expect(applyCards(d, { tickets: [t("4", "review")], ...none })).toBeNull();
+  });
+
+  it("tells a new ticket from one it never loaded by the daemon's highest id, not by the loaded ones", () => {
+    // 526 To do, 40 loaded (ids 4..160); the daemon's highest id when the board loaded was 1000.
+    const loaded = Array.from({ length: 40 }, (_, i) => String((i + 1) * 4));
+    const d = board({ todo: { total: 526, ids: loaded } }, 1000);
+    // Ticket 900 existed then: it is somewhere in the 486 unloaded cards, so its event must not bump the total.
+    expect(applyCards(d, { tickets: [t("900", "todo")], ...none })).toBeNull();
+    // Ticket 1001 did not: it is new, counted once, and not shown (after the unloaded cards).
+    const next = applyCards(d, { tickets: [t("1001", "todo")], ...none });
+    expect(next?.columns.todo.total).toBe(527);
+    expect(next?.columns.todo.tickets).toHaveLength(40);
+    expect(next?.maxId).toBe(1001);
+    // Told again about 1001 (a second event for it): not counted twice, because it is no longer above the highest id.
+    expect(next && applyCards(next, { tickets: [t("1001", "todo")], ...none })).toBeNull();
   });
 
   it("removes a ticket that is gone", () => {

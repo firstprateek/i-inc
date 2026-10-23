@@ -93,6 +93,8 @@ export class IncApp extends LitElement {
   private lastView: Route["view"] = "conversations";
   private releaseAhp: (() => void) | undefined;
   private offRoster: (() => void) | undefined;
+  /** The connection's opening roster has been heard. */
+  private rosterSeen = false;
   private rosterTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor() {
@@ -157,6 +159,12 @@ export class IncApp extends LitElement {
     if (!ahp || !useAhp || !this.isConnected || this.releaseAhp) return;
     this.releaseAhp = useAhp();
     this.offRoster = ahp().onRoster(() => {
+      // The first roster is the connection's opening snapshot (every connect sends one): the count asked for as
+      // the page opened already has it, so counting again would only repeat that request.
+      if (!this.rosterSeen) {
+        this.rosterSeen = true;
+        if (this.needsCount !== null) return;
+      }
       clearTimeout(this.rosterTimer);
       this.rosterTimer = setTimeout(() => void this.loadNeeds(), 600);
     });

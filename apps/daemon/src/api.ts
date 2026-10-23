@@ -257,6 +257,9 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     }
     return out;
   };
+  /** The highest ticket id there is (ids are numbers in order), so the board can tell a new ticket from one it did not load. */
+  const maxTicketId = (): number =>
+    d.tickets.all().reduce((m, r) => Math.max(m, Number(r.ticket.id) || 0), 0);
   const views = async (): Promise<TicketView[]> => (await boardItems()).map((i) => i.view);
   const unreadableTickets = () => {
     const seen = new Set<string>();
@@ -403,10 +406,14 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       "/api/board/summary",
       async (req) => {
         const q = new URL(req.url).searchParams;
-        const summary = boardSummary(await boardItems(), {
-          ...(q.has("limit") ? { limit: Number(q.get("limit")) } : {}),
-          ...(q.has("doneLimit") ? { doneLimit: Number(q.get("doneLimit")) } : {}),
-        });
+        const summary = boardSummary(
+          await boardItems(),
+          {
+            ...(q.get("limit") ? { limit: Number(q.get("limit")) } : {}),
+            ...(q.get("doneLimit") ? { doneLimit: Number(q.get("doneLimit")) } : {}),
+          },
+          maxTicketId(),
+        );
         const unreadable = unreadableTickets();
         return json({ ...summary, ...(unreadable.length ? { unreadable } : {}) });
       },
@@ -440,6 +447,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           .filter(Boolean)
           .slice(0, MAX_PAGE);
         const waiting = waitingMap();
+        unbuilt = []; // this request's own failures, not an earlier one's
         const items: BoardItem[] = [];
         const gone: string[] = [];
         for (const id of ids) {
@@ -448,7 +456,12 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           if (item) items.push(item);
           else gone.push(id);
         }
-        return json({ tickets: items.map((i) => i.view), reports: reportsFor(items), gone });
+        return json({
+          tickets: items.map((i) => i.view),
+          reports: reportsFor(items),
+          gone,
+          maxId: maxTicketId(),
+        });
       },
     ],
 
@@ -458,6 +471,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       "/api/needs-you",
       async () => {
         const waiting = waitingMap();
+        unbuilt = []; // this request's own failures, not an earlier one's
         const tickets: TicketView[] = [];
         const policies: ProposedEdit[] = [];
         for (const r of d.tickets.all()) {

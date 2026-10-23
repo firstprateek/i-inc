@@ -22,6 +22,7 @@ export interface BoardWorld {
 
 const COLUMNS = ["todo", "in-progress", "review", "done"];
 const num = (id: string) => Number(id) || 0;
+const maxId = (w: BoardWorld) => Math.max(0, ...w.tickets.map((t) => num(t.id)));
 
 function ordered(tickets: T[], column: string): T[] {
   const mine = tickets.filter((t) => t.column === column);
@@ -53,7 +54,7 @@ export function answer(world: BoardWorld, url: string): unknown | undefined {
         shown.push(...page);
         columns[c] = { total: all.length, tickets: page };
       }
-      return { columns, reports: reportsOf(world, shown) };
+      return { columns, reports: reportsOf(world, shown), maxId: maxId(world) };
     }
     case "/api/board/column": {
       const all = ordered(world.tickets, q.get("column") ?? "");
@@ -68,6 +69,7 @@ export function answer(world: BoardWorld, url: string): unknown | undefined {
         tickets,
         reports: reportsOf(world, tickets),
         gone: ids.filter((id) => !world.tickets.some((t) => t.id === id)),
+        maxId: maxId(world),
       };
     }
     case "/api/board/recent":

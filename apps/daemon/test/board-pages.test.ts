@@ -54,6 +54,24 @@ describe("GET /api/board/summary", () => {
     expect(body.reports["30"]).toMatchObject({ id: "30", outcome: "Merged" });
   });
 
+  it("treats a limit that is not a number as no limit at all, not as an empty column", async () => {
+    const app = await board(60, 20);
+    for (const q of ["limit=abc", "limit=NaN&doneLimit=x", "limit=&doneLimit=Infinity"]) {
+      const { status, body } = await app.call("GET", `/api/board/summary?${q}`);
+      expect(status, q).toBe(200);
+      expect(body.columns.todo.tickets, q).toHaveLength(40);
+      expect(body.columns.done.tickets, q).toHaveLength(15);
+    }
+    const page = await app.call("GET", "/api/board/column?column=todo&offset=abc&limit=abc");
+    expect(page.body.tickets).toHaveLength(40);
+  });
+
+  it("says the highest ticket id, so the board can tell a new ticket from one it did not load", async () => {
+    const app = await board(60, 20);
+    expect((await app.call("GET", "/api/board/summary")).body.maxId).toBe(60);
+    expect((await app.call("GET", "/api/board/cards?ids=3")).body.maxId).toBe(60);
+  });
+
   it("honours limit and doneLimit, within bounds", async () => {
     const app = await board(60, 20);
     const { body } = await app.call("GET", "/api/board/summary?limit=5&doneLimit=3");

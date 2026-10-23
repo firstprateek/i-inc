@@ -1,10 +1,13 @@
 // What opening the board and one live event cost with a thousand tickets (T63): before, 16 requests and 2.6 MB
 // to open, and 9 requests and 1.3 MB for each ticket event.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AhpConnection } from "../src/ahp/connection.ts";
+import { resetAhp, setAhp } from "../src/ahp/hub.ts";
 import { refreshNow, type TicketView } from "../src/api.ts";
 import { IncApp } from "../src/components/app.ts";
 import "../src/components/board.ts";
 import "../src/components/inbox.ts";
+import { hosts } from "./ahp/fake-host.ts";
 import { answer } from "./daemon-board.ts";
 
 const COLUMNS = ["todo", "in-progress", "review", "done"] as const;
@@ -175,5 +178,34 @@ describe("the Needs you page and the badge", () => {
     await settle(app);
     expect(paths().filter((p) => p === "/api/needs-you")).toHaveLength(1);
     expect(paths().filter((p) => p === "/api/board")).toEqual([]);
+  });
+});
+
+describe("the Needs you count and the AHP connection's opening roster", () => {
+  it("is not counted again for the snapshot every connection sends, but is for a real change", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = hosts();
+      setAhp(new AhpConnection({ connect: h.connect, pingMs: 0, backoff: () => 5 }));
+      location.hash = "#/work/board";
+      const app = new IncApp();
+      document.body.append(app);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(h.made.length).toBeGreaterThan(0);
+      // The page opened with one count (the connection's snapshot did not ask for another).
+      expect(paths().filter((p) => p === "/api/needs-you")).toHaveLength(1);
+      log = [];
+      (h.made[0] as NonNullable<(typeof h.made)[number]>).notify("root/sessionAdded", {
+        channel: "ahp-root:/",
+        session: "ahp-session:/chat/ab12cd34",
+        summary: { resource: "ahp-session:/chat/ab12cd34", status: 24 },
+      });
+      // The roster is debounced (600 ms); the 5 s fallback poll (no event stream here) is not reached.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(paths()).toEqual(["/api/needs-you"]);
+    } finally {
+      resetAhp();
+      vi.useRealTimers();
+    }
   });
 });
