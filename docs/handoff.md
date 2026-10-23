@@ -320,7 +320,7 @@ install ripgrep` (no root, no internet), said it could not go on, and the ticket
    looked at. A page counts only if it was **written or changed by this ticket's sessions** (a page an earlier run
    left does not; the daemon answers from its record of this ticket's harvests), has **frontmatter with a title and a
    description that the agent wrote** (the daemon repairs frontmatter when it commits; a repair means the agent did
-   not write it), has **at least 40 words** of body, no repeated `TODO`, and is **not the example copied** as it is.
+   not write it), has **at least 40 words** of body (and 20 different ones, so fifty repeated words don't pass), no repeated `TODO`, and is **not the example** with a line or two changed.
    A PA's pages are `reference/how-i-help-at-home` (with a "My tools" section) and `patterns/errands`; an engineer's
    are `projects/<name>` for each project it works on (the company's projects when none is named), or
    `reference/my-tools` when the company has no project yet. A miss runs one more session whose brief says what is
@@ -329,7 +329,11 @@ install ripgrep` (no root, no internet), said it could not go on, and the ticket
    cannot be read goes to Needs you at once, since another session would not help. The tidy-up is checked the
    same way: its report must come out empty.
    **Errands** (the PA's main work) are held to a smaller version of it: `{"proposals":[]}` alone is not done. The
-   reply needs proposals or `"nothing":"<the reason>"`; a bare empty reply gets one more session, then Needs you.
+   reply needs proposals or `"nothing":"<the reason>"`; a bare empty reply gets one more session, then Needs you. The
+   reason is shown on the ticket as a note ("Proposed nothing: …"), and the errand closes as done only if it reads as
+   no action needed ("the inbox has no new mail"). A reason that mentions an error, a failure, missing tools or access
+   ("sudo failed", "no internet", "can't") or that the classifier cannot tell goes to Needs you at once
+   (`nothingMeansNoActionNeeded`, core `validate.ts`: a keyword list, unsure means ask).
    Other ticket types that close without their done-when being checked are in docs/coord.md, T72: **low-effort code
    tickets** (no `prove` stage) and **tickets where nobody has the verify duty** (`prove` is skipped).
 2. **A PA's orientation was the engineers'** ("a page for each project"; it has none). Now `homeOrientationTask`
@@ -368,27 +372,26 @@ install ripgrep` (no root, no internet), said it could not go on, and the ticket
    decision about the host, not about i.inc: if `ollama ps` shows the PA's model larger than about 8 GB, parallel
    slots are the cause, and `OLLAMA_NUM_PARALLEL=1` in Ollama's service environment (persistently) is the fix.
 
-**Host steps after this is deployed** (the daemon deploys itself; these are the parts it cannot do):
+**Host steps after this is deployed** (the deploy does the rest; these three are the parts it cannot do, in this order):
 
 ```bash
-# 1. The PA's model, with its window. Needs qwen3:8b pulled; safe to run again; costs no disk.
-sh tools/host/ollama-pa-model.sh
-ollama show qwen3-8b-32k --parameters                  # num_ctx 32768
-# The relay serves any installed model, so machines can use it within 30 s. Check from the host:
-curl -s http://127.0.0.1:11434/api/tags | grep -c qwen3-8b-32k
-
-# 2. Point the engine at it: Setup > Engines > the local engine (qwen): model `qwen3-8b-32k`.
-#    And the daemon's own helper and chat model (they read I_INC_OLLAMA_MODEL; the plist now sets it):
-sh tools/host/install-daemon.sh
-
-# 3. ripgrep and OpenCode's config into the machines that exist. No rebuild, no recreate, no restart:
+sh tools/host/ollama-pa-model.sh          # makes qwen3-8b-32k from qwen3:8b (needs it pulled); safe to run again; no disk
 sh tools/host/fetch-rg.sh                 # ripgrep 14.1.1 (linux arm64), checked against the SHA-256 pinned in the script
-sh tools/host/update-machine.sh home-pip  # the team id of each sandbox: engineering, company, home-pip
-# (it also copies the launchers and OpenCode's config, and copies rg only where `rg` is missing)
-
-# 4. Only for machines made from now on, if you want the image itself to carry them:
-container build -t local/i-inc-employee:latest images/employee
+sh tools/host/update-machine.sh <team>    # for each team: engineering, company, home-pip. Copies the launchers, OpenCode's
+                                          # config (which names the new model) and rg (only where `rg` is missing)
 ```
+
+Nothing else: the daemon is not reinstalled (do not run `install-daemon.sh` on a host the deployer manages) and no
+setting is changed. How the model reaches each user of it:
+- **The PA's OpenCode** reads the model from `opencode.json` in its machine (`ollama/qwen3-8b-32k`), which
+  `update-machine.sh` puts there; a machine not updated yet keeps its old file and `qwen3:8b`. The file lists **both**
+  models, so anything that selects `qwen3:8b` still works. An engine's `model` field in Setup is a label for OpenCode
+  and does not select anything.
+- **The daemon's own helper and chat** use `qwen3-8b-32k` whenever Ollama lists it, checked at start and again at most
+  once a minute, so the model made in step 1 is picked up without a restart. Until it exists they use `qwen3:8b`, and the
+  log says once: `ollama: using qwen3:8b, not qwen3-8b-32k (…)`. `I_INC_OLLAMA_MODEL`, if set, wins.
+- **The relay** serves any installed model, so machines can use it within 30 s of step 1 (tested in
+  `ollama-relay.test.ts`). Check from the host: `ollama show qwen3-8b-32k --parameters` shows `num_ctx 32768`.
 
 The binary is copied like the launchers are, so an existing machine needs neither a rebuild nor recreating. T70's
 automatic launcher update copies the launchers only; `rg` and `opencode.json` still go in with `update-machine.sh`.

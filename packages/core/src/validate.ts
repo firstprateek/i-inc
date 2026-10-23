@@ -158,3 +158,20 @@ export function readProposals(value: unknown): Proposal[] | null {
   }
   return out;
 }
+
+/** Words that make a "nothing" reason a report of giving up (a failure, a missing tool or access), not of having nothing to do. */
+const gaveUp =
+  /\b(sudo|fail(?:s|ed|ure|ures|ing)?|errors?|can'?t|cannot|can not|couldn'?t|could not|unable|not possible|impossible|no internet|offline|denied|permission|refused|not installed|missing|access|time[sd]? ?out|did not work|didn'?t work|doesn'?t work|not working|unavailable|not available|isn'?t available|blocked|broken|crash(?:ed)?|exception|not allowed|forbidden|unauthori[sz]ed|no tool|lack(?:s|ed|ing)?|stuck)\b/i;
+
+/** Words that make it a report of there being nothing to do. */
+const nothingToDo =
+  /\b(no action|nothing (?:to do|needed|is needed|needs|new|pending|more|else|to (?:reply|answer|send|prepare|propose|triage|report|file|book|schedule))|no (?:new|unread|pending|outstanding|open|unanswered|urgent) |no (?:mail|e-?mails?|messages?|invites?|requests?|events?|questions?) |no (?:reply|replies|response|responses|changes?|updates?|tasks?|work|action) (?:is |are )?(?:needed|required|necessary)|not needed|no need|already (?:done|handled|answered|replied|sorted|up to date|booked|scheduled)|up to date|all clear|all caught up|(?:inbox|calendar|list) (?:is )?(?:empty|clear)|nothing has changed)\b/i;
+
+/**
+ * Whether the reason an errand gave for proposing nothing reads as "no action was needed". Anything that mentions an
+ * error, a failure, missing tools or access is giving up, and so is anything this cannot tell: both go to the owner
+ * (the errand's `nothing` reply, spec §7).
+ */
+export function nothingMeansNoActionNeeded(reason: string): boolean {
+  return !gaveUp.test(reason) && nothingToDo.test(reason);
+}

@@ -166,6 +166,7 @@ export interface Expectation {
 }
 
 const minWords = 40;
+const minDistinct = 20;
 const squash = (s: string) => s.replace(/\s+/g, " ").trim();
 
 /**
@@ -179,6 +180,9 @@ export function pageProblem(text: string, slug: string, example?: string): strin
   }
   const words = wordCount(parsed.body);
   if (words < minWords) return `its body is ${words} words, under ${minWords}`;
+  const distinct = new Set((parsed.body.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []) as string[]).size;
+  if (distinct < minDistinct)
+    return `it uses only ${distinct} different words, under ${minDistinct}: it repeats itself`;
   if ((parsed.body.match(/\bTODO\b/gi) ?? []).length >= 2) return "it still has TODO placeholders";
   if (example) {
     const want = parsePage(example, slug).body.split("## My tools")[0] ?? "";
@@ -187,7 +191,8 @@ export function pageProblem(text: string, slug: string, example?: string): strin
     const have = new Set(lines(got));
     const same = lines(want).filter((l) => have.has(l)).length;
     const extra = lines(got).filter((l) => !lines(want).includes(l)).length;
-    if (same >= Math.ceil(lines(want).length * 0.9) && extra <= 2) {
+    // Most of the example's lines still there, whether or not a line or two was edited or added.
+    if (same >= Math.ceil(lines(want).length * 0.6) && extra <= 3) {
       return "it is the example copied as it is: write it in your own words";
     }
   }

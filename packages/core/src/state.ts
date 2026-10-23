@@ -104,6 +104,8 @@ export interface TicketState {
    * stage is tried once more, then goes to the owner), and the last result, which the next session is told.
    */
   doneWhen: { misses: number; last: { met: boolean; missing: string[] } | null };
+  /** An errand that proposed nothing: why, in its own words, for the owner to read on the ticket. */
+  nothingNote: string | null;
   /** Brain pages the agent replied with as JSON, by page: they are applied after the run, but count as written. */
   brainProposed: Record<string, string>;
   /** Time spent running, leaving out time paused, failed or waiting on the owner. */
@@ -156,6 +158,7 @@ export function emptyState(): TicketState {
     pr: null,
     prFor: null,
     doneWhen: { misses: 0, last: null },
+    nothingNote: null,
     brainProposed: {},
     workedMs: 0,
     lastAt: null,
@@ -398,6 +401,8 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
           ),
         },
       };
+    case "errand-nothing":
+      return { ...s, nothingNote: text(e.reason, 500) };
     case "done-when-checked":
       return {
         ...s,

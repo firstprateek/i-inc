@@ -20,6 +20,7 @@ import { resolveVersion } from "./deploys.ts";
 import { GitHubApp, readGitHubAppConfig } from "./github.ts";
 import { installGuards, serverError } from "./guards.ts";
 import { AppleMachines, defaultMachineSettings, wallsUp } from "./machines.ts";
+import { ollamaModelChoice } from "./ollama.ts";
 import { killTracked, stopTracked } from "./proc.ts";
 import { realPorts } from "./real.ts";
 import { checkpoint } from "./retention.ts";
@@ -83,11 +84,15 @@ const appConfig =
   !demo && existsSync(join(configDir(), "github-app.json")) ? readGitHubAppConfig() : undefined;
 const agent = new FakeAgent();
 const harness = new FakeHarness();
+// The daemon's own helper and chat use qwen3-8b-32k when Ollama has it, else qwen3:8b with a warning.
+const ollamaModel = demo ? undefined : ollamaModelChoice({ log });
+await ollamaModel?.refresh();
 const real = demo
   ? undefined
   : realPorts({
       credentials,
       log,
+      ...(ollamaModel ? { ollama: { model: ollamaModel.current } } : {}),
       // Every push is made here on the host, from the mirrors; main's commits are written to the ledger the
       // deployer checks (T68).
       // The repo the deployer deploys: what it runs on the host needs your OK (I_INC_REPO, as the deployer's).

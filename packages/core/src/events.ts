@@ -130,5 +130,7 @@ export type TicketEvent =
    * An orientation or tidy-up ended and its done-when was checked against what the agent left behind (the brain
    * pages it wrote, what the tidy-up report still lists). `missing` is what was not there; empty means met.
    */
+  /** An errand that proposed nothing and said why (and the reason reads as "no action needed"): shown on the ticket. */
+  | { type: "errand-nothing"; at: number; reason: string }
   | { type: "done-when-checked"; at: number; stage: StageId; met: boolean; missing: string[] }
   | { type: "failed"; at: number; stage: StageId; reason: string; tried: string[] };

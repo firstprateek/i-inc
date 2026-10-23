@@ -1,6 +1,6 @@
 import { defaultSwitchRules, type Employee, type Engine, type Ticket } from "@i-inc/core";
 import { describe, expect, it, vi } from "vitest";
-import { OllamaChat, OllamaHelper } from "../src/ollama.ts";
+import { OllamaChat, OllamaHelper, ollamaModelChoice } from "../src/ollama.ts";
 
 const ada: Employee = {
   id: "ada",
@@ -193,5 +193,80 @@ describe("OllamaChat", () => {
       brief: "Answer this question",
     });
     expect(outcome).toEqual({ kind: "done", output: "Here is the answer to your brief." });
+  });
+});
+
+describe("ollamaModelChoice", () => {
+  const tags = (...names: string[]) =>
+    vi.fn(async () => new Response(JSON.stringify({ models: names.map((name) => ({ name, model: name })) })));
+
+  it("picks qwen3-8b-32k when Ollama lists it", async () => {
+    const f = tags("qwen3:8b", "qwen3-8b-32k:latest");
+    const logs: string[] = [];
+    const choice = ollamaModelChoice({ fetch: f as never, log: (m) => logs.push(m), env: "" });
+    await choice.refresh();
+    expect(choice.current()).toBe("qwen3-8b-32k");
+    expect(logs).toEqual([]);
+  });
+
+  it("falls back to qwen3:8b with one warning when it isn't installed, or Ollama can't be reached", async () => {
+    const logs: string[] = [];
+    const choice = ollamaModelChoice({ fetch: tags("qwen3:8b") as never, log: (m) => logs.push(m), env: "" });
+    await choice.refresh();
+    expect(choice.current()).toBe("qwen3:8b");
+    await choice.refresh();
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain("sh tools/host/ollama-pa-model.sh");
+    const down = ollamaModelChoice({
+      fetch: (async () => {
+        throw new Error("connection refused");
+      }) as never,
+      log: (m) => logs.push(m),
+      env: "",
+    });
+    await down.refresh();
+    expect(down.current()).toBe("qwen3:8b");
+    expect(logs).toHaveLength(2);
+  });
+
+  it("notices a model made later, within a minute, without a restart", async () => {
+    let now = 0;
+    const installed = ["qwen3:8b"];
+    const f = vi.fn(
+      async () => new Response(JSON.stringify({ models: installed.map((name) => ({ name })) })),
+    );
+    const choice = ollamaModelChoice({ fetch: f as never, env: "", now: () => now });
+    await choice.refresh();
+    expect(choice.current()).toBe("qwen3:8b");
+    installed.push("qwen3-8b-32k:latest");
+    now += 30_000;
+    choice.current();
+    expect(f).toHaveBeenCalledTimes(1); // not asked again within the minute
+    now += 31_000;
+    choice.current(); // asks in the background
+    await choice.refresh();
+    expect(choice.current()).toBe("qwen3-8b-32k");
+  });
+
+  it("obeys I_INC_OLLAMA_MODEL and doesn't ask", async () => {
+    const f = tags("qwen3-8b-32k");
+    const choice = ollamaModelChoice({ fetch: f as never, env: "my-model" });
+    await choice.refresh();
+    expect(choice.current()).toBe("my-model");
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it("is what the helper uses, asked each time", async () => {
+    let model = "qwen3:8b";
+    const seen: string[] = [];
+    const f = vi.fn(async (_u: string | URL | Request, init?: RequestInit) => {
+      seen.push(JSON.parse(init?.body as string).model);
+      return new Response(JSON.stringify({ response: '{"answer": true}' }));
+    });
+    const helper = new OllamaHelper({ fetch: f as never, model: () => model });
+    await helper.yesNo("q", "t");
+    model = "qwen3-8b-32k";
+    await helper.yesNo("q", "t");
+    expect(seen).toEqual(["qwen3:8b", "qwen3-8b-32k"]);
   });
 });

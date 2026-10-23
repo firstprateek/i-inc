@@ -30,6 +30,7 @@ import { planFor, type StageId, type StagePlan } from "./stages.ts";
 import { fold, type TicketState } from "./state.ts";
 import {
   isRecord,
+  nothingMeansNoActionNeeded,
   readDisputed,
   readEdits,
   readFollowUps,
@@ -206,6 +207,23 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     const reply = parseJson<unknown>(out);
     const proposals = readProposals(reply);
     const nothing = isRecord(reply) && typeof reply.nothing === "string" ? reply.nothing.trim() : "";
+    if (proposals !== null && proposals.length === 0 && nothing && !nothingMeansNoActionNeeded(nothing)) {
+      // A reason that is giving up ("sudo failed", "no internet", an error text) is not a finished errand.
+      await c.emit(
+        {
+          type: "done-when-checked",
+          at: c.p.clock.now(),
+          stage: "work",
+          met: false,
+          missing: [`gave up: ${nothing}`],
+        },
+        needsYou(c, "work", {
+          kind: "stuck",
+          reason: `${c.builder.name} proposed nothing, and says: "${nothing.slice(0, 300)}". That reads as giving up, not as nothing to do`,
+        }),
+      );
+      return;
+    }
     if (proposals !== null && proposals.length === 0 && !nothing) {
       const misses = c.s.doneWhen.misses + 1;
       const at = c.p.clock.now();
@@ -222,7 +240,13 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
       );
       return;
     }
-    await c.emit(checkpoint(c, "work", out), finished(c, "work"));
+    await c.emit(
+      ...(proposals !== null && proposals.length === 0 && nothing
+        ? [{ type: "errand-nothing", at: c.p.clock.now(), reason: nothing } as TicketEvent]
+        : []),
+      checkpoint(c, "work", out),
+      finished(c, "work"),
+    );
   },
 
   async proposals(c) {

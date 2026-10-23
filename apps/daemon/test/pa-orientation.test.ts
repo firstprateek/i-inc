@@ -173,6 +173,47 @@ describe("hiring a personal assistant", () => {
   });
 });
 
+describe("an errand that proposes nothing", () => {
+  const file = (w: Awaited<ReturnType<typeof brainRig>>) =>
+    w.call("POST", "/api/tickets", {
+      title: "Morning triage",
+      project: "Home",
+      type: "errand",
+      effort: "low",
+      doneWhen: [],
+      assignee: "pip",
+    });
+
+  it("is done with the reason on the ticket when nothing was needed", async () => {
+    const w = await brainRig();
+    const agent = w.app.deps.agent as FakeAgent;
+    agent.on(
+      { stage: "work" },
+      { kind: "done", output: JSON.stringify({ proposals: [], nothing: "the inbox has no new mail" }) },
+    );
+    const made = await file(w);
+    await w.app.daemon.idle();
+    const t = (await w.call("GET", `/api/tickets/${made.body.ticket.id}`)).body.ticket;
+    expect(t.outcome).toBe("done");
+    expect(t.note).toBe("Proposed nothing: the inbox has no new mail");
+  });
+
+  it("waits for the owner when the reason is giving up", async () => {
+    const w = await brainRig();
+    const agent = w.app.deps.agent as FakeAgent;
+    agent.on(
+      { stage: "work" },
+      { kind: "done", output: JSON.stringify({ proposals: [], nothing: "sudo failed, no internet" }) },
+    );
+    const made = await file(w);
+    await w.app.daemon.idle();
+    const t = (await w.call("GET", `/api/tickets/${made.body.ticket.id}`)).body.ticket;
+    expect(t.outcome).not.toBe("done");
+    expect(t.needsYou).toMatchObject({ kind: "stuck" });
+    expect(t.needsYou.reason).toContain("sudo failed, no internet");
+  });
+});
+
 describe("running a PA's orientation again", () => {
   it("files a fresh orientation ticket for an employee already hired, with the PA done-when", async () => {
     const w = await brainRig();

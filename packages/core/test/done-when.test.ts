@@ -15,6 +15,7 @@ import {
   homePages,
   localBrainBudget,
   localContextTokens,
+  nothingMeansNoActionNeeded,
   offlineNotes,
   orientationDoneWhen,
   orientationExpectations,
@@ -292,6 +293,28 @@ describe("what makes a page count", () => {
     expect(help(withTools)).toContain("the example copied as it is");
   });
 
+  it("refuses a body of 50 repeated words, and the example with a line or two edited", () => {
+    const front =
+      "---\ntitle: How I help at home\ndescription: What I do\n---\n## My tools\n- shell: works\n";
+    const parrot = `${front.replace("## My tools\n- shell: works\n", "")}# Home\n${"home ".repeat(50)}\n## My tools\n- shell: works\n`;
+    expect(help(parrot)).toMatch(/only \d+ different words, under 20: it repeats itself/);
+    const edited = helpPageExample().replace(
+      "- I work on Home: mail, calendar, shopping, plans for the week.",
+      "- I work on Home: the family's mail and calendar.",
+    );
+    expect(help(edited)).toContain("the example copied as it is");
+    const twoEdits = edited.replace(
+      "- My model runs on the host; nothing leaves the house.",
+      "- I run on the local model.",
+    );
+    expect(help(twoEdits)).toContain("the example copied as it is");
+    const eFirst = errandsPageExample().replace(
+      "1. Read the request. Say it back in one line.",
+      "1. Read the request.",
+    );
+    expect(errands(eFirst)).toContain("the example copied as it is");
+  });
+
   it("wants the tools section on the help page", () => {
     expect(help(helpPage.replace("## My tools", "## Other"))).toContain('"My tools" section');
   });
@@ -431,6 +454,63 @@ describe("an errand is done when it proposes something or says why not", () => {
     expect(calls[0]?.brief).not.toContain("Your last reply had no proposals");
     expect(calls[1]?.brief).toContain("Your last reply had no proposals and no reason");
     expect(fold(await p.store.read("e1")).outcome).toBeNull();
+  });
+
+  it("tells a reason that is no action needed from one that is giving up", () => {
+    for (const ok of [
+      "the inbox has no new mail",
+      "Nothing to do: all replies were sent yesterday",
+      "no action needed, the calendar is clear",
+      "already answered by the owner",
+      "No unread messages",
+      "Nothing needed this morning; inbox is empty",
+    ]) {
+      expect(nothingMeansNoActionNeeded(ok), ok).toBe(true);
+    }
+    for (const giveUp of [
+      "sudo failed",
+      "I can't access the mail",
+      "not possible without internet",
+      "no internet",
+      "unable to read the calendar",
+      "Error: ECONNREFUSED",
+      "the tool is missing",
+      "no mail access",
+      "permission denied",
+      "nothing to do because the search failed",
+      "I couldn't find rg",
+      "hmm",
+      "I looked and decided against it",
+    ]) {
+      expect(nothingMeansNoActionNeeded(giveUp), giveUp).toBe(false);
+    }
+  });
+
+  it("closes as done when the reason is no action needed, and keeps it as a note for the owner", async () => {
+    const p = ports();
+    p.agent.on(
+      { stage: "work" },
+      { kind: "done", output: json({ proposals: [], nothing: "the inbox has no new mail" }) },
+    );
+    expect(await runTicket(p, errand())).toEqual({ status: "done", outcome: "done" });
+    expect(fold(await p.store.read("e1")).nothingNote).toBe("the inbox has no new mail");
+  });
+
+  it("sends a reason that is giving up to needs-you, at once, with the reason", async () => {
+    const p = ports();
+    p.agent.on(
+      { stage: "work" },
+      { kind: "done", output: json({ proposals: [], nothing: "sudo failed, no internet" }) },
+    );
+    const r = await runTicket(p, errand());
+    expect(r.status).toBe("needs-you");
+    expect(r.status === "needs-you" && r.ask.kind === "stuck" && r.ask.reason).toContain(
+      '"sudo failed, no internet"',
+    );
+    expect(p.agent.callsFor("pip", "work")).toHaveLength(1);
+    const s = fold(await p.store.read("e1"));
+    expect(s.outcome).toBeNull();
+    expect(s.nothingNote).toBeNull();
   });
 
   it("lets the retry make up for it", async () => {
