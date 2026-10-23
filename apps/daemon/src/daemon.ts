@@ -313,6 +313,20 @@ export class Daemon {
     this.d.brainFeed?.noteMachineUp(id);
   }
 
+  /**
+   * Boots an employee's machine for something that is not a ticket (a conversation), the way a ticket does: the
+   * start is counted (the idle sweep leaves the machine alone), waits for a storage cleanup, and goes through the
+   * machine's lock, the walls' acknowledgement and a home machine's coverage. Returns when scripts may run in it.
+   */
+  ensureMachineUp(id: Id): Promise<void> {
+    return this.ports.machines.ensureUp(id);
+  }
+
+  /** Whether an employee's machine is known to be running (started by this daemon, or adopted at startup). */
+  machineKnownUp(id: Id): boolean {
+    return this.awake.has(id);
+  }
+
   /** Counts a turn as running until it settles. */
   async track<T>(turn: Promise<T>): Promise<T> {
     this.turns++;

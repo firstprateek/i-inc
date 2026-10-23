@@ -24,6 +24,14 @@ export interface AppGate {
   };
   /** The employee's machine was started for a conversation. */
   awake(employeeId: string): void;
+  /**
+   * Boots the employee's machine (the per-machine lock, the walls' acknowledgement and a home machine's coverage
+   * included) and returns when anything may be run in it. A conversation calls it before its first script:
+   * the sandbox guard refuses to run anything in a machine that is stopped (T66/T70), and machines sleep when idle.
+   */
+  ensureUp?(employeeId: string): Promise<void>;
+  /** Whether the daemon knows the employee's machine to be up now (false: it is stopped, or not known to be running). */
+  sandboxUp?(employeeId: string): boolean;
   /** What a ticket did to the conversation's branch while it was away, once: the next prompt starts with it. */
   takeNote?(conversationId: string): string | undefined;
 }

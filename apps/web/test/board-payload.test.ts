@@ -61,7 +61,17 @@ afterEach(() => {
   location.hash = "";
 });
 
-const settle = async (app: IncApp) => {
+/** Waits for `ready` (what the test is about) to show on the page or in the request log, with the app's renders done. */
+const settle = async (app: IncApp, ready: () => unknown = () => true) => {
+  await app.updateComplete;
+  await vi.waitFor(async () => {
+    await app.updateComplete;
+    if (!ready()) throw new Error("not rendered yet");
+  });
+};
+
+/** For "nothing happens" assertions only, where there is nothing to wait for: lets pending work run first. */
+const quiet = async (app: IncApp) => {
   for (let i = 0; i < 8; i++) {
     await new Promise((r) => setTimeout(r, 0));
     await app.updateComplete;
@@ -72,7 +82,15 @@ async function open(): Promise<{ app: IncApp; board: HTMLElement; root: ShadowRo
   location.hash = "#/work/board";
   const app = new IncApp();
   document.body.append(app);
-  await settle(app);
+  const boardRoot = () => (app.shadowRoot?.querySelector("inc-board") as HTMLElement | null)?.shadowRoot;
+  // Open: every column drawn with cards, and both requests of the opening made.
+  await settle(
+    app,
+    () =>
+      boardRoot()?.querySelectorAll("section a.card").length &&
+      paths().includes("/api/board/summary") &&
+      paths().includes("/api/needs-you"),
+  );
   const board = app.shadowRoot?.querySelector("inc-board") as HTMLElement;
   return { app, board, root: board.shadowRoot as ShadowRoot };
 }
@@ -113,7 +131,7 @@ describe("opening the board with 1,000 tickets", () => {
     log = [];
     const more = root.querySelectorAll("section")[3]?.querySelector<HTMLButtonElement>("button.more");
     more?.click();
-    await settle(app);
+    await settle(app, () => root.querySelectorAll("section")[3]?.querySelectorAll("a.card").length === 40);
     expect(log.map((l) => l.url)).toEqual(["/api/board/column?column=done&offset=15&limit=25"]);
     expect(root.querySelectorAll("section")[3]?.querySelectorAll("a.card")).toHaveLength(40);
   });
@@ -126,7 +144,10 @@ describe("a live event for one ticket", () => {
     log = [];
     tickets[3] = { ...(tickets[3] as TicketView), live: "Checks passed", title: "Renamed by the event" };
     refreshNow({ tickets: new Set(["4"]), office: false });
-    await settle(app);
+    await settle(
+      app,
+      () => root.textContent?.includes("Renamed by the event") && paths().includes("/api/needs-you"),
+    );
     const p = log.map((l) => l.url);
     expect(p).toEqual(expect.arrayContaining(["/api/board/cards?ids=4", "/api/needs-you"]));
     expect(p).toHaveLength(2);
@@ -142,8 +163,10 @@ describe("a live event for one ticket", () => {
     tickets = tickets.map((x) => (x.id === "8" ? ({ ...x, column: "in-progress" } as TicketView) : x));
     log = [];
     refreshNow({ tickets: new Set(["8"]), office: false });
-    await settle(app);
-    const totals = [...root.querySelectorAll("section h2")].map((h) => h.textContent?.replace(/\D+/g, ""));
+    const totalsNow = () =>
+      [...root.querySelectorAll("section h2")].map((h) => h.textContent?.replace(/\D+/g, ""));
+    await settle(app, () => totalsNow().join() === "249,251,250,250");
+    const totals = totalsNow();
     expect(totals).toEqual(["249", "251", "250", "250"]); // To do -1, In progress +1
     // It moved by itself: one card fetched, no summary.
     expect(paths()).not.toContain("/api/board/summary");
@@ -153,7 +176,7 @@ describe("a live event for one ticket", () => {
     const { app } = await open();
     log = [];
     refreshNow({ tickets: new Set(), office: true });
-    await settle(app);
+    await quiet(app);
     expect(paths().filter((p) => p.startsWith("/api/board"))).toEqual([]);
   });
 
@@ -161,7 +184,7 @@ describe("a live event for one ticket", () => {
     const { app } = await open();
     log = [];
     refreshNow();
-    await settle(app);
+    await settle(app, () => paths().includes("/api/board/summary") && paths().includes("/api/needs-you"));
     expect(paths().filter((p) => p === "/api/board/summary")).toHaveLength(1);
     expect(paths().filter((p) => p === "/api/needs-you")).toHaveLength(1);
   });
@@ -172,10 +195,10 @@ describe("the Needs you page and the badge", () => {
     location.hash = "#/needs-you";
     const app = new IncApp();
     document.body.append(app);
-    await settle(app);
+    await settle(app, () => paths().includes("/api/needs-you"));
     log = [];
     refreshNow();
-    await settle(app);
+    await settle(app, () => paths().includes("/api/needs-you"));
     expect(paths().filter((p) => p === "/api/needs-you")).toHaveLength(1);
     expect(paths().filter((p) => p === "/api/board")).toEqual([]);
   });

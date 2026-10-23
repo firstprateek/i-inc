@@ -143,6 +143,31 @@ describe("hiring a personal assistant", () => {
     expect(t.needsYou.reason).not.toContain(`${homePages.errands}:`);
   });
 
+  it("drops the junk keys of Pip's page when it collects it, and still does not count a page without its own title", async () => {
+    const w = await brainRig();
+    // Pip's file, as the 8B model wrote it from an example shown with "| " in front of every line.
+    const mangled = errandsPage.replace(
+      /^---\ntitle: (.*)\ndescription: (.*)\n---/,
+      "---\n| title: $1\n| description: $2\n---",
+    );
+    expect(mangled).toContain("| title: Errands");
+    writesInCopy(w, "lu", { [homePages.help]: helpPage, [homePages.errands]: mangled });
+    const made = await w.call("POST", "/api/employees", hire());
+    await w.app.daemon.idle();
+    const t = (await w.call("GET", `/api/tickets/${made.body.orientation}`)).body.ticket;
+    expect(t.needsYou.reason).toContain(
+      `${homePages.errands}: it has no frontmatter with a title and a description`,
+    );
+    const brain = (await w.call("GET", "/api/knowledge/brains/lu")).body;
+    const text: string =
+      brain.pages.find((p: { path: string }) => p.path === "patterns/errands.md")?.text ?? "";
+    expect(text).not.toBe("");
+    expect(text).toContain("title: Errands");
+    expect(text).not.toContain("| title");
+    expect(text).not.toContain("| description");
+    expect(w.logs.some((l) => l.includes("dropped 2 junk frontmatter keys"))).toBe(true);
+  });
+
   it("does not count a copy of the example, or a page with TODOs", async () => {
     const w = await brainRig();
     writesInCopy(w, "lu", {
