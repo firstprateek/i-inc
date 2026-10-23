@@ -276,6 +276,34 @@ describe("what was asked, at the top of a ticket", () => {
     const root = await mountTicket(view({ id: "8", doneWhen: [] }));
     expect(root.querySelector(".asked")).toBeNull();
   });
+
+  it("shows the done-when check's result on each item, as words, with the evidence (T72)", async () => {
+    const root = await mountTicket(
+      view({
+        id: "9",
+        doneWhen: ["August drops by the refund", "A test covers it"],
+        doneCheck: {
+          by: { id: "quinn", name: "Quinn", tint: 1 },
+          note: null,
+          items: [
+            { doneWhen: "August drops by the refund", verdict: "met", evidence: "refunds.ts line 12" },
+            { doneWhen: "A test covers it", verdict: "not-met", evidence: "no test file changed" },
+          ],
+        },
+      }),
+    );
+    const rows = [...root.querySelectorAll(".asked ul[aria-label='Done when'] li")];
+    expect(rows.map((r) => r.querySelector(".verdict")?.textContent)).toEqual(["Met", "Not met"]);
+    expect(rows[1]?.querySelector(".evidence")?.textContent).toBe("no test file changed");
+    expect(root.querySelector(".asked .check-note")?.textContent).toBe("Checked by Quinn");
+  });
+
+  it("says 'No done-when to check' when there was nothing to check (T72)", async () => {
+    const root = await mountTicket(
+      view({ id: "10", doneWhen: [], doneCheck: { by: null, items: [], note: "No done-when to check" } }),
+    );
+    expect(root.querySelector(".asked .check-note")?.textContent).toBe("No done-when to check");
+  });
 });
 
 describe("plain statuses, with times in the owner's zone", () => {

@@ -283,7 +283,7 @@ export class IncTicket extends Loader<Data> {
     if (!reason && !items.length && !check) return "";
     // The done-when check's result (T72) sits on the item it is about when the two lists line up; otherwise
     // (the prove stage's own wording) it is a list of its own below.
-    const inline = check && check.items.length === items.length ? check.items : null;
+    const inline = check?.items.length && check.items.length === items.length ? check.items : null;
     const long =
       reason.length > 280 ||
       items.length > 4 ||
