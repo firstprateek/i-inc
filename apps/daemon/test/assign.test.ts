@@ -1,4 +1,7 @@
 // C17: the owner assigns a ticket that has not started, and the board says why it waits.
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createApi } from "../src/api.ts";
 import { refunds, testApp } from "./setup.ts";
@@ -31,6 +34,53 @@ describe("POST /api/tickets/:id/assign", () => {
     expect(after.status).not.toBe("queued");
     expect(after.waiting).toBeNull();
     expect(app.deps.tickets.get("1")?.ticket.assignee).toBe("ada");
+  });
+
+  it("queues both assignment endpoints behind a busy employee and drains FIFO after restart", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "assign-queue-")), "test.db");
+    const app = await testApp(path);
+    app.agent.on(
+      { employee: "ada", stage: "build" },
+      { kind: "out-of-tokens", resetsAt: app.clock.now() + 3_600_000 },
+    );
+    await app.call("POST", "/api/tickets", refunds);
+    await app.daemon.idle();
+    expect((await app.call("GET", "/api/tickets/1")).body.ticket.status).toBe("paused");
+    await app.call("POST", "/api/tickets", { ...unassigned, priority: 100 });
+    expect((await app.call("POST", "/api/tickets", { ...refunds, title: "First queued" })).status).toBe(201);
+    expect((await app.call("POST", "/api/tickets/2/assign", { to: "ada" })).status).toBe(200);
+    await app.daemon.idle();
+    for (const id of ["2", "3"]) {
+      expect((await app.call("GET", `/api/tickets/${id}`)).body.ticket).toMatchObject({
+        status: "queued",
+        waiting: "Ada is busy",
+      });
+    }
+    expect(app.agent.callsFor("ada", "plan").map((c) => c.ticket.id)).toEqual(["1"]);
+    // Repeating the assignment is idempotent, and a different employee can still progress.
+    expect((await app.call("POST", "/api/tickets/3/assign", { to: "ada" })).status).toBe(200);
+    app.deps.registry.hire({
+      ...app.deps.registry.employee("kit"),
+      engines: { default: "qwen", fallbacks: [] },
+    });
+    await app.call("POST", "/api/tickets", { ...refunds, assignee: "kit" });
+    await app.daemon.idle();
+    expect((await app.call("GET", "/api/tickets/4")).body.ticket.status).toBe("ready");
+    app.db.close();
+
+    const restarted = await testApp(path);
+    restarted.clock.advance(61);
+    await restarted.daemon.tick();
+    await restarted.daemon.idle();
+    expect(restarted.agent.callsFor("ada", "plan").map((c) => c.ticket.id)).toEqual(["3", "2"]);
+    // Every report finishes before the employee starts the next ticket, without owner approval.
+    const calls = restarted.agent.callsFor("ada").map((c) => `${c.ticket.id}:${c.stage}`);
+    expect(calls.indexOf("1:report")).toBeLessThan(calls.indexOf("3:plan"));
+    expect(calls.indexOf("3:report")).toBeLessThan(calls.indexOf("2:plan"));
+    for (const id of ["1", "2", "3"]) {
+      expect((await restarted.call("GET", `/api/tickets/${id}`)).body.ticket.status).toBe("ready");
+    }
+    restarted.db.close();
   });
 
   it("returns 404 for an unknown ticket", async () => {

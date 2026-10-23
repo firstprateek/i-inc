@@ -117,6 +117,56 @@ describe("the scheduler", () => {
     expect(plan.starts).toEqual([{ employeeId: "ada", ticketId: "first", as: "build", by: "assignment" }]);
   });
 
+  it("keeps a blocked queue head ahead of later work and standing orders", () => {
+    const employee: Employee = {
+      ...ada,
+      duties: [...ada.duties, "librarian"],
+      engines: { default: "qwen", perDuty: { librarian: "opus" }, fallbacks: [] },
+      standingOrders: [{ types: ["fix"], maxPerDay: 10 }],
+    };
+    const plan = schedule(
+      snap({
+        employees: [employee, kit],
+        accountsBlockedUntil: { "claude-pro": 5_000 },
+        backlog: [
+          item("standing", { priority: 100 }),
+          item("later", { assignee: "ada", queueSequence: 2, priority: 10 }),
+          item("head", { assignee: "ada", type: "tidy", queueSequence: 1 }),
+          item("other", { assignee: "kit" }),
+        ],
+      }),
+      company,
+    );
+    expect(plan.starts).toEqual([]);
+    expect(plan.waiting).toContainEqual({ ticketId: "standing", reason: "Ada is busy" });
+    expect(plan.waiting).toContainEqual({ ticketId: "later", reason: "Ada is busy" });
+    expect(plan.resets?.head).toBe(5_000);
+  });
+
+  it("skips held tickets and restores their saved position on release", () => {
+    const first = item("first", { assignee: "ada", queueSequence: 1, hold: true });
+    const later = item("later", { assignee: "ada", queueSequence: 2, priority: 10 });
+    expect(schedule(snap({ backlog: [first, later] }), company).starts[0]?.ticketId).toBe("later");
+    expect(schedule(snap({ backlog: [{ ...first, hold: false }, later] }), company).starts[0]?.ticketId).toBe(
+      "first",
+    );
+  });
+
+  it("keeps standing-order work in priority order when there is no explicit queue", () => {
+    const plan = schedule(
+      snap({
+        backlog: [
+          item("low", { type: "chore", labels: ["deps"] }),
+          item("high", { type: "chore", labels: ["deps"], priority: 10 }),
+        ],
+      }),
+      company,
+    );
+    expect(plan.starts).toEqual([
+      { employeeId: "qwen-bot", ticketId: "high", as: "build", by: "standing-order" },
+    ]);
+  });
+
   it("respects holds, working hours, usage caps and standing-order limits", () => {
     const plan = schedule(
       snap({

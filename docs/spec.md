@@ -600,7 +600,15 @@ reviews it.
 - You assign tickets by default. An unassigned ticket that matches an employee's standing order is
   picked up in priority order when that employee is free and has tokens. Mark a ticket Hold to keep
   it for yourself.
-- Each employee does one thing at a time.
+- You can assign more tickets to a busy employee. Assigned tickets queue in assignment order,
+  regardless of priority or creation time, and the order survives restarts. Repeating an assignment
+  preserves its position; reassigning to another employee appends to that employee's queue. Held
+  tickets are skipped and retain their position when released. Existing queues at upgrade retain
+  their previous priority/creation order because earlier assignment times were not recorded.
+- Each employee does one thing at a time. A builder starts the next queued ticket automatically
+  when the previous ticket reaches Report ready, completes or fails; owner approval and merge do
+  not hold the queue. Waiting for owner input, helpers or tokens before Report ready holds the
+  builder's queue. Explicit assignments go ahead of new standing-order pickups.
 - Reviewers and verifiers are scheduled like any other work. When a ticket reaches Prove or
   Review, it waits for a free employee with that duty, and the card says who it waits for. A
   builder whose own ticket is waiting may review someone else's work meanwhile; their own ticket

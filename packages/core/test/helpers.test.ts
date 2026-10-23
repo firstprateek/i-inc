@@ -107,6 +107,10 @@ describe("who is busy", () => {
     expect(o.holding.sort()).toEqual(["kit", "quinn"]);
   });
 
+  it.each(["ready", "done", "failed"] as const)("releases the builder at %s", (status) => {
+    expect(occupancy([{ builder: "ada", state: state({ status }) }], 0)).toEqual({ busy: [], holding: [] });
+  });
+
   it("frees a reviewer when the owner has to settle a disagreement", () => {
     const o = occupancy(
       [
