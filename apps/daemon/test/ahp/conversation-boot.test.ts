@@ -8,7 +8,7 @@ import { FakeClock } from "@i-inc/core/testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.ts";
 import { seedDemo } from "../../src/demo.ts";
-import { EgressWall, machineAddress } from "../../src/egress-wall.ts";
+import { EgressWall, type EgressWallSettings, machineAddress } from "../../src/egress-wall.ts";
 import { assertRunnable, type Exec, type MachineSettings, rootProbeScript } from "../../src/machines.ts";
 import { realPorts } from "../../src/real.ts";
 import { FakeSandbox } from "./fake-acp.ts";
@@ -19,7 +19,7 @@ let dir: string;
 let machines: Map<string, { ip: string; state: "running" | "stopped" }>;
 const events: string[] = [];
 let sandbox: FakeSandbox;
-let wallSettings: ConstructorParameters<typeof EgressWall>[0];
+let wallSettings: EgressWallSettings;
 
 const listing = () =>
   [
@@ -189,7 +189,7 @@ describe.each([
   it("says the sandbox is starting, instead of failing, when the machine went to sleep after the agent's settings were known", async () => {
     const { app, call } = await rig();
     const first = (await call("POST", "/api/conversations", { employeeId })).body.conversation;
-    expect((await say(app, first, "hello")).state).toBe("complete");
+    expect((await say(app, first, "hello"))?.state).toBe("complete");
     // The machine sleeps (nothing live): stopped, and forgotten as awake.
     await app.deps.machines.stop?.(employeeId);
     (app.daemon as unknown as { awake: Set<string> }).awake.delete(employeeId);
