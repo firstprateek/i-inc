@@ -50,8 +50,8 @@ export interface LaunchRequest {
 }
 
 /**
- * Starts an agent in a machine. It answers at once for an ordinary machine, and as a promise when the walls
- * have to be looked at first (machines.ts, machineLaunch).
+ * Starts an agent in a machine. `machineLaunch` answers as a promise: it takes a lease on the machine, and looks
+ * at `machine ls` (and, with the new walls, the walls) first. A fake may answer at once.
  */
 export type Launch = (r: LaunchRequest) => AgentProcess | Promise<AgentProcess>;
 

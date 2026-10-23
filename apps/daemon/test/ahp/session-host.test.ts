@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { ActionType, ROOT, SessionStatus, ToolCallStatus, TurnState } from "../../src/ahp/wire.ts";
 import { defaultMachineSettings, machineLaunch } from "../../src/machines.ts";
+import { upExec } from "../up.ts";
 import { FakeSandbox } from "./fake-acp.ts";
 import { pendingCall, sessionRig, tools, until } from "./session-rig.ts";
 import { type Any, type TestClient, turnStarted } from "./support.ts";
@@ -897,7 +898,10 @@ describe("the sandbox", () => {
   it("launches with `container machine run` into the team's sandbox, passing credentials by environment only", async () => {
     const sandbox = new FakeSandbox();
     const seen: { bin: string; args: string[]; env: NodeJS.ProcessEnv }[] = [];
-    const t = await sessionRig({ sandbox, host: { launch: machineLaunch(noWalls, sandbox.spawn(seen)) } });
+    const t = await sessionRig({
+      sandbox,
+      host: { launch: machineLaunch(noWalls, sandbox.spawn(seen), upExec("inc-engineering")) },
+    });
     await t.create("c1", { employee: "ada" });
     expect(seen).toHaveLength(1);
     expect(seen[0]?.bin).toBe("/usr/local/bin/container");
@@ -929,7 +933,7 @@ describe("the sandbox", () => {
     // Codex gets its own launcher
     const codexRig = await sessionRig({
       sandbox,
-      host: { launch: machineLaunch(noWalls, sandbox.spawn(seen)) },
+      host: { launch: machineLaunch(noWalls, sandbox.spawn(seen), upExec("inc-engineering")) },
     });
     codexRig.sandbox.options = { codex: true };
     await codexRig.create("c2", { provider: "codex" });
@@ -942,7 +946,11 @@ describe("the sandbox", () => {
     const t = await sessionRig({
       sandbox,
       host: {
-        launch: machineLaunch({ ...settings, wallsMarker: "/nonexistent/walls.ok" }, sandbox.spawn(seen)),
+        launch: machineLaunch(
+          { ...settings, wallsMarker: "/nonexistent/walls.ok" },
+          sandbox.spawn(seen),
+          upExec("inc-engineering"),
+        ),
       },
     });
     await expect(t.create()).rejects.toThrow(/the walls aren't up/);

@@ -12,6 +12,7 @@
 // Never by name: an agent is stopped only if a note says it is this launch's process.
 import { randomBytes } from "node:crypto";
 import type { Id } from "@i-inc/core";
+import { MachineNotRunning } from "./machine-queue.ts";
 
 /** The tokens of the agents this daemon has started and not seen end: it never reaps those. */
 const live = new Set<string>();
@@ -185,7 +186,10 @@ export function reaper(
       for (const line of reaped) log?.(`stopped an agent left running by an earlier daemon (pid ${line})`);
       return reaped;
     } catch (e) {
-      log?.(`looking for agents left running failed: ${e instanceof Error ? e.message : e}`);
+      // A stopped machine has no agent left in it, and is not started to look.
+      if (!(e instanceof MachineNotRunning)) {
+        log?.(`looking for agents left running failed: ${e instanceof Error ? e.message : e}`);
+      }
       return [];
     }
   };
@@ -227,6 +231,8 @@ export async function reapMachines(
               log?.(`stopped an agent left running in ${m.name} by an earlier daemon (pid ${line.slice(9)})`);
             }
           } catch (e) {
+            // It stopped since the listing: there is nothing left in it to look for.
+            if (e instanceof MachineNotRunning) return;
             log?.(
               `looking for agents left running in ${m.name} failed: ${e instanceof Error ? e.message : e}`,
             );

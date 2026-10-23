@@ -28,6 +28,7 @@ import {
   reapMachines,
   SWEEP_SCRIPT,
 } from "../../src/reaper.ts";
+import { upExec } from "../up.ts";
 import { sessionRig, until } from "./session-rig.ts";
 import { turnStarted } from "./support.ts";
 
@@ -83,7 +84,12 @@ function sandbox(stubborn: "eof" | "term" = "eof") {
   };
   return {
     // The sandbox's /home/employee/work/... is a folder inside the temporary home.
-    launch: ((r) => machineLaunch(noWalls, spawnAgent as never)({ ...r, cwd: join(home, r.cwd) })) as Launch,
+    launch: ((r) =>
+      machineLaunch(
+        noWalls,
+        spawnAgent as never,
+        upExec("inc-ada", "inc-kit"),
+      )({ ...r, cwd: join(home, r.cwd) })) as Launch,
     reap: ((employee, o) => reaper(run)(employee, o?.cwd ? { ...o, cwd: join(home, o.cwd) } : o)) as Reap,
     run,
     notes,

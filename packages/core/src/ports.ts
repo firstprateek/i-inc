@@ -120,6 +120,11 @@ export interface MachineProvider {
   /** Stops a machine whose employee has nothing running (spec §12: memory returns only on restart). */
   stop?(employeeId: Id): Promise<void>;
   /**
+   * Whether a script or session is running in the employee's machine right now (a lease on it). The idle pass
+   * leaves such a machine for the next pass instead of waiting on it: a stop waits for leases.
+   */
+  leased?(employeeId: Id): boolean;
+  /**
    * At startup: of these employees, those whose machine an earlier daemon left running. They are
    * recorded as up, so `stop` can stop them once nothing uses them (a restart forgets what it started).
    */

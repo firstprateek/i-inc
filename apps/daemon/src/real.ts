@@ -18,6 +18,7 @@ import { EgressWall } from "./egress-wall.ts";
 import { commitIdentity, PullRequests, type TokenSource, waitForCi } from "./github.ts";
 import { MachineHarness, machineScript, type RunScript } from "./harness.ts";
 import { type HostPush, HostPusher } from "./host-push.ts";
+import { MachineNotRunning, MachineQueue } from "./machine-queue.ts";
 import {
   AppleMachines,
   convDir,
@@ -137,6 +138,8 @@ export function realPorts(o: RealOptions): Pick<
     registryRef = registry;
     settings ??= {
       ...base,
+      // Every `container` command for one machine goes through this queue (machine-queue.ts, T75).
+      queue: base.queue ?? new MachineQueue(o.log ? { log: o.log } : {}),
       // The egress wall is checked whenever the walls marker is (not in the tests that turn that off).
       ...(base.wallsMarker && !base.wall ? { wall: new EgressWall() } : {}),
       machineFor: (employeeId) => `inc-${registry.teamOf(employeeId).id}`,
@@ -155,10 +158,23 @@ export function realPorts(o: RealOptions): Pick<
     };
     return settings;
   };
+  // Scripts for chores (the brain's copies, sweeps, sign-ins, clean-ups) never boot a stopped machine: the
+  // chore is skipped, and tried again after the next boot (T75).
   let runner: RunScript | undefined;
   const run = (registry: Registry): RunScript => {
     runner ??= o.runScript ?? machineScript(teams(registry), o.exec);
     return runner;
+  };
+  // Scripts for work that needs its machine (ticket stages, a conversation's working copy, shipping) bring it
+  // up first, explicitly and through the machine's queue, if it was stopped.
+  let worker: RunScript | undefined;
+  const work = (registry: Registry): RunScript => {
+    worker ??=
+      o.runScript ??
+      machineScript(teams(registry), o.exec, (employeeId) =>
+        machines ? machines.ensureUp(employeeId) : Promise.reject(new Error("no machine provider")),
+      );
+    return worker;
   };
   // The brain's copy goes into a sandbox through the same script runner as everything else (a tar
   // stream on stdin of `machine run -i`); the feed adds the brain to briefs only once it has one.
@@ -193,7 +209,13 @@ export function realPorts(o: RealOptions): Pick<
   const loginRepos = new Map<string, Set<string>>();
   const ghLogin = "gh auth login --hostname github.com --git-protocol https --with-token && echo @@signed-in";
   const loginScript = `printf %s "$I_INC_GH" | ${ghLogin}`;
-  const signIn = async (registry: Registry, employeeId: Id, repo?: string | null): Promise<void> => {
+  const signIn = async (
+    registry: Registry,
+    employeeId: Id,
+    repo?: string | null,
+    /** Before a session (the sandbox is needed, and brought up if it was stopped), or a renewal (a stopped one is skipped). */
+    needed = false,
+  ): Promise<void> => {
     if (!github) return;
     const name = machineOf(teams(registry), employeeId);
     const known = loginRepos.get(name);
@@ -209,7 +231,13 @@ export function realPorts(o: RealOptions): Pick<
       o.log?.(`couldn't mint a read-only GitHub token for ${name}: ${String(err)}`);
       return;
     }
-    const r = await run(registry)(employeeId, loginScript, { I_INC_GH: token });
+    let r: { output: string };
+    try {
+      r = await (needed ? work : run)(registry)(employeeId, loginScript, { I_INC_GH: token });
+    } catch (err) {
+      if (err instanceof MachineNotRunning) return; // signed in after its next boot
+      throw err;
+    }
     if (!r.output.includes("@@signed-in")) {
       o.log?.(`couldn't sign ${name} in to GitHub: ${r.output.trim().slice(-200)}`);
       return;
@@ -242,7 +270,7 @@ export function realPorts(o: RealOptions): Pick<
         // The account's credential if it has one (machines sign in themselves by default), and the
         // ticket's ports. GitHub comes from the sandbox's sign-in.
         credentials: async (engine, ticket, _duty, employeeId) => {
-          await signIn(registry, employeeId, repoOf(registry, ticket.project));
+          await signIn(registry, employeeId, repoOf(registry, ticket.project), true);
           return { ...account(engine), I_INC_PORTS: portsFor(ticket.id) };
         },
         cwdFor: dirOf(tickets),
@@ -287,7 +315,7 @@ export function realPorts(o: RealOptions): Pick<
               }
             : {}),
         },
-        run(registry),
+        work(registry),
       ),
     ...(github
       ? {
@@ -296,7 +324,7 @@ export function realPorts(o: RealOptions): Pick<
           ship: (registry: Registry): ShipPort =>
             conversationShip({
               tokens: github.tokens,
-              run: run(registry),
+              run: work(registry),
               prs: github.prs ?? new PullRequests(github.tokens),
               ...(host ? { host } : {}),
             }),
@@ -309,7 +337,7 @@ export function realPorts(o: RealOptions): Pick<
               prs: github.prs ?? new PullRequests(github.tokens),
               identity,
               worktree: dirOf(tickets),
-              run: run(registry),
+              run: work(registry),
               ...(host ? { host } : {}),
               ...(o.log ? { log: o.log } : {}),
             }),
@@ -354,7 +382,7 @@ export function realPorts(o: RealOptions): Pick<
               project: (name) => registry.project(name),
               tokens: github?.tokens ?? { token: async () => "", readToken: async () => "" },
               identity,
-              run: run(registry),
+              run: work(registry),
             },
             { employee: registry.employee(c.employeeId), project: c.project, branch: c.branch, cwd: c.cwd },
           );
@@ -363,7 +391,7 @@ export function realPorts(o: RealOptions): Pick<
           await run(registry)(c.employeeId, removeCopyScript({ worktree: c.cwd, branch: c.branch }));
         },
         credentials: async (engine, c) => {
-          await signIn(registry, c.employeeId, repoOf(registry, c.project));
+          await signIn(registry, c.employeeId, repoOf(registry, c.project), true);
           return { ...account(engine), I_INC_PORTS: portsFor(`conv-${c.id}`) };
         },
         employeeKnown: (employeeId) => registry.employees().some((e) => e.id === employeeId),

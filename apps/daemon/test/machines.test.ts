@@ -116,9 +116,11 @@ describe("AppleMachines.inspectSandbox", () => {
       signedIn: { claude: true, antigravity: false, codex: true, github: true },
     });
 
-    expect(calls).toHaveLength(2);
+    // the listing, a second look inside the machine's queue (a stopped machine is not probed, never booted), the probe
+    expect(calls).toHaveLength(3);
     expect(calls[0]?.args).toEqual(["machine", "ls"]);
-    expect(calls[1]?.args).toEqual([
+    expect(calls[1]?.args).toEqual(["machine", "ls"]);
+    expect(calls[2]?.args).toEqual([
       "machine",
       "run",
       "-i",
@@ -130,12 +132,12 @@ describe("AppleMachines.inspectSandbox", () => {
       "bash",
       "-s",
     ]);
-    expect(calls[1]?.input).toContain("~/.claude/.credentials.json");
-    expect(calls[1]?.input).toContain("~/.gemini/antigravity-acp/acp_token.json");
-    expect(calls[1]?.input).toContain("codex login status >/dev/null 2>&1 && echo codex");
+    expect(calls[2]?.input).toContain("~/.claude/.credentials.json");
+    expect(calls[2]?.input).toContain("~/.gemini/antigravity-acp/acp_token.json");
+    expect(calls[2]?.input).toContain("codex login status >/dev/null 2>&1 && echo codex");
     // Codex is installed under ~/.local/bin, which non-login bash doesn't have on its PATH.
-    expect(calls[1]?.input).toMatch(/^export PATH="\$HOME\/\.local\/bin:\$PATH"; /);
-    expect(calls[1]?.input).toContain("~/.config/gh/hosts.yml");
+    expect(calls[2]?.input).toMatch(/^export PATH="\$HOME\/\.local\/bin:\$PATH"; /);
+    expect(calls[2]?.input).toContain("~/.config/gh/hosts.yml");
 
     // Check signedInCache was populated
     expect(m.signedInCache.get("inc-engineering")).toEqual({
@@ -289,15 +291,18 @@ describe("AppleMachines recovery, exponential backoff, and state change logging"
     expect(fault1?.kind).toBe("stale-hostname");
     expect(fault1?.attempts).toBe(1);
     expect(fault1?.retryAt).toBe(currentTime + 30_000);
-    expect(logs).toHaveLength(1);
-    expect(logs[0]).toContain("[sandbox:inc-ada]");
+    // the state change, and the stale hostname with the machine's last queue operations (T75)
+    expect(logs).toHaveLength(2);
+    expect(logs[0]).toContain("STALE HOSTNAME");
+    expect(logs[0]).toContain("queue operations");
+    expect(logs[1]).toContain("[sandbox:inc-ada]");
 
     // Immediate retry while in backoff throws StartupError without calling container CLI again
     calls.length = 0;
     await expect(m.ensureUp("ada")).rejects.toBeInstanceOf(StartupError);
     expect(calls).toHaveLength(0);
     // No duplicate log line for same state
-    expect(logs).toHaveLength(1);
+    expect(logs).toHaveLength(2);
 
     // After 30s, next attempt: backoff 60s
     currentTime += 30_000;
