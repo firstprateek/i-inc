@@ -469,6 +469,9 @@ When macOS or Apple's container framework terminates abruptly or gets out of syn
 4. The failed boots are tried again. If a name is still stuck, the old "restart the container service on the Mac mini" message stands and the owner gets a push ("A sandbox is stuck"). At most one automatic restart per 30 minutes (the window survives a daemon restart).
 5. Every restart is logged (`[container] …`) and kept as an event on Setup > Sandboxes ("restarted the container service at 14:02 to clear a stuck machine name"; `GET /api/sandboxes/service-events`, newest first, last 20). A restart that itself fails, or a walls job that doesn't answer afterwards, is an event and a push too.
 
+6. "Restart in progress" is written to the database before `container system stop`. At startup, before the first launch (launches wait for it), a daemon checks that `container machine ls` answers: if not, it runs `container system start` and waits; if a restart is on record, it takes it as finished; either way it waits for the walls job as in step 3 and records a "resumed" event. So a deploy or crash in the middle of a restart cannot leave the service stopped. If it can't start the service, the owner gets a push.
+7. "Idle" also includes one-off scripts in machines (brain copies, the reaper's sweeps, sign-ins) and a launcher update.
+
 If the machine still enters persistent `stale-hostname` backoff (visible in Setup > Sandboxes and ticket waiting line), or the daemon asks for you:
 1. **Never delete** the machine, its volumes, or disks.
 2. Ask the owner before restarting the container daemon on the host.

@@ -14,7 +14,7 @@ import {
   withDefaultTimeout,
 } from "./machines.ts";
 import { isHostExecuted, isProtected } from "./paths.ts";
-import { describeMs, guardStdin, stopGroup, trackGroup } from "./proc.ts";
+import { describeMs, guardStdin, scriptEnded, scriptStarted, stopGroup, trackGroup } from "./proc.ts";
 import { pushFromSandbox } from "./sandbox-push.ts";
 import { defaultTimeoutsMs, type TimeoutsMs } from "./timeouts.ts";
 import { branchName, isSafeRefName } from "./workspace.ts";
@@ -58,7 +58,8 @@ export function machineScript(
     const flags = names.flatMap((name) => ["-e", name]);
     const args = ["machine", "run", "-i", "-u", s.user, "-n", machine, ...flags, "--", "bash", "-s"];
     const limit = opts.timeoutMs ?? s.timeouts?.().scriptMs ?? defaultTimeoutsMs.scriptMs;
-    return new Promise((resolve, reject) => {
+    scriptStarted();
+    const finished = new Promise<{ code: number; output: string }>((resolve, reject) => {
       // Detached, so the child leads a process group that a timeout can stop as a whole.
       const child = spawn(s.bin, args, {
         env: { ...process.env, ...env },
@@ -113,6 +114,9 @@ export function machineScript(
       // 'close', not 'exit': 'exit' can come before the last output has been read.
       child.on("close", (code) => settle({ code: code ?? 1, output }));
       child.stdin.end(script);
+    });
+    return finished.finally(() => {
+      scriptEnded();
     });
   };
 }

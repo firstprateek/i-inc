@@ -329,6 +329,7 @@ export async function createApp(o: AppOptions) {
       store: RecoveryStore;
     }) => unknown;
     recoveryActive?: boolean;
+    checkService?: () => Promise<void>;
     listMachines?: () => Promise<{ name: string }[]>;
   };
   if (recoverable.enableRecovery) {
@@ -371,6 +372,8 @@ export async function createApp(o: AppOptions) {
       },
     });
     daemon.onHold(() => recoverable.recoveryActive === true);
+    // Set at once: no launch starts before the check. A restart a dead daemon left half-done is finished here.
+    void recoverable.checkService?.().catch(() => {});
   }
   backend.attachApp?.({
     storage,

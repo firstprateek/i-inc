@@ -25,7 +25,7 @@ import {
 import type { AgentProcess, Launch } from "./acp.ts";
 import { type RecoveryOptions, ServiceRecovery } from "./container-recovery.ts";
 import { type EgressWall, isHomeMachine, WallError, type WallRow } from "./egress-wall.ts";
-import { describeMs, guardStdin, stopGroup, trackGroup } from "./proc.ts";
+import { describeMs, guardStdin, scriptsRunning, stopGroup, trackGroup } from "./proc.ts";
 import { launcherNeedsUpdate, newAgentId, noteLauncher, trackAgent } from "./reaper.ts";
 import { defaultTimeoutsMs, type TimeoutsMs } from "./timeouts.ts";
 
@@ -524,7 +524,9 @@ export class AppleMachines implements MachineProvider {
       mono: this.mono,
       ...(this.log ? { log: this.log } : {}),
       // No boot or stop is under way either, and nothing else is: the daemon says the rest.
-      idle: async () => this.locks.size === 0 && (await o.idle()),
+      // (One-off scripts, such as brain copies and the reaper's sweeps, and a launcher update count too.)
+      idle: async () =>
+        this.locks.size === 0 && this.launcherBusy.size === 0 && scriptsRunning() === 0 && (await o.idle()),
       stopMachines: () => this.stopAll(),
       forget: (machine) => this.forgetFault(machine),
       retry: (employeeId) => this.ensureUp(employeeId),
@@ -534,6 +536,14 @@ export class AppleMachines implements MachineProvider {
     this.recovery = recovery;
     this.s.gate = () => recovery.gate();
     return recovery;
+  }
+
+  /**
+   * At startup, before the first launch: the container service must be answering; if the last daemon died in
+   * the middle of a restart it is started again (container-recovery.ts). Launches wait for it.
+   */
+  checkService(): Promise<void> {
+    return this.recovery?.startup() ?? Promise.resolve();
   }
 
   /** The daemon is leaving: no restart starts. */

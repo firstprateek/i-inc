@@ -57,7 +57,13 @@ export interface SandboxStatus {
 }
 
 /** What the daemon did about the container service, for Setup > Sandboxes (T73). */
-export type ServiceEventKind = "restarted" | "not-fixed" | "restart-failed" | "gave-up-busy" | "walls-late";
+export type ServiceEventKind =
+  | "restarted"
+  | "resumed"
+  | "not-fixed"
+  | "restart-failed"
+  | "gave-up-busy"
+  | "walls-late";
 
 export interface ServiceEvent {
   /** Epoch ms. */

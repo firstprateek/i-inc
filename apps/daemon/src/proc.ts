@@ -90,3 +90,9 @@ export function describeMs(ms: number): string {
   if (ms >= 60_000 && ms % 60_000 === 0) return "1 minute";
   return `${Math.round(ms / 1000)} seconds`;
 }
+
+/** Scripts running in machines now (brain copies, the reaper's sweeps, sign-ins, checks): work the container service's restart waits for. */
+let scriptsInFlight = 0;
+export const scriptsRunning = (): number => scriptsInFlight;
+export const scriptStarted = (): void => void scriptsInFlight++;
+export const scriptEnded = (): void => void scriptsInFlight--;

@@ -1,12 +1,13 @@
 // The daemon restarts the container service by itself to clear a stuck machine name (T73). A fake `container`
 // that fails to boot with "hostname(s) already exist" until the service is restarted; fake clocks (nothing here
 // waits for real time).
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StartupError } from "@i-inc/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRecoveryStore, RESTART_WINDOW_MS } from "../src/container-recovery.ts";
+import { machineScript } from "../src/harness.ts";
 import {
   AppleMachines,
   assertRunnable,
@@ -14,6 +15,7 @@ import {
   type Exec,
   type MachineSettings,
 } from "../src/machines.ts";
+import { scriptEnded, scriptStarted, scriptsRunning } from "../src/proc.ts";
 
 const { wallsMarker: _, ...noWalls } = defaultMachineSettings;
 
@@ -38,6 +40,7 @@ interface Rig {
     fixed: boolean;
     staysStuck: boolean;
     failStart: boolean;
+    serviceUp: boolean;
     t: number;
     sleeps: number;
   };
@@ -49,25 +52,32 @@ interface Rig {
 
 function rig(settings: MachineSettings = noWalls, store = new MemoryRecoveryStore(), t0 = 1_000_000): Rig {
   const calls: string[] = [];
-  const state = { busy: false, fixed: false, staysStuck: false, failStart: false, t: t0, sleeps: 0 };
+  const state = {
+    busy: false,
+    fixed: false,
+    staysStuck: false,
+    failStart: false,
+    serviceUp: true,
+    t: t0,
+    sleeps: 0,
+  };
   const onSleep = { fn: () => {} };
   const gateStop: Rig["gateStop"] = {};
-  let serviceUp = true;
   const exec: Exec = async (_bin, args) => {
     const line = args.join(" ");
     calls.push(line);
     if (line === "system stop") {
       await gateStop.hold;
-      serviceUp = false;
+      state.serviceUp = false;
       return "";
     }
     if (line === "system start") {
       if (state.failStart) throw new Error("start failed");
-      serviceUp = true;
+      state.serviceUp = true;
       if (!state.staysStuck) state.fixed = true;
       return "";
     }
-    if (!serviceUp) throw new Error("connection refused: is the container service running?");
+    if (!state.serviceUp) throw new Error("connection refused: is the container service running?");
     if (args[0] === "machine" && args[1] === "ls")
       return LISTING.replace(
         "inc-engineering  -        192.168.64.2   6     12G     3G    stopped",
@@ -374,5 +384,144 @@ describe("without the recovery nothing changes", () => {
     await expect(m.ensureUp("engineering")).rejects.toBeInstanceOf(StartupError);
     expect(m.sandboxFault("engineering")?.waiting).toContain("restart the container service on the Mac mini");
     expect(calls.some((c) => c.startsWith("system"))).toBe(false);
+  });
+});
+
+describe("a restart the last daemon didn't finish", () => {
+  it("records that a restart is under way before the service is stopped, and clears it after", async () => {
+    const r = rig();
+    let release = () => {};
+    r.gateStop.hold = new Promise<void>((res) => {
+      release = res;
+    });
+    await expect(r.m.ensureUp("engineering")).rejects.toBeInstanceOf(StartupError);
+    await vi.waitFor(() => expect(r.calls).toContain("system stop"));
+    // A daemon that dies here leaves this behind for the next one.
+    expect(r.store.load().inProgress).toBe(true);
+    release();
+    await r.rec.settled();
+    expect(r.store.load().inProgress).toBe(false);
+  });
+
+  it("a new daemon finds the service stopped, starts it, and holds launches until the walls have run", async () => {
+    const store = new MemoryRecoveryStore({ events: [], inProgress: true });
+    const r = rig(noWalls, store);
+    r.state.serviceUp = false; // the last daemon died between `system stop` and `system start`
+    const checking = r.m.checkService();
+    // Before the first launch: nothing starts while the service is being looked at.
+    const early = r.m.ensureUp("pip");
+    expect(r.rec.active).toBe(true);
+    await expect(early).rejects.toThrow(/checked/);
+    await checking;
+    expect(r.calls.filter((c) => c.startsWith("system "))).toEqual(["system start"]);
+    expect(store.load().inProgress).toBe(false);
+    expect(r.m.serviceEvents()[0]?.kind).toBe("resumed");
+    expect(r.m.serviceEvents()[0]?.text).toContain("died in the middle");
+    expect(r.rec.active).toBe(false);
+    expect(r.done).toHaveBeenCalled();
+    await expect(r.m.ensureUp("pip")).resolves.toBeUndefined();
+  });
+
+  it("a new daemon that finds the service up but a restart on record takes it as finished", async () => {
+    const store = new MemoryRecoveryStore({ events: [], inProgress: true });
+    const r = rig(noWalls, store);
+    await r.m.checkService();
+    expect(systemCalls(r)).toEqual([]);
+    expect(store.load().inProgress).toBe(false);
+    expect(store.load().restartedAt).toBeDefined();
+    expect(r.m.serviceEvents()[0]?.text).toContain("finished a restart");
+  });
+
+  it("a healthy service is left alone", async () => {
+    const r = rig();
+    await r.m.checkService();
+    expect(systemCalls(r)).toEqual([]);
+    expect(r.m.serviceEvents()).toEqual([]);
+    expect(r.rec.gate()).toBeNull();
+  });
+
+  it("holds launches until the walls marker is newer than the start", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "walls-"));
+    try {
+      const marker = join(dir, "walls.ok");
+      writeFileSync(marker, "");
+      const r = rig({ ...noWalls, wallsMarker: marker }, new MemoryRecoveryStore(), Date.now());
+      r.state.serviceUp = false;
+      r.onSleep.fn = () => {
+        if (!r.calls.includes("system start")) return;
+        expect(r.rec.gate()).toContain("walls job");
+        const later = (r.state.t + 10_000) / 1000;
+        utimesSync(marker, later, later);
+      };
+      await r.m.checkService();
+      expect(r.rec.gate()).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a service that can't be started goes to the owner with a push", async () => {
+    const r = rig();
+    r.state.serviceUp = false;
+    r.state.failStart = true;
+    await r.m.checkService();
+    expect(r.m.serviceEvents()[0]?.kind).toBe("restart-failed");
+    expect(r.m.serviceEvents()[0]?.text).toContain("container system start");
+    expect(r.push).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("one-off scripts and launcher updates count as work for the idle check", () => {
+  it("waits for a script running in a machine", async () => {
+    const r = rig();
+    scriptStarted();
+    let ended = false;
+    r.onSleep.fn = () => {
+      expect(systemCalls(r)).toEqual([]);
+      if (r.state.sleeps >= 4 && !ended) {
+        ended = true;
+        scriptEnded();
+      }
+    };
+    try {
+      await expect(r.m.ensureUp("engineering")).rejects.toBeInstanceOf(StartupError);
+      await r.rec.settled();
+    } finally {
+      if (!ended) scriptEnded();
+    }
+    expect(systemCalls(r)).toEqual(["system stop", "system start"]);
+    expect(r.state.sleeps).toBeGreaterThanOrEqual(4);
+  });
+
+  it("waits for a launcher update", async () => {
+    const r = rig();
+    const busy = r.m["launcherBusy"] as Set<string>;
+    busy.add("inc-engineering");
+    r.onSleep.fn = () => {
+      expect(systemCalls(r)).toEqual([]);
+      if (r.state.sleeps >= 3) busy.clear();
+    };
+    await expect(r.m.ensureUp("engineering")).rejects.toBeInstanceOf(StartupError);
+    await r.rec.settled();
+    expect(systemCalls(r)).toEqual(["system stop", "system start"]);
+  });
+});
+
+describe("machineScript counts as work while it runs", () => {
+  it("is counted from the start of the script to its end", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "script-"));
+    try {
+      const bin = join(dir, "container");
+      writeFileSync(bin, `#!/bin/sh\nwhile [ ! -e ${dir}/go ]; do sleep 0.02; done\n`);
+      chmodSync(bin, 0o755);
+      const before = scriptsRunning();
+      const run = machineScript({ ...noWalls, bin })("ada", "true");
+      await vi.waitFor(() => expect(scriptsRunning()).toBe(before + 1));
+      writeFileSync(join(dir, "go"), "");
+      await run;
+      expect(scriptsRunning()).toBe(before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

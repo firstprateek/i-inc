@@ -40,6 +40,11 @@ export interface RecoveryState {
   /** When the last one finished and the API server answered: the walls marker must be newer than this. */
   restartedAt?: number;
   events: ServiceEvent[];
+  /**
+   * Set before `container system stop`, cleared once the service answers again. A daemon that finds it set at
+   * startup (the last one died mid-restart: a deploy, a crash) finishes the job.
+   */
+  inProgress?: boolean;
 }
 
 export interface RecoveryStore {
@@ -113,7 +118,7 @@ const defaultTiming: RecoveryTiming = {
   wallsPollMs: 2_000,
 };
 
-type Phase = "idle" | "waiting" | "restarting" | "walls" | "retrying";
+type Phase = "idle" | "checking" | "waiting" | "restarting" | "walls" | "retrying";
 
 export const OWNER_FIX = "container system stop && container system start";
 
@@ -148,7 +153,12 @@ export class ServiceRecovery {
    * (/api/health). Waiting for the machines to go idle is not that: a deploy may go ahead then.
    */
   get active(): boolean {
-    return this.phase === "restarting" || this.phase === "walls" || this.phase === "retrying";
+    return (
+      this.phase === "checking" ||
+      this.phase === "restarting" ||
+      this.phase === "walls" ||
+      this.phase === "retrying"
+    );
   }
 
   /** Resolves when the run in progress (if any) is over. */
@@ -165,6 +175,9 @@ export class ServiceRecovery {
    * walls.sh has confirmed the walls since the restart.
    */
   gate(): string | null {
+    if (this.phase === "checking") {
+      return "the container service is being checked on the Mac mini; machines start in a moment";
+    }
     if (this.phase === "restarting") {
       return "the container service is being restarted on the Mac mini; machines start again in a minute or two";
     }
@@ -291,6 +304,64 @@ export class ServiceRecovery {
     void this.tell("container-service", "A sandbox is stuck", text);
   }
 
+  /**
+   * At startup, before the first launch (the gate is set at once): the service must answer. If it doesn't, the
+   * last daemon died between `system stop` and `system start`, or it crashed: it is started. If an interrupted
+   * restart is on record and the service answers, the restart is taken as done. Either way bridge100 may be new, so
+   * launches wait for the walls job as after any restart.
+   */
+  startup(): Promise<void> {
+    if (this.phase !== "idle") return this.job;
+    this.phase = "checking";
+    this.job = this.check().finally(() => {
+      this.phase = "idle";
+      this.o.done?.();
+    });
+    return this.job;
+  }
+
+  private async check(): Promise<void> {
+    try {
+      let up = true;
+      try {
+        await this.o.run(["machine", "ls"], 30_000);
+      } catch {
+        up = false;
+      }
+      const interrupted = this.state.inProgress === true;
+      if (up && !interrupted) return;
+      if (!up) {
+        await this.o.run(["system", "start"], this.t.commandMs);
+        await this.untilApi();
+      }
+      this.state.inProgress = false;
+      this.state.restartedAt = this.o.now();
+      this.record(
+        "resumed",
+        up
+          ? `finished a restart of the container service that the last daemon didn't (at ${clockTime(this.state.restartedAt)})`
+          : `started the container service at ${clockTime(this.state.restartedAt)}: it wasn't running when the daemon started${interrupted ? " (the last daemon died in the middle of restarting it)" : ""}`,
+      );
+      this.phase = "walls";
+      if (!(await this.untilWalls())) {
+        this.record(
+          "walls-late",
+          "the walls job hasn't confirmed the walls since the container service was started, so nothing starts yet (see /var/log/i-inc-walls.log on the Mac mini)",
+        );
+        void this.tell(
+          "container-service",
+          "The walls need a look",
+          "The container service was started, but the walls job hasn't confirmed the walls since. Nothing starts until it does.",
+        );
+      }
+    } catch (err) {
+      const why = err instanceof Error ? err.message : String(err);
+      const text = `the container service isn't running and the daemon couldn't start it: ${why}. On the Mac mini run: container system start`;
+      this.record("restart-failed", text);
+      void this.tell("container-service", "The container service needs you", text);
+    }
+  }
+
   private async run(): Promise<void> {
     try {
       if (!(await this.untilIdle())) {
@@ -303,9 +374,12 @@ export class ServiceRecovery {
       }
       this.phase = "restarting";
       this.state.lastAttemptAt = this.o.now();
+      // Durable before the service is stopped: a daemon that dies from here on leaves it for the next one to finish.
+      this.state.inProgress = true;
       this.save();
       await this.restart();
       if (this.closed) return;
+      this.state.inProgress = false;
       this.state.restartedAt = this.o.now();
       const names = [...this.requesters.keys()];
       this.record(
@@ -376,6 +450,11 @@ export class ServiceRecovery {
     }
     await this.o.run(["system", "stop"], this.t.commandMs);
     await this.o.run(["system", "start"], this.t.commandMs);
+    await this.untilApi();
+  }
+
+  /** Polls `container machine ls` until the API server answers; throws after the limit. */
+  private async untilApi(): Promise<void> {
     const deadline = this.o.mono() + this.t.apiWaitMs;
     for (;;) {
       try {
