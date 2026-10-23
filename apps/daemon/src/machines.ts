@@ -254,8 +254,10 @@ export const removeRootScript = (user: string): string =>
   [
     "set -eu",
     `user=${user}`,
+    // The last run left the file empty and immutable (below): no change to it works until the flag is off.
+    'chattr -i "/etc/sudoers.d/$user" 2>/dev/null || true',
     'rm -f "/etc/sudoers.d/$user"',
-    'for f in /etc/sudoers.d/*; do [ -f "$f" ] || continue; case "$f" in */README) ;; *) rm -f "$f" ;; esac; done',
+    'for f in /etc/sudoers.d/*; do [ -f "$f" ] || continue; case "$f" in */README) ;; *) chattr -i "$f" 2>/dev/null || true; rm -f "$f" ;; esac; done',
     '[ ! -f /etc/sudoers ] || sed -i "/^$user[[:space:]]/d" /etc/sudoers',
     'for g in sudo admin wheel docker lxd adm disk; do getent group "$g" >/dev/null 2>&1 && gpasswd -d "$user" "$g" >/dev/null 2>&1 || true; done',
     // An empty file, root's and immutable where the filesystem allows, so nothing puts the grant back.
