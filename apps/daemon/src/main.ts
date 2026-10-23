@@ -87,12 +87,15 @@ const harness = new FakeHarness();
 // The daemon's own helper and chat use qwen3-8b-32k when Ollama has it, else qwen3:8b with a warning.
 const ollamaModel = demo ? undefined : ollamaModelChoice({ log });
 await ollamaModel?.refresh();
+// Looked at again every ten minutes (and before each helper or chat request), so a model made later is picked up
+// and the change is logged even when nothing asks.
+if (ollamaModel) setInterval(() => void ollamaModel.refresh(), 10 * 60_000).unref();
 const real = demo
   ? undefined
   : realPorts({
       credentials,
       log,
-      ...(ollamaModel ? { ollama: { model: ollamaModel.current } } : {}),
+      ...(ollamaModel ? { ollama: { model: ollamaModel.current, fresh: ollamaModel.fresh } } : {}),
       // Every push is made here on the host, from the mirrors; main's commits are written to the ledger the
       // deployer checks (T68).
       // The repo the deployer deploys: what it runs on the host needs your OK (I_INC_REPO, as the deployer's).
@@ -290,6 +293,8 @@ async function shutdown(signal: string): Promise<void> {
   if (stopping) process.exit(1);
   stopping = true;
   log(`${signal}: stopping`);
+  // No restart of the container service starts while the daemon leaves (container-recovery.ts).
+  if (app.deps.machines instanceof AppleMachines) app.deps.machines.closeRecovery();
   const hard = setTimeout(() => {
     log("shutdown took too long: leaving");
     process.exit(1);

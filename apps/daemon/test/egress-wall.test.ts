@@ -569,7 +569,9 @@ describe("the script that takes root away", () => {
       fake("getent", "exit 1");
       fake("gpasswd", "exit 0");
       fake("chown", "exit 0");
-      const text = script.replaceAll("/etc/sudoers.d", sudoers).replaceAll("/etc/sudoers", join(dir, "sudoers"));
+      const text = script
+        .replaceAll("/etc/sudoers.d", sudoers)
+        .replaceAll("/etc/sudoers", join(dir, "sudoers"));
       return spawnSync("/bin/bash", ["-c", text], {
         env: { PATH: `${bin}:/usr/bin:/bin` },
         encoding: "utf8",

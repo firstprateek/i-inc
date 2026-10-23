@@ -56,6 +56,18 @@ export interface SandboxStatus {
   retryAt?: number;
 }
 
+/** What the daemon did about the container service, for Setup > Sandboxes (T73). */
+export type ServiceEventKind = "restarted" | "not-fixed" | "restart-failed" | "gave-up-busy" | "walls-late";
+
+export interface ServiceEvent {
+  /** Epoch ms. */
+  at: number;
+  kind: ServiceEventKind;
+  /** One plain sentence: "restarted the container service at 14:02 to clear a stuck machine name (inc-engineering)". */
+  text: string;
+  machine?: string;
+}
+
 /** A sandbox that failed to boot and is waiting out its backoff. */
 export interface SandboxFault {
   machine: string;
@@ -117,6 +129,8 @@ export interface MachineProvider {
    * hasn't been probed yet.
    */
   signedIn?(employeeId: Id, harness: AgentHarness): boolean | undefined;
+  /** What the daemon did about the container service lately (T73), newest first. */
+  serviceEvents?(): ServiceEvent[];
   /** Clears a sandbox's backoff and tries to boot it now (contract C18). Returns its new state. */
   retrySandbox?(team: Id, size: { cpus: number; memory: string }): Promise<SandboxStatus>;
 }

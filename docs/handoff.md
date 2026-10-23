@@ -462,7 +462,14 @@ Then read what Pip wrote in Company → Brain (`reference/how-i-help-at-home`, `
 ### Sandbox won't boot: hostname already exists
 When macOS or Apple's container framework terminates abruptly or gets out of sync, `container-apiserver` can retain a stale registration (`hostname(s) already exist: ["inc-<team>.machine."]`). The daemon automatically recovers from transient machine failures using safe `container machine stop <name>` retries and exponential backoff (30s → 1m → 2m … up to 10m) without churning tickets.
 
-If the machine enters persistent `stale-hostname` backoff (visible in Setup > Sandboxes and ticket waiting line):
+**The daemon clears this by itself (T73).** Retrying the machine never helps, but restarting the container service always has, so when a boot fails with `hostname(s) already exist`:
+1. The ticket (or conversation) that failed shows "waiting for other work to finish, then the container service is restarted". Nothing is killed: the daemon waits up to 10 minutes until no ticket session, conversation turn, harness script, brain collection or storage cleanup is running in any machine, and no boot or stop is under way. If they never go idle it gives up (an event says so) and tries again at the next failed boot.
+2. Once idle it takes a daemon-wide lock: every new launch, script and boot, on any machine, waits with "the container service is being restarted". It stops all running machines, runs `container system stop`, then `container system start`, and polls `container machine ls` until the API server answers (2 minutes at most). `GET /api/health` reports `busy: true` for this part, so the deployer's drain waits for it. A restart never begins while the daemon is busy or leaving (SIGTERM).
+3. The restart recreates `bridge100` with its filter flags at 0. Launches stay blocked until `walls.sh` (root, every minute) has run since the restart: `/var/run/i-inc-walls.ok` (which it touches only after checking the rules, the table and the bridge's filter flags in the same run) and, with the new walls installed, `/var/run/i-inc-walls.open` must both be newer than the restart. The walls marker and the home-machine acknowledgements then gate every launch as always.
+4. The failed boots are tried again. If a name is still stuck, the old "restart the container service on the Mac mini" message stands and the owner gets a push ("A sandbox is stuck"). At most one automatic restart per 30 minutes (the window survives a daemon restart).
+5. Every restart is logged (`[container] …`) and kept as an event on Setup > Sandboxes ("restarted the container service at 14:02 to clear a stuck machine name"; `GET /api/sandboxes/service-events`, newest first, last 20). A restart that itself fails, or a walls job that doesn't answer afterwards, is an event and a push too.
+
+If the machine still enters persistent `stale-hostname` backoff (visible in Setup > Sandboxes and ticket waiting line), or the daemon asks for you:
 1. **Never delete** the machine, its volumes, or disks.
 2. Ask the owner before restarting the container daemon on the host.
 3. Once approved, restart the Apple container service on the Mac mini:
@@ -474,6 +481,10 @@ If the machine enters persistent `stale-hostname` backoff (visible in Setup > Sa
    container machine ls
    ```
 5. In i.inc web under Setup > Sandboxes, click **Retry now** (or call `POST /api/sandboxes/:team/retry`) to immediately wake the team sandbox and resume tickets at their current stage.
+
+**The root-removal script is idempotent (T73).** A personal assistant's sandbox loses its user's sudo at every boot (`removeRootScript`). It leaves `/etc/sudoers.d/<user>` empty and immutable (`chattr +i`), so it clears the flag (`chattr -i`) before it removes or rewrites any grant file; before this, the second boot failed with "rm: cannot remove … Operation not permitted" and the assistant's ticket waited for ever.
+
+**The local model is re-checked (T73).** The daemon looks at Ollama's installed models every 10 minutes and before each helper or chat request (cached for a minute), so `qwen3-8b-32k` made after the daemon started is used without a restart; a change of the choice is logged once.
 
 ### Adding or creating a project (T62)
 

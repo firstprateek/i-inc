@@ -71,9 +71,10 @@ const storage = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-function serve(opts: { storage?: unknown | "404" | "fail" } = {}) {
+function serve(opts: { storage?: unknown | "404" | "fail"; events?: unknown[] } = {}) {
   vi.stubGlobal("fetch", async (url: string) => {
     if (url === "/api/sandboxes") return json({ sandboxes });
+    if (url === "/api/sandboxes/service-events") return json({ events: opts.events ?? [] });
     if (url === "/api/storage") {
       if (opts.storage === "404") return json({ error: "not found" }, 404);
       if (opts.storage === "fail") return new Response("<html>nope</html>", { status: 500 });
@@ -208,5 +209,28 @@ describe("sizes and times", () => {
     expect(agoText(now - 10 * 60_000, now)).toBe("10 minutes ago");
     expect(agoText(now - 5 * 3_600_000, now)).toBe("5 hours ago");
     expect(agoText(now - 4 * 86_400_000, now)).toBe("4 days ago");
+  });
+});
+
+describe("the container service's restarts", () => {
+  it("lists what the daemon did, newest first, and nothing when it did nothing", async () => {
+    serve();
+    expect((await mount()).querySelector('section[aria-label="Container service"]')).toBeNull();
+    document.body.replaceChildren();
+    serve({
+      events: [
+        {
+          at: Date.now() - 60_000,
+          kind: "restarted",
+          text: "restarted the container service at 14:02 to clear a stuck machine name (inc-engineering)",
+        },
+        { at: Date.now() - 3_600_000, kind: "not-fixed", text: "inc-engineering still can't start" },
+      ],
+    });
+    const card = (await mount()).querySelector('section[aria-label="Container service"]');
+    const items = [...(card?.querySelectorAll("li") ?? [])];
+    expect(items).toHaveLength(2);
+    expect(items[0]?.textContent).toContain("restarted the container service at 14:02");
+    expect(items[1]?.classList.contains("bad")).toBe(true);
   });
 });

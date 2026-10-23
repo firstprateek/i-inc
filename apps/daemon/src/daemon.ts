@@ -142,6 +142,8 @@ export class Daemon {
   /** Turns in flight that are not tickets (an owner chat turn today, conversations later). */
   private turns = 0;
   private readonly busyHooks: Array<() => boolean> = [];
+  /** Work that holds a deploy back but is not work of the kind the container service's restart waits for (T73). */
+  private readonly holdHooks: Array<() => boolean> = [];
   /** The session each ticket is in now, so an urgent message can stop it. */
   private readonly sessions = new Map<Id, { employeeId: Id; controller: AbortController }>();
   /** Why each ticket that didn't start is waiting, from the last tick. */
@@ -157,7 +159,16 @@ export class Daemon {
    */
   private readonly failures = new Map<
     Id,
-    { count: number; since: number; sinceMono: number; retryAt: number; retryMono: number; reason: string }
+    {
+      count: number;
+      since: number;
+      sinceMono: number;
+      retryAt: number;
+      retryMono: number;
+      reason: string;
+      /** The last failure was a `StartupError`: a sandbox that couldn't start, not the ticket's fault. */
+      startup?: true;
+    }
   >();
   /** Tickets whose owner acted while a run was still finishing: they run again as soon as it ends. */
   private readonly rerun = new Set<Id>();
@@ -178,6 +189,18 @@ export class Daemon {
       this.dirtyTickets.add(ticketId);
       this.stateCache.delete(ticketId);
     });
+  }
+
+  /**
+   * A sandbox that wouldn't start can now (the container service was restarted): tickets waiting on a start
+   * try again at the next tick instead of after their backoff.
+   */
+  clearStartWaits(): void {
+    for (const [id, f] of this.failures) {
+      if (!f.startup) continue;
+      this.failures.delete(id);
+      delete this.waitingUntil[id];
+    }
   }
 
   invalidate(ticketId: Id): void {
@@ -258,7 +281,20 @@ export class Daemon {
    * releases (GET /api/health, contract C21).
    */
   busy(): boolean {
+    return this.working() || this.holdHooks.some((h) => h());
+  }
+
+  /**
+   * Whether tickets, chat turns or registered work are running: `busy()` without the holds. The automatic
+   * restart of the container service waits for this to be false, and is itself a hold (a deploy waits for it).
+   */
+  working(): boolean {
     return this.running.size > 0 || this.turns > 0 || this.busyHooks.some((h) => h());
+  }
+
+  /** Registers something that makes `busy()` true without being work (the container service's restart). */
+  onHold(hook: () => boolean): void {
+    this.holdHooks.push(hook);
   }
 
   /** Registers a source of busyness, such as "a conversation turn is running". */
@@ -988,7 +1024,7 @@ export class Daemon {
         await this.escalate(id, `can't start: ${reason}`);
         return;
       }
-      this.failures.set(id, { count, since, sinceMono, retryAt, retryMono, reason });
+      this.failures.set(id, { count, since, sinceMono, retryAt, retryMono, reason, startup: true });
       return;
     }
     this.d.log?.(`ticket ${id} stopped (${count} in a row): ${reason}`);

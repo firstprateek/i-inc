@@ -43,8 +43,29 @@ export interface StorageView {
   memory: { rssBytes: number; heapUsedBytes: number };
 }
 
+/** What the daemon did about the container service (`GET /api/sandboxes/service-events`, T73). */
+export interface ServiceEventView {
+  at: number;
+  kind: string;
+  text: string;
+  machine?: string;
+}
+
 /** null: the daemon has no sandbox status yet (or it failed). */
-type Data = { sandboxes: Sandbox[] | null; storage: StorageView | null };
+type Data = { sandboxes: Sandbox[] | null; storage: StorageView | null; events: ServiceEventView[] };
+
+async function loadEvents(): Promise<ServiceEventView[]> {
+  try {
+    const r = await call<{ events?: ServiceEventView[] }>("GET", "/api/sandboxes/service-events");
+    return Array.isArray(r.events) ? r.events : [];
+  } catch {
+    return [];
+  }
+}
+
+/** "14:02", in the viewer's time. */
+export const timeText = (at: number): string =>
+  new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 const GB = 1024 ** 3;
 const MB = 1024 ** 2;
@@ -101,8 +122,12 @@ export class IncSetupSandboxes extends Loader<Data> {
   }
 
   protected fetch = async (): Promise<Data> => {
-    const [sandboxes, storage] = await Promise.all([setupApi.sandboxes(), loadStorage()]);
-    return { sandboxes, storage };
+    const [sandboxes, storage, events] = await Promise.all([
+      setupApi.sandboxes(),
+      loadStorage(),
+      loadEvents(),
+    ]);
+    return { sandboxes, storage, events };
   };
 
   private async retry(team: string) {
@@ -193,7 +218,7 @@ export class IncSetupSandboxes extends Loader<Data> {
         ${this.disk(s.machine)}
         ${s.signedIn?.codex !== true ? html`<p class="note codex-help">To sign Codex in, run <code>sh tools/host/sign-in-codex.sh ${s.team}</code> on the host. Authentication stays there; don't enter credentials in i.inc. <a href="https://github.com/firstprateek/i-inc/blob/main/docs/codex.md" target="_blank" rel="noreferrer">Owner sign-in instructions</a>.</p>` : ""}
       </section>`;
-    })}${this.host()}</div>`;
+    })}${this.service()}${this.host()}</div>`;
   }
 
   /** How full a machine's disk is, and the last cleanup. Nothing when the daemon has no storage report. */
@@ -219,6 +244,24 @@ export class IncSetupSandboxes extends Loader<Data> {
             : html`<p class="sub">No cleanup has run yet.</p>`
       }
     </div>`;
+  }
+
+  /** What the daemon did about the container service lately (it restarts it by itself to clear a stuck machine name). */
+  private service() {
+    const events = this.data?.events ?? [];
+    if (!events.length) return "";
+    const bad = (k: string) => k === "not-fixed" || k === "restart-failed" || k === "walls-late";
+    return html`<section class="card" aria-label="Container service">
+      <div class="head"><h3>Container service</h3></div>
+      <ul class="keeps" aria-label="What the daemon did about the container service">
+        ${events
+          .slice(0, 5)
+          .map(
+            (e) =>
+              html`<li class=${bad(e.kind) ? "bad" : ""}><time datetime=${new Date(e.at).toISOString()}>${timeText(e.at)}</time> ${agoText(e.at)}: ${e.text}</li>`,
+          )}
+      </ul>
+    </section>`;
   }
 
   /** What the Mac mini keeps, and for how long. */

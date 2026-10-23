@@ -140,6 +140,16 @@ describe("GET /api/health", () => {
     expect((await send("GET", "/api/health")).body.busy).toBe(false);
   });
 
+  it("is busy while the container service restarts (a hold), which is not work the restart itself waits for (T73)", async () => {
+    const { app, send } = await guarded();
+    let restarting = true;
+    app.daemon.onHold(() => restarting);
+    expect((await send("GET", "/api/health")).body.busy).toBe(true);
+    expect(app.daemon.working()).toBe(false);
+    restarting = false;
+    expect((await send("GET", "/api/health")).body.busy).toBe(false);
+  });
+
   it("is busy while an owner chat turn is being answered (removing daemon.track around it fails this)", async () => {
     const { app, send, authed } = await guarded();
     let finish: () => void = () => {};

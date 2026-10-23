@@ -19,9 +19,11 @@ import {
   type SandboxFault,
   type SandboxFaultKind,
   type SandboxStatus,
+  type ServiceEvent,
   StartupError,
 } from "@i-inc/core";
 import type { AgentProcess, Launch } from "./acp.ts";
+import { type RecoveryOptions, ServiceRecovery } from "./container-recovery.ts";
 import { type EgressWall, isHomeMachine, WallError, type WallRow } from "./egress-wall.ts";
 import { describeMs, guardStdin, stopGroup, trackGroup } from "./proc.ts";
 import { launcherNeedsUpdate, newAgentId, noteLauncher, trackAgent } from "./reaper.ts";
@@ -91,6 +93,11 @@ export interface MachineSettings {
    * confirmed. Absent, nothing is checked but the walls marker, and no home machine runs.
    */
   wall?: EgressWall;
+  /**
+   * Why no new launch may start right now, or null. The container service's restart (container-recovery.ts)
+   * sets it; it is read by every launch, script and boot through `assertWalls`.
+   */
+  gate?: () => string | null;
   /** The limits in timeouts.ts as the owner has them now, read at each call (milliseconds). */
   timeouts?: () => Partial<TimeoutsMs>;
   /**
@@ -194,6 +201,9 @@ export function wallsUp(s: MachineSettings, now = Date.now()): boolean {
 
 /** Fails closed: nothing runs in a machine unless the walls are up (spec §5). */
 export function assertWalls(s: MachineSettings): void {
+  const held = s.gate?.();
+  // A wait, not a failure: the ticket or conversation shows why and tries again.
+  if (held) throw new StartupError(held, Date.now() + 30_000);
   if (!wallsUp(s)) {
     throw new Error(
       `the walls aren't up (${s.wallsMarker} is missing or stale), so no machine runs: see tools/host`,
@@ -447,6 +457,8 @@ export class AppleMachines implements MachineProvider {
   private readonly launcherRetry = new Map<string, number>();
 
   private readonly exec: Exec;
+  /** Clears the container service's stuck machine names by restarting it (container-recovery.ts); absent: never. */
+  private recovery?: ServiceRecovery;
 
   constructor(
     private readonly s: MachineSettings = defaultMachineSettings,
@@ -496,6 +508,74 @@ export class AppleMachines implements MachineProvider {
     await this.locked(name, () => this.bringUp(name, employeeId));
   }
 
+  /**
+   * Turns on the automatic restart of the container service for a machine that won't boot because its
+   * hostname is still held (container-recovery.ts, T73). `o` is what only the daemon knows: whether any
+   * work is running, the push, where the record is kept.
+   */
+  enableRecovery(
+    o: Pick<RecoveryOptions, "idle" | "booted" | "done" | "push" | "store" | "stopping" | "timing">,
+  ): ServiceRecovery {
+    const recovery = new ServiceRecovery({
+      ...o,
+      run: (args, timeoutMs) => this.exec(this.s.bin, args, timeoutMs ? { timeoutMs } : undefined),
+      sleep: this.sleep,
+      now: this.now,
+      mono: this.mono,
+      ...(this.log ? { log: this.log } : {}),
+      // No boot or stop is under way either, and nothing else is: the daemon says the rest.
+      idle: async () => this.locks.size === 0 && (await o.idle()),
+      stopMachines: () => this.stopAll(),
+      forget: (machine) => this.forgetFault(machine),
+      retry: (employeeId) => this.ensureUp(employeeId),
+      ...(this.s.wallsMarker ? { wallsMarker: this.s.wallsMarker } : {}),
+      wallsAck: () => this.s.wall?.s.ack,
+    });
+    this.recovery = recovery;
+    this.s.gate = () => recovery.gate();
+    return recovery;
+  }
+
+  /** The daemon is leaving: no restart starts. */
+  closeRecovery(): void {
+    this.recovery?.close();
+  }
+
+  /** The restart of the container service is cutting machines off (the deployer waits for it). */
+  get recoveryActive(): boolean {
+    return this.recovery?.active ?? false;
+  }
+
+  /** What the daemon did about the container service, newest first (Setup > Sandboxes). */
+  serviceEvents(): ServiceEvent[] {
+    return this.recovery?.events() ?? [];
+  }
+
+  private forgetFault(name: string): void {
+    this.faults.delete(name);
+    this.retryMono.delete(name);
+    this.attempts.delete(name);
+    this.lastLogged.delete(name);
+  }
+
+  /** The fault to show for a machine: the recovery's wait, or the boot's backoff while it runs. */
+  private liveFault(name: string): SandboxFault | undefined {
+    const wait = this.recovery?.waitingFor(name);
+    if (wait) {
+      return {
+        machine: name,
+        kind: "stale-hostname",
+        reason: wait.reason,
+        waiting: wait.waiting,
+        since: wait.since,
+        retryAt: this.now() + 30_000,
+        attempts: this.faults.get(name)?.attempts ?? 1,
+      };
+    }
+    const fault = this.faults.get(name);
+    return fault && this.backingOff(name, fault) ? fault : undefined;
+  }
+
   /** `ensureUp` once it holds the machine's lock: the machine may be up already by now. */
   private async bringUp(name: string, employeeId: Id): Promise<void> {
     const working = this.up.get(name);
@@ -506,13 +586,11 @@ export class AppleMachines implements MachineProvider {
       this.claim(name, employeeId);
       return;
     }
-    const fault = this.faults.get(name);
-    if (fault && this.backingOff(name, fault)) {
-      throw new StartupError(fault.waiting, fault.retryAt);
-    }
+    const fault = this.liveFault(name);
+    if (fault) throw new StartupError(fault.waiting, fault.retryAt);
     const size = this.s.sizeFor?.(name) ?? { cpus: this.s.cpus, memory: this.s.memory };
     try {
-      await this.bootWithRecovery(name);
+      await this.bootWithRecovery(name, employeeId);
     } catch (err) {
       if (!/notFound|not found/.test(err instanceof Error ? err.message : String(err))) throw err;
       // No such machine yet: make it with the flags M1 used.
@@ -530,7 +608,7 @@ export class AppleMachines implements MachineProvider {
         this.s.image,
       ]);
       // Boot it here rather than in its first job.
-      await this.bootWithRecovery(name);
+      await this.bootWithRecovery(name, employeeId);
     }
     // Before anything is run in it: a home machine loses its user's root, and the walls must have its address.
     await this.secure(name, true);
@@ -689,7 +767,7 @@ export class AppleMachines implements MachineProvider {
    * Boots a machine with safe recovery and exponential backoff on failure (T50). The caller holds the
    * machine's lock (`locked`): the recovery's `machine stop` must not kill a boot another call just made.
    */
-  private async bootWithRecovery(name: string): Promise<void> {
+  private async bootWithRecovery(name: string, employeeId?: Id): Promise<void> {
     try {
       await this.boot(name);
       if (this.faults.has(name) || this.attempts.has(name)) {
@@ -733,6 +811,29 @@ export class AppleMachines implements MachineProvider {
         const retryAt = currentTime + backoffMs;
         const info = BOOT_FAILURES[failure.kind];
         const teamName = name.replace(/^inc-/, "");
+        // A stuck hostname is cleared by restarting the container service, once everything is idle
+        // (container-recovery.ts). Only when that has been done lately and did not help does the owner get it.
+        if (failure.kind === "stale-hostname" && this.recovery?.request(name, employeeId)) {
+          const wait = this.recovery.waitingFor(name);
+          const text =
+            wait?.waiting ?? `the ${teamName} sandbox can't start: the container service is being restarted`;
+          this.logStateChange(
+            name,
+            "fault:stale-hostname:recovering",
+            `boot failed (stale-hostname): ${text}`,
+          );
+          this.faults.set(name, {
+            machine: name,
+            kind: "stale-hostname",
+            reason: wait?.reason ?? text,
+            waiting: text,
+            since: this.faults.get(name)?.since ?? currentTime,
+            retryAt: currentTime + 30_000,
+            attempts,
+          });
+          this.retryMono.set(name, this.mono() + 30_000);
+          throw new StartupError(text, currentTime + 30_000);
+        }
         const waiting =
           failure.kind === "stale-hostname"
             ? `the ${teamName} sandbox can't start (restart the container service on the Mac mini)`
@@ -773,8 +874,21 @@ export class AppleMachines implements MachineProvider {
   /** The fault holding an employee's sandbox, while its backoff runs; once it is over the next start tries again. */
   sandboxFault(employeeId: Id): SandboxFault | undefined {
     const name = machineOf(this.s, employeeId);
-    const fault = this.faults.get(name);
-    return fault && this.backingOff(name, fault) ? fault : undefined;
+    const own = this.liveFault(name);
+    if (own) return own;
+    // While the container service restarts, nothing starts anywhere: every ticket and conversation says why.
+    const held = this.s.gate?.();
+    return held
+      ? {
+          machine: name,
+          kind: "container-service-down",
+          reason: held,
+          waiting: held,
+          since: this.now(),
+          retryAt: this.now() + 30_000,
+          attempts: 1,
+        }
+      : undefined;
   }
 
   signedIn(employeeId: Id, harness: AgentHarness): boolean | undefined {
@@ -973,7 +1087,8 @@ export class AppleMachines implements MachineProvider {
     if (!/^[a-z0-9-]{1,32}$/.test(team)) throw new Error(`not a team id: ${team}`);
     const machine = machineName(team);
     const defaultSignedIn = { claude: false, antigravity: false, codex: false, github: false };
-    const fault = this.faults.get(machine);
+    const live = this.liveFault(machine);
+    const fault = live ?? this.faults.get(machine);
 
     let listing = "";
     try {
@@ -1007,7 +1122,7 @@ export class AppleMachines implements MachineProvider {
       };
     }
 
-    const inFault = Boolean(fault && this.backingOff(machine, fault));
+    const inFault = Boolean(live || (fault && this.backingOff(machine, fault)));
     const state: "running" | "stopped" | "error" = inFault
       ? "error"
       : entry.includes("running")

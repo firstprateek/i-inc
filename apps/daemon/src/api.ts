@@ -827,6 +827,13 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       },
     ],
 
+    // T73: what the daemon did about the container service lately, newest first (T73).
+    [
+      "GET",
+      "/api/sandboxes/service-events",
+      async () => json({ events: d.machines.serviceEvents?.() ?? [] }),
+    ],
+
     // C23: what the daemon keeps and how much room it takes (T52).
     [
       "GET",
