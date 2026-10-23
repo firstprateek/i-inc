@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { converse, parseArgs, type SocketLike } from "../../scripts/converse.ts";
+import { converse, parseArgs, type SocketLike, urlProblem } from "../../scripts/converse.ts";
 import type { Socket } from "../../src/ahp/host.ts";
 import { ActionType } from "../../src/ahp/wire.ts";
 import { createApp } from "../../src/app.ts";
@@ -179,6 +179,74 @@ describe("converse.ts", () => {
     const r = await t.run({ employee: "nobody" });
     expect(r.code).toBe(1);
     expect(t.text()).toContain("no employee");
+  });
+});
+
+describe("converse.ts on a failed connection", () => {
+  it("archives the conversation it made even when the socket never opens (exit 2)", async () => {
+    const t = await rig();
+    const refused = (): SocketLike => {
+      const ws: SocketLike = {
+        onopen: null,
+        onmessage: null,
+        onerror: null,
+        onclose: null,
+        send: () => {},
+        close: () => {},
+      };
+      setTimeout(() => ws.onerror?.({}), 0);
+      return ws;
+    };
+    const r = await t.run({ openSocket: refused });
+    expect(r.code).toBe(2);
+    expect(r.conversation).toMatch(/^[0-9a-f]{8}$/);
+    const archived = await (
+      await t.fetchFn(`http://${HOST}/api/conversations?archived=true`, {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      })
+    ).json();
+    expect(archived.conversations.map((c: Any) => c.id)).toEqual([r.conversation]);
+    // and with --keep it is left
+    const kept = await t.run({ openSocket: refused, keep: true });
+    const live = await (
+      await t.fetchFn(`http://${HOST}/api/conversations`, { headers: { authorization: `Bearer ${TOKEN}` } })
+    ).json();
+    expect(live.conversations.map((c: Any) => c.id)).toEqual([kept.conversation]);
+  });
+});
+
+describe("converse.ts and the token's road", () => {
+  it("sends the token only over https, or over http to this machine", () => {
+    for (const ok of [
+      "http://127.0.0.1:7420",
+      "http://localhost:7420",
+      "http://[::1]:7420",
+      "https://mini.tail1234.ts.net:8443",
+    ]) {
+      expect(urlProblem(ok), ok).toBeNull();
+    }
+    for (const bad of [
+      "http://192.168.1.20:7420",
+      "http://mini.tail1234.ts.net:7420",
+      "http://example.com",
+      "ftp://127.0.0.1",
+      "nonsense",
+    ]) {
+      expect(urlProblem(bad), bad).not.toBeNull();
+    }
+    expect(parseArgs(["--employee", "pip", "--url", "http://10.0.0.2:7420", "hi"])).toContain("in the clear");
+  });
+
+  it("refuses before making any request", async () => {
+    const t = await rig();
+    const seen: string[] = [];
+    const r = await t.run({
+      baseUrl: "http://10.0.0.2:7420",
+      fetch: (async (u: string) => void seen.push(u)) as never,
+    });
+    expect(r.code).toBe(2);
+    expect(seen).toEqual([]);
+    expect(t.text()).toContain("in the clear");
   });
 });
 

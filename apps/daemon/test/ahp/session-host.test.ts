@@ -318,7 +318,12 @@ describe("prompts with images", () => {
   });
 
   it("tells a personal assistant's every turn what its machine lacks, and nobody else's", async () => {
-    const t = await sessionRig({ host: { isHome: (employee) => employee === "kit" } });
+    const t = await sessionRig({
+      host: {
+        homeNotes: (employee) =>
+          employee === "kit" ? "Your machine (test note): NO internet, no sudo and no root." : "",
+      },
+    });
     const home = await t.create("c1", { employee: "kit" });
     const a = await t.client(home);
     await t.say(a, home.chat, "first");
@@ -327,7 +332,6 @@ describe("prompts with images", () => {
       ((t.sandbox.last.prompts[n]?.blocks ?? []) as Any[]).map((b) => b.text ?? "").join("\n");
     for (const n of [0, 1]) {
       expect(texts(n)).toContain("NO internet, no sudo and no root");
-      expect(texts(n)).toContain("/home/employee/brain/kit/.bin/brain search");
     }
     const other = await t.create("c2", { employee: "ada" });
     const b = await t.client(other);

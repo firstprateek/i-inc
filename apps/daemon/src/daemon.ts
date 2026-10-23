@@ -24,6 +24,7 @@ import {
   type MachineProvider,
   monotonicNow,
   occupancy,
+  offlineNotes,
   type PendingDuty,
   type Ports,
   type ProjectRelease,
@@ -313,6 +314,7 @@ export class Daemon {
       pickEmployee: (duty, ticket, exclude) => reg.pickEmployee(duty, ticket, exclude),
       ...(isContact ? { isContact: (address) => isContact.call(reg, address) } : {}),
       ...(projectPolicy ? { projectPolicy: (project) => projectPolicy.call(reg, project) } : {}),
+      projectIds: () => reg.projects().map((p) => p.id),
       engines: () => reg.engines(),
       engineBlock: (employeeId: Id, engineId: Id, duty: Duty) => {
         // `sandboxFault` is the fault only while its backoff runs (measured on the machines' monotonic clock).
@@ -428,6 +430,10 @@ export class Daemon {
           } catch (err) {
             this.d.log?.(`brain: no pages for ${req.ticket.id}/${req.stage}: ${err}`);
           }
+        }
+        // A PA's machine has no internet and no root, and a small model that isn't told tries to install things.
+        if (isHomeEmployee(req.employee)) {
+          req.brief = `${req.brief}\n\n${offlineNotes(req.employee.id, feed?.toolsOf(req.employee.id))}`;
         }
         // What the session handles from outside (a GitHub issue as the ticket, a web fetch) makes what it writes
         // into the brain untrusted.
@@ -559,7 +565,27 @@ export class Daemon {
       await this.collectCopy(employeeId, ticketId, false);
       const repo = { kind: "brain", id: employeeId } as const;
       if (!this.d.knowledge.exists(repo)) return null;
-      return new Map(this.d.knowledge.pages(repo).map((p) => [p.path.replace(/\.md$/, ""), p.text]));
+      // Only what THIS ticket's sessions wrote or changed (the harvests of its copy), as it is in the brain now:
+      // a page an earlier run left does not make a new orientation done.
+      const mine = this.d.db.all<{ slug: string; notes: string }>(
+        "SELECT slug, notes FROM brain_changes WHERE employee_id = ? AND ref_kind = 'ticket' AND ref_id = ? AND status = 'committed' AND reverted_at IS NULL AND scope = ? AND op != 'delete' AND slug IS NOT NULL",
+        employeeId,
+        ticketId,
+        `brain:${employeeId}`,
+      );
+      const now = new Map(this.d.knowledge.pages(repo).map((p) => [p.path.replace(/\.md$/, ""), p.text]));
+      const out = new Map<string, string>();
+      for (const { slug, notes } of mine) {
+        const text = now.get(slug);
+        if (text === undefined) continue;
+        // The daemon repairs a page's frontmatter when it commits it. If it had to add it (or the title or the
+        // description), the agent did not write it: the page is handed on without it, so the check sees that.
+        const added = /added frontmatter|repaired the frontmatter|added a title|added a description/.test(
+          notes,
+        );
+        out.set(slug, added ? text.replace(/^---\n[\s\S]*?\n---\n?/, "") : text);
+      }
+      return out;
     },
     tidyLeft: async (employeeId, ticketId) => {
       await this.collectCopy(employeeId, ticketId, true);

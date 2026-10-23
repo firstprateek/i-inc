@@ -21,6 +21,9 @@
     <string>7420</string>
     <key>I_INC_HOSTS</key>
     <string>@HOSTS@</string>
+    <!-- The local model the daemon's own helper and chat use: the one tools/host/ollama-pa-model.sh makes. -->
+    <key>I_INC_OLLAMA_MODEL</key>
+    <string>qwen3-8b-32k</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>

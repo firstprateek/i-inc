@@ -7,9 +7,7 @@ import {
   answer,
   type BrainState,
   brainBudgetFor,
-  brief,
   cloudBrainBudget,
-  emptyState,
   errandsPageExample,
   fold,
   helpPageExample,
@@ -20,9 +18,12 @@ import {
   offlineNotes,
   orientationDoneWhen,
   orientationExpectations,
+  pageProblem,
   runTicket,
   type Ticket,
+  toolsPage,
 } from "../src/index.ts";
+import { json } from "../src/testing/index.ts";
 import { engines, kit, pip, ports, refundsTicket } from "./fixtures.ts";
 
 const orientation = (over: Partial<Ticket> = {}) =>
@@ -55,8 +56,35 @@ function brainWith(initial: Record<string, string> = {}) {
   return { pages, calls, tidy, state };
 }
 
-const helpPage = helpPageExample();
-const errandsPage = errandsPageExample();
+/** Pages a model wrote in its own words: frontmatter, 40+ words, not the example. */
+const duetPage = `---
+title: Duet
+description: What I need to know about the Duet app
+---
+# Duet
+Duet is the couples' finance app. It is a Tauri app with Lit components, and it syncs through the home Mac mini. I read its CLAUDE.md before I touch anything, run the checks before I ask for a review, and never push to main myself. Releases are cut by the owner with the signing key that only the owner holds.
+`;
+const helpPage = `---
+title: How I help at home
+description: What I do for the owner at home and the rules I keep
+---
+# How I help at home
+I look after the home of the owner: the mail, the calendar, the shopping list and the plan for the week. I write drafts, summaries and shortlists, and I never send anything myself. Everything I prepare waits for the owner as a proposal. When I am unsure about a name, a date or an amount I ask instead of guessing. My model runs on the host, so nothing leaves the house.
+## My tools
+- shell: works
+- git: works
+- brain search: works
+- internet and sudo: not available
+`;
+const errandsPage = `---
+title: Errands
+description: How I run an errand from the request to the proposals
+---
+# Errands
+First I read the request and say it back in one line. Then I look in my own brain for what I know, and ask the home tools for the rest. Each outgoing action becomes a proposal: a draft reply, an event, a shortlist or an answer. Then I stop and wait, because the owner decides and nothing goes out by itself.
+## Habits
+- Replies to the school the same day.
+`;
 
 describe("an orientation's done-when is checked", () => {
   it("closes as done when the pages are there", async () => {
@@ -89,10 +117,10 @@ describe("an orientation's done-when is checked", () => {
     // the retry is told what it did not do, with the exact path and the shape to copy
     expect(calls[0]?.brief).not.toContain("did not finish the job");
     expect(calls[1]?.brief).toContain("did not finish the job");
-    expect(calls[1]?.brief).toContain(`you did not write ${homePages.help}`);
+    expect(calls[1]?.brief).toContain(`${homePages.help}: you did not write it in this ticket`);
     expect(calls[1]?.brief).toContain("/home/employee/brain/pip/personal/reference/how-i-help-at-home.md");
     expect(calls[1]?.brief).toContain("## My tools");
-    expect(calls[1]?.brief).not.toContain(`you did not write ${homePages.errands}`);
+    expect(calls[1]?.brief).not.toContain(`${homePages.errands}: you did not write`);
   });
 
   it("goes to needs-you, not done, when the second session misses too, and says why", async () => {
@@ -104,8 +132,8 @@ describe("an orientation's done-when is checked", () => {
     if (r.status !== "needs-you") return;
     expect(r.ask.kind).toBe("stuck");
     const reason = r.ask.kind === "stuck" ? r.ask.reason : "";
-    expect(reason).toContain(`you did not write ${homePages.help}`);
-    expect(reason).toContain(`you did not write ${homePages.errands}`);
+    expect(reason).toContain(`${homePages.help}: you did not write it in this ticket`);
+    expect(reason).toContain(`${homePages.errands}: you did not write it in this ticket`);
     expect(reason).toContain("after 2 sessions");
     expect(p.agent.callsFor("pip", "orient")).toHaveLength(2);
     expect(fold(await p.store.read("o1")).status).toBe("needs-you");
@@ -151,8 +179,7 @@ describe("an orientation's done-when is checked", () => {
 
   it("holds an engineer to a page for each of its projects", async () => {
     const p = ports();
-    const b = brainWith({ personality: "x".repeat(40) });
-    p.brainState = b.state;
+    p.brainState = brainWith().state;
     const t = refundsTicket({
       id: "o2",
       type: "orientation",
@@ -161,15 +188,116 @@ describe("an orientation's done-when is checked", () => {
       assignee: "kit",
       project: "Duet",
     });
-    const r = await runTicket(p, t);
-    // the scripted agent replies with projects/duet as JSON, which counts
-    expect(r).toEqual({ status: "done", outcome: "done" });
+    p.agent.on(
+      { stage: "orient" },
+      { kind: "done", output: json({ edits: [{ page: "projects/duet", text: duetPage }] }) },
+    );
+    expect(await runTicket(p, t)).toEqual({ status: "done", outcome: "done" });
+    // The task names the exact pages.
+    expect(p.agent.callsFor("kit", "orient")[0]?.brief).toContain(
+      "- projects/duet  (the file /home/employee/brain/kit/personal/projects/duet.md)",
+    );
     const ex = orientationExpectations(t, { ...kit, projects: ["Duet", "Listy"] }, false);
     expect(ex.map((e) => e.page)).toEqual(["projects/duet", "projects/listy"]);
-    expect(ex[0]?.met(new Map([["projects/duet-money", "Notes about Duet that are long enough."]]))).toBe(
-      true,
+    expect(ex[0]?.problem(new Map([["projects/duet-money", duetPage]]))).toBeNull();
+    expect(ex[1]?.problem(new Map([["projects/duet", duetPage]]))).toMatch(
+      /^projects\/listy: you did not write/,
     );
-    expect(ex[1]?.met(new Map([["projects/duet", "Notes about Duet that are long enough."]]))).toBe(false);
+  });
+
+  it("for an engineer with no named project, expects a page for each project the company has", async () => {
+    const p = ports();
+    p.company.projects.push("Duet", "Listy");
+    p.brainState = brainWith().state;
+    const t = refundsTicket({
+      id: "o3",
+      type: "orientation",
+      effort: "low",
+      doneWhen: [],
+      assignee: "kit",
+      project: "General",
+    });
+    const r = await runTicket(p, t);
+    // the default scripted reply writes projects/general, which is neither
+    expect(r.status).toBe("needs-you");
+    const brief = p.agent.callsFor("kit", "orient")[0]?.brief ?? "";
+    expect(brief).toContain("projects/duet");
+    expect(brief).toContain("projects/listy");
+  });
+
+  it("for an engineer in a company with no project at all, expects reference/my-tools, not 'any page'", async () => {
+    const t = refundsTicket({ type: "orientation", project: "General" });
+    const ex = orientationExpectations(t, { ...kit }, false);
+    expect(ex.map((e) => e.page)).toEqual([toolsPage]);
+    expect(ex[0]?.problem(new Map([["tools/anything", duetPage]]))).toContain(
+      "you did not write it in this ticket",
+    );
+    expect(ex[0]?.problem(new Map([[toolsPage, duetPage]]))).toBeNull();
+  });
+
+  it("sends the ticket to needs-you, not done, when the brain can't be read", async () => {
+    const p = ports();
+    p.brainState = { pages: async () => null, tidyLeft: async () => null };
+    const r = await runTicket(p, orientation());
+    expect(r.status).toBe("needs-you");
+    expect(r.status === "needs-you" && r.ask.kind === "stuck" && r.ask.reason).toContain("could not be read");
+    // another session would not help, so it did not run one more
+    expect(p.agent.callsFor("pip", "orient")).toHaveLength(1);
+    expect(fold(await p.store.read("o1")).outcome).toBeNull();
+  });
+
+  it("sends a tidy-up whose brain can't be read to needs-you too", async () => {
+    const p = ports();
+    p.brainState = { pages: async () => null, tidyLeft: async () => null };
+    const t = refundsTicket({ id: "t9", type: "tidy", project: "General", doneWhen: [], assignee: "kit" });
+    expect((await runTicket(p, t)).status).toBe("needs-you");
+  });
+});
+
+describe("what makes a page count", () => {
+  const exp = () => orientationExpectations({ project: "Home" }, pip, true);
+  const help = (text: string) => exp()[0]?.problem(new Map([[homePages.help, text]]));
+  const errands = (text: string) => exp()[1]?.problem(new Map([[homePages.errands, text]]));
+
+  it("accepts a page in the model's own words", () => {
+    expect(help(helpPage)).toBeNull();
+    expect(errands(errandsPage)).toBeNull();
+  });
+
+  it("wants frontmatter with a title and a description", () => {
+    const body = helpPage.split("---\n").slice(2).join("---\n");
+    expect(help(body)).toContain("no frontmatter with a title and a description");
+    expect(help(helpPage.replace(/description:.*\n/, ""))).toContain("title and a description");
+    expect(help(helpPage.replace(/title:.*\n/, ""))).toContain("title and a description");
+    expect(pageProblem(helpPage, homePages.help)).toBeNull();
+  });
+
+  it("wants at least 40 words of body", () => {
+    const short =
+      "---\ntitle: x\ndescription: y\n---\n# How I help\nI help at home. My tools: shell works.\n";
+    expect(help(short)).toMatch(/body is \d+ words, under 40/);
+  });
+
+  it("refuses repeated TODO placeholders", () => {
+    const todo = helpPage.replace("I look after", "TODO TODO I look after");
+    expect(help(todo)).toContain("TODO placeholders");
+    // one is a note, not a placeholder page
+    expect(help(helpPage.replace("I look after", "TODO check this. I look after"))).toBeNull();
+  });
+
+  it("refuses the example copied as it is, even with its tools section filled in", () => {
+    expect(help(helpPageExample())).toContain("the example copied as it is");
+    expect(errands(errandsPageExample())).toContain("the example copied as it is");
+    const withTools = helpPageExample().replace("- shell: works", "- shell: works (ran date)");
+    expect(help(withTools)).toContain("the example copied as it is");
+  });
+
+  it("wants the tools section on the help page", () => {
+    expect(help(helpPage.replace("## My tools", "## Other"))).toContain('"My tools" section');
+  });
+
+  it("is not satisfied by a page left from an earlier run (the port only hands on this ticket's pages)", () => {
+    expect(exp()[0]?.problem(new Map())).toBe(`${homePages.help}: you did not write it in this ticket`);
   });
 });
 
@@ -223,28 +351,97 @@ describe("a PA's orientation and brief", () => {
     expect(task.length / 4).toBeLessThan(800);
   });
 
-  it("is what the PA's orient session is given, with the done-when list and the offline section", async () => {
+  it("is what the PA's orient session is given, with the done-when list", async () => {
     const p = ports();
     await runTicket(p, orientation());
     const sent = p.agent.callsFor("pip", "orient")[0]?.brief ?? "";
     expect(sent).toContain("This is your orientation, Pip");
     expect(sent).toContain(`your brain has the page ${homePages.help}`);
-    expect(sent).toContain("NO internet, no sudo");
+  });
+});
+
+describe("the offline note", () => {
+  it("says what the machine lacks, and matches the image: gh and docker are there but unusable", () => {
+    const n = offlineNotes("pip");
+    expect(n).toContain("NO internet, no sudo and no root");
+    expect(n).toContain("apt, npm install, pip");
+    expect(n).toContain("gh and docker are installed but cannot be used: they need the internet");
+    expect(n).toContain("Not available at all: sudo, apt, python, a browser");
+    expect(n).not.toContain("do NOT have: sudo, apt, docker, gh");
+    expect(n).toContain("/home/employee/brain/pip/personal/");
+    // about 200 tokens
+    expect(n.length / 4).toBeLessThan(300);
   });
 
-  it("puts the offline section in every PA brief, and in nobody else's", () => {
-    const t = refundsTicket({ type: "errand", project: "Home", assignee: "pip" });
-    const forPip = brief(t, "work", emptyState(), "Do the errand.", [], true, pip);
-    expect(forPip).toContain("Your machine");
-    expect(forPip).toContain("NO internet, no sudo and no root");
-    expect(forPip).toContain("apt, npm install, pip");
-    expect(forPip).toContain("`rg` (ripgrep) may be missing");
-    expect(forPip).toContain('grep -rn "words"');
-    expect(forPip).toContain('/home/employee/brain/pip/.bin/brain search "words"');
-    expect(forPip).toContain("You do NOT have: sudo, apt, docker, gh, python");
-    expect(brief(t, "work", emptyState(), "x", [], true, kit)).not.toContain("NO internet");
-    // the section is short: about 200 tokens
-    expect(offlineNotes("pip").length / 4).toBeLessThan(260);
+  it("names rg only when it is there, and says grep -rn when it isn't", () => {
+    expect(offlineNotes("pip", { rg: true })).toContain('use rg "words" <folder>, or grep -rn');
+    expect(offlineNotes("pip", { rg: true })).toContain("jq, rg)");
+    for (const none of [{}, { rg: false }]) {
+      const n = offlineNotes("pip", none);
+      expect(n).toContain('use: grep -rn "words" <folder>');
+      expect(n).not.toContain("rg");
+    }
+  });
+
+  it("names the brain command only when search works", () => {
+    expect(offlineNotes("pip", { search: true })).toContain(
+      '/home/employee/brain/pip/.bin/brain search "words"',
+    );
+    expect(offlineNotes("pip")).toContain(".bin/brain search");
+    const off = offlineNotes("pip", { search: false });
+    expect(off).not.toContain(".bin/brain search");
+    expect(off).toContain("`brain search` does not work here");
+  });
+});
+
+describe("an errand is done when it proposes something or says why not", () => {
+  const errand = () =>
+    refundsTicket({ id: "e1", type: "errand", project: "Home", doneWhen: [], assignee: "pip" });
+  const proposal = { action: "send-email", summary: "Thursday 4 pm works", to: ["dentist@example.com"] };
+
+  it("accepts proposals", async () => {
+    const p = ports();
+    p.agent.on({ stage: "work" }, { kind: "done", output: json({ proposals: [proposal] }) });
+    const r = await runTicket(p, errand());
+    expect(r.status).toBe("needs-you"); // the proposal waits for the owner, as always
+    expect(p.agent.callsFor("pip", "work")).toHaveLength(1);
+  });
+
+  it("accepts an empty list with a reason", async () => {
+    const p = ports();
+    p.agent.on(
+      { stage: "work" },
+      { kind: "done", output: json({ proposals: [], nothing: "the inbox has no new mail" }) },
+    );
+    expect(await runTicket(p, errand())).toEqual({ status: "done", outcome: "done" });
+    expect(p.agent.callsFor("pip", "work")).toHaveLength(1);
+  });
+
+  it("sends a bare empty result to one more session, then to the owner", async () => {
+    const p = ports();
+    const bare = { kind: "done" as const, output: json({ proposals: [] }) };
+    p.agent.on({ stage: "work" }, bare, bare);
+    const r = await runTicket(p, errand());
+    expect(r.status).toBe("needs-you");
+    expect(r.status === "needs-you" && r.ask.kind === "stuck" && r.ask.reason).toContain(
+      "no proposals and no reason, after 2 sessions",
+    );
+    const calls = p.agent.callsFor("pip", "work");
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.brief).not.toContain("Your last reply had no proposals");
+    expect(calls[1]?.brief).toContain("Your last reply had no proposals and no reason");
+    expect(fold(await p.store.read("e1")).outcome).toBeNull();
+  });
+
+  it("lets the retry make up for it", async () => {
+    const p = ports();
+    p.agent.on(
+      { stage: "work" },
+      { kind: "done", output: json({ proposals: [] }) },
+      { kind: "done", output: json({ proposals: [], nothing: "no mail to answer" }) },
+    );
+    expect(await runTicket(p, errand())).toEqual({ status: "done", outcome: "done" });
+    expect(p.agent.callsFor("pip", "work")).toHaveLength(2);
   });
 });
 

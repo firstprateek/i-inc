@@ -1,0 +1,7 @@
+# The personal assistant's model (T71): qwen3:8b with a 32,768-token window set on the model itself.
+# OpenCode talks to Ollama through the OpenAI-compatible endpoint, which cannot set a window per request, and
+# a prompt that does not fit is cut from the front without an error. A model of its own pins the window
+# whatever Ollama's default is, and touches nothing else on the host (Duet's models keep theirs).
+# Created by tools/host/ollama-pa-model.sh.
+FROM qwen3:8b
+PARAMETER num_ctx 32768

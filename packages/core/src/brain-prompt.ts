@@ -207,7 +207,7 @@ export const cloudBrainBudget: BrainBudget = { mapLines: mapLinesTotal, tokens: 
  */
 export const localBrainBudget: BrainBudget = { mapLines: 40, tokens: 1500, pages: 3 };
 
-/** The context window (tokens) the local engine is set up with: `OLLAMA_CONTEXT_LENGTH` on the host and `limit.context` in OpenCode's config (docs/handoff.md, "Checking a PA works"). */
+/** The context window (tokens) the local engine is set up with: the `qwen3-8b-32k` model (tools/host/ollama-pa-model.sh) and `limit.context` in OpenCode's config (docs/handoff.md, "Checking a PA works"). */
 export const localContextTokens = 32768;
 
 export const brainBudgetFor = (engine: { local: boolean }): BrainBudget =>

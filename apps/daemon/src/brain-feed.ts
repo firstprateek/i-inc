@@ -98,6 +98,8 @@ export interface SyncReport {
   kept: string[];
   /** The `brain search` command works in that sandbox (false when its Node can't do SQLite FTS5). */
   search?: boolean;
+  /** ripgrep is on that sandbox's path (absent: not known yet). */
+  rg?: boolean;
   detail?: string;
 }
 
@@ -109,6 +111,8 @@ interface Delivered {
   pending: string[];
   /** `brain search` works in that sandbox. */
   search: boolean;
+  /** ripgrep is on the sandbox's path (absent: not known, e.g. after a restart). */
+  rg?: boolean;
 }
 
 interface Built {
@@ -242,6 +246,22 @@ export class BrainFeed {
     const tree = this.o.store.tree(repo);
     this.trees.set(k, { head, tree });
     return tree;
+  }
+
+  /** What each employee's machine was last seen to have (from the last copy made or checked). */
+  private readonly toolsSeen = new Map<string, { search: boolean; rg: boolean | undefined }>();
+  private seen(employeeId: string, report: SyncReport): SyncReport {
+    this.toolsSeen.set(employeeId, { search: report.search !== false, rg: report.rg });
+    return report;
+  }
+
+  /**
+   * Which of the tools a PA's brief names its machine has, as last seen: `brain search` unless it was found not to
+   * work, `rg` only if it was seen (unknown counts as missing: the brief says to use `grep -rn` then).
+   */
+  toolsOf(employeeId: string): { search: boolean; rg: boolean } {
+    const t = this.toolsSeen.get(employeeId);
+    return { search: t?.search ?? true, rg: t?.rg === true };
   }
 
   /** The files an employee's copy holds right now, with their ids. Cached until a repo changes. */
@@ -494,12 +514,26 @@ export class BrainFeed {
 
       if (last && last.snap.id === b.snap.id && last.pending.length === 0) {
         if (now - last.verifiedAt < (this.o.verifyEveryMs ?? 5 * 60_000)) {
-          return { ok: true, how: "current", id: b.snap.id, kept: [], search: last.search };
+          return this.seen(employeeId, {
+            ok: true,
+            how: "current",
+            id: b.snap.id,
+            kept: [],
+            search: last.search,
+            ...(last.rg !== undefined ? { rg: last.rg } : {}),
+          });
         }
         const v = parseApply(...(await this.verify(employeeId, root, b.snap.id)));
         if (v.kind === "current") {
           this.delivered.set(key, { ...last, verifiedAt: now });
-          return { ok: true, how: "current", id: b.snap.id, kept: [], search: last.search };
+          return this.seen(employeeId, {
+            ok: true,
+            how: "current",
+            id: b.snap.id,
+            kept: [],
+            search: last.search,
+            ...(last.rg !== undefined ? { rg: last.rg } : {}),
+          });
         }
       }
 
@@ -574,6 +608,7 @@ export class BrainFeed {
         verifiedAt: now,
         pending: [...kept].sort(),
         search: result.search,
+        ...(result.rg !== undefined ? { rg: result.rg } : last?.rg !== undefined ? { rg: last.rg } : {}),
       };
       this.delivered.set(key, delivered);
       this.o.db.run(
@@ -594,7 +629,15 @@ export class BrainFeed {
         );
       }
       this.keptLogged.set(key, said);
-      return { ok: true, how, id: b.snap.id, sent, kept: delivered.pending, search: result.search };
+      return this.seen(employeeId, {
+        ok: true,
+        how,
+        id: b.snap.id,
+        sent,
+        kept: delivered.pending,
+        search: result.search,
+        ...(delivered.rg !== undefined ? { rg: delivered.rg } : {}),
+      });
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e);
       this.log(`couldn't copy ${employeeId}'s brain: ${detail}`);

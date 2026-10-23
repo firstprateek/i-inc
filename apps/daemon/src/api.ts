@@ -1932,11 +1932,24 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       "POST",
       "/api/employees/:id/orientation",
       async (_req, { id = "" }) => {
+        const mine = d.tickets
+          .all()
+          .filter((r) => r.ticket.type === "orientation" && r.ticket.assignee === id);
         let who: Employee;
         try {
           who = d.registry.employee(id);
         } catch {
-          return json({ error: `no employee ${id}` }, 404);
+          // Someone who worked here and has left (they have tickets) is a conflict; a name nobody ever had is not found.
+          return mine.length || d.tickets.all().some((r) => r.ticket.assignee === id)
+            ? json({ error: `${id} has left, so there is no orientation to file` }, 409)
+            : json({ error: `no employee ${id}` }, 404);
+        }
+        // Asking again while one is open (running, or waiting for you) gives that one back, not a second.
+        for (const r of mine) {
+          const st = await daemon.state(r.ticket.id);
+          if (st.status !== "done" && st.status !== "failed") {
+            return json({ orientation: r.ticket.id, existing: true }, 200);
+          }
         }
         d.knowledge.ensureBrain(who);
         const orientation = fileOrientation(who);

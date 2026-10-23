@@ -147,6 +147,8 @@ export interface ApplyResult {
   kind: "synced" | "current" | "need-full" | "failed";
   /** `brain search` works in that sandbox. */
   search: boolean;
+  /** ripgrep is on the sandbox's path. Said only by a copy that was applied; absent otherwise. */
+  rg?: boolean;
   applied?: number;
   removed?: number;
   /** Files whose local edits were kept (they differ from the baseline). */
@@ -162,7 +164,14 @@ export function parseApply(code: number, output: string): ApplyResult {
   const synced = lines.find((l) => l.startsWith("@@synced "));
   if (code === 0 && synced) {
     const n = (k: string) => Number(new RegExp(`${k}=(\\d+)`).exec(synced)?.[1] ?? 0);
-    return { kind: "synced", applied: n("applied"), removed: n("removed"), kept, search };
+    return {
+      kind: "synced",
+      applied: n("applied"),
+      removed: n("removed"),
+      kept,
+      search,
+      rg: lines.some((l) => l.startsWith("@@tool rg")),
+    };
   }
   if (code === 0 && lines.some((l) => l.startsWith("@@current"))) return { kind: "current", kept, search };
   const fail = lines.find((l) => l.startsWith("@@fail "));

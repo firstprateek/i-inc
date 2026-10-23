@@ -74,6 +74,23 @@ export interface ConverseResult {
 const defaultSocket = (url: string, headers: Record<string, string>): SocketLike =>
   new WebSocket(url, { headers } as never) as unknown as SocketLike;
 
+/**
+ * Why this daemon address may not be used, or null. The bearer token goes in every request, so it only goes over
+ * https, or over http to this machine.
+ */
+export function urlProblem(url: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return `${url} is not a web address`;
+  }
+  if (u.protocol === "https:") return null;
+  const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(u.hostname);
+  if (u.protocol === "http:" && loopback) return null;
+  return `the token would be sent in the clear to ${u.host}: use https, or http to 127.0.0.1`;
+}
+
 /** Runs one message through one employee and resolves when the turn ends. Never rejects. */
 export async function converse(o: ConverseOptions): Promise<ConverseResult> {
   const sink = o.out ?? ((t: string) => void process.stdout.write(t));
@@ -91,6 +108,11 @@ export async function converse(o: ConverseOptions): Promise<ConverseResult> {
     inputTokens: 0,
     outputTokens: 0,
   };
+  const bad = urlProblem(o.baseUrl);
+  if (bad) {
+    out(`${bad}\n`);
+    return { ...result, code: 2, status: "unreachable", detail: bad };
+  }
   let socket: SocketLike | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -267,15 +289,7 @@ export async function converse(o: ConverseOptions): Promise<ConverseResult> {
       `\n\nturn: ${end.status}${end.detail ? ` (${end.detail})` : ""} · parts: ${result.parts} · tokens: ${result.inputTokens} in, ${result.outputTokens} out · conversation ${conv.id}${o.keep ? " (kept)" : ""}\n`,
     );
 
-    // 4. Put it away.
-    if (!o.keep) {
-      const arch = await fetchFn(`${base}/api/conversations/${conv.id}`, {
-        method: "PATCH",
-        headers: { ...auth, "content-type": "application/json" },
-        body: JSON.stringify({ archived: true }),
-      }).catch(() => undefined);
-      if (!arch?.ok) out("(the conversation could not be archived; it stays in the list)\n");
-    }
+    // 4. Put it away (in the `finally` below, so a failure on the way puts it away too).
     return result;
   } catch (e) {
     result.detail = e instanceof Error ? e.message : String(e);
@@ -286,6 +300,15 @@ export async function converse(o: ConverseOptions): Promise<ConverseResult> {
     try {
       socket?.close();
     } catch {}
+    // Whatever happened after the conversation was made, it is put away unless the owner asked to keep it.
+    if (result.conversation && !o.keep) {
+      const arch = await fetchFn(`${base}/api/conversations/${result.conversation}`, {
+        method: "PATCH",
+        headers: { ...auth, "content-type": "application/json" },
+        body: JSON.stringify({ archived: true }),
+      }).catch(() => undefined);
+      if (!arch?.ok) out("(the conversation could not be archived; it stays in the list)\n");
+    }
   }
 }
 
@@ -334,6 +357,8 @@ export function parseArgs(argv: string[]): Parsed | string {
   if (!p.employee) return "--employee is required";
   if (!p.message) return "a message is required";
   if (!Number.isFinite(p.timeoutMs) || p.timeoutMs <= 0) return "--timeout is a number of seconds";
+  const bad = urlProblem(p.url);
+  if (bad) return bad;
   return p;
 }
 

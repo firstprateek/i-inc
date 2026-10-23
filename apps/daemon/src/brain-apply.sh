@@ -90,6 +90,7 @@ apply() {
     if [ -z "$head" ] || [ "$head" = "$old" ]; then git update-ref HEAD "$ci"; git reset -q; fi
   fi
   node -e 'const {DatabaseSync}=require("node:sqlite");const d=new DatabaseSync(":memory:");d.exec("create virtual table t using fts5(x)")' >/dev/null 2>&1 || echo "@@warn no-search"
+  command -v rg >/dev/null 2>&1 && echo "@@tool rg"
   cp "$tmp/meta.json" .snapshot.json
   printf '%s' "$NEW" > .snapshot.id
   sort -u "$tmp/kept" | sed 's/^/@@kept /'

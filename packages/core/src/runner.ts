@@ -185,13 +185,44 @@ export async function answer(
 const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
   // An errand (spec §7): the PA works through the home tools and hands back proposals.
   async work(c) {
+    if (c.s.lastAnswer?.answer === "reject") {
+      await c.emit(failed(c, "work", "the owner declined to keep going"));
+      return;
+    }
+    const last = c.s.doneWhen.last;
+    const task =
+      'Do the errand with the home tools. Send nothing yourself. Reply as JSON: {"proposals":[{"action","summary","to"?,"invitesOthers"?}]}. If the errand needs no outgoing action, say why: {"proposals":[],"nothing":"<the reason>"}.';
     const out = await session(
       c,
       "build",
       c.builder,
-      'Do the errand with the home tools. Send nothing yourself. Reply as JSON: {"proposals":[{"action","summary","to"?,"invitesOthers"?}]}.',
+      last && !last.met
+        ? `${task}\n\nYour last reply had no proposals and no reason. List the proposals, or give the reason nothing is needed in "nothing". An empty list alone is not an answer.`
+        : task,
     );
-    if (out !== null) await c.emit(checkpoint(c, "work", out), finished(c, "work"));
+    if (out === null) return;
+    // An empty result alone is how a model that did nothing looks. The errand is done when it proposes something
+    // or says why nothing is needed; a bare empty reply gets one more session, then goes to the owner.
+    const reply = parseJson<unknown>(out);
+    const proposals = readProposals(reply);
+    const nothing = isRecord(reply) && typeof reply.nothing === "string" ? reply.nothing.trim() : "";
+    if (proposals !== null && proposals.length === 0 && !nothing) {
+      const misses = c.s.doneWhen.misses + 1;
+      const at = c.p.clock.now();
+      await c.emit(
+        { type: "done-when-checked", at, stage: "work", met: false, missing: ["no proposals and no reason"] },
+        ...(misses >= maxMisses
+          ? [
+              needsYou(c, "work", {
+                kind: "stuck",
+                reason: `${c.builder.name} finished the errand with no proposals and no reason, after ${misses} sessions`,
+              }),
+            ]
+          : []),
+      );
+      return;
+    }
+    await c.emit(checkpoint(c, "work", out), finished(c, "work"));
   },
 
   async proposals(c) {
@@ -235,11 +266,17 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
       return;
     }
     const home = isHomeEmployee(c.builder);
-    const expected = orientationExpectations(c.ticket, c.builder, home);
+    const expected = orientationExpectations(c.ticket, c.builder, home, c.p.company.projectIds?.() ?? []);
     const last = c.s.doneWhen.last;
-    const redo = last && !last.met ? expected.filter((e) => last.missing.includes(e.missing)) : [];
+    const redo =
+      last && !last.met
+        ? expected
+            .map((e) => ({ e, problem: last.missing.find((m) => m.startsWith(`${e.page}:`)) }))
+            .filter((x): x is { e: (typeof expected)[number]; problem: string } => x.problem !== undefined)
+            .map((x) => ({ problem: x.problem, how: x.e.how }))
+        : [];
     const task = [
-      home ? homeOrientationTask(c.builder) : engineerOrientationTask(pageRules),
+      home ? homeOrientationTask(c.builder) : engineerOrientationTask(c.builder, expected, pageRules),
       ...(redo.length ? [orientationFeedback(redo)] : []),
     ].join("\n\n");
     const out = await session(c, "build", c.builder, task);
@@ -249,15 +286,18 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     const at = c.p.clock.now();
     // What the agent wrote in its brain copy is collected now, so the check sees it (and the harvest at the end
     // of the ticket finds nothing more to do). Pages it sent back as JSON count as written too.
-    const have = await c.p.brainState?.pages(c.builder.id, c.ticket.id);
-    let unmet: string[] | null = null;
-    if (have) {
-      const pages = new Map([
-        ...have,
-        ...Object.entries(c.s.brainProposed),
-        ...edits.map((e): [string, string] => [e.page, e.text]),
-      ]);
-      unmet = expected.filter((e) => !e.met(pages)).map((e) => e.missing);
+    let unmet: Unmet = "skip";
+    if (c.p.brainState) {
+      const have = await c.p.brainState.pages(c.builder.id, c.ticket.id);
+      if (have === null) unmet = "unreadable";
+      else {
+        const pages = new Map([
+          ...have,
+          ...Object.entries(c.s.brainProposed),
+          ...edits.map((e): [string, string] => [e.page, e.text]),
+        ]);
+        unmet = expected.map((e) => e.problem(pages)).filter((m): m is string => m !== null);
+      }
     }
     await closeIfDone(
       c,
@@ -566,8 +606,8 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     if (out === null) return;
     // What the librarian changed in its copy is collected now, then the report is made again: the ticket is
     // done when nothing it listed is left (the pages unused for 60 days may stay if they are worth keeping).
-    const left = (await c.p.brainState?.tidyLeft(c.builder.id, c.ticket.id)) ?? null;
-    await closeIfDone(c, "tidy", left, [checkpoint(c, "tidy", out)], "the tidy-up");
+    const left = c.p.brainState ? await c.p.brainState.tidyLeft(c.builder.id, c.ticket.id) : "skip";
+    await closeIfDone(c, "tidy", left ?? "unreadable", [checkpoint(c, "tidy", out)], "the tidy-up");
   },
 
   // The retro (spec §6, stage 11): builder and reviewer each propose 0-2 knowledge edits.
@@ -849,21 +889,33 @@ async function wantHelper(c: Step, duty: HelperDuty): Promise<void> {
 /** How many sessions an orientation or tidy-up gets to meet its done-when before it goes to the owner. */
 const maxMisses = 2;
 
+/** What a done-when check found: what is missing, nothing to check against ("skip"), or a brain it could not read. */
+type Unmet = string[] | "skip" | "unreadable";
+
 /**
- * Closes an orientation or tidy-up only when its done-when is met. `unmet` is what the check found missing, or
- * null when it can't tell (no brain to look at: the ticket closes as it always did). The first miss runs the
- * stage once more, with what is missing in its brief; the second goes to the owner as a Needs you card with the
- * reason, never to done (spec §6).
+ * Closes an orientation or tidy-up only when its done-when is met. "skip" means there is no brain to look at (a
+ * demo, a test): the ticket closes as it always did. A brain that can't be read goes straight to the owner, since
+ * another session would not help. A miss runs the stage once more, with what is wrong in its brief; the second
+ * goes to the owner as a Needs you card with the reason, never to done (spec §6).
  */
 async function closeIfDone(
   c: Step,
   stage: "orient" | "tidy",
-  unmet: string[] | null,
+  unmet: Unmet,
   before: TicketEvent[],
   what: string,
 ): Promise<void> {
   const at = c.p.clock.now();
-  if (unmet !== null && unmet.length > 0) {
+  if (unmet === "unreadable") {
+    const reason = `${c.builder.name}'s brain could not be read to check ${what}, so it is not marked done`;
+    await c.emit(
+      ...before,
+      { type: "done-when-checked", at, stage, met: false, missing: ["the brain could not be read"] },
+      needsYou(c, stage, { kind: "stuck", reason }),
+    );
+    return;
+  }
+  if (unmet !== "skip" && unmet.length > 0) {
     const misses = c.s.doneWhen.misses + 1;
     const reason = `${c.builder.name} says ${what} is done, but ${unmet.join("; ")}${
       misses >= maxMisses ? `, after ${misses} sessions` : ""
@@ -877,7 +929,7 @@ async function closeIfDone(
   }
   await c.emit(
     ...before,
-    ...(unmet === null
+    ...(unmet === "skip"
       ? []
       : [{ type: "done-when-checked", at, stage, met: true, missing: [] } as TicketEvent]),
     finished(c, stage),

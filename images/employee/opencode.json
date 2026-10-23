@@ -1,17 +1,27 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "enabled_providers": ["ollama"],
-  "model": "ollama/qwen3:8b",
+  "model": "ollama/qwen3-8b-32k",
   "share": "disabled",
   "autoupdate": false,
   "provider": {
     "ollama": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "Ollama on the host, through the relay on the machines' gateway",
-      "options": { "baseURL": "http://192.168.64.1:11434/v1" },
+      "options": {
+        "baseURL": "http://192.168.64.1:11434/v1"
+      },
       "models": {
-        "qwen3:8b": { "name": "qwen3 8B", "limit": { "context": 32768, "output": 4096 } },
-        "qwen2.5-coder:14b": { "name": "qwen2.5-coder 14B", "limit": { "context": 32768, "output": 4096 } }
+        "qwen3-8b-32k": {
+          "name": "qwen3 8B (32k window)",
+          "limit": {
+            "context": 32768,
+            "output": 4096
+          }
+        },
+        "qwen2.5-coder:14b": {
+          "name": "qwen2.5-coder 14B"
+        }
       }
     }
   }

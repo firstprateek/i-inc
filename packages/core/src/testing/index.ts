@@ -280,12 +280,17 @@ function defaultOutcome(r: SessionRequest): SessionOutcome {
   if (r.duty === "review") return done(json({ approved: true, findings: [] }));
   if (r.stage === "review") return done(json({ disputed: null }));
   if (r.stage === "report") return done("What changed: refunds are subtracted from spending.");
-  if (r.stage === "work") return done(json({ proposals: [] }));
+  if (r.stage === "work") return done(json({ proposals: [], nothing: "nothing to prepare" }));
   if (r.stage === "retro") return done(json({ edits: [] }));
   if (r.stage === "orient") {
     return done(
       json({
-        edits: [{ page: `projects/${r.ticket.project.toLowerCase()}`, text: "Read the CLAUDE.md first." }],
+        edits: [
+          {
+            page: `projects/${r.ticket.project.toLowerCase()}`,
+            text: `---\ntitle: ${r.ticket.project}\ndescription: What to know before working on ${r.ticket.project}\n---\n# ${r.ticket.project}\nRead the CLAUDE.md first. It says how the project is built and tested, which checks must pass before a review, where the specification lives, and which paths only the owner may change. Run the checks locally, keep commits small, and never push to main yourself: the daemon does that after the review.\n`,
+          },
+        ],
       }),
     );
   }
@@ -371,6 +376,11 @@ export class FakeCompany implements Company {
   private readonly engineMap = new Map<Id, Engine>();
   /** The owner's contacts, for outbound rules. */
   readonly contacts: string[] = [];
+  /** The company's project ids (what an engineer with no project named writes pages for). */
+  readonly projects: string[] = [];
+  projectIds(): string[] {
+    return this.projects;
+  }
   /**
    * Every project's policy. The fakes default to the owner-merges flow most tests were written for;
    * direct-mode tests set `mode: "direct"`.

@@ -10,7 +10,7 @@
 // Everything the sandbox walls decide stays where it was: the launch is `machineLaunch`, which checks
 // the walls and passes credentials by environment only.
 
-import { type BrainUse, brainBudgetFor, type Engine, type Id, offlineNotes } from "@i-inc/core";
+import { type BrainUse, brainBudgetFor, type Engine, type Id } from "@i-inc/core";
 import type { AgentInfo, Message } from "@microsoft/agent-host-protocol";
 import {
   bypassMode,
@@ -78,10 +78,10 @@ export interface SessionHostOptions {
   /** Is this employee still here? A conversation of one who left is suspended at the next sweep. */
   employeeKnown?: (employeeId: Id) => boolean;
   /**
-   * Is this employee a personal assistant? Its turns carry a short note on what its machine has and hasn't (no
-   * internet, no sudo, no installs), because a small local model that isn't told tries `sudo apt install`.
+   * For a personal assistant, a short note on what its machine has and hasn't (no internet, no sudo, no installs),
+   * added to every turn: a small local model that isn't told tries `sudo apt install`. Absent or "" for anyone else.
    */
-  isHome?: (employeeId: Id) => boolean;
+  homeNotes?: (employeeId: Id) => string;
   /** The reasoning effort Codex is asked for. */
   effort?: (employeeId: Id) => string;
   /**
@@ -388,7 +388,7 @@ export class SessionHost implements AgentBackend {
       blocks = [{ type: "text", text: this.continuationBrief(live, run.message) }, ...blocks.slice(1)];
     }
     // The brain goes in after the owner's message, as its own block.
-    const home = this.o.isHome?.(live.info.employeeId) ? offlineNotes(live.info.employeeId) : "";
+    const home = this.o.homeNotes?.(live.info.employeeId) ?? "";
     const extra = [brain.text, home].filter(Boolean).join("\n\n");
     if (extra) blocks = [blocks[0] as Json, { type: "text", text: extra }, ...blocks.slice(1)];
     // What a ticket did to the branch while this conversation was away, said once, ahead of everything.

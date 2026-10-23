@@ -298,6 +298,8 @@ export interface Company {
   isContact?(address: string): boolean;
   /** How a project's work reaches main. Absent: the default (direct). */
   projectPolicy?(project: string): ProjectPolicy;
+  /** The company's projects, by id: what an engineer with no project named in its hiring writes pages for. */
+  projectIds?(): string[];
   /** Every engine, so a reviewer can run on a different one from the builder's. */
   engines?(): Engine[];
   /**
@@ -351,8 +353,9 @@ export interface Ports {
 /** The brain as the runner checks it. Each method may return null: it can't tell now, and the check is skipped. */
 export interface BrainState {
   /**
-   * The pages of this employee's own brain, by page (`projects/duet`) with their text, after the pages the
-   * session wrote in its copy have been collected into it.
+   * The pages of this employee's own brain that THIS ticket's sessions wrote or changed, by page (`projects/duet`)
+   * with their text, after what the session wrote in its copy has been collected into the brain. A page left by
+   * an earlier run is not in it. Null: the brain can't be read, and the ticket waits for the owner.
    */
   pages(employeeId: Id, ticketId: Id): Promise<Map<string, string> | null>;
   /** After collecting: what the tidy-up still has to do, as plain lines. Empty: nothing is left. */
