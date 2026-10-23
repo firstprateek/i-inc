@@ -52,6 +52,51 @@ export function readProof(value: unknown): ProofItem[] | null {
   return out;
 }
 
+export type DoneWhenVerdict = "met" | "not-met" | "cant-tell";
+export type DoneWhenItem = { doneWhen: string; verdict: DoneWhenVerdict; evidence: string };
+
+const verdictOf = (v: unknown): DoneWhenVerdict => {
+  const t =
+    typeof v === "string"
+      ? v
+          .toLowerCase()
+          .replace(/[\s_-]+/g, " ")
+          .trim()
+      : "";
+  if (t === "met") return "met";
+  if (t === "not met" || t === "unmet") return "not-met";
+  return "cant-tell";
+};
+
+/** One line: the checker's words go into markdown (the PR body, the report), where a newline could start a heading. */
+export const oneLine = (t: unknown, max = 2000): string => text(t, max).replace(/\s+/g, " ").trim();
+
+/**
+ * The done-when checker's `{"items":[{doneWhen, verdict, evidence}]}`, lined up with the ticket's own done-when
+ * list (T72). An answer belongs to an item only by its exact text (case and spacing aside); never by position, so a
+ * reply that reorders, rewords or skips items cannot put one item's verdict on another. An item with no answer, a
+ * `met` with no evidence, and every item of a reply that cannot be read read as "can't tell": nothing is ever made
+ * done on a guess. The evidence is cut to one line.
+ */
+export function readDoneWhenCheck(value: unknown, expected: string[]): DoneWhenItem[] {
+  const raw = isRecord(value) ? value.items : value;
+  const replied = Array.isArray(raw) ? raw.slice(0, maxItems).filter(isRecord) : [];
+  const norm = (t: string) => t.trim().replace(/\s+/g, " ").toLowerCase();
+  const used = new Set<number>();
+  return expected.map((doneWhen) => {
+    const at = replied.findIndex((r, i) => !used.has(i) && norm(text(r.doneWhen)) === norm(doneWhen));
+    const r = replied[at];
+    if (!r) return { doneWhen, verdict: "cant-tell", evidence: "the checker did not answer for this item" };
+    used.add(at);
+    const evidence = oneLine(r.evidence);
+    const verdict = verdictOf(r.verdict);
+    if (verdict === "met" && !evidence) {
+      return { doneWhen, verdict: "cant-tell", evidence: "the checker said met but gave no evidence" };
+    }
+    return { doneWhen, verdict, evidence };
+  });
+}
+
 /** One review finding; a bad severity becomes "should-fix", and something that isn't an object is dropped. */
 export function readFindings(value: unknown): Finding[] {
   if (!Array.isArray(value)) return [];

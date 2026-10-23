@@ -17,6 +17,7 @@ import {
 import {
   type Duty,
   defaultProjectPolicy,
+  type Effort,
   type Employee,
   type Id,
   type KnowledgeEdit,
@@ -24,14 +25,16 @@ import {
   type Ticket,
 } from "./model.ts";
 import { decideOutbound } from "./outbound.ts";
-import { type Ports, type SessionOutcome, StartupError } from "./ports.ts";
+import { type Ports, type SessionOutcome, StartupError, type WorktreeSnapshot } from "./ports.ts";
 import { assembleReport, type Report, reportMarkdown } from "./report.ts";
 import { planFor, type StageId, type StagePlan } from "./stages.ts";
 import { fold, type TicketState } from "./state.ts";
 import {
+  type DoneWhenItem,
   isRecord,
   nothingMeansNoActionNeeded,
   readDisputed,
+  readDoneWhenCheck,
   readEdits,
   readFollowUps,
   readProof,
@@ -442,6 +445,158 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     );
   },
 
+  // The done-when check (T72): every code ticket's done-when is checked before it closes. Where the prove stage
+  // checked it, this only records that; otherwise a fresh, light, read-only session that is never the builder's
+  // own checks each item. All met: on to the gates. Something not met: the builder fixes it once. Still not met,
+  // or can't tell: the owner, with the result for each item. Nothing is ever marked done on a guess.
+  async "done-when"(c) {
+    if (c.s.lastAnswer?.answer === "reject") {
+      await c.emit(failed(c, "done-when", "the owner declined to keep going"));
+      return;
+    }
+    const items = c.ticket.doneWhen.map((d) => d.trim()).filter(Boolean);
+    const at = c.p.clock.now();
+    if (c.s.fixDue) {
+      const unmet = (c.s.doneCheck?.items ?? []).filter((i) => i.verdict !== "met");
+      const out = await session(
+        c,
+        "build",
+        c.builder,
+        `Your change was checked against the ticket's done-when, and these items are not met or could not be confirmed:\n${unmet
+          .map(
+            (i) =>
+              `- ${i.doneWhen}: ${i.verdict === "not-met" ? "not met" : "can't tell"}${i.evidence ? `, ${i.evidence}` : ""}`,
+          )
+          .join(
+            "\n",
+          )}\nFix what is missing, or make it easy to confirm (a test, a clear change), and keep the checks green. ${
+          c.policy.mode === "direct"
+            ? "Commit your work to the local branch."
+            : "Commit your work: i.inc pushes the branch for the recheck, and the checker reads what is committed."
+        }`,
+      );
+      if (out !== null) await c.emit(checkpoint(c, "done-when", out));
+      return;
+    }
+    if (!items.length) {
+      await c.emit(
+        { type: "done-when-verdict", at, by: null, items: [], retry: false, note: noDoneWhen },
+        finished(c, "done-when", noDoneWhen),
+      );
+      return;
+    }
+    // A prove stage that ran and passed has checked these items already: no second check.
+    const proof = c.s.lastProof;
+    if (c.s.finished.includes("prove") && proof && proof.length > 0 && proof.every((i) => i.pass)) {
+      await c.emit(
+        {
+          type: "done-when-verdict",
+          at,
+          by: null,
+          items: proof.map((i) => ({ doneWhen: i.doneWhen, verdict: "met" as const, evidence: i.evidence })),
+          retry: false,
+          note: "Checked in the prove stage",
+        },
+        finished(c, "done-when", "checked in the prove stage"),
+      );
+      return;
+    }
+    const seat = await doneWhenSeat(c);
+    if (seat === "wait") return;
+    // Owner-merges: a checker in another machine reads the branch from GitHub, so what the builder committed
+    // (the first time, or in the fix) goes there first, by the host (T68). Pushing again is harmless.
+    const ws = c.p.workspace;
+    if (ws?.push && c.policy.mode === "owner-merges" && c.s.pr?.number !== undefined) {
+      try {
+        await ws.push(c.ticket, c.builder);
+      } catch (err) {
+        if (isPassing(err)) throw err;
+        await c.emit(failed(c, "done-when", `couldn't push the branch for the check: ${errorText(err)}`));
+        return;
+      }
+    }
+    const checks = c.s.lastChecks;
+    const guard: Guard = { changed: [], restored: true };
+    const out = await session(
+      c,
+      seat.duty,
+      seat.employee,
+      `Check whether this change meets each done-when item above. Read the diff of this folder against main (\`git diff origin/main\`, committed or not) and whatever else you need, but change no files. The checks ${
+        !checks
+          ? "were not run"
+          : checks.green
+            ? "passed on the builder's last run"
+            : `failed on the builder's last run: ${checks.failures.join("; ")}`
+      }. For each item answer met, not met, or can't tell, with evidence (a file and line, a test, a command's output); say can't tell rather than guess. Be brief. Reply as JSON: {"items":[{"doneWhen":"<the item, word for word>","verdict":"met"|"not met"|"can't tell","evidence":"..."}]}.`,
+      {
+        fresh: true,
+        helperFor: seat.duty,
+        effort: "low",
+        guard,
+        ...(seat.engineId ? { engineId: seat.engineId } : {}),
+      },
+    );
+    if (out === null) return;
+    // "Read-only" is only a request (sessions run with full access), so the worktree is compared before and after.
+    // A checker that changed anything has its changes put back and its answer thrown away: the owner decides.
+    if (guard.changed.length) {
+      const what = `the checker changed files (${guard.changed.slice(0, 5).join(", ")}${guard.changed.length > 5 ? ", ..." : ""}), so its answer is not used${guard.restored ? "; they were put back" : "; they could not be put back, so look at the worktree"}`;
+      const touched: DoneWhenItem[] = items.map((doneWhen) => ({
+        doneWhen,
+        verdict: "cant-tell",
+        evidence: what,
+      }));
+      await c.emit(
+        { type: "done-when-verdict", at, by: seat.employee.id, items: touched, retry: false },
+        { type: "done-when-checked", at, stage: "done-when", met: false, missing: items },
+        needsYou(c, "done-when", {
+          kind: "stuck",
+          reason: `The done-when is not confirmed: ${c.p.company.employee(seat.employee.id).name}, who was checking it, ${what.replace("the checker changed", "changed")}`,
+        }),
+      );
+      return;
+    }
+    const read = parseJson<unknown>(out);
+    const result: DoneWhenItem[] = readDoneWhenCheck(read, items).map((i) =>
+      read === null ? { ...i, evidence: `the checker's reply could not be read${quoteOf(out)}` } : i,
+    );
+    const unmet = result.filter((i) => i.verdict !== "met");
+    const by = seat.employee.id;
+    if (unmet.length === 0) {
+      await c.emit(
+        { type: "done-when-verdict", at, by, items: result, retry: false },
+        { type: "done-when-checked", at, stage: "done-when", met: true, missing: [] },
+        finished(c, "done-when"),
+      );
+      return;
+    }
+    // One fix session for something that is not met; can't tell, or a second miss, is the owner's to look at.
+    const retry = c.s.doneWhen.misses === 0 && unmet.some((i) => i.verdict === "not-met");
+    await c.emit(
+      { type: "done-when-verdict", at, by, items: result, retry },
+      {
+        type: "done-when-checked",
+        at,
+        stage: "done-when",
+        met: false,
+        missing: unmet.map((i) => i.doneWhen),
+      },
+      ...(retry
+        ? []
+        : [
+            needsYou(c, "done-when", {
+              kind: "stuck",
+              reason: `The done-when is not confirmed${c.s.doneWhen.misses > 0 ? " after the builder's fix" : ""}, checked by ${c.p.company.employee(by).name}: ${result
+                .map(
+                  (i) =>
+                    `${i.doneWhen} (${verdictWords[i.verdict]}${i.evidence ? `: ${i.evidence.slice(0, 300)}` : ""})`,
+                )
+                .join("; ")}`,
+            }),
+          ]),
+    );
+  },
+
   async review(c) {
     const r = c.s.review;
 
@@ -710,6 +865,25 @@ async function verifySeat(c: Step): Promise<Seat | "none" | "wait"> {
   return "wait";
 }
 
+const noDoneWhen = "No done-when to check";
+const verdictWords = { met: "met", "not-met": "not met", "cant-tell": "can't tell" } as const;
+
+/**
+ * Who checks the done-when (T72), never the builder's own session: another employee with the verify duty, else one
+ * with the review duty (either may be waited for through the scheduler), else a fresh session in the builder's seat
+ * on a different engine when there is one, else on the builder's own engine with a clean context.
+ */
+async function doneWhenSeat(
+  c: Step,
+): Promise<{ employee: Employee; duty: HelperDuty; engineId?: Id } | "wait"> {
+  for (const duty of ["verify", "review"] as const) {
+    const other = await helper(c, duty);
+    if (other === "wait") return "wait";
+    if (typeof other !== "string") return { employee: other, duty };
+  }
+  return { ...ownSeat(c, "verify"), duty: "verify" };
+}
+
 /** A reviewer or verifier outside direct mode: "exhausted" (no one left who can start) waits. */
 async function helperOrWait(c: Step, duty: HelperDuty): Promise<Employee | "none" | "wait"> {
   const other = await helper(c, duty);
@@ -961,13 +1135,56 @@ async function closeIfDone(
   );
 }
 
+/** What a read-only session changed in the worktree, if anything (see `guardWorktree`). */
+interface Guard {
+  changed: string[];
+  /** Whether those changes were put back. */
+  restored: boolean;
+}
+
+/**
+ * Looks at the worktree again after a read-only session. Anything that differs from before (a file edited, staged,
+ * created or deleted, a commit) is put back exactly, and listed in `guard`; `restored` is true only when the restore
+ * verified. A hiccup worth another tick is thrown, so the check runs again.
+ */
+async function guardWorktree(
+  c: Step,
+  employee: Employee,
+  before: WorktreeSnapshot,
+  guard: Guard,
+): Promise<void> {
+  const ws = c.p.workspace;
+  if (!ws?.snapshot) return;
+  let after: WorktreeSnapshot;
+  try {
+    after = await ws.snapshot(c.ticket, employee);
+  } catch (err) {
+    if (isPassing(err)) throw err;
+    return;
+  }
+  const moved = before.head !== after.head;
+  if (!moved && before.state === after.state) return;
+  let names: string[] = [];
+  try {
+    if (!ws.restore) throw new Error("no way to restore");
+    const r = await ws.restore(c.ticket, employee, before, after);
+    names = r.changed;
+    guard.restored = r.restored;
+  } catch (err) {
+    if (isPassing(err)) throw err;
+    guard.restored = false;
+  }
+  guard.changed = [...(moved ? ["a new commit"] : []), ...names];
+  if (guard.changed.length === 0) guard.changed = ["the worktree"];
+}
+
 /** Runs one session. Returns its output, or null when it paused, switched engine, escalated or failed. */
 async function session(
   c: Step,
   duty: Duty,
   employee: Employee,
   task: string,
-  o: { engineId?: Id; fresh?: boolean; helperFor?: HelperDuty } = {},
+  o: { engineId?: Id; fresh?: boolean; helperFor?: HelperDuty; effort?: Effort; guard?: Guard } = {},
 ): Promise<string | null> {
   const stage = c.s.active as StageId;
   const isAssignee = employee.id === c.ticket.assignee;
@@ -1021,6 +1238,15 @@ async function session(
     const why = await readyHelper(c, employee);
     if (why !== null) return unavailable(why);
   }
+  // A session that must not change the worktree (the done-when check) is measured before it runs.
+  let before: WorktreeSnapshot | undefined;
+  if (o.guard && c.p.workspace?.snapshot && c.s.pr) {
+    try {
+      before = await c.p.workspace.snapshot(c.ticket, employee);
+    } catch (err) {
+      if (isPassing(err)) throw err; // anything else: the look is advisory, the session still runs
+    }
+  }
   const text = o.fresh
     ? freshBrief(c.ticket, stage, task, c.p.harness.describe?.(c.ticket))
     : brief(
@@ -1059,6 +1285,7 @@ async function session(
       employee,
       engine,
       brief: text,
+      ...(o.effort ? { effort: o.effort } : {}),
       ...(signal ? { signal } : {}),
       ...(c.p.agent.reportsLaunch ? { onLaunched: recordStart } : {}),
     });
@@ -1070,7 +1297,10 @@ async function session(
     throw err;
   }
 
-  if (out.kind === "done") return out.output;
+  if (out.kind === "done") {
+    if (o.guard && before) await guardWorktree(c, employee, before, o.guard);
+    return out.output;
+  }
   if (out.kind === "interrupted") {
     await c.emit({ type: "session-interrupted", at: c.p.clock.now(), stage, reason: out.reason });
     return null;

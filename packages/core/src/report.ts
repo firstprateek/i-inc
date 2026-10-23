@@ -4,6 +4,7 @@ import { findEngine } from "./engines.ts";
 import type { Ticket } from "./model.ts";
 import type { Company } from "./ports.ts";
 import type { TicketState } from "./state.ts";
+import { oneLine } from "./validate.ts";
 
 export interface Report {
   /** e.g. "[fix] Refunds are counted as spending · Duet" */
@@ -15,6 +16,15 @@ export interface Report {
   checks: string;
   minutes: number;
   judgment: string;
+  /**
+   * The done-when check, item by item (T72): met, not met or can't tell, with the checker's evidence; `note` says
+   * when nothing was checked ("No done-when to check") or where the result came from. Absent before the check ran.
+   */
+  doneWhen?: {
+    by: string | null;
+    items: { doneWhen: string; verdict: "met" | "not-met" | "cant-tell"; evidence: string }[];
+    note: string | null;
+  };
   /** The ticket's pull request, when it has one. */
   pr: string | null;
 }
@@ -49,6 +59,15 @@ export function assembleReport(ticket: Ticket, s: TicketState, company: Company)
     // Working time: the days a ticket sat failed or paused don't count.
     minutes: Math.round(s.workedMs / 60_000),
     judgment: s.outputs.report ?? "",
+    ...(s.doneCheck
+      ? {
+          doneWhen: {
+            by: s.doneCheck.by ? company.employee(s.doneCheck.by).name : null,
+            items: s.doneCheck.items,
+            note: s.doneCheck.note,
+          },
+        }
+      : {}),
     pr: s.pr?.url ?? null,
   };
 }
@@ -56,7 +75,30 @@ export function assembleReport(ticket: Ticket, s: TicketState, company: Company)
 /** The report as the PR's body: the facts first, then the builder's judgment. */
 export function reportMarkdown(r: Report): string {
   const facts = [r.byline, r.checks, `${r.minutes} ${r.minutes === 1 ? "minute" : "minutes"}`].join(" · ");
-  return [`## ${r.title}`, "", facts, ...(r.engines ? ["", `Engines: ${r.engines}.`] : []), "", r.judgment]
+  return [
+    `## ${r.title}`,
+    "",
+    facts,
+    ...(r.engines ? ["", `Engines: ${r.engines}.`] : []),
+    ...(r.doneWhen ? ["", ...doneWhenLines(r.doneWhen)] : []),
+    "",
+    r.judgment,
+  ]
     .join("\n")
     .trim();
+}
+
+const verdictWords = { met: "met", "not-met": "not met", "cant-tell": "can't tell" } as const;
+
+/** The done-when result as markdown lines for the report: the note alone, or each item with its verdict. */
+function doneWhenLines(d: NonNullable<Report["doneWhen"]>): string[] {
+  if (d.items.length === 0) return [`Done when: ${oneLine(d.note ?? "nothing to check", 500)}.`];
+  return [
+    `Done when${d.by ? ` (checked by ${oneLine(d.by, 200)})` : ""}${d.note ? `: ${oneLine(d.note, 500)}` : ""}`,
+    // One line each: the checker's words must not start a heading or a list of their own in the PR body.
+    ...d.items.map((i) => {
+      const evidence = oneLine(i.evidence);
+      return `- ${oneLine(i.doneWhen)}: ${verdictWords[i.verdict]}${evidence ? `, ${evidence}` : ""}`;
+    }),
+  ];
 }

@@ -4,6 +4,7 @@ import type { TicketEvent } from "./events.ts";
 import type {
   AgentHarness,
   Duty,
+  Effort,
   Employee,
   Engine,
   Id,
@@ -154,6 +155,8 @@ export interface SessionRequest {
   engine: Engine;
   /** Everything a fresh session needs: ticket, plan, progress, last error. See brief.ts. */
   brief: string;
+  /** Reasoning effort for this session when it differs from the ticket's (the done-when check runs at "low"). */
+  effort?: Effort;
   /** Aborted when the owner sends an urgent message: stop at once and return "interrupted". */
   signal?: AbortSignal;
   /**
@@ -289,6 +292,22 @@ export interface Harness {
  * builder's machine and opens a draft PR, so CI runs from the start. The report then goes into the
  * PR, which is marked ready for the owner. Both are safe to repeat after a crash.
  */
+/**
+ * A worktree at a moment (T72): its HEAD commit, and `state`, a fingerprint of everything else (the branch, the
+ * content of every tracked and untracked file, and the index). Two snapshots are the same worktree only when both
+ * are equal; the content, not the names `git status` prints, is what is compared.
+ */
+export interface WorktreeSnapshot {
+  head: string;
+  state: string;
+}
+
+/** What `restore` did: whether the worktree verifiably matches the snapshot again, and which paths had changed. */
+export interface RestoreResult {
+  restored: boolean;
+  changed: string[];
+}
+
 export interface Workspace {
   open(ticket: Ticket, builder: Employee): Promise<PullRequestRef>;
   /**
@@ -304,6 +323,28 @@ export interface Workspace {
    * commit. Never pushes, and never touches a builder's worktree that is already there.
    */
   checkout?(ticket: Ticket, employee: Employee): Promise<void>;
+  /**
+   * The ticket's worktree in `employee`'s machine as it is now. The done-when check (T72) is read-only, but a
+   * session runs with full access, so the runner takes one before and one after, and any difference counts as the
+   * checker having changed files.
+   */
+  snapshot?(ticket: Ticket, employee: Employee): Promise<WorktreeSnapshot>;
+  /**
+   * Puts the worktree back exactly as `before` had it: HEAD, every file's content (edited, staged, created or
+   * deleted, whatever its name), and the index, so the builder's own uncommitted work from before comes back too.
+   * It then looks again, and says `restored` only when the worktree really matches `before`.
+   */
+  restore?(
+    ticket: Ticket,
+    employee: Employee,
+    before: WorktreeSnapshot,
+    after: WorktreeSnapshot,
+  ): Promise<RestoreResult>;
+  /**
+   * Owner-merges: pushes the builder's committed work to the ticket's branch (through the host, since a sandbox
+   * holds no write credentials), so a checker in another machine reads the code as it is now. Safe to repeat.
+   */
+  push?(ticket: Ticket, builder: Employee): Promise<void>;
   ready(ticket: Ticket, pr: PullRequestRef, report: string): Promise<void>;
   /**
    * Where the ticket's PR stands on GitHub. The owner merges it there, then clicks Approve: i.inc

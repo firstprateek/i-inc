@@ -2,7 +2,7 @@
 import type { Decision, Finding, HelperDuty, NeedsYou, TicketEvent } from "./events.ts";
 import type { Id, Proposal, PullRequestRef, TicketAttachment } from "./model.ts";
 import type { StageId } from "./stages.ts";
-import { isRecord, readFindings, text } from "./validate.ts";
+import { isRecord, oneLine, readFindings, text } from "./validate.ts";
 
 export interface SessionRecord {
   stage: StageId;
@@ -104,6 +104,15 @@ export interface TicketState {
    * stage is tried once more, then goes to the owner), and the last result, which the next session is told.
    */
   doneWhen: { misses: number; last: { met: boolean; missing: string[] } | null };
+  /**
+   * The done-when stage's latest per-item result (T72), for the ticket page and the report; null until it has run.
+   * `by` is the employee who checked (null when nobody did: no done-when, or the prove stage already had).
+   */
+  doneCheck: {
+    by: Id | null;
+    items: { doneWhen: string; verdict: "met" | "not-met" | "cant-tell"; evidence: string }[];
+    note: string | null;
+  } | null;
   /** An errand that proposed nothing: why, in its own words, for the owner to read on the ticket. */
   nothingNote: string | null;
   /** Brain pages the agent replied with as JSON, by page: they are applied after the run, but count as written. */
@@ -158,6 +167,7 @@ export function emptyState(): TicketState {
     pr: null,
     prFor: null,
     doneWhen: { misses: 0, last: null },
+    doneCheck: null,
     nothingNote: null,
     brainProposed: {},
     workedMs: 0,
@@ -415,6 +425,23 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
           },
         },
       };
+    case "done-when-verdict": {
+      const items = (Array.isArray(e.items) ? e.items : []).filter(isRecord).map((i) => ({
+        doneWhen: oneLine(i.doneWhen),
+        verdict: i.verdict === "met" || i.verdict === "not-met" ? i.verdict : ("cant-tell" as const),
+        evidence: oneLine(i.evidence),
+      }));
+      return {
+        ...s,
+        interrupted: false,
+        fixDue: e.retry === true,
+        doneCheck: {
+          by: typeof e.by === "string" ? e.by : null,
+          items,
+          note: typeof e.note === "string" ? text(e.note, 500) : null,
+        },
+      };
+    }
     case "reply-flagged":
     case "unreadable":
       return s;
@@ -515,4 +542,13 @@ export function fold(events: TicketEvent[], onSkip?: (event: unknown, why: strin
       return s;
     }
   }, emptyState());
+}
+
+/**
+ * The employee (other than the builder) who is checking the done-when of a ticket in that stage, once their
+ * session has started (T72): they are busy until the stage ends.
+ */
+export function doneWhenChecker(s: TicketState, builder: Id): Id | undefined {
+  if (s.active !== "done-when") return undefined;
+  return s.sessions.findLast((x) => x.stage === "done-when" && x.employeeId !== builder)?.employeeId;
 }

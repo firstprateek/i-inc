@@ -133,4 +133,17 @@ export type TicketEvent =
   /** An errand that proposed nothing and said why (and the reason reads as "no action needed"): shown on the ticket. */
   | { type: "errand-nothing"; at: number; reason: string }
   | { type: "done-when-checked"; at: number; stage: StageId; met: boolean; missing: string[] }
+  /**
+   * The done-when stage's per-item result (T72): who checked, and for each item met, not met or can't tell, with
+   * evidence. `retry` is set when the builder is asked once to fix the unmet items. `note` says why nothing was
+   * checked ("No done-when to check") or where the result came from (the prove stage).
+   */
+  | {
+      type: "done-when-verdict";
+      at: number;
+      by: Id | null;
+      items: { doneWhen: string; verdict: "met" | "not-met" | "cant-tell"; evidence: string }[];
+      retry: boolean;
+      note?: string;
+    }
   | { type: "failed"; at: number; stage: StageId; reason: string; tried: string[] };

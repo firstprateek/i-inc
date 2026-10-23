@@ -10,8 +10,10 @@ import {
   type Employee,
   type ProjectPolicy,
   type PullRequestRef,
+  type RestoreResult,
   type Ticket,
   type Workspace,
+  type WorktreeSnapshot,
 } from "@i-inc/core";
 import type { PullRequests, TokenSource } from "./github.ts";
 import type { RunScript } from "./harness.ts";
@@ -242,6 +244,82 @@ export function checkoutScript(o: {
 }
 
 /**
+ * The worktree's state, by content (T72): HEAD, the branch, a tree of every tracked and untracked file as it is on
+ * disk (a throwaway index and `git add -A`, so the names git quotes, spaces and non-ASCII included, never pass
+ * through a shell or a status line), and the tree of the real index (what is staged). Comparing these is
+ * comparing the worktree: an edit to a file that was already dirty, or a staged change, shows up.
+ */
+function stateLines(): string[] {
+  return [
+    'echo "@@head $(git rev-parse HEAD)"',
+    'echo "@@ref $(git symbolic-ref -q HEAD || echo -)"',
+    'IDX=$(mktemp -u); GIT_INDEX_FILE="$IDX" git add -A >/dev/null 2>&1 || true',
+    'echo "@@work $(GIT_INDEX_FILE="$IDX" git write-tree)"; rm -f "$IDX"',
+    'echo "@@index $(git write-tree 2>/dev/null || echo -)"',
+  ];
+}
+
+export function snapshotScript(worktree: string): string {
+  return ["set -e", `cd ${quote(worktree)}`, ...stateLines(), "echo @@snapshot"].join("\n");
+}
+
+/** Reads `snapshotScript`'s output: HEAD, and the rest as one fingerprint. Null when it did not finish. */
+export function readSnapshot(output: string): WorktreeSnapshot | null {
+  const head = /^@@head ([0-9a-f]{40})$/m.exec(output)?.[1];
+  const ref = /^@@ref (\S+)$/m.exec(output)?.[1];
+  const work = /^@@work ([0-9a-f]{40})$/m.exec(output)?.[1];
+  const index = /^@@index ([0-9a-f]{40}|-)$/m.exec(output)?.[1];
+  if (!head || !ref || !work || !index || !output.includes("@@snapshot")) return null;
+  return { head, state: `${ref} ${work} ${index}` };
+}
+
+/**
+ * Puts the worktree back exactly as a snapshot had it, whatever the session did to it: a commit (undone), edits,
+ * staged changes, files created or deleted, names with spaces or any other character. The builder's own uncommitted
+ * work from before is part of the snapshot, so it comes back too. Nothing is named in the script but hashes: the
+ * content is read back from git's object store, not from paths. It then takes a new snapshot and says `@@restored`
+ * only when that matches; otherwise `@@mismatch`. `@@c` lines name what had changed, for the owner to read.
+ */
+export function restoreScript(o: { worktree: string; head: string; state: string }): string {
+  const [ref, work, index] = o.state.split(" ");
+  const hash = (v: string | undefined) => v !== undefined && /^[0-9a-f]{40}$/.test(v);
+  if (!/^[0-9a-f]{40}$/.test(o.head) || !hash(work) || !(hash(index) || index === "-"))
+    throw new Error(`not a worktree snapshot: ${o.head} ${o.state}`);
+  if (ref !== "-" && !(ref?.startsWith("refs/heads/") && isSafeRefName(ref.slice("refs/heads/".length))))
+    throw new Error(`not a branch: ${ref}`);
+  const branch = ref === "-" ? "" : (ref as string).slice("refs/heads/".length);
+  return [
+    "set -e",
+    `cd ${quote(o.worktree)}`,
+    // What differs now, by name, before anything is put back (git prints odd names quoted; they are for reading).
+    'NOW=$(mktemp -u); GIT_INDEX_FILE="$NOW" git add -A >/dev/null 2>&1 || true',
+    'CUR=$(GIT_INDEX_FILE="$NOW" git write-tree); rm -f "$NOW"',
+    `git -c core.quotePath=false diff-tree -r --name-only ${work} "$CUR" | sed 's/^/@@c /' || true`,
+    ...(branch
+      ? [
+          `if [ "$(git symbolic-ref -q HEAD || true)" != ${quote(ref as string)} ]; then git checkout -q -f ${quote(branch)}; fi`,
+        ]
+      : ["git checkout -q --detach"]),
+    `git reset -q --hard ${o.head}`,
+    "git clean -fdq",
+    `git read-tree --reset -u ${work}`,
+    ...(index === "-" ? [] : [`git read-tree ${index}`]),
+    ...stateLines(),
+    "echo @@snapshot",
+  ].join("\n");
+}
+
+/** Reads `restoreScript`'s output, then compares its closing snapshot with the one it was to restore. */
+export function readRestore(
+  output: string,
+  before: WorktreeSnapshot,
+): { restored: boolean; changed: string[] } {
+  const now = readSnapshot(output);
+  const changed = [...output.matchAll(/^@@c (.+)$/gm)].map((m) => m[1] as string);
+  return { restored: now !== null && now.head === before.head && now.state === before.state, changed };
+}
+
+/**
  * Writes one of the owner's images into the worktree, under `.inc/`, which git is told to ignore
  * (`info/exclude`, so it isn't a change to the repo). One image per script keeps each one small.
  * An image that's already there is left alone: attachments never change.
@@ -462,6 +540,57 @@ export class GitHubWorkspace implements Workspace {
       const tail = r.output.trim().split("\n").slice(-5).join("\n");
       throw new Error(`git in ${employee.name}'s machine failed: ${tail}`);
     }
+  }
+
+  /** The ticket's worktree in the employee's machine, by content (see `snapshotScript`). */
+  async snapshot(ticket: Ticket, employee: Employee): Promise<WorktreeSnapshot> {
+    const r = await this.o.run(employee.id, snapshotScript(this.o.worktree(ticket.id)));
+    const snap = r.code === 0 ? readSnapshot(r.output) : null;
+    if (!snap)
+      throw new Error(`couldn't look at ${employee.name}'s worktree: ${r.output.trim().slice(-200)}`);
+    return snap;
+  }
+
+  /** Puts the worktree back exactly as `before` had it, and verifies it (see `restoreScript`). */
+  async restore(
+    ticket: Ticket,
+    employee: Employee,
+    before: WorktreeSnapshot,
+    _after: WorktreeSnapshot,
+  ): Promise<RestoreResult> {
+    const r = await this.o.run(
+      employee.id,
+      restoreScript({ worktree: this.o.worktree(ticket.id), head: before.head, state: before.state }),
+    );
+    // A script that failed part way did not restore it, whatever it printed before.
+    const verdict = readRestore(r.output, before);
+    return { ...verdict, restored: r.code === 0 && verdict.restored };
+  }
+
+  /**
+   * Owner-merges: the builder's committed work goes to the ticket's branch through the host (a machine holds no
+   * write credentials), so a checker in another machine reads it. Direct mode keeps the branch local: nothing to do.
+   */
+  async push(ticket: Ticket, builder: Employee): Promise<void> {
+    if (this.o.policy?.(ticket.project).mode === "direct") return;
+    const project = this.project(ticket);
+    const { repo } = project;
+    const branch = branchName(ticket);
+    const worktree = this.o.worktree(ticket.id);
+    const head = await this.o.run(builder.id, `git -C ${quote(worktree)} rev-parse HEAD`);
+    const sha = /^[0-9a-f]{40}$/m.exec(head.output)?.[0];
+    if (head.code !== 0 || !sha) throw new Error(`git in ${builder.name}'s machine gave no commit to push`);
+    await pushFromSandbox({
+      host: this.o.host,
+      run: (script) => this.o.run(builder.id, script),
+      worktree,
+      sha,
+      req: { repo, branch, defaultBranch: project.defaultBranch ?? "main", ticket: ticket.id },
+      baseBranches: [project.defaultBranch ?? "main", branch],
+    }).catch((e) => {
+      if (e instanceof HostPushError) throw new Error(`couldn't push ${branch}: ${e.message}`);
+      throw e;
+    });
   }
 
   /** Copies the ticket's images into the worktree: those numbered `ns`, or all of them. */

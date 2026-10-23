@@ -334,8 +334,7 @@ install ripgrep` (no root, no internet), said it could not go on, and the ticket
    no action needed ("the inbox has no new mail"). A reason that mentions an error, a failure, missing tools or access
    ("sudo failed", "no internet", "can't") or that the classifier cannot tell goes to Needs you at once
    (`nothingMeansNoActionNeeded`, core `validate.ts`: a keyword list, unsure means ask).
-   Other ticket types that close without their done-when being checked are in docs/coord.md, T72: **low-effort code
-   tickets** (no `prove` stage) and **tickets where nobody has the verify duty** (`prove` is skipped).
+   Code tickets are covered by T72 (below).
 2. **A PA's orientation was the engineers'** ("a page for each project"; it has none). Now `homeOrientationTask`
    (core `home.ts`): four short jobs, every file's exact path, the page format, and the questions each page answers.
 3. **The brief never said what the machine lacks.** Every PA brief and every turn of a PA's conversation now
@@ -429,6 +428,56 @@ curl -s -X POST -H "Authorization: Bearer $(cat ~/.config/i-inc/web-token)" \
 Asking again while that ticket is open (running, or waiting in Needs you) answers `200` with the same ticket and
 `"existing": true`, so it never files a second. An employee who has left is `409`, a name nobody has is `404`.
 Then read what Pip wrote in Company → Brain (`reference/how-i-help-at-home`, `patterns/errands`).
+
+### Every ticket's done-when is checked (T72)
+
+**What was wrong.** A code ticket could close done with its done-when never checked: low effort has no `prove` stage, and
+medium and high skip `prove` when nobody on the team holds the verify duty.
+
+**What happens now.** Every code ticket plan (both modes, every effort) has a `done-when` stage between the review (or
+the checks, where there is no review) and the gates (core `stages.ts`, `stageSteps["done-when"]` in `runner.ts`):
+
+- **No prove stage, or none that ran:** a light check runs. Its session is a fresh brief (the ticket, the done-when list and
+  the task, no plan or notes), at **low effort**, told to read the diff (`git diff origin/main`) and the checks'
+  result and to change no files. `SessionRequest.effort` is wired in the ACP client (`acp.ts`) for **both** harnesses:
+  Codex's `reasoning_effort` option and the Claude adapter's `effort` option (a `thought_level` config option, offered
+  only for models that support effort). If the model has no `low` level, or the harness offers no effort option, the
+  session starts on its default effort; it never fails to start because of this. It never is the
+  builder's own session: another employee with the verify duty, else one with the review duty (both through the scheduler,
+  like a reviewer), else the builder's seat on a **different engine**, else its own engine with a clean context. It answers
+  per item: `met`, `not met` or `can't tell`, with evidence. An answer belongs to an item by its **exact text** (case and
+  spacing aside) and never by position, so a reordered, reworded or short reply cannot put one item's verdict on another;
+  a reply that cannot be read, an item with no answer, and a `met` with no evidence all read as `can't tell`
+  (`readDoneWhenCheck`, core `validate.ts`). The evidence is cut to one line before it is stored, so it cannot start a
+  heading in the PR body or the report.
+- **Read-only is checked, not trusted.** Sessions run with full access, so the runner takes a snapshot of the checker's
+  worktree before the session and another after (`Workspace.snapshot`, core `runner.ts` `guardWorktree`). A snapshot is
+  by **content**, not by `git status` lines: HEAD, the branch, a tree of every tracked and untracked file as it is on
+  disk (a throwaway index and `git add -A`, so names with spaces or non-ASCII never pass through a shell), and the
+  tree of the real index (what is staged). Any difference counts as "can't tell, the checker changed files". The
+  worktree is then put back **exactly** (`Workspace.restore`, `restoreScript` in `apps/daemon/src/workspace.ts`:
+  `git reset --hard` to the old HEAD, `git clean`, `git read-tree --reset -u` of the old content tree, then the old
+  index), so staged edits, edits to files the builder had already changed, and a commit over a dirty file all come back as
+  they were, the builder's uncommitted work included. It then snapshots again and says "put back" only when that matches
+  the old snapshot; otherwise the card says it could not be put back. The ticket goes to Needs you. (Ignored files,
+  such as `.inc/`, are not covered.)
+- **Owner-merges:** a checker on another machine reads the branch from GitHub, so before the check (and again before the
+  recheck) the daemon pushes the builder's commits through the T68 host push (`Workspace.push`). The builder's fix prompt
+  says to commit; a push that fails fails the ticket. Direct mode keeps the branch local and never pushes for the check.
+- **All met:** the ticket goes on to the gates. **Any not met:** the builder gets one session with the unmet items (a
+  `done-when` stage session on the `build` duty), then the check runs again. **Still not met, or can't tell:** a Needs
+  you "stuck" card with the result for each item; "Keep going" runs the cycle again, "Decline" fails the ticket. Nothing
+  is pushed to main before this passes.
+- **Skipped, with a note:** a ticket with no done-when records "No done-when to check" and runs no session. A ticket whose
+  `prove` stage ran and passed is recorded as "Checked in the prove stage" with the verifier's items, and is not
+  checked a second time.
+- **On the board** the stage's pip and live line say "Checking done-when" (`stageLabel`, core `stages.ts`).
+- **Where you see it:** the `done-when-verdict` event keeps the result (`TicketState.doneCheck`). The ticket page shows
+  each item's verdict and evidence under "What was asked" (`TicketView.doneCheck`), and the report (the board, and the PR
+  body in owner-merges) lists them (`Report.doneWhen`).
+
+The existing check-then-gates run still re-runs the checks after the builder's fix, so a fix that breaks them is caught
+there. Tests: `packages/core/test/done-when-everywhere.test.ts`, `apps/daemon/test/done-when-check.test.ts`.
 
 ### A PA's example pages, and talking to a sleeping sandbox (T74)
 

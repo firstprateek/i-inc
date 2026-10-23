@@ -539,6 +539,7 @@ diff or revert what any employee learned.
 | 5. Prove | a fresh session with the verify duty (e.g. QA) | A black-box check of each done-when item against the running app. Screenshots come from Playwright on the web build, plus test and CLI output, all stored by the harness | every item ✓ with evidence, or ✗ with a reason |
 | 6. Review | another employee with the review duty (same vendor is fine), plus a UX Designer when the UI changed, if you have one | Checks out the branch **in its own machine** and runs it. Returns findings marked blocking, should-fix or nit, each with file:line, and checks the builder's claims against the diff | a verdict |
 | 7. Address | builder | Fixes each finding or replies with why not. Then back to 4, to 5 if the UI changed, and a re-review of **only the changes** | approved, or out of rounds, which goes to you with both sides |
+| 7b. Done-when check | a fresh session that is not the builder's: another employee with the verify duty, else one with the review duty, else the builder's seat on a different engine, else its own engine with a clean context | A short, read-only, low-effort check of each done-when item against the diff and the checks' results: met, not met or can't tell, each with evidence. Skipped, with a note, only when the ticket has no done-when ("No done-when to check"), and recorded without a second check when the prove stage already proved every item. It runs at low effort where the harness has that level, and the worktree is compared before and after: a checker that changed files has them put back, and the ticket goes to you | every item met. Something not met goes back to the builder **once**, with the unmet items; still not met, or can't tell, goes to you with the result for each item, never to done. The result shows on the ticket page under "What was asked", and in the report |
 | 8. Final gates | harness | Rebase on the latest `main`, full checks, GitHub CI green, every done-when ✓, a secret scan, diff-size and protected-path checks | all pass |
 | 9. Report | the builder drafts, the reviewer confirms, the harness fills in the facts | The one-page report becomes the PR body; the PR is marked ready, the ticket moves to Review, and you get a push notification | — |
 | 10. Your decision | you | **Merge on GitHub** (the ticket links to the PR; i.inc looks at the PR about every 5 minutes and closes the ticket as merged by itself once it sees it merged), **Close without merging** (closes the PR, keeps the branch), or Request changes (back to 7 with your note first). Approve alone does not merge, and is refused while the PR is open | — |
@@ -548,7 +549,7 @@ diff or revert what any employee learned.
 
 | Effort | Stages | Review rounds | Gate |
 | --- | --- | --- | --- |
-| Low | 1, 3, 4, 8, 9 | 0 | — |
+| Low | 1, 3, 4, 7b, 8, 9 | 0 | — |
 | Medium | all | 1 | only on risky areas |
 | High | all, with a fresh verifier on a different model | 2 | always |
 

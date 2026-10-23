@@ -25,11 +25,13 @@ import type {
   HelperModel,
   MachineProvider,
   Ports,
+  RestoreResult,
   SandboxStatus,
   SessionOutcome,
   SessionRequest,
   SessionTranscriptItem,
   Workspace,
+  WorktreeSnapshot,
 } from "../ports.ts";
 import type { StageId } from "../stages.ts";
 
@@ -187,6 +189,47 @@ export class FakeWorkspace implements Workspace {
     this.checkedOut.push({ ticketId: ticket.id, employeeId: employee.id });
     this.calls.push(`checkout ${employee.id}`);
   }
+  /** Each machine's worktree: HEAD and changed paths. A test changes one inside a scripted session. */
+  readonly trees = new Map<Id, { head: string; status: string[] }>();
+  /** What `restore` put back, by whose machine. */
+  readonly restored: { employeeId: Id; paths: string[] }[] = [];
+  /** The tickets whose branch was pushed through the host, in order. */
+  readonly pushed: Id[] = [];
+  /** `restore` throws. */
+  failRestore = false;
+  /** `restore` runs but cannot verify that the worktree matches again. */
+  unverified = false;
+  failPush: string | null = null;
+  async snapshot(_ticket: Ticket, employee: Employee): Promise<WorktreeSnapshot> {
+    const t = this.trees.get(employee.id);
+    return { head: t?.head ?? "a".repeat(40), state: (t?.status ?? []).join("\n") };
+  }
+  async restore(
+    _ticket: Ticket,
+    employee: Employee,
+    before: WorktreeSnapshot,
+    after: WorktreeSnapshot,
+  ): Promise<RestoreResult> {
+    if (this.failRestore) throw new Error("restore failed");
+    const had = new Set(before.state.split("\n"));
+    const changed = after.state
+      .split("\n")
+      .filter((line) => line && !had.has(line))
+      .map((line) => line.slice(3).trim());
+    this.restored.push({ employeeId: employee.id, paths: changed });
+    if (!this.unverified) {
+      this.trees.set(employee.id, {
+        head: before.head,
+        status: before.state ? before.state.split("\n") : [],
+      });
+    }
+    return { restored: !this.unverified, changed };
+  }
+  async push(ticket: Ticket, builder: Employee): Promise<void> {
+    if (this.failPush) throw new Error(this.failPush);
+    this.pushed.push(ticket.id);
+    this.calls.push(`push ${builder.id}`);
+  }
   async ready(ticket: Ticket, pr: PullRequestRef, report: string): Promise<void> {
     this.readied.push({ ticketId: ticket.id, pr, report });
   }
@@ -277,6 +320,18 @@ function matches(m: Match, r: SessionRequest): boolean {
 function defaultOutcome(r: SessionRequest): SessionOutcome {
   const done = (output: string): SessionOutcome => ({ kind: "done", output });
   if (r.duty === "plan") return done("Approach: change the sorter and add a test that reproduces the bug.");
+  // The done-when check (T72): every item met, with evidence, unless a test scripts otherwise.
+  if (r.stage === "done-when") {
+    return done(
+      json({
+        items: r.ticket.doneWhen.map((d) => ({
+          doneWhen: d,
+          verdict: "met",
+          evidence: "the diff and a test",
+        })),
+      }),
+    );
+  }
   if (r.duty === "verify") {
     return done(
       json({ items: r.ticket.doneWhen.map((d) => ({ doneWhen: d, pass: true, evidence: "screenshot" })) }),
