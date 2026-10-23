@@ -443,8 +443,8 @@ export class AcpAgent implements Agent {
           await select(
             "thought_level",
             ["reasoning_effort"],
-            `${r.ticket.effort} reasoning effort`,
-            (choices) => choices.find((choice) => choice.value === r.ticket.effort)?.value,
+            `${r.effort ?? r.ticket.effort} reasoning effort`,
+            (choices) => choices.find((choice) => choice.value === (r.effort ?? r.ticket.effort))?.value,
           );
           await select(
             "mode",

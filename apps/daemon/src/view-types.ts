@@ -52,6 +52,16 @@ export interface TicketView {
   effort: string;
   /** What was asked: the ticket's "done when" list, as the owner (or the agent that filed it) wrote it. */
   doneWhen: string[];
+  /**
+   * The done-when check's result, item by item (T72), shown under "What was asked": who checked, and for each item
+   * met, not met or can't tell with evidence. `note` is "No done-when to check" when there was nothing to check.
+   * Absent until the check has run.
+   */
+  doneCheck?: {
+    by: Person | null;
+    items: { doneWhen: string; verdict: "met" | "not-met" | "cant-tell"; evidence: string }[];
+    note: string | null;
+  };
   /** Why it is worth doing, for a follow-up an agent filed. Absent for the owner's tickets. */
   reason?: string;
   assignee: Person | null;

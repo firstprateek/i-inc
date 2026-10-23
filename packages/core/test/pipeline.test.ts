@@ -17,7 +17,17 @@ describe("the happy path", () => {
     expect(result.report.engines).toBeNull();
 
     const s = fold(await p.store.read("42"));
-    expect(s.finished).toEqual(["pickup", "plan", "build", "checks", "prove", "review", "gates", "report"]);
+    expect(s.finished).toEqual([
+      "pickup",
+      "plan",
+      "build",
+      "checks",
+      "prove",
+      "review",
+      "done-when",
+      "gates",
+      "report",
+    ]);
     expect(p.agent.callsFor("quinn", "prove")).toHaveLength(1);
     expect(p.harness.gateRuns).toBe(1);
   });
@@ -26,7 +36,7 @@ describe("the happy path", () => {
     const p = ports();
     await runTicket(p, refundsTicket({ effort: "low" }));
     const s = fold(await p.store.read("42"));
-    expect(s.finished).toEqual(["pickup", "build", "checks", "gates", "report"]);
+    expect(s.finished).toEqual(["pickup", "build", "checks", "done-when", "gates", "report"]);
     expect(p.agent.calls.some((c) => c.employee.id === grace.id)).toBe(false);
   });
 

@@ -452,7 +452,7 @@ export class Daemon {
         if (feed?.enabled) {
           try {
             const st = await this.state(req.ticket.id);
-            const blind = req.stage === "review" || req.stage === "prove";
+            const blind = req.stage === "review" || req.stage === "prove" || req.stage === "done-when";
             const ctx = await feed.forTicket({
               employeeId: req.employee.id,
               sessionId,

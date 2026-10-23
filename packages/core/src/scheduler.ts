@@ -5,7 +5,7 @@ import { UNASSIGNED } from "./board.ts";
 import { findEngine } from "./engines.ts";
 import type { Duty, Employee, Id, StandingOrder, TicketType, WorkingHours } from "./model.ts";
 import type { Company } from "./ports.ts";
-import type { TicketState } from "./state.ts";
+import { doneWhenChecker, type TicketState } from "./state.ts";
 
 export interface BacklogItem {
   id: Id;
@@ -215,7 +215,7 @@ export function occupancy(tickets: Underway[], now: number): { busy: Id[]; holdi
     if ((s.status === "running" && !s.waitingFor) || resumes) busy.add(builder);
     else holding.add(builder);
     const duty = s.active === "review" ? "review" : s.active === "prove" ? "verify" : null;
-    const helper = duty ? s.helpers[duty] : undefined;
+    const helper = duty ? s.helpers[duty] : doneWhenChecker(s, builder);
     if (helper && s.status !== "needs-you") busy.add(helper);
   }
   return { busy: [...busy], holding: [...holding].filter((id) => !busy.has(id)) };

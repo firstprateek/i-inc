@@ -52,6 +52,48 @@ export function readProof(value: unknown): ProofItem[] | null {
   return out;
 }
 
+export type DoneWhenVerdict = "met" | "not-met" | "cant-tell";
+export type DoneWhenItem = { doneWhen: string; verdict: DoneWhenVerdict; evidence: string };
+
+const verdictOf = (v: unknown): DoneWhenVerdict => {
+  const t =
+    typeof v === "string"
+      ? v
+          .toLowerCase()
+          .replace(/[\s_-]+/g, " ")
+          .trim()
+      : "";
+  if (t === "met") return "met";
+  if (t === "not met" || t === "unmet") return "not-met";
+  return "cant-tell";
+};
+
+/**
+ * The done-when checker's `{"items":[{doneWhen, verdict, evidence}]}`, lined up with the ticket's own done-when
+ * list (T72). The checker's words are matched by text, then by position when the counts agree. Anything the reply
+ * leaves out, cannot place, or calls "met" without evidence reads as "can't tell": a reply that cannot be read
+ * never makes a ticket done.
+ */
+export function readDoneWhenCheck(value: unknown, expected: string[]): DoneWhenItem[] {
+  const raw = isRecord(value) ? value.items : value;
+  const replied = Array.isArray(raw) ? raw.slice(0, maxItems).filter(isRecord) : [];
+  const norm = (t: string) => t.trim().replace(/\s+/g, " ").toLowerCase();
+  const used = new Set<number>();
+  return expected.map((doneWhen, n) => {
+    let at = replied.findIndex((r, i) => !used.has(i) && norm(text(r.doneWhen)) === norm(doneWhen));
+    if (at < 0 && replied.length === expected.length && !used.has(n)) at = n;
+    const r = replied[at];
+    if (!r) return { doneWhen, verdict: "cant-tell", evidence: "the checker did not answer for this item" };
+    used.add(at);
+    const evidence = text(r.evidence, 2000);
+    const verdict = verdictOf(r.verdict);
+    if (verdict === "met" && !evidence.trim()) {
+      return { doneWhen, verdict: "cant-tell", evidence: "the checker said met but gave no evidence" };
+    }
+    return { doneWhen, verdict, evidence };
+  });
+}
+
 /** One review finding; a bad severity becomes "should-fix", and something that isn't an object is dropped. */
 export function readFindings(value: unknown): Finding[] {
   if (!Array.isArray(value)) return [];

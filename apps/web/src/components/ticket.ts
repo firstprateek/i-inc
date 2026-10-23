@@ -167,6 +167,10 @@ export class IncTicket extends Loader<Data> {
       .asked .why { margin: 0; font-size: 15px; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-wrap; }
       .asked .done-when { margin: 6px 0 2px; font-size: 13px; font-weight: 700; color: var(--ink-2); }
       .asked ul { margin: 0; padding-left: 22px; font-size: 15px; line-height: 1.5; display: flex; flex-direction: column; gap: 3px; overflow-wrap: anywhere; }
+      .asked .verdict { font-weight: 800; font-size: 13px; margin-left: 8px; white-space: nowrap; }
+      .asked .verdict.not-met { color: var(--alarm-fg); }
+      .asked .evidence { display: block; font-size: 14px; line-height: 1.45; color: var(--ink-2); }
+      .asked .check-note { margin: 6px 0 0; font-size: 14px; color: var(--ink-2); }
       .from { margin: -6px 0 0; font-size: 14px; color: var(--ink-2); display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: baseline; overflow-wrap: anywhere; }
       .from a { color: var(--reviewing-fg); font-weight: 600; text-underline-offset: 2px; display: inline-flex; align-items: center; min-height: 44px; }
       h2 { font-size: 24px; letter-spacing: -0.4px; overflow-wrap: anywhere; }
@@ -275,8 +279,16 @@ export class IncTicket extends Loader<Data> {
   private asked(t: TicketView) {
     const reason = t.reason?.trim() ?? "";
     const items = t.doneWhen ?? [];
-    if (!reason && !items.length) return "";
-    const long = reason.length > 280 || items.length > 4 || items.join(" ").length > 400;
+    const check = t.doneCheck;
+    if (!reason && !items.length && !check) return "";
+    // The done-when check's result (T72) sits on the item it is about when the two lists line up; otherwise
+    // (the prove stage's own wording) it is a list of its own below.
+    const inline = check && check.items.length === items.length ? check.items : null;
+    const long =
+      reason.length > 280 ||
+      items.length > 4 ||
+      items.join(" ").length > 400 ||
+      (check?.items ?? []).map((r) => r.evidence).join(" ").length > 400;
     const open = this.askedOpen ?? !long;
     const count = items.length ? `${items.length} done-when ${items.length === 1 ? "item" : "items"}` : "";
     return html`<section class="asked" aria-labelledby="asked-h">
@@ -295,11 +307,34 @@ export class IncTicket extends Loader<Data> {
         ${
           items.length
             ? html`<p class="done-when">Done when</p>
-              <ul aria-label="Done when">${items.map((d) => html`<li>${d}</li>`)}</ul>`
+              <ul aria-label="Done when">${items.map((d, n) => {
+                const r = inline?.[n];
+                return html`<li>${d}${r ? this.verdict(r.verdict) : ""}${r?.evidence ? html`<span class="evidence">${r.evidence}</span>` : ""}</li>`;
+              })}</ul>`
             : ""
         }
+        ${
+          check && !inline && check.items.length
+            ? html`<p class="done-when">Checked${check.by ? ` by ${check.by.name}` : ""}${check.note ? ` · ${check.note}` : ""}</p>
+              <ul aria-label="Done-when check">${check.items.map(
+                (r) =>
+                  html`<li>${r.doneWhen}${this.verdict(r.verdict)}${r.evidence ? html`<span class="evidence">${r.evidence}</span>` : ""}</li>`,
+              )}</ul>`
+            : ""
+        }
+        ${
+          check && inline
+            ? html`<p class="check-note">Checked${check.by ? ` by ${check.by.name}` : ""}${check.note ? ` · ${check.note}` : ""}</p>`
+            : ""
+        }
+        ${check && !check.items.length && check.note ? html`<p class="check-note">${check.note}</p>` : ""}
       </div>
     </section>`;
+  }
+
+  /** One done-when item's verdict as a word, not a colour alone. */
+  private verdict(v: "met" | "not-met" | "cant-tell") {
+    return html`<span class="verdict ${v}">${v === "met" ? "Met" : v === "not-met" ? "Not met" : "Can't tell"}</span>`;
   }
 
   /** The owner's images, each opening at full size. */

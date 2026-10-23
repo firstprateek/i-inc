@@ -45,6 +45,7 @@ describe("direct mode", () => {
       "checks",
       "prove",
       "review",
+      "done-when",
       "gates",
       "report",
       "retro",

@@ -272,6 +272,18 @@ function matches(m: Match, r: SessionRequest): boolean {
 function defaultOutcome(r: SessionRequest): SessionOutcome {
   const done = (output: string): SessionOutcome => ({ kind: "done", output });
   if (r.duty === "plan") return done("Approach: change the sorter and add a test that reproduces the bug.");
+  // The done-when check (T72): every item met, with evidence, unless a test scripts otherwise.
+  if (r.stage === "done-when") {
+    return done(
+      json({
+        items: r.ticket.doneWhen.map((d) => ({
+          doneWhen: d,
+          verdict: "met",
+          evidence: "the diff and a test",
+        })),
+      }),
+    );
+  }
   if (r.duty === "verify") {
     return done(
       json({ items: r.ticket.doneWhen.map((d) => ({ doneWhen: d, pass: true, evidence: "screenshot" })) }),

@@ -4,6 +4,7 @@ import type { TicketEvent } from "./events.ts";
 import type {
   AgentHarness,
   Duty,
+  Effort,
   Employee,
   Engine,
   Id,
@@ -149,6 +150,8 @@ export interface SessionRequest {
   engine: Engine;
   /** Everything a fresh session needs: ticket, plan, progress, last error. See brief.ts. */
   brief: string;
+  /** Reasoning effort for this session when it differs from the ticket's (the done-when check runs at "low"). */
+  effort?: Effort;
   /** Aborted when the owner sends an urgent message: stop at once and return "interrupted". */
   signal?: AbortSignal;
   /**

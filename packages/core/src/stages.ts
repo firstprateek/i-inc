@@ -8,6 +8,7 @@ export type StageId =
   | "checks"
   | "prove"
   | "review"
+  | "done-when"
   | "gates"
   | "report"
   | "work"
@@ -24,6 +25,9 @@ export const stageDuty: Record<StageId, Duty | "harness"> = {
   checks: "harness",
   prove: "verify",
   review: "review",
+  // (T72) A light, read-only check of each done-when item by a fresh session that is never the builder's own;
+  // where the prove stage already checked them it only records that.
+  "done-when": "verify",
   gates: "harness",
   report: "build",
   work: "build",
@@ -42,14 +46,18 @@ export interface StagePlan {
 }
 
 export const stagePlans: Record<Effort, StagePlan> = {
-  low: { stages: ["pickup", "build", "checks", "gates", "report"], reviewRounds: 0, planGate: "never" },
+  low: {
+    stages: ["pickup", "build", "checks", "done-when", "gates", "report"],
+    reviewRounds: 0,
+    planGate: "never",
+  },
   medium: {
-    stages: ["pickup", "plan", "build", "checks", "prove", "review", "gates", "report"],
+    stages: ["pickup", "plan", "build", "checks", "prove", "review", "done-when", "gates", "report"],
     reviewRounds: 1,
     planGate: "risky",
   },
   high: {
-    stages: ["pickup", "plan", "build", "checks", "prove", "review", "gates", "report"],
+    stages: ["pickup", "plan", "build", "checks", "prove", "review", "done-when", "gates", "report"],
     reviewRounds: 2,
     planGate: "always",
   },
@@ -82,17 +90,17 @@ export const tidyPlan: StagePlan = {
  */
 export const directPlans: Record<Effort, StagePlan> = {
   low: {
-    stages: ["pickup", "build", "checks", "review", "gates", "report"],
+    stages: ["pickup", "build", "checks", "review", "done-when", "gates", "report"],
     reviewRounds: 2,
     planGate: "never",
   },
   medium: {
-    stages: ["pickup", "plan", "build", "checks", "prove", "review", "gates", "report"],
+    stages: ["pickup", "plan", "build", "checks", "prove", "review", "done-when", "gates", "report"],
     reviewRounds: 2,
     planGate: "never",
   },
   high: {
-    stages: ["pickup", "plan", "build", "checks", "prove", "review", "gates", "report"],
+    stages: ["pickup", "plan", "build", "checks", "prove", "review", "done-when", "gates", "report"],
     reviewRounds: 2,
     planGate: "never",
   },

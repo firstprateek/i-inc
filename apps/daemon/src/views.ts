@@ -1,6 +1,7 @@
 import {
   type AccountCost,
   assembleReport,
+  doneWhenChecker,
   type Employee,
   type Id,
   planFor,
@@ -95,6 +96,15 @@ export function ticketView(
     type: r.ticket.type,
     effort: r.ticket.effort,
     doneWhen: r.ticket.doneWhen,
+    ...(s.doneCheck
+      ? {
+          doneCheck: {
+            by: s.doneCheck.by ? personOf(registry, s.doneCheck.by) : null,
+            items: s.doneCheck.items,
+            note: s.doneCheck.note,
+          },
+        }
+      : {}),
     ...(r.ticket.reason ? { reason: r.ticket.reason } : {}),
     assignee,
     column: columnOf(s),
@@ -259,9 +269,10 @@ export function officeView(
     const engine = modelOf(registry, e.engines.default);
     const own = views.filter((v) => v.assignee?.id === e.id && v.column !== "done" && v.status !== "queued");
     const reviewing = [...states.entries()].find(
-      ([, s]) =>
+      ([id, s]) =>
         (s.active === "review" && s.helpers.review === e.id) ||
-        (s.active === "prove" && s.helpers.verify === e.id),
+        (s.active === "prove" && s.helpers.verify === e.id) ||
+        doneWhenChecker(s, views.find((v) => v.id === id)?.assignee?.id ?? "") === e.id,
     );
     // While their own ticket waits for a reviewer, a builder may be reviewing someone else's.
     const current = (own.find((v) => v.column === "in-progress") ?? own[0]) as TicketView | undefined;

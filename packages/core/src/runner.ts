@@ -17,6 +17,7 @@ import {
 import {
   type Duty,
   defaultProjectPolicy,
+  type Effort,
   type Employee,
   type Id,
   type KnowledgeEdit,
@@ -29,9 +30,11 @@ import { assembleReport, type Report, reportMarkdown } from "./report.ts";
 import { planFor, type StageId, type StagePlan } from "./stages.ts";
 import { fold, type TicketState } from "./state.ts";
 import {
+  type DoneWhenItem,
   isRecord,
   nothingMeansNoActionNeeded,
   readDisputed,
+  readDoneWhenCheck,
   readEdits,
   readFollowUps,
   readProof,
@@ -442,6 +445,121 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     );
   },
 
+  // The done-when check (T72): every code ticket's done-when is checked before it closes. Where the prove stage
+  // checked it, this only records that; otherwise a fresh, light, read-only session that is never the builder's
+  // own checks each item. All met: on to the gates. Something not met: the builder fixes it once. Still not met,
+  // or can't tell: the owner, with the result for each item. Nothing is ever marked done on a guess.
+  async "done-when"(c) {
+    if (c.s.lastAnswer?.answer === "reject") {
+      await c.emit(failed(c, "done-when", "the owner declined to keep going"));
+      return;
+    }
+    const items = c.ticket.doneWhen.map((d) => d.trim()).filter(Boolean);
+    const at = c.p.clock.now();
+    if (c.s.fixDue) {
+      const unmet = (c.s.doneCheck?.items ?? []).filter((i) => i.verdict !== "met");
+      const out = await session(
+        c,
+        "build",
+        c.builder,
+        `Your change was checked against the ticket's done-when, and these items are not met or could not be confirmed:\n${unmet
+          .map(
+            (i) =>
+              `- ${i.doneWhen}: ${i.verdict === "not-met" ? "not met" : "can't tell"}${i.evidence ? `, ${i.evidence}` : ""}`,
+          )
+          .join(
+            "\n",
+          )}\nFix what is missing, or make it easy to confirm (a test, a clear change), and keep the checks green. Commit your work.`,
+      );
+      if (out !== null) await c.emit(checkpoint(c, "done-when", out));
+      return;
+    }
+    if (!items.length) {
+      await c.emit(
+        { type: "done-when-verdict", at, by: null, items: [], retry: false, note: noDoneWhen },
+        finished(c, "done-when", noDoneWhen),
+      );
+      return;
+    }
+    // A prove stage that ran and passed has checked these items already: no second check.
+    const proof = c.s.lastProof;
+    if (c.s.finished.includes("prove") && proof && proof.length > 0 && proof.every((i) => i.pass)) {
+      await c.emit(
+        {
+          type: "done-when-verdict",
+          at,
+          by: null,
+          items: proof.map((i) => ({ doneWhen: i.doneWhen, verdict: "met" as const, evidence: i.evidence })),
+          retry: false,
+          note: "Checked in the prove stage",
+        },
+        finished(c, "done-when", "checked in the prove stage"),
+      );
+      return;
+    }
+    const seat = await doneWhenSeat(c);
+    if (seat === "wait") return;
+    const checks = c.s.lastChecks;
+    const out = await session(
+      c,
+      seat.duty,
+      seat.employee,
+      `Check whether this change meets each done-when item above. Read the diff of this folder against main (\`git diff origin/main\`, committed or not) and whatever else you need, but change no files. The checks ${
+        !checks
+          ? "were not run"
+          : checks.green
+            ? "passed on the builder's last run"
+            : `failed on the builder's last run: ${checks.failures.join("; ")}`
+      }. For each item answer met, not met, or can't tell, with evidence (a file and line, a test, a command's output); say can't tell rather than guess. Be brief. Reply as JSON: {"items":[{"doneWhen":"<the item, word for word>","verdict":"met"|"not met"|"can't tell","evidence":"..."}]}.`,
+      {
+        fresh: true,
+        helperFor: seat.duty,
+        effort: "low",
+        ...(seat.engineId ? { engineId: seat.engineId } : {}),
+      },
+    );
+    if (out === null) return;
+    const read = parseJson<unknown>(out);
+    const result: DoneWhenItem[] = readDoneWhenCheck(read, items).map((i) =>
+      read === null ? { ...i, evidence: `the checker's reply could not be read${quoteOf(out)}` } : i,
+    );
+    const unmet = result.filter((i) => i.verdict !== "met");
+    const by = seat.employee.id;
+    if (unmet.length === 0) {
+      await c.emit(
+        { type: "done-when-verdict", at, by, items: result, retry: false },
+        { type: "done-when-checked", at, stage: "done-when", met: true, missing: [] },
+        finished(c, "done-when"),
+      );
+      return;
+    }
+    // One fix session for something that is not met; can't tell, or a second miss, is the owner's to look at.
+    const retry = c.s.doneWhen.misses === 0 && unmet.some((i) => i.verdict === "not-met");
+    await c.emit(
+      { type: "done-when-verdict", at, by, items: result, retry },
+      {
+        type: "done-when-checked",
+        at,
+        stage: "done-when",
+        met: false,
+        missing: unmet.map((i) => i.doneWhen),
+      },
+      ...(retry
+        ? []
+        : [
+            needsYou(c, "done-when", {
+              kind: "stuck",
+              reason: `The done-when is not confirmed${c.s.doneWhen.misses > 0 ? " after the builder's fix" : ""}, checked by ${c.p.company.employee(by).name}: ${result
+                .map(
+                  (i) =>
+                    `${i.doneWhen} (${verdictWords[i.verdict]}${i.evidence ? `: ${i.evidence.slice(0, 300)}` : ""})`,
+                )
+                .join("; ")}`,
+            }),
+          ]),
+    );
+  },
+
   async review(c) {
     const r = c.s.review;
 
@@ -710,6 +828,25 @@ async function verifySeat(c: Step): Promise<Seat | "none" | "wait"> {
   return "wait";
 }
 
+const noDoneWhen = "No done-when to check";
+const verdictWords = { met: "met", "not-met": "not met", "cant-tell": "can't tell" } as const;
+
+/**
+ * Who checks the done-when (T72), never the builder's own session: another employee with the verify duty, else one
+ * with the review duty (either may be waited for through the scheduler), else a fresh session in the builder's seat
+ * on a different engine when there is one, else on the builder's own engine with a clean context.
+ */
+async function doneWhenSeat(
+  c: Step,
+): Promise<{ employee: Employee; duty: HelperDuty; engineId?: Id } | "wait"> {
+  for (const duty of ["verify", "review"] as const) {
+    const other = await helper(c, duty);
+    if (other === "wait") return "wait";
+    if (typeof other !== "string") return { employee: other, duty };
+  }
+  return { ...ownSeat(c, "verify"), duty: "verify" };
+}
+
 /** A reviewer or verifier outside direct mode: "exhausted" (no one left who can start) waits. */
 async function helperOrWait(c: Step, duty: HelperDuty): Promise<Employee | "none" | "wait"> {
   const other = await helper(c, duty);
@@ -967,7 +1104,7 @@ async function session(
   duty: Duty,
   employee: Employee,
   task: string,
-  o: { engineId?: Id; fresh?: boolean; helperFor?: HelperDuty } = {},
+  o: { engineId?: Id; fresh?: boolean; helperFor?: HelperDuty; effort?: Effort } = {},
 ): Promise<string | null> {
   const stage = c.s.active as StageId;
   const isAssignee = employee.id === c.ticket.assignee;
@@ -1059,6 +1196,7 @@ async function session(
       employee,
       engine,
       brief: text,
+      ...(o.effort ? { effort: o.effort } : {}),
       ...(signal ? { signal } : {}),
       ...(c.p.agent.reportsLaunch ? { onLaunched: recordStart } : {}),
     });
