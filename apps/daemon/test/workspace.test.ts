@@ -19,6 +19,7 @@ import {
   checkoutScript,
   GitHubWorkspace,
   openScript,
+  readRestore,
   readSnapshot,
   restoreScript,
   snapshotScript,
@@ -564,17 +565,21 @@ describe("2.5 looking for a ticket's worktree", () => {
 });
 
 describe("the read-only guard on a worktree (T72)", () => {
-  /** A repo with two commits' worth of files, and some uncommitted work of the builder's. */
+  const OLD = "a.txt";
+  const SPACED = "my file.txt";
+  const ACCENT = "café-é.txt";
+  /** A repo whose builder has uncommitted work: b.txt edited, mine.txt new. Names with a space and an accent are tracked. */
   function tree() {
     const dir = mkdtempSync(join(tmpdir(), "inc-guard-"));
     git(dir, "init", "-q", "-b", "main");
     git(dir, "config", "user.email", "a@b.c");
     git(dir, "config", "user.name", "T");
-    writeFileSync(join(dir, "a.txt"), "a\n");
-    writeFileSync(join(dir, "b.txt"), "b\n");
+    git(dir, "config", "core.quotePath", "true");
+    for (const f of [OLD, "b.txt", SPACED, ACCENT]) writeFileSync(join(dir, f), `${f}\n`);
     git(dir, "add", ".");
     git(dir, "commit", "-qm", "one");
     writeFileSync(join(dir, "b.txt"), "b, edited by the builder\n"); // uncommitted work from before
+    writeFileSync(join(dir, "mine.txt"), "the builder's new file\n");
     return dir;
   }
   const look = async (dir: string) => {
@@ -583,63 +588,114 @@ describe("the read-only guard on a worktree (T72)", () => {
     if (!snap) throw new Error(r.output);
     return snap;
   };
+  /** Restores, as the workspace does, and returns what it said. */
+  const putBack = async (dir: string, before: Awaited<ReturnType<typeof look>>) => {
+    const r = await localScript(
+      "ada",
+      restoreScript({ worktree: dir, head: before.head, state: before.state }),
+    );
+    expect(r.code).toBe(0);
+    return readRestore(r.output, before);
+  };
+  const text = (dir: string, f: string) => readFileSync(join(dir, f), "utf8");
+  /** Everything the builder had before, back as it was: the content, and nothing staged. */
+  const builderWork = (dir: string) => {
+    expect(text(dir, "b.txt")).toBe("b, edited by the builder\n");
+    expect(text(dir, "mine.txt")).toBe("the builder's new file\n");
+    expect(git(dir, "diff", "--cached", "--name-only")).toBe("");
+  };
 
-  it("reads the commit and every changed path, one line each", async () => {
+  it("a worktree nobody touched snapshots the same twice", async () => {
     const dir = tree();
-    mkdirSync(join(dir, "new"));
-    writeFileSync(join(dir, "new", "x.txt"), "x");
-    const snap = await look(dir);
-    expect(snap.head).toBe(git(dir, "rev-parse", "HEAD"));
-    expect(snap.status.sort()).toEqual([" M b.txt", "?? new/x.txt"]);
+    expect(await look(dir)).toEqual(await look(dir));
   });
 
-  it("puts back what a session changed and nothing the tree already had", async () => {
+  it("sees what git status cannot: more edits to a file that was already changed", async () => {
     const dir = tree();
     const before = await look(dir);
-    writeFileSync(join(dir, "a.txt"), "changed by the checker\n");
-    writeFileSync(join(dir, "created.txt"), "new\n");
-    const after = await look(dir);
-    const paths = after.status.filter((l) => !before.status.includes(l)).map((l) => l.slice(3));
-    expect(paths.sort()).toEqual(["a.txt", "created.txt"]);
-    const r = await localScript("ada", restoreScript({ worktree: dir, head: before.head, paths }));
-    expect(r.output).toContain("@@restored");
-    expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("a\n");
-    expect(existsSync(join(dir, "created.txt"))).toBe(false);
-    // the builder's own edit from before the session is still there
-    expect(readFileSync(join(dir, "b.txt"), "utf8")).toBe("b, edited by the builder\n");
-    expect((await look(dir)).status).toEqual(before.status);
+    writeFileSync(join(dir, "b.txt"), "b, edited by the builder, and then by the checker\n");
+    expect((await look(dir)).state).not.toBe(before.state);
+    const r = await putBack(dir, before);
+    expect(r.restored).toBe(true);
+    expect(r.changed).toEqual(["b.txt"]);
+    builderWork(dir);
+    expect(await look(dir)).toEqual(before);
   });
 
-  it("undoes a commit the session made, and the files in it", async () => {
+  it("puts back a staged edit, and unstages it", async () => {
     const dir = tree();
     const before = await look(dir);
-    writeFileSync(join(dir, "a.txt"), "committed by the checker\n");
+    writeFileSync(join(dir, OLD), "staged by the checker\n");
+    git(dir, "add", OLD);
+    expect((await look(dir)).state).not.toBe(before.state);
+    expect((await putBack(dir, before)).restored).toBe(true);
+    expect(text(dir, OLD)).toBe("a.txt\n");
+    builderWork(dir); // nothing staged
+    expect(await look(dir)).toEqual(before);
+  });
+
+  it("handles a name with a space, and a non-ASCII name: edited, created and deleted", async () => {
+    const dir = tree();
+    const before = await look(dir);
+    writeFileSync(join(dir, SPACED), "changed\n");
+    writeFileSync(join(dir, ACCENT), "changed\n");
+    writeFileSync(join(dir, "new file ü.txt"), "created\n");
+    writeFileSync(join(dir, "ça va.txt"), "created\n");
+    rmSync(join(dir, "mine.txt")); // deleted: the builder's untracked file
+    const r = await putBack(dir, before);
+    expect(r.restored).toBe(true);
+    // the names are readable in what it reports, not skipped
+    expect(r.changed.sort()).toEqual(
+      ["café-é.txt", "my file.txt", "mine.txt", "new file ü.txt", "ça va.txt"].sort(),
+    );
+    expect(text(dir, SPACED)).toBe(`${SPACED}\n`);
+    expect(text(dir, ACCENT)).toBe(`${ACCENT}\n`);
+    expect(existsSync(join(dir, "new file ü.txt"))).toBe(false);
+    expect(existsSync(join(dir, "ça va.txt"))).toBe(false);
+    builderWork(dir);
+    expect(await look(dir)).toEqual(before);
+  });
+
+  it("undoes a commit over a file the builder had changed, and brings the builder's uncommitted edit back", async () => {
+    const dir = tree();
+    const before = await look(dir);
+    git(dir, "add", "b.txt"); // commits the builder's edit along with it
     writeFileSync(join(dir, "c.txt"), "c\n");
-    git(dir, "add", "a.txt", "c.txt");
+    git(dir, "add", "c.txt");
     git(dir, "commit", "-qm", "sneaky");
     const after = await look(dir);
     expect(after.head).not.toBe(before.head);
-    const r = await localScript("ada", restoreScript({ worktree: dir, head: before.head, paths: [] }));
-    expect(r.output).toContain("@@restored");
+    expect((await putBack(dir, before)).restored).toBe(true);
     expect(git(dir, "rev-parse", "HEAD")).toBe(before.head);
-    expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("a\n");
     expect(existsSync(join(dir, "c.txt"))).toBe(false);
-    expect(readFileSync(join(dir, "b.txt"), "utf8")).toBe("b, edited by the builder\n");
+    builderWork(dir); // the edit is back as an uncommitted one
+    expect(git(dir, "status", "--porcelain")).toMatch(/M b\.txt/);
+    expect(await look(dir)).toEqual(before);
   });
 
-  it("only restores plain paths, and only a real commit", () => {
-    const head = "a".repeat(40);
-    const script = restoreScript({
-      worktree: "/w",
-      head,
-      paths: ["ok/file.ts", "../evil", "-rf", "a b", '"q"'],
-    });
-    expect(script).toContain("back 'ok/file.ts'");
-    expect(script).not.toContain("evil");
-    expect(script).not.toContain("'-rf'");
-    expect(script).not.toContain("'a b'");
-    expect(() => restoreScript({ worktree: "/w", head: "main; rm -rf /", paths: [] })).toThrow(
-      "not a commit",
+  it("goes back to the branch, and a staged new file too", async () => {
+    const dir = tree();
+    const before = await look(dir);
+    git(dir, "stash", "-u", "-q"); // clean enough to switch
+    git(dir, "checkout", "-q", "-b", "elsewhere");
+    writeFileSync(join(dir, "n.txt"), "n\n");
+    git(dir, "add", "n.txt");
+    expect((await putBack(dir, before)).restored).toBe(true);
+    expect(git(dir, "branch", "--show-current")).toBe("main");
+    expect(existsSync(join(dir, "n.txt"))).toBe(false);
+    builderWork(dir);
+  });
+
+  it("does not claim a restore that did not verify, and refuses a snapshot it cannot read", async () => {
+    const dir = tree();
+    const before = await look(dir);
+    expect(readRestore("", before)).toEqual({ restored: false, changed: [] });
+    expect(readRestore("@@snapshot", before).restored).toBe(false);
+    expect(readSnapshot("@@head nothing")).toBeNull();
+    expect(() => restoreScript({ worktree: "/w", head: "main; rm -rf /", state: before.state })).toThrow(
+      "not a worktree snapshot",
     );
+    expect(() => restoreScript({ worktree: "/w", head: before.head, state: "refs/heads/a;b x y" })).toThrow();
+    expect(() => restoreScript({ worktree: "/w", head: before.head, state: `-; ${before.state}` })).toThrow();
   });
 });

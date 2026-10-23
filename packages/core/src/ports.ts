@@ -287,10 +287,20 @@ export interface Harness {
  * builder's machine and opens a draft PR, so CI runs from the start. The report then goes into the
  * PR, which is marked ready for the owner. Both are safe to repeat after a crash.
  */
-/** A worktree at a moment: its HEAD commit and the lines of `git status --porcelain` (one per changed path). */
+/**
+ * A worktree at a moment (T72): its HEAD commit, and `state`, a fingerprint of everything else (the branch, the
+ * content of every tracked and untracked file, and the index). Two snapshots are the same worktree only when both
+ * are equal; the content, not the names `git status` prints, is what is compared.
+ */
 export interface WorktreeSnapshot {
   head: string;
-  status: string[];
+  state: string;
+}
+
+/** What `restore` did: whether the worktree verifiably matches the snapshot again, and which paths had changed. */
+export interface RestoreResult {
+  restored: boolean;
+  changed: string[];
 }
 
 export interface Workspace {
@@ -309,22 +319,22 @@ export interface Workspace {
    */
   checkout?(ticket: Ticket, employee: Employee): Promise<void>;
   /**
-   * What the ticket's worktree in `employee`'s machine looks like: its HEAD commit and `git status --porcelain`.
-   * The done-when check (T72) is read-only, but a session runs with full access, so the runner looks before and
-   * after and treats any difference as the checker having changed files.
+   * The ticket's worktree in `employee`'s machine as it is now. The done-when check (T72) is read-only, but a
+   * session runs with full access, so the runner takes one before and one after, and any difference counts as the
+   * checker having changed files.
    */
   snapshot?(ticket: Ticket, employee: Employee): Promise<WorktreeSnapshot>;
   /**
-   * Puts back what a session changed since `before`: files it modified or created (`paths`, as `after` shows
-   * them, and the files of any commit it made), and HEAD. It touches nothing the worktree had at `before`.
+   * Puts the worktree back exactly as `before` had it: HEAD, every file's content (edited, staged, created or
+   * deleted, whatever its name), and the index, so the builder's own uncommitted work from before comes back too.
+   * It then looks again, and says `restored` only when the worktree really matches `before`.
    */
   restore?(
     ticket: Ticket,
     employee: Employee,
     before: WorktreeSnapshot,
     after: WorktreeSnapshot,
-    paths: string[],
-  ): Promise<void>;
+  ): Promise<RestoreResult>;
   /**
    * Owner-merges: pushes the builder's committed work to the ticket's branch (through the host, since a sandbox
    * holds no write credentials), so a checker in another machine reads the code as it is now. Safe to repeat.

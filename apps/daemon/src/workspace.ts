@@ -10,6 +10,7 @@ import {
   type Employee,
   type ProjectPolicy,
   type PullRequestRef,
+  type RestoreResult,
   type Ticket,
   type Workspace,
   type WorktreeSnapshot,
@@ -242,52 +243,80 @@ export function checkoutScript(o: {
   ].join("\n");
 }
 
-/** The ticket's worktree as it is: HEAD, and one `@@s` line per path `git status --porcelain` lists (new files one by one). */
+/**
+ * The worktree's state, by content (T72): HEAD, the branch, a tree of every tracked and untracked file as it is on
+ * disk (a throwaway index and `git add -A`, so the names git quotes, spaces and non-ASCII included, never pass
+ * through a shell or a status line), and the tree of the real index (what is staged). Comparing these is
+ * comparing the worktree: an edit to a file that was already dirty, or a staged change, shows up.
+ */
+function stateLines(): string[] {
+  return [
+    'echo "@@head $(git rev-parse HEAD)"',
+    'echo "@@ref $(git symbolic-ref -q HEAD || echo -)"',
+    'IDX=$(mktemp -u); GIT_INDEX_FILE="$IDX" git add -A >/dev/null 2>&1 || true',
+    'echo "@@work $(GIT_INDEX_FILE="$IDX" git write-tree)"; rm -f "$IDX"',
+    'echo "@@index $(git write-tree 2>/dev/null || echo -)"',
+  ];
+}
+
 export function snapshotScript(worktree: string): string {
-  const q = quote(worktree);
+  return ["set -e", `cd ${quote(worktree)}`, ...stateLines(), "echo @@snapshot"].join("\n");
+}
+
+/** Reads `snapshotScript`'s output: HEAD, and the rest as one fingerprint. Null when it did not finish. */
+export function readSnapshot(output: string): WorktreeSnapshot | null {
+  const head = /^@@head ([0-9a-f]{40})$/m.exec(output)?.[1];
+  const ref = /^@@ref (\S+)$/m.exec(output)?.[1];
+  const work = /^@@work ([0-9a-f]{40})$/m.exec(output)?.[1];
+  const index = /^@@index ([0-9a-f]{40}|-)$/m.exec(output)?.[1];
+  if (!head || !ref || !work || !index || !output.includes("@@snapshot")) return null;
+  return { head, state: `${ref} ${work} ${index}` };
+}
+
+/**
+ * Puts the worktree back exactly as a snapshot had it, whatever the session did to it: a commit (undone), edits,
+ * staged changes, files created or deleted, names with spaces or any other character. The builder's own uncommitted
+ * work from before is part of the snapshot, so it comes back too. Nothing is named in the script but hashes: the
+ * content is read back from git's object store, not from paths. It then takes a new snapshot and says `@@restored`
+ * only when that matches; otherwise `@@mismatch`. `@@c` lines name what had changed, for the owner to read.
+ */
+export function restoreScript(o: { worktree: string; head: string; state: string }): string {
+  const [ref, work, index] = o.state.split(" ");
+  const hash = (v: string | undefined) => v !== undefined && /^[0-9a-f]{40}$/.test(v);
+  if (!/^[0-9a-f]{40}$/.test(o.head) || !hash(work) || !(hash(index) || index === "-"))
+    throw new Error(`not a worktree snapshot: ${o.head} ${o.state}`);
+  if (ref !== "-" && !(ref?.startsWith("refs/heads/") && isSafeRefName(ref.slice("refs/heads/".length))))
+    throw new Error(`not a branch: ${ref}`);
+  const branch = ref === "-" ? "" : (ref as string).slice("refs/heads/".length);
   return [
     "set -e",
-    `cd ${q}`,
-    'echo "@@head $(git rev-parse HEAD)"',
-    "git status --porcelain --untracked-files=all | sed 's/^/@@s /'",
+    `cd ${quote(o.worktree)}`,
+    // What differs now, by name, before anything is put back (git prints odd names quoted; they are for reading).
+    'NOW=$(mktemp -u); GIT_INDEX_FILE="$NOW" git add -A >/dev/null 2>&1 || true',
+    'CUR=$(GIT_INDEX_FILE="$NOW" git write-tree); rm -f "$NOW"',
+    `git -c core.quotePath=false diff-tree -r --name-only ${work} "$CUR" | sed 's/^/@@c /' || true`,
+    ...(branch
+      ? [
+          `if [ "$(git symbolic-ref -q HEAD || true)" != ${quote(ref as string)} ]; then git checkout -q -f ${quote(branch)}; fi`,
+        ]
+      : ["git checkout -q --detach"]),
+    `git reset -q --hard ${o.head}`,
+    "git clean -fdq",
+    `git read-tree --reset -u ${work}`,
+    ...(index === "-" ? [] : [`git read-tree ${index}`]),
+    ...stateLines(),
     "echo @@snapshot",
   ].join("\n");
 }
 
-/** Reads `snapshotScript`'s output. Null when it did not finish. */
-export function readSnapshot(output: string): { head: string; status: string[] } | null {
-  const head = /^@@head ([0-9a-f]{40})$/m.exec(output)?.[1];
-  if (!head || !output.includes("@@snapshot")) return null;
-  const status = [...output.matchAll(/^@@s (.+)$/gm)].map((m) => m[1] as string);
-  return { head, status };
-}
-
-/** A path git printed that is safe to hand back to a script: plain, relative, nothing that git quotes or renames. */
-const plainPath = (p: string) =>
-  /^[A-Za-z0-9._@+/-]+$/.test(p) && !p.startsWith("-") && !p.split("/").includes("..");
-
-/**
- * Puts the worktree back after a session that was only to read (the done-when check): a commit it made is undone
- * (the work stays in the tree, then goes with the rest), and the files it modified or created are restored or
- * removed. Only `paths` and the files of that commit are touched, never anything the tree already had changed
- * before the session, so the builder's own uncommitted work stays.
- */
-export function restoreScript(o: { worktree: string; head: string; paths: string[] }): string {
-  if (!/^[0-9a-f]{40}$/.test(o.head)) throw new Error(`not a commit: ${o.head}`);
-  const q = quote(o.worktree);
-  const paths = o.paths.filter(plainPath);
-  return [
-    "set -e",
-    `cd ${q}`,
-    'back() { git checkout -- "$1" 2>/dev/null || git clean -fdq -- "$1"; }',
-    `if [ "$(git rev-parse HEAD)" != ${o.head} ]; then`,
-    `  files=$(git diff --name-only ${o.head} HEAD)`,
-    `  git reset --quiet --mixed ${o.head}`,
-    '  printf "%s\\n" "$files" | while IFS= read -r f; do [ -n "$f" ] && back "$f" || true; done',
-    "fi",
-    ...paths.map((p) => `back ${quote(p)}`),
-    "echo @@restored",
-  ].join("\n");
+/** Reads `restoreScript`'s output, then compares its closing snapshot with the one it was to restore. */
+export function readRestore(
+  output: string,
+  before: WorktreeSnapshot,
+): { restored: boolean; changed: string[] } {
+  const now = readSnapshot(output);
+  const changed = [...output.matchAll(/^@@c (.+)$/gm)].map((m) => m[1] as string);
+  return { restored: now !== null && now.head === before.head && now.state === before.state, changed };
 }
 
 /**
@@ -513,7 +542,7 @@ export class GitHubWorkspace implements Workspace {
     }
   }
 
-  /** HEAD and the changed paths of the ticket's worktree in the employee's machine. */
+  /** The ticket's worktree in the employee's machine, by content (see `snapshotScript`). */
   async snapshot(ticket: Ticket, employee: Employee): Promise<WorktreeSnapshot> {
     const r = await this.o.run(employee.id, snapshotScript(this.o.worktree(ticket.id)));
     const snap = r.code === 0 ? readSnapshot(r.output) : null;
@@ -522,20 +551,20 @@ export class GitHubWorkspace implements Workspace {
     return snap;
   }
 
-  /** Puts back what a read-only session changed (see `restoreScript`). */
+  /** Puts the worktree back exactly as `before` had it, and verifies it (see `restoreScript`). */
   async restore(
     ticket: Ticket,
     employee: Employee,
     before: WorktreeSnapshot,
     _after: WorktreeSnapshot,
-    paths: string[],
-  ): Promise<void> {
+  ): Promise<RestoreResult> {
     const r = await this.o.run(
       employee.id,
-      restoreScript({ worktree: this.o.worktree(ticket.id), head: before.head, paths }),
+      restoreScript({ worktree: this.o.worktree(ticket.id), head: before.head, state: before.state }),
     );
-    if (r.code !== 0 || !r.output.includes("@@restored"))
-      throw new Error(`couldn't put ${employee.name}'s worktree back: ${r.output.trim().slice(-200)}`);
+    // A script that failed part way did not restore it, whatever it printed before.
+    const verdict = readRestore(r.output, before);
+    return { ...verdict, restored: r.code === 0 && verdict.restored };
   }
 
   /**

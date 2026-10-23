@@ -1142,16 +1142,10 @@ interface Guard {
   restored: boolean;
 }
 
-/** The paths `git status --porcelain` lists after that it did not list before. */
-function newPaths(before: WorktreeSnapshot, after: WorktreeSnapshot): string[] {
-  const had = new Set(before.status);
-  return after.status.filter((line) => !had.has(line)).map((line) => line.slice(3).trim());
-}
-
 /**
- * Looks at the worktree again after a read-only session. Anything it changed (a file edited or created, a commit)
- * is put back, limited to what changed during the session, and listed in `guard`. A hiccup worth another tick is
- * thrown, so the check runs again; a restore that fails is recorded as not restored.
+ * Looks at the worktree again after a read-only session. Anything that differs from before (a file edited, staged,
+ * created or deleted, a commit) is put back exactly, and listed in `guard`; `restored` is true only when the restore
+ * verified. A hiccup worth another tick is thrown, so the check runs again.
  */
 async function guardWorktree(
   c: Step,
@@ -1168,17 +1162,20 @@ async function guardWorktree(
     if (isPassing(err)) throw err;
     return;
   }
-  const paths = newPaths(before, after);
   const moved = before.head !== after.head;
-  if (!moved && paths.length === 0) return;
-  guard.changed = [...(moved ? ["a new commit"] : []), ...paths];
+  if (!moved && before.state === after.state) return;
+  let names: string[] = [];
   try {
     if (!ws.restore) throw new Error("no way to restore");
-    await ws.restore(c.ticket, employee, before, after, paths);
+    const r = await ws.restore(c.ticket, employee, before, after);
+    names = r.changed;
+    guard.restored = r.restored;
   } catch (err) {
     if (isPassing(err)) throw err;
     guard.restored = false;
   }
+  guard.changed = [...(moved ? ["a new commit"] : []), ...names];
+  if (guard.changed.length === 0) guard.changed = ["the worktree"];
 }
 
 /** Runs one session. Returns its output, or null when it paused, switched engine, escalated or failed. */

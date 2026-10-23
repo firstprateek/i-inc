@@ -328,7 +328,7 @@ describe("read-only is checked, not trusted", () => {
     const run = p.agent.run.bind(p.agent);
     p.agent.run = async (req) => {
       if (req.stage === "done-when" && req.employee.id === who && req.duty !== "build") {
-        const t = await ws.snapshot(req.ticket, req.employee);
+        const t = ws.trees.get(who) ?? { head: "a".repeat(40), status: [] };
         ws.trees.set(who, { head: over.head ?? t.head, status: over.status ?? t.status });
       }
       return run(req);
@@ -347,7 +347,7 @@ describe("read-only is checked, not trusted", () => {
     expect(result.ask.reason).toContain("changed files (src/refunds.ts, notes.txt)");
     expect(result.ask.reason).toContain("put back");
     expect(ws.restored).toEqual([{ employeeId: "quinn", paths: ["src/refunds.ts", "notes.txt"] }]);
-    expect((await ws.snapshot(low(), p.company.employee("quinn"))).status).toEqual([]); // restored
+    expect((await ws.snapshot(low(), p.company.employee("quinn"))).state).toBe(""); // restored
     const s = fold(await p.store.read("42"));
     // the "met" answer it gave is not used
     expect(s.doneCheck?.items.map((i) => i.verdict)).toEqual(["cant-tell", "cant-tell"]);
@@ -369,6 +369,19 @@ describe("read-only is checked, not trusted", () => {
       throw new Error("expected a stuck card");
     expect(result.ask.reason).toContain("a new commit");
     expect(result.ask.reason).toContain("could not be put back");
+  });
+
+  it("says 'put back' only when the restore verified: one that ran but did not match is not claimed", async () => {
+    const p = direct(ports());
+    const ws = new FakeWorkspace();
+    ws.unverified = true;
+    p.workspace = ws;
+    meddling(p, ws, "quinn", { status: [" M src/refunds.ts"] });
+    const result = await runTicket(p, low());
+    if (result.status !== "needs-you" || result.ask.kind !== "stuck")
+      throw new Error("expected a stuck card");
+    expect(result.ask.reason).toContain("could not be put back");
+    expect(result.ask.reason).not.toContain("they were put back");
   });
 
   it("a checker that touched nothing, and the builder's own dirty files from before, are no change", async () => {

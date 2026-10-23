@@ -25,6 +25,7 @@ import type {
   HelperModel,
   MachineProvider,
   Ports,
+  RestoreResult,
   SandboxStatus,
   SessionOutcome,
   SessionRequest,
@@ -184,27 +185,40 @@ export class FakeWorkspace implements Workspace {
     this.calls.push(`checkout ${employee.id}`);
   }
   /** Each machine's worktree: HEAD and changed paths. A test changes one inside a scripted session. */
-  readonly trees = new Map<Id, WorktreeSnapshot>();
+  readonly trees = new Map<Id, { head: string; status: string[] }>();
   /** What `restore` put back, by whose machine. */
   readonly restored: { employeeId: Id; paths: string[] }[] = [];
   /** The tickets whose branch was pushed through the host, in order. */
   readonly pushed: Id[] = [];
+  /** `restore` throws. */
   failRestore = false;
+  /** `restore` runs but cannot verify that the worktree matches again. */
+  unverified = false;
   failPush: string | null = null;
   async snapshot(_ticket: Ticket, employee: Employee): Promise<WorktreeSnapshot> {
     const t = this.trees.get(employee.id);
-    return { head: t?.head ?? "a".repeat(40), status: [...(t?.status ?? [])] };
+    return { head: t?.head ?? "a".repeat(40), state: (t?.status ?? []).join("\n") };
   }
   async restore(
     _ticket: Ticket,
     employee: Employee,
     before: WorktreeSnapshot,
-    _after: WorktreeSnapshot,
-    paths: string[],
-  ): Promise<void> {
+    after: WorktreeSnapshot,
+  ): Promise<RestoreResult> {
     if (this.failRestore) throw new Error("restore failed");
-    this.restored.push({ employeeId: employee.id, paths });
-    this.trees.set(employee.id, { head: before.head, status: [...before.status] });
+    const had = new Set(before.state.split("\n"));
+    const changed = after.state
+      .split("\n")
+      .filter((line) => line && !had.has(line))
+      .map((line) => line.slice(3).trim());
+    this.restored.push({ employeeId: employee.id, paths: changed });
+    if (!this.unverified) {
+      this.trees.set(employee.id, {
+        head: before.head,
+        status: before.state ? before.state.split("\n") : [],
+      });
+    }
+    return { restored: !this.unverified, changed };
   }
   async push(ticket: Ticket, builder: Employee): Promise<void> {
     if (this.failPush) throw new Error(this.failPush);

@@ -450,12 +450,17 @@ the checks, where there is no review) and the gates (core `stages.ts`, `stageSte
   a reply that cannot be read, an item with no answer, and a `met` with no evidence all read as `can't tell`
   (`readDoneWhenCheck`, core `validate.ts`). The evidence is cut to one line before it is stored, so it cannot start a
   heading in the PR body or the report.
-- **Read-only is checked, not trusted.** Sessions run with full access, so the runner records HEAD and `git status
-  --porcelain` of the checker's worktree before the session and compares after (`Workspace.snapshot`, core `runner.ts`
-  `guardWorktree`). Any difference counts as "can't tell, the checker changed files": the changes made during the check are
-  put back (`Workspace.restore`: `git checkout`/`git clean` of those paths only, and a commit it made is undone, never
-  touching what the tree had before) and the ticket goes to Needs you with the reason. The builder's own dirty files
-  from before the check are not a change.
+- **Read-only is checked, not trusted.** Sessions run with full access, so the runner takes a snapshot of the checker's
+  worktree before the session and another after (`Workspace.snapshot`, core `runner.ts` `guardWorktree`). A snapshot is
+  by **content**, not by `git status` lines: HEAD, the branch, a tree of every tracked and untracked file as it is on
+  disk (a throwaway index and `git add -A`, so names with spaces or non-ASCII never pass through a shell), and the
+  tree of the real index (what is staged). Any difference counts as "can't tell, the checker changed files". The
+  worktree is then put back **exactly** (`Workspace.restore`, `restoreScript` in `apps/daemon/src/workspace.ts`:
+  `git reset --hard` to the old HEAD, `git clean`, `git read-tree --reset -u` of the old content tree, then the old
+  index), so staged edits, edits to files the builder had already changed, and a commit over a dirty file all come back as
+  they were, the builder's uncommitted work included. It then snapshots again and says "put back" only when that matches
+  the old snapshot; otherwise the card says it could not be put back. The ticket goes to Needs you. (Ignored files,
+  such as `.inc/`, are not covered.)
 - **Owner-merges:** a checker on another machine reads the branch from GitHub, so before the check (and again before the
   recheck) the daemon pushes the builder's commits through the T68 host push (`Workspace.push`). The builder's fix prompt
   says to commit; a push that fails fails the ticket. Direct mode keeps the branch local and never pushes for the check.
