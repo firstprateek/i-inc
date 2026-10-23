@@ -280,8 +280,8 @@ export function secretShare(text: string): { redacted: string; share: number; co
 
 const looksExternal = (s: string) => /https?:\/\/|\bgithub\.com\/|\bgit@|\bwww\./i.test(s);
 
-/** A frontmatter key worth keeping: a word, not `| title`, `"title"` or ` title`. */
-const validKey = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/;
+/** A frontmatter key worth keeping: it starts with a letter, a digit or `_`. Not `| title`, `"title"` or ` title`; `last reviewed` is fine. */
+const validKey = /^[\p{L}\p{N}_]/u;
 
 export interface Normalized {
   text: string;

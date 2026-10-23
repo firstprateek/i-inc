@@ -280,6 +280,16 @@ describe("frontmatter", () => {
     expect(n.meta.extra).toEqual({ "owner-note": "keep me" });
     expect(n.text).not.toContain("| title");
     expect(n.notes.some((x) => x.startsWith("dropped 2 junk frontmatter keys"))).toBe(true);
+    // Keys with an inner space or a non-ASCII letter are keys: kept.
+    const spaced = normalizePage(
+      good("T", body, "last reviewed: 2026-01-01\nsee also: other-page\nnaïve: yes\n"),
+      "t",
+      { today: "2026-10-23", provenance: "ticket-5" },
+    );
+    expect(spaced.meta.extra).toMatchObject({ "see also": "other-page", naïve: "yes" });
+    expect(Object.keys(spaced.meta.extra ?? {})).toContain("last reviewed");
+    expect(spaced.text).toContain("last reviewed:");
+    expect(spaced.notes.some((x) => x.includes("junk"))).toBe(false);
     // Nothing dropped, nothing said.
     const clean = normalizePage(good("T", body, "owner-note: keep me\n"), "t", {
       today: "2026-10-23",
