@@ -22,6 +22,7 @@ import { BrainFeed } from "./brain-feed.ts";
 import { BrainHarvest } from "./brain-harvest.ts";
 import { BrainIndex } from "./brain-index.ts";
 import { ChatLog } from "./chat.ts";
+import type { RecoveryState, RecoveryStore } from "./container-recovery.ts";
 import { Daemon, type DaemonDeps } from "./daemon.ts";
 import { type Db, openDb } from "./db.ts";
 import { DeployNotifier } from "./deploys.ts";
@@ -316,6 +317,63 @@ export async function createApp(o: AppOptions) {
   if (backend.liveEmployees) {
     const live = () => backend.liveEmployees?.() ?? [];
     daemon.onMachineBusy((machine) => live().some((e) => storage.machineOf(e) === machine));
+  }
+  // A machine that won't boot because the container service holds its hostname is cleared by restarting the
+  // service, once nothing is working in any machine (container-recovery.ts, T73). The restart holds a deploy back.
+  const recoverable = deps.machines as unknown as {
+    enableRecovery?: (o: {
+      idle: () => Promise<boolean>;
+      booted: (employeeId: string) => void;
+      done: () => void;
+      push?: (n: { title: string; body: string; url: string; tag: string }) => Promise<void>;
+      store: RecoveryStore;
+    }) => unknown;
+    recoveryActive?: boolean;
+    checkService?: () => Promise<void>;
+    listMachines?: () => Promise<{ name: string }[]>;
+  };
+  if (recoverable.enableRecovery) {
+    const stateKey = "container-service";
+    const push = deps.push;
+    recoverable.enableRecovery({
+      idle: async () => {
+        if (daemon.working() || storage.anyHolding()) return false;
+        const names = new Set(registry.teams().map((t) => `inc-${t.id}`));
+        try {
+          for (const m of (await recoverable.listMachines?.()) ?? []) names.add(m.name);
+        } catch {
+          // The service is sick: the teams' machines are what there is to look at.
+        }
+        for (const name of names) if (await daemon.machineBusy(name)) return false;
+        return true;
+      },
+      booted: (employeeId) => daemon.noteAwake(employeeId),
+      done: () => {
+        daemon.clearStartWaits();
+        void daemon.tick().catch(() => {});
+      },
+      ...(push ? { push: (n) => push.send(n) } : {}),
+      store: {
+        load: () => {
+          const [row] = db.all<{ body: string }>("SELECT body FROM storage_state WHERE key = ?", stateKey);
+          try {
+            const state = row ? (JSON.parse(row.body) as RecoveryState) : undefined;
+            return { ...state, events: Array.isArray(state?.events) ? state.events : [] };
+          } catch {
+            return { events: [] };
+          }
+        },
+        save: (state) =>
+          db.run(
+            "INSERT INTO storage_state (key, body) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET body = excluded.body",
+            stateKey,
+            JSON.stringify(state),
+          ),
+      },
+    });
+    daemon.onHold(() => recoverable.recoveryActive === true);
+    // Set at once: no launch starts before the check. A restart a dead daemon left half-done is finished here.
+    void recoverable.checkService?.().catch(() => {});
   }
   backend.attachApp?.({
     storage,

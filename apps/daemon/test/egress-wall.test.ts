@@ -1,7 +1,7 @@
 // The machines' egress wall, from the daemon's side (T66): closed unless opened. With a fake `container`
 // and a fake walls job that does what tools/host/walls.sh does with the daemon's list, for the OLD walls (no
 // acknowledgement ever: the daemon deploys itself before the owner installs the new walls) and the NEW ones.
-import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -546,5 +546,76 @@ describe("the script that takes root away", () => {
     expect(script).toContain(': >"/etc/sudoers.d/$user"');
     expect(script).toContain("@@no-root");
     expect(rootProbeScript).toContain("sudo -n true");
+  });
+
+  // A real run of the script against a folder standing in for /etc, with a `chattr` and an `rm` that model the
+  // immutable flag (a marker file; the flag also makes the file read-only, as it blocks writes).
+  describe("run twice", () => {
+    const run = (dir: string, script: string) => {
+      const bin = join(dir, "bin");
+      const sudoers = join(dir, "sudoers.d");
+      const fake = (name: string, body: string) => {
+        writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+      };
+      fake(
+        "chattr",
+        'flag="$1"; shift; for f in "$@"; do case "$flag" in +i) touch "$f.immutable"; chmod 444 "$f" ;; -i) rm_real -f "$f.immutable"; chmod 644 "$f" ;; esac; done',
+      );
+      fake("rm_real", 'exec /bin/rm "$@"');
+      fake(
+        "rm",
+        'for a in "$@"; do case "$a" in -*) ;; *) if [ -e "$a.immutable" ]; then echo "rm: cannot remove \'$a\': Operation not permitted" >&2; exit 1; fi ;; esac; done; exec /bin/rm "$@"',
+      );
+      fake("getent", "exit 1");
+      fake("gpasswd", "exit 0");
+      fake("chown", "exit 0");
+      const text = script
+        .replaceAll("/etc/sudoers.d", sudoers)
+        .replaceAll("/etc/sudoers", join(dir, "sudoers"));
+      return spawnSync("/bin/bash", ["-c", text], {
+        env: { PATH: `${bin}:/usr/bin:/bin` },
+        encoding: "utf8",
+      });
+    };
+    const setup = () => {
+      const dir = mkdtempSync(join(tmpdir(), "rm-root-"));
+      mkdirSync(join(dir, "bin"));
+      mkdirSync(join(dir, "sudoers.d"));
+      writeFileSync(join(dir, "sudoers.d", "employee"), "employee ALL=(ALL) NOPASSWD:ALL\n");
+      return dir;
+    };
+
+    it("succeeds on every run: the second run finds the file immutable and still clears it", () => {
+      const dir = setup();
+      try {
+        for (const n of [1, 2, 3]) {
+          const r = run(dir, removeRootScript("employee"));
+          expect(r.stderr, `run ${n}`).toBe("");
+          expect(r.stdout, `run ${n}`).toContain("@@no-root");
+          expect(r.status, `run ${n}`).toBe(0);
+          expect(existsSync(join(dir, "sudoers.d", "employee.immutable"))).toBe(true);
+          expect(readFileSync(join(dir, "sudoers.d", "employee"), "utf8")).toBe("");
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("the fake is honest: without the chattr -i steps the second run fails", () => {
+      const dir = setup();
+      try {
+        const old = removeRootScript("employee")
+          .split("\n")
+          .filter((l) => !l.startsWith("chattr -i"))
+          .join("\n")
+          .replaceAll('chattr -i "$f" 2>/dev/null || true; ', "");
+        expect(run(dir, old).status).toBe(0);
+        const second = run(dir, old);
+        expect(second.status).not.toBe(0);
+        expect(second.stderr).toContain("Operation not permitted");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 });

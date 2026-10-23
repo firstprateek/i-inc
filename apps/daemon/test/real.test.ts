@@ -189,7 +189,9 @@ describe("real mode", () => {
     const { registry } = app.deps;
     // No team claims Ada: she works in the company's sandbox.
     await app.deps.machines.ensureUp("ada");
-    expect(exec[0]).toEqual(["machine", "run", "-n", "inc-company", "--", "true"]);
+    // The first command is the startup check that the container service answers (T73).
+    expect(exec[0]).toEqual(["machine", "ls"]);
+    expect(exec[1]).toEqual(["machine", "run", "-n", "inc-company", "--", "true"]);
     registry.addTeam({ id: "engineering", name: "Engineering", members: ["kit"] });
     await app.deps.machines.ensureUp("kit");
     expect(exec.at(-1)).toEqual(["machine", "run", "-n", "inc-engineering", "--", "true"]);

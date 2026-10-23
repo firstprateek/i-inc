@@ -402,6 +402,11 @@ export class Storage {
     return this.locks.has(machine);
   }
 
+  /** A cleanup is running in some machine. */
+  anyHolding(): boolean {
+    return this.locks.size > 0;
+  }
+
   /** Takes a machine's lock. False if a cleanup already holds it. */
   private lock(machine: string): boolean {
     if (this.locks.has(machine)) return false;

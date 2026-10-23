@@ -248,6 +248,67 @@ describe("ollamaModelChoice", () => {
     expect(choice.current()).toBe("qwen3-8b-32k");
   });
 
+  it("logs a change of the choice once, in either direction, and asks before a request when the look is old", async () => {
+    let now = 0;
+    const installed = ["qwen3:8b"];
+    const f = vi.fn(
+      async () => new Response(JSON.stringify({ models: installed.map((name) => ({ name })) })),
+    );
+    const logs: string[] = [];
+    const choice = ollamaModelChoice({
+      fetch: f as never,
+      log: (m) => logs.push(m),
+      env: "",
+      now: () => now,
+    });
+    await choice.refresh();
+    expect(logs).toHaveLength(1); // the fallback, at the start
+    // Within the cache a request does not ask again.
+    now += 30_000;
+    await choice.fresh();
+    expect(f).toHaveBeenCalledTimes(1);
+    // The owner makes the model; the next request (a PA session's) waits for a look and uses it.
+    installed.push("qwen3-8b-32k:latest");
+    now += 10 * 60_000;
+    await choice.fresh();
+    expect(choice.current()).toBe("qwen3-8b-32k");
+    expect(logs).toHaveLength(2);
+    expect(logs[1]).toContain("now using qwen3-8b-32k");
+    // Asking again with nothing changed says nothing.
+    now += 10 * 60_000;
+    await choice.refresh();
+    expect(logs).toHaveLength(2);
+    // The model goes away: said once.
+    installed.pop();
+    now += 10 * 60_000;
+    await choice.refresh();
+    await choice.refresh();
+    expect(choice.current()).toBe("qwen3:8b");
+    expect(logs).toHaveLength(3);
+    expect(logs[2]).toContain("using qwen3:8b");
+  });
+
+  it("makes the helper wait for the look before it picks the model", async () => {
+    const order: string[] = [];
+    const f = vi.fn(async (url: string) => {
+      order.push(String(url).includes("/api/generate") ? "generate" : "other");
+      return new Response(JSON.stringify({ response: "x", models: [] }));
+    });
+    let model = "qwen3:8b";
+    const helper = new OllamaHelper({
+      fetch: f as never,
+      model: () => model,
+      fresh: async () => {
+        order.push("fresh");
+        model = "qwen3-8b-32k";
+      },
+    });
+    await helper.yesNo("is it new work?", "hello");
+    expect(order[0]).toBe("fresh");
+    const body = JSON.parse(String((f.mock.calls[0] as unknown as [string, { body: string }])[1].body));
+    expect(body.model).toBe("qwen3-8b-32k");
+  });
+
   it("obeys I_INC_OLLAMA_MODEL and doesn't ask", async () => {
     const f = tags("qwen3-8b-32k");
     const choice = ollamaModelChoice({ fetch: f as never, env: "my-model" });

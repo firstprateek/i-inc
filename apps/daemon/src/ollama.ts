@@ -5,6 +5,8 @@ export interface OllamaOptions {
   baseUrl?: string;
   /** A model name, or a function that says which model to use now (see `ollamaModelChoice`). */
   model?: string | (() => string);
+  /** Awaited before each request: makes sure the model choice is not older than its cache allows (`ollamaModelChoice().fresh`). */
+  fresh?: () => Promise<unknown>;
   fetch?: typeof fetch;
 }
 
@@ -15,8 +17,10 @@ export const BASE_MODEL = "qwen3:8b";
 /**
  * Which Ollama model the daemon's own helper and chat use: `I_INC_OLLAMA_MODEL` if it is set, otherwise
  * `qwen3-8b-32k` whenever Ollama lists it as installed, otherwise `qwen3:8b` with a warning (once). Ollama's
- * installed models are read at start (`refresh`) and again, in the background, at most once a minute, so a model made
- * by `ollama-pa-model.sh` is picked up without a restart. `current()` never waits and never throws.
+ * installed models are read at start (`refresh`) and again, in the background, at most once a minute when something
+ * asks (`current()`), every ten minutes by a timer (main.ts) and before each request of the helper and chat
+ * (`fresh()`, cached for the same minute), so a model made by `ollama-pa-model.sh` is picked up without a restart.
+ * A change of the choice is logged once. `current()` never waits and never throws.
  */
 export function ollamaModelChoice(
   o: {
@@ -27,7 +31,7 @@ export function ollamaModelChoice(
     now?: () => number;
     ttlMs?: number;
   } = {},
-): { current: () => string; refresh: () => Promise<void> } {
+): { current: () => string; refresh: () => Promise<void>; fresh: () => Promise<void> } {
   const pinned = o.env ?? process.env.I_INC_OLLAMA_MODEL;
   const base = (o.baseUrl ?? process.env.I_INC_OLLAMA ?? "http://127.0.0.1:11434").replace(/\/+$/, "");
   const fetchFn = o.fetch ?? globalThis.fetch;
@@ -35,6 +39,26 @@ export function ollamaModelChoice(
   let chosen = pinned || BASE_MODEL;
   let checkedAt = Number.NEGATIVE_INFINITY;
   let warned = false;
+  /** The choice last logged or settled on, so a change is said once. */
+  let announced: string | undefined;
+  const settle = (model: string, warn?: string) => {
+    const before = announced;
+    chosen = model;
+    announced = model;
+    if (before === undefined) {
+      // The first look: only a fallback is worth a line.
+      if (warn && !warned) {
+        warned = true;
+        o.log?.(warn);
+      }
+    } else if (before !== model) {
+      o.log?.(
+        model === PA_MODEL
+          ? `ollama: now using ${PA_MODEL} (it is installed)`
+          : (warn ?? `ollama: now using ${model}`),
+      );
+    }
+  };
   let inFlight: Promise<void> | undefined;
   const refresh = (): Promise<void> => {
     if (pinned) return Promise.resolve();
@@ -47,19 +71,15 @@ export function ollamaModelChoice(
           .flatMap((m) => [m.name, m.model])
           .filter((n) => typeof n === "string");
         if (names.some((n) => n === PA_MODEL || n === `${PA_MODEL}:latest`)) {
-          chosen = PA_MODEL;
-          warned = false;
+          settle(PA_MODEL);
           return;
         }
         throw new Error(`${PA_MODEL} isn't installed`);
       } catch (e) {
-        chosen = BASE_MODEL;
-        if (!warned) {
-          warned = true;
-          o.log?.(
-            `ollama: using ${BASE_MODEL}, not ${PA_MODEL} (${e instanceof Error ? e.message : String(e)}). Make it with: sh tools/host/ollama-pa-model.sh`,
-          );
-        }
+        settle(
+          BASE_MODEL,
+          `ollama: using ${BASE_MODEL}, not ${PA_MODEL} (${e instanceof Error ? e.message : String(e)}). Make it with: sh tools/host/ollama-pa-model.sh`,
+        );
       }
     })().finally(() => {
       inFlight = undefined;
@@ -72,6 +92,10 @@ export function ollamaModelChoice(
       return chosen;
     },
     refresh,
+    // Waits for a look when the last one is older than the cache allows; otherwise answers at once.
+    fresh: async () => {
+      if (!pinned && now() - checkedAt > (o.ttlMs ?? 60_000)) await refresh();
+    },
   };
 }
 
@@ -105,13 +129,17 @@ class OllamaClient {
     const m = opts.model ?? process.env.I_INC_OLLAMA_MODEL ?? BASE_MODEL;
     this.modelOf = typeof m === "function" ? m : () => m;
     this.fetchFn = opts.fetch ?? globalThis.fetch;
+    this.fresh = opts.fresh;
   }
+
+  private readonly fresh: (() => Promise<unknown>) | undefined;
 
   get model(): string {
     return this.modelOf();
   }
 
   protected async generate(prompt: string, format?: "json"): Promise<string> {
+    await this.fresh?.().catch(() => {});
     const res = await this.fetchFn(`${this.baseUrl}/api/generate`, {
       method: "POST",
       headers: { "content-type": "application/json" },
