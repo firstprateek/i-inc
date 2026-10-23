@@ -1,7 +1,7 @@
 // Who can take a ticket, who usually does, and the plain-words reason a ticket is waiting. Pure, so the
 // new-ticket form, the ticket page, the board and the inbox share one rule.
-import type { Employee } from "@i-inc/core";
-import type { TicketView } from "./api.ts";
+import { type Employee, UNASSIGNED } from "@i-inc/core";
+import type { RecentWork, TicketView } from "./api.ts";
 import { atTime, hourLabel, withResume } from "./time.ts";
 
 /** An employee who may work on the project (`projects` absent means all) and builds tickets. */
@@ -14,7 +14,11 @@ export function assignable(employees: Employee[], project: string): Employee[] {
  * project in their `projects` who worked on it most recently (the highest ticket id they built there),
  * then the other project members, then employees who work on every project.
  */
-export function assignees(employees: Employee[], project: string, tickets: TicketView[]): Employee[] {
+export function assignees(
+  employees: Employee[],
+  project: string,
+  tickets: (Pick<RecentWork, "id" | "project" | "status"> & { assignee: { id: string } | null })[],
+): Employee[] {
   const lastWork = new Map<string, number>();
   for (const t of tickets) {
     if (t.project !== project || !t.assignee || t.status === "queued") continue;
@@ -41,13 +45,8 @@ export const NOBODY_LABEL = "Nobody yet — Won't start until someone is assigne
 /** A ticket nobody has started: the owner may still choose who does it. */
 export const notStarted = (t: Pick<TicketView, "status">): boolean => t.status === "queued";
 
-/** The owner can fix this wait by assigning: nobody is assigned and no standing order covers it, or the assignee isn't on the team. */
-export function waitsForAssignee(t: Pick<TicketView, "status" | "waiting" | "assignee" | "held">): boolean {
-  if (!notStarted(t) || t.held) return false;
-  return t.waiting === UNASSIGNED || /^assignee .+ doesn't work here$/.test(t.waiting ?? "");
-}
-
-export const UNASSIGNED = "unassigned, and no standing order covers it";
+// The rule is shared with the daemon, which builds the Needs you payload with it (@i-inc/core, board.ts).
+export { UNASSIGNED, waitsForAssignee } from "@i-inc/core";
 
 /** The owner's own time zone, friendly: "2:14 AM", or "tomorrow at 2:14 AM" when it is not today. */
 const clock = (at: number): string => atTime(at);

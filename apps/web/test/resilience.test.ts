@@ -9,6 +9,7 @@ import "../src/components/knowledge.ts";
 import "../src/components/ticket.ts";
 import { report } from "../src/connection.ts";
 import { parse } from "../src/routes.ts";
+import { answer } from "./daemon-board.ts";
 
 const view = (over: Partial<TicketView>): TicketView => ({
   id: "1",
@@ -71,10 +72,11 @@ describe("a daemon that goes away and comes back", () => {
     let boardCalls = 0;
     vi.stubGlobal("fetch", async (url: string) => {
       if (!up) throw new TypeError("Failed to fetch");
-      if (url === "/api/board") {
+      if (url.startsWith("/api/board/summary")) {
         boardCalls++;
-        return json({ tickets: [view({})] });
+        return json(answer({ tickets: [view({})] }, url));
       }
+      if (url === "/api/needs-you") return json(answer({ tickets: [view({})] }, url));
       if (url === "/api/projects") return json({ projects: [{ id: "Duet" }] });
       return json({ proposals: [], employees: [], pages: [], history: [], awaiting: [], conversations: [] });
     });
@@ -139,8 +141,10 @@ describe("a refresh that fails with an answer from the daemon", () => {
   it("keeps the data, and the shell says so with a retry", async () => {
     let fail = false;
     vi.stubGlobal("fetch", async (url: string) => {
-      if (url === "/api/board")
-        return fail ? json({ error: "the daemon had a bad day" }, 500) : json({ tickets: [view({})] });
+      if (url.startsWith("/api/board/summary"))
+        return fail
+          ? json({ error: "the daemon had a bad day" }, 500)
+          : json(answer({ tickets: [view({})] }, url));
       return json({ proposals: [], conversations: [], employees: [], projects: [] });
     });
     location.hash = "#/work/board";
@@ -172,7 +176,7 @@ describe("the loader", () => {
       "fetch",
       (url: string) =>
         new Promise<Response>((resolve) => {
-          if (url === "/api/board") pending.push(resolve);
+          if (url.startsWith("/api/board/summary")) pending.push(resolve);
           else resolve(json({ proposals: [], conversations: [], employees: [] }));
         }),
     );
@@ -181,9 +185,16 @@ describe("the loader", () => {
     await tick();
     expect(pending.length).toBe(2); // the first load, and the refresh
     // the refresh (newer) is answered first, with both tickets; the first load's old answer comes last
-    pending[1]?.(json({ tickets: [view({ id: "1" }), view({ id: "2", title: "Second ticket" })] }));
+    pending[1]?.(
+      json(
+        answer(
+          { tickets: [view({ id: "1" }), view({ id: "2", title: "Second ticket" })] },
+          "/api/board/summary",
+        ),
+      ),
+    );
     await settle(board);
-    pending[0]?.(json({ tickets: [view({ id: "1" })] }));
+    pending[0]?.(json(answer({ tickets: [view({ id: "1" })] }, "/api/board/summary")));
     await settle(board);
     expect(board.shadowRoot?.textContent).toContain("Second ticket");
   });
@@ -191,9 +202,9 @@ describe("the loader", () => {
   it("shows the first load's failure with a retry instead of a dead end", async () => {
     let up = false;
     vi.stubGlobal("fetch", async (url: string) =>
-      url === "/api/board" && !up
+      url.startsWith("/api/board/summary") && !up
         ? json({ error: "no board today" }, 500)
-        : json({ tickets: [view({})], proposals: [] }),
+        : json(answer({ tickets: [view({})] }, url) ?? { proposals: [] }),
     );
     const board = await mount<HTMLElement>("inc-board");
     expect(board.shadowRoot?.textContent).toContain("Couldn't load the board: no board today");
@@ -215,8 +226,10 @@ describe("a failed button press", () => {
   it("keeps the list and says what went wrong above it", async () => {
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       if (init?.method === "POST") return json({ error: "ticket 3 is not waiting" }, 409);
-      if (url === "/api/board")
-        return json({ tickets: [needsYou, view({ id: "1", status: "ready", column: "review" })] });
+      if (url === "/api/needs-you")
+        return json(
+          answer({ tickets: [needsYou, view({ id: "1", status: "ready", column: "review" })] }, url),
+        );
       return json({ pages: [], history: [], awaiting: [], proposals: [], conversations: [] });
     });
     const inbox = await mount<HTMLElement>("inc-inbox");
@@ -241,7 +254,7 @@ describe("a failed button press", () => {
         });
         return json({ ok: true });
       }
-      if (url === "/api/board") return json({ tickets: [needsYou] });
+      if (url === "/api/needs-you") return json(answer({ tickets: [needsYou] }, url));
       return json({ pages: [], history: [], awaiting: [], proposals: [], conversations: [] });
     });
     const inbox = await mount<HTMLElement>("inc-inbox");
@@ -402,7 +415,9 @@ describe("a half-written ticket", () => {
 describe("a 404 on a loader view", () => {
   it("says it isn't there in words, never the daemon's raw sentence", async () => {
     vi.stubGlobal("fetch", async (url: string) =>
-      url === "/api/board" ? json({ error: "no such board" }, 404) : json({ proposals: [], tickets: [] }),
+      url.startsWith("/api/board/summary")
+        ? json({ error: "no such board" }, 404)
+        : json({ proposals: [], tickets: [] }),
     );
     const board = await mount<HTMLElement>("inc-board");
     expect(board.shadowRoot?.textContent).toContain("The board isn't there. It may have been removed.");

@@ -150,8 +150,12 @@ export function startLiveUpdates(stream: Live = live): () => void {
   };
   refresh.addEventListener("refresh", onRefresh);
 
+  const hidden = () => document.visibilityState === "hidden";
   const flush = () => {
     timer = 0;
+    // A backgrounded tab does not refetch for events (each one costs a request); it keeps what they named and
+    // catches up when it is shown again.
+    if (hidden()) return;
     const scope = { tickets, office };
     const all = broad;
     tickets = new Set();
@@ -174,7 +178,12 @@ export function startLiveUpdates(stream: Live = live): () => void {
     queue();
   });
   const offStatus = stream.onStatus((connected, reconnected) => {
-    if (connected && reconnected) refreshNow();
+    if (!connected || !reconnected) return;
+    if (hidden()) {
+      broad = true; // catch up when shown
+      return;
+    }
+    refreshNow();
   });
 
   const poll = window.setInterval(() => {
@@ -183,7 +192,10 @@ export function startLiveUpdates(stream: Live = live): () => void {
   }, FALLBACK_POLL_MS);
 
   const onVisible = () => {
-    if (document.visibilityState === "visible" && Date.now() - last >= FALLBACK_POLL_MS) refreshNow();
+    if (document.visibilityState !== "visible") return;
+    if (tickets.size || office || broad) {
+      queue(); // events came while it was hidden: one refetch of what they named
+    } else if (Date.now() - last >= FALLBACK_POLL_MS) refreshNow();
   };
   document.addEventListener("visibilitychange", onVisible);
 

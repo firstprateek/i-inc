@@ -1,6 +1,7 @@
 // Who starts what next (spec §6, "Assignment and scheduling"). Pure: the daemon passes a snapshot
 // and starts what comes back. Every ticket that doesn't start gets a reason, which the board shows
 // ("waits for Claude Pro at 3:40 pm").
+import { UNASSIGNED } from "./board.ts";
 import { findEngine } from "./engines.ts";
 import type { Duty, Employee, Id, StandingOrder, TicketType, WorkingHours } from "./model.ts";
 import type { Company } from "./ports.ts";
@@ -184,7 +185,7 @@ export function schedule(snap: Snapshot, company: Pick<Company, "engine" | "engi
       starts.push({ employeeId: taker.id, ticketId: t.id, as: "build", by: "standing-order" });
     } else {
       const first = takers[0];
-      const why = first ? (available(first, "build") ?? "") : "unassigned, and no standing order covers it";
+      const why = first ? (available(first, "build") ?? "") : UNASSIGNED;
       const until = first && isReset(why) ? resetAt(first) : undefined;
       if (until) resets[t.id] = until;
       waiting.push({ ticketId: t.id, reason: why });

@@ -1,12 +1,14 @@
-import type { AccountCost, Employee, ProjectRelease, TicketEvent } from "@i-inc/core";
+import type { AccountCost, DigestRow, Employee, ProjectRelease, TicketEvent } from "@i-inc/core";
 import type {
   AccountRateLimit,
+  BoardSummaryView,
   BrainChangesView,
   BrainChangeView,
   DeskEntry,
   DeskView,
   KnowledgeView,
   NamedChange,
+  NeedsYouView,
   Page,
   PendingRelease,
   PendingTicket,
@@ -21,12 +23,14 @@ import type { Engine } from "./providers.ts";
 export type {
   AccountCost,
   AccountRateLimit,
+  BoardSummaryView,
   BrainChangesView,
   BrainChangeView,
   DeskEntry,
   DeskView,
   KnowledgeView,
   NamedChange,
+  NeedsYouView,
   Page,
   PendingRelease,
   PendingTicket,
@@ -38,6 +42,14 @@ export type {
   TicketEvent,
   TicketView,
 };
+
+/** The newest started ticket of an employee in a project (`GET /api/board/recent`). */
+export interface RecentWork {
+  id: string;
+  project: string;
+  status: string;
+  assignee: { id: string };
+}
 
 /** One entry of a session transcript (contract C4). */
 export interface TranscriptItem {
@@ -266,6 +278,28 @@ export const api = {
   login,
   logout,
   board: () => call<{ tickets: TicketView[] }>("GET", "/api/board").then((r) => r.tickets),
+  /** The board's first page: each column's first cards and total, and the report of each Done card (T63). */
+  boardSummary: (q: { limit?: number; doneLimit?: number } = {}) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(q)) if (v !== undefined) p.set(k, String(v));
+    return call<BoardSummaryView>("GET", `/api/board/summary${p.size ? `?${p}` : ""}`);
+  },
+  /** More of one column. */
+  boardColumn: (column: TicketView["column"], offset: number, limit: number) =>
+    call<{ total: number; tickets: TicketView[]; reports: Record<string, DigestRow> }>(
+      "GET",
+      `/api/board/column?column=${column}&offset=${offset}&limit=${limit}`,
+    ),
+  /** The cards of these tickets alone, for a live update; `gone` are ids that no longer exist. */
+  boardCards: (ids: string[]) =>
+    call<{ tickets: TicketView[]; reports: Record<string, DigestRow>; gone: string[]; maxId: number }>(
+      "GET",
+      `/api/board/cards?ids=${ids.map(encodeURIComponent).join(",")}`,
+    ),
+  /** Who last worked on each project, to rank the people to offer for a ticket. */
+  recentWork: () => call<{ tickets: RecentWork[] }>("GET", "/api/board/recent").then((r) => r.tickets),
+  /** Everything waiting for the owner, and its count, in one request. */
+  needsYou: () => call<NeedsYouView>("GET", "/api/needs-you"),
   projects: () => call<{ projects: { id: string }[] }>("GET", "/api/projects").then((r) => r.projects),
   createTicket,
   office: () => call<OfficeResponse>("GET", "/api/office"),

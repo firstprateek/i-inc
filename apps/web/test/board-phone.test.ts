@@ -5,6 +5,7 @@ import type { TicketEvent, TicketView } from "../src/api.ts";
 import { ago, digestRow } from "../src/components/board.ts";
 import "../src/components/board.ts";
 import { NEW_TICKET_EVENT } from "../src/components/new-ticket.ts";
+import { answer } from "./daemon-board.ts";
 
 const view = (over: Partial<TicketView> & { createdBy?: unknown }): TicketView =>
   ({
@@ -41,6 +42,8 @@ function serve(tickets: TicketView[], events: Record<string, TicketEvent[]> = {}
     calls.push({ method, url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
     const reply = (body: unknown, status = 200) =>
       new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const board = answer({ tickets, events }, url);
+    if (board !== undefined) return reply(board);
     if (url === "/api/board") return reply({ tickets });
     if (url === "/api/projects") return reply({ projects: [{ id: "Duet" }, { id: "fintrack" }] });
     if (url === "/api/tickets" && method === "POST") {

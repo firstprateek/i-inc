@@ -4,6 +4,7 @@ import type { ProposalView } from "../src/api.ts";
 import { refreshNow } from "../src/api.ts";
 import "../src/components/board.ts";
 import "../src/components/inbox.ts";
+import { answer } from "./daemon-board.ts";
 
 const proposal = (over: Partial<ProposalView> = {}): ProposalView => ({
   id: 1,
@@ -26,23 +27,21 @@ const proposal = (over: Partial<ProposalView> = {}): ProposalView => ({
 let open: ProposalView[] = [];
 let calls: { method: string; url: string }[] = [];
 let failWith: { status: number; error: string } | null = null;
-let proposalsStatus = 200;
 
 function serve() {
   calls = [];
   failWith = null;
-  proposalsStatus = 200;
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
     calls.push({ method, url });
     const reply = (body: unknown, status = 200) =>
       new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const world = answer({ tickets: [], proposals: open }, url);
+    if (world !== undefined) return reply(world);
     if (url === "/api/board") return reply({ tickets: [] });
     if (url === "/api/projects") return reply({ projects: [{ id: "Duet" }] });
     if (url === "/api/knowledge/handbook") return reply({ pages: [], history: [], awaiting: [] });
-    if (url === "/api/proposals?status=open") {
-      return proposalsStatus === 200 ? reply({ proposals: open }) : reply({ error: "not found" }, 404);
-    }
+    if (url === "/api/proposals?status=open") return reply({ proposals: open });
     const m = /^\/api\/proposals\/(\d+)\/(accept|decline)$/.exec(url);
     if (m && method === "POST") {
       if (failWith) return reply({ error: failWith.error }, failWith.status);
@@ -246,13 +245,6 @@ describe("Proposed in Needs you", () => {
     expect(after.querySelector(".proposed")).toBeNull();
     expect(after.querySelector(".all-done")?.textContent).toContain("All decided");
     expect(after.activeElement?.classList.contains("all-done")).toBe(true);
-  });
-
-  it("still shows the list when the daemon has no proposals route", async () => {
-    proposalsStatus = 404;
-    const root = await mount("inc-inbox");
-    expect(root.querySelector(".summary")).not.toBeNull();
-    expect(section(root)?.querySelector(".proposed")).toBeFalsy();
   });
 
   it("refetches on a live refresh, so a new proposal appears without a reload", async () => {

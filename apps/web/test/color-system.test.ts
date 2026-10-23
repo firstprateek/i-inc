@@ -7,6 +7,7 @@ import "../src/components/desk.ts";
 import type { IncOffice } from "../src/components/office.ts";
 import "../src/components/office.ts";
 import { projectBadge, projectIndex, tints } from "../src/components/shared.ts";
+import { boardData } from "./daemon-board.ts";
 
 function sRGBtoLinear(c: number): number {
   const norm = c / 255;
@@ -222,56 +223,53 @@ describe("Rich visual identity and color system (T38)", () => {
 
   it("board renders status column indicator dots and active card accent classes (including paused)", async () => {
     const el = document.createElement("inc-board") as IncBoard;
-    (el as unknown as { data: unknown }).data = {
-      tickets: [
-        {
-          id: "1",
-          title: "Fix bug",
-          project: "i-inc",
-          type: "fix",
-          effort: "small",
-          column: "in-progress",
-          status: "running",
-          stages: [],
-          live: "Running",
-        },
-        {
-          id: "2",
-          title: "Review PR",
-          project: "duet",
-          type: "feature",
-          effort: "medium",
-          column: "review",
-          status: "reviewing",
-          stages: [],
-          live: "Reviewing",
-        },
-        {
-          id: "3",
-          title: "Needs user OK",
-          project: "i-inc",
-          type: "task",
-          effort: "small",
-          column: "in-progress",
-          status: "needs-you",
-          stages: [],
-          live: "Waiting",
-        },
-        {
-          id: "4",
-          title: "Paused out of tokens",
-          project: "i-inc",
-          type: "chore",
-          effort: "small",
-          column: "in-progress",
-          status: "paused",
-          waiting: "coffee break",
-          stages: [],
-          live: "Paused",
-        },
-      ],
-      digest: [],
-    };
+    (el as unknown as { data: unknown }).data = boardData([
+      {
+        id: "1",
+        title: "Fix bug",
+        project: "i-inc",
+        type: "fix",
+        effort: "small",
+        column: "in-progress",
+        status: "running",
+        stages: [],
+        live: "Running",
+      },
+      {
+        id: "2",
+        title: "Review PR",
+        project: "duet",
+        type: "feature",
+        effort: "medium",
+        column: "review",
+        status: "reviewing",
+        stages: [],
+        live: "Reviewing",
+      },
+      {
+        id: "3",
+        title: "Needs user OK",
+        project: "i-inc",
+        type: "task",
+        effort: "small",
+        column: "in-progress",
+        status: "needs-you",
+        stages: [],
+        live: "Waiting",
+      },
+      {
+        id: "4",
+        title: "Paused out of tokens",
+        project: "i-inc",
+        type: "chore",
+        effort: "small",
+        column: "in-progress",
+        status: "paused",
+        waiting: "coffee break",
+        stages: [],
+        live: "Paused",
+      },
+    ]);
     document.body.appendChild(el);
     await el.updateComplete;
 
