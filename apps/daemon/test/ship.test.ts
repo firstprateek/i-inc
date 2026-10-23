@@ -475,7 +475,8 @@ describe("idempotency", () => {
       rig.call("POST", `/api/conversations/${c.conv.id}/ticket`, { title: "One" }),
       rig.call("POST", `/api/conversations/${c.conv.id}/ticket`, { title: "Two" }),
     ]);
-    expect([one.status, two.status].sort()).toEqual([200, 201]);
+    // The bodies are in the assertion, so a failure on CI says which step failed (both clicks share one attempt).
+    expect([one, two].map((r) => r.status).sort(), JSON.stringify([one.body, two.body])).toEqual([200, 201]);
     expect(one.body.ticket.id).toBe(two.body.ticket.id);
     expect(rig.app.deps.tickets.all()).toHaveLength(1);
     expect(rig.prs.prs).toHaveLength(1);

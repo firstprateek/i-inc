@@ -20,6 +20,14 @@ machines out. So `container build` (its builder is the container `buildkit`) and
 their internet while the daemon runs, within about half a minute of starting; so does a machine you make by
 hand, such as `inc-imagecheck`. If the daemon is stopped nothing new is declared and a build has no network:
 start the daemon first. Check with `container ls` and, on the mini, `cat /var/run/i-inc-walls.open`.
+Machines don't reach each other (T70): the walls drop traffic between two machines, so a build or a check
+that needs to talk to another machine has to go through the host.
+
+**Launchers in older machines.** A rebuilt image only reaches machines made after it, but the daemon copies
+the release's `acp-env.sh`, `launchers/acp-*` and `claude-settings.json` into a running machine whose launcher
+is older (it finds out in the sweep before a launch and in Setup's probe; apps/daemon `updateLauncher`), as
+root and after checking the walls. A stopped machine is updated the next time it is up. `tools/host/update-machine.sh`
+does the same by hand.
 A personal assistant's sandbox is made by the daemon, not by hand, and has its user's sudo removed (so
 `check.sh`'s "sudo needs no password" line fails there on purpose).
 
