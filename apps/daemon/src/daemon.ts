@@ -854,6 +854,7 @@ export class Daemon {
         ...(r.ticket.labels ? { labels: r.ticket.labels } : {}),
         priority: r.priority,
         createdAt: r.createdAt,
+        queueSequence: r.queueSequence,
         assignee: r.ticket.assignee || null,
         hold: r.hold,
       }));

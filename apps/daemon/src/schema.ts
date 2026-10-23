@@ -225,4 +225,30 @@ export function migrate(db: Db): void {
       body TEXT NOT NULL
     );
   `);
+  // Add and backfill exactly once, atomically. Existing assignment history is unavailable:
+  // preserve the old priority/creation order, with numeric ticket IDs breaking timestamp ties.
+  db.transaction(() => {
+    if (db.all<{ name: string }>("PRAGMA table_info(tickets)").some((c) => c.name === "queue_sequence"))
+      return;
+    db.exec(`
+      ALTER TABLE tickets ADD COLUMN queue_sequence INTEGER;
+      CREATE TABLE ticket_queue_counter (id INTEGER PRIMARY KEY CHECK (id = 1), value INTEGER NOT NULL);
+      INSERT INTO ticket_queue_counter VALUES (1, 0);
+    `);
+    const rows = db.all<{ id: string; body: string }>(
+      "SELECT id, body FROM tickets ORDER BY priority DESC, created_at, CAST(id AS INTEGER), id",
+    );
+    let sequence = 0;
+    for (const row of rows) {
+      let ticket: { assignee?: unknown } | null;
+      try {
+        ticket = JSON.parse(row.body);
+      } catch {
+        continue;
+      }
+      if (typeof ticket?.assignee !== "string" || !ticket.assignee) continue;
+      db.run("UPDATE tickets SET queue_sequence = ? WHERE id = ?", ++sequence, row.id);
+    }
+    db.run("UPDATE ticket_queue_counter SET value = ? WHERE id = 1", sequence);
+  });
 }

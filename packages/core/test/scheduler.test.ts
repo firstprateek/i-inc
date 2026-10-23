@@ -104,6 +104,19 @@ describe("the scheduler", () => {
     expect(plan.waiting).toEqual([{ ticketId: "a", reason: "Ada is busy" }]);
   });
 
+  it("runs assigned work in assignment order ahead of priority and older tickets", () => {
+    const plan = schedule(
+      snap({
+        backlog: [
+          item("old", { assignee: "ada", priority: 10, createdAt: 0, queueSequence: 2 }),
+          item("first", { assignee: "ada", createdAt: 100, queueSequence: 1 }),
+        ],
+      }),
+      company,
+    );
+    expect(plan.starts).toEqual([{ employeeId: "ada", ticketId: "first", as: "build", by: "assignment" }]);
+  });
+
   it("respects holds, working hours, usage caps and standing-order limits", () => {
     const plan = schedule(
       snap({
