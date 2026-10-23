@@ -21,7 +21,7 @@ describe("durable ticket queues", () => {
     try {
       migrate(db);
       const tickets = new Tickets(db);
-      tickets.create({ ...input, assignee: undefined }, 0);
+      tickets.create({ ...input, assignee: "" }, 0);
       tickets.create(input, 0);
       tickets.assign("1", "ada");
       expect(tickets.get("1")?.queueSequence).toBe(2);

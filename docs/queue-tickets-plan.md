@@ -1,6 +1,22 @@
 # Ticket #25: ability to queue tickets
 
-Stage: plan. No runtime changes in this commit.
+Stage: build. Implemented using the recommended defaults below.
+
+## Implementation
+
+- Assigned tickets now use a transactionally allocated, persisted FIFO sequence. Repeating an
+  assignment keeps its position; reassignment appends, and holds retain their saved position.
+- Legacy assigned rows migrate in priority/creation/numeric-ID order. Unassigned tickets retain
+  standing-order priority and daily limits; explicit queues take precedence over new pickups.
+- Existing occupancy and completion rules remain: Report ready releases the builder, while waiting
+  for owner input, helpers or tokens before that point blocks subsequent builds. The UI is unchanged.
+- Regression coverage includes an ordering test demonstrated failing before implementation, both
+  assignment endpoints behind a busy employee, automatic advancement across a database restart,
+  migration, equal timestamps, reassignment, holds, standing orders and terminal occupancy.
+
+Build validation: `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm typecheck`, and
+`pnpm test` all passed on 2026-10-23. Tests: 3,182 passed, 56 skipped, plus host shell checks.
+Biome reported the same two pre-existing informational template-literal notices.
 
 ## Findings
 
