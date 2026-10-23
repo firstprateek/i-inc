@@ -78,6 +78,16 @@ export function ticketView(
   // Rows the store could not read back stand in the log as placeholders (store.ts).
   const unreadable = events.filter((e) => e.type === "unreadable").length;
 
+  // An owner-merges ticket waiting for the owner: the PR is theirs to merge on GitHub.
+  const pr = s.pr;
+  const mergeOnGitHub =
+    s.status === "ready" &&
+    pr?.number !== undefined &&
+    pr.url !== undefined &&
+    registry.projectPolicy(r.ticket.project).mode === "owner-merges"
+      ? { number: pr.number, url: pr.url }
+      : undefined;
+
   return {
     id: r.ticket.id,
     title: r.ticket.title,
@@ -96,6 +106,7 @@ export function ticketView(
     needsYou: s.needsYou,
     waiting,
     ...(waiting && waitingUntil ? { waitingUntil } : {}),
+    ...(mergeOnGitHub ? { mergeOnGitHub } : {}),
     report: s.status === "ready" ? assembleReport({ ...r.ticket, assignee: assigneeId }, s, registry) : null,
     failure: s.failure,
     outcome: s.outcome,

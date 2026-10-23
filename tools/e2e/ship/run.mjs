@@ -343,11 +343,14 @@ async function flow(browser, combo) {
   await page.locator("inc-conv-composer textarea").waitFor();
   ok(page.url().endsWith(`#/conversations/${a.id}`), `${combo.name}: the link goes back to the conversation`);
 
-  // ---- 5. The owner merges: the conversation has its copy back ----
+  // ---- 5. The owner merges the PR on GitHub: the ticket closes by itself, and the conversation has its copy back ----
   ok(
-    (await api("POST", `/api/tickets/${ticketId}/decide`, { decision: "approve" })).status === 200,
-    `${combo.name}: the owner approves`,
+    (await api("POST", `/api/tickets/${ticketId}/decide`, { decision: "approve" })).status === 409,
+    `${combo.name}: Approve is refused while the PR is open`,
   );
+  const shown = (await api("GET", `/api/tickets/${ticketId}`)).body.ticket.mergeOnGitHub;
+  ok(Boolean(shown?.url), `${combo.name}: the ticket points at the PR to merge`);
+  await control({ op: "merge", number: shown.number });
   await until(
     async () => (await api("GET", `/api/tickets/${ticketId}`)).body.ticket.status === "done",
     "the ticket to be done",

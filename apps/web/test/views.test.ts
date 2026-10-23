@@ -152,6 +152,34 @@ describe("the inbox", () => {
     });
   });
 
+  // T63 7.1: in owner-merges the owner merges the PR on GitHub; i.inc notices and marks the ticket merged.
+  it("sends the owner to GitHub for a ready ticket whose PR is open, with no Approve", async () => {
+    serve([
+      view({
+        id: "8",
+        status: "ready",
+        column: "review",
+        mergeOnGitHub: { number: 12, url: "https://github.com/acme/duet/pull/12" },
+      }),
+    ]);
+    const root = await mount("inc-inbox");
+    const labels = [...root.querySelectorAll("button, a.btn")].map((b) => b.textContent?.trim());
+    expect(labels).toContain("Merge on GitHub");
+    expect(labels).toContain("Close without merging");
+    expect(labels).not.toContain("Approve");
+    const link = [...root.querySelectorAll("a")].find((a) => a.textContent?.trim() === "Merge on GitHub");
+    expect(link?.getAttribute("href")).toBe("https://github.com/acme/duet/pull/12");
+    expect(root.textContent).toContain("i.inc marks it merged by itself once you merge the PR");
+
+    [...root.querySelectorAll("button")].find((b) => b.textContent === "Close without merging")?.click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).toContainEqual({
+      method: "POST",
+      url: "/api/tickets/8/decide",
+      body: { decision: "reject" },
+    });
+  });
+
   it("offers Keep going on a stuck ticket, and sends the continue answer", async () => {
     serve([
       view({
@@ -287,6 +315,74 @@ describe("the ticket drawer", () => {
       body: {},
     });
     expect(changedDispatched).toBe(true);
+  });
+});
+
+describe("a ready ticket's page", () => {
+  async function page(over: Partial<TicketView>) {
+    const t = view({
+      id: "9",
+      status: "ready",
+      column: "review",
+      report: { checks: "Checks green", byline: "Ada", minutes: 12, engines: "", judgment: "Moved it" },
+      ...over,
+    } as Partial<TicketView>);
+    calls = [];
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      calls.push({
+        method: init?.method ?? "GET",
+        url,
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      });
+      const body = url === "/api/tickets/9" ? { ticket: t, events: [] } : { ok: true };
+      return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+    });
+    return mount("inc-ticket", { ticketId: "9" });
+  }
+  const labels = (root: ShadowRoot) =>
+    [...root.querySelectorAll("button, a.btn")].map((b) => b.textContent?.trim());
+
+  it("owner-merges with an open PR: Merge on GitHub and Close without merging, no Approve", async () => {
+    const root = await page({ mergeOnGitHub: { number: 3, url: "https://github.com/acme/duet/pull/3" } });
+    expect(labels(root)).toEqual(
+      expect.arrayContaining(["Merge on GitHub", "Close without merging", "Request changes"]),
+    );
+    expect(labels(root)).not.toContain("Approve and merge");
+    expect(labels(root)).not.toContain("Reject");
+    expect(
+      [...root.querySelectorAll("a")].find((a) => a.textContent?.trim() === "Merge on GitHub")?.href,
+    ).toBe("https://github.com/acme/duet/pull/3");
+    expect(root.textContent).toContain("i.inc marks it merged by itself once you merge the PR");
+    [...root.querySelectorAll("button")].find((b) => b.textContent === "Close without merging")?.click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).toContainEqual({
+      method: "POST",
+      url: "/api/tickets/9/decide",
+      body: { decision: "reject" },
+    });
+  });
+
+  it("tells the owner when the PR turns out to be merged already", async () => {
+    const root = await page({ mergeOnGitHub: { number: 3, url: "https://github.com/acme/duet/pull/3" } });
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      calls.push({
+        method: init?.method ?? "GET",
+        url,
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      });
+      return new Response(JSON.stringify({ ok: true, merged: true, message: "That PR was already merged" }), {
+        headers: { "content-type": "application/json" },
+      });
+    });
+    [...root.querySelectorAll("button")].find((b) => b.textContent === "Close without merging")?.click();
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+    expect(root.querySelector("[role=alert]")?.textContent).toContain("That PR was already merged");
+  });
+
+  it("direct mode is unchanged: Approve and merge, Reject", async () => {
+    const root = await page({});
+    expect(labels(root)).toEqual(expect.arrayContaining(["Approve and merge", "Reject"]));
+    expect(labels(root)).not.toContain("Merge on GitHub");
   });
 });
 

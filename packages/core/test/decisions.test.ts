@@ -88,6 +88,16 @@ describe("the owner's decision", () => {
     await decide(merged, "42", "reject");
     await runTicket(merged, ticket);
     expect(merged.workspace.prStates.get("42")).toBe("merged");
+    expect(merged.workspace.closedPrs).toEqual([]);
+  });
+
+  it("records merged when the owner closes without merging a PR they had already merged", async () => {
+    const p = withPr();
+    await runTicket(p, ticket);
+    p.workspace.prStates.set("42", "merged");
+    await decide(p, "42", "reject");
+    expect(await runTicket(p, ticket)).toEqual({ status: "done", outcome: "merged" });
+    expect(p.workspace.closedPrs).toEqual([]);
   });
 });
 
