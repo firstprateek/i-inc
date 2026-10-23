@@ -4,6 +4,7 @@ import { findEngine } from "./engines.ts";
 import type { Ticket } from "./model.ts";
 import type { Company } from "./ports.ts";
 import type { TicketState } from "./state.ts";
+import { oneLine } from "./validate.ts";
 
 export interface Report {
   /** e.g. "[fix] Refunds are counted as spending · Duet" */
@@ -91,11 +92,13 @@ const verdictWords = { met: "met", "not-met": "not met", "cant-tell": "can't tel
 
 /** The done-when result as markdown lines for the report: the note alone, or each item with its verdict. */
 function doneWhenLines(d: NonNullable<Report["doneWhen"]>): string[] {
-  if (d.items.length === 0) return [`Done when: ${d.note ?? "nothing to check"}.`];
+  if (d.items.length === 0) return [`Done when: ${oneLine(d.note ?? "nothing to check", 500)}.`];
   return [
-    `Done when${d.by ? ` (checked by ${d.by})` : ""}${d.note ? `: ${d.note}` : ""}`,
-    ...d.items.map(
-      (i) => `- ${i.doneWhen}: ${verdictWords[i.verdict]}${i.evidence ? `, ${i.evidence}` : ""}`,
-    ),
+    `Done when${d.by ? ` (checked by ${oneLine(d.by, 200)})` : ""}${d.note ? `: ${oneLine(d.note, 500)}` : ""}`,
+    // One line each: the checker's words must not start a heading or a list of their own in the PR body.
+    ...d.items.map((i) => {
+      const evidence = oneLine(i.evidence);
+      return `- ${oneLine(i.doneWhen)}: ${verdictWords[i.verdict]}${evidence ? `, ${evidence}` : ""}`;
+    }),
   ];
 }

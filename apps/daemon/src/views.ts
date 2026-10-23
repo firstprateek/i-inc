@@ -5,8 +5,10 @@ import {
   type Employee,
   type Id,
   planFor,
+  type StageId,
   sessionHours,
   spend,
+  stageLabel,
   type TicketEvent,
   type TicketState,
   waits,
@@ -242,20 +244,22 @@ function describe(e: TicketEvent, registry: Registry): string | null {
     case "closed":
       return e.outcome === "merged" ? "Merged" : e.outcome === "rejected" ? "Rejected" : "Done";
     case "session-started":
-      return `${capitalize(e.stage)} · ${nameOf(registry, e.employeeId)} on ${modelOf(registry, e.engineId)}`;
+      return `${stageName(e.stage)} · ${nameOf(registry, e.employeeId)} on ${modelOf(registry, e.engineId)}`;
     case "session-interrupted":
-      return `${capitalize(e.stage)} · starting again with your urgent message`;
+      return `${stageName(e.stage)} · starting again with your urgent message`;
     case "helper-wanted":
-      return `${capitalize(e.stage)} · waits for a ${e.duty === "review" ? "reviewer" : "verifier"}`;
+      return `${stageName(e.stage)} · waits for a ${e.duty === "review" ? "reviewer" : "verifier"}`;
     case "helper-unavailable":
-      return `${capitalize(e.stage)} · ${nameOf(registry, e.employeeId)} unavailable: ${e.reason}`;
+      return `${stageName(e.stage)} · ${nameOf(registry, e.employeeId)} unavailable: ${e.reason}`;
     case "stage-started":
-      return capitalize(e.stage);
+      return stageName(e.stage);
   }
   return null;
 }
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+/** A stage as the owner reads it: the done-when check says what it is doing, the rest are their names. */
+const stageName = (id: StageId) => (id === "done-when" ? stageLabel(id) : capitalize(id));
 
 /** The office: each employee's desk (spec §10). */
 export function officeView(

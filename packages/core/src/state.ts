@@ -2,7 +2,7 @@
 import type { Decision, Finding, HelperDuty, NeedsYou, TicketEvent } from "./events.ts";
 import type { Id, Proposal, PullRequestRef, TicketAttachment } from "./model.ts";
 import type { StageId } from "./stages.ts";
-import { isRecord, readFindings, text } from "./validate.ts";
+import { isRecord, oneLine, readFindings, text } from "./validate.ts";
 
 export interface SessionRecord {
   stage: StageId;
@@ -427,9 +427,9 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
       };
     case "done-when-verdict": {
       const items = (Array.isArray(e.items) ? e.items : []).filter(isRecord).map((i) => ({
-        doneWhen: text(i.doneWhen),
+        doneWhen: oneLine(i.doneWhen),
         verdict: i.verdict === "met" || i.verdict === "not-met" ? i.verdict : ("cant-tell" as const),
-        evidence: text(i.evidence),
+        evidence: oneLine(i.evidence),
       }));
       return {
         ...s,

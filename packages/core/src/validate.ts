@@ -68,26 +68,29 @@ const verdictOf = (v: unknown): DoneWhenVerdict => {
   return "cant-tell";
 };
 
+/** One line: the checker's words go into markdown (the PR body, the report), where a newline could start a heading. */
+export const oneLine = (t: unknown, max = 2000): string => text(t, max).replace(/\s+/g, " ").trim();
+
 /**
  * The done-when checker's `{"items":[{doneWhen, verdict, evidence}]}`, lined up with the ticket's own done-when
- * list (T72). The checker's words are matched by text, then by position when the counts agree. Anything the reply
- * leaves out, cannot place, or calls "met" without evidence reads as "can't tell": a reply that cannot be read
- * never makes a ticket done.
+ * list (T72). An answer belongs to an item only by its exact text (case and spacing aside); never by position, so a
+ * reply that reorders, rewords or skips items cannot put one item's verdict on another. An item with no answer, a
+ * `met` with no evidence, and every item of a reply that cannot be read read as "can't tell": nothing is ever made
+ * done on a guess. The evidence is cut to one line.
  */
 export function readDoneWhenCheck(value: unknown, expected: string[]): DoneWhenItem[] {
   const raw = isRecord(value) ? value.items : value;
   const replied = Array.isArray(raw) ? raw.slice(0, maxItems).filter(isRecord) : [];
   const norm = (t: string) => t.trim().replace(/\s+/g, " ").toLowerCase();
   const used = new Set<number>();
-  return expected.map((doneWhen, n) => {
-    let at = replied.findIndex((r, i) => !used.has(i) && norm(text(r.doneWhen)) === norm(doneWhen));
-    if (at < 0 && replied.length === expected.length && !used.has(n)) at = n;
+  return expected.map((doneWhen) => {
+    const at = replied.findIndex((r, i) => !used.has(i) && norm(text(r.doneWhen)) === norm(doneWhen));
     const r = replied[at];
     if (!r) return { doneWhen, verdict: "cant-tell", evidence: "the checker did not answer for this item" };
     used.add(at);
-    const evidence = text(r.evidence, 2000);
+    const evidence = oneLine(r.evidence);
     const verdict = verdictOf(r.verdict);
-    if (verdict === "met" && !evidence.trim()) {
+    if (verdict === "met" && !evidence) {
       return { doneWhen, verdict: "cant-tell", evidence: "the checker said met but gave no evidence" };
     }
     return { doneWhen, verdict, evidence };

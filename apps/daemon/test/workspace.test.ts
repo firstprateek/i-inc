@@ -19,6 +19,9 @@ import {
   checkoutScript,
   GitHubWorkspace,
   openScript,
+  readSnapshot,
+  restoreScript,
+  snapshotScript,
 } from "../src/workspace.ts";
 import { fakeTokens, READ_TOKEN } from "./fake-tokens.ts";
 import { refunds, testApp } from "./setup.ts";
@@ -451,6 +454,31 @@ describe("a reviewer's machine", () => {
     expect(git(b, "status", "--porcelain")).toBe("");
   });
 
+  it("pushes the builder's commit through the host, so a checker in another machine reads it (T72)", async () => {
+    const { ws, wt } = office({ grace: "machine-b" });
+    await ws.open(ticket, ada);
+    await ws.checkout(ticket, grace);
+    writeFileSync(join(wt("ada"), "fix.ts"), "export {};\n");
+    git(wt("ada"), "add", "fix.ts");
+    git(wt("ada"), "commit", "-q", "-m", "fix: what was not met");
+    // committed in the builder's machine only (a sandbox holds no write credentials): the checker's copy is behind
+    await ws.checkout(ticket, grace);
+    expect(existsSync(join(wt("grace"), "fix.ts"))).toBe(false);
+    await ws.push(ticket, ada);
+    await ws.push(ticket, ada); // safe to repeat
+    await ws.checkout(ticket, grace);
+    expect(git(wt("grace"), "rev-parse", "HEAD")).toBe(git(wt("ada"), "rev-parse", "HEAD"));
+    expect(existsSync(join(wt("grace"), "fix.ts"))).toBe(true);
+  });
+
+  it("pushes nothing in direct mode, where the branch stays in the builder's machine", async () => {
+    const { ws, runs } = office({}, "direct");
+    await ws.open(ticket, ada);
+    const before = runs.length;
+    await ws.push(ticket, ada);
+    expect(runs.length).toBe(before);
+  });
+
   it("leaves the builder's own worktree alone on a shared machine, author and unpushed work too", async () => {
     const { ws, wt } = office();
     await ws.open(ticket, ada);
@@ -532,5 +560,86 @@ describe("2.5 looking for a ticket's worktree", () => {
     rmSync(join(work, "inc-7"), { recursive: true });
     mkdirSync(join(work, "inc-7", ".inc"), { recursive: true });
     expect(await ws.present(ticket, ada)).toBe(false);
+  });
+});
+
+describe("the read-only guard on a worktree (T72)", () => {
+  /** A repo with two commits' worth of files, and some uncommitted work of the builder's. */
+  function tree() {
+    const dir = mkdtempSync(join(tmpdir(), "inc-guard-"));
+    git(dir, "init", "-q", "-b", "main");
+    git(dir, "config", "user.email", "a@b.c");
+    git(dir, "config", "user.name", "T");
+    writeFileSync(join(dir, "a.txt"), "a\n");
+    writeFileSync(join(dir, "b.txt"), "b\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-qm", "one");
+    writeFileSync(join(dir, "b.txt"), "b, edited by the builder\n"); // uncommitted work from before
+    return dir;
+  }
+  const look = async (dir: string) => {
+    const r = await localScript("ada", snapshotScript(dir));
+    const snap = readSnapshot(r.output);
+    if (!snap) throw new Error(r.output);
+    return snap;
+  };
+
+  it("reads the commit and every changed path, one line each", async () => {
+    const dir = tree();
+    mkdirSync(join(dir, "new"));
+    writeFileSync(join(dir, "new", "x.txt"), "x");
+    const snap = await look(dir);
+    expect(snap.head).toBe(git(dir, "rev-parse", "HEAD"));
+    expect(snap.status.sort()).toEqual([" M b.txt", "?? new/x.txt"]);
+  });
+
+  it("puts back what a session changed and nothing the tree already had", async () => {
+    const dir = tree();
+    const before = await look(dir);
+    writeFileSync(join(dir, "a.txt"), "changed by the checker\n");
+    writeFileSync(join(dir, "created.txt"), "new\n");
+    const after = await look(dir);
+    const paths = after.status.filter((l) => !before.status.includes(l)).map((l) => l.slice(3));
+    expect(paths.sort()).toEqual(["a.txt", "created.txt"]);
+    const r = await localScript("ada", restoreScript({ worktree: dir, head: before.head, paths }));
+    expect(r.output).toContain("@@restored");
+    expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("a\n");
+    expect(existsSync(join(dir, "created.txt"))).toBe(false);
+    // the builder's own edit from before the session is still there
+    expect(readFileSync(join(dir, "b.txt"), "utf8")).toBe("b, edited by the builder\n");
+    expect((await look(dir)).status).toEqual(before.status);
+  });
+
+  it("undoes a commit the session made, and the files in it", async () => {
+    const dir = tree();
+    const before = await look(dir);
+    writeFileSync(join(dir, "a.txt"), "committed by the checker\n");
+    writeFileSync(join(dir, "c.txt"), "c\n");
+    git(dir, "add", "a.txt", "c.txt");
+    git(dir, "commit", "-qm", "sneaky");
+    const after = await look(dir);
+    expect(after.head).not.toBe(before.head);
+    const r = await localScript("ada", restoreScript({ worktree: dir, head: before.head, paths: [] }));
+    expect(r.output).toContain("@@restored");
+    expect(git(dir, "rev-parse", "HEAD")).toBe(before.head);
+    expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("a\n");
+    expect(existsSync(join(dir, "c.txt"))).toBe(false);
+    expect(readFileSync(join(dir, "b.txt"), "utf8")).toBe("b, edited by the builder\n");
+  });
+
+  it("only restores plain paths, and only a real commit", () => {
+    const head = "a".repeat(40);
+    const script = restoreScript({
+      worktree: "/w",
+      head,
+      paths: ["ok/file.ts", "../evil", "-rf", "a b", '"q"'],
+    });
+    expect(script).toContain("back 'ok/file.ts'");
+    expect(script).not.toContain("evil");
+    expect(script).not.toContain("'-rf'");
+    expect(script).not.toContain("'a b'");
+    expect(() => restoreScript({ worktree: "/w", head: "main; rm -rf /", paths: [] })).toThrow(
+      "not a commit",
+    );
   });
 });

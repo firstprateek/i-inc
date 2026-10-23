@@ -1,6 +1,6 @@
 // The board (spec §10): To do → In progress → Review → Done, across projects and Home.
 
-import type { DigestRow } from "@i-inc/core";
+import { type DigestRow, stageLabel } from "@i-inc/core";
 import { css, html } from "lit";
 import { api, type RefreshScope, type TicketView } from "../api.ts";
 import { liveText, waitingLine, waitsForAssignee } from "../assign.ts";
@@ -318,7 +318,7 @@ export class IncBoard extends Loader<BoardData> {
               ${t.stages.map(
                 (s) =>
                   html`<i class="${s.state === "done" ? "done" : s.state === "current" ? `cur ${t.status} ${s.id}` : ""}"
-                    title=${s.id}></i>`,
+                    title=${stageLabel(s.id)}></i>`,
               )}
             </div>`
       }

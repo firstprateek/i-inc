@@ -115,3 +115,7 @@ export function planFor(ticket: Ticket, policy: ProjectPolicy = defaultProjectPo
   const plans = policy.mode === "direct" ? directPlans : stagePlans;
   return plans[ticket.effort] ?? plans.medium;
 }
+
+/** What a stage is called where the owner sees it: a stage with no entry shows as its own id. */
+const stageLabels: Partial<Record<StageId, string>> = { "done-when": "Checking done-when" };
+export const stageLabel = (id: StageId): string => stageLabels[id] ?? id;

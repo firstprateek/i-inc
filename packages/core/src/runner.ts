@@ -25,7 +25,7 @@ import {
   type Ticket,
 } from "./model.ts";
 import { decideOutbound } from "./outbound.ts";
-import { type Ports, type SessionOutcome, StartupError } from "./ports.ts";
+import { type Ports, type SessionOutcome, StartupError, type WorktreeSnapshot } from "./ports.ts";
 import { assembleReport, type Report, reportMarkdown } from "./report.ts";
 import { planFor, type StageId, type StagePlan } from "./stages.ts";
 import { fold, type TicketState } from "./state.ts";
@@ -469,7 +469,11 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
           )
           .join(
             "\n",
-          )}\nFix what is missing, or make it easy to confirm (a test, a clear change), and keep the checks green. Commit your work.`,
+          )}\nFix what is missing, or make it easy to confirm (a test, a clear change), and keep the checks green. ${
+          c.policy.mode === "direct"
+            ? "Commit your work to the local branch."
+            : "Commit your work: i.inc pushes the branch for the recheck, and the checker reads what is committed."
+        }`,
       );
       if (out !== null) await c.emit(checkpoint(c, "done-when", out));
       return;
@@ -499,7 +503,20 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     }
     const seat = await doneWhenSeat(c);
     if (seat === "wait") return;
+    // Owner-merges: a checker in another machine reads the branch from GitHub, so what the builder committed
+    // (the first time, or in the fix) goes there first, by the host (T68). Pushing again is harmless.
+    const ws = c.p.workspace;
+    if (ws?.push && c.policy.mode === "owner-merges" && c.s.pr?.number !== undefined) {
+      try {
+        await ws.push(c.ticket, c.builder);
+      } catch (err) {
+        if (isPassing(err)) throw err;
+        await c.emit(failed(c, "done-when", `couldn't push the branch for the check: ${errorText(err)}`));
+        return;
+      }
+    }
     const checks = c.s.lastChecks;
+    const guard: Guard = { changed: [], restored: true };
     const out = await session(
       c,
       seat.duty,
@@ -515,10 +532,30 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
         fresh: true,
         helperFor: seat.duty,
         effort: "low",
+        guard,
         ...(seat.engineId ? { engineId: seat.engineId } : {}),
       },
     );
     if (out === null) return;
+    // "Read-only" is only a request (sessions run with full access), so the worktree is compared before and after.
+    // A checker that changed anything has its changes put back and its answer thrown away: the owner decides.
+    if (guard.changed.length) {
+      const what = `the checker changed files (${guard.changed.slice(0, 5).join(", ")}${guard.changed.length > 5 ? ", ..." : ""}), so its answer is not used${guard.restored ? "; they were put back" : "; they could not be put back, so look at the worktree"}`;
+      const touched: DoneWhenItem[] = items.map((doneWhen) => ({
+        doneWhen,
+        verdict: "cant-tell",
+        evidence: what,
+      }));
+      await c.emit(
+        { type: "done-when-verdict", at, by: seat.employee.id, items: touched, retry: false },
+        { type: "done-when-checked", at, stage: "done-when", met: false, missing: items },
+        needsYou(c, "done-when", {
+          kind: "stuck",
+          reason: `The done-when is not confirmed: ${c.p.company.employee(seat.employee.id).name}, who was checking it, ${what.replace("the checker changed", "changed")}`,
+        }),
+      );
+      return;
+    }
     const read = parseJson<unknown>(out);
     const result: DoneWhenItem[] = readDoneWhenCheck(read, items).map((i) =>
       read === null ? { ...i, evidence: `the checker's reply could not be read${quoteOf(out)}` } : i,
@@ -1098,13 +1135,59 @@ async function closeIfDone(
   );
 }
 
+/** What a read-only session changed in the worktree, if anything (see `guardWorktree`). */
+interface Guard {
+  changed: string[];
+  /** Whether those changes were put back. */
+  restored: boolean;
+}
+
+/** The paths `git status --porcelain` lists after that it did not list before. */
+function newPaths(before: WorktreeSnapshot, after: WorktreeSnapshot): string[] {
+  const had = new Set(before.status);
+  return after.status.filter((line) => !had.has(line)).map((line) => line.slice(3).trim());
+}
+
+/**
+ * Looks at the worktree again after a read-only session. Anything it changed (a file edited or created, a commit)
+ * is put back, limited to what changed during the session, and listed in `guard`. A hiccup worth another tick is
+ * thrown, so the check runs again; a restore that fails is recorded as not restored.
+ */
+async function guardWorktree(
+  c: Step,
+  employee: Employee,
+  before: WorktreeSnapshot,
+  guard: Guard,
+): Promise<void> {
+  const ws = c.p.workspace;
+  if (!ws?.snapshot) return;
+  let after: WorktreeSnapshot;
+  try {
+    after = await ws.snapshot(c.ticket, employee);
+  } catch (err) {
+    if (isPassing(err)) throw err;
+    return;
+  }
+  const paths = newPaths(before, after);
+  const moved = before.head !== after.head;
+  if (!moved && paths.length === 0) return;
+  guard.changed = [...(moved ? ["a new commit"] : []), ...paths];
+  try {
+    if (!ws.restore) throw new Error("no way to restore");
+    await ws.restore(c.ticket, employee, before, after, paths);
+  } catch (err) {
+    if (isPassing(err)) throw err;
+    guard.restored = false;
+  }
+}
+
 /** Runs one session. Returns its output, or null when it paused, switched engine, escalated or failed. */
 async function session(
   c: Step,
   duty: Duty,
   employee: Employee,
   task: string,
-  o: { engineId?: Id; fresh?: boolean; helperFor?: HelperDuty; effort?: Effort } = {},
+  o: { engineId?: Id; fresh?: boolean; helperFor?: HelperDuty; effort?: Effort; guard?: Guard } = {},
 ): Promise<string | null> {
   const stage = c.s.active as StageId;
   const isAssignee = employee.id === c.ticket.assignee;
@@ -1158,6 +1241,15 @@ async function session(
     const why = await readyHelper(c, employee);
     if (why !== null) return unavailable(why);
   }
+  // A session that must not change the worktree (the done-when check) is measured before it runs.
+  let before: WorktreeSnapshot | undefined;
+  if (o.guard && c.p.workspace?.snapshot && c.s.pr) {
+    try {
+      before = await c.p.workspace.snapshot(c.ticket, employee);
+    } catch (err) {
+      if (isPassing(err)) throw err; // anything else: the look is advisory, the session still runs
+    }
+  }
   const text = o.fresh
     ? freshBrief(c.ticket, stage, task, c.p.harness.describe?.(c.ticket))
     : brief(
@@ -1208,7 +1300,10 @@ async function session(
     throw err;
   }
 
-  if (out.kind === "done") return out.output;
+  if (out.kind === "done") {
+    if (o.guard && before) await guardWorktree(c, employee, before, o.guard);
+    return out.output;
+  }
   if (out.kind === "interrupted") {
     await c.emit({ type: "session-interrupted", at: c.p.clock.now(), stage, reason: out.reason });
     return null;

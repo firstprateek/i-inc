@@ -401,6 +401,26 @@ export class AcpAgent implements Agent {
       const session = (created.result ?? {}) as Json;
       const sessionId = String(session.sessionId);
       liveConfigOptions = Array.isArray(session.configOptions) ? (session.configOptions as Json[]) : [];
+      // A session that asks for its own effort (the done-when check runs at "low") gets it when the harness offers
+      // that level: Codex and the Claude adapter both list their levels as a config option. When the model has no
+      // such level, or no effort option at all, the session starts on its default effort: it never fails to start.
+      const lenientEffort = async () => {
+        if (!r.effort) return;
+        const config = liveConfigOptions.find(
+          (option) =>
+            ["reasoning_effort", "effort"].includes(String(option.id ?? option.configId ?? "")) ||
+            option.category === "thought_level",
+        );
+        const value = config && configChoices(config).find((choice) => choice.value === r.effort)?.value;
+        if (!config || !value || config.currentValue === value) return;
+        const changed = await rpc.request(
+          "session/set_config_option",
+          { sessionId, configId: String(config.id ?? config.configId), value },
+          { timeoutMs: limits.agentStartMs },
+        );
+        const result = (changed.error ? {} : (changed.result ?? {})) as Json;
+        if (Array.isArray(result.configOptions)) liveConfigOptions = result.configOptions as Json[];
+      };
       if (r.engine.harness === "codex") {
         const select = async (
           category: string,
@@ -440,12 +460,14 @@ export class AcpAgent implements Agent {
                   choice.name.toLowerCase() === r.engine.model.toLowerCase(),
               )?.value,
           );
-          await select(
-            "thought_level",
-            ["reasoning_effort"],
-            `${r.effort ?? r.ticket.effort} reasoning effort`,
-            (choices) => choices.find((choice) => choice.value === (r.effort ?? r.ticket.effort))?.value,
-          );
+          if (r.effort) await lenientEffort();
+          else
+            await select(
+              "thought_level",
+              ["reasoning_effort"],
+              `${r.ticket.effort} reasoning effort`,
+              (choices) => choices.find((choice) => choice.value === r.ticket.effort)?.value,
+            );
           await select(
             "mode",
             ["mode"],
@@ -466,6 +488,11 @@ export class AcpAgent implements Agent {
             { sessionId, modeId: bypass },
             { timeoutMs: limits.agentStartMs },
           );
+        }
+        try {
+          await lenientEffort();
+        } catch {
+          // A harness that answers badly about effort still runs the session, on its own default.
         }
       }
 

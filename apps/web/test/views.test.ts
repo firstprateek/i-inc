@@ -110,6 +110,26 @@ describe("the board", () => {
     expect(root.querySelectorAll(".strip i.cur")).toHaveLength(1);
   });
 
+  it("labels the done-when stage's pip 'Checking done-when' (T72)", async () => {
+    serve([
+      view({
+        id: "1",
+        stages: [
+          { id: "checks", state: "done" },
+          { id: "done-when", state: "current" },
+          { id: "gates", state: "todo" },
+        ],
+        live: "Checking done-when · Quinn on Gemini 3.8 Flash",
+      }),
+    ]);
+    const root = await mount("inc-board");
+    expect([...root.querySelectorAll(".strip i")].map((i) => i.getAttribute("title"))).toEqual([
+      "checks",
+      "Checking done-when",
+      "gates",
+    ]);
+  });
+
   it("shows a dashed placeholder in empty columns only", async () => {
     serve([view({ id: "1" })]);
     const root = await mount("inc-board");

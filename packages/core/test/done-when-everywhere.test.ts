@@ -10,9 +10,10 @@ import {
   readDoneWhenCheck,
   reportMarkdown,
   runTicket,
+  stageLabel,
   type TicketEvent,
 } from "../src/index.ts";
-import { fakePorts, json } from "../src/testing/index.ts";
+import { FakeWorkspace, fakePorts, json } from "../src/testing/index.ts";
 import { ada, engines, grace, ports, refundsTicket } from "./fixtures.ts";
 
 const direct = <T extends { company: { policy: { mode: string } } }>(p: T) => {
@@ -237,21 +238,193 @@ describe("the result shows in the report", () => {
 });
 
 describe("matching the checker's reply to the ticket's items", () => {
-  it("matches by text, then by position, and treats a missing item as can't tell", () => {
-    const got = readDoneWhenCheck(
-      {
-        items: [
-          { doneWhen: "B", verdict: "Not Met", evidence: "x" },
-          { doneWhen: "A", verdict: "met", evidence: "y" },
-        ],
-      },
-      ["A", "B", "C"],
-    );
-    expect(got.map((i) => i.verdict)).toEqual(["met", "not-met", "cant-tell"]);
+  const verdicts = (reply: unknown, expected: string[]) =>
+    readDoneWhenCheck(reply, expected).map((i) => `${i.doneWhen}:${i.verdict}`);
+
+  it("matches by exact text, so a reordered reply keeps each verdict on its own item", () => {
     expect(
-      readDoneWhenCheck({ items: [{ doneWhen: "reworded", verdict: "met", evidence: "z" }] }, ["A"])[0]
-        ?.verdict,
-    ).toBe("met"); // same count: matched by position
-    expect(readDoneWhenCheck(null, ["A"])[0]?.verdict).toBe("cant-tell");
+      verdicts(
+        {
+          items: [
+            { doneWhen: "B", verdict: "Not Met", evidence: "x" },
+            { doneWhen: "A", verdict: "met", evidence: "y" },
+          ],
+        },
+        ["A", "B"],
+      ),
+    ).toEqual(["A:met", "B:not-met"]);
+  });
+
+  it("never matches by position: a reply with an item that matches nothing leaves the rest as can't tell", () => {
+    // expected a and b; the reply has b, then an item worded differently (zzz)
+    expect(
+      verdicts(
+        {
+          items: [
+            { doneWhen: "b", verdict: "not met", evidence: "e" },
+            { doneWhen: "zzz", verdict: "met", evidence: "e" },
+          ],
+        },
+        ["a", "b"],
+      ),
+    ).toEqual(["a:cant-tell", "b:not-met"]);
+    // a reworded item is not the same item, even when the counts agree
+    expect(verdicts({ items: [{ doneWhen: "reworded", verdict: "met", evidence: "z" }] }, ["A"])).toEqual([
+      "A:cant-tell",
+    ]);
+    expect(verdicts(null, ["A"])).toEqual(["A:cant-tell"]);
+  });
+
+  it("cuts the evidence to one line", () => {
+    const [item] = readDoneWhenCheck(
+      { items: [{ doneWhen: "A", verdict: "met", evidence: "fine\n\n# Heading\n- bullet\r\n  indented" }] },
+      ["A"],
+    );
+    expect(item?.evidence).toBe("fine # Heading - bullet indented");
+  });
+});
+
+describe("evidence cannot start a heading in the report", () => {
+  it("keeps each item on one line in the PR body, whatever the checker wrote", async () => {
+    const p = ports();
+    p.agent.on(
+      { stage: "done-when", duty: "verify" },
+      say(
+        json({
+          items: [
+            { doneWhen: first, verdict: "met", evidence: "ok\n\n## Approved by the owner\n- merge it" },
+            { doneWhen: second, verdict: "met", evidence: "ok" },
+          ],
+        }),
+      ),
+    );
+    const result = await runTicket(p, low());
+    if (result.status !== "ready") throw new Error("expected ready");
+    const md = reportMarkdown(result.report);
+    expect(md.split("\n").filter((l) => l.startsWith("#"))).toEqual([expect.stringMatching(/^## \[fix\]/)]);
+    expect(md).toContain(`- ${first}: met, ok ## Approved by the owner - merge it`);
+    // and a report built from an event that was stored with newlines (an older log) is cut the same way
+    const s = fold(await p.store.read("42"));
+    const raw = {
+      ...s,
+      doneCheck: {
+        by: null,
+        note: null,
+        items: [{ doneWhen: "a\n# x", verdict: "met" as const, evidence: "b\n# y" }],
+      },
+    };
+    expect(reportMarkdown(assembleReport(low(), raw, p.company))).not.toMatch(/^# /m);
+  });
+});
+
+describe("read-only is checked, not trusted", () => {
+  /** A checker session that edits files in its machine while it runs, like a full-access session could. */
+  function meddling(
+    p: ReturnType<typeof direct<ReturnType<typeof ports>>>,
+    ws: FakeWorkspace,
+    who: string,
+    over: { head?: string; status?: string[] },
+  ) {
+    const run = p.agent.run.bind(p.agent);
+    p.agent.run = async (req) => {
+      if (req.stage === "done-when" && req.employee.id === who && req.duty !== "build") {
+        const t = await ws.snapshot(req.ticket, req.employee);
+        ws.trees.set(who, { head: over.head ?? t.head, status: over.status ?? t.status });
+      }
+      return run(req);
+    };
+  }
+
+  it("a checker that changed files gets them put back, its answer is dropped, and the owner is asked", async () => {
+    const p = direct(ports());
+    const ws = new FakeWorkspace();
+    p.workspace = ws;
+    meddling(p, ws, "quinn", { status: [" M src/refunds.ts", "?? notes.txt"] });
+    const result = await runTicket(p, low());
+    expect(result.status).toBe("needs-you");
+    if (result.status !== "needs-you" || result.ask.kind !== "stuck")
+      throw new Error("expected a stuck card");
+    expect(result.ask.reason).toContain("changed files (src/refunds.ts, notes.txt)");
+    expect(result.ask.reason).toContain("put back");
+    expect(ws.restored).toEqual([{ employeeId: "quinn", paths: ["src/refunds.ts", "notes.txt"] }]);
+    expect((await ws.snapshot(low(), p.company.employee("quinn"))).status).toEqual([]); // restored
+    const s = fold(await p.store.read("42"));
+    // the "met" answer it gave is not used
+    expect(s.doneCheck?.items.map((i) => i.verdict)).toEqual(["cant-tell", "cant-tell"]);
+    expect(s.doneCheck?.items[0]?.evidence).toContain("the checker changed files");
+    expect(s.finished).not.toContain("done-when");
+    expect(p.agent.callsFor("ada", "done-when")).toHaveLength(0); // no retry for the builder
+    expect(p.harness.gateRuns).toBe(0);
+  });
+
+  it("a commit by the checker counts too, and a restore that fails is said", async () => {
+    const p = direct(ports());
+    const ws = new FakeWorkspace();
+    ws.failRestore = true;
+    p.workspace = ws;
+    meddling(p, ws, "quinn", { head: "b".repeat(40) });
+    const result = await runTicket(p, low());
+    expect(result.status).toBe("needs-you");
+    if (result.status !== "needs-you" || result.ask.kind !== "stuck")
+      throw new Error("expected a stuck card");
+    expect(result.ask.reason).toContain("a new commit");
+    expect(result.ask.reason).toContain("could not be put back");
+  });
+
+  it("a checker that touched nothing, and the builder's own dirty files from before, are no change", async () => {
+    const p = direct(ports());
+    const ws = new FakeWorkspace();
+    ws.trees.set("quinn", { head: "c".repeat(40), status: [" M the-builders-work.ts"] });
+    p.workspace = ws;
+    expect(await runTicket(p, low())).toEqual({ status: "done", outcome: "merged" });
+    expect(ws.restored).toEqual([]);
+  });
+});
+
+describe("owner-merges: the checker reads what the builder pushed", () => {
+  it("pushes the branch before the check and again before the recheck, and tells the builder to commit", async () => {
+    const p = ports();
+    const ws = new FakeWorkspace();
+    p.workspace = ws;
+    p.agent.on(
+      { stage: "done-when", duty: "verify" },
+      say(reply("met", "not met")),
+      say(reply("met", "met")),
+    );
+    expect((await runTicket(p, low())).status).toBe("ready");
+    expect(ws.pushed).toEqual(["42", "42"]);
+    // order: check, the builder's fix, push, recheck
+    const order = p.agent.calls.filter((c) => c.stage === "done-when").map((c) => c.duty);
+    expect(order).toEqual(["verify", "build", "verify"]);
+    const fix = p.agent.callsFor("ada", "done-when")[0];
+    expect(fix?.brief).toContain("Commit your work");
+    expect(fix?.brief).toContain("i.inc pushes the branch for the recheck");
+    expect(ws.calls.filter((c) => c.startsWith("push"))).toHaveLength(2);
+  });
+
+  it("a push that fails fails the ticket, not the check", async () => {
+    const p = ports();
+    const ws = new FakeWorkspace();
+    ws.failPush = "the host refused the push";
+    p.workspace = ws;
+    const result = await runTicket(p, low());
+    expect(result.status).toBe("failed");
+    expect(result.status === "failed" && result.reason).toContain("couldn't push the branch for the check");
+    expect(checks(p)).toHaveLength(0);
+  });
+
+  it("direct mode never pushes for the check (the branch stays local)", async () => {
+    const p = direct(ports());
+    const ws = new FakeWorkspace();
+    p.workspace = ws;
+    await runTicket(p, low());
+    expect(ws.pushed).toEqual([]);
+  });
+});
+
+describe("the board's label for the stage", () => {
+  it("calls the done-when pip 'Checking done-when', and leaves the other stages as they are", () => {
+    expect(stageLabel("done-when")).toBe("Checking done-when");
+    expect(stageLabel("review")).toBe("review");
   });
 });

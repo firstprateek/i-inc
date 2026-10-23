@@ -438,12 +438,27 @@ medium and high skip `prove` when nobody on the team holds the verify duty.
 the checks, where there is no review) and the gates (core `stages.ts`, `stageSteps["done-when"]` in `runner.ts`):
 
 - **No prove stage, or none that ran:** a light check runs. Its session is a fresh brief (the ticket, the done-when list and
-  the task, no plan or notes), at **low effort** (`SessionRequest.effort`, which the ACP client uses for the reasoning
-  level), told to read the diff (`git diff origin/main`) and the checks' result and to change no files. It never is the
+  the task, no plan or notes), at **low effort**, told to read the diff (`git diff origin/main`) and the checks'
+  result and to change no files. `SessionRequest.effort` is wired in the ACP client (`acp.ts`) for **both** harnesses:
+  Codex's `reasoning_effort` option and the Claude adapter's `effort` option (a `thought_level` config option, offered
+  only for models that support effort). If the model has no `low` level, or the harness offers no effort option, the
+  session starts on its default effort; it never fails to start because of this. It never is the
   builder's own session: another employee with the verify duty, else one with the review duty (both through the scheduler,
   like a reviewer), else the builder's seat on a **different engine**, else its own engine with a clean context. It answers
-  per item: `met`, `not met` or `can't tell`, with evidence. A reply that cannot be read, an item it leaves out, and a
-  `met` with no evidence all read as `can't tell` (`readDoneWhenCheck`, core `validate.ts`).
+  per item: `met`, `not met` or `can't tell`, with evidence. An answer belongs to an item by its **exact text** (case and
+  spacing aside) and never by position, so a reordered, reworded or short reply cannot put one item's verdict on another;
+  a reply that cannot be read, an item with no answer, and a `met` with no evidence all read as `can't tell`
+  (`readDoneWhenCheck`, core `validate.ts`). The evidence is cut to one line before it is stored, so it cannot start a
+  heading in the PR body or the report.
+- **Read-only is checked, not trusted.** Sessions run with full access, so the runner records HEAD and `git status
+  --porcelain` of the checker's worktree before the session and compares after (`Workspace.snapshot`, core `runner.ts`
+  `guardWorktree`). Any difference counts as "can't tell, the checker changed files": the changes made during the check are
+  put back (`Workspace.restore`: `git checkout`/`git clean` of those paths only, and a commit it made is undone, never
+  touching what the tree had before) and the ticket goes to Needs you with the reason. The builder's own dirty files
+  from before the check are not a change.
+- **Owner-merges:** a checker on another machine reads the branch from GitHub, so before the check (and again before the
+  recheck) the daemon pushes the builder's commits through the T68 host push (`Workspace.push`). The builder's fix prompt
+  says to commit; a push that fails fails the ticket. Direct mode keeps the branch local and never pushes for the check.
 - **All met:** the ticket goes on to the gates. **Any not met:** the builder gets one session with the unmet items (a
   `done-when` stage session on the `build` duty), then the check runs again. **Still not met, or can't tell:** a Needs
   you "stuck" card with the result for each item; "Keep going" runs the cycle again, "Decline" fails the ticket. Nothing
@@ -451,6 +466,7 @@ the checks, where there is no review) and the gates (core `stages.ts`, `stageSte
 - **Skipped, with a note:** a ticket with no done-when records "No done-when to check" and runs no session. A ticket whose
   `prove` stage ran and passed is recorded as "Checked in the prove stage" with the verifier's items, and is not
   checked a second time.
+- **On the board** the stage's pip and live line say "Checking done-when" (`stageLabel`, core `stages.ts`).
 - **Where you see it:** the `done-when-verdict` event keeps the result (`TicketState.doneCheck`). The ticket page shows
   each item's verdict and evidence under "What was asked" (`TicketView.doneCheck`), and the report (the board, and the PR
   body in owner-merges) lists them (`Report.doneWhen`).

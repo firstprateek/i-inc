@@ -287,6 +287,12 @@ export interface Harness {
  * builder's machine and opens a draft PR, so CI runs from the start. The report then goes into the
  * PR, which is marked ready for the owner. Both are safe to repeat after a crash.
  */
+/** A worktree at a moment: its HEAD commit and the lines of `git status --porcelain` (one per changed path). */
+export interface WorktreeSnapshot {
+  head: string;
+  status: string[];
+}
+
 export interface Workspace {
   open(ticket: Ticket, builder: Employee): Promise<PullRequestRef>;
   /**
@@ -302,6 +308,28 @@ export interface Workspace {
    * commit. Never pushes, and never touches a builder's worktree that is already there.
    */
   checkout?(ticket: Ticket, employee: Employee): Promise<void>;
+  /**
+   * What the ticket's worktree in `employee`'s machine looks like: its HEAD commit and `git status --porcelain`.
+   * The done-when check (T72) is read-only, but a session runs with full access, so the runner looks before and
+   * after and treats any difference as the checker having changed files.
+   */
+  snapshot?(ticket: Ticket, employee: Employee): Promise<WorktreeSnapshot>;
+  /**
+   * Puts back what a session changed since `before`: files it modified or created (`paths`, as `after` shows
+   * them, and the files of any commit it made), and HEAD. It touches nothing the worktree had at `before`.
+   */
+  restore?(
+    ticket: Ticket,
+    employee: Employee,
+    before: WorktreeSnapshot,
+    after: WorktreeSnapshot,
+    paths: string[],
+  ): Promise<void>;
+  /**
+   * Owner-merges: pushes the builder's committed work to the ticket's branch (through the host, since a sandbox
+   * holds no write credentials), so a checker in another machine reads the code as it is now. Safe to repeat.
+   */
+  push?(ticket: Ticket, builder: Employee): Promise<void>;
   ready(ticket: Ticket, pr: PullRequestRef, report: string): Promise<void>;
   /**
    * Where the ticket's PR stands on GitHub. The owner merges it there, then clicks Approve: i.inc

@@ -397,6 +397,117 @@ describe("an ACP session", () => {
     );
   });
 
+  describe("a session's own effort (the done-when check runs at low)", () => {
+    const options = (efforts: string[]) => [
+      {
+        id: "model",
+        category: "model",
+        type: "select",
+        currentValue: "x",
+        options: [{ value: codex.model, name: "GPT-5 Codex" }],
+      },
+      {
+        id: "reasoning_effort",
+        category: "thought_level",
+        type: "select",
+        currentValue: "high",
+        options: efforts.map((value) => ({ value, name: value })),
+      },
+      {
+        id: "mode",
+        category: "mode",
+        type: "select",
+        currentValue: "workspace-write",
+        options: [{ value: "agent-full-access", name: "Full access" }],
+      },
+    ];
+    const codexServer = (efforts: string[]) =>
+      server((method, params, reply, id) => {
+        if (method === "initialize") reply({ id, result: { protocolVersion: 1, agentCapabilities: {} } });
+        if (method === "session/new")
+          reply({ id, result: { sessionId: "s1", configOptions: options(efforts) } });
+        if (method === "session/set_config_option")
+          reply({ id, result: { configOptions: options(efforts) } });
+        if (method === "session/prompt") {
+          reply(update("agent_message_chunk", { content: { type: "text", text: "checked" } }));
+          setTimeout(() => reply({ id, result: { stopReason: "end_turn" } }), 5);
+        }
+        void params;
+      });
+    const sets = (s: ReturnType<typeof server>) =>
+      s.sent.filter((m) => m.method === "session/set_config_option").map((m) => (m.params as Json).configId);
+
+    it("asks Codex for low when the model offers it, instead of the ticket's effort", async () => {
+      const s = codexServer(["low", "medium", "high"]);
+      const result = await agent(s).run(request({ engine: codex, effort: "low" }));
+      expect(result).toEqual({ kind: "done", output: "checked" });
+      expect(
+        s.sent.filter((m) => m.method === "session/set_config_option").map((m) => (m.params as Json).value),
+      ).toEqual([codex.model, "low", "agent-full-access"]);
+    });
+
+    it("starts a Codex model that has no low level on its default effort, and never fails", async () => {
+      const s = codexServer(["medium", "high"]);
+      const result = await agent(s).run(request({ engine: codex, effort: "low" }));
+      expect(result).toEqual({ kind: "done", output: "checked" });
+      expect(sets(s)).toEqual(["model", "mode"]); // no effort change
+    });
+
+    const claudeServer = (efforts: string[] | null) =>
+      server((method, params, reply, id) => {
+        if (method === "initialize")
+          reply({ id, result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [] } });
+        if (method === "session/new")
+          reply({
+            id,
+            result: {
+              sessionId: "s1",
+              modes: { currentModeId: "default", availableModes: [{ id: "bypassPermissions" }] },
+              configOptions: efforts
+                ? [
+                    {
+                      id: "effort",
+                      category: "thought_level",
+                      type: "select",
+                      currentValue: "default",
+                      options: ["default", ...efforts].map((value) => ({ value, name: value })),
+                    },
+                  ]
+                : [],
+            },
+          });
+        if (method === "session/set_mode") reply({ id, result: {} });
+        if (method === "session/set_config_option") reply({ id, result: {} });
+        if (method === "session/prompt") {
+          reply(update("agent_message_chunk", { content: { type: "text", text: "checked" } }));
+          setTimeout(() => reply({ id, result: { stopReason: "end_turn" } }), 5);
+        }
+        void params;
+      });
+
+    it("sets the Claude adapter's effort option to low when it offers one", async () => {
+      const s = claudeServer(["low", "medium", "high"]);
+      expect(await agent(s).run(request({ effort: "low" }))).toEqual({ kind: "done", output: "checked" });
+      expect(s.sent.filter((m) => m.method === "session/set_config_option").map((m) => m.params)).toEqual([
+        { sessionId: "s1", configId: "effort", value: "low" },
+      ]);
+    });
+
+    it("leaves Claude on its own effort when the model has none to choose, or no low", async () => {
+      for (const efforts of [null, ["medium", "high"]]) {
+        const s = claudeServer(efforts);
+        expect(await agent(s).run(request({ effort: "low" }))).toEqual({ kind: "done", output: "checked" });
+        expect(sets(s)).toEqual([]);
+      }
+    });
+
+    it("sets no effort for an ordinary session", async () => {
+      const s = claudeServer(["low", "medium"]);
+      await agent(s).run(request());
+      expect(sets(s)).toEqual([]);
+    });
+  });
+
   it("debounces rapid streaming text chunks into transcript items", async () => {
     const s = server((method, _params, reply, id) => {
       if (method === "initialize")

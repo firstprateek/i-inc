@@ -1,7 +1,9 @@
 // The done-when check through the daemon (T72): a code ticket with no prove stage is checked by a fresh session
 // that the scheduler picks, and the board, the ticket page's data and the report carry the result for each item.
+import type { TicketEvent } from "@i-inc/core";
 import { json } from "@i-inc/core/testing";
 import { describe, expect, it } from "vitest";
+import { liveInfo } from "../src/views.ts";
 import { refunds, testApp } from "./setup.ts";
 
 const item = (doneWhen: string, verdict: string, evidence = "the diff") => ({ doneWhen, verdict, evidence });
@@ -84,5 +86,22 @@ describe("the done-when check", () => {
     expect(t.status).toBe("ready");
     expect(t.doneCheck).toEqual({ by: null, items: [], note: "No done-when to check" });
     expect(app.agent.calls.filter((c) => c.stage === "done-when")).toHaveLength(0);
+  });
+
+  it("names the stage on the board while it runs", async () => {
+    const app = await testApp();
+    const events: TicketEvent[] = [
+      { type: "stage-started", at: 1, stage: "done-when" },
+      {
+        type: "session-started",
+        at: 2,
+        stage: "done-when",
+        employeeId: "quinn",
+        engineId: "flash",
+        resume: false,
+      },
+    ];
+    expect(liveInfo(events.slice(0, 1), app.deps.registry).live).toBe("Checking done-when");
+    expect(liveInfo(events, app.deps.registry).live).toMatch(/^Checking done-when · Quinn on /);
   });
 });

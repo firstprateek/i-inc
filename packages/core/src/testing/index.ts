@@ -30,6 +30,7 @@ import type {
   SessionRequest,
   SessionTranscriptItem,
   Workspace,
+  WorktreeSnapshot,
 } from "../ports.ts";
 import type { StageId } from "../stages.ts";
 
@@ -181,6 +182,34 @@ export class FakeWorkspace implements Workspace {
     if (this.failCheckout) throw new Error(this.failCheckout);
     this.checkedOut.push({ ticketId: ticket.id, employeeId: employee.id });
     this.calls.push(`checkout ${employee.id}`);
+  }
+  /** Each machine's worktree: HEAD and changed paths. A test changes one inside a scripted session. */
+  readonly trees = new Map<Id, WorktreeSnapshot>();
+  /** What `restore` put back, by whose machine. */
+  readonly restored: { employeeId: Id; paths: string[] }[] = [];
+  /** The tickets whose branch was pushed through the host, in order. */
+  readonly pushed: Id[] = [];
+  failRestore = false;
+  failPush: string | null = null;
+  async snapshot(_ticket: Ticket, employee: Employee): Promise<WorktreeSnapshot> {
+    const t = this.trees.get(employee.id);
+    return { head: t?.head ?? "a".repeat(40), status: [...(t?.status ?? [])] };
+  }
+  async restore(
+    _ticket: Ticket,
+    employee: Employee,
+    before: WorktreeSnapshot,
+    _after: WorktreeSnapshot,
+    paths: string[],
+  ): Promise<void> {
+    if (this.failRestore) throw new Error("restore failed");
+    this.restored.push({ employeeId: employee.id, paths });
+    this.trees.set(employee.id, { head: before.head, status: [...before.status] });
+  }
+  async push(ticket: Ticket, builder: Employee): Promise<void> {
+    if (this.failPush) throw new Error(this.failPush);
+    this.pushed.push(ticket.id);
+    this.calls.push(`push ${builder.id}`);
   }
   async ready(ticket: Ticket, pr: PullRequestRef, report: string): Promise<void> {
     this.readied.push({ ticketId: ticket.id, pr, report });
