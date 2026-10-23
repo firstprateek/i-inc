@@ -8,8 +8,9 @@
 // - A path under /assets that is not there is a 404, never index.html: a stale tab asking for a chunk a newer
 //   build replaced must get an error it can act on, not HTML where script was expected.
 // - Any other path that is not a file is the app (index.html), for the hash-routed shell.
-import { readFile, stat } from "node:fs/promises";
-import { extname, join, normalize, resolve, sep } from "node:path";
+import { createHash } from "node:crypto";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { extname, join, normalize, relative, resolve, sep } from "node:path";
 import { brotliCompressSync, constants, gzipSync } from "node:zlib";
 
 const TYPES: Record<string, string> = {
@@ -96,13 +97,66 @@ export function serveWebFrom(root: string): WebServer {
   const base = resolve(root);
   /** Files compressed on demand: `<mtime>:<size>:<encoding>:<path>` to the bytes. */
   const made = new Map<string, Buffer>();
+  /** The build, with any link in its own path resolved (a release folder reached through `current`). */
+  let realBase: Promise<string> | undefined;
+  /** Precompressed copies checked against the build's manifest: `<path>:<mtime>:<size>` to whether to trust it. */
+  const trusted = new Map<string, boolean>();
+  let manifest: { key: string; map: Record<string, { src?: string; br?: string; gz?: string }> } | undefined;
 
   async function fileAt(urlPath: string): Promise<{ path: string; size: number; mtimeMs: number } | null> {
     const path = resolve(join(base, normalize(urlPath)));
     if (path !== base && !path.startsWith(base + sep)) return null;
     try {
       const s = await stat(path);
-      return s.isFile() ? { path, size: s.size, mtimeMs: s.mtimeMs } : null;
+      if (!s.isFile()) return null;
+      // A link inside the build is never followed, to a file or through a folder: the file must be where its
+      // address says (what `realpath` finds is the build's real folder plus the same relative path).
+      realBase ??= realpath(base);
+      if ((await realpath(path)) !== join(await realBase, relative(base, path))) return null;
+      return { path, size: s.size, mtimeMs: s.mtimeMs };
+    } catch {
+      return null;
+    }
+  }
+
+  const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
+
+  /** `precompressed.json`, which `vite build` writes with what each copy was made from and is. */
+  async function readManifest() {
+    const path = join(base, "precompressed.json");
+    try {
+      const s = await stat(path);
+      const key = `${s.mtimeMs}:${s.size}`;
+      if (manifest?.key !== key) manifest = { key, map: JSON.parse(await readFile(path, "utf8")) };
+      return manifest.map;
+    } catch {
+      return {};
+    }
+  }
+
+  /**
+   * The bytes of a precompressed copy when it is the one the build made from the file as it is now: the copy and
+   * its source both hash to what the manifest says. A date proves nothing (a copy, a restore or a checkout
+   * moves it); a build without a manifest, or a file changed since, is compressed here instead.
+   */
+  async function precompressed(
+    file: { path: string; size: number; mtimeMs: number },
+    encoding: "br" | "gzip",
+  ): Promise<Buffer | null> {
+    const entry = (await readManifest())[relative(base, file.path).split(sep).join("/")];
+    const want = encoding === "br" ? entry?.br : entry?.gz;
+    if (!entry?.src || !want) return null;
+    const copyPath = file.path + (encoding === "br" ? ".br" : ".gz");
+    try {
+      const copy = await stat(copyPath);
+      const key = `${copyPath}:${copy.mtimeMs}:${copy.size}:${file.mtimeMs}:${file.size}`;
+      let ok = trusted.get(key);
+      const bytes = await readFile(copyPath);
+      if (ok === undefined) {
+        ok = sha(bytes) === want && sha(await readFile(file.path)) === entry.src;
+        trusted.set(key, ok);
+      }
+      return ok ? bytes : null;
     } catch {
       return null;
     }
@@ -154,12 +208,9 @@ export function serveWebFrom(root: string): WebServer {
 
     let body: Buffer;
     if (encoding) {
-      const suffix = encoding === "br" ? ".br" : ".gz";
-      const pre = file.path + suffix;
-      const preStat = await stat(pre).catch(() => null);
-      // A precompressed copy older than its source belongs to an earlier build: not trusted.
-      if (preStat?.isFile() && preStat.mtimeMs >= file.mtimeMs) {
-        body = await readFile(pre);
+      const pre = await precompressed(file, encoding);
+      if (pre) {
+        body = pre;
       } else {
         const key = `${file.mtimeMs}:${file.size}:${encoding}:${file.path}`;
         let hit = made.get(key);

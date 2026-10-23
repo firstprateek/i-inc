@@ -1,6 +1,7 @@
 // @vitest-environment node
 // What `vite build` produces (T63): a small entry chunk, one chunk per screen group, self-hosted fonts, and a
 // brotli and gzip copy of every text file for the daemon to send.
+import { createHash } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -85,6 +86,22 @@ describe("the build", () => {
     }
     // Fonts are already compressed.
     expect(assets().filter((f) => f.endsWith(".woff2.br"))).toEqual([]);
+  });
+
+  it("writes a manifest of what each copy was made from and is, which the daemon checks before trusting a copy", () => {
+    const manifest = JSON.parse(file("precompressed.json")) as Record<
+      string,
+      { src: string; br?: string; gz?: string }
+    >;
+    const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
+    const names = Object.keys(manifest);
+    expect(names.length).toBeGreaterThan(8);
+    for (const f of names) {
+      expect(manifest[f]?.src, f).toBe(sha(readFileSync(join(out, f))));
+      expect(manifest[f]?.br, f).toBe(sha(readFileSync(join(out, `${f}.br`))));
+      expect(manifest[f]?.gz, f).toBe(sha(readFileSync(join(out, `${f}.gz`))));
+    }
+    expect(names).toContain("index.html");
   });
 
   it("precaches every file the shell can need, but not the compressed copies", () => {

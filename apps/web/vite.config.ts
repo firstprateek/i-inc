@@ -65,6 +65,9 @@ function compressPlugin(): Plugin {
     closeBundle: {
       order: "post",
       handler() {
+        /** What each copy was made from and is, so the daemon trusts a copy by content and not by its date. */
+        const manifest: Record<string, { src: string; br?: string; gz?: string }> = {};
+        const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
         for (const f of listFiles(outDir)) {
           if (!COMPRESSIBLE.has(extname(f)) || /\.(br|gz)$/.test(f)) continue;
           const path = join(outDir, f);
@@ -72,9 +75,18 @@ function compressPlugin(): Plugin {
           if (raw.length < 1024) continue;
           const br = brotliCompressSync(raw, { params: { [constants.BROTLI_PARAM_QUALITY]: 11 } });
           const gz = gzipSync(raw, { level: 9 });
-          if (br.length < raw.length) writeFileSync(`${path}.br`, br);
-          if (gz.length < raw.length) writeFileSync(`${path}.gz`, gz);
+          const entry: { src: string; br?: string; gz?: string } = { src: sha(raw) };
+          if (br.length < raw.length) {
+            writeFileSync(`${path}.br`, br);
+            entry.br = sha(br);
+          }
+          if (gz.length < raw.length) {
+            writeFileSync(`${path}.gz`, gz);
+            entry.gz = sha(gz);
+          }
+          manifest[f] = entry;
         }
+        writeFileSync(join(outDir, "precompressed.json"), JSON.stringify(manifest));
       },
     },
   };

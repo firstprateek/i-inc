@@ -1,5 +1,6 @@
 // The web build is served compressed, cached by hash, and never answers a missing asset with HTML (T63).
-import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync } from "node:zlib";
@@ -10,6 +11,20 @@ const JS = "export const answer = 42; // padding so it compresses well\n".repeat
 const INDEX = `<!doctype html><html><head><title>i.inc</title></head><body>${"<p>shell</p>".repeat(120)}</body></html>`;
 let dir: string;
 let serve: ReturnType<typeof serveWebFrom>;
+
+const sha = (b: Buffer | string) => createHash("sha256").update(b).digest("hex");
+/** What `vite build` writes: for each file, the hash of its source and of each copy. */
+function writeManifest(files: Record<string, string>) {
+  const map: Record<string, { src: string; br: string; gz: string }> = {};
+  for (const [f, text] of Object.entries(files)) {
+    map[f] = {
+      src: sha(text),
+      br: sha(brotliCompressSync(Buffer.from(text))),
+      gz: sha(gzipSync(Buffer.from(text))),
+    };
+  }
+  writeFileSync(join(dir, "precompressed.json"), JSON.stringify(map));
+}
 
 const get = (path: string, headers: Record<string, string> = {}, method = "GET") =>
   serve(new Request(`http://127.0.0.1:7420${path}`, { headers, method }));
@@ -24,6 +39,7 @@ beforeAll(() => {
   writeFileSync(join(dir, "assets/app-abc123.js"), JS);
   writeFileSync(join(dir, "assets/app-abc123.js.br"), brotliCompressSync(Buffer.from(JS)));
   writeFileSync(join(dir, "assets/app-abc123.js.gz"), gzipSync(Buffer.from(JS)));
+  writeManifest({ "assets/app-abc123.js": JS });
   // ...and one from an older build that did not.
   writeFileSync(join(dir, "assets/old-def456.js"), JS);
   writeFileSync(join(dir, "assets/font-aaa111.woff2"), Buffer.alloc(4000, 7));
@@ -90,13 +106,76 @@ describe("hashed assets", () => {
     expect(await res.text()).not.toContain("<html");
   });
 
-  it("distrusts a precompressed copy older than its file", async () => {
-    writeFileSync(join(dir, "assets/new-fff000.js"), JS);
-    writeFileSync(join(dir, "assets/new-fff000.js.gz"), gzipSync(Buffer.from("old build")));
-    const past = new Date(Date.now() - 60_000);
-    utimesSync(join(dir, "assets/new-fff000.js.gz"), past, past);
-    const res = await get("/assets/new-fff000.js", { "accept-encoding": "gzip" });
+  it("trusts a precompressed copy by what it is, not by its date", async () => {
+    // Older than its source by the clock, but the manifest vouches for both: served as the copy.
+    const past = new Date(Date.now() - 3_600_000);
+    utimesSync(join(dir, "assets/app-abc123.js.br"), past, past);
+    const res = await get("/assets/app-abc123.js", { "accept-encoding": "br" });
+    expect(Buffer.from(await res.arrayBuffer()).equals(brotliCompressSync(Buffer.from(JS)))).toBe(true);
+  });
+
+  it("does not trust a copy the manifest does not vouch for: swapped, or made from another file", async () => {
+    writeFileSync(join(dir, "assets/swap-111111.js"), JS);
+    writeFileSync(join(dir, "assets/swap-111111.js.gz"), gzipSync(Buffer.from("something else entirely")));
+    writeManifest({ "assets/app-abc123.js": JS, "assets/swap-111111.js": JS });
+    const swapped = await get("/assets/swap-111111.js", { "accept-encoding": "gzip" });
+    expect(gunzipSync(Buffer.from(await swapped.arrayBuffer())).toString()).toBe(JS);
+    // The source changed after the build wrote its copy (a later copy over it): the copy is no longer its copy.
+    writeFileSync(join(dir, "assets/edit-222222.js"), JS);
+    writeFileSync(join(dir, "assets/edit-222222.js.gz"), gzipSync(Buffer.from(JS)));
+    writeManifest({ "assets/app-abc123.js": JS, "assets/edit-222222.js": JS });
+    writeFileSync(join(dir, "assets/edit-222222.js"), `${JS}// edited\n`);
+    const edited = await get("/assets/edit-222222.js", { "accept-encoding": "gzip" });
+    expect(gunzipSync(Buffer.from(await edited.arrayBuffer())).toString()).toBe(`${JS}// edited\n`);
+  });
+
+  it("compresses itself when a build has no manifest (an older build's copies are not taken on trust)", async () => {
+    const other = mkdtempSync(join(tmpdir(), "i-inc-web-nomanifest-"));
+    mkdirSync(join(other, "assets"));
+    writeFileSync(join(other, "index.html"), INDEX);
+    writeFileSync(join(other, "assets/x-333333.js"), JS);
+    writeFileSync(join(other, "assets/x-333333.js.gz"), gzipSync(Buffer.from("not the same")));
+    const res = await serveWebFrom(other)(
+      new Request("http://127.0.0.1:7420/assets/x-333333.js", { headers: { "accept-encoding": "gzip" } }),
+    );
     expect(gunzipSync(Buffer.from(await res.arrayBuffer())).toString()).toBe(JS);
+  });
+});
+
+describe("links inside the build", () => {
+  let outside: string;
+  beforeAll(() => {
+    outside = mkdtempSync(join(tmpdir(), "i-inc-outside-"));
+    writeFileSync(join(outside, "secret.js"), "export const secret = 'do not serve';\n".repeat(60));
+    symlinkSync(join(outside, "secret.js"), join(dir, "assets/leak-444444.js"));
+    symlinkSync(outside, join(dir, "assets/linked-dir"));
+    // A link that stays inside the build is not followed either: the file must be where its address says.
+    symlinkSync(join(dir, "assets/old-def456.js"), join(dir, "assets/alias-555555.js"));
+  });
+
+  it("never serves a file that is a link, to somewhere outside or inside the build", async () => {
+    for (const path of [
+      "/assets/leak-444444.js",
+      "/assets/linked-dir/secret.js",
+      "/assets/alias-555555.js",
+    ]) {
+      const res = await get(path);
+      expect(res.status, path).toBe(404);
+      expect(await res.text(), path).not.toContain("do not serve");
+    }
+    // ...and outside /assets it falls back to the app, never to the linked file.
+    symlinkSync(join(outside, "secret.js"), join(dir, "leak.txt"));
+    const res = await get("/leak.txt");
+    expect(await res.text()).toBe(INDEX);
+  });
+
+  it("serves a build reached through a link to its folder (a release behind `current`)", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "i-inc-release-"));
+    const via = join(parent, "current");
+    symlinkSync(dir, via);
+    const res = await serveWebFrom(via)(new Request("http://127.0.0.1:7420/assets/app-abc123.js"));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(JS);
   });
 });
 
