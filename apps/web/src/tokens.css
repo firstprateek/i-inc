@@ -1,5 +1,29 @@
 /* Layout rules live in docs/layout.md; the shared Lit frame is apps/web/src/components/layout.ts.
    Page 840px, Wide 1400px, Split 300px sidebar; keep these matched to --page-width/--wide-width below. */
+/* Self-hosted fonts (src/fonts/README.md): no third-party request, nothing render-blocking. Text shows in the
+   fallback face at once and swaps when the file arrives. */
+@font-face {
+  font-family: "Figtree";
+  font-style: normal;
+  font-weight: 300 900;
+  font-display: swap;
+  src: url("./fonts/figtree-latin-wght.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Bricolage Grotesque";
+  font-style: normal;
+  font-weight: 200 800;
+  font-stretch: 75% 100%;
+  font-display: swap;
+  src: url("./fonts/bricolage-grotesque-latin-opsz.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("./fonts/jetbrains-mono-latin-500.woff2") format("woff2");
+}
 /* i.inc's tokens, by role (see .claude/skills/ui-review/references/i-inc-lessons.md).
    Every colour has exactly one job. Light by default, with a dark theme. */
 :root {

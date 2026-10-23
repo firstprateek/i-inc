@@ -2,6 +2,7 @@
 import { defaultProjectPolicy } from "@i-inc/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../src/components/app.ts";
+import "../src/components/group-projects.ts";
 import "../src/components/setup.ts";
 import { defaultSandbox, type Project, policyDefaults, type Sandbox, type Team } from "../src/setup-api.ts";
 

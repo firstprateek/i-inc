@@ -2,6 +2,7 @@
 // desktop, every hash from before the areas still works (rewritten in place), and each route uses its template.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { IncApp, layoutForRoute, parse, routeName } from "../src/components/app.ts";
+import "../src/components/group-work.ts";
 import { IncLogin } from "../src/login.ts";
 import {
   AREAS,

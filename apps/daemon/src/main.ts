@@ -7,7 +7,7 @@
 // instead, so the web app has something to show anywhere.
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, normalize } from "node:path";
+import { join } from "node:path";
 import { FakeAgent, FakeChat, FakeHarness, FakeHelper, FakeMachines } from "@i-inc/core/testing";
 import { agentsFromRegistry } from "./ahp/conversations.ts";
 import { SessionHost } from "./ahp/session-host.ts";
@@ -23,6 +23,7 @@ import { AppleMachines, defaultMachineSettings, wallsUp } from "./machines.ts";
 import { killTracked, stopTracked } from "./proc.ts";
 import { realPorts } from "./real.ts";
 import { checkpoint } from "./retention.ts";
+import { serveWebFrom } from "./web-static.ts";
 
 const home = process.env.I_INC_HOME ?? join(homedir(), ".i-inc");
 const port = Number(process.env.PORT ?? 7420);
@@ -247,13 +248,8 @@ if (!demo && app.deps.machines instanceof AppleMachines) {
 // restarted with a new one) or whose user has root again is stopped (egress-wall.ts).
 setInterval(() => void watchHome(), 30_000);
 
-/** The web app's build, with index.html for every other path. */
-async function serveWeb(req: Request): Promise<Response> {
-  const path = normalize(new URL(req.url).pathname).replace(/^(\.\.[/\\])+/, "");
-  const file = Bun.file(join(web, path === "/" ? "index.html" : path));
-  if (await file.exists()) return new Response(file);
-  return new Response(Bun.file(join(web, "index.html")));
-}
+/** The web app's build (web-static.ts): precompressed, cached by hash, index.html for every other path. */
+const serveWeb = serveWebFrom(web);
 
 app.ahp.transport.start();
 // Idle conversations are suspended, so their agents don't hold the sandbox.

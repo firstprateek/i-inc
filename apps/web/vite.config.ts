@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { extname, join, relative, resolve, sep } from "node:path";
+import { brotliCompressSync, constants, gzipSync } from "node:zlib";
 import { defineConfig, type Plugin } from "vite";
 
 /**
@@ -14,13 +15,13 @@ function precachePlugin(): Plugin {
     name: "i-inc-precache",
     apply: "build",
     configResolved(config) {
-      outDir = join(config.root, config.build.outDir);
+      outDir = resolve(config.root, config.build.outDir);
     },
     closeBundle: {
       order: "post",
       handler() {
         const files = listFiles(outDir)
-          .filter((f) => f !== "sw.js")
+          .filter((f) => f !== "sw.js" && !/\.(br|gz)$/.test(f))
           .sort();
         const urls = files.map((f) => `/${f}`);
         const hash = createHash("sha256");
@@ -35,6 +36,50 @@ function precachePlugin(): Plugin {
   };
 }
 
+/** What compresses (text); images and fonts are already compressed. Kept in step with apps/daemon/src/web-static.ts. */
+const COMPRESSIBLE = new Set([
+  ".html",
+  ".js",
+  ".mjs",
+  ".css",
+  ".json",
+  ".webmanifest",
+  ".svg",
+  ".txt",
+  ".map",
+]);
+
+/**
+ * Writes `<file>.br` and `<file>.gz` beside every text file in the build, after the service worker is filled
+ * in, so the daemon sends the smallest form the browser accepts without compressing anything per request.
+ * A copy is kept only when it is smaller than the file.
+ */
+function compressPlugin(): Plugin {
+  let outDir = "dist";
+  return {
+    name: "i-inc-compress",
+    apply: "build",
+    configResolved(config) {
+      outDir = resolve(config.root, config.build.outDir);
+    },
+    closeBundle: {
+      order: "post",
+      handler() {
+        for (const f of listFiles(outDir)) {
+          if (!COMPRESSIBLE.has(extname(f)) || /\.(br|gz)$/.test(f)) continue;
+          const path = join(outDir, f);
+          const raw = readFileSync(path);
+          if (raw.length < 1024) continue;
+          const br = brotliCompressSync(raw, { params: { [constants.BROTLI_PARAM_QUALITY]: 11 } });
+          const gz = gzipSync(raw, { level: 9 });
+          if (br.length < raw.length) writeFileSync(`${path}.br`, br);
+          if (gz.length < raw.length) writeFileSync(`${path}.gz`, gz);
+        }
+      },
+    },
+  };
+}
+
 function listFiles(dir: string, root = dir): string[] {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
@@ -44,7 +89,7 @@ function listFiles(dir: string, root = dir): string[] {
 
 // In development the API comes from the daemon; in production the daemon serves this build.
 export default defineConfig({
-  plugins: [precachePlugin()],
+  plugins: [precachePlugin(), compressPlugin()],
   server: { proxy: { "/api": "http://127.0.0.1:7420" } },
   build: { outDir: "dist", emptyOutDir: true },
 });
