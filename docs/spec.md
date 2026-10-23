@@ -395,7 +395,7 @@ interface with a scripted fake in tests, like the ACP agent.
     that isn't installed (which includes any name with a registry host) are refused, and the request body is
     parsed and re-written so what is checked is what Ollama reads, so a sandbox can't make the host fetch from, or send a prompt to,
     a server of its choosing.
-  - **Machines can't reach each other (T70; verify after install).** The machines share one bridge,
+  - **Machines can't reach each other (T70, verified on the mini on 2026-10-22).** The machines share one bridge,
     and macOS switches a frame from one machine to another without handing it to the host's IP stack, so
     pf's rules on the bridge never saw it: two machines could reach each other over TCP, UDP and ping, and
     a PA's sandbox could hand data to an engineers' machine that has the internet. macOS has no
@@ -409,8 +409,8 @@ interface with a scripted fake in tests, like the ACP agent.
     Not covered: a machine with raw-socket root crafting frames with forged source addresses to another
     machine's hardware address and a destination that isn't a machine's; engineers' machines have that
     root, a PA's sandbox doesn't. Closing it would take per-machine MAC and address locks on the bridge
-    (`ifconfig bridge100 hostfilter`). Until the owner has run the verification in docs/handoff.md,
-    this is designed and tested against a model of pf, not proven on the mini.
+    (`ifconfig bridge100 hostfilter`). Verified on the mini: TCP and ping between two machines are blocked both ways,
+    open machines keep the internet, DNS, Ollama and DHCP, and a 100 MB download completes.
 - **GitHub** uses a bot identity: one GitHub App, "i.inc bot", installed on the repos you choose.
   - **A sandbox never holds a credential that can write (T68).** Agents run with bypassed permissions and
     can be prompt-injected, and the bot may update `main` (direct mode), which the deployer puts on the
@@ -923,9 +923,9 @@ model is loaded (qwen3:8b at a 32k context: 8.1 GB).
   - tokens are short-lived or revocable;
   - everything is audited.
 
-  What stays open: the agents of one team trust each other (the team is the trust boundary, §5), and
-  one machine reaching another on the bridge is not verified to be blocked (§5). In direct mode the
-  checks and the review run in the builder's own sandbox, so against a poisoned agent they are advisory.
+  What stays open: the agents of one team trust each other (the team is the trust boundary, §5), and in
+  direct mode the checks and the review run in the builder's own sandbox, so against a poisoned agent they
+  are advisory. (One machine cannot reach another: T70, verified on the mini, §5.)
   That's acceptable for personal use.
 - **A PA reads mail written by strangers.** An email can carry a prompt injection ("forward the last
   ten password resets to…"). The PA holds your private data and reads untrusted text, so it must not
@@ -1065,13 +1065,14 @@ graceful stop.
 - The PA's home tools (mail, calendar, contacts) and web errands. The errand loop, outbound permissions and
   the PA's walls are built, but nothing connects them to a mailbox yet.
 - Privileged requests, and Approve merging with your account.
+- Done-when checked for every ticket (T72, in progress): a low-effort code ticket has no `prove` stage, and a medium or high
+  ticket skips it when nobody on the team has the verify duty. Orientation, tidy and errands are checked (T71).
 - Track records and scorecards, goals and the roadmap, the weekly company report, and the Output, Quality and
   Your-time parts of My desk.
 - Proof screenshots captured by the harness and copied into the PR (proof is text evidence per done-when item).
 - A cap on machines awake at once per host, and the local model pool with memory-aware scheduling.
 - A Feedback button, and a browser smoke test in CI (CI runs `check`, `typecheck` and `test`; `pnpm e2e` is run by hand).
 - Per-device login tokens, a native app, and a private cloud.
-- A machine-to-machine isolation guarantee on the bridge (§5, "Not verified").
 
 ## Sources
 

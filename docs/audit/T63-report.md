@@ -1,7 +1,8 @@
 # T63: audit of the whole product
 
-Date: 2026-10-22. Status of the fixes: the daemon and web groups below are merged except four PRs that are still in
-review (#107, #109, #110 and #111); this report lists them as "in review" and is updated when they merge.
+Date: 2026-10-22. Status: every fix below is merged. One related gap is still in progress (T72, done-when for
+low-effort and no-verifier tickets, under "Found live"). Merged PRs: #96 to #104, #107, #109, #110, #111, #113, #114,
+#115, #116, #117 and #118, with the UX work in #105 and #106.
 
 The UX review (T64) is a separate document: [T64-ux.md](T64-ux.md). It is linked here, not copied.
 
@@ -105,11 +106,11 @@ The board and Needs you payloads (the web half of this) are in "Web 4" below.
 | A protected path without a trailing slash matched only the exact file | LOW | #103: matches the path and everything under it |
 | A default branch containing `/` broke every branch script | LOW | #103: scripts accept any valid ref name; the project form refuses the rest |
 
-### Daemon 7. Correctness. Fixed in #101, with a follow-up in review (#110)
+### Daemon 7. Correctness. Fixed in #101 and #110
 
 | Finding | Severity | Fix |
 | --- | --- | --- |
-| In owner-merges mode "Approve" never merged and "Reject" never closed the PR, so "merged" meant only "the owner clicked" | MEDIUM | #101: merged is recorded only when GitHub says the PR is merged; Reject closes the PR. **In review (#110):** the owner merges on GitHub, the ticket shows "Merge on GitHub" and "Close without merging", the daemon watches the PR about every 5 minutes and closes the ticket by itself when it is merged, and Approve is refused while the PR is open |
+| In owner-merges mode "Approve" never merged and "Reject" never closed the PR, so "merged" meant only "the owner clicked" | MEDIUM | #101: merged is recorded only when GitHub says the PR is merged; Reject closes the PR. **#110:** the owner merges on GitHub, the ticket shows "Merge on GitHub" and "Close without merging", the daemon watches the PR about every 5 minutes and closes the ticket by itself when it is merged, and Approve is refused while the PR is open |
 | Clock handling: a future-dated release hid later ones, `workedMs` could go negative, back-off used wall time, budgets used UTC days | LOW | #101: a monotonic clock for back-off, non-negative durations, local-day budgets, and red main reverted only after the builder had a chance to fix it |
 | Stale snapshot across awaits; an owner action waited for the next tick | LOW | #101: the helper assignment re-reads the ticket; an owner action re-runs the ticket at once |
 | After the second rejected review round nothing re-reviews the fixes | LOW | Left as designed (the report says so) |
@@ -151,17 +152,20 @@ and #98 counts queries instead of timing.
 | Settings → Teams could not create a team although two screens said to | MEDIUM | Teams can be created, resized and given people, following the PA's own-team rule |
 | Back from a sent first message returned to the empty draft and could start a second conversation; the open Brain page was not in the address; raw daemon strings | LOW | The first message replaces the draft address; the Brain page is in the URL; plain not-found states |
 
-### Web 4. Request budget and static serving. In review (#109 and #107)
+### Web 4. Request budget and static serving. Fixed in #109, #107 and #116
 
 | Finding | Severity | Status |
 | --- | --- | --- |
-| Opening the board with 1,000 tickets cost 16 requests and 2.6 MB, and each ticket event 9 requests and 1.3 MB; the board had no cap; background tabs kept refetching | HIGH | **In review (#109):** a summary endpoint with paged columns, one card per event, one shared Needs you request, and hidden tabs catching up on show. Measured there: 24 requests and 2.4 MB to 6 requests and 53 KB |
-| Static files were served raw, uncompressed and uncached (a 558 KB bundle on every visit); missing assets answered 200 | MEDIUM | **In review (#107):** brotli and gzip, immutable caching for hashed files, 404 for a missing asset |
-| Google Fonts blocked first paint and leaked the owner's address | MEDIUM | **In review (#107):** self-hosted fonts |
-| One 558 KB chunk loaded for every route | LOW | **In review (#107):** one chunk per screen group |
+| Opening the board with 1,000 tickets cost 16 requests and 2.6 MB, and each ticket event 9 requests and 1.3 MB; the board had no cap; background tabs kept refetching | HIGH | **Fixed, #109:** a summary endpoint with paged columns, one card per event, one shared Needs you request, and hidden tabs catching up on show. Measured there: 24 requests and 2.4 MB to 6 requests and 53 KB |
+| Static files were served raw, uncompressed and uncached (a 558 KB bundle on every visit); missing assets answered 200 | MEDIUM | **#107:** brotli and gzip, immutable caching for hashed files, 404 for a missing asset |
+| Google Fonts blocked first paint and leaked the owner's address | MEDIUM | **#107:** self-hosted fonts |
+| One 558 KB chunk loaded for every route | LOW | **#107:** one chunk per screen group |
 | A 300 KB markdown table in a conversation made 353,000 DOM nodes | LOW | Left: a rare input; it needs a row cap or virtual rows |
 
-### Web 5 to 8. Accessibility, layout, PWA and hardening. In review (#111)
+Review of #107 found two small gaps in the static server, closed in #116: a symlink inside the build could have been
+served, and a precompressed copy was trusted by file date; it is now trusted only when its hash matches a manifest.
+
+### Web 5 to 8. Accessibility, layout, PWA and hardening. Fixed in #111 (CSP in #107, link checks in #111)
 
 Accessibility (duties without names, 1.6:1 control borders, placeholders at 4.44:1, no reduced-motion rule, tab bar
 semantics, no skip link, 1,000 Tab stops on a large board, iOS zoom and small targets), the header-position rule,
@@ -185,18 +189,31 @@ and claims about agents asking questions, agent teams, and MCP and skills. Those
 | **Personal assistant egress gap (T66).** The spec said a PA's sandbox reaches only Ollama, but the walls gave every sandbox the open internet | SEC, HIGH | #94. The walls are closed unless opened: only declared machines get the internet and DNS, and the daemon fails closed. The PA gets its own home team and sandbox with no root (its sudo is removed before every launch), and the Ollama relay became an allowlisting proxy |
 | **Shared Unix user (T67).** All employees of a team run as one Unix user, so an agent can read and change a teammate's working copies and brain copy | MEDIUM | Decided against changing it. Agents need root, and root reads every user's files, so per-employee users would isolate nothing unless root went, which breaks normal work; a machine per employee would reverse the sandbox-per-team decision. The team is the trust boundary. What must not be shared isn't: the PA has its own sandbox, brain edits made while a teammate's session overlapped are marked untrusted (T58, #95), and no write credential is in any sandbox |
 
-Left open, deliberately: **machine-to-machine isolation on the bridge is not verified.** Traffic between two sandboxes may
-be switched without meeting the firewall. `tools/m1/walls-test.sh` with `OTHER_MACHINE` tests it, and it has not passed on
-the mini yet, so no document claims that a PA's sandbox cannot talk to another machine.
+**Machine-to-machine isolation (T70, #114): fixed and verified.** Traffic between two sandboxes was switched on the
+bridge without ever meeting the firewall (a live test on the mini on 2026-10-22 found a listener in the PA's
+machine reachable from an engineers' machine and the other way round). The bridge's filter flags now make pf run on
+each member interface. Verified on the mini the same day: TCP and ping between machines are blocked both ways,
+open machines keep the internet, DNS, Ollama and DHCP, and a 100 MB download completes. Not covered: a machine with
+raw-socket root forging frames; a PA's sandbox has no root.
 
-## In review at the time of writing
+## Found live: hiring a personal assistant ("Pip") on the mini
 
-| PR | What | Findings it closes |
-| --- | --- | --- |
-| #107 | Compressed, cached static serving; self-hosted fonts; split bundle; CSP | Web 4 (static serving), Web 8 |
-| #109 | The board opens on a summary and updates one card per event | Web 4 (request budget) |
-| #110 | Owner-merges tickets close when the PR is merged on GitHub | Daemon 7.1 follow-up |
-| #111 | Accessibility, header rule, service worker and install, safe links | Web 5 to 8 |
+After the audit's fixes were deployed, a PA was hired and driven for real. This found four more problems that no
+test had, all fixed:
+
+| Finding | Fix |
+| --- | --- |
+| The PA's orientation ticket closed "done" without meeting its done-when, because the stage closed whenever the session returned | T71, #115: orientation and tidy tickets close only when their done-when is met, judged against the collected brain copy (one retry with feedback, then Needs you), and an errand is done when it proposes something or says why not. The PA also works offline now: a note on its machine in every brief and turn, a brain section cut to its small window, a pinned 32k-token local model (`qwen3-8b-32k`), `rg` in the image, and a `converse.ts` smoke tool |
+| The small model copied the prefix of an example page format literally | T74, #118: examples it can copy as they are (fenced, no prefix, a heredoc); the harvest drops junk frontmatter keys |
+| A conversation with a PA failed when its sandbox was stopped | T74, #118: a conversation boots a stopped sandbox first, home or team |
+| The stale-hostname boot failure recurred after machine stops, and the PA's root removal could not be repeated | T73, #117: the daemon restarts the container service by itself once every machine is idle (at most one in 30 minutes, with the walls confirmed before any launch), else the owner is asked; the root removal clears the immutable flag first so it works on every boot |
+
+The same hole as the first row is still open for code tickets (**T72, in progress**): a low-effort code ticket has no
+`prove` stage, and a medium or high ticket skips it when nobody on the team has the verify duty, so both can close
+without their done-when being verified. The fix will name who checks them and enforce it as T71 does.
+
+Also merged: #113 made the ship tests deterministic (the helpers resolved on a child's `exit` event, which can fire
+before its output is drained, so CI flaked under load).
 
 ## Related
 

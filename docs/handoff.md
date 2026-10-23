@@ -14,7 +14,7 @@ Merged on `main` and live on the mini:
 | --- | --- |
 | Access & auth | Tailscale Service `svc:iinc` serves HTTPS on standard port 443 at `https://iinc.<tailnet>.ts.net` (`I_INC_HOSTS` configured). Owner auth via `POST /api/signup`, `POST /api/login`, `POST /api/logout`, `GET /api/auth`: `scrypt` hashing in SQLite, **a per-login server-side session** in the `i_inc` cookie (HttpOnly, SameSite=Strict, Secure over https; sign-out revokes it and closes its open sockets), bearer token for scripts and the deployer, **a one-time setup code** (`~/.i-inc/setup-code`) for the first-run signup, and per-client limits on wrong logins and setup guesses (T63, contract C5) |
 | Engines & sandboxes | Teams share a sandbox (`inc-<team>`, 12G, 6 CPUs) with Claude (`claude-code`), Antigravity (Google AI Pro, `antigravity`) and Codex (`codex`) signed in once per sandbox; Antigravity OAuth callback relay (`POST /api/teams/:id/antigravity-callback`); OpenCode (`opencode`, `local: true`) using local Ollama via the container gateway relay (port 11434); local `OllamaHelper` (yes/no & intent classification) and `OllamaChat` (the old small-model chat). A personal assistant gets a team and sandbox of its own (no root, no internet, T66) |
-| Isolation & safety | Sandbox inspection (`GET /api/sandboxes`, C1) without booting stopped VMs on read; sandbox DNS filter (`apps/daemon/src/dns.ts`) refusing `.ts.net` and `.local`; firewall walls (`pf`) refreshed every minute and **closed unless opened** (T66); monthly scheduled host restart. **The team is the trust boundary** (T67: one sandbox and one Unix user per team, agents have root; machine-to-machine isolation on the bridge is not verified). **No write credentials in sandboxes** (T68): read-only repo-scoped tokens, every push made on the host from a verified bundle, host-executed code in the repo the mini runs needs the owner's OK, and the deployer deploys only ledgered owner-approved, owner-merged-PR or docs-only commits |
+| Isolation & safety | Sandbox inspection (`GET /api/sandboxes`, C1) without booting stopped VMs on read; sandbox DNS filter (`apps/daemon/src/dns.ts`) refusing `.ts.net` and `.local`; firewall walls (`pf`) refreshed every minute and **closed unless opened** (T66); monthly scheduled host restart. **The team is the trust boundary** (T67: one sandbox and one Unix user per team, agents have root; machine-to-machine traffic is blocked by the bridge filter, T70, verified on the mini on 2026-10-22). **No write credentials in sandboxes** (T68): read-only repo-scoped tokens, every push made on the host from a verified bundle, host-executed code in the repo the mini runs needs the owner's OK, and the deployer deploys only ledgered owner-approved, owner-merged-PR or docs-only commits |
 | Caps & releases | Account `monthlyCap` and live Claude rate-limit utilization meters (`GET /api/accounts`, `GET /api/office`); project releases (`GET /api/releases`, `POST /api/projects/:id/release`, `autoRelease` setting, `<inc-desk>`) |
 | Web Push | Backend VAPID key file in `~/.config/i-inc/vapid.json`, dedicated `push_sent` SQLite table preventing duplicate notifications, startup baseline, 5 s timeout, triggering on `needs-you`, `report-ready`, and `main-red` (C2); web Push opt-in UI and service worker push handler (PR #46 merged) |
 | Live updates | Server-Sent Events stream (`GET /api/events`, C3, daemon PR #40 merged) broadcasting `ticket` and `office` updates with `: keepalive` heartbeats every 25 s, `x-accel-buffering: no`, and `highWaterMark: 64` backpressure handling; web app refetches reactively from the event stream (web PR #44 merged) |
@@ -229,7 +229,7 @@ machines keep their internet. The design, and why:
   at most, 10 minutes without a byte once a call is in. A request with `model`/`name` keys spelt any other way, or
   with a non-plain key, is refused, and what is forwarded is the parsed object written out again. A model installed
   locally with a registry host in its name (`hf.co/…`) is served; anything not installed is not.
-- **One machine reaching another (T70; verify after install).** Two machines on the bridge could reach each other
+- **One machine reaching another (T70, verified on the mini on 2026-10-22: TCP and ping blocked both ways, open machines keep internet, DNS, Ollama and DHCP, a 100 MB download completes).** Two machines on the bridge could reach each other
   (TCP, UDP, ping), because macOS switches the frames between the machines' `vmenetN` interfaces without running
   pf on them. macOS has no `net.link.bridge.pfil_*` sysctl (those are FreeBSD's; `sysctl -a | grep net.link.bridge`
   has none). The bridge has filter flags instead, which only the `BRDGSFILT` ioctl sets and `ifconfig bridge100`
@@ -887,10 +887,8 @@ read every ticket's events every 30 seconds; since T63 it folds only tickets tha
    an iPhone or Android device.
 2. **Check ticket images on the mini and an iPhone (#14):** checked on Linux, but not yet on the mini.
    The two steps are in [m1-findings.md, "M3: ticket images"](m1-findings.md#m3-ticket-images-14).
-3. **Walls: machine-to-machine.** Run `tools/m1/walls-test.sh` with `OTHER_MACHINE` on the mini and record the
-   result; until it passes, a PA's sandbox is not claimed to be isolated from other machines on the bridge.
-4. **Open PRs and audit leftovers:** see [audit/T63-report.md](audit/T63-report.md) ("Left on purpose" and
-   "In review").
+3. **Audit leftovers:** see [audit/T63-report.md](audit/T63-report.md) ("Left on purpose"), and T72 in
+   [coord.md](coord.md) (done-when for low-effort and no-verifier tickets).
 5. **Future work (not built):** agents asking questions mid-conversation, agent teams, MCP tools and skills, the
    PA's mail and calendar tools. The list is spec §16.
 
