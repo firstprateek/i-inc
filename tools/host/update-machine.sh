@@ -14,6 +14,11 @@ img="$(cd "$(dirname "$0")/../../images/employee" && pwd)"
   exit 1
 }
 
+# ripgrep (`rg`) for a machine made before the image had it: a Linux arm64 binary that tools/host/fetch-rg.sh
+# downloaded on the host (RG_BIN overrides where it is). It is copied only where `rg` is missing, so a
+# machine from a rebuilt image keeps its own. No rebuild and no recreate: the machine is not even restarted.
+rg_bin=${RG_BIN:-$HOME/.cache/i-inc/rg}
+
 # As root with `-u root`, not as the employee with sudo: a personal assistant's sandbox has its user's sudo
 # taken away (apps/daemon/src/machines.ts), and this works the same in every machine.
 # Through cat: `machine run -i` takes a pipe, but not every kind of stdin (images/employee/README.md).
@@ -27,3 +32,14 @@ for f in "$img"/launchers/acp-*; do put "$f" "/usr/local/bin/$(basename "$f")" 7
 $c machine run -u employee -n "$machine" -- mkdir -p /home/employee/.claude </dev/null
 cat "$img/claude-settings.json" | $c machine run -i -u employee -n "$machine" -- tee /home/employee/.claude/settings.json >/dev/null
 echo "$machine: /home/employee/.claude/settings.json"
+# OpenCode's config (the local models and their context window, T71).
+$c machine run -u employee -n "$machine" -- mkdir -p /home/employee/.config/opencode </dev/null
+cat "$img/opencode.json" | $c machine run -i -u employee -n "$machine" -- tee /home/employee/.config/opencode/opencode.json >/dev/null
+echo "$machine: /home/employee/.config/opencode/opencode.json"
+if $c machine run -u employee -n "$machine" -- sh -c 'command -v rg >/dev/null 2>&1' </dev/null; then
+  echo "$machine: rg is already there"
+elif [ -x "$rg_bin" ]; then
+  put "$rg_bin" /usr/local/bin/rg 755
+else
+  echo "$machine: no rg here, and no $rg_bin to copy: run tools/host/fetch-rg.sh first" >&2
+fi

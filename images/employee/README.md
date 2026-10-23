@@ -31,6 +31,13 @@ does the same by hand.
 A personal assistant's sandbox is made by the daemon, not by hand, and has its user's sudo removed (so
 `check.sh`'s "sudo needs no password" line fails there on purpose).
 
+**ripgrep and the local model's window (T71).** The image installs `ripgrep` (`rg`). OpenCode's glob and grep tools
+run on it and cannot download it in a machine with no internet. A machine made before this has none: copy it in
+with `sh tools/host/fetch-rg.sh` and then `sh tools/host/update-machine.sh <team id>` (no rebuild, no recreate).
+`opencode.json` uses the model `qwen3-8b-32k` (`qwen3:8b` with a 32,768-token window), which the host creates once with
+`sh tools/host/ollama-pa-model.sh` (docs/handoff.md, "Checking a PA works"): the endpoint OpenCode uses cannot set a
+window per request, and a prompt that does not fit is cut at the front without an error.
+
 The image includes the pinned Codex ACP adapter and its matching Codex CLI, but no Codex sign-in.
 For an existing team sandbox, the owner can install those pins with
 `sh tools/host/provision-codex.sh <team-id>`; it checks the host walls and updates only that

@@ -3,8 +3,76 @@ import type { ChatSession, Employee, Engine, HelperModel, SessionOutcome, Ticket
 
 export interface OllamaOptions {
   baseUrl?: string;
-  model?: string;
+  /** A model name, or a function that says which model to use now (see `ollamaModelChoice`). */
+  model?: string | (() => string);
   fetch?: typeof fetch;
+}
+
+/** The model a personal assistant's window is pinned on (tools/host/ollama-pa-model.sh), and the one it is made from. */
+export const PA_MODEL = "qwen3-8b-32k";
+export const BASE_MODEL = "qwen3:8b";
+
+/**
+ * Which Ollama model the daemon's own helper and chat use: `I_INC_OLLAMA_MODEL` if it is set, otherwise
+ * `qwen3-8b-32k` whenever Ollama lists it as installed, otherwise `qwen3:8b` with a warning (once). Ollama's
+ * installed models are read at start (`refresh`) and again, in the background, at most once a minute, so a model made
+ * by `ollama-pa-model.sh` is picked up without a restart. `current()` never waits and never throws.
+ */
+export function ollamaModelChoice(
+  o: {
+    baseUrl?: string;
+    fetch?: typeof fetch;
+    log?: (msg: string) => void;
+    env?: string | undefined;
+    now?: () => number;
+    ttlMs?: number;
+  } = {},
+): { current: () => string; refresh: () => Promise<void> } {
+  const pinned = o.env ?? process.env.I_INC_OLLAMA_MODEL;
+  const base = (o.baseUrl ?? process.env.I_INC_OLLAMA ?? "http://127.0.0.1:11434").replace(/\/+$/, "");
+  const fetchFn = o.fetch ?? globalThis.fetch;
+  const now = o.now ?? Date.now;
+  let chosen = pinned || BASE_MODEL;
+  let checkedAt = Number.NEGATIVE_INFINITY;
+  let warned = false;
+  let inFlight: Promise<void> | undefined;
+  const refresh = (): Promise<void> => {
+    if (pinned) return Promise.resolve();
+    inFlight ??= (async () => {
+      checkedAt = now();
+      try {
+        const res = await fetchFn(`${base}/api/tags`, { signal: AbortSignal.timeout(3000) });
+        const body = (await res.json()) as { models?: { name?: string; model?: string }[] };
+        const names = (body.models ?? [])
+          .flatMap((m) => [m.name, m.model])
+          .filter((n) => typeof n === "string");
+        if (names.some((n) => n === PA_MODEL || n === `${PA_MODEL}:latest`)) {
+          chosen = PA_MODEL;
+          warned = false;
+          return;
+        }
+        throw new Error(`${PA_MODEL} isn't installed`);
+      } catch (e) {
+        chosen = BASE_MODEL;
+        if (!warned) {
+          warned = true;
+          o.log?.(
+            `ollama: using ${BASE_MODEL}, not ${PA_MODEL} (${e instanceof Error ? e.message : String(e)}). Make it with: sh tools/host/ollama-pa-model.sh`,
+          );
+        }
+      }
+    })().finally(() => {
+      inFlight = undefined;
+    });
+    return inFlight;
+  };
+  return {
+    current: () => {
+      if (!pinned && now() - checkedAt > (o.ttlMs ?? 60_000)) void refresh();
+      return chosen;
+    },
+    refresh,
+  };
 }
 
 export function fallbackHeuristic(question: string, text: string): boolean {
@@ -29,13 +97,18 @@ export function fallbackClassify(
 
 class OllamaClient {
   readonly baseUrl: string;
-  readonly model: string;
+  private readonly modelOf: () => string;
   protected readonly fetchFn: typeof fetch;
 
   constructor(opts: OllamaOptions = {}) {
     this.baseUrl = (opts.baseUrl ?? process.env.I_INC_OLLAMA ?? "http://127.0.0.1:11434").replace(/\/+$/, "");
-    this.model = opts.model ?? process.env.I_INC_OLLAMA_MODEL ?? "qwen3:8b";
+    const m = opts.model ?? process.env.I_INC_OLLAMA_MODEL ?? BASE_MODEL;
+    this.modelOf = typeof m === "function" ? m : () => m;
     this.fetchFn = opts.fetch ?? globalThis.fetch;
+  }
+
+  get model(): string {
+    return this.modelOf();
   }
 
   protected async generate(prompt: string, format?: "json"): Promise<string> {

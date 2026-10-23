@@ -113,9 +113,16 @@ export function ticketView(
     createdBy,
     finishedAt,
     pushed,
-    ...(unreadable
+    ...(unreadable || s.nothingNote
       ? {
-          note: `${unreadable} unreadable ${unreadable === 1 ? "event was" : "events were"} set aside (see event_quarantine)`,
+          note: [
+            unreadable
+              ? `${unreadable} unreadable ${unreadable === 1 ? "event was" : "events were"} set aside (see event_quarantine)`
+              : "",
+            s.nothingNote ? `Proposed nothing: ${s.nothingNote}` : "",
+          ]
+            .filter(Boolean)
+            .join(". "),
         }
       : {}),
     ...(r.ticket.conversation ? { fromConversation: { id: r.ticket.conversation, title: null } } : {}),

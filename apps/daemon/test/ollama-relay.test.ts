@@ -96,6 +96,16 @@ async function call(method: string, path: string, body?: unknown, raw?: string) 
 }
 
 describe("the Ollama relay", () => {
+  it("serves the PA's model qwen3-8b-32k once `ollama create` has made it, and not before", async () => {
+    const chat = { model: "qwen3-8b-32k", messages: [{ role: "user", content: "hi" }] };
+    expect((await call("POST", "/v1/chat/completions", chat)).status).toBe(403);
+    // `ollama create qwen3-8b-32k` lists it as qwen3-8b-32k:latest; the name without the tag is the same model.
+    models.push({ name: "qwen3-8b-32k:latest", model: "qwen3-8b-32k:latest" });
+    clock += 31_000; // the relay re-reads /api/tags every 30 s
+    expect((await call("POST", "/v1/chat/completions", chat)).status).toBe(200);
+    expect(modelProblem("qwen3-8b-32k")).toBeNull();
+  });
+
   it("forwards the calls an agent needs, streaming the answer, for an installed model", async () => {
     const r = await call("POST", "/api/chat", {
       model: "qwen3:8b",

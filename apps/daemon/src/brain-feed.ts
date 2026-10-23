@@ -13,9 +13,11 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
+  type BrainBudget,
   type BrainUse,
   brainHome,
   buildMap,
+  cloudBrainBudget,
   conversationQuery,
   fitMaps,
   isHomeEmployee,
@@ -96,6 +98,8 @@ export interface SyncReport {
   kept: string[];
   /** The `brain search` command works in that sandbox (false when its Node can't do SQLite FTS5). */
   search?: boolean;
+  /** ripgrep is on that sandbox's path (absent: not known yet). */
+  rg?: boolean;
   detail?: string;
 }
 
@@ -107,6 +111,8 @@ interface Delivered {
   pending: string[];
   /** `brain search` works in that sandbox. */
   search: boolean;
+  /** ripgrep is on the sandbox's path (absent: not known, e.g. after a restart). */
+  rg?: boolean;
 }
 
 interface Built {
@@ -240,6 +246,22 @@ export class BrainFeed {
     const tree = this.o.store.tree(repo);
     this.trees.set(k, { head, tree });
     return tree;
+  }
+
+  /** What each employee's machine was last seen to have (from the last copy made or checked). */
+  private readonly toolsSeen = new Map<string, { search: boolean; rg: boolean | undefined }>();
+  private seen(employeeId: string, report: SyncReport): SyncReport {
+    this.toolsSeen.set(employeeId, { search: report.search !== false, rg: report.rg });
+    return report;
+  }
+
+  /**
+   * Which of the tools a PA's brief names its machine has, as last seen: `brain search` unless it was found not to
+   * work, `rg` only if it was seen (unknown counts as missing: the brief says to use `grep -rn` then).
+   */
+  toolsOf(employeeId: string): { search: boolean; rg: boolean } {
+    const t = this.toolsSeen.get(employeeId);
+    return { search: t?.search ?? true, rg: t?.rg === true };
   }
 
   /** The files an employee's copy holds right now, with their ids. Cached until a repo changes. */
@@ -492,12 +514,26 @@ export class BrainFeed {
 
       if (last && last.snap.id === b.snap.id && last.pending.length === 0) {
         if (now - last.verifiedAt < (this.o.verifyEveryMs ?? 5 * 60_000)) {
-          return { ok: true, how: "current", id: b.snap.id, kept: [], search: last.search };
+          return this.seen(employeeId, {
+            ok: true,
+            how: "current",
+            id: b.snap.id,
+            kept: [],
+            search: last.search,
+            ...(last.rg !== undefined ? { rg: last.rg } : {}),
+          });
         }
         const v = parseApply(...(await this.verify(employeeId, root, b.snap.id)));
         if (v.kind === "current") {
           this.delivered.set(key, { ...last, verifiedAt: now });
-          return { ok: true, how: "current", id: b.snap.id, kept: [], search: last.search };
+          return this.seen(employeeId, {
+            ok: true,
+            how: "current",
+            id: b.snap.id,
+            kept: [],
+            search: last.search,
+            ...(last.rg !== undefined ? { rg: last.rg } : {}),
+          });
         }
       }
 
@@ -572,6 +608,7 @@ export class BrainFeed {
         verifiedAt: now,
         pending: [...kept].sort(),
         search: result.search,
+        ...(result.rg !== undefined ? { rg: result.rg } : last?.rg !== undefined ? { rg: last.rg } : {}),
       };
       this.delivered.set(key, delivered);
       this.o.db.run(
@@ -592,7 +629,15 @@ export class BrainFeed {
         );
       }
       this.keptLogged.set(key, said);
-      return { ok: true, how, id: b.snap.id, sent, kept: delivered.pending, search: result.search };
+      return this.seen(employeeId, {
+        ok: true,
+        how,
+        id: b.snap.id,
+        sent,
+        kept: delivered.pending,
+        search: result.search,
+        ...(delivered.rg !== undefined ? { rg: delivered.rg } : {}),
+      });
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e);
       this.log(`couldn't copy ${employeeId}'s brain: ${detail}`);
@@ -855,7 +900,12 @@ export class BrainFeed {
    * The maps for a prompt: only pages that are in the copy, each scope's cut to its share of about 150
    * lines in all (closest scope first).
    */
-  private maps(employeeId: string, scopes: Scope[], allowHome: boolean): PromptMap[] {
+  private maps(
+    employeeId: string,
+    scopes: Scope[],
+    allowHome: boolean,
+    budget: BrainBudget = cloudBrainBudget,
+  ): PromptMap[] {
     const built = this.build(employeeId, allowHome);
     return fitMaps(
       scopes.map((scope) => {
@@ -882,6 +932,7 @@ export class BrainFeed {
           lines,
         };
       }),
+      budget.mapLines,
     );
   }
 
@@ -890,12 +941,19 @@ export class BrainFeed {
     query: string,
     exclude: string[],
     allowHome = true,
+    budget: BrainBudget = cloudBrainBudget,
   ): RetrievedPage[] {
     this.index.refresh();
     const scopes = this.readable(employeeId, allowHome);
     // The personality page is the role instructions, which the brief already carries; it stays in the
     // map and the copy, but is never what a task "matches".
-    return retrieve(this.index, { query, scopes, exclude: [...exclude, `brain:${employeeId}:personality`] });
+    return retrieve(this.index, {
+      query,
+      scopes,
+      exclude: [...exclude, `brain:${employeeId}:personality`],
+      k: budget.pages,
+      tokenBudget: budget.tokens,
+    });
   }
 
   /**
@@ -909,16 +967,18 @@ export class BrainFeed {
     query: TicketQueryInput;
     /** The session may carry home data (a PA's own brain): an errand or orientation, not code work. Default: yes. */
     allowHome?: boolean;
+    /** How much brain to carry: a local engine's small window gets less. Default: the cloud budget. */
+    budget?: BrainBudget;
   }): Promise<BrainContext> {
     if (!this.enabled) return { text: "", pages: [], copy: false, maps: false };
     const allowHome = i.allowHome ?? true;
     const report = await this.sync(i.employeeId, allowHome);
     const scopes = this.readable(i.employeeId, allowHome);
-    const pages = this.retrieveFor(i.employeeId, ticketQuery(i.query), [], allowHome);
+    const pages = this.retrieveFor(i.employeeId, ticketQuery(i.query), [], allowHome, i.budget);
     const hints = report.ok ? this.hints(i.employeeId, this.copyId(i.employeeId, allowHome)) : [];
     const text = renderBrainPrompt(
       {
-        maps: this.maps(i.employeeId, scopes, allowHome),
+        maps: this.maps(i.employeeId, scopes, allowHome, i.budget),
         pages,
         snapshot: report.ok,
         search: report.search !== false,
@@ -951,6 +1011,8 @@ export class BrainFeed {
     fresh?: boolean;
     /** The conversation may carry home data (a PA's own brain): it has no project, so nothing leaves the chat. Default: yes. */
     allowHome?: boolean;
+    /** How much brain to carry: a local engine's small window gets less. Default: the cloud budget. */
+    budget?: BrainBudget;
   }): Promise<BrainContext & { conversationPages: BrainUse[]; commit: () => void }> {
     if (!this.enabled) {
       return { text: "", pages: [], copy: false, maps: false, conversationPages: [], commit: () => {} };
@@ -961,7 +1023,7 @@ export class BrainFeed {
     const earlier = this.turnsOf(i.conversation).filter((t) => t.unit !== i.turn);
     // Pages the agent was given or opened itself are in its context already.
     const sent = i.fresh ? [] : earlier.flatMap((t) => t.body.pages.map((p) => `${p.scope}:${p.slug}`));
-    const maps = this.maps(i.employeeId, scopes, allowHome);
+    const maps = this.maps(i.employeeId, scopes, allowHome, i.budget);
     // Each map is sent again only when its own lines changed (or the agent has lost its memory).
     const mapHashes: Record<string, string> = {};
     for (const m of maps) mapHashes[m.scope] = hash(JSON.stringify(m.lines));
@@ -973,6 +1035,7 @@ export class BrainFeed {
       conversationQuery({ message: i.message, title: i.title, project: i.project }),
       sent,
       allowHome,
+      i.budget,
     );
     const uses = usesOf(pages);
     const hints = report.ok ? this.hints(i.employeeId, this.copyId(i.employeeId, allowHome)) : [];

@@ -9,7 +9,8 @@
 #   - the user `employee`, with passwordless sudo: lenient inside the machine, hard walls outside
 #     (spec §5). The daemon runs everything as `employee` (`machine run -u employee`), never as the
 #     user that matches the host's;
-#   - Node, pnpm, git, gh, and Docker, which starts on first use rather than at boot;
+#   - Node, pnpm, git, gh, ripgrep (`rg`: agents use it a lot, and OpenCode's glob and grep tools need it, which
+#     a machine with no internet can't fetch), and Docker, which starts on first use rather than at boot;
 #   - the harnesses: Claude's ACP adapter, which carries Claude Code's own binary (also `claude`, for
 #     signing the machine in), Antigravity's CLI and ACP server, OpenCode pinned to local models
 #     through the relay, and Codex's pinned ACP adapter and CLI;
@@ -37,7 +38,7 @@ ENV container=container
 RUN apt-get update && \
     apt-get install -y \
       dbus systemd systemd-sysv iproute2 iputils-ping curl wget vim-tiny sudo less \
-      ca-certificates git dnsutils netcat-openbsd unzip xz-utils jq docker.io && \
+      ca-certificates git dnsutils netcat-openbsd unzip xz-utils jq ripgrep docker.io && \
     install -d -m 0755 /etc/apt/keyrings && \
     curl -fsSL -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
       https://cli.github.com/packages/githubcli-archive-keyring.gpg && \

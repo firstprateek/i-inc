@@ -298,6 +298,8 @@ export interface Company {
   isContact?(address: string): boolean;
   /** How a project's work reaches main. Absent: the default (direct). */
   projectPolicy?(project: string): ProjectPolicy;
+  /** The company's projects, by id: what an engineer with no project named in its hiring writes pages for. */
+  projectIds?(): string[];
   /** Every engine, so a reviewer can run on a different one from the builder's. */
   engines?(): Engine[];
   /**
@@ -341,4 +343,21 @@ export interface Ports {
    * as JSON. Absent in demo mode and in tests; false when the copy is unavailable for this employee.
    */
   brainWrites?: (employeeId: Id) => boolean;
+  /**
+   * What the brain holds, for checking an orientation or a tidy-up against its done-when when its session ends.
+   * Absent in tests that don't need it: the ticket then closes as before.
+   */
+  brainState?: BrainState;
+}
+
+/** The brain as the runner checks it. Each method may return null: it can't tell now, and the check is skipped. */
+export interface BrainState {
+  /**
+   * The pages of this employee's own brain that THIS ticket's sessions wrote or changed, by page (`projects/duet`)
+   * with their text, after what the session wrote in its copy has been collected into the brain. A page left by
+   * an earlier run is not in it. Null: the brain can't be read, and the ticket waits for the owner.
+   */
+  pages(employeeId: Id, ticketId: Id): Promise<Map<string, string> | null>;
+  /** After collecting: what the tidy-up still has to do, as plain lines. Empty: nothing is left. */
+  tidyLeft(employeeId: Id, ticketId: Id): Promise<string[] | null>;
 }

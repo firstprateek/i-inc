@@ -309,6 +309,127 @@ service is gone after `bootout`, retries a `bootstrap` that fails with error 5, 
 that was running back and loads it. The deployer installer restores the plist it replaced, not the older
 pre-deployer backup. The deployer's own restart (`launchctl kickstart -k`) never boots out, so it needed no change.
 
+### Checking a PA works (T71)
+
+**What was wrong (2026-10-22).** Pip's orientation ticket #18 ran two globs, tried `sudo apt update && sudo apt
+install ripgrep` (no root, no internet), said it could not go on, and the ticket still closed as **done** with only
+`INDEX.md` and `personality.md` in its brain. Four things were wrong, and each has a fix:
+
+1. **Done-when was not checked.** Orientation closed whenever the session returned. Now (core `closeIfDone`, the
+   daemon's `brainState`) the session's brain copy is collected when it ends and the pages it was asked for are
+   looked at. A page counts only if it was **written or changed by this ticket's sessions** (a page an earlier run
+   left does not; the daemon answers from its record of this ticket's harvests), has **frontmatter with a title and a
+   description that the agent wrote** (the daemon repairs frontmatter when it commits; a repair means the agent did
+   not write it), has **at least 40 words** of body (and 20 different ones, so fifty repeated words don't pass), no repeated `TODO`, and is **not the example** with a line or two changed.
+   A PA's pages are `reference/how-i-help-at-home` (with a "My tools" section) and `patterns/errands`; an engineer's
+   are `projects/<name>` for each project it works on (the company's projects when none is named), or
+   `reference/my-tools` when the company has no project yet. A miss runs one more session whose brief says what is
+   wrong with each page, with the exact path and the page format. A second miss puts the ticket in **Needs you**
+   with the reason (a "stuck" card: "Keep going" gives two more sessions, "Decline" fails the ticket). A brain that
+   cannot be read goes to Needs you at once, since another session would not help. The tidy-up is checked the
+   same way: its report must come out empty.
+   **Errands** (the PA's main work) are held to a smaller version of it: `{"proposals":[]}` alone is not done. The
+   reply needs proposals or `"nothing":"<the reason>"`; a bare empty reply gets one more session, then Needs you. The
+   reason is shown on the ticket as a note ("Proposed nothing: …"), and the errand closes as done only if it reads as
+   no action needed ("the inbox has no new mail"). A reason that mentions an error, a failure, missing tools or access
+   ("sudo failed", "no internet", "can't") or that the classifier cannot tell goes to Needs you at once
+   (`nothingMeansNoActionNeeded`, core `validate.ts`: a keyword list, unsure means ask).
+   Other ticket types that close without their done-when being checked are in docs/coord.md, T72: **low-effort code
+   tickets** (no `prove` stage) and **tickets where nobody has the verify duty** (`prove` is skipped).
+2. **A PA's orientation was the engineers'** ("a page for each project"; it has none). Now `homeOrientationTask`
+   (core `home.ts`): four short jobs, every file's exact path, and the page to copy.
+3. **The brief never said what the machine lacks.** Every PA brief and every turn of a PA's conversation now
+   carries `offlineNotes`: no internet, no sudo, no installs; `gh` and `docker` are in the image but cannot reach
+   anything offline; `brain search` named only when it works in that machine; `rg` named only when the last copy
+   found it on the path, otherwise `grep -rn`. OpenCode's own glob and grep tools run on ripgrep and try to download
+   it when it is not on the path, which cannot work offline: that, more than the brief, is probably why Pip's globs
+   found nothing. So `rg` is now in the image.
+4. **The small model's window.** Nothing pinned one. Ollama's default window depends on its version and the host's
+   memory, and the OpenAI-compatible endpoint OpenCode talks to cannot set it per request; a prompt that does not fit
+   is cut from the front without an error. The numbers (tokens, characters / 4; OpenCode's own system prompt and
+   tool list are an estimate, not measured):
+
+   | | PA, local budget | the same brief with a cloud budget |
+   | --- | --- | --- |
+   | OpenCode's prompt and tools | about 10,000 | about 10,000 |
+   | the PA's orientation brief (task, offline notes, ticket) | about 1,000 | about 1,000 |
+   | map lines | 40 (about 1,000) | 150 (about 3,750) |
+   | matching pages | at most 3, 1,500 | at most 5, 3,000 |
+   | the brain section's own words | about 400 | about 400 |
+   | **total** | **about 14,000** | **about 18,000** |
+
+   The cloud-sized one leaves little room in 16,384; the local one uses under half of 32,768, with room for tool
+   output and the reply. So the PA's model is **`qwen3-8b-32k`**: `qwen3:8b` with `PARAMETER num_ctx 32768`
+   (`tools/host/qwen3-8b-32k.Modelfile`), a model of its own, so the window is pinned whatever Ollama's default is
+   and nothing else on the host (Duet's models) changes. `opencode.json` names it (`ollama/qwen3-8b-32k`, with
+   `limit.context` 32768 so OpenCode compacts before Ollama cuts), and `localContextTokens` in core and
+   `localBrainBudget` carry the numbers. Memory: spec §12 and M1 measured qwen3:8b loaded at a 32k window at **8.1
+   GB**; the variant shares its weights and costs no disk.
+   **`OLLAMA_NUM_PARALLEL` is left alone.** Ollama allocates `num_ctx` for each parallel slot, so `OLLAMA_NUM_PARALLEL=4`
+   would make a 32k model take four times the key-value cache. `=1` would be the safe value for this, but it also
+   serialises every other caller of Ollama on the host (Duet's included, and the daemon's helper and chat), and a
+   `launchctl setenv` does not survive a reboot unless the Ollama service's own environment carries it. That is a
+   decision about the host, not about i.inc: if `ollama ps` shows the PA's model larger than about 8 GB, parallel
+   slots are the cause, and `OLLAMA_NUM_PARALLEL=1` in Ollama's service environment (persistently) is the fix.
+
+**Host steps after this is deployed** (the deploy does the rest; these three are the parts it cannot do, in this order):
+
+```bash
+sh tools/host/ollama-pa-model.sh          # makes qwen3-8b-32k from qwen3:8b (needs it pulled); safe to run again; no disk
+sh tools/host/fetch-rg.sh                 # ripgrep 14.1.1 (linux arm64), checked against the SHA-256 pinned in the script
+sh tools/host/update-machine.sh <team>    # for each team: engineering, company, home-pip. Copies the launchers, OpenCode's
+                                          # config (which names the new model) and rg (only where `rg` is missing)
+```
+
+Nothing else: the daemon is not reinstalled (do not run `install-daemon.sh` on a host the deployer manages) and no
+setting is changed. How the model reaches each user of it:
+- **The PA's OpenCode** reads the model from `opencode.json` in its machine (`ollama/qwen3-8b-32k`), which
+  `update-machine.sh` puts there; a machine not updated yet keeps its old file and `qwen3:8b`. The file lists **both**
+  models, so anything that selects `qwen3:8b` still works. An engine's `model` field in Setup is a label for OpenCode
+  and does not select anything.
+- **The daemon's own helper and chat** use `qwen3-8b-32k` whenever Ollama lists it, checked at start and again at most
+  once a minute, so the model made in step 1 is picked up without a restart. Until it exists they use `qwen3:8b`, and the
+  log says once: `ollama: using qwen3:8b, not qwen3-8b-32k (…)`. `I_INC_OLLAMA_MODEL`, if set, wins.
+- **The relay** serves any installed model, so machines can use it within 30 s of step 1 (tested in
+  `ollama-relay.test.ts`). Check from the host: `ollama show qwen3-8b-32k --parameters` shows `num_ctx 32768`.
+
+The binary is copied like the launchers are, so an existing machine needs neither a rebuild nor recreating. T70's
+automatic launcher update copies the launchers only; `rg` and `opencode.json` still go in with `update-machine.sh`.
+
+**Talking to a PA from the host.** `apps/daemon/scripts/converse.ts` is the smoke test: it opens a conversation
+the way the web app does, sends one message, streams what comes back and puts the conversation away.
+
+```bash
+bun apps/daemon/scripts/converse.ts --employee pip "What can you do in your machine? Check rg and git."
+bun apps/daemon/scripts/converse.ts --employee ada --project Duet --keep "read the README and say what it is"
+#   --allow          approve permission requests (the default is to deny them and say so)
+#   --keep           leave the conversation in the list instead of archiving it
+#   --timeout 120    seconds to wait for the turn to end (default 300)
+#   --url, --token-file   another daemon, another token file (defaults: http://127.0.0.1:7420, ~/.config/i-inc/web-token)
+```
+
+It reads the bearer token from `~/.config/i-inc/web-token` (the file must be owner-only, like the daemon's own
+check), never prints it, and sends it only over https or over http to this machine (`--url` with another http host is
+refused). It prints the reply, `[tool] …` lines and `[permission] … -> denied|allowed` lines, then
+`turn: complete · parts: N · tokens: X in, Y out · conversation <id>`. The conversation is archived afterwards, also
+when the connection fails after it was made. Exit codes: 0 the turn completed; 1 it was cancelled or failed, or the
+daemon refused (an employee who is not there); 2 a timeout (the turn is cancelled), the daemon could not be reached
+or the address is refused; 64 a bad command line. A good first check of Pip: *"Run `date`, `git --version` and
+`rg --version`, then say which worked."* It should run all three, report `rg` as there, and not mention sudo.
+
+**Running orientation again.** Pip's #18 is done and thin. File a new one, with the PA done-when:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $(cat ~/.config/i-inc/web-token)" \
+  -H 'content-type: application/json' -d '{}' \
+  http://127.0.0.1:7420/api/employees/pip/orientation
+# 201 {"orientation":"<ticket id>"}; follow it on the board. It ends done, or in Needs you with what is missing.
+```
+
+Asking again while that ticket is open (running, or waiting in Needs you) answers `200` with the same ticket and
+`"existing": true`, so it never files a second. An employee who has left is `409`, a name nobody has is `404`.
+Then read what Pip wrote in Company → Brain (`reference/how-i-help-at-home`, `patterns/errands`).
+
 ### End-to-end checks and the test suite (`tools/e2e`, `pnpm test`)
 - **End to end:** each `tools/e2e/<name>/run.mjs` drives the real web app in Chromium against a local daemon in a scratch
   HOME, with stand-ins for GitHub and the agents (no real credentials; screenshots at 1440x900 and 390x844, light and

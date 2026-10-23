@@ -253,6 +253,14 @@ The employee's first ticket is orientation. It reads each project's `CLAUDE.md` 
 project pages in its brain. Like every session, it gets the handbook's map and the pages that match
 its task in its brief, and a copy of the handbook in its machine (§5, "The brain").
 
+**Orientation closes only when its done-when is met.** When the session ends, the daemon collects what the
+employee wrote in its brain copy and checks the pages it was asked for: a page under `projects/` for each
+project, or for a PA the two pages of §7. A page counts if this ticket's sessions wrote it, with a title and a
+description they wrote, at least 40 words and no placeholders (not the example copied). If one is missing, the employee gets one more session with a brief
+that says what it did not write and how. If that fails too, the ticket goes to Needs you with the reason, and
+"Keep going" gives it two more sessions; it is never marked done. The daily tidy-up is held to its done-when
+the same way (the report it started from must be empty).
+
 ### Engines and switching: identity is memory
 
 Every machine has all the harnesses installed: Claude Code, Antigravity, Codex and OpenCode, each speaking
@@ -600,6 +608,19 @@ shorter loop:
   local one. If none is set up, it says so ("none is set up yet: add one in Setup"), and the hiring
   form says the same; the local engine is OpenCode on Ollama (`tools/m1/install-harnesses.sh`), added
   as an engine in Setup.
+- **A PA works on a small model, in a machine with nothing to install.** Every PA brief and every turn of a
+  PA's conversation carries a short note on its machine: no internet, no sudo, no installs; the tools it has (a
+  shell, git, node, jq, grep, its file tools, the `brain` command and `rg` when they are there) and the ones it
+  cannot use (`gh` and `docker` are installed but need the internet). The brain section it carries is cut for its small
+  window: 40 map lines and 1,500 tokens of pages (at most 3), against 150 lines and 3,000 tokens (5 pages) for a cloud
+  engine. Its model is `qwen3-8b-32k`, `qwen3:8b` with a 32,768-token window set on the model itself
+  (`tools/host/ollama-pa-model.sh`), because a prompt that does not fit is cut without a word and the endpoint
+  OpenCode uses cannot set the window per request. Its orientation is its own, in short numbered jobs with the
+  exact path and the page format to copy: read its home brain and the handbook's non-code pages, write
+  `reference/how-i-help-at-home` (with a "My tools" section where it records what works offline) and a starter
+  `patterns/errands`. An errand it runs is done when it proposes something or says why nothing is needed, not
+  with an empty result. The owner can check it works with `apps/daemon/scripts/converse.ts` (docs/handoff.md,
+  "Checking a PA works").
 - **Web work is split off.** A flight search needs the internet but not your mail. The PA files a
   **web errand** with a structured brief (for example: from, to, dates, cabin, preferences). A fresh,
   throwaway session with open internet and no home data runs it, on any engine, and returns the

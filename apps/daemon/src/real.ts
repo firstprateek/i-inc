@@ -5,7 +5,7 @@
 // to GitHub as the bot with a READ-ONLY token for the repos its sessions work on (T68): a sandbox never
 // holds a credential that can write. Every push is made on the host, from a bundle the sandbox hands over
 // (host-push.ts). Claude's usage reports land in the registry. The helper model and chat use Ollama on the host.
-import { type Employee, type Id, isHomeEmployee } from "@i-inc/core";
+import { type Employee, type Id, isHomeEmployee, offlineNotes } from "@i-inc/core";
 import { AcpAgent, type Launch } from "./acp.ts";
 import type { AgentBackend } from "./ahp/backend.ts";
 import { agentsFromRegistry } from "./ahp/conversations.ts";
@@ -319,6 +319,10 @@ export function realPorts(o: RealOptions): Pick<
     ahpBackend: (registry, _tickets, brain, harvest: BrainHarvest): AgentBackend =>
       new SessionHost({
         brain: withBrain(registry, brain),
+        homeNotes: (employeeId) =>
+          registry.employees().some((e) => e.id === employeeId && isHomeEmployee(e))
+            ? offlineNotes(employeeId, brain.toolsOf(employeeId))
+            : "",
         activity: (employeeId) => harvest.beginActivity(employeeId),
         external: (c, why) => harvest.noteExternal({ kind: "conversation", id: c.id }, why),
         // A conversation's brain copy is collected when it goes idle or ends, and on `/remember`.

@@ -317,6 +317,28 @@ describe("prompts with images", () => {
     ).toBe(true);
   });
 
+  it("tells a personal assistant's every turn what its machine lacks, and nobody else's", async () => {
+    const t = await sessionRig({
+      host: {
+        homeNotes: (employee) =>
+          employee === "kit" ? "Your machine (test note): NO internet, no sudo and no root." : "",
+      },
+    });
+    const home = await t.create("c1", { employee: "kit" });
+    const a = await t.client(home);
+    await t.say(a, home.chat, "first");
+    await t.say(a, home.chat, "second");
+    const texts = (n: number) =>
+      ((t.sandbox.last.prompts[n]?.blocks ?? []) as Any[]).map((b) => b.text ?? "").join("\n");
+    for (const n of [0, 1]) {
+      expect(texts(n)).toContain("NO internet, no sudo and no root");
+    }
+    const other = await t.create("c2", { employee: "ada" });
+    const b = await t.client(other);
+    await t.say(b, other.chat, "hello");
+    expect(JSON.stringify(t.sandbox.last.prompts[0]?.blocks)).not.toContain("NO internet");
+  });
+
   it("says so, rather than failing, when the agent can't see images; sends files as resources", async () => {
     const t = await sessionRig();
     t.sandbox.options = { image: false };

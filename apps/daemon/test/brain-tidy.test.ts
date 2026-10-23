@@ -101,6 +101,13 @@ describe("one at a time, once a day", () => {
     await w.tick();
     await w.tick();
     expect(w.tickets()).toHaveLength(1);
+    // The scripted librarian tidied nothing, so the ticket is not done: it asked twice, then waits for the owner.
+    const first = w.tickets()[0]?.ticket.id ?? "";
+    const asked = (await w.call("GET", `/api/tickets/${first}`)).body.ticket.needsYou;
+    expect(asked).toMatchObject({ kind: "stuck" });
+    expect(asked.reason).toContain("is done, but");
+    await w.call("POST", `/api/tickets/${first}/answer`, { answer: "reject" });
+    await w.app.daemon.idle();
     w.clock.advance(24 * 60);
     await w.tick();
     expect(w.tickets()).toHaveLength(2);
