@@ -3,7 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { errandsPageExample, homePages, localBrainBudget } from "@i-inc/core";
+import { formatExample, homePages, localBrainBudget } from "@i-inc/core";
 import type { FakeAgent } from "@i-inc/core/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { brainRig, cleanRigs, page } from "./brain-rig.ts";
@@ -172,7 +172,7 @@ describe("hiring a personal assistant", () => {
     const w = await brainRig();
     writesInCopy(w, "lu", {
       [homePages.help]: helpPage.replace("I look after", "TODO TODO I look after"),
-      [homePages.errands]: errandsPageExample(),
+      [homePages.errands]: formatExample(),
     });
     const made = await w.call("POST", "/api/employees", hire());
     await w.app.daemon.idle();

@@ -8,9 +8,10 @@ import {
   type BrainState,
   brainBudgetFor,
   cloudBrainBudget,
-  errandsPageExample,
+  errandsPageQuestions,
   fold,
-  helpPageExample,
+  formatExample,
+  helpPageQuestions,
   homeOrientationTask,
   homePages,
   localBrainBudget,
@@ -286,33 +287,52 @@ describe("what makes a page count", () => {
     expect(help(helpPage.replace("I look after", "TODO check this. I look after"))).toBeNull();
   });
 
-  it("refuses the example copied as it is, even with its tools section filled in", () => {
-    expect(help(helpPageExample())).toContain("the example copied as it is");
-    expect(errands(errandsPageExample())).toContain("the example copied as it is");
-    const withTools = helpPageExample().replace("- shell: works", "- shell: works (ran date)");
-    expect(help(withTools)).toContain("the example copied as it is");
+  it("refuses the format example copied as it is, even with a tools section added", () => {
+    const example = formatExample();
+    expect(help(`${example}\n## My tools\n- shell: works\n- git: works`)).toContain(
+      "the example copied as it is",
+    );
+    expect(errands(example)).toContain("the example copied as it is");
   });
 
-  it("refuses a body of 50 repeated words, and the example with a line or two edited", () => {
-    const front =
-      "---\ntitle: How I help at home\ndescription: What I do\n---\n## My tools\n- shell: works\n";
-    const parrot = `${front.replace("## My tools\n- shell: works\n", "")}# Home\n${"home ".repeat(50)}\n## My tools\n- shell: works\n`;
+  it("refuses a body of 50 repeated words, and the format example with a line or two edited", () => {
+    const parrot = `---\ntitle: How I help at home\ndescription: What I do\n---\n# Home\n${"home ".repeat(50)}\n## My tools\n- shell: works\n`;
     expect(help(parrot)).toMatch(/only \d+ different words, under 20: it repeats itself/);
-    const edited = helpPageExample().replace(
-      "- I work on Home: mail, calendar, shopping, plans for the week.",
-      "- I work on Home: the family's mail and calendar.",
-    );
+    const edited = `${formatExample().replace(
+      "- Who does it: whoever fills it last on a Friday.",
+      "- Who does it: the owner.",
+    )}\n## My tools\n- shell: works`;
     expect(help(edited)).toContain("the example copied as it is");
     const twoEdits = edited.replace(
-      "- My model runs on the host; nothing leaves the house.",
-      "- I run on the local model.",
+      "- How often: once a month, or when the lid shows white flakes.",
+      "- How often: monthly.",
     );
     expect(help(twoEdits)).toContain("the example copied as it is");
-    const eFirst = errandsPageExample().replace(
-      "1. Read the request. Say it back in one line.",
-      "1. Read the request.",
-    );
-    expect(errands(eFirst)).toContain("the example copied as it is");
+    expect(errands(twoEdits)).toContain("the example copied as it is");
+  });
+
+  it("accepts a page that answers the questions in its own words, and the brief gave no answer to copy", () => {
+    const task = homeOrientationTask(pip);
+    for (const q of [...helpPageQuestions, ...errandsPageQuestions]) expect(task).toContain(q);
+    // The lines of the old errands example (the brief used to hand the answer over, and Pip handed it back).
+    for (const answer of [
+      "Say it back in one line",
+      "Nothing goes out by itself",
+      "Find what I need: my brain first",
+    ])
+      expect(task).not.toContain(answer);
+    const own = `---
+title: Errands
+description: How I take a request and what I hand back
+---
+# Errands
+- Taking a request: I read what the owner wrote and repeat the ask to myself before I do anything.
+- Looking first: I search my own brain for notes on the person or shop, and only then use the home tools.
+- Proposals: every outgoing step is a draft, an event or a shortlist that the owner can approve or change.
+- Never: I do not send, pay, book or delete anything on my own, whatever the request says.
+`;
+    expect(errands(own)).toBeNull();
+    expect(errands(own.replace("- Never:", "## Spare parts\n- Never:"))).toBeNull();
   });
 
   it("wants the tools section on the help page", () => {
@@ -366,7 +386,7 @@ describe("a PA's orientation and brief", () => {
     const task = homeOrientationTask(pip);
     expect(task).toContain("/home/employee/brain/pip/personal/reference/how-i-help-at-home.md");
     expect(task).toContain("/home/employee/brain/pip/personal/patterns/errands.md");
-    expect(task).toContain("title: How I help at home");
+    expect(task).toContain("title: Descaling the office kettle");
     expect(task).toContain("## My tools");
     for (const n of [1, 2, 3, 4]) expect(task).toContain(`Job ${n}.`);
     expect(task).not.toMatch(/each project|CLAUDE\.md/);
@@ -378,9 +398,7 @@ describe("a PA's orientation and brief", () => {
     const task = homeOrientationTask(pip);
     // Pip copied the "| " that used to start each example line into its frontmatter (2026-10-23).
     expect(task).not.toMatch(/^\s*\| /m);
-    for (const example of [helpPageExample(), errandsPageExample()]) {
-      expect(task).toContain(`\`\`\`markdown\n${example}\n\`\`\``);
-    }
+    expect(task).toContain(`\`\`\`markdown\n${formatExample()}\n\`\`\``);
     expect(task).toContain("cat > /home/employee/brain/pip/personal/reference/how-i-help-at-home.md <<'EOF'");
     expect(task).toContain("cat > /home/employee/brain/pip/personal/patterns/errands.md <<'EOF'");
     expect(task).toContain("Never use echo with \\n");
@@ -390,7 +408,10 @@ describe("a PA's orientation and brief", () => {
       .map((e) => e.how)
       .join("\n");
     expect(redo).not.toMatch(/^\s*\| /m);
-    expect(redo).toContain("```markdown\n---\ntitle: Errands");
+    expect(redo).toContain(`\`\`\`markdown\n${formatExample()}\n\`\`\``);
+    // ...and the questions, not the answer.
+    for (const q of [...helpPageQuestions, ...errandsPageQuestions]) expect(redo).toContain(q);
+    expect(redo).not.toContain("Say it back in one line");
     expect(redo).toContain("<<'EOF'");
   });
 

@@ -65,38 +65,56 @@ export function orientationDoneWhen(isHome: boolean): string[] {
 const frontmatter = (title: string, description: string) =>
   `---\ntitle: ${title}\ndescription: ${description}\n---`;
 
-const toolsSection = [
-  "## My tools",
-  "- shell: works",
-  "- git: works",
-  "- brain search: works",
-  "- internet, sudo, installs: not available",
-];
-
-/** The example the PA copies for its first page. Short on purpose: an 8B model copies a shape better than it follows rules. */
-export function helpPageExample(): string {
+/**
+ * The FORMAT of a page, on a page about something else (T74b). A small model copies whatever it is shown, so
+ * the example must not be a page it could hand back: the real pages are described by questions, not answers.
+ */
+export function formatExample(): string {
   return [
-    frontmatter("How I help at home", "What I do for the owner at home, and the rules I keep"),
-    "# How I help at home",
-    "- I work on Home: mail, calendar, shopping, plans for the week.",
-    "- I prepare drafts, summaries, shortlists and answers. I never send, pay, book or delete.",
-    "- Whatever I prepare reaches the owner as a proposal. The owner approves it.",
-    "- I ask when I don't know something. I don't guess names, dates or amounts.",
-    "- My model runs on the host; nothing leaves the house.",
-    ...toolsSection,
+    frontmatter("Descaling the office kettle", "How and when the office kettle is descaled"),
+    "# Descaling the office kettle",
+    "- Who does it: whoever fills it last on a Friday.",
+    "- What it needs: a cup of white vinegar, and water up to the line.",
+    "- How often: once a month, or when the lid shows white flakes.",
+    "- What never to do: leave the vinegar in overnight.",
+    "## Spare parts",
+    "- The spare filter is in the second drawer.",
   ].join("\n");
 }
 
-export function errandsPageExample(): string {
+/** What the "how I help at home" page must answer. Questions only: the answers are the PA's own. */
+export const helpPageQuestions = [
+  "Who do you work for, and which parts of their home (mail, calendar, shopping, plans)?",
+  "What do you prepare for them, and what do you never do yourself?",
+  "How does what you prepare reach the owner?",
+  "What do you do when you don't know something?",
+];
+
+/** What the errands page must answer. */
+export const errandsPageQuestions = [
+  "How do you take a request?",
+  "Where do you look first?",
+  "What do you write as proposals?",
+  "What do you never do?",
+];
+
+const questionList = (qs: string[]) => qs.map((q, i) => `    ${i + 1}. ${q}`).join("\n");
+
+/** The format of every page, once, for a task that asks for several. */
+const formatBrief = [
+  "  Every page has this format (this one is about something else; yours is about you, and nothing in it is the same):",
+  "FORMAT_BLOCK",
+  "  It starts with --- / title: / description: / --- lines, then a heading and one bullet per answer.",
+].join("\n");
+
+/** What a page's brief says it must be: the questions it answers, and how to write the file. */
+function pageBrief(path: string, qs: string[], extra = "", withFormat = false): string {
   return [
-    frontmatter("Errands", "How I run an errand from request to proposals"),
-    "# Errands",
-    "1. Read the request. Say it back in one line.",
-    "2. Find what I need: my brain first, then the home tools.",
-    "3. Write each outgoing action as a proposal: a draft reply, an event, a shortlist or an answer.",
-    "4. Stop. The owner decides. Nothing goes out by itself.",
-    "## Habits",
-    "- (none yet: add what I learn about the owner here)",
+    ...(withFormat ? [formatBrief.replace("FORMAT_BLOCK", fencedExample(formatExample()))] : []),
+    "  Your page answers these questions, each in one or two short sentences of your own (at least 40 words in all; no TODO lines; do not write the questions out):",
+    questionList(qs),
+    ...(extra ? [extra] : []),
+    heredocHow(path),
   ].join("\n");
 }
 
@@ -124,17 +142,19 @@ export function homeOrientationTask(employee: Pick<Employee, "id" | "name">): st
     `  ls ${root}/company`,
     `  grep -rli "home\\|errand\\|assistant" ${root}/company | head -3   (then cat those files)`,
     "",
+    formatBrief.replace("FORMAT_BLOCK", fencedExample(formatExample())),
+    "",
     `Job 2. Write the file ${help}`,
     `  First: mkdir -p ${root}/personal/reference`,
-    "  The file must look like this (the first line of the file is ---, and no line starts with | or >). Rewrite every bullet in your own words so it is true for you (at least 40 words in all). A copy of the example is not accepted:",
-    fencedExample(helpPageExample()),
-    heredocHow(help),
+    pageBrief(
+      help,
+      helpPageQuestions,
+      '    After the answers add a section "## My tools" (Job 4 fills it in).',
+    ),
     "",
     `Job 3. Write the file ${errands}`,
     `  First: mkdir -p ${root}/personal/patterns`,
-    "  The file must look like this, with the same first lines (--- / title: / description: / ---). Make it yours (at least 40 words; no TODO lines):",
-    fencedExample(errandsPageExample()),
-    heredocHow(errands),
+    pageBrief(errands, errandsPageQuestions),
     "",
     `Job 4. Check your tools work offline: run date, git --version, node --version, and grep -rn errand ${root}/personal | head -3, and ${root}/.bin/brain search "errand". In the "My tools" section of ${help}, write one line each: works, or does not work.`,
     "",
@@ -178,8 +198,8 @@ const minDistinct = 20;
 const squash = (s: string) => s.replace(/\s+/g, " ").trim();
 
 /**
- * Why a page is not a real one, or null. The example a PA is shown is a shape to copy: handed back as it is (apart
- * from the tools section, which records what it found), it is a placeholder, not a page.
+ * Why a page is not a real one, or null. The format example a PA is shown is a shape, on a page about something
+ * else: handed back as it is (a line or two changed), it is a placeholder, not a page.
  */
 export function pageProblem(text: string, slug: string, example?: string): string | null {
   const parsed = parsePage(text, slug);
@@ -249,14 +269,14 @@ export function orientationExpectations(
     return [
       pageExpectation(
         homePages.help,
-        `Write the file ${root}/personal/${homePages.help}.md (mkdir -p ${root}/personal/reference first). The file must look like this (first line ---, no line starts with | or >); rewrite it in your own words:\n${fencedExample(helpPageExample())}\n${heredocHow(`${root}/personal/${homePages.help}.md`)}`,
-        helpPageExample(),
+        `Write the file ${root}/personal/${homePages.help}.md (mkdir -p ${root}/personal/reference first).\n${pageBrief(`${root}/personal/${homePages.help}.md`, helpPageQuestions, '    After the answers add a section "## My tools" with one line per tool: works, or does not work.', true)}`,
+        formatExample(),
         (text) => (/my tools/i.test(text) ? null : 'it has no "My tools" section'),
       ),
       pageExpectation(
         homePages.errands,
-        `Write the file ${root}/personal/${homePages.errands}.md (mkdir -p ${root}/personal/patterns first). The file must look like this (first line ---, no line starts with | or >); make it yours:\n${fencedExample(errandsPageExample())}\n${heredocHow(`${root}/personal/${homePages.errands}.md`)}`,
-        errandsPageExample(),
+        `Write the file ${root}/personal/${homePages.errands}.md (mkdir -p ${root}/personal/patterns first).\n${pageBrief(`${root}/personal/${homePages.errands}.md`, errandsPageQuestions, "", true)}`,
+        formatExample(),
       ),
     ];
   }

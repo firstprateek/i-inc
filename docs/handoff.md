@@ -320,7 +320,7 @@ install ripgrep` (no root, no internet), said it could not go on, and the ticket
    looked at. A page counts only if it was **written or changed by this ticket's sessions** (a page an earlier run
    left does not; the daemon answers from its record of this ticket's harvests), has **frontmatter with a title and a
    description that the agent wrote** (the daemon repairs frontmatter when it commits; a repair means the agent did
-   not write it), has **at least 40 words** of body (and 20 different ones, so fifty repeated words don't pass), no repeated `TODO`, and is **not the example** with a line or two changed.
+   not write it), has **at least 40 words** of body (and 20 different ones, so fifty repeated words don't pass), no repeated `TODO`, and is **not the format example** with a line or two changed (T74b: see below).
    A PA's pages are `reference/how-i-help-at-home` (with a "My tools" section) and `patterns/errands`; an engineer's
    are `projects/<name>` for each project it works on (the company's projects when none is named), or
    `reference/my-tools` when the company has no project yet. A miss runs one more session whose brief says what is
@@ -337,7 +337,7 @@ install ripgrep` (no root, no internet), said it could not go on, and the ticket
    Other ticket types that close without their done-when being checked are in docs/coord.md, T72: **low-effort code
    tickets** (no `prove` stage) and **tickets where nobody has the verify duty** (`prove` is skipped).
 2. **A PA's orientation was the engineers'** ("a page for each project"; it has none). Now `homeOrientationTask`
-   (core `home.ts`): four short jobs, every file's exact path, and the page to copy.
+   (core `home.ts`): four short jobs, every file's exact path, the page format, and the questions each page answers.
 3. **The brief never said what the machine lacks.** Every PA brief and every turn of a PA's conversation now
    carries `offlineNotes`: no internet, no sudo, no installs; `gh` and `docker` are in the image but cannot reach
    anything offline; `brain search` named only when it works in that machine; `rg` named only when the last copy
@@ -452,6 +452,14 @@ coverage), and only then runs its scripts and starts the agent. If the agent's s
 conversation is made at once and its first message boots the machine, saying "Starting Pip's sandbox…" (or "the
 engineering sandbox") in the chat while it does; the first conversation after a restart boots inside the create
 request. A machine that cannot boot (the container service, the walls) ends the turn with the reason, as for tickets.
+
+**The brief shows the format, not the answer (T74b).** After #118 Pip's frontmatter was right and
+`reference/how-i-help-at-home` passed, but `patterns/errands` was refused as "the example copied as it is" after two
+sessions: the brief showed the errands page in full, the 8B model handed it back, and the copy was good content. So
+the brief and the rule were at odds. Now the only example is `formatExample()` (core `home.ts`), a page about
+something else (descaling a kettle), and each real page is given 3 to 4 questions it must answer
+(`helpPageQuestions`, `errandsPageQuestions`), with no answer text. The "copied example" refusal stays, compared with
+the format example only. The retry brief says the same.
 
 ### End-to-end checks and the test suite (`tools/e2e`, `pnpm test`)
 - **End to end:** each `tools/e2e/<name>/run.mjs` drives the real web app in Chromium against a local daemon in a scratch
