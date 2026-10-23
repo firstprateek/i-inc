@@ -220,7 +220,7 @@ where `AccountRateLimit` is `{ "status"?: string, "resetsAt"?: number, "fiveHour
 
 **C25 Timeouts (T63)** → `GET /api/timeouts` → `{ "settings": TimeoutSettings, "defaults": TimeoutSettings }` and `PUT /api/timeouts` with any of the keys (whole minutes, 1 to 1440; `400` otherwise) → the same shape. Keys: `scriptMinutes` (a script run in a machine: git, gh, sign-in, the reaper, a brain copy; default 10), `checksMinutes` (the project's check recipe; 30), `machineCommandMinutes` (one `container` command on the host; 5), `agentStartMinutes` (an agent's `initialize` and `session/new`; 2) and `agentIdleMinutes` (a session with no word from the agent; 30). A limit that is hit kills the process group and counts as stuck, so switch rules run. Saved in the registry settings.
 
-## Follow-ups (ready to file as i-inc tickets; found in reviews, none blocking)
+## Follow-ups (found in reviews, none blocking; the first five are filed as tickets #20–#24 on the mini, 2026-10-23)
 
 - **Chat drafts (#10/#11):** another open tab keeps its own Map and can re-store a draft after a 401 elsewhere (chat.ts ~123); a failed send's stored text is overwritten when a new draft is typed (chat.ts ~127, drafts.ts ~37).
 - **Header/desk (#61):** the desk test named "labelled 44px button" doesn't assert the size and nothing guards `release-btn` min-height; the mobile title issue is resolved by T40/T43 route heading focus; baseline sign-out still leaves the previous document title/focus on the login screen (follow-up).
