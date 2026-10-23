@@ -551,6 +551,8 @@ export class BrainHarvest {
           conflict: done.conflict,
           notes: [...a.notes, ...done.notes],
         });
+        for (const n of a.notes)
+          if (/^dropped \d+ junk frontmatter/.test(n)) this.log(`${a.path} (${req.employeeId}): ${n}`);
         if (a.policy) this.policyChanged(a, req, employee, done.conflict);
       } catch (e) {
         this.log(

@@ -82,6 +82,8 @@ export interface SessionHostOptions {
    * added to every turn: a small local model that isn't told tries `sudo apt install`. Absent or "" for anyone else.
    */
   homeNotes?: (employeeId: Id) => string;
+  /** What the employee's sandbox is called in the chat while it boots ("Pip's sandbox", "the engineering sandbox"). */
+  sandboxLabel?: (employeeId: Id) => string;
   /** The reasoning effort Codex is asked for. */
   effort?: (employeeId: Id) => string;
   /**
@@ -282,7 +284,19 @@ export class SessionHost implements AgentBackend {
         live.deferred = true;
         return { config: known, meta: { "iinc.cwd": info.cwd } };
       }
+      // A stopped machine takes a minute to boot, and the guard refuses every script in it until it is up. With
+      // the agent's settings known from an earlier session the conversation is made now and the first message
+      // boots the machine (saying so in the chat); if not, it boots here, since the settings come from the agent.
+      const gate = this.app;
+      if (gate?.ensureUp && gate.sandboxUp && !gate.sandboxUp(info.employeeId)) {
+        const known = this.configCache.get(info.engine.id);
+        if (known) {
+          live.deferred = true;
+          return { config: known, meta: { "iinc.cwd": info.cwd } };
+        }
+      }
       await this.acquire(live, { wait: false });
+      await gate?.ensureUp?.(info.employeeId);
       copy = await this.o.workingCopy(info);
       const first = await this.launchSession(live, { fresh: true, mode: req.config?.mode });
       const config = configFromAcp(
@@ -785,6 +799,8 @@ export class SessionHost implements AgentBackend {
       if (waited) this.announce(run, undefined);
       try {
         if (run.signal.aborted) throw new Error("cancelled before the agent started");
+        await this.bootSandbox(live, run);
+        if (run.signal.aborted) throw new Error("cancelled while the sandbox started");
         const copy = await this.o.workingCopy(live.info);
         // Cancelled while the working copy was made: no agent, no slot.
         if (run.signal.aborted) throw new Error("cancelled before the agent started");
@@ -805,6 +821,26 @@ export class SessionHost implements AgentBackend {
       live.starting = undefined;
     });
     return live.starting;
+  }
+
+  /**
+   * Boots the employee's machine before anything is run in it (the working copy, the agent): a stopped
+   * machine is refused by the sandbox guard, and tickets boot theirs first too. Says so in the chat when it
+   * has to start it.
+   */
+  private async bootSandbox(live: Live, run: TurnRun): Promise<void> {
+    const gate = this.app;
+    if (!gate?.ensureUp) return;
+    const id = live.info.employeeId;
+    const stopped = gate.sandboxUp ? !gate.sandboxUp(id) : false;
+    if (stopped) {
+      this.announce(run, `Starting ${this.o.sandboxLabel?.(id) ?? `the ${live.info.team} sandbox`}…`);
+    }
+    try {
+      await gate.ensureUp(id);
+    } finally {
+      if (stopped) this.announce(run, undefined);
+    }
   }
 
   private kill(live: Live): void {

@@ -378,6 +378,8 @@ export async function createApp(o: AppOptions) {
   backend.attachApp?.({
     storage,
     awake: (id) => daemon.noteAwake(id),
+    ensureUp: (id) => daemon.ensureMachineUp(id),
+    sandboxUp: (id) => daemon.machineKnownUp(id),
     takeNote: (conversationId) => deps.shipping?.takeNote(conversationId),
   });
   // The index follows every commit from here on, including the first commits of a new install's

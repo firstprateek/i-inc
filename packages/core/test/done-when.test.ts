@@ -374,6 +374,26 @@ describe("a PA's orientation and brief", () => {
     expect(task.length / 4).toBeLessThan(800);
   });
 
+  it("shows each example page in a fenced block with no prefix on any line, and says to write it with a heredoc", () => {
+    const task = homeOrientationTask(pip);
+    // Pip copied the "| " that used to start each example line into its frontmatter (2026-10-23).
+    expect(task).not.toMatch(/^\s*\| /m);
+    for (const example of [helpPageExample(), errandsPageExample()]) {
+      expect(task).toContain(`\`\`\`markdown\n${example}\n\`\`\``);
+    }
+    expect(task).toContain("cat > /home/employee/brain/pip/personal/reference/how-i-help-at-home.md <<'EOF'");
+    expect(task).toContain("cat > /home/employee/brain/pip/personal/patterns/errands.md <<'EOF'");
+    expect(task).toContain("Never use echo with \\n");
+    expect(offlineNotes("pip")).toContain("never echo with \\n");
+    // The retry brief shows the same shape.
+    const redo = orientationExpectations({ project: "Home" }, pip, true)
+      .map((e) => e.how)
+      .join("\n");
+    expect(redo).not.toMatch(/^\s*\| /m);
+    expect(redo).toContain("```markdown\n---\ntitle: Errands");
+    expect(redo).toContain("<<'EOF'");
+  });
+
   it("is what the PA's orient session is given, with the done-when list", async () => {
     const p = ports();
     await runTicket(p, orientation());

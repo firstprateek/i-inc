@@ -47,7 +47,7 @@ export function offlineNotes(employeeId: string, tools: HomeTools = {}): string 
       ? '- To search text, use rg "words" <folder>, or grep -rn "words" <folder>.'
       : '- To search text, use: grep -rn "words" <folder>.',
     "- gh and docker are installed but cannot be used: they need the internet. Not available at all: sudo, apt, python, a browser. Do not install anything.",
-    "- Write files only under /home/employee. If a tool fails, say so in one line and use another way. Never run the same failing command twice.",
+    "- Write files only under /home/employee. To write a file use a heredoc (cat > path <<'EOF' ... EOF) or your edit tool, never echo with \\n. If a tool fails, say so in one line and use another way. Never run the same failing command twice.",
   ].join("\n");
 }
 
@@ -100,16 +100,22 @@ export function errandsPageExample(): string {
   ].join("\n");
 }
 
+/**
+ * An example page in a fenced block with no prefix on any line, exactly as the file must look. A small model
+ * copies what it sees: with a `| ` in front of each line (a quote style) Pip wrote `"| title": Errands` into its
+ * frontmatter (2026-10-23).
+ */
+export const fencedExample = (text: string): string => ["```markdown", text, "```"].join("\n");
+
+/** How to write a file: a heredoc or the edit tool, never `echo` with `\n` (it writes one broken line). */
+export const heredocHow = (path: string): string =>
+  `  Write it with: cat > ${path} <<'EOF'  then the whole file, from the first --- line, then a line EOF. Or use your edit tool. Never use echo with \\n.`;
+
 /** The PA's orientation, as the task of its one stage. Short steps, exact paths. */
 export function homeOrientationTask(employee: Pick<Employee, "id" | "name">): string {
   const root = brainRoot(employee.id);
   const help = `${root}/personal/${homePages.help}.md`;
   const errands = `${root}/personal/${homePages.errands}.md`;
-  const quoted = (text: string) =>
-    text
-      .split("\n")
-      .map((l) => `  | ${l}`)
-      .join("\n");
   return [
     `This is your orientation, ${employee.name}. You have no code projects: you work on the owner's home. Do 4 small jobs, in order, with the files and shell. Do not search the web.`,
     "",
@@ -120,13 +126,15 @@ export function homeOrientationTask(employee: Pick<Employee, "id" | "name">): st
     "",
     `Job 2. Write the file ${help}`,
     `  First: mkdir -p ${root}/personal/reference`,
-    "  Copy this shape, then rewrite every bullet in your own words so it is true for you (at least 40 words in all). A copy of the example is not accepted:",
-    quoted(helpPageExample()),
+    "  The file must look like this (the first line of the file is ---, and no line starts with | or >). Rewrite every bullet in your own words so it is true for you (at least 40 words in all). A copy of the example is not accepted:",
+    fencedExample(helpPageExample()),
+    heredocHow(help),
     "",
     `Job 3. Write the file ${errands}`,
     `  First: mkdir -p ${root}/personal/patterns`,
-    "  Copy this shape and make it yours (at least 40 words; no TODO lines):",
-    quoted(errandsPageExample()),
+    "  The file must look like this, with the same first lines (--- / title: / description: / ---). Make it yours (at least 40 words; no TODO lines):",
+    fencedExample(errandsPageExample()),
+    heredocHow(errands),
     "",
     `Job 4. Check your tools work offline: run date, git --version, node --version, and grep -rn errand ${root}/personal | head -3, and ${root}/.bin/brain search "errand". In the "My tools" section of ${help}, write one line each: works, or does not work.`,
     "",
@@ -241,13 +249,13 @@ export function orientationExpectations(
     return [
       pageExpectation(
         homePages.help,
-        `Write the file ${root}/personal/${homePages.help}.md (mkdir -p ${root}/personal/reference first). Copy this shape and rewrite it in your own words:\n${helpPageExample()}`,
+        `Write the file ${root}/personal/${homePages.help}.md (mkdir -p ${root}/personal/reference first). The file must look like this (first line ---, no line starts with | or >); rewrite it in your own words:\n${fencedExample(helpPageExample())}\n${heredocHow(`${root}/personal/${homePages.help}.md`)}`,
         helpPageExample(),
         (text) => (/my tools/i.test(text) ? null : 'it has no "My tools" section'),
       ),
       pageExpectation(
         homePages.errands,
-        `Write the file ${root}/personal/${homePages.errands}.md (mkdir -p ${root}/personal/patterns first). Copy this shape and make it yours:\n${errandsPageExample()}`,
+        `Write the file ${root}/personal/${homePages.errands}.md (mkdir -p ${root}/personal/patterns first). The file must look like this (first line ---, no line starts with | or >); make it yours:\n${fencedExample(errandsPageExample())}\n${heredocHow(`${root}/personal/${homePages.errands}.md`)}`,
         errandsPageExample(),
       ),
     ];

@@ -280,6 +280,9 @@ export function secretShare(text: string): { redacted: string; share: number; co
 
 const looksExternal = (s: string) => /https?:\/\/|\bgithub\.com\/|\bgit@|\bwww\./i.test(s);
 
+/** A frontmatter key worth keeping: a word, not `| title`, `"title"` or ` title`. */
+const validKey = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/;
+
 export interface Normalized {
   text: string;
   meta: PageMeta;
@@ -310,6 +313,19 @@ export function normalizePage(
   else if (parsed.frontmatterError) notes.push("repaired the frontmatter");
   const body = `${parsed.body.replace(/^\n+/, "").trimEnd()}\n`;
   const meta: PageMeta = { ...parsed.meta };
+  // Keys that are not keys: a small model copies a `| ` (or a quote) from the example into every frontmatter line,
+  // and `| title: Errands` comes out as the key "| title" (Pip, 2026-10-23). They are dropped, not kept as extras.
+  if (meta.extra) {
+    const junk = Object.keys(meta.extra).filter((k) => !validKey.test(k));
+    if (junk.length) {
+      const kept = Object.fromEntries(Object.entries(meta.extra).filter(([k]) => validKey.test(k)));
+      if (Object.keys(kept).length) meta.extra = kept;
+      else delete meta.extra;
+      notes.push(
+        `dropped ${junk.length} junk frontmatter key${junk.length === 1 ? "" : "s"}: ${junk.map((k) => JSON.stringify(clip(k, 40))).join(", ")}`,
+      );
+    }
+  }
   meta.title = clip(meta.title.replace(/\s+/g, " ").trim(), 120) || titleFromSlug(slug);
   if (parsed.derived.title && parsed.hasFrontmatter && !parsed.frontmatterError) notes.push("added a title");
   meta.description = clip(

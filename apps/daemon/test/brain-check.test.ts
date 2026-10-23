@@ -1,6 +1,6 @@
 // The checks every harvested change passes before it is committed (src/brain-check.ts): scopes, paths,
 // sizes, frontmatter, secrets, the write bar and duplicates. Pure, so each rule has a case here.
-import type { Scope } from "@i-inc/core";
+import { parsePage, type Scope } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
 import {
   appendedNoise,
@@ -241,6 +241,51 @@ describe("frontmatter", () => {
     const again = normalizePage(first.text, "t", { today: "2026-10-22", provenance: "conversation-3f2a" });
     expect(again.meta.sources).toEqual(["ticket-1", "conversation-3f2a"]);
     expect(again.meta.updated).toBe("2026-10-22");
+  });
+
+  // The page Pip wrote (2026-10-23): the brief showed the example with "| " in front of every line and the
+  // 8B model copied it into the frontmatter, so YAML read the keys "| title" and "| description".
+  const pipsErrands = [
+    "---",
+    "| title: Errands",
+    "| description: How I run an errand from request to proposals",
+    "---",
+    "# Errands",
+    "1. Read the request. Say it back in one line.",
+    "2. Find what I need: my brain first, then the home tools.",
+    "3. Write each outgoing action as a proposal.",
+    "",
+  ].join("\n");
+
+  it("drops frontmatter keys that are not keys (a copied '| '), says so, and fills the title and description", () => {
+    const n = normalizePage(pipsErrands, "patterns/errands", { today: "2026-10-23", provenance: "ticket-5" });
+    expect(n.text).not.toContain("| title");
+    expect(n.text).not.toContain("| description");
+    expect(n.meta.extra).toBeUndefined();
+    expect(n.meta.title).toBe("Errands");
+    expect(n.meta.description).toBe("Read the request.");
+    expect(n.notes).toContain("repaired the frontmatter");
+    expect(
+      n.notes.some((x) => /^dropped 2 junk frontmatter keys: "\| title", "\| description"$/.test(x)),
+    ).toBe(true);
+    // The agent did not write a title or a description of its own: the done-when check still sees that.
+    const written = parsePage(n.text, "patterns/errands");
+    expect(written.frontmatterError).toBeUndefined();
+    expect(Object.keys(written.meta.extra ?? {})).toEqual([]);
+  });
+
+  it("drops junk keys in a block that is valid YAML too, and keeps the real extra keys", () => {
+    const text = `---\ntitle: Errands\ndescription: How I run an errand\n"| title": Errands\n' note': x\nowner-note: keep me\n---\n${body}\n`;
+    const n = normalizePage(text, "patterns/errands", { today: "2026-10-23", provenance: "ticket-5" });
+    expect(n.meta.extra).toEqual({ "owner-note": "keep me" });
+    expect(n.text).not.toContain("| title");
+    expect(n.notes.some((x) => x.startsWith("dropped 2 junk frontmatter keys"))).toBe(true);
+    // Nothing dropped, nothing said.
+    const clean = normalizePage(good("T", body, "owner-note: keep me\n"), "t", {
+      today: "2026-10-23",
+      provenance: "ticket-5",
+    });
+    expect(clean.notes.some((x) => x.includes("junk"))).toBe(false);
   });
 
   it("clips a long title and description and drops odd tags", () => {

@@ -430,6 +430,29 @@ Asking again while that ticket is open (running, or waiting in Needs you) answer
 `"existing": true`, so it never files a second. An employee who has left is `409`, a name nobody has is `404`.
 Then read what Pip wrote in Company → Brain (`reference/how-i-help-at-home`, `patterns/errands`).
 
+### A PA's example pages, and talking to a sleeping sandbox (T74)
+
+**Pip's pages had keys like `"| title"` (2026-10-23).** The orientation brief showed the example page with `| ` in
+front of every line, and the 8B model copied the prefix into its frontmatter (`echo "| ---\n| title: …"`), so the
+harvest filled in a title and a description and the done-when check, correctly, sent the ticket to Needs you. Now
+the example is in a fenced block with no prefix on any line, exactly as the file must look, with the command to write
+it (`cat > path <<'EOF' … EOF`, or the edit tool; `echo` with `\n` is named as the thing not to do, in the task, in
+the retry brief and in the offline note on every PA turn). And the brain harvest (`normalizePage`, brain-check.ts)
+drops frontmatter keys that are not keys (anything not starting with a letter, digit or `_`, such as `| title` or a
+quoted key), says so in the change's notes ("dropped 2 junk frontmatter keys: …", shown in Company → Brain → Changes)
+and in the daemon log. It does not rescue their values: the done-when check still wants the agent's own title and
+description, and still sends a page without them back.
+
+**You could not start a conversation with a stopped sandbox.** `POST /api/conversations` answered 502 "inc-home-pip
+isn't running, so nothing is run in it": the guard (T66/T70) refuses scripts in a machine that is stopped, and the
+conversation ran its scripts (the working copy, the brain copy) before anything booted it; machines sleep when idle.
+Now a conversation boots the machine first, through the same path as a ticket (`Daemon.ensureMachineUp`: the
+per-machine lock, a storage cleanup waited out, the walls' acknowledgement and a home machine's root removal and
+coverage), and only then runs its scripts and starts the agent. If the agent's settings are already known the
+conversation is made at once and its first message boots the machine, saying "Starting Pip's sandbox…" (or "the
+engineering sandbox") in the chat while it does; the first conversation after a restart boots inside the create
+request. A machine that cannot boot (the container service, the walls) ends the turn with the reason, as for tickets.
+
 ### End-to-end checks and the test suite (`tools/e2e`, `pnpm test`)
 - **End to end:** each `tools/e2e/<name>/run.mjs` drives the real web app in Chromium against a local daemon in a scratch
   HOME, with stand-ins for GitHub and the agents (no real credentials; screenshots at 1440x900 and 390x844, light and

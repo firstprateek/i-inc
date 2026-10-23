@@ -323,6 +323,12 @@ export function realPorts(o: RealOptions): Pick<
           registry.employees().some((e) => e.id === employeeId && isHomeEmployee(e))
             ? offlineNotes(employeeId, brain.toolsOf(employeeId))
             : "",
+        sandboxLabel: (employeeId) => {
+          const e = registry.employees().find((x) => x.id === employeeId);
+          return e && isHomeEmployee(e)
+            ? `${e.name}'s sandbox`
+            : `the ${registry.teamOf(employeeId).id} sandbox`;
+        },
         activity: (employeeId) => harvest.beginActivity(employeeId),
         external: (c, why) => harvest.noteExternal({ kind: "conversation", id: c.id }, why),
         // A conversation's brain copy is collected when it goes idle or ends, and on `/remember`.
