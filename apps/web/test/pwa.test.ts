@@ -303,6 +303,25 @@ describe("an update while the app is open", () => {
     expect(heard).toHaveBeenCalledTimes(1); // said once
   });
 
+  it("marks the page stale on a worker taking over only after the first one (a first visit's claim is not an update)", () => {
+    let handler: (() => void) | undefined;
+    const sw = {
+      controller: null as unknown,
+      addEventListener: (_: string, fn: () => void) => {
+        handler = fn;
+      },
+      removeEventListener: () => {},
+    };
+    vi.stubGlobal("navigator", { ...navigator, serviceWorker: sw });
+    vi.stubGlobal("fetch", async () => json({}));
+    const stop = watchForUpdates();
+    handler?.(); // the first visit: the worker claims the page
+    expect(updateAvailable()).toBe(false);
+    handler?.(); // a deploy while the page is open: a newer worker takes over
+    expect(updateAvailable()).toBe(true);
+    stop();
+  });
+
   it("ignores a daemon that does not say its release", async () => {
     health(() => "unknown");
     expect(await checkForUpdate()).toBe(false);
@@ -363,6 +382,27 @@ describe("an update while the app is open", () => {
     expect(reload).not.toHaveBeenCalled();
     banner?.querySelector("button")?.click();
     expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not stack the update banner on a page whose own code could not load", async () => {
+    health(() => "aaa111");
+    vi.stubGlobal("matchMedia", (q: string) => ({
+      matches: false,
+      media: q,
+      addEventListener() {},
+      removeEventListener() {},
+    }));
+    location.hash = "#/company/team";
+    const app = new IncApp();
+    document.body.append(app);
+    await vi.advanceTimersByTimeAsync(20);
+    (app as unknown as { outdated: boolean; loadFailed: boolean }).outdated = true;
+    (app as unknown as { outdated: boolean; loadFailed: boolean }).loadFailed = true;
+    await app.updateComplete;
+    expect(app.shadowRoot?.querySelector('[slot="notice"]')).toBeNull();
+    (app as unknown as { loadFailed: boolean }).loadFailed = false;
+    await app.updateComplete;
+    expect(app.shadowRoot?.querySelector('[slot="notice"]')?.textContent).toContain("i.inc was updated");
   });
 });
 

@@ -66,9 +66,12 @@ export function watchForUpdates(now: () => number = Date.now): () => void {
   addEventListener("online", check);
   // A worker that takes over a page that already had one belongs to a newer build.
   const sw = typeof navigator !== "undefined" ? navigator.serviceWorker : undefined;
-  const hadController = !!sw?.controller;
+  let hadController = !!sw?.controller;
   const onController = () => {
+    // The first one on a page that started with no worker is the page's own worker claiming it (a first visit):
+    // fine. Any later one is a newer build's worker taking over, and the page is old.
     if (hadController) markStale();
+    hadController = true;
   };
   sw?.addEventListener?.("controllerchange", onController);
   check(); // the baseline

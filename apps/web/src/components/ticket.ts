@@ -17,7 +17,7 @@ import { ImagePicker, imagePickerStyles } from "./image-picker.ts";
 import { Loader } from "./loader.ts";
 import { protectedDiff } from "./protected-card.ts";
 import "./transcript.ts";
-import { api as apiHref } from "../links.ts";
+import { api as apiHref, web } from "../links.ts";
 import { layoutStyles } from "./layout.ts";
 import { base, check, projectBadge, selectField } from "./shared.ts";
 
@@ -387,7 +387,7 @@ export class IncTicket extends Loader<Data> {
         ${
           t.mergeOnGitHub
             ? html`<div class="actions">
-          <a class="btn" href=${t.mergeOnGitHub.url} target="_blank" rel="noopener noreferrer">Merge on GitHub</a>
+          <a class="btn" href=${web(t.mergeOnGitHub.url)} target="_blank" rel="noopener noreferrer">Merge on GitHub</a>
           <button type="button" class="btn ghost" ?disabled=${this.busy} @click=${() => this.act(() => api.decide(id, "reject"))}>Close without merging</button>
         </div>
         <p class="muted" style="font-size:14px">i.inc marks it merged by itself once you merge the PR</p>`

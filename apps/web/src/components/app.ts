@@ -386,7 +386,8 @@ export class IncApp extends LitElement {
 
   private notice() {
     if (this.offline) return html`<inc-offline slot="notice"></inc-offline>`;
-    if (this.outdated) {
+    // A page whose own code couldn't load already says the app may have been updated, with a Reload of its own.
+    if (this.outdated && !this.loadFailed) {
       return html`<div slot="notice" class="load-error" role="status">
         <span>i.inc was updated. Reload to use the new version.</span>
         <button class="btn" type="button" @click=${() => location.reload()}>Reload</button>

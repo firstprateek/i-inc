@@ -76,17 +76,22 @@ describe("form controls", () => {
 
 describe("reduced motion", () => {
   it("is honoured everywhere: in every component's base styles and in the page's", () => {
-    for (const f of ["src/components/shared.ts", "src/tokens.css"]) {
+    for (const [f, important] of [
+      ["src/components/shared.ts", " !important"],
+      ["src/tokens.css", ""],
+    ] as const) {
       const css = read(f).replace(/\s+/g, " ");
       expect(css, f).toMatch(/@media \(prefers-reduced-motion: reduce\) \{ \*, \*::before, \*::after \{/);
       for (const rule of [
-        "animation-duration: 0.01ms !important",
-        "animation-iteration-count: 1 !important",
-        "transition-duration: 0.01ms !important",
+        "animation-duration: 0.01ms",
+        "animation-iteration-count: 1",
+        "transition-duration: 0.01ms",
       ]) {
-        expect(css, `${f}: ${rule}`).toContain(rule);
+        expect(css, `${f}: ${rule}`).toContain(`${rule}${important};`);
       }
     }
+    // The page's own file needs no !important (and the linter says so): nothing in the light DOM sets motion.
+    expect(read("src/tokens.css")).not.toContain("!important");
     // The phone tab bar's press scale is a transform, which a zero duration would not remove.
     expect(read("src/components/app.ts")).toMatch(
       /prefers-reduced-motion: reduce\)\s*\{\s*\.tabs a:active \{ transform: none; \}/,
