@@ -14,6 +14,7 @@ import { seedDemo } from "../src/demo.ts";
 import { AppleMachines, defaultMachineSettings } from "../src/machines.ts";
 import { Storage } from "../src/storage.ts";
 import { refunds, testApp } from "./setup.ts";
+import { tracking } from "./up.ts";
 
 type Json = Record<string, unknown>;
 
@@ -129,7 +130,7 @@ describe("2.2 machines serialise boot and stop per machine", () => {
       await new Promise((r) => setTimeout(r, 20)); // a boot takes time
       return "";
     };
-    const m = new AppleMachines({ ...noWalls, machineFor: () => "inc-eng" }, exec, async () => {});
+    const m = new AppleMachines({ ...noWalls, machineFor: () => "inc-eng" }, tracking(exec), async () => {});
     await Promise.all([m.ensureUp("ada"), m.ensureUp("kit")]);
     expect(calls.filter((c) => c.startsWith("machine run"))).toHaveLength(1);
     expect(m.running().sort()).toEqual(["ada", "kit"]);
@@ -154,7 +155,7 @@ describe("2.2 machines serialise boot and stop per machine", () => {
       events.push(`end ${what}`);
       return "";
     };
-    const m = new AppleMachines({ ...noWalls, machineFor: () => "inc-eng" }, exec, async () => {});
+    const m = new AppleMachines({ ...noWalls, machineFor: () => "inc-eng" }, tracking(exec), async () => {});
     const boot = m.ensureUp("ada");
     const other = m.ensureUp("kit");
     const stopping = m.stop("kit");
@@ -182,7 +183,7 @@ describe("2.2 machines serialise boot and stop per machine", () => {
       }
       return "";
     };
-    const m = new AppleMachines({ ...noWalls, machineFor: () => "inc-eng" }, exec, async () => {});
+    const m = new AppleMachines({ ...noWalls, machineFor: () => "inc-eng" }, tracking(exec), async () => {});
     await Promise.all([m.ensureUp("ada"), m.ensureUp("kit")]);
     // run (fails), stop, run: one recovery for both, and no stop after the successful boot.
     expect(order).toEqual(["machine run", "machine stop", "machine run"]);
@@ -226,6 +227,25 @@ describe("2.7 machines left running by an earlier daemon", () => {
     // (A machine nobody started is not asked to stop.)
     await app.daemon.tick();
     expect(machines.stopped).toHaveLength(2);
+  });
+});
+
+describe("T75 the idle sweep does not wait on a machine that is leased", () => {
+  it("leaves a machine with a script or session running in it for the next pass, and stops it then", async () => {
+    const app = await testApp();
+    const machines = app.deps.machines as unknown as {
+      leftRunning: string[];
+      stopped: string[];
+      leasedIds: Set<string>;
+    };
+    machines.leftRunning.push("ada", "kit");
+    await app.daemon.adoptRunning();
+    machines.leasedIds.add("ada");
+    await app.daemon.tick();
+    expect(machines.stopped).toEqual(["kit"]); // a stop of ada's would only have waited for the lease
+    machines.leasedIds.clear();
+    await app.daemon.tick();
+    expect(machines.stopped.sort()).toEqual(["ada", "kit"]); // still awake, so stopped as soon as the lease ended
   });
 });
 

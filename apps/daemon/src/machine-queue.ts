@@ -69,6 +69,8 @@ export interface QueueOptions {
 interface Waiter {
   kind: HoldKind;
   label: string;
+  /** A stop that goes ahead although the queue is closed (see {@link MachineQueue.stop}). */
+  force?: boolean;
   grant: () => void;
   fail: (err: Error) => void;
   /** For a stop: ends its wait for leases. */
@@ -117,8 +119,8 @@ export class MachineQueue {
    * Takes a hold on a machine and resolves with what ends it. `stop` rejects with {@link MachineBusy} if
    * the leases outlast `leaseWaitMs`, or if the queue is closed.
    */
-  acquire(machine: string, kind: HoldKind, label: string): Promise<Release> {
-    if (this.closed && kind === "stop") {
+  acquire(machine: string, kind: HoldKind, label: string, force = false): Promise<Release> {
+    if (this.closed && kind === "stop" && !force) {
       return Promise.reject(
         new MachineBusy(machine, `the daemon is shutting down, so ${machine} is not stopped`),
       );
@@ -129,6 +131,7 @@ export class MachineQueue {
       const waiter: Waiter = {
         kind,
         label,
+        force,
         grant: () => {
           waiter.cancelTimer?.();
           op.at = this.now();
@@ -211,12 +214,23 @@ export class MachineQueue {
   }
 
   /** Runs `fn` (the `machine stop`) alone, once every lease has ended. Rejects with {@link MachineBusy} if it can't. */
-  stop<T>(machine: string, label: string, fn: () => Promise<T>): Promise<T> {
-    return this.hold(machine, "stop", label, fn);
+  stop<T>(
+    machine: string,
+    label: string,
+    fn: () => Promise<T>,
+    o: { whenClosed?: boolean } = {},
+  ): Promise<T> {
+    return this.hold(machine, "stop", label, fn, o.whenClosed === true);
   }
 
-  private async hold<T>(machine: string, kind: HoldKind, label: string, fn: () => Promise<T>): Promise<T> {
-    const release = await this.acquire(machine, kind, label);
+  private async hold<T>(
+    machine: string,
+    kind: HoldKind,
+    label: string,
+    fn: () => Promise<T>,
+    force = false,
+  ): Promise<T> {
+    const release = await this.acquire(machine, kind, label, force);
     try {
       const out = await fn();
       release("ok");
@@ -234,13 +248,14 @@ export class MachineQueue {
 
   /**
    * The daemon is leaving: no stop is issued from now on (a machine left running is adopted, and stopped when
-   * idle, by the next daemon), and stops still waiting give up. Runs already granted are not touched.
+   * idle, by the next daemon), and stops still waiting give up. Runs already granted are not touched. A stop
+   * asked with `whenClosed` (a machine the walls refused must not stay up) still waits its turn and goes ahead.
    */
   close(): void {
     this.closed = true;
     for (const [machine, st] of this.machines) {
       for (const w of [...st.waiters]) {
-        if (w.kind !== "stop") continue;
+        if (w.kind !== "stop" || w.force) continue;
         w.cancelTimer?.();
         st.waiters.splice(st.waiters.indexOf(w), 1);
         w.fail(new MachineBusy(machine, `the daemon is shutting down, so ${machine} is not stopped`));

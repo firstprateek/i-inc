@@ -19,7 +19,7 @@ import {
 import { machineScript } from "../src/harness.ts";
 import { AppleMachines, defaultMachineSettings, machineLaunch, workDir } from "../src/machines.ts";
 import type { AccountRateLimit } from "../src/registry.ts";
-import { upExec } from "./up.ts";
+import { tracking, upExec } from "./up.ts";
 
 // The defaults, without the walls' marker, which exists only on the mini (a test below covers it).
 const { wallsMarker: _, ...noWalls } = defaultMachineSettings;
@@ -823,13 +823,13 @@ describe("Apple container machines", () => {
     const calls: string[][] = [];
     const m = new AppleMachines(
       noWalls,
-      async (_bin, args) => {
+      tracking(async (_bin, args) => {
         calls.push(args);
         if (args[1] === "run" && calls.length === 1) throw new Error(notFound);
         // The new machine's first boot fails, as it does now and then on the mini.
         if (args[1] === "run" && calls.length === 3) throw new Error("Operation not supported by device");
         return "";
-      },
+      }),
       async () => {},
     );
     await m.ensureUp("ada");
@@ -1118,12 +1118,12 @@ describe("a team's sandbox", () => {
     };
     const m = new AppleMachines(
       team,
-      async (_bin, args) => {
+      tracking(async (_bin, args) => {
         calls.push(args);
         if (args[1] === "run" && calls.length === 1)
           throw new Error("Error: notFound: machine inc-engineering");
         return "";
-      },
+      }),
       async () => {},
     );
     await m.ensureUp("ada");

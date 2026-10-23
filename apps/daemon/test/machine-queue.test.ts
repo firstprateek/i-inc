@@ -67,6 +67,19 @@ class AppleFake {
     return this;
   }
 
+  /** The machine dies on its own (a crash, `container system stop`, a stop by hand): no daemon command did it. */
+  crash(name: string): void {
+    const m = this.machines.get(name);
+    if (m) m.state = "stopped";
+  }
+
+  /** The next boot fails with this message. */
+  failNextBoot(message: string): void {
+    this.bootFailure = message;
+  }
+
+  private bootFailure: string | undefined;
+
   /** The fault itself, as if a stop and a run had met. */
   stick(name: string): void {
     const m = this.machines.get(name);
@@ -156,6 +169,11 @@ class AppleFake {
   private run(cmd: Cmd, name: string): void {
     const m = this.machines.get(name);
     if (!m) throw new Error(`notFound: ${name}`);
+    if (cmd.kind === "boot" && this.bootFailure) {
+      const message = this.bootFailure;
+      this.bootFailure = undefined;
+      throw new Error(message);
+    }
     if (this.stateAtStart.get(cmd) === "running") return; // attached to a machine that was up
     if (m.state === "stopped") {
       if (m.stuck) throw new Error(`hostname(s) already exist: ["${name}.machine."]`);
@@ -706,5 +724,89 @@ describe("a stuck hostname is logged with the machine's last queue operations", 
     expect(line).toMatch(/serial\(ensureUp\) started \d\d:\d\d:\d\d\.\d{3}/);
     expect(line).toMatch(/stop\(idle\) started \d\d:\d\d:\d\d\.\d{3}, ended \d\d:\d\d:\d\d\.\d{3} ok/);
     expect((line?.match(/started/g) ?? []).length).toBeLessThanOrEqual(HISTORY_LEN);
+  });
+});
+
+describe("a machine stopped out of band", () => {
+  it("is booted again by the next start, instead of being trusted as up for ever", async () => {
+    const logs: string[] = [];
+    const r = rig({ log: (m) => logs.push(m) });
+    await r.machines.ensureUp("ada");
+    r.fake.crash(r.machine); // `container system stop`, a crash, a stop by hand
+    // before the fix: the stale record made ensureUp return, and every script failed with "isn't running"
+    await expect(r.chore("ada", "x")).rejects.toBeInstanceOf(MachineNotRunning);
+    await r.machines.ensureUp("ada");
+    expect(r.fake.machines.get(r.machine)?.state).toBe("running");
+    expect(r.fake.log.filter((l) => l.startsWith("boot:"))).toHaveLength(2);
+    expect((await r.chore("ada", "y")).code).toBe(0);
+    expect(r.machines.running()).toEqual(["ada"]);
+    expect(logs.some((l) => /not running \(stopped out of band\)/.test(l))).toBe(true);
+    // and work that needs the machine brings it up by itself the same way
+    r.fake.crash(r.machine);
+    expect((await r.work("ada", "z")).code).toBe(0);
+    expect(r.fake.implicitBoots).toEqual([]);
+  });
+});
+
+describe("the boot recovery's stop", () => {
+  it("is not issued while a script or session holds a lease on the machine", async () => {
+    const r = rig({ running: true });
+    await r.launch({ employeeId: "ada", engine, cwd: "/w", env: {} }); // a session, though nothing recorded the machine as up
+    r.fake.failNextBoot("boom");
+    await expect(r.machines.ensureUp("ada")).resolves.toBeUndefined(); // the retry's boot works
+    expect(r.fake.log.filter((l) => l.startsWith("stop:"))).toEqual([]);
+    expect(r.fake.overlaps).toEqual([]);
+  });
+
+  it("is issued, as before, when nothing holds a lease", async () => {
+    const r = rig();
+    r.fake.failNextBoot("boom");
+    await r.machines.ensureUp("ada");
+    expect(r.fake.log.filter((l) => l.startsWith("stop:"))).toEqual(["stop:inc-ada"]);
+  });
+});
+
+describe("a machine the walls refused, at shutdown", () => {
+  it("is still stopped, through the queue; any other stop is not", async () => {
+    const q = new MachineQueue();
+    const order: string[] = [];
+    let end!: () => void;
+    const busy = q.use("m", "script", () => new Promise<void>((r) => (end = r)));
+    const forced = q.stop("m", "walls refused it", async () => void order.push("forced"), {
+      whenClosed: true,
+    });
+    const plain = q.stop("m", "idle", async () => void order.push("plain"));
+    await settle();
+    q.close();
+    await expect(plain).rejects.toBeInstanceOf(MachineBusy); // the waiting one gave up
+    expect(order).toEqual([]);
+    end();
+    await Promise.all([busy, forced]);
+    expect(order).toEqual(["forced"]); // after the script, not beside it
+    await expect(q.stop("m", "later", async () => {})).rejects.toBeInstanceOf(MachineBusy);
+    await q.stop("m", "refused later", async () => void order.push("forced 2"), { whenClosed: true });
+    expect(order).toEqual(["forced", "forced 2"]);
+  });
+
+  it("is stopped by ensureUp even though the daemon is leaving", async () => {
+    const r = rig();
+    await r.machines.ensureUp("ada");
+    r.machines.closeQueue();
+    (r.machines as unknown as { stopAfter: Set<string> }).stopAfter.add(r.machine); // what a refused boot leaves
+    await r.machines.ensureUp("ada");
+    expect(r.fake.log.filter((l) => l.startsWith("stop:"))).toEqual(["stop:inc-ada"]);
+  });
+});
+
+describe("leased", () => {
+  it("says whether a script or session runs in the employee's machine", async () => {
+    const r = rig();
+    await r.machines.ensureUp("ada");
+    expect(r.machines.leased("ada")).toBe(false);
+    await r.launch({ employeeId: "ada", engine, cwd: "/w", env: {} });
+    expect(r.machines.leased("ada")).toBe(true);
+    r.fake.children.at(-1)?.end();
+    await settle();
+    expect(r.machines.leased("ada")).toBe(false);
   });
 });

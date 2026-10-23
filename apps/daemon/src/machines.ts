@@ -518,7 +518,7 @@ export class AppleMachines implements MachineProvider {
    * running (it is never booted for `fn`: a chore waits for the next boot). `fn` runs commands with the raw
    * `exec`, since it holds the lease already. Rejects with {@link MachineNotRunning} when the machine is down.
    */
-  private async leased<T>(machine: string, label: string, fn: () => Promise<T>): Promise<T> {
+  private async withLease<T>(machine: string, label: string, fn: () => Promise<T>): Promise<T> {
     return this.queue.use(machine, label, async () => {
       await guardRun(this.s, this.exec, machine);
       return fn();
@@ -540,7 +540,13 @@ export class AppleMachines implements MachineProvider {
   private async stopRefused(name: string): Promise<void> {
     if (!this.stopAfter.delete(name)) return;
     try {
-      await this.queue.stop(name, "walls refused it", () => this.exec(this.s.bin, ["machine", "stop", name]));
+      // Even while the daemon is leaving: a machine the walls refused must not be left running for the next one.
+      await this.queue.stop(
+        name,
+        "walls refused it",
+        () => this.exec(this.s.bin, ["machine", "stop", name]),
+        { whenClosed: true },
+      );
     } catch (err) {
       this.log?.(`[sandbox:${name}] couldn't stop it after the walls refused it: ${err}`);
     }
@@ -628,11 +634,24 @@ export class AppleMachines implements MachineProvider {
   private async bringUp(name: string, employeeId: Id): Promise<void> {
     const working = this.up.get(name);
     if (working) {
-      // Already up: its address and its lack of root are checked again, since it may have been restarted.
-      await this.secure(name, false);
-      // The set may have been replaced by a failed check meanwhile; add to what is there.
-      this.claim(name, employeeId);
-      return;
+      // The record can be stale: a machine stopped out of band (a crash, `container system stop`, a stop by
+      // hand) is not running. `machine ls` says (inside this hold), and a machine that is down is booted below.
+      const stillUp = await assertRunning(this.s, this.exec, name).then(
+        () => true,
+        (err) => {
+          if (err instanceof MachineNotRunning) return false;
+          throw err;
+        },
+      );
+      if (stillUp) {
+        // Already up: its address and its lack of root are checked again, since it may have been restarted.
+        await this.secure(name, false);
+        // The set may have been replaced by a failed check meanwhile; add to what is there.
+        this.claim(name, employeeId);
+        return;
+      }
+      this.log?.(`[sandbox:${name}] was recorded as up but is not running (stopped out of band): booting it`);
+      this.up.delete(name);
     }
     const fault = this.liveFault(name);
     if (fault) throw new StartupError(fault.waiting, fault.retryAt);
@@ -795,7 +814,7 @@ export class AppleMachines implements MachineProvider {
       if (!r.home || r.state !== "running" || stop.includes(r.name)) continue;
       try {
         // A lease like any script's: the machine may have stopped since the listing, and is not booted for this.
-        // (Not `leased`: its walls check would refuse a machine that has root, which is what is looked for here.)
+        // (Not `withLease`: its walls check would refuse a machine that has root, which is what is looked for here.)
         const hasRoot = await this.queue.use(r.name, "root check", async () => {
           assertWalls(this.s);
           await assertRunning(this.s, this.exec, r.name);
@@ -850,10 +869,14 @@ export class AppleMachines implements MachineProvider {
       }
       // Safe automatic recovery inside the sandbox layer only: machine stop, retry once
       try {
-        try {
-          await this.exec(this.s.bin, ["machine", "stop", name]);
-        } catch {
-          // ignore error stopping if already stopped
+        // Not while a script or session holds a lease on it: a stop beside a run is what sticks a hostname.
+        // (A machine that failed to boot has none; one that is up, whose boot call failed, keeps them.)
+        if (this.queue.leases(name) === 0) {
+          try {
+            await this.exec(this.s.bin, ["machine", "stop", name]);
+          } catch {
+            // ignore error stopping if already stopped
+          }
         }
         await this.boot(name);
         if (this.faults.has(name) || this.attempts.has(name)) {
@@ -1084,6 +1107,11 @@ export class AppleMachines implements MachineProvider {
     this.queue.close();
   }
 
+  /** A script or a session is running in the employee's machine (a lease): the idle pass leaves it alone. */
+  leased(employeeId: Id): boolean {
+    return this.queue.leases(machineOf(this.s, employeeId)) > 0;
+  }
+
   /** Employees whose machines this daemon started and hasn't stopped. */
   running(): Id[] {
     return [...this.up.values()].flatMap((working) => [...working]);
@@ -1110,7 +1138,7 @@ export class AppleMachines implements MachineProvider {
    */
   async runIn(machine: string, script: string, timeoutMs = 15 * 60_000): Promise<string> {
     if (!/^inc-[a-z0-9-]{1,32}$/.test(machine)) throw new Error(`not a machine name: ${machine}`);
-    return this.leased(machine, "runIn", () =>
+    return this.withLease(machine, "runIn", () =>
       this.exec(this.s.bin, ["machine", "run", "-i", "-u", this.s.user, "-n", machine, "--", "bash", "-s"], {
         input: script,
         timeoutMs,
@@ -1184,7 +1212,7 @@ export class AppleMachines implements MachineProvider {
 
   async deliverCallback(teamId: Id, url: string): Promise<void> {
     const machine = machineName(teamId);
-    await this.leased(machine, "callback", () =>
+    await this.withLease(machine, "callback", () =>
       this.exec(
         this.s.bin,
         ["machine", "run", "-i", "-u", this.s.user, "-n", machine, "-e", "CALLBACK_URL", "--", "bash", "-s"],
@@ -1246,7 +1274,7 @@ export class AppleMachines implements MachineProvider {
     if (wallsUp(this.s) && state === "running") {
       try {
         // A lease, and a second look at `machine ls` inside it: a machine that stopped since the listing is not probed.
-        signedIn = await this.leased(machine, "sign-in probe", () => this.probeSignIn(machine));
+        signedIn = await this.withLease(machine, "sign-in probe", () => this.probeSignIn(machine));
       } catch {
         // keep cached or fallback (the walls don't let anything run in it, or it isn't running now)
       }
@@ -1279,7 +1307,7 @@ export class AppleMachines implements MachineProvider {
     const input =
       'export PATH="$HOME/.local/bin:$PATH"; ' +
       "[ -s ~/.claude/.credentials.json ] && echo claude; [ -s ~/.gemini/antigravity-acp/acp_token.json ] && echo antigravity; codex login status >/dev/null 2>&1 && echo codex; [ -s ~/.config/gh/hosts.yml ] && echo github; if grep -q inc-agents /usr/local/lib/i-inc/acp-env.sh 2>/dev/null; then echo agentnotes; else echo noagentnotes; fi; true\n";
-    // The caller holds a lease on the machine (`leased`).
+    // The caller holds a lease on the machine (`withLease`).
     const output = await this.exec(
       this.s.bin,
       ["machine", "run", "-i", "-u", this.s.user, "-n", machine, "--", "bash", "-s"],

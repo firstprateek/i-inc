@@ -1253,6 +1253,9 @@ export class Daemon {
       // Nothing between this look and the stop call waits (the machine provider queues the stop behind
       // any boot already under way, and a start that comes later queues behind the stop).
       if (await this.inUseNow(id)) continue;
+      // A script or a session is running in it: a stop would only wait for it (up to 30 s, for every machine in
+      // turn, holding up the tick). The next pass looks again.
+      if (this.d.machines.leased?.(id)) continue;
       this.awake.delete(id);
       try {
         await this.d.machines.stop(id);

@@ -82,6 +82,11 @@ export class FakeMachines implements MachineProvider {
   async stop(employeeId: Id): Promise<void> {
     this.stopped.push(employeeId);
   }
+  /** Employees with a script or session running in their machine now: the idle pass leaves them for the next pass. */
+  readonly leasedIds = new Set<Id>();
+  leased(employeeId: Id): boolean {
+    return this.leasedIds.has(employeeId);
+  }
   /** Employees whose machine an earlier daemon left running: what `adopt` reports at startup. */
   readonly leftRunning: Id[] = [];
   async adopt(employeeIds: Id[]): Promise<Id[]> {

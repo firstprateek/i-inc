@@ -14,3 +14,23 @@ export const upExec =
   (...names: string[]): Exec =>
   async (_bin, args) =>
     args[1] === "ls" ? runningListing(...(names.length ? names : ["inc-ada"])) : "";
+
+/**
+ * Wraps a test's `exec` so `machine ls` tells the truth about what it booted and stopped: a machine is listed
+ * running once a `machine run -n M` has succeeded, until a `machine stop M` has. `ls` itself is answered here and
+ * never reaches `inner`, so a test's own record of the calls is unchanged. (`AppleMachines` looks at `machine ls`
+ * to see whether a machine it has recorded as up still is, T75.)
+ */
+export const tracking = (inner: Exec): Exec => {
+  const up = new Set<string>();
+  return async (bin, args, opts) => {
+    if (args[0] === "machine" && args[1] === "ls") return runningListing(...up);
+    const out = await inner(bin, args, opts);
+    if (args[0] === "machine" && args[1] === "run") {
+      const n = args[args.indexOf("-n") + 1];
+      if (n) up.add(n);
+    }
+    if (args[0] === "machine" && args[1] === "stop" && args[2]) up.delete(args[2]);
+    return out;
+  };
+};
