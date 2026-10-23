@@ -38,7 +38,7 @@ const localScript: RunScript = (_employee, script, extra = {}) =>
     child.stderr.on("data", (c) => {
       output += c;
     });
-    child.on("exit", (code) => resolve({ code: code ?? 1, output }));
+    child.on("close", (code) => resolve({ code: code ?? 1, output }));
     child.stdin.end(script);
   });
 
