@@ -820,6 +820,29 @@ describe("autoRelease policy and automatic releases", () => {
   });
 });
 
+describe("GET /api/sandboxes/service-events (T73)", () => {
+  it("is empty when the provider has no events", async () => {
+    const app = await testApp();
+    expect((await app.call("GET", "/api/sandboxes/service-events")).body).toEqual({ events: [] });
+  });
+
+  it("lists what the machine provider did about the container service, as it gave them", async () => {
+    const app = await testApp();
+    const events = [
+      {
+        at: 2_000,
+        kind: "restarted",
+        text: "restarted the container service at 14:02 to clear a stuck machine name (inc-engineering)",
+      },
+      { at: 1_000, kind: "not-fixed", text: "still stuck", machine: "inc-engineering" },
+    ];
+    (app.deps.machines as { serviceEvents?: () => unknown[] }).serviceEvents = () => events;
+    const res = await app.call("GET", "/api/sandboxes/service-events");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ events });
+  });
+});
+
 describe("GET /api/sandboxes (contract C1)", () => {
   it("returns empty sandboxes when no teams are registered", async () => {
     const app = await testApp();

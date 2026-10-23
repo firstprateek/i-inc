@@ -364,7 +364,10 @@ export class ServiceRecovery {
 
   private async run(): Promise<void> {
     try {
-      if (!(await this.untilIdle())) {
+      const idle = await this.untilIdle();
+      // The daemon is leaving: that is not "kept busy", and nothing is stopped.
+      if (idle === "closed") return;
+      if (idle === "timeout") {
         const names = [...this.requesters.keys()].join(", ");
         this.record(
           "gave-up-busy",
@@ -372,6 +375,8 @@ export class ServiceRecovery {
         );
         return;
       }
+      // Looked at once more, right before the service is touched: a close during the last check is respected.
+      if (this.closed || this.o.stopping?.()) return;
       this.phase = "restarting";
       this.state.lastAttemptAt = this.o.now();
       // Durable before the service is stopped: a daemon that dies from here on leaves it for the next one to finish.
@@ -425,18 +430,18 @@ export class ServiceRecovery {
     }
   }
 
-  /** Waits for every machine to be idle; false after the limit. Nothing is cut short. */
-  private async untilIdle(): Promise<boolean> {
+  /** Waits for every machine to be idle; "timeout" after the limit, "closed" if the daemon leaves. Nothing is cut short. */
+  private async untilIdle(): Promise<"idle" | "timeout" | "closed"> {
     const deadline = this.o.mono() + this.t.idleWaitMs;
     for (;;) {
-      if (this.closed || this.o.stopping?.()) return false;
+      if (this.closed || this.o.stopping?.()) return "closed";
       if (await this.o.idle()) {
         // Take the lock, then look once more: a launch that slipped in before it was set shows now.
         this.phase = "restarting";
-        if (await this.o.idle()) return true;
+        if (await this.o.idle()) return "idle";
         this.phase = "waiting";
       }
-      if (this.o.mono() >= deadline) return false;
+      if (this.o.mono() >= deadline) return "timeout";
       await this.o.sleep(this.t.idlePollMs);
     }
   }

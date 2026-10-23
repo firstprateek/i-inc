@@ -41,6 +41,8 @@ interface Rig {
     staysStuck: boolean;
     failStart: boolean;
     serviceUp: boolean;
+    onIdleCheck?: () => void;
+    holdScript?: Promise<void>;
     t: number;
     sleeps: number;
   };
@@ -52,7 +54,7 @@ interface Rig {
 
 function rig(settings: MachineSettings = noWalls, store = new MemoryRecoveryStore(), t0 = 1_000_000): Rig {
   const calls: string[] = [];
-  const state = {
+  const state: Rig["state"] = {
     busy: false,
     fixed: false,
     staysStuck: false,
@@ -77,6 +79,7 @@ function rig(settings: MachineSettings = noWalls, store = new MemoryRecoveryStor
       if (!state.staysStuck) state.fixed = true;
       return "";
     }
+    if (line.includes("bash -s")) await state.holdScript;
     if (!state.serviceUp) throw new Error("connection refused: is the container service running?");
     if (args[0] === "machine" && args[1] === "ls")
       return LISTING.replace(
@@ -103,7 +106,10 @@ function rig(settings: MachineSettings = noWalls, store = new MemoryRecoveryStor
   const booted: string[] = [];
   const done = vi.fn();
   const rec = m.enableRecovery({
-    idle: async () => !state.busy,
+    idle: async () => {
+      state.onIdleCheck?.();
+      return !state.busy;
+    },
     booted: (id) => booted.push(id),
     done,
     push,
@@ -209,6 +215,41 @@ describe("a stuck machine name: the container service is restarted once everythi
     await expect(r.m.ensureUp("engineering")).rejects.toBeInstanceOf(StartupError);
     await r.rec.settled();
     expect(systemCalls(r)).toEqual([]);
+    // Leaving is not "kept busy for ten minutes".
+    expect(r.m.serviceEvents()).toEqual([]);
+  });
+
+  it("does not stop anything when the daemon starts leaving during the last look at the machines", async () => {
+    const r = rig();
+    let looks = 0;
+    r.state.onIdleCheck = () => {
+      if (++looks === 2) r.m.closeRecovery(); // the second look, the one that takes the lock
+    };
+    await expect(r.m.ensureUp("engineering")).rejects.toBeInstanceOf(StartupError);
+    await r.rec.settled();
+    expect(looks).toBeGreaterThanOrEqual(2);
+    expect(systemCalls(r)).toEqual([]);
+    expect(r.calls.filter((c) => c === "machine stop inc-pip")).toEqual([]);
+    expect(r.store.load().inProgress).toBeUndefined();
+    expect(r.rec.active).toBe(false);
+  });
+
+  it("waits for a script, sign-in probe or callback this provider is running", async () => {
+    const r = rig();
+    let release = () => {};
+    r.state.holdScript = new Promise<void>((res) => {
+      release = res;
+    });
+    const running = r.m.runIn("inc-pip", "true");
+    await vi.waitFor(() => expect(r.calls.some((c) => c.includes("bash -s"))).toBe(true));
+    r.onSleep.fn = () => {
+      expect(systemCalls(r)).toEqual([]);
+      if (r.state.sleeps >= 3) release();
+    };
+    await expect(r.m.ensureUp("engineering")).rejects.toBeInstanceOf(StartupError);
+    await r.rec.settled();
+    await running;
+    expect(systemCalls(r)).toEqual(["system stop", "system start"]);
   });
 
   it("refuses every new launch, on any machine, while the service restarts", async () => {
@@ -223,7 +264,9 @@ describe("a stuck machine name: the container service is restarted once everythi
     // Another team's boot, a script and a launch's check all wait, with a reason, and run nothing.
     await expect(r.m.ensureUp("pip")).rejects.toThrow(/being restarted/);
     await expect(r.m.ensureUp("pip")).rejects.toBeInstanceOf(StartupError);
-    await expect(assertRunnable(r.m["s"], async () => "", "inc-pip")).rejects.toBeInstanceOf(StartupError);
+    await expect(
+      assertRunnable((r.m as unknown as { s: MachineSettings }).s, async () => "", "inc-pip"),
+    ).rejects.toBeInstanceOf(StartupError);
     expect(r.m.sandboxFault("pip")?.waiting).toContain("restarted");
     expect(r.calls.slice(before)).toEqual([]);
     release();
@@ -432,6 +475,19 @@ describe("a restart the last daemon didn't finish", () => {
     expect(r.m.serviceEvents()[0]?.text).toContain("finished a restart");
   });
 
+  it("starts a stopped service even inside the 30-minute window of an earlier restart", async () => {
+    const store = new MemoryRecoveryStore({
+      events: [],
+      inProgress: true,
+      lastAttemptAt: 1_000_000 - 60_000,
+    });
+    const r = rig(noWalls, store);
+    r.state.serviceUp = false;
+    await r.m.checkService();
+    expect(systemCalls(r)).toEqual(["system start"]);
+    expect(r.m.serviceEvents()[0]?.kind).toBe("resumed");
+  });
+
   it("a healthy service is left alone", async () => {
     const r = rig();
     await r.m.checkService();
@@ -495,7 +551,7 @@ describe("one-off scripts and launcher updates count as work for the idle check"
 
   it("waits for a launcher update", async () => {
     const r = rig();
-    const busy = r.m["launcherBusy"] as Set<string>;
+    const busy = (r.m as unknown as { launcherBusy: Set<string> }).launcherBusy;
     busy.add("inc-engineering");
     r.onSleep.fn = () => {
       expect(systemCalls(r)).toEqual([]);

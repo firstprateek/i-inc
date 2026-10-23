@@ -526,7 +526,11 @@ export class AppleMachines implements MachineProvider {
       // No boot or stop is under way either, and nothing else is: the daemon says the rest.
       // (One-off scripts, such as brain copies and the reaper's sweeps, and a launcher update count too.)
       idle: async () =>
-        this.locks.size === 0 && this.launcherBusy.size === 0 && scriptsRunning() === 0 && (await o.idle()),
+        this.locks.size === 0 &&
+        this.launcherBusy.size === 0 &&
+        this.inFlight === 0 &&
+        scriptsRunning() === 0 &&
+        (await o.idle()),
       stopMachines: () => this.stopAll(),
       forget: (machine) => this.forgetFault(machine),
       retry: (employeeId) => this.ensureUp(employeeId),
@@ -1012,14 +1016,23 @@ export class AppleMachines implements MachineProvider {
     await assertRunnable(this.s, this.exec, machine);
     const row = (await this.listMachines()).find((m) => m.name === machine);
     if (row?.state !== "running") throw new Error(`${machine} isn't running, so nothing is run in it`);
-    return this.exec(
-      this.s.bin,
-      ["machine", "run", "-i", "-u", this.s.user, "-n", machine, "--", "bash", "-s"],
-      {
+    return this.counted(() =>
+      this.exec(this.s.bin, ["machine", "run", "-i", "-u", this.s.user, "-n", machine, "--", "bash", "-s"], {
         input: script,
         timeoutMs,
-      },
+      }),
     );
+  }
+
+  /** Commands in machines that this provider itself runs now (a script, a sign-in probe, a callback): work for the restart's idle check. */
+  private inFlight = 0;
+  private async counted<T>(fn: () => Promise<T>): Promise<T> {
+    this.inFlight++;
+    try {
+      return await fn();
+    } finally {
+      this.inFlight--;
+    }
   }
 
   /**
@@ -1083,13 +1096,15 @@ export class AppleMachines implements MachineProvider {
   async deliverCallback(teamId: Id, url: string): Promise<void> {
     const machine = machineName(teamId);
     await assertRunnable(this.s, this.exec, machine);
-    await this.exec(
-      this.s.bin,
-      ["machine", "run", "-i", "-u", this.s.user, "-n", machine, "-e", "CALLBACK_URL", "--", "bash", "-s"],
-      {
-        env: { CALLBACK_URL: url },
-        input: 'curl -fsS -- "$CALLBACK_URL" >/dev/null\n',
-      },
+    await this.counted(() =>
+      this.exec(
+        this.s.bin,
+        ["machine", "run", "-i", "-u", this.s.user, "-n", machine, "-e", "CALLBACK_URL", "--", "bash", "-s"],
+        {
+          env: { CALLBACK_URL: url },
+          input: 'curl -fsS -- "$CALLBACK_URL" >/dev/null\n',
+        },
+      ),
     );
   }
 
@@ -1185,10 +1200,10 @@ export class AppleMachines implements MachineProvider {
     const input =
       'export PATH="$HOME/.local/bin:$PATH"; ' +
       "[ -s ~/.claude/.credentials.json ] && echo claude; [ -s ~/.gemini/antigravity-acp/acp_token.json ] && echo antigravity; codex login status >/dev/null 2>&1 && echo codex; [ -s ~/.config/gh/hosts.yml ] && echo github; if grep -q inc-agents /usr/local/lib/i-inc/acp-env.sh 2>/dev/null; then echo agentnotes; else echo noagentnotes; fi; true\n";
-    const output = await this.exec(
-      this.s.bin,
-      ["machine", "run", "-i", "-u", this.s.user, "-n", machine, "--", "bash", "-s"],
-      { input },
+    const output = await this.counted(() =>
+      this.exec(this.s.bin, ["machine", "run", "-i", "-u", this.s.user, "-n", machine, "--", "bash", "-s"], {
+        input,
+      }),
     );
     const found = new Set(output.split(/\s+/).filter(Boolean));
     const result = {
