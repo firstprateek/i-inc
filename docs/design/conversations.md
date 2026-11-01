@@ -221,6 +221,34 @@ shapes against a real adapter on the mini first.
   agent's plan, the brain pages used for this turn, and usage.
 - **Phone:** the same stream in one column; the context panel becomes a sheet.
 
+## Review (the Changes pane)
+
+**Changes** in the thread's header opens a pane over the thread and the context panel: everything the conversation's
+working copy changes against where its branch left the project's main, committed or not, with untracked files. It comes
+from git, not from tool calls, so a change made by a shell command shows too. The panel's Files changed list stays, and
+links into it.
+
+- `GET /api/conversations/:id/changes`: `{ changes: { state, noProject, files, skipped, truncated, reason? } }`, each file
+  `{ path, added, removed, binary?, status }`, and status one of added, modified, deleted, type-changed. Renames show as a
+  deletion and an addition.
+- `GET /api/conversations/:id/changes/file?path=`: `{ file: { state, path, before, after, withheld?, reason? } }`. Each side
+  is `{ state, text? }`, and state one of none, text, binary, too-big, link, outside, other. A bad path is a 400.
+- `state` is `ok`, or why the read didn't happen, with `reason` in one sentence: `asleep`, `busy` (the read outlasted its
+  wait or its time limit), `no-copy` or `failed`. These are 200s. The pane says the sentence and offers Try again.
+- **Read-only.** No fetch, no token, and nothing in the copy is written: `apps/daemon/src/review.ts` works from a scratch
+  copy of the index and a scratch object folder, with optional locks and lazy fetches off, and `G` from `ship-git.ts`
+  (no hooks, filters, fsmonitor or external diffs).
+- **No implicit boots.** It uses the runner that refuses a stopped machine (T75). A read holds an ordinary lease, so it
+  runs beside an agent's turn: the pane shows what is there, says the agent is working, and refreshes when the turn ends.
+- **No project:** the folder is not a repository, so a scratch one outside it looks at it, and every file there is new.
+- **Untrusted.** Paths must be relative, with no `..`, NUL, control character, leading `-`, `.git` or `.inc`, and a name
+  that fails is left out and counted. Files stop at 1 MB, tokens are redacted, a file that usually holds secrets is listed
+  but never served, links are never followed, and the pane renders all of it as text.
+- **Line comments** are the owner's, in this browser, per conversation, kept with the drafts (and forgotten with them at
+  sign-out). No route takes them. They are added to the next message as `path:line`, the quoted line and the comment, and
+  cleared once it is sent. **Send comments** sends that message through the composer, so a running turn queues it and the
+  composer's refusals hold. If the host refuses it later, it comes back in the box as text.
+
 ## Data and API
 
 - Table `conversations(id, employee_id, project, branch, title, mode, engine_id, created_at,
