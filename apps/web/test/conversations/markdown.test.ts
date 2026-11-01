@@ -1,6 +1,6 @@
+import { diffLines, diffStats, diffWithContext } from "@i-inc/core";
 import { render } from "lit";
 import { describe, expect, it } from "vitest";
-import { diffLines, diffStats, diffWithContext } from "../../src/conversations/diff.ts";
 import { highlight, tokensText } from "../../src/conversations/highlight.ts";
 import {
   chunkStarts,

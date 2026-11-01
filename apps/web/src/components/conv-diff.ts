@@ -1,9 +1,9 @@
 // A file edit as a diff: both sides are fetched from the host (`ahp-content:` blobs), diffed here, and shown
 // with a few lines of context. Long diffs stop at a screenful with "Show all".
+import { type DiffRow, diffStats, diffWithContext } from "@i-inc/core";
 import type { FileEdit } from "@microsoft/agent-host-protocol";
 import { css, html, LitElement, nothing } from "lit";
 import { ahp } from "../ahp/hub.ts";
-import { type DiffRow, diffStats, diffWithContext } from "../conversations/diff.ts";
 import { pathOf, visible } from "../conversations/model.ts";
 import { cardStyles } from "../conversations/styles.ts";
 

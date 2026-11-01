@@ -404,6 +404,19 @@ describe("tool content", () => {
     expect(out).toHaveLength(5);
   });
 
+  it("counts only the lines an edit changed, not the whole of each side", () => {
+    const put = () => ({ uri: "ahp-content:/1", sizeHint: 0, contentType: "text/plain" });
+    const counts = (oldText: string | undefined, newText: string) =>
+      mapToolContent([{ type: "diff", path: "/a.ts", oldText, newText }], put)[0]?.diff;
+    const file = (at: string) => `one\ntwo\n${at}\nfour\nfive\n`;
+    expect(counts(file("three"), file("3"))).toEqual({ added: 1, removed: 1 });
+    expect(counts("a\nb\n", "a\nb\nc\n")).toEqual({ added: 1, removed: 0 });
+    expect(counts("a\nb\nc\n", "a\nc\n")).toEqual({ added: 0, removed: 1 });
+    expect(counts("same\n", "same\n")).toEqual({ added: 0, removed: 0 });
+    expect(counts("", "new\n")).toEqual({ added: 1, removed: 0 });
+    expect(counts("gone\n", "")).toEqual({ added: 0, removed: 1 });
+  });
+
   it("cuts a huge diff side instead of storing megabytes", () => {
     let kept = "";
     mapToolContent([{ type: "diff", path: "/big", oldText: "", newText: "x".repeat(2_000_000) }], (d) => {
@@ -412,6 +425,16 @@ describe("tool content", () => {
     });
     expect(kept.length).toBeLessThan(1_100_000);
     expect(kept).toContain("[…truncated]");
+  });
+
+  it("counts an edit past the point where a side is cut", () => {
+    const put = () => ({ uri: "ahp-content:/1", sizeHint: 0, contentType: "text/plain" });
+    const head = "a line of a very long file\n".repeat(50_000);
+    const out = mapToolContent(
+      [{ type: "diff", path: "/big", oldText: `${head}old\n`, newText: `${head}new\n` }],
+      put,
+    );
+    expect(out[0]?.diff).toEqual({ added: 1, removed: 1 });
   });
 });
 

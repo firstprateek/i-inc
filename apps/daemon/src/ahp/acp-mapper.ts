@@ -7,6 +7,7 @@
 // config schema).
 //
 // What AHP 1.0 has no field for travels in `_meta` (contract C22): tool-call locations, the plan.
+import { diffLines, diffStats } from "@i-inc/core";
 import type { ContentRef, Message, SessionConfigState } from "@microsoft/agent-host-protocol";
 import { redactTokens } from "./sanitize.ts";
 import {
@@ -55,7 +56,6 @@ export function cleanLocations(locations: unknown): Json[] {
   return out;
 }
 
-const lines = (s: string | undefined | null) => (s ? s.split("\n").length - (s.endsWith("\n") ? 1 : 0) : 0);
 const MAX_DIFF_SIDE = 1024 * 1024;
 const cutSide = (s: string) => (s.length > MAX_DIFF_SIDE ? `${s.slice(0, MAX_DIFF_SIDE)}\n[…truncated]` : s);
 
@@ -78,13 +78,16 @@ export function mapToolContent(content: Json[] | undefined, put: PutContent): Js
     } else if (c.type === "diff") {
       const path = redactTokens(String(c.path)).slice(0, 500);
       const uri = path.startsWith("/") ? `file://${path}` : `file:///${path}`;
-      const before = c.oldText !== undefined && c.oldText !== null ? cutSide(String(c.oldText)) : undefined;
-      const after = cutSide(String(c.newText ?? ""));
+      const oldText = c.oldText !== undefined && c.oldText !== null ? String(c.oldText) : undefined;
+      const newText = String(c.newText ?? "");
+      const before = oldText !== undefined ? cutSide(oldText) : undefined;
+      const after = cutSide(newText);
       out.push({
         type: ToolResultContentType.FileEdit,
         ...(before !== undefined ? { before: { uri, content: put(before, "text/plain") } } : {}),
         after: { uri, content: put(after, "text/plain") },
-        diff: { added: lines(after), removed: lines(before) },
+        // The lines that changed, counted before the sides are cut: an edit past the cut still counts.
+        diff: diffStats(diffLines(oldText ?? "", newText)),
       });
     } else if (c.type === "terminal") {
       // We offer no ACP terminal capability, so this is not expected; keep a trace rather than nothing.
