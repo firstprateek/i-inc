@@ -302,9 +302,11 @@ function redactKeyBlocks(t: string): string {
  * goes to the agent by its number.
  */
 export function redactFile(text: string): string {
-  return redactTokens(redactKeyBlocks(text), { keepLines: true })
+  // These two first: `redactTokens` stops at the end of a shorter run and would leave the rest of the secret.
+  const wide = redactKeyBlocks(text)
     .replace(/\b[sr]k_live_[A-Za-z0-9]{16,}\w*/g, "[redacted]")
-    .replace(/\bwhsec_[A-Za-z0-9+/=_-]{8,}/g, "[redacted]")
+    .replace(/\bwhsec_[A-Za-z0-9+/=_-]{8,}/g, "[redacted]");
+  return redactTokens(wide, { keepLines: true })
     .replace(/(_authToken\s*=\s*)(?!\$\{)[^\s"']{8,}/g, "$1[redacted]")
     .replace(/(\bmachine\s+\S+\s+(?:login\s+\S+\s+)?password\s+)\S{4,}/g, "$1[redacted]");
 }
