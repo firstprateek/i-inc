@@ -133,3 +133,6 @@ paths, branch names, structured briefs).
 33. **A new object in `render` is a new prop every draw.** The pane's target was built in `render`, so the 30-second clock
     reopened the file and took focus. → Build it once, where the event happens, and keep it in state.
 34. **A failed refresh must not take away what works (states).** → Say the failure above what is showing, and keep it.
+35. **Check a phone's header with every control it can hold (layout).** The Files tab's header fit, but Changes adds
+    Refresh and pushed the close button into the screen's edge, which the checker didn't report. → Render each tab of a
+    tabbed header at 390 px and measure the last control against the gutter.

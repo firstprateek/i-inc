@@ -213,6 +213,9 @@ export class IncConvReview extends LitElement {
       /* Narrow: one column, the list or the diff. */
       @container (max-width: 680px) {
         .sum { display: none; }
+        .head { gap: 6px; }
+        .tab { padding: 0 8px; }
+        .refresh { padding: 0 12px; }
         .head .grow { flex: 1 1 auto; }
         .body { grid-template-columns: minmax(0, 1fr); }
         .body.reading .side, .body:not(.reading) .main { display: none; }

@@ -63,10 +63,14 @@ export function foldersOf(path: string): string[] {
   return parts.map((_, i) => parts.slice(0, i + 1).join("/"));
 }
 
-/** Paths holding `word`: those whose name starts with it first, then shorter paths. */
+/** Paths holding `word`: those whose name starts with it first, then a folder on the way, then shorter paths. */
 export function matchPaths(paths: string[], word: string): string[] {
   const w = word.toLowerCase();
-  const rank = (p: string) => (baseName(p).toLowerCase().startsWith(w) ? 0 : 1);
+  const rank = (p: string) => {
+    const lower = p.toLowerCase();
+    if (baseName(lower).startsWith(w)) return 0;
+    return lower.startsWith(w) || lower.includes(`/${w}`) ? 1 : 2;
+  };
   return paths
     .filter((p) => p.toLowerCase().includes(w))
     .map((p) => ({ p, r: rank(p) }))

@@ -109,6 +109,7 @@ describe("the model", () => {
       "src/zebra/a.ts",
     ]);
     expect(matchPaths(PATHS, "nothing")).toEqual([]);
+    expect(matchPaths(["package.json", "src/index.ts"], "s")).toEqual(["src/index.ts", "package.json"]);
   });
 
   it("stays quick over a long list", () => {
