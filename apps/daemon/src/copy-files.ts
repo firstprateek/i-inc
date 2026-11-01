@@ -65,7 +65,7 @@ const checkNonce = (nonce: string) => {
 export function isSearchQuery(q: unknown): q is string {
   if (typeof q !== "string" || q.trim() === "" || q.length > MAX_QUERY) return false;
   // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what this refuses
-  return !/[\u0000-\u001f\u007f]/.test(q);
+  return !/[\u0000-\u001f\u007f\uffff]/.test(q);
 }
 
 /**
@@ -133,12 +133,14 @@ export function searchScript(copy: ReviewCopy, query: string, matchCase: boolean
     ...open(copy),
     ...scratchIndex(fail),
     'if [ -n "$head" ]; then',
+    // `-I` goes by what the file holds, not by what the copy's attributes say it is.
+    `  mkdir -p "$W/repo/info"; echo '* !diff' > "$W/repo/info/attributes"`,
     `  ( ${limit}; G grep -I -l -z --threads=2 --untracked ${fold}-F -e ${quote(query)} ${HERE} ) > "$W/found" 2> "$W/said"; s=$?`,
     `  case "$s" in 0|1) ;; *) ${fail} ;; esac`,
     // Git carries on past a file it can't read, and only says so.
-    `  [ ! -s "$W/said" ] || echo ${m("partial")}`,
+    `  ! grep -q -E 'failed to|could not open|Permission denied' "$W/said" || echo ${m("partial")}`,
     "else",
-    `  ( ${limit}; grep -r -l -I -s -D skip --null ${skip} ${fold}-F -e ${quote(query)} . ) > "$W/found"; s=$?`,
+    `  ( ${limit}; LC_ALL=C.UTF-8 grep -r -l -I -s -D skip --null ${skip} ${fold}-F -e ${quote(query)} . ) > "$W/found"; s=$?`,
     // 2: a file it couldn't read, which grep says while it carries on; what it could read is there.
     `  case "$s" in 0|1) ;; 2) echo ${m("partial")} ;; *) ${fail} ;; esac`,
     "fi",
@@ -156,7 +158,8 @@ export function searchScript(copy: ReviewCopy, query: string, matchCase: boolean
     `  n=$((n + 1)); t=$((t + z))`,
     `  if [ "$n" -gt ${MAX_SEARCH_FILES} ] || [ "$t" -gt ${SEARCH_BYTES} ]; then echo ${m("cut")}; break; fi`,
     `  echo "${m("file")} $(printf %s "$f" | base64 | tr -d '\\n')"`,
-    `  base64 < "./$f" || echo ${m("partial")}`,
+    `  head -c ${MAX_FILE_BYTES + 1} < "./$f" | base64; p=("\${PIPESTATUS[@]}")`,
+    `  [ "\${p[0]}" -eq 0 ] && [ "\${p[1]}" -eq 0 ] || echo ${m("partial")}`,
     'done < "$W/found"',
     "echo",
     `echo ${m("files-end")}`,
@@ -210,6 +213,15 @@ export function readOpenFile(output: string, nonce: string, path: string): FileS
 
 const MASK = "\uffff";
 
+/** The part of a line shown from `from`, with its edges off any pair of surrogates. */
+function excerpt(line: string, from: number): string {
+  const low = (i: number) => /[\udc00-\udfff]/.test(line[i] ?? "");
+  const start = from > 0 && low(from) ? from + 1 : from;
+  const end =
+    start + LINE_SHOWN < line.length && low(start + LINE_SHOWN) ? start + LINE_SHOWN - 1 : start + LINE_SHOWN;
+  return `${start ? "…" : ""}${line.slice(start, end)}${end < line.length ? "…" : ""}`;
+}
+
 /** The hits in a text as the viewer would show it, at most what one file may have, and whether there were more. */
 function hitsIn(path: string, text: string, match: RegExp): { hits: SearchHit[]; more: boolean } {
   // What redaction put there isn't in the file: a query that finds it would tell what kind of thing went.
@@ -223,12 +235,7 @@ function hitsIn(path: string, text: string, match: RegExp): { hits: SearchHit[];
     if (hits.length === MAX_FILE_HITS) return { hits, more: true };
     const line = (lines[i] ?? "").replace(/\r$/, "");
     const from = at.index + at[0].length > LINE_SHOWN ? Math.max(0, at.index - 100) : 0;
-    const shown = line.slice(from, from + LINE_SHOWN);
-    hits.push({
-      path,
-      line: i + 1,
-      text: `${from ? "…" : ""}${shown}${from + LINE_SHOWN < line.length ? "…" : ""}`,
-    });
+    hits.push({ path, line: i + 1, text: excerpt(line, from) });
   }
   return { hits, more: false };
 }
@@ -269,10 +276,8 @@ export function readSearch(output: string, nonce: string, query: string, matchCa
   for (const [path, side] of [...files].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
     if (side.text === undefined) continue;
     const found = hitsIn(path, side.text, match);
-    if (found.more) truncated = true;
-    if (hits.length + found.hits.length > MAX_HITS) truncated = true;
+    if (found.more || hits.length + found.hits.length > MAX_HITS) truncated = true;
     hits.push(...found.hits.slice(0, MAX_HITS - hits.length));
-    if (hits.length >= MAX_HITS) break;
   }
   return { present: true, hits, truncated, partial: output.includes(marker(nonce, "partial")) };
 }

@@ -133,7 +133,11 @@ function redactCredentials(text: string, keepLines = false): string {
   t = t.replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, "[redacted]");
   t = t.replace(/\bAIza[0-9A-Za-z_-]{30,}\b/g, "[redacted]");
   t = t.replace(/\bxox[baprs]-[0-9A-Za-z-]{10,}\b/g, "[redacted]");
-  t = t.replace(/\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\b/g, "[redacted]");
+  // Bounded: a run of `eyJ-` is a fresh start at every step, and an open-ended run makes that quadratic.
+  t = t.replace(
+    /\beyJ[A-Za-z0-9_-]{8,2048}\.eyJ[A-Za-z0-9_-]{8,16384}\.[A-Za-z0-9_-]{1,8192}\b/g,
+    "[redacted]",
+  );
   t = t.replace(/\bAKIA[0-9A-Z]{16}\b/g, "[redacted]");
   t = t.replace(/\b(?:[sr]k_live|whsec)_[A-Za-z0-9]{8,}\b/g, "[redacted]");
   t = t.replace(/\bnpm_[A-Za-z0-9]{20,}\b/g, "[redacted]");

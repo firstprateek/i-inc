@@ -53,7 +53,10 @@ export function redactKeyed(text: string): string {
   out = out.replace(/xox[baprs]-[0-9A-Za-z-]{8,}\b/g, "[redacted]");
 
   // 7. JWT-like tokens (eyJ...\.eyJ...\....)
-  out = out.replace(/eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\b/g, "[redacted]");
+  out = out.replace(
+    /eyJ[A-Za-z0-9_-]{8,2048}\.eyJ[A-Za-z0-9_-]{8,16384}\.[A-Za-z0-9_-]{1,8192}\b/g,
+    "[redacted]",
+  );
 
   // 8. AWS Access Key IDs (AKIA...)
   out = out.replace(/AKIA[0-9A-Z]{16}(?![0-9A-Za-z])/g, "[redacted]");

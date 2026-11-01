@@ -272,26 +272,48 @@ const extraCredential = [
   /\bmachine\s+\S+\s+(?:login\s+\S+\s+)?password\s+\S{4,}/,
 ];
 
-const KEY_BEGIN = /-{4,5} ?BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY[A-Z ]{0,10}-{4,5}/g;
-const KEY_END = /-{4,5} ?END [A-Z0-9 ]{0,40}PRIVATE KEY[A-Z ]{0,10}-{4,5}/g;
+// A marker alone on its line, or behind a comment's mark. One inside a string in source code isn't a key's edge.
+const KEY_BEGIN =
+  /^[ \t]*(?:(?:#|\/\/|\*|>|;|--)[ \t]*)?-{4,5} ?BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY[A-Z ]{0,10}-{4,5}[ \t]*$/gm;
+const KEY_END =
+  /^[ \t]*(?:(?:#|\/\/|\*|>|;|--)[ \t]*)?-{4,5} ?END [A-Z0-9 ]{0,40}PRIVATE KEY[A-Z ]{0,10}-{4,5}[ \t]*$/gm;
+/** The biggest block taken for a key: an 8192-bit RSA key is under 7 KB. Past this it is two markers in a long text. */
+const MAX_KEY_BLOCK = 16_384;
 
 /**
  * Everything between a key's markers goes, keeping its lines, whatever the lines in between look like: a key in a
- * comment or a quoted block is no less a key. With no end marker it is `redactTokens`' to judge. One pass.
+ * comment or a quoted block is no less a key. With no end marker it is `redactTokens`' to judge. What this takes,
+ * `holdsCredential` stops, so nothing can be hidden from the owner's review and still be pushed. One pass: the next
+ * end marker is found once and remembered.
  */
 function redactKeyBlocks(t: string): string {
   if (!t.includes("PRIVATE KEY")) return t;
   let out = "";
   let last = 0;
+  let end: RegExpExecArray | null | undefined;
   KEY_BEGIN.lastIndex = 0;
-  for (let m = KEY_BEGIN.exec(t); m; m = KEY_BEGIN.exec(t)) {
-    KEY_END.lastIndex = KEY_BEGIN.lastIndex;
-    const e = KEY_END.exec(t);
-    if (!e) break;
-    const stop = e.index + e[0].length;
-    out += `${t.slice(last, m.index)}[private key]${"\n".repeat(t.slice(m.index, stop).split("\n").length - 1)}`;
-    last = stop;
+  let m = KEY_BEGIN.exec(t);
+  while (m) {
+    const from = m.index + m[0].length;
+    if (end === undefined || (end && end.index < from)) {
+      KEY_END.lastIndex = from;
+      end = KEY_END.exec(t);
+    }
+    if (!end) break;
+    KEY_BEGIN.lastIndex = from;
+    const next = KEY_BEGIN.exec(t);
+    // A later begin before the end is where the block really starts.
+    if (next && next.index < end.index) {
+      m = next;
+      continue;
+    }
+    const stop = end.index + end[0].length;
+    if (stop - m.index <= MAX_KEY_BLOCK) {
+      out += `${t.slice(last, m.index)}[private key]${"\n".repeat(t.slice(m.index, stop).split("\n").length - 1)}`;
+      last = stop;
+    }
     KEY_BEGIN.lastIndex = stop;
+    m = KEY_BEGIN.exec(t);
   }
   return out + t.slice(last);
 }
@@ -316,7 +338,7 @@ export function holdsCredential(added: string): boolean {
   const piece = 400_000;
   let chunk = "";
   const looks = (t: string) =>
-    t.length > 0 && (redactTokens(t) !== t || extraCredential.some((re) => re.test(t)));
+    t.length > 0 && (redactFile(t) !== t || extraCredential.some((re) => re.test(t)));
   for (const line of added.split("\n")) {
     if (chunk.length + line.length + 1 > piece) {
       if (looks(chunk)) return true;

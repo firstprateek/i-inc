@@ -250,7 +250,8 @@ links into it.
   every file there is new.
 - **Untrusted.** Paths must be relative, with no `..`, NUL, control character, leading `-`, `.git` or `.inc`, and a name
   that fails is left out and counted. Files stop at 1 MB, every kind of credential ship's scan stops is redacted (a key
-  block keeps its lines, so line numbers hold), a file that usually holds secrets is listed but never served, links are
+  block keeps its lines, so line numbers hold), and what is redacted is what ship's scan stops, so nothing can be hidden
+  from review and still be pushed, a file that usually holds secrets is listed but never served, links are
   never followed, and the pane renders all of it as text.
 - **Line comments** are the owner's, in this browser, per conversation, kept with the drafts (and forgotten with them at
   sign-out), across tabs. No route takes them. A line's number opens its box; the code itself is there to select. A
@@ -284,9 +285,10 @@ changed. Each read follows the Review rules above: it writes nothing, boots noth
   in all and none over 1 MB, come out as the viewer reads them, each is redacted whole, and the query is looked for in
   that text. Redacting a line can't work: a value can sit lines from its label and a key has nothing near it. So what a
   search shows can't be other than what the viewer shows, a match inside what redaction took out is no match, and nothing
-  counts what wasn't shown: a count that moved with the query would tell what is hidden, a letter at a time. One thing
-  still moves with a guess: a match in a file counts towards the 200 files, so with more than 200 files matching, a guess
-  right about a secret could change which files are looked through. Hits are at most 20 a file and 500 in all.
+  counts what wasn't shown: a count that moved with the query would tell what is hidden, a letter at a time. Two things
+  still move with a right guess, and only for someone who has planted files holding it: a match counts towards the file
+  limits before anything is read, so past 200 files or 6 MB it can change which files are looked through; and a file
+  brought out takes a few milliseconds more than one that isn't. Hits are at most 20 a file and 500 in all.
 - **The pane.** Files is a tree with one tab stop and the tree keys, with a filter over paths; lists draw 400 rows at a
   time. The viewer has line numbers and the highlighter (up to 40 KB, plain after that) and draws 1,000 lines at a time,
   around the line asked for. Search runs when it is asked to, lists hits by file and opens the viewer at the line. Files

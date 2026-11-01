@@ -60,9 +60,9 @@ export function check(copy: ReviewCopy): void {
 export const LIST_TRIES = 3;
 
 /**
- * Into the copy, with `G` ready and `$mb` set to what the change is measured from: where the branch left main, by
- * the refs already in the machine (never a fetch), or the first commit when they are gone. With no commit to measure
- * from (no project, or a copy with no commits or no repository) a scratch repository outside the folder looks at it,
+ * Into the copy, with `G` ready, `$head` and `$b` naming the commit and the project's main, and `$mb`, which
+ * `scratchObjects` works out, what the change is measured from: where the branch left main, by the refs already in the
+ * machine (never a fetch), or the first commit when they are gone. With no commit to measure from (no project, or a copy with no commits or no repository) a scratch repository outside the folder looks at it,
  * `$mb` is the empty tree, `$head` is empty and every file there is new. Optional locks and lazy fetches are off:
  * reading must not write or reach out. `GIT_NO_LAZY_FETCH` needs git 2.45 and the image has 2.43, where allowing no
  * protocol is what stops a partial clone fetching what it lacks. Git's warnings go nowhere: output is what the script
@@ -82,14 +82,15 @@ export const open = (copy: ReviewCopy): string[] => {
   const base = copy.base;
   return [
     ...enter(copy),
-    "if env -i PATH=\"$PATH\" HOME=/nonexistent GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none git -c core.hooksPath=/dev/null -c core.fsmonitor=false rev-parse --verify --quiet 'HEAD^{commit}' >/dev/null; then",
+    'if env -i PATH="$PATH" HOME=/nonexistent GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none git -c core.hooksPath=/dev/null -c core.fsmonitor=false rev-parse --verify --quiet HEAD >/dev/null; then',
     ...safeGit(copy),
     // Nothing here runs a filter, and a filter's name in the copy's config can be one no `-c` can carry.
     "FA=()",
     "GX=(GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none)",
-    "head=$(G rev-parse --verify --quiet 'HEAD^{commit}') || { echo '@@fail the working copy has no commit'; exit 1; }",
-    `b=$(G rev-parse --verify --quiet ${quote(`refs/remotes/origin/${base}^{commit}`)} || G rev-parse --verify --quiet ${quote(`refs/heads/${base}^{commit}`)} || true)`,
-    'if [ -n "$b" ]; then mb=$(G merge-base "$b" "$head" || echo "$b"); else mb=$(G rev-list --max-parents=0 "$head" | tail -n 1); fi',
+    "head=$(G rev-parse --verify --quiet HEAD) || { echo '@@fail the working copy has no commit'; exit 1; }",
+    // Names only: nothing here reads an object, and on the image's git reading one can write to the copy's config.
+    `b=$(G rev-parse --verify --quiet ${quote(`refs/remotes/origin/${base}`)} || G rev-parse --verify --quiet ${quote(`refs/heads/${base}`)} || true)`,
+    'mb=""',
     "else",
     ...scratch,
     "fi",
@@ -117,6 +118,9 @@ export const scratchObjects = (fail: string): string[] => [
   '  GX=(GIT_DIR="$W/repo" GIT_WORK_TREE="$PWD" GIT_CONFIG_GLOBAL=/dev/null GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none)',
   '  O() { local GX=("${GX[@]}" GIT_ALTERNATE_OBJECT_DIRECTORIES="$o"); "$@"; }',
   `  [ -n "$o" ] || ${fail}`,
+  `  head=$(O G rev-parse --verify --quiet "$head^{commit}") || ${fail}`,
+  '  [ -z "$b" ] || b=$(O G rev-parse --verify --quiet "$b^{commit}" || true)',
+  '  if [ -n "$b" ]; then mb=$(O G merge-base "$b" "$head" || echo "$b"); else mb=$(O G rev-list --max-parents=0 "$head" | tail -n 1); fi',
   "fi",
 ];
 

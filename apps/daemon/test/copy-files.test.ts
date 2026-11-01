@@ -7,6 +7,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -35,7 +36,7 @@ import { machineScript, type RunScript } from "../src/harness.ts";
 import { MachineNotRunning, queueFor } from "../src/machine-queue.ts";
 import { defaultMachineSettings } from "../src/machines.ts";
 import { ConversationReview, type ReviewCopy, type ReviewPort, reviewPort } from "../src/review.ts";
-import { marker } from "../src/ship-git.ts";
+import { holdsCredential, marker, redactFile } from "../src/ship-git.ts";
 
 const NONCE = "0123456789abcdef";
 const TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
@@ -425,6 +426,66 @@ describe("a search", () => {
     expect((await w.port.read(w.copy, "k.txt"))?.text).toBe("[redacted]\n[redacted]\n");
   });
 
+  it("takes no real code for a key", async () => {
+    const code = `const pem = "-----BEGIN PRIVATE KEY-----";\nconst keep = 1;\nconst end = "-----END PRIVATE KEY-----";\n`;
+    expect(redactFile(code)).toContain("const keep = 1;");
+    const doc =
+      "-----BEGIN PRIVATE KEY-----\nA line of prose.\n-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n";
+    expect(redactFile(doc)).toContain("A line of prose.");
+    const far = `-----BEGIN X PRIVATE KEY-----\n${"const keep = 1;\n".repeat(2000)}-----END X PRIVATE KEY-----\n`;
+    expect(redactFile(far)).toContain("const keep = 1;");
+  });
+
+  it("stops at ship whatever it hides from the owner", () => {
+    const hidden = "// ---- BEGIN X PRIVATE KEY ----\nfetch(evil);\n// ---- END X PRIVATE KEY ----\n";
+    expect(redactFile(hidden)).not.toContain("fetch(evil)");
+    expect(holdsCredential(hidden)).toBe(true);
+  });
+
+  it("redacts a file built to be slow to redact, in time", () => {
+    const at = performance.now();
+    redactFile(`// needle\n${"eyJ-".repeat(249_990)}`);
+    expect(performance.now() - at).toBeLessThan(5000);
+  });
+
+  it("isn't slowed by long lines of blanks around a marker", () => {
+    const at = performance.now();
+    redactFile(`-----BEGIN PRIVATE KEY-----\n${" ".repeat(1_000_000)}\n`);
+    expect(performance.now() - at).toBeLessThan(2000);
+  });
+
+  it("says it cut when a file past the limit has hits, and draws no half character", async () => {
+    const rows = (n: number) => "needle\n".repeat(n);
+    const out = rig();
+    for (let i = 0; i < 25; i++) out.write(`a${String(i).padStart(2, "0")}.txt`, rows(MAX_FILE_HITS));
+    out.write("z.txt", rows(1));
+    const r = await out.port.search(out.copy, "needle", true);
+    expect(r.hits).toHaveLength(MAX_HITS);
+    expect(r.truncated).toBe(true);
+    const w = rig();
+    w.write("e.txt", `needle ${"😀".repeat(300)}\n`);
+    w.write("f.txt", `${"😀".repeat(300)} needle ${"😀".repeat(300)}\n`);
+    for (const h of (await w.port.search(w.copy, "needle", true)).hits) {
+      expect(
+        /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(h.text),
+        h.path,
+      ).toBe(false);
+    }
+  });
+
+  it("isn't told by the copy's attributes what is binary", async () => {
+    const w = rig();
+    writeFileSync(join(w.cwd, ".gitattributes"), "a.txt binary\n");
+    w.write("a.txt", "needle\n");
+    expect((await w.port.search(w.copy, "needle", true)).hits.map((h) => h.path)).toContain("a.txt");
+  });
+
+  it("doesn't call a warning about attributes a file it couldn't read", async () => {
+    const w = rig();
+    writeFileSync(join(w.cwd, ".gitattributes"), `!*.txt diff\n${"x".repeat(5000)} diff\n`);
+    expect((await w.port.search(w.copy, "needle", true)).partial).toBe(false);
+  });
+
   it("still finds a line after a label that has nothing to do with it", async () => {
     const w = rig();
     w.write("a.yaml", "name:\n  needle\n");
@@ -526,7 +587,7 @@ describe("a search", () => {
 
   it("refuses what isn't a line of words", () => {
     const w = rig();
-    for (const bad of ["", "   ", "a\nb", "a\0b", "x".repeat(MAX_QUERY + 1), 3, null]) {
+    for (const bad of ["", "   ", "a\nb", "a\0b", "\uffff", "x".repeat(MAX_QUERY + 1), 3, null]) {
       expect(isSearchQuery(bad)).toBe(false);
     }
     expect(() => searchScript(w.copy, "a\nb", false, NONCE)).toThrow(/search for/);
@@ -587,9 +648,7 @@ describe("a failure isn't an answer", () => {
 
   it("says a file it couldn't bring out may be missing, not that nothing matched", async () => {
     const w = rig();
-    // Names come in on a pipe and files don't: this one fails on the files.
-    const port = shim(w, "base64", 'if [ -p /dev/stdin ]; then exec REAL "$@"; fi\nexit 1');
-    expect((await port.search(w.copy, "needle", false)).partial).toBe(true);
+    expect((await shim(w, "head", "exit 3").search(w.copy, "needle", false)).partial).toBe(true);
   });
 
   it("says a file git couldn't read may be missing", async () => {
@@ -625,6 +684,33 @@ describe("a failure isn't an answer", () => {
 });
 
 describe("it only reads", () => {
+  it("writes nothing to a partial clone's config for a commit it lacks, on git older than GIT_NO_LAZY_FETCH", async () => {
+    const w = rig();
+    w.write("keep.txt", "changed\n");
+    git(w.cwd, "add", "-A");
+    git(w.cwd, "-c", "user.name=a", "-c", "user.email=a@example.invalid", "commit", "-q", "-m", "work");
+    const main = git(w.cwd, "rev-parse", "refs/remotes/origin/main");
+    git(w.cwd, "update-ref", "refs/remotes/origin/main", git(w.cwd, "rev-parse", "HEAD~1"));
+    git(w.cwd, "config", "remote.origin.url", join(w.root, "nowhere"));
+    git(w.cwd, "config", "remote.origin.promisor", "true");
+    git(w.cwd, "config", "extensions.partialClone", "origin");
+    git(w.cwd, "config", "core.repositoryformatversion", "1");
+    execFileSync("rm", ["-f", join(w.cwd, ".git/objects", main.slice(0, 2), main.slice(2))]);
+    const config = readFileSync(join(w.cwd, ".git/config"), "utf8");
+    const old: RunScript = async (_who, script) =>
+      bash(
+        script
+          .replaceAll("GIT_NO_LAZY_FETCH=1", "IGNORED=1")
+          .replaceAll("/home/employee/work", join(w.root, "work")),
+      );
+    const port = reviewPort(old);
+    await port.tree(w.copy).catch(() => null);
+    await port.search(w.copy, "needle", false).catch(() => null);
+    await port.file(w.copy, "keep.txt").catch(() => null);
+    await port.list(w.copy).catch(() => null);
+    expect(readFileSync(join(w.cwd, ".git/config"), "utf8")).toBe(config);
+  });
+
   it("doesn't fetch a missing object on git older than GIT_NO_LAZY_FETCH", async () => {
     // A partial clone of a server: the old blob isn't here, so asking for it would fetch it and write to .git.
     const w = rig(false);
@@ -650,7 +736,7 @@ describe("it only reads", () => {
       try {
         execFileSync("git", ["-c", "core.hooksPath=/dev/null", "cat-file", "-e", missing], {
           cwd: w.cwd,
-          env: { ...env, GIT_NO_LAZY_FETCH: "1" },
+          env: { ...env, GIT_ALLOW_PROTOCOL: "none" },
           stdio: "ignore",
         });
         return true;
