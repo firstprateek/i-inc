@@ -138,7 +138,9 @@ export class IncConvReview extends LitElement {
     css`
       :host { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; background: var(--ground); container-type: inline-size; }
       .head { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 4px 10px; border-bottom: 1px solid var(--line); min-width: 0; }
-      .tabs { flex: none; display: flex; gap: 2px; }
+      .tabs { flex: 0 1 auto; min-width: 0; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }
+      .tab { flex: none; }
+      .refresh { flex: none; }
       .tab { min-height: 44px; padding: 0 12px; border: 0; border-radius: 10px; background: transparent; color: var(--ink-2); font: 700 15px var(--body); cursor: pointer; }
       .tab:hover { background: var(--sunken); color: var(--ink); }
       .tab[aria-selected="true"] { color: var(--ink); box-shadow: inset 0 -3px 0 var(--ink); border-radius: 10px 10px 0 0; }
