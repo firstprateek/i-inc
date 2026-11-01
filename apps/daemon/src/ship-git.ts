@@ -16,7 +16,7 @@ import { isProtected } from "./paths.ts";
 import { pushFromSandbox } from "./sandbox-push.ts";
 import { isSafeRefName, isSafeWorkDir } from "./workspace.ts";
 
-const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
+export const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
 
 /** A conversation's working copy, with what shipping needs to know about its project. */
 export interface ShipCopy {
@@ -126,6 +126,13 @@ function check(copy: ShipCopy, remote?: string): void {
  * token is taken out of the environment first and goes to one place only, `NC`: see `cleanRepo`.
  */
 const enter = (copy: ShipCopy, remote: string) => [
+  ...safeGit(copy),
+  `URL=${quote(remote)}`,
+  `[ "$(G branch --show-current)" = ${quote(copy.branch)} ] || { echo "@@fail the working copy is on $(G branch --show-current), not ${copy.branch}"; exit 1; }`,
+];
+
+/** Into the copy with `G` as `enter` describes it, without its opinion on the branch: the review reads any. */
+export const safeGit = (copy: { cwd: string }) => [
   'TOK="${GH_TOKEN:-}"; unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GH_HOST',
   `cd ${quote(copy.cwd)} || { echo '@@fail the working copy is not there'; exit 1; }`,
   // Git gets an allow-listed environment, never this script's own: PATH, a locale, a home that is empty, and
@@ -137,8 +144,6 @@ const enter = (copy: ShipCopy, remote: string) => [
   "FA=()",
   'while IFS= read -r key; do name=${key#filter.}; name=${name%.*}; FA+=(-c "filter.$name.clean=" -c "filter.$name.smudge=" -c "filter.$name.process=" -c "filter.$name.required=false"); done < <("${BE[@]}" git -c core.hooksPath=/dev/null config --name-only --get-regexp \'^filter[.].*[.](clean|smudge|process)$\' 2>/dev/null | sort -u)',
   'G() { "${BE[@]}" ${GX[@]+"${GX[@]}"} git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c commit.gpgsign=false -c core.pager=cat ${FA[@]+"${FA[@]}"} "$@"; }',
-  `URL=${quote(remote)}`,
-  `[ "$(G branch --show-current)" = ${quote(copy.branch)} ] || { echo "@@fail the working copy is on $(G branch --show-current), not ${copy.branch}"; exit 1; }`,
 ];
 
 /**
@@ -313,7 +318,7 @@ export function addedLines(patch: string): string {
 export const scanPatch = (patch: string): boolean => holdsCredential(addedLines(patch));
 
 /** The text between two of this run's markers, or undefined. */
-function section(output: string, nonce: string, name: string): string | undefined {
+export function section(output: string, nonce: string, name: string): string | undefined {
   const begin = `\n${marker(nonce, `${name}-begin`)}\n`;
   const at = `\n${output}`.indexOf(begin);
   if (at < 0) return undefined;
