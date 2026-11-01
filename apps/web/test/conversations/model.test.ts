@@ -17,6 +17,7 @@ import {
   bypassMode,
   changedFiles,
   commandsOf,
+  contextUsage,
   firstPending,
   groupConversations,
   latestPlan,
@@ -270,6 +271,28 @@ describe("the thread's state", () => {
     ]);
     expect(files[0]?.edit.before?.content.uri).toBe("b1");
     expect(files[0]?.edit.after?.content.uri).toBe("a2");
+  });
+  it("reads how full the context is from the latest turn that says", () => {
+    const turn = (id: string, _meta?: unknown) => ({
+      id,
+      usage: { inputTokens: 1, _meta },
+      responseParts: [],
+    });
+    expect(contextUsage(undefined)).toBeUndefined();
+    expect(contextUsage({ turns: [turn("1")] } as Any)).toBeUndefined();
+    expect(
+      contextUsage({
+        turns: [
+          turn("1", { contextUsed: 10, contextSize: 100 }),
+          turn("2", { contextUsed: 20, contextSize: 100 }),
+        ],
+        activeTurn: { id: "3", responseParts: [] },
+      } as Any),
+    ).toEqual({ used: 20, size: 100 });
+    expect(contextUsage({ turns: [turn("1", { contextUsed: 10, contextSize: 0 })] } as Any)).toBeUndefined();
+    expect(
+      contextUsage({ turns: [turn("1", { contextUsed: "10", contextSize: 100 })] } as Any),
+    ).toBeUndefined();
   });
   it("sums usage and finds what waits for the owner", () => {
     const chat: Any = {

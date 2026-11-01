@@ -365,6 +365,20 @@ export function usageTotals(chat: ChatState | undefined): UsageTotals {
   return t;
 }
 
+/** How full the agent's context is, from the latest turn that says (the host keeps it in the usage's `_meta`). */
+export function contextUsage(chat: ChatState | undefined): { used: number; size: number } | undefined {
+  if (!chat) return undefined;
+  const all: AnyTurn[] = [...chat.turns];
+  if (chat.activeTurn) all.push(chat.activeTurn);
+  for (const turn of all.reverse()) {
+    const meta = turn.usage?._meta as { contextUsed?: unknown; contextSize?: unknown } | undefined;
+    const used = meta?.contextUsed;
+    const size = meta?.contextSize;
+    if (typeof used === "number" && typeof size === "number" && used >= 0 && size > 0) return { used, size };
+  }
+  return undefined;
+}
+
 export const tokens = (n: number): string =>
   n >= 1_000_000
     ? `${(n / 1_000_000).toFixed(1)}M`
