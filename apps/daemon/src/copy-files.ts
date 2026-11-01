@@ -1,7 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell scripts, not templates
 // The Files and Search tabs' reads (docs/design/conversations.md, "Files"): everything in a conversation's working
-// copy, one file as it is on disk, and a literal search of its contents. The same rules as the review's reads
-// (copy-read.ts): nothing in the copy is written, what comes back is believed for nothing, and no machine is booted.
+// copy, one file as it is on disk, and a literal search of what the viewer would show. The same rules as the review's
+// reads (copy-read.ts): nothing in the copy is written, what comes back is believed for nothing, and no machine is booted.
 import {
   check,
   diskSide,
@@ -9,13 +9,15 @@ import {
   fenced,
   isReviewPath,
   LIST_LIMIT,
+  MAX_FILE_BYTES,
   open,
   type ReviewCopy,
   readSides,
   scratchIndex,
   servedNever,
+  sideOf,
 } from "./copy-read.ts";
-import { marker, quote, redactFile, section } from "./ship-git.ts";
+import { marker, quote, section } from "./ship-git.ts";
 import type { FileSide, SearchHit } from "./view-types.ts";
 
 /** The most files listed. The web app holds them all, so a list stays fast. */
@@ -24,18 +26,11 @@ export const MAX_QUERY = 200;
 /** The most lines a search returns, and from one file: a word in every line of a log says nothing more at 20. */
 export const MAX_HITS = 500;
 export const MAX_FILE_HITS = 20;
-/** How much of a search's output is read, and how much of any line: one minified line can't use it all up. */
-const SEARCH_LIMIT = 1_000_000;
-const LINE_BYTES = 2000;
+/** The most files, and bytes of them, a search brings out to look through. */
+export const MAX_SEARCH_FILES = 200;
+export const SEARCH_BYTES = 6_000_000;
 /** The characters of a line shown. */
 export const LINE_SHOWN = 400;
-/**
- * The lines read before each match. A value can sit on the line after its label (`aws_secret_access_key:` in YAML),
- * so a line alone can't always be redacted.
- */
-const CONTEXT_LINES = 2;
-/** What goes from the end of a line that was cut, since a credential the cut split matches no pattern. */
-const CUT_MARGIN = 512;
 /** How much memory a search may use, in KiB: git holds each file it reads, and this runs beside the agent's turn. */
 const SEARCH_MEMORY_KB = 2_097_152;
 /** A folder with no `.gitignore` to speak for it is walked this deep, and its dependencies aren't. */
@@ -44,12 +39,6 @@ const FIND_DEPTH = 24;
 const NOT_WALKED = ["node_modules"];
 /** Where a repository's paths stop: `.inc` holds the owner's images, which are never part of the work. */
 const HERE = "-- . ':(exclude).inc'";
-/**
- * Files that aren't searched, whatever is asked: a key's body or a `.netrc` login's password has nothing near it for
- * redaction to go on. Which files these are depends on nothing typed, so the count of them says nothing about a query.
- */
-const SPREAD_SECRET =
-  "PRIVATE KEY|^[[:space:]]*machine[[:space:]]+[^[:space:]]+([[:space:]]+login[[:space:]]+[^[:space:]]+)?[[:space:]]*$";
 
 export interface FilesListing {
   present: boolean;
@@ -63,9 +52,6 @@ export interface FilesListing {
 export interface SearchListing {
   present: boolean;
   hits: SearchHit[];
-  skipped: number;
-  /** Files not searched, for what they hold. */
-  withheld: number;
   truncated: boolean;
   /** Something in the folder couldn't be read, so there may be more. */
   partial: boolean;
@@ -126,9 +112,12 @@ export function fileScript(copy: ReviewCopy, path: string, nonce: string): strin
 }
 
 /**
- * A literal search. In a repository: `git grep -F` over the folder, tracked and new, with the scratch index and its
- * empty config, so nothing of the copy's runs; otherwise a bounded `grep`. The query is one quoted word after `-e`,
- * so it can't be a flag or a pattern. Binary files aren't looked in, and a pipe or a link isn't opened.
+ * A literal search, in two steps. `git grep -F` over the folder, with the scratch index and its empty config so nothing
+ * of the copy's runs, or a bounded `grep` with no commit, only says which files may hold the query. The query is one
+ * quoted word after `-e`, so it can't be a flag or a pattern. Then each of those files comes out as the viewer would
+ * read it, and `readSearch` looks in the text the viewer would show. A file is what is redacted, never a line of one:
+ * a value can sit lines from its label, and a key has nothing near it at all, so what search shows can't be other
+ * than what the viewer shows. Binary files aren't looked in, and a pipe or a link isn't opened.
  */
 export function searchScript(copy: ReviewCopy, query: string, matchCase: boolean, nonce: string): string {
   check(copy);
@@ -139,39 +128,30 @@ export function searchScript(copy: ReviewCopy, query: string, matchCase: boolean
   const fold = matchCase ? "" : "-i ";
   const limit = `ulimit -v ${SEARCH_MEMORY_KB} 2>/dev/null`;
   const skip = ["node_modules", ".git", ".inc"].map((d) => `--exclude-dir=${d}`).join(" ");
-  const short = `LC_ALL=C cut -b 1-${LINE_BYTES}`;
-  const cap = `head -c ${SEARCH_LIMIT + 1}`;
-  const plain = `grep -r -I -s -D skip --null ${skip}`;
-  const context = `-n -B ${CONTEXT_LINES}`;
   return [
     ...open(copy),
     ...scratchIndex(fail),
-    // Every step of the pipe is looked at: a `cut` that dies leaves git with a closed pipe, and no matches to show.
-    "seen() {",
-    `  [ "$3" -eq 0 ] && { [ "$2" -eq 0 ] || [ "$2" -eq 141 ]; } || ${fail}`,
-    `  case "$1" in 0|1) [ "$2" -eq 0 ] || ${fail} ;; 141) [ "$(wc -c < "$W/hits")" -gt ${SEARCH_LIMIT} ] || ${fail} ;; *) ${fail} ;; esac`,
-    "}",
     'if [ -n "$head" ]; then',
-    `  ( ${limit}; G grep -I -z --threads=2 --untracked ${context} ${fold}-F -e ${quote(query)} ${HERE} ) | ${short} | ${cap} > "$W/hits"; p=("\${PIPESTATUS[@]}")`,
-    `  ( ${limit}; G grep --text -l -z --threads=2 --untracked -E -e ${quote(SPREAD_SECRET)} ${HERE} ) > "$W/keys"; k=$?`,
-    '  seen "${p[0]}" "${p[1]}" "${p[2]}"',
-    `  case "$k" in 0|1) ;; *) ${fail} ;; esac`,
+    `  ( ${limit}; G grep -I -l -z --threads=2 --untracked ${fold}-F -e ${quote(query)} ${HERE} ) > "$W/found"; s=$?`,
+    `  case "$s" in 0|1) ;; *) ${fail} ;; esac`,
     "else",
-    `  ${plain} ${context} ${fold}-F -e ${quote(query)} . | ${short} | ${cap} > "$W/hits"; p=("\${PIPESTATUS[@]}")`,
-    `  ${plain.replace(" -I", " -a")} -l -E -e ${quote(SPREAD_SECRET)} . > "$W/keys"; k=$?`,
+    `  grep -r -l -I -s -D skip --null ${skip} ${fold}-F -e ${quote(query)} . > "$W/found"; s=$?`,
     // 2: a file it couldn't read, which grep says while it carries on; what it could read is there.
-    `  [ "\${p[0]}" -ne 2 ] || { echo ${m("partial")}; p[0]=0; }`,
-    '  seen "${p[0]}" "${p[1]}" "${p[2]}"',
-    `  case "$k" in 0|1|2) ;; *) ${fail} ;; esac`,
+    `  case "$s" in 0|1) ;; 2) echo ${m("partial")} ;; *) ${fail} ;; esac`,
     "fi",
-    // A list of what mustn't be searched that doesn't fit is no list: the search fails rather than show those files.
-    `[ "$(wc -c < "$W/keys")" -le ${LIST_LIMIT} ] || ${fail}`,
-    `[ "$(wc -c < "$W/hits")" -le ${SEARCH_LIMIT} ] || echo ${m("cut")}`,
-    `echo ${m("hits-begin")}`,
-    `head -c ${SEARCH_LIMIT} "$W/hits"`,
+    `echo ${m("files-begin")}`,
+    "n=0; t=0",
+    "while IFS= read -r -d '' f; do",
+    '  [ -f "./$f" ] && [ ! -L "./$f" ] || continue',
+    `  z=$(wc -c < "./$f" | tr -d ' ')`,
+    `  [ -n "$z" ] && [ "$z" -le ${MAX_FILE_BYTES} ] || continue`,
+    `  n=$((n + 1)); t=$((t + z))`,
+    `  if [ "$n" -gt ${MAX_SEARCH_FILES} ] || [ "$t" -gt ${SEARCH_BYTES} ]; then echo ${m("cut")}; break; fi`,
+    `  echo "${m("file")} $(printf %s "$f" | base64 | tr -d '\\n')"`,
+    `  base64 < "./$f"`,
+    'done < "$W/found"',
     "echo",
-    `echo ${m("hits-end")}`,
-    ...fenced(nonce, "keys"),
+    `echo ${m("files-end")}`,
     `echo ${m("done")}`,
   ].join("\n");
 }
@@ -220,114 +200,69 @@ export function readOpenFile(output: string, nonce: string, path: string): FileS
   return after;
 }
 
-interface ReadLine {
-  text: string;
-  /** The cut took the end of it. */
-  cut: boolean;
+const MASK = "\uffff";
+
+/** The hits in a text as the viewer would show it, at most what one file may have, and whether there were more. */
+function hitsIn(path: string, text: string, match: RegExp): { hits: SearchHit[]; more: boolean } {
+  // What redaction put there isn't in the file: a query that finds it would tell what kind of thing went.
+  const seen = text.replace(/\[redacted\]|\[private key\]/g, (w) => MASK.repeat(w.length));
+  const lines = text.split("\n");
+  const looked = seen.split("\n");
+  const hits: SearchHit[] = [];
+  for (let i = 0; i < looked.length; i++) {
+    const at = match.exec(looked[i] ?? "");
+    if (!at) continue;
+    if (hits.length === MAX_FILE_HITS) return { hits, more: true };
+    const line = (lines[i] ?? "").replace(/\r$/, "");
+    const from = at.index + at[0].length > LINE_SHOWN ? Math.max(0, at.index - 100) : 0;
+    const shown = line.slice(from, from + LINE_SHOWN);
+    hits.push({
+      path,
+      line: i + 1,
+      text: `${from ? "…" : ""}${shown}${from + LINE_SHOWN < line.length ? "…" : ""}`,
+    });
+  }
+  return { hits, more: false };
 }
 
 /**
- * The rows of a search's output, by file and line number: `path NUL number NUL text` from git, `path NUL number:text`
- * or `-text` from grep, with `--` between runs. Text has no newline in it, but a name can: one that has is left out
- * and counted. What follows the last newline is a row the cap cut in two.
+ * Reads `searchScript`'s output: each file by its name in base64, then its bytes. A file no name-based rule lets out,
+ * or with no text to show, is passed over, and nothing counts those: a count that moved with the query would tell what
+ * is hidden, a letter at a time.
  */
-function readRows(found: string): { files: Map<string, Map<number, ReadLine>>; skipped: number } {
-  const files = new Map<string, Map<number, ReadLine>>();
-  let skipped = 0;
-  let from = 0;
-  for (;;) {
-    const nul = found.indexOf("\0", from);
-    const end = nul < 0 ? -1 : found.indexOf("\n", nul);
-    if (end < 0) break;
-    const name = found.slice(from, nul).replace(/^(?:--\n)+/, "");
-    const m = /^(\d+)[\0:-]([\s\S]*)$/.exec(found.slice(nul + 1, end));
-    const bytes = Buffer.byteLength(found.slice(from, end));
-    from = end + 1;
-    if (!m) continue;
-    const path = named(name);
-    if (!isReviewPath(path)) {
-      skipped++;
-      continue;
-    }
-    const lines = files.get(path) ?? new Map<number, ReadLine>();
-    files.set(path, lines);
-    lines.set(Number(m[1]), { text: (m[2] ?? "").replace(/\r$/, ""), cut: bytes >= LINE_BYTES });
-  }
-  return { files, skipped };
-}
-
-/** A line that was cut, less its end: what the cut split has no pattern left to match, so it can't be shown. */
-const uncut = (l: ReadLine) =>
-  l.cut ? l.text.slice(0, -CUT_MARGIN).replace(/[^\s"'`,;()<>]*$/, "") : l.text;
-
-/**
- * The line to show, redacted and cut around the match, or null when it can't be shown: the match has gone with what
- * was taken out, or redaction reaches this line from the lines before it. To count such a line would tell what is
- * hidden, a letter at a time, so nothing does.
- */
-function excerpt(
-  lines: Map<number, ReadLine>,
-  n: number,
-  line: ReadLine,
-  query: string,
-  matchCase: boolean,
-): string | null {
-  // A NUL means a binary file got past `-I`.
-  if (line.text.includes("\0")) return null;
-  const own = uncut(line);
-  const before: string[] = [];
-  for (let i = n - 1; i >= n - CONTEXT_LINES && lines.has(i); i--)
-    before.unshift(uncut(lines.get(i) as ReadLine));
-  const text = redactFile(own);
-  if (before.length) {
-    const lead = before.join("\n");
-    if (redactFile(`${lead}\n${own}`) !== `${redactFile(lead)}\n${text}`) return null;
-  }
-  const fold = (s: string) => (matchCase ? s : s.toLowerCase());
-  const at = fold(text).indexOf(fold(query));
-  if (at < 0) return null;
-  const from = at + query.length > LINE_SHOWN ? Math.max(0, at - 100) : 0;
-  const shown = text.slice(from, from + LINE_SHOWN);
-  return `${from ? "…" : ""}${shown}${from + LINE_SHOWN < text.length ? "…" : ""}`;
-}
-
-/** Reads `searchScript`'s output. Git doesn't mark which rows matched, so a row is a match if it shows the query. */
 export function readSearch(output: string, nonce: string, query: string, matchCase: boolean): SearchListing {
   const done = output.includes(marker(nonce, "done"));
-  const empty = { hits: [], skipped: 0, withheld: 0, truncated: false, partial: false };
+  const empty = { hits: [], truncated: false, partial: false };
   if (/^@@nocopy$/m.test(output) && !done) return { present: false, ...empty };
-  const found = section(output, nonce, "hits");
-  const keys = section(output, nonce, "keys");
-  if (found === undefined || keys === undefined || !done) throw new Error("the search could not be read");
-  const spread = new Set(
-    keys
-      .split(/[\0\n]/)
-      .filter(Boolean)
-      .map(named),
-  );
-  const { files, skipped } = readRows(found);
+  const body = section(output, nonce, "files");
+  if (body === undefined || !done) throw new Error("the search could not be read");
+  const words = query.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&");
+  const match = new RegExp(words, matchCase ? "u" : "iu");
+  const files = new Map<string, FileSide>();
+  const head = `${marker(nonce, "file")} `;
+  let at: { name: string; b64: string[] } | undefined;
+  const close = () => {
+    if (!at) return;
+    const path = named(Buffer.from(at.name, "base64").toString("utf8"));
+    if (isReviewPath(path) && !servedNever(path)) files.set(path, sideOf(at.b64.join("")));
+    at = undefined;
+  };
+  for (const line of body.split("\n")) {
+    if (line.startsWith(head)) {
+      close();
+      at = { name: line.slice(head.length), b64: [] };
+    } else at?.b64.push(line);
+  }
+  close();
   let truncated = output.includes(marker(nonce, "cut"));
   const hits: SearchHit[] = [];
-  for (const [path, lines] of files) {
-    if (spread.has(path) || servedNever(path)) continue;
-    let inFile = 0;
-    for (const [n, line] of [...lines].sort((a, b) => a[0] - b[0])) {
-      const text = excerpt(lines, n, line, query, matchCase);
-      if (text === null) continue;
-      if (inFile >= MAX_FILE_HITS || hits.length >= MAX_HITS) {
-        truncated = true;
-        break;
-      }
-      inFile++;
-      hits.push({ path, line: n, text });
-    }
+  for (const [path, side] of [...files].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+    if (side.text === undefined) continue;
+    const found = hitsIn(path, side.text, match);
+    if (found.more) truncated = true;
+    if (hits.length + found.hits.length > MAX_HITS) truncated = true;
+    hits.push(...found.hits.slice(0, MAX_HITS - hits.length));
+    if (hits.length >= MAX_HITS) break;
   }
-  return {
-    present: true,
-    hits,
-    skipped,
-    withheld: spread.size,
-    truncated,
-    partial: output.includes(marker(nonce, "partial")),
-  };
+  return { present: true, hits, truncated, partial: output.includes(marker(nonce, "partial")) };
 }

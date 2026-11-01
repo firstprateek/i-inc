@@ -34,19 +34,21 @@ export function isReviewPath(path: unknown): path is string {
   const parts = path.split("/");
   if (parts.some((p) => p === "" || p === "." || p === "..")) return false;
   if (parts[0] === ".inc" || parts.some((p) => p.toLowerCase() === ".git")) return false;
-  return redactTokens(path) === path;
+  return redactFile(path) === path;
 }
 
 /**
  * A file never served or searched, by its name: what ship's scan calls a secrets file, in any case, and a few more
- * that a change is unlikely to want to show (`prod.env`, `.envrc`).
+ * that a change is unlikely to want to show (`prod.env`, `.envrc`, `.pgpass`).
  */
 export function servedNever(path: string): boolean {
   const lower = path.toLowerCase();
   return (
     secretFile.some((re) => re.test(path) || re.test(lower)) ||
     /(^|\/)[^/]+\.env$/.test(lower) ||
-    /(^|\/)\.envrc$/.test(lower)
+    /(^|\/)\.env(?!\.(?:example|sample|template|dist)$)[^/]+$/.test(lower) ||
+    /(^|\/)(?:\.pgpass|\.git-credentials|credentials)$/.test(lower) ||
+    /\.ppk$/.test(lower)
   );
 }
 
@@ -132,7 +134,7 @@ export const diskSide = (head: string): string[] => [
   "root=$(pwd -P)",
   'd=$(cd -P -- "$(dirname -- "./$P")" 2>/dev/null && pwd -P || true)',
   `if [ -z "$d" ]; then echo "${head} none"`,
-  `elif ! case "$d/" in "$root/.git/"* | "$root/.inc/"*) false ;; "$root/"*) true ;; *) false ;; esac; then echo "${head} outside"`,
+  `elif ! case "$d/" in "$root/.git/"* | "$root/"*"/.git/"* | "$root/.inc/"*) false ;; "$root/"*) true ;; *) false ;; esac; then echo "${head} outside"`,
   `elif [ -L "./$P" ]; then echo "${head} link"; printf %s "$(readlink -- "./$P")" | head -c ${MAX_PATH} | base64`,
   'elif [ -f "./$P" ]; then',
   `  s=$(wc -c < "./$P" | tr -d ' ')`,

@@ -22,6 +22,7 @@ import {
   MAX_FILE_HITS,
   MAX_HITS,
   MAX_QUERY,
+  MAX_SEARCH_FILES,
   MAX_TREE,
   readSearch,
   readTree,
@@ -143,8 +144,9 @@ describe("the file list", () => {
     w.write(`-rf`, "x\n");
     w.write(`$(touch pwned).txt`, "x\n");
     w.write(`${TOKEN}.txt`, "x\n");
+    w.write("_authToken=abcdefgh12345678.txt", "x\n");
     const t = await w.port.tree(w.copy);
-    expect(t.skipped).toBe(3);
+    expect(t.skipped).toBe(4);
     expect(t.paths).toContain("$(touch pwned).txt");
     expect(existsSync(join(w.cwd, "pwned"))).toBe(false);
   });
@@ -235,6 +237,13 @@ describe("one file", () => {
     expect(await w.port.read(w.copy, "i/photo.txt")).toEqual({ state: "outside" });
   });
 
+  it("doesn't reach a nested .git through a link either", async () => {
+    const w = rig();
+    w.write("sub/.git/config", "secret\n");
+    symlinkSync("sub/.git", join(w.cwd, "d"));
+    expect(await w.port.read(w.copy, "d/config")).toEqual({ state: "outside" });
+  });
+
   it("shows a link that stays inside as its target", async () => {
     const w = rig();
     symlinkSync("keep.txt", join(w.cwd, "in"));
@@ -318,14 +327,12 @@ describe("a search", () => {
     expect((await w.port.search(w.copy, "--help", false)).hits).toHaveLength(1);
   });
 
-  it("redacts a line, and never says a line holds what redaction hid", async () => {
+  it("shows a line as the viewer shows it, and a match in what was taken out is no match", async () => {
     const w = rig();
     w.write("cfg.txt", `key needle ${TOKEN}\n`);
     const shown = await w.port.search(w.copy, "key needle", false);
-    expect(shown.hits[0]?.text).toBe("key needle [redacted]");
-    const hidden = await w.port.search(w.copy, TOKEN.slice(0, 12), false);
-    expect(hidden.hits).toEqual([]);
-    expect(hidden.withheld).toBe(0);
+    expect(shown.hits).toContainEqual({ path: "cfg.txt", line: 1, text: "key needle [redacted]" });
+    expect((await w.port.search(w.copy, TOKEN.slice(0, 12), false)).hits).toEqual([]);
   });
 
   it("gives away nothing about a secret by whether a guess at it matched", async () => {
@@ -333,49 +340,99 @@ describe("a search", () => {
     w.write("cfg.txt", `value ${TOKEN}\n`);
     w.write(".env", "API_KEY=hunter2hunter2\n");
     w.write("key.txt", "-----BEGIN PRIVATE KEY-----\nMIIabcdef\n-----END PRIVATE KEY-----\n");
-    const guess = async (q: string) => {
-      const { hits, withheld, skipped, truncated, partial } = await w.port.search(w.copy, q, true);
-      return { hits, withheld, skipped, truncated, partial };
-    };
+    w.write("notes\x01.txt", "swordfish\n");
+    const guess = (q: string) => w.port.search(w.copy, q, true);
     expect(await guess(TOKEN.slice(0, 8))).toEqual(await guess("ghp_zzzz"));
     expect(await guess("API_KEY=h")).toEqual(await guess("API_KEY=x"));
     expect(await guess("MIIabc")).toEqual(await guess("MIIabd"));
+    expect(await guess("swordfish")).toEqual(await guess("swordfisk"));
   });
 
-  it("doesn't return a value that sits on the line after its label", async () => {
-    const key = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY12";
-    const pairs = [
-      `aws_secret_access_key:\n  ${key}\n`,
-      `Authorization: Bearer\n  ${key}\n`,
-      `_authToken =\n  ${key}\n`,
-      `machine h login joe password\n  ${key}\n`,
-      `aws_secret_access_key:\n\n  ${key}\n`,
-    ];
-    for (const text of pairs) {
-      const w = rig();
-      w.write("deploy.yaml", text);
-      expect((await w.port.search(w.copy, key.slice(0, 5), true)).hits, text).toEqual([]);
+  it("doesn't find the letters of what redaction put in a line's place", async () => {
+    const w = rig();
+    w.write("cfg.txt", `x ${TOKEN} y\n`);
+    for (const q of ["redacted", "edac", "[red"]) {
+      expect((await w.port.search(w.copy, q, false)).hits, q).toEqual([]);
     }
   });
 
-  it("still shows the line after a label that has nothing to do with it", async () => {
+  it("can't differ from the viewer, however far a value sits from its label", async () => {
+    const key = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY12";
+    const shapes = [
+      `aws_secret_access_key:\n  ${key}\n`,
+      `aws_secret_access_key:\n\n\n\n${key}\n`,
+      `Authorization: Bearer\n  ${key}\n`,
+      `Authorization: Bearer\n${"\n".repeat(30)}${key}\n`,
+      `Bearer\r\n\r\n\r\n${key}\r\n`,
+      `_authToken =\n  ${key}\n`,
+      `_authToken\n\n\n=\n\n\n${key}\n`,
+      `machine h login joe password\n  ${key}\n`,
+      `machine h login\nu\npassword\n${key}\n`,
+      `${"x ".repeat(1500)}aws_secret_access_key:\n${key}\n`,
+      `# -----BEGIN PRIVATE KEY-----\n# ${key}\n# -----END PRIVATE KEY-----\n`,
+      `---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----\n${key}\n---- END SSH2 ENCRYPTED PRIVATE KEY ----\n`,
+      `-----BEGIN PRIVATE KEY-----\nabc.def ghi\n${key}\n-----END PRIVATE KEY-----\n`,
+    ];
+    for (const text of shapes) {
+      for (const project of [true, false]) {
+        const w = rig(project);
+        w.write("deploy.yaml", text);
+        const seen = await w.port.read(w.copy, "deploy.yaml");
+        const r = await w.port.search(w.copy, key.slice(0, 5), true);
+        const fromViewer = seen?.text?.split("\n") ?? [];
+        for (const h of r.hits) expect(fromViewer).toContain(h.text);
+        expect(seen?.text ?? "", text).toSatisfy((t: string) => !t.includes(key) || r.hits.length > 0);
+      }
+    }
+  });
+
+  it("shows no key body in the viewer, whatever the lines around it look like", async () => {
+    const body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC";
+    const shapes = [
+      `# -----BEGIN PRIVATE KEY-----\n# ${body}\n# -----END PRIVATE KEY-----\nafter\n`,
+      `// -----BEGIN RSA PRIVATE KEY-----\n// ${body}\n// -----END RSA PRIVATE KEY-----\nafter\n`,
+      `-----BEGIN PRIVATE KEY-----\nabc.def ghi\n${body}\n-----END PRIVATE KEY-----\nafter\n`,
+      `---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----\n${body}\n---- END SSH2 ENCRYPTED PRIVATE KEY ----\nafter\n`,
+    ];
+    for (const text of shapes) {
+      const w = rig();
+      w.write("k.txt", text);
+      const seen = (await w.port.read(w.copy, "k.txt"))?.text ?? "";
+      expect(seen, text).not.toContain(body);
+      expect(seen.split("\n").indexOf("after"), text).toBe(text.split("\n").indexOf("after"));
+    }
+  });
+
+  it("redacts live payment keys and webhook secrets whole", async () => {
+    const w = rig();
+    w.write("k.txt", "sk_live_abcdefghijklmnopqrstuvwx_tail\nwhsec_abcdefgh+ijklmnop/qrstuvwx\n");
+    expect((await w.port.read(w.copy, "k.txt"))?.text).toBe("[redacted]\n[redacted]\n");
+  });
+
+  it("still finds a line after a label that has nothing to do with it", async () => {
     const w = rig();
     w.write("a.yaml", "name:\n  needle\n");
     expect((await w.port.search(w.copy, "needle", true)).hits.map((h) => h.path)).toContain("a.yaml");
   });
 
-  it("returns no line of a file whose secrets span lines, or that usually holds them", async () => {
+  it("doesn't look in a file that usually holds secrets", async () => {
     const w = rig();
-    w.write("key.txt", "-----BEGIN PRIVATE KEY-----\nMIIneedleBODY\n-----END PRIVATE KEY-----\n");
-    w.write("logins", "machine example.com\n  login ada\n  password needlepass\n");
-    for (const name of [".env", "prod.env", ".envrc", ".PYPIRC", "certs/server.pem"])
-      w.write(name, "needle\n");
+    const names = [
+      ".env",
+      "prod.env",
+      ".envrc",
+      ".env-prod",
+      ".PYPIRC",
+      ".pgpass",
+      "certs/server.pem",
+      "a.ppk",
+    ];
+    for (const name of names) w.write(name, "needle\n");
     const r = await w.port.search(w.copy, "needle", true);
     expect(r.hits.map((h) => h.path)).toEqual(["gone.txt"]);
-    expect(r.withheld).toBe(2);
   });
 
-  it("doesn't show a file with a NUL past where binary is looked for", async () => {
+  it("treats a file with a NUL as the viewer does, attributes or not", async () => {
     const w = rig();
     writeFileSync(join(w.cwd, ".gitattributes"), "* diff\n");
     w.write("wide.txt", "n\0e\0needle\0\n");
@@ -383,57 +440,26 @@ describe("a search", () => {
     expect(r.hits.map((h) => h.path)).toEqual(["gone.txt"]);
   });
 
-  it("does the same in plain grep", async () => {
-    const w = rig(false);
-    w.write("key.txt", "-----BEGIN PRIVATE KEY-----\nMIIneedleBODY\n-----END PRIVATE KEY-----\n");
-    const r = await w.port.search(w.copy, "needle", true);
-    expect(r.hits).toEqual([]);
-    expect(r.withheld).toBe(1);
-  });
-
-  it("cuts a long line around the match, and leaves out a match past what is read", async () => {
+  it("cuts a long line around the match, however far along it is", async () => {
     const w = rig();
-    w.write("min.js", `${"a ".repeat(500)}needle ${"b ".repeat(500)}\n`);
-    const r = await w.port.search(w.copy, "needle", false);
-    const hit = r.hits.find((h) => h.path === "min.js");
+    w.write("min.js", `${"a".repeat(5000)}needle${"b".repeat(5000)}\n`);
+    const hit = (await w.port.search(w.copy, "needle", false)).hits.find((h) => h.path === "min.js");
     expect(hit?.text.startsWith("…")).toBe(true);
     expect(hit?.text.length).toBeLessThan(410);
     expect(hit?.text).toContain("needle");
-    w.write("min.js", `${"a".repeat(5000)}needle\n`);
-    const past = await w.port.search(w.copy, "needle", false);
-    expect(past.hits.map((h) => h.path)).not.toContain("min.js");
-    expect(past.withheld).toBe(0);
   });
 
-  it("doesn't show a credential the line's cut split in two", async () => {
-    const fill = (n: number) => "x ".repeat(n / 2);
-    const secrets = [
-      "https://bot:Sup3rS3cretPassw0rd1234567890@example.com/",
-      "aws_secret_access_key=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY12",
-      "AKIAIOSFODNN7EXAMPLE",
-      TOKEN,
-      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
-    ];
-    for (const secret of secrets) {
-      for (const offset of [8, 12, 15, 19]) {
-        const w = rig();
-        // The row is the path, its number and the line: the cut lands inside the secret.
-        const before = 2000 - "s.txt".length - 3 - offset;
-        w.write("s.txt", `${fill(before - 7)}needle ${secret}\n`);
-        const r = await w.port.search(w.copy, "needle", true);
-        const shown = r.hits.filter((h) => h.path === "s.txt").map((h) => h.text);
-        expect(shown.join("\n"), `${secret} at ${offset}`).not.toContain(secret.slice(0, offset));
-      }
-    }
-  });
-
-  it("one enormous line doesn't use up the output", async () => {
+  it("finds a match past where a character's lower case changes the line's length", async () => {
     const w = rig();
-    w.write("a-min.js", `needle${"a".repeat(3_000_000)}\n`);
-    w.write("b.txt", "needle\n");
-    const r = await w.port.search(w.copy, "needle", true);
-    expect(r.hits.map((h) => h.path)).toContain("b.txt");
-    expect(r.truncated).toBe(false);
+    w.write("t.txt", `${"İ".repeat(300)} needle\n`);
+    const hit = (await w.port.search(w.copy, "NEEDLE", false)).hits.find((h) => h.path === "t.txt");
+    expect(hit?.text).toContain("needle");
+  });
+
+  it("leaves out a file over the viewer's limit", async () => {
+    const w = rig();
+    w.write("big.log", `needle\n${"x".repeat(1_100_000)}\n`);
+    expect((await w.port.search(w.copy, "needle", true)).hits.map((h) => h.path)).toEqual(["gone.txt"]);
   });
 
   it("keeps to its limits, and says so", async () => {
@@ -442,43 +468,21 @@ describe("a search", () => {
     const r = await w.port.search(w.copy, "needle", true);
     expect(r.hits.filter((h) => h.path === "log.txt")).toHaveLength(MAX_FILE_HITS);
     expect(r.truncated).toBe(true);
-    const rows = Array.from({ length: MAX_HITS + 5 }, (_, i) => `f${i}.txt\x001\x00needle\n`).join("");
-    const out = [
-      marker(NONCE, "hits-begin"),
-      rows,
-      marker(NONCE, "hits-end"),
-      marker(NONCE, "keys-begin"),
-      "",
-      marker(NONCE, "keys-end"),
-      marker(NONCE, "done"),
-    ].join("\n");
-    const cut = readSearch(out, NONCE, "needle", true);
-    expect(cut.hits).toHaveLength(MAX_HITS);
+    const many = rig();
+    for (let i = 0; i < 30; i++) many.write(`d/f${i}.txt`, "needle\n".repeat(MAX_FILE_HITS));
+    const all = await many.port.search(many.copy, "needle", true);
+    expect(all.hits).toHaveLength(Math.min(MAX_HITS, 30 * MAX_FILE_HITS + 1));
+    const over = rig();
+    for (let i = 0; i < MAX_SEARCH_FILES + 3; i++) over.write(`f${i}.txt`, "needle\n");
+    const cut = await over.port.search(over.copy, "needle", true);
     expect(cut.truncated).toBe(true);
+    expect(cut.hits.length).toBeLessThanOrEqual(MAX_SEARCH_FILES);
   });
 
-  it("drops a row the cap cut in two", () => {
-    const out = [
-      marker(NONCE, "cut"),
-      marker(NONCE, "hits-begin"),
-      "a.txt\x001\x00needle\nb.txt\x002\x00nee",
-      marker(NONCE, "hits-end"),
-      marker(NONCE, "keys-begin"),
-      "",
-      marker(NONCE, "keys-end"),
-      marker(NONCE, "done"),
-    ].join("\n");
-    const r = readSearch(out, NONCE, "needle", true);
-    expect(r.hits.map((h) => h.path)).toEqual(["a.txt"]);
-    expect(r.truncated).toBe(true);
-  });
-
-  it("says where a name with a newline can't pass as another file's, and counts it", async () => {
+  it("lets no name with a newline pass as another file", async () => {
     const w = rig();
     w.write("zz\nREADME.md", "needle: this line is not in README.md\n");
-    const r = await w.port.search(w.copy, "needle: this", true);
-    expect(r.hits).toEqual([]);
-    expect(r.skipped).toBe(1);
+    expect((await w.port.search(w.copy, "needle: this", true)).hits).toEqual([]);
   });
 
   it("calls a search that failed a failure, not no results", async () => {
@@ -525,14 +529,10 @@ describe("a failure isn't an answer", () => {
     return reviewPort(run);
   }
 
-  it("doesn't call a search whose `cut` died no results", async () => {
-    const w = rig();
-    await expect(shim(w, "cut", "kill -9 $$").search(w.copy, "needle", false)).rejects.toThrow();
-  });
-
-  it("doesn't call a search whose `head` failed no results", async () => {
-    const w = rig();
-    await expect(shim(w, "head", "exit 3").search(w.copy, "needle", false)).rejects.toThrow();
+  it("doesn't call a search whose grep was killed no results", async () => {
+    const w = rig(false);
+    w.write("a.txt", "needle\n");
+    await expect(shim(w, "grep", "kill -9 $$").search(w.copy, "needle", false)).rejects.toThrow();
   });
 
   it("doesn't call a killed `find` an empty folder", async () => {
@@ -567,16 +567,6 @@ describe("a failure isn't an answer", () => {
     const side = await w.port.read(w.copy, "locked.txt");
     chmodSync(join(w.cwd, "locked.txt"), 0o644);
     expect(side).toEqual({ state: "other" });
-  });
-
-  it("fails rather than search past a list of key files too long to read", async () => {
-    const w = rig();
-    const port = shim(
-      w,
-      "git",
-      'case " $* " in *" -l "*) head -c 2100000 /dev/zero | tr "\\0" a; exit 0 ;; esac\nexec REAL "$@"',
-    );
-    await expect(port.search(w.copy, "needle", false)).rejects.toThrow();
   });
 
   it("limits a search's memory", () => {

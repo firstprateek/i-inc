@@ -87,6 +87,6 @@ export const demoReview: ReviewPort = {
         .split("\n")
         .flatMap((line, i) => (fold(line).includes(fold(query)) ? [{ path, line: i + 1, text: line }] : [])),
     );
-    return { present: true, hits, skipped: 0, withheld: 0, truncated: false, partial: false };
+    return { present: true, hits, truncated: false, partial: false };
   },
 };

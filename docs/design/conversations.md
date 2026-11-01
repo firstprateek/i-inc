@@ -277,16 +277,16 @@ changed. Each read follows the Review rules above: it writes nothing, boots noth
 - `GET /api/conversations/:id/files/read?path=`: `{ file: { state, path, side, withheld?, reason? } }`, one side as in a
   diff, by the same checks: 1 MB, redacted with its lines kept, links never followed, and a file that usually holds secrets
   is named but not served, and neither is anything reached through a link into `.git` or `.inc`. A bad path is a 400.
-- `GET /api/conversations/:id/files/search?q=&case=1`: `{ search: { state, hits, skipped, withheld, truncated, partial, reason? } }`,
-  each hit `{ path, line, text }`. A literal query of one line, at most 200 characters: `git grep -F` over what isn't
-  ignored, with the scratch index, or a bounded `grep` with no commit. It looks in no binary file and through no link,
-  and has at most 20 hits per file and 500 in all, and 2 GB of memory. Case is ignored unless `case=1`.
-- **What a search won't say.** Redaction looks across lines, so a search reads the two lines before each match, and a line
-  redaction reaches from those isn't shown. A line is read to 2,000 bytes, and a line that long loses its last 512 bytes
-  and any word it ended in, since a credential the cut split matches no pattern. A file that holds a private key or a
-  `.netrc`-style login, or that usually holds secrets, isn't searched; `withheld` counts the first kind, which depends on
-  nothing typed. A match that can't be shown is left out and not counted: to count it would tell what is hidden, a letter
-  at a time.
+- `GET /api/conversations/:id/files/search?q=&case=1`: `{ search: { state, hits, truncated, partial, reason? } }`, each hit
+  `{ path, line, text }`. A literal query of one line, at most 200 characters, with case ignored unless `case=1`.
+- **Search looks at what the viewer shows.** `git grep -F` over what isn't ignored, with the scratch index and 2 GB of
+  memory, or a bounded `grep` with no commit, only says which files may hold the query. Those files, up to 200 and 6 MB
+  in all and none over 1 MB, come out as the viewer reads them, each is redacted whole, and the query is looked for in
+  that text. Redacting a line can't work: a value can sit lines from its label and a key has nothing near it. So what a
+  search shows can't be other than what the viewer shows, a match inside what redaction took out is no match, and nothing
+  counts what wasn't shown: a count that moved with the query would tell what is hidden, a letter at a time. One thing
+  still moves with a guess: a match in a file counts towards the 200 files, so with more than 200 files matching, a guess
+  right about a secret could change which files are looked through. Hits are at most 20 a file and 500 in all.
 - **The pane.** Files is a tree with one tab stop and the tree keys, with a filter over paths; lists draw 400 rows at a
   time. The viewer has line numbers and the highlighter (up to 40 KB, plain after that) and draws 1,000 lines at a time,
   around the line asked for. Search runs when it is asked to, lists hits by file and opens the viewer at the line. Files

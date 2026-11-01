@@ -393,21 +393,20 @@ export interface OpenFileView {
   reason?: string;
 }
 
-/** A line holding what was searched for. `text` is redacted, cut around the match, and shows it. */
+/** A line holding what was searched for, as the viewer shows it, cut around the match. */
 export interface SearchHit {
   path: string;
   line: number;
   text: string;
 }
 
-/** What a search of a working copy found (GET /api/conversations/:id/files/search). */
+/**
+ * What a search of a working copy found (GET /api/conversations/:id/files/search). There is no count of what wasn't
+ * shown: a count that moved with the query would tell what is hidden.
+ */
 export interface SearchView {
   state: ChangesState;
   hits: SearchHit[];
-  /** Matches in names that aren't safe to show. */
-  skipped: number;
-  /** Files not searched, for what they hold. It depends on nothing typed, so it says nothing about a query. */
-  withheld: number;
   /** There were more than the results hold. */
   truncated: boolean;
   /** Something in the folder couldn't be read, so there may be more. */

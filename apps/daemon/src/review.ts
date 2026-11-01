@@ -405,7 +405,7 @@ export class ConversationReview {
   /** The lines that hold `query`, as it is written. */
   async search(id: string, query: string, matchCase: boolean): Promise<SearchView> {
     const copy = this.copy(id);
-    const empty = { hits: [], skipped: 0, withheld: 0, truncated: false, partial: false };
+    const empty = { hits: [], truncated: false, partial: false };
     if (!copy) return { ...empty, state: "failed", reason: "There is no such conversation." };
     try {
       const { present, ...found } = await this.within(this.d.port.search(copy, query, matchCase));

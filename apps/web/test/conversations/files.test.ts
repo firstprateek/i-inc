@@ -55,7 +55,7 @@ let calls: string[];
 beforeEach(() => {
   listReply = filesView();
   fileReply = undefined;
-  searchReply = { state: "ok", hits: [], skipped: 0, withheld: 0, truncated: false };
+  searchReply = { state: "ok", hits: [], truncated: false, partial: false };
   calls = [];
   vi.stubGlobal("fetch", async (url: string) => {
     calls.push(url);
@@ -650,9 +650,8 @@ describe("the Search tab", () => {
         { path: "src/a.ts", line: 2, text: "const b = 2;" },
         { path: "src/deep/b.ts", line: 9, text: "<b>const</b>" },
       ],
-      skipped: 0,
-      withheld: 0,
       truncated: false,
+      partial: false,
     };
     const { el, root } = await mount();
     await search(el, root, "const");
@@ -670,9 +669,8 @@ describe("the Search tab", () => {
     searchReply = {
       state: "ok",
       hits: [{ path: "a", line: 5, text: "    expect(x)" }],
-      skipped: 0,
-      withheld: 0,
       truncated: false,
+      partial: false,
     };
     const { el, root } = await mount();
     await search(el, root, "expect");
@@ -697,9 +695,8 @@ describe("the Search tab", () => {
         { path: "a.ts", line: 12, text: "x" },
         { path: "a.ts", line: 40, text: "x" },
       ],
-      skipped: 0,
-      withheld: 0,
       truncated: false,
+      partial: false,
     };
     const { el, root } = await mount();
     await search(el, root, "x");
@@ -715,9 +712,8 @@ describe("the Search tab", () => {
     searchReply = {
       state: "ok",
       hits: [{ path: "a", line: 1, text: "one two" }],
-      skipped: 0,
-      withheld: 0,
       truncated: false,
+      partial: false,
     };
     const { el, root } = await mount();
     await search(el, root, "one");
@@ -730,17 +726,15 @@ describe("the Search tab", () => {
     const { el, root } = await mount();
     await search(el, root, "x");
     expect(root.textContent).toContain("No matches.");
-    searchReply = { state: "ok", hits: [], skipped: 1, withheld: 2, truncated: true };
+    searchReply = { state: "ok", hits: [], partial: true, truncated: true };
     await search(el, root, "y");
-    expect(root.textContent).toContain("1 match is in a file whose name isn't safe to show.");
-    expect(root.textContent).toContain("2 files holding keys or logins weren't searched.");
+    expect(root.textContent).toContain("Some files couldn't be read");
     expect(root.textContent).toContain("at most 20 a file and 500 in all");
     searchReply = {
       state: "asleep",
       hits: [],
-      skipped: 0,
-      withheld: 0,
       truncated: false,
+      partial: false,
       reason: "Ada's machine is asleep, so the files can't be read right now.",
     };
     await search(el, root, "z");

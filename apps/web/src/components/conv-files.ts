@@ -581,16 +581,12 @@ export class IncConvFiles extends LitElement {
       return html`<p class="say" role="alert">Couldn't search (${this.searchError}).</p>`;
     }
     if (!r || !asked)
-      return html`<p class="quiet">Finds this text in the working copy, changed or not, leaving out ignored files and files that hold secrets.</p>`;
+      return html`<p class="quiet">Finds this text as the viewer shows it, changed or not. Ignored files, files that hold secrets and files over 1 MB aren't searched.</p>`;
     if (r.state !== "ok") return html`<p class="say">${r.reason}</p>`;
     const groups = groupHits(r.hits);
-    const left = html`${r.skipped ? html`<p class="say">${r.skipped === 1 ? "1 match is" : `${r.skipped} matches are`} in a file whose name isn't safe to show.</p>` : nothing}
-      ${r.withheld ? html`<p class="say">${r.withheld === 1 ? "1 file holding a key or login wasn't" : `${r.withheld} files holding keys or logins weren't`} searched.</p>` : nothing}
-      ${r.partial ? html`<p class="say">Some files couldn't be read, so there may be more.</p>` : nothing}
+    const left = html`${r.partial ? html`<p class="say">Some files couldn't be read, so there may be more.</p>` : nothing}
       ${r.truncated ? html`<p class="say">There are more matches than this: at most 20 a file and 500 in all. Try a longer search.</p>` : nothing}`;
-    if (!r.hits.length) {
-      return html`<p class="quiet">No matches.</p>${left}`;
-    }
+    if (!r.hits.length) return html`<p class="quiet">No matches.</p>${left}`;
     return html`<p class="quiet">${this.summary(r)}</p>
       <div class="scroll">${left}${groups.map(
         (g) =>

@@ -272,13 +272,39 @@ const extraCredential = [
   /\bmachine\s+\S+\s+(?:login\s+\S+\s+)?password\s+\S{4,}/,
 ];
 
+const KEY_BEGIN = /-{4,5} ?BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY[A-Z ]{0,10}-{4,5}/g;
+const KEY_END = /-{4,5} ?END [A-Z0-9 ]{0,40}PRIVATE KEY[A-Z ]{0,10}-{4,5}/g;
+
+/**
+ * Everything between a key's markers goes, keeping its lines, whatever the lines in between look like: a key in a
+ * comment or a quoted block is no less a key. With no end marker it is `redactTokens`' to judge. One pass.
+ */
+function redactKeyBlocks(t: string): string {
+  if (!t.includes("PRIVATE KEY")) return t;
+  let out = "";
+  let last = 0;
+  KEY_BEGIN.lastIndex = 0;
+  for (let m = KEY_BEGIN.exec(t); m; m = KEY_BEGIN.exec(t)) {
+    KEY_END.lastIndex = KEY_BEGIN.lastIndex;
+    const e = KEY_END.exec(t);
+    if (!e) break;
+    const stop = e.index + e[0].length;
+    out += `${t.slice(last, m.index)}[private key]${"\n".repeat(t.slice(m.index, stop).split("\n").length - 1)}`;
+    last = stop;
+    KEY_BEGIN.lastIndex = stop;
+  }
+  return out + t.slice(last);
+}
+
 /**
  * A changed file made safe to show the owner: everything `redactTokens` takes out and the other kinds the scan
  * stops, so what would stop a push is not sent to a browser in clear. Lines stay where they are: a comment on one
  * goes to the agent by its number.
  */
 export function redactFile(text: string): string {
-  return redactTokens(text, { keepLines: true })
+  return redactTokens(redactKeyBlocks(text), { keepLines: true })
+    .replace(/\b[sr]k_live_[A-Za-z0-9]{16,}\w*/g, "[redacted]")
+    .replace(/\bwhsec_[A-Za-z0-9+/=_-]{8,}/g, "[redacted]")
     .replace(/(_authToken\s*=\s*)(?!\$\{)[^\s"']{8,}/g, "$1[redacted]")
     .replace(/(\bmachine\s+\S+\s+(?:login\s+\S+\s+)?password\s+)\S{4,}/g, "$1[redacted]");
 }
