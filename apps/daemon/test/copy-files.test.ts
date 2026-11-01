@@ -29,8 +29,9 @@ import {
 } from "../src/copy-files.ts";
 import { seedDemo } from "../src/demo.ts";
 import { demoReview } from "../src/demo-review.ts";
-import type { RunScript } from "../src/harness.ts";
-import { MachineNotRunning } from "../src/machine-queue.ts";
+import { machineScript, type RunScript } from "../src/harness.ts";
+import { MachineNotRunning, queueFor } from "../src/machine-queue.ts";
+import { defaultMachineSettings } from "../src/machines.ts";
 import { ConversationReview, type ReviewCopy, type ReviewPort, reviewPort } from "../src/review.ts";
 import { marker } from "../src/ship-git.ts";
 
@@ -543,6 +544,33 @@ describe("how a read fails, in a sentence", () => {
     const r = service(stub({ tree: never, search: never }));
     expect((await r.files("ab12")).state).toBe("busy");
     expect((await r.search("ab12", "x", false)).state).toBe("busy");
+  });
+
+  it("says busy when a read is still queued behind a stop, through the real queue, and starts nothing", async () => {
+    const { wallsMarker: _, ...noWalls } = defaultMachineSettings;
+    const settings = { ...noWalls, machineFor: () => "inc-ada" };
+    const started: string[][] = [];
+    const run = machineScript(
+      settings,
+      async () => "NAME STATE\ninc-ada running\n",
+      undefined,
+      (_bin, args) => {
+        started.push(args);
+        throw new Error("no client here");
+      },
+    );
+    // A stop in hand holds the machine: nothing else may start until it ends.
+    let end = () => {};
+    const stopping = queueFor(settings).stop("inc-ada", "a stop", () => new Promise<void>((r) => (end = r)));
+    const r = service(reviewPort(run));
+    expect(await r.files("ab12")).toMatchObject({
+      state: "busy",
+      reason: "Ada's machine is busy, so the files can't be read right now.",
+    });
+    expect(await r.search("ab12", "x", false)).toMatchObject({ state: "busy" });
+    expect(started).toEqual([]);
+    end();
+    await stopping;
   });
 
   it("says a failure in a sentence, with nothing from the machine in it", async () => {
