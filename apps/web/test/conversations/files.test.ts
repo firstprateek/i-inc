@@ -1,0 +1,897 @@
+// The Files and Search tabs, `@file` in the composer, and a Read card's link into the viewer.
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetAhp, setAhp } from "../../src/ahp/hub.ts";
+import type { IncConvComposer } from "../../src/components/conv-composer.ts";
+import "../../src/components/conv-composer.ts";
+import { IncConvFiles, LIST_ROWS, VIEW_LINES } from "../../src/components/conv-files.ts";
+import type { IncConvReview } from "../../src/components/conv-review.ts";
+import "../../src/components/conv-review.ts";
+import type { IncConvTool } from "../../src/components/conv-tool.ts";
+import "../../src/components/conv-tool.ts";
+import {
+  buildTree,
+  codeLines,
+  foldersOf,
+  groupHits,
+  langOf,
+  matchParts,
+  matchPaths,
+  mentionQuery,
+  openNote,
+  pathInCopy,
+  pathsFor,
+  treeRows,
+} from "../../src/conversations/files.ts";
+import { draftMemo } from "../../src/drafts.ts";
+import { CHAT, must, SESSION, until } from "../ahp/fake-host.ts";
+
+// biome-ignore lint/suspicious/noExplicitAny: scripted JSON.
+type Any = any;
+
+const reply = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+const PATHS = ["README.md", "src/a.ts", "src/deep/b.ts", "src/deep/c.ts", "zebra.txt"];
+const filesView = (over: Any = {}) => ({
+  state: "ok",
+  noProject: false,
+  paths: PATHS,
+  skipped: 0,
+  truncated: false,
+  ...over,
+});
+const opened = (path: string, over: Any = {}) => ({
+  state: "ok",
+  path,
+  side: { state: "text", text: "const a = 1;\nconst b = 2;\n" },
+  ...over,
+});
+
+let listReply: Any;
+let fileReply: Any;
+let searchReply: Any;
+let calls: string[];
+
+beforeEach(() => {
+  listReply = filesView();
+  fileReply = undefined;
+  searchReply = { state: "ok", hits: [], skipped: 0, withheld: 0, truncated: false };
+  calls = [];
+  vi.stubGlobal("fetch", async (url: string) => {
+    calls.push(url);
+    if (url.includes("/files/read")) {
+      const path = new URL(url, "http://x").searchParams.get("path") ?? "";
+      return reply({ file: fileReply ?? opened(path) });
+    }
+    if (url.includes("/files/search")) return reply({ search: searchReply });
+    if (url.includes("/files")) return reply({ files: listReply });
+    if (url.includes("/changes")) {
+      return reply({
+        changes: { state: "ok", noProject: false, files: [], skipped: 0, truncated: false, partial: false },
+      });
+    }
+    return reply({});
+  });
+});
+
+afterEach(() => {
+  document.body.innerHTML = "";
+  draftMemo.clearAll();
+  localStorage.clear();
+  resetAhp();
+  vi.unstubAllGlobals();
+});
+
+describe("the model", () => {
+  it("shows folders first, and what is inside only when a folder is open", () => {
+    const tree = buildTree(PATHS);
+    expect(treeRows(tree, new Set()).map((r) => r.path)).toEqual(["src", "README.md", "zebra.txt"]);
+    const open = treeRows(tree, new Set(["src", "src/deep"]));
+    expect(open.map((r) => `${r.level} ${r.path}`)).toEqual([
+      "1 src",
+      "2 src/deep",
+      "3 src/deep/b.ts",
+      "3 src/deep/c.ts",
+      "2 src/a.ts",
+      "1 README.md",
+      "1 zebra.txt",
+    ]);
+  });
+
+  it("names the folders on the way", () => {
+    expect(foldersOf("a/b/c.ts")).toEqual(["a", "a/b"]);
+    expect(foldersOf("c.ts")).toEqual([]);
+  });
+
+  it("matches anywhere in a path, a file's name first", () => {
+    expect(matchPaths(["src/zebra/a.ts", "zebra.txt", "b.ts"], "ZEB")).toEqual([
+      "zebra.txt",
+      "src/zebra/a.ts",
+    ]);
+    expect(matchPaths(PATHS, "nothing")).toEqual([]);
+  });
+
+  it("stays quick over a long list", () => {
+    const many = Array.from({ length: 20_000 }, (_, i) => `packages/p${i % 50}/src/file-${i}.ts`);
+    const at = performance.now();
+    const rows = treeRows(buildTree(many), new Set(["packages", "packages/p1", "packages/p1/src"]));
+    matchPaths(many, "file-19");
+    expect(rows.length).toBeGreaterThan(400);
+    expect(performance.now() - at).toBeLessThan(500);
+  });
+
+  it("finds an @ only at the start or after a space", () => {
+    expect(mentionQuery("@src", 4)).toEqual({ word: "src", start: 0 });
+    expect(mentionQuery("see @a/b", 8)).toEqual({ word: "a/b", start: 4 });
+    expect(mentionQuery("mail me@example.com", 19)).toBeUndefined();
+    expect(mentionQuery("@a b", 4)).toBeUndefined();
+    expect(mentionQuery("@a b", 2)).toEqual({ word: "a", start: 0 });
+  });
+
+  it("takes only a path in this copy", () => {
+    expect(pathInCopy("/home/employee/work/conv-c1/src/a.ts", "c1")).toBe("src/a.ts");
+    expect(pathInCopy("src/a.ts", "c1")).toBe("src/a.ts");
+    for (const bad of [
+      "/etc/passwd",
+      "/home/employee/work/conv-c2/a.ts",
+      "/home/employee/work/conv-c1/../x",
+      "../x",
+      ".git/config",
+      "a/.GIT/config",
+      ".inc/a.png",
+      "-x",
+      "a\nb",
+      "",
+    ]) {
+      expect(pathInCopy(bad, "c1")).toBeNull();
+    }
+  });
+
+  it("cuts a token that spans lines at each break, and drops the last empty line", () => {
+    const lines = codeLines("/* one\ntwo */\nx\n", "ts");
+    expect(lines).toHaveLength(3);
+    expect(lines[1]?.map((t) => t.s).join("")).toBe("two */");
+    expect(lines[1]?.[0]?.t).toBe("com");
+    expect(codeLines("a\n\nb", "txt")).toHaveLength(3);
+  });
+
+  it("names a language from a file's extension, and a dotfile has none", () => {
+    expect(langOf("src/a.TS")).toBe("ts");
+    expect(langOf(".gitignore")).toBe("");
+    expect(langOf("Makefile")).toBe("");
+  });
+
+  it("says why a file has no lines", () => {
+    const side = (state: string, text?: string) => ({ side: { state, ...(text ? { text } : {}) } }) as Any;
+    expect(openNote(side("text", "x"))).toBeNull();
+    expect(openNote(side("text", ""))).toContain("empty");
+    expect(openNote(side("none"))).toContain("isn't in the working copy");
+    expect(openNote(side("link", "b.txt"))).toContain("link to b.txt");
+    expect(openNote(side("outside"))).toContain("leaves the working copy");
+    expect(openNote(side("too-big"))).toContain("over 1 MB");
+    expect(openNote(side("binary"))).toContain("binary");
+    expect(openNote(side("other"))).toContain("regular file");
+    expect(openNote({ ...side("none"), withheld: true })).toContain("secrets");
+  });
+
+  it("groups hits by file, in order", () => {
+    const h = (path: string, line: number) => ({ path, line, text: "x" });
+    expect(groupHits([h("a", 1), h("a", 2), h("b", 1)]).map((g) => g.hits.length)).toEqual([2, 1]);
+  });
+
+  it("marks every match, whatever its case", () => {
+    expect(matchParts("Abc abc", "ABC", false)).toEqual([
+      { s: "Abc", hit: true },
+      { s: " ", hit: false },
+      { s: "abc", hit: true },
+    ]);
+    expect(matchParts("Abc", "abc", true)).toEqual([{ s: "Abc", hit: false }]);
+  });
+});
+
+describe("the Files tab", () => {
+  async function mount(over: Partial<IncConvFiles> = {}) {
+    const el = document.createElement("inc-conv-files") as IncConvFiles;
+    el.conversationId = "c1";
+    Object.assign(el, over);
+    document.body.append(el);
+    const root = el.shadowRoot as ShadowRoot;
+    await until(() => !el.listLoading && (el.list || el.listError));
+    await el.updateComplete;
+    return { el, root };
+  }
+  const items = (root: ShadowRoot) => [...root.querySelectorAll<HTMLElement>('[role="treeitem"]')];
+  const row = (root: ShadowRoot, path: string) => must(items(root).find((r) => r.dataset.path === path));
+  const key = (el: HTMLElement, k: string) =>
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, composed: true }));
+
+  it("starts with the top of the tree, and opens a folder", async () => {
+    const { el, root } = await mount();
+    expect(items(root).map((r) => r.dataset.path)).toEqual(["src", "README.md", "zebra.txt"]);
+    const src = row(root, "src");
+    expect(src.getAttribute("aria-expanded")).toBe("false");
+    src.click();
+    await el.updateComplete;
+    expect(items(root).map((r) => r.dataset.path)).toContain("src/a.ts");
+    expect(row(root, "src").getAttribute("aria-expanded")).toBe("true");
+    expect(row(root, "src/a.ts").getAttribute("aria-level")).toBe("2");
+  });
+
+  it("goes through the tree by keyboard, one tab stop at a time", async () => {
+    const { el, root } = await mount();
+    expect(items(root).filter((r) => r.tabIndex === 0)).toHaveLength(1);
+    row(root, "src").focus();
+    key(row(root, "src"), "ArrowRight");
+    await el.updateComplete;
+    expect(el.open.has("src")).toBe(true);
+    key(row(root, "src"), "ArrowDown");
+    await el.updateComplete;
+    await el.updateComplete;
+    expect((root.activeElement as HTMLElement)?.dataset.path).toBe("src/deep");
+    key(row(root, "src/deep"), "ArrowLeft");
+    await el.updateComplete;
+    await el.updateComplete;
+    expect((root.activeElement as HTMLElement)?.dataset.path).toBe("src");
+    key(row(root, "src"), "ArrowLeft");
+    await el.updateComplete;
+    expect(el.open.has("src")).toBe(false);
+    key(row(root, "src"), "End");
+    await el.updateComplete;
+    await el.updateComplete;
+    expect((root.activeElement as HTMLElement)?.dataset.path).toBe("zebra.txt");
+    key(row(root, "zebra.txt"), "Enter");
+    await until(() => root.querySelector(".code"));
+    expect(calls.some((c) => c.includes("/files/read?path=zebra.txt"))).toBe(true);
+  });
+
+  it("filters by path, and clears on Escape with the pane left alone", async () => {
+    const { el, root } = await mount();
+    const box = root.querySelector('input[type="search"]') as HTMLInputElement;
+    box.value = "deep/";
+    box.dispatchEvent(new Event("input"));
+    await el.updateComplete;
+    expect([...root.querySelectorAll("[data-path]")].map((b) => (b as HTMLElement).dataset.path)).toEqual([
+      "src/deep/b.ts",
+      "src/deep/c.ts",
+    ]);
+    const out = vi.fn();
+    document.addEventListener("keydown", out);
+    box.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, composed: true }));
+    document.removeEventListener("keydown", out);
+    await el.updateComplete;
+    expect(out).not.toHaveBeenCalled();
+    expect(el.filter).toBe("");
+    expect(root.querySelector('[role="tree"]')).not.toBeNull();
+  });
+
+  it("says when a filter finds nothing", async () => {
+    const { el, root } = await mount();
+    el.filter = "nothing";
+    await el.updateComplete;
+    expect(root.textContent).toContain("No file's path has that in it.");
+  });
+
+  it("draws a long list in pieces", async () => {
+    listReply = filesView({ paths: Array.from({ length: 1200 }, (_, i) => `f${i}.txt`) });
+    const { el, root } = await mount();
+    expect(items(root)).toHaveLength(LIST_ROWS);
+    must(root.querySelector<HTMLButtonElement>(".more .link-btn")).click();
+    await el.updateComplete;
+    expect(items(root)).toHaveLength(LIST_ROWS * 2);
+    el.filter = "f1";
+    await el.updateComplete;
+    expect(root.querySelectorAll("li .t").length).toBeLessThanOrEqual(LIST_ROWS * 2);
+  });
+
+  it("says what it left out", async () => {
+    listReply = filesView({ skipped: 2, truncated: true });
+    const { root } = await mount();
+    expect(root.textContent).toContain("2 files have a name that isn't safe to show.");
+    expect(root.textContent).toContain("Only the first 5 files are listed.");
+  });
+
+  it("says when the machine is asleep, wakes nothing, and tries again", async () => {
+    listReply = filesView({
+      state: "asleep",
+      paths: [],
+      reason: "Ada's machine is asleep, so the files can't be read right now.",
+    });
+    const { el, root } = await mount();
+    expect(root.querySelector(".state")?.textContent).toContain("is asleep");
+    expect(calls.filter((c) => c.includes("/files/read"))).toEqual([]);
+    listReply = filesView();
+    must(root.querySelector<HTMLButtonElement>(".state .cbtn")).click();
+    await until(() => el.list?.state === "ok");
+    await el.updateComplete;
+    expect(items(root).length).toBeGreaterThan(0);
+  });
+
+  it("says when a list can't be fetched, and tries again", async () => {
+    vi.stubGlobal("fetch", async () => reply({ error: "no" }, 500));
+    const { el, root } = await mount();
+    expect(root.querySelector(".state")?.getAttribute("role")).toBe("alert");
+    vi.stubGlobal("fetch", async () => reply({ files: listReply }));
+    must(root.querySelector<HTMLButtonElement>(".state .cbtn")).click();
+    await until(() => el.list?.state === "ok");
+  });
+
+  it("calls an empty folder empty", async () => {
+    listReply = filesView({ paths: [], noProject: true });
+    const { root } = await mount();
+    expect(root.querySelector(".state")?.textContent).toContain("There are no files here yet.");
+  });
+
+  it("renders a file as text, never as HTML, with bidi and control characters shown", async () => {
+    fileReply = opened("zebra.txt", {
+      side: { state: "text", text: "<img src=x onerror=alert(1)>\nnaughty‮gnp.exe\n" },
+    });
+    const { el, root } = await mount();
+    row(root, "zebra.txt").click();
+    await until(() => root.querySelector(".code"));
+    await el.updateComplete;
+    expect(root.querySelector(".code img")).toBeNull();
+    expect(root.querySelector(".code")?.textContent).toContain("<img src=x");
+    expect(root.querySelector(".code")?.textContent).not.toContain("‮");
+  });
+
+  it("numbers the lines and highlights by language", async () => {
+    const { el, root } = await mount({ target: { path: "src/a.ts" } });
+    await until(() => root.querySelector(".code"));
+    await el.updateComplete;
+    expect([...root.querySelectorAll(".ln .no")].map((n) => n.textContent)).toEqual(["1", "2"]);
+    const keyword = must(root.querySelector<HTMLElement>(".tk-kw"));
+    expect(keyword.textContent).toBe("const");
+    // The class alone isn't the colour: the stylesheet has to be there too.
+    const sheets = (el.constructor as typeof IncConvFiles).styles as unknown as { cssText: string }[];
+    expect(sheets.some((sheet) => sheet.cssText.includes(".tk-kw"))).toBe(true);
+    expect(root.activeElement).toBe(root.querySelector(".code"));
+  });
+
+  it("opens the folders on the way to a file it is told to open", async () => {
+    const { el, root } = await mount({ target: { path: "src/deep/b.ts" } });
+    await until(() => root.querySelector(".code"));
+    await el.updateComplete;
+    expect(row(root, "src/deep/b.ts").getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("opens deep in a long file around the line, and shows more each way", async () => {
+    const text = Array.from({ length: 5000 }, (_, i) => `line ${i + 1}`).join("\n");
+    fileReply = opened("big.log", { side: { state: "text", text } });
+    const { el, root } = await mount({ target: { path: "big.log", line: 3000 } });
+    await until(() => root.querySelector(".code"));
+    await el.updateComplete;
+    expect(root.querySelectorAll(".ln")).toHaveLength(VIEW_LINES);
+    expect(root.querySelector('.ln[aria-current="true"]')?.textContent).toContain("line 3000");
+    const [up, down] = root.querySelectorAll<HTMLButtonElement>(".more .link-btn");
+    must(up).click();
+    await el.updateComplete;
+    expect(root.querySelectorAll(".ln")).toHaveLength(VIEW_LINES * 2);
+    must(down).click();
+    await el.updateComplete;
+    expect(root.querySelectorAll(".ln")).toHaveLength(VIEW_LINES * 3);
+  });
+
+  it("says why a file shows no lines, and keeps a way on when a read fails", async () => {
+    const { el, root } = await mount();
+    fileReply = opened("x", { side: { state: "binary" } });
+    row(root, "zebra.txt").click();
+    await until(() => root.querySelector(".note")?.textContent?.includes("binary"));
+    fileReply = opened("x", {
+      state: "busy",
+      side: { state: "none" },
+      reason: "Ada's machine is busy, so this file can't be read right now.",
+    });
+    row(root, "README.md").click();
+    await until(() => root.querySelector(".note")?.textContent?.includes("is busy"));
+    fileReply = undefined;
+    const again = must(root.querySelector<HTMLButtonElement>(".note .link-btn"));
+    again.focus();
+    again.click();
+    await until(() => root.activeElement?.matches(".code"));
+    await el.updateComplete;
+  });
+
+  it("doesn't let a slow answer for one file replace the next", async () => {
+    const { el, root } = await mount();
+    let release: (r: Response) => void = () => {};
+    vi.stubGlobal("fetch", (url: string) =>
+      url.includes("zebra")
+        ? new Promise<Response>((r) => {
+            release = r;
+          })
+        : Promise.resolve(reply({ file: opened("README.md") })),
+    );
+    row(root, "zebra.txt").click();
+    row(root, "README.md").click();
+    await until(() => el.file?.path === "README.md");
+    release(reply({ file: opened("zebra.txt") }));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(el.selected).toBe("README.md");
+    expect(el.file?.path).toBe("README.md");
+  });
+
+  it("forgets everything when the conversation changes", async () => {
+    const { el, root } = await mount({ target: { path: "src/a.ts" } });
+    await until(() => root.querySelector(".code"));
+    el.filter = "x";
+    el.conversationId = "c2";
+    await el.updateComplete;
+    expect(el.selected).toBeNull();
+    expect(el.filter).toBe("");
+    await until(() => calls.some((c) => c.includes("/conversations/c2/files")));
+  });
+
+  it("refreshes the list and the open file", async () => {
+    const { el, root } = await mount({ target: { path: "src/a.ts" } });
+    await until(() => root.querySelector(".code"));
+    calls.length = 0;
+    await el.refresh();
+    expect(calls.some((c) => c.endsWith("/files"))).toBe(true);
+    expect(calls.some((c) => c.includes("/files/read"))).toBe(true);
+  });
+});
+
+describe("the Search tab", () => {
+  async function mount() {
+    const el = document.createElement("inc-conv-files") as IncConvFiles;
+    el.conversationId = "c1";
+    el.mode = "search";
+    document.body.append(el);
+    await el.updateComplete;
+    return { el, root: el.shadowRoot as ShadowRoot };
+  }
+  async function search(el: IncConvFiles, root: ShadowRoot, q: string) {
+    const box = root.querySelector('input[type="text"]') as HTMLInputElement;
+    box.value = q;
+    box.dispatchEvent(new Event("input"));
+    await el.updateComplete;
+    must(root.querySelector("form")).dispatchEvent(new Event("submit", { cancelable: true }));
+    await until(() => !el.searching);
+    await el.updateComplete;
+  }
+
+  it("asks nothing of the machine until asked, and sends the query as text", async () => {
+    const { el, root } = await mount();
+    expect(calls).toEqual([]);
+    await search(el, root, "a&b=c");
+    expect(calls[0]).toContain("/files/search?q=a%26b%3Dc");
+    expect(calls[0]).not.toContain("case=1");
+  });
+
+  it("minds case when asked", async () => {
+    const { el, root } = await mount();
+    const box = root.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    box.checked = true;
+    box.dispatchEvent(new Event("change"));
+    await search(el, root, "x");
+    expect(calls[0]).toContain("case=1");
+  });
+
+  it("shows matches by file, marks them, and opens the viewer at the line", async () => {
+    searchReply = {
+      state: "ok",
+      hits: [
+        { path: "src/a.ts", line: 2, text: "const b = 2;" },
+        { path: "src/deep/b.ts", line: 9, text: "<b>const</b>" },
+      ],
+      skipped: 0,
+      withheld: 0,
+      truncated: false,
+    };
+    const { el, root } = await mount();
+    await search(el, root, "const");
+    expect([...root.querySelectorAll("h3")].map((h) => h.textContent)).toEqual(["src/a.ts", "src/deep/b.ts"]);
+    expect(root.textContent).toContain("2 matches in 2 files.");
+    expect(root.querySelector("mark")?.textContent).toBe("const");
+    expect(root.querySelector(".x b")).toBeNull();
+    must(root.querySelector<HTMLButtonElement>(".hit")).click();
+    await until(() => root.querySelector('.ln[aria-current="true"]'));
+    expect(root.querySelector('.ln[aria-current="true"]')?.textContent).toContain("const b = 2;");
+    expect(root.querySelector(".hit")?.getAttribute("aria-current")).toBe("true");
+  });
+
+  it("shows a match without its line's indent, which would wrap the code under the number", async () => {
+    searchReply = {
+      state: "ok",
+      hits: [{ path: "a", line: 5, text: "    expect(x)" }],
+      skipped: 0,
+      withheld: 0,
+      truncated: false,
+    };
+    const { el, root } = await mount();
+    await search(el, root, "expect");
+    expect(root.querySelector(".x")?.textContent).toBe("expect(x)");
+  });
+
+  it("marks what was searched for, not what is in the box since", async () => {
+    searchReply = {
+      state: "ok",
+      hits: [{ path: "a", line: 1, text: "one two" }],
+      skipped: 0,
+      withheld: 0,
+      truncated: false,
+    };
+    const { el, root } = await mount();
+    await search(el, root, "one");
+    el.query = "two";
+    await el.updateComplete;
+    expect(root.querySelector("mark")?.textContent).toBe("one");
+  });
+
+  it("says nothing was found, what was held back, and when the machine can't answer", async () => {
+    const { el, root } = await mount();
+    await search(el, root, "x");
+    expect(root.textContent).toContain("No matches.");
+    searchReply = { state: "ok", hits: [], skipped: 1, withheld: 2, truncated: true };
+    await search(el, root, "y");
+    expect(root.textContent).toContain("1 match is in a file whose name isn't safe to show.");
+    expect(root.textContent).toContain("2 matches aren't shown");
+    expect(root.textContent).toContain("There are more matches than this.");
+    searchReply = {
+      state: "asleep",
+      hits: [],
+      skipped: 0,
+      withheld: 0,
+      truncated: false,
+      reason: "Ada's machine is asleep, so the files can't be read right now.",
+    };
+    await search(el, root, "z");
+    expect(root.textContent).toContain("is asleep");
+  });
+
+  it("says when a search can't be asked", async () => {
+    const { el, root } = await mount();
+    vi.stubGlobal("fetch", async () => reply({ error: "That can't be searched for." }, 400));
+    await search(el, root, "x");
+    expect(root.querySelector('[role="alert"]')?.textContent).toContain("Couldn't search");
+  });
+
+  it("does nothing with an empty box, and doesn't search twice at once", async () => {
+    const { el, root } = await mount();
+    must(root.querySelector("form")).dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(calls).toEqual([]);
+    let release: (r: Response) => void = () => {};
+    vi.stubGlobal("fetch", (url: string) => {
+      calls.push(url);
+      return new Promise<Response>((r) => {
+        release = r;
+      });
+    });
+    el.query = "x";
+    await el.updateComplete;
+    const form = must(root.querySelector("form"));
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(calls).toHaveLength(1);
+    release(reply({ search: searchReply }));
+    await until(() => !el.searching);
+  });
+});
+
+describe("the pane's tabs", () => {
+  beforeEach(() => {
+    setAhp({ chat: () => ({ turns: [] }), stop() {}, onChange: () => () => {} } as Any);
+  });
+  async function mount(over: Partial<IncConvReview> = {}) {
+    const el = document.createElement("inc-conv-review") as IncConvReview;
+    el.conv = { id: "c1", ahpChat: CHAT, ahpSession: SESSION } as Any;
+    el.name = "Ada";
+    Object.assign(el, over);
+    document.body.append(el);
+    await el.updateComplete;
+    return { el, root: el.shadowRoot as ShadowRoot };
+  }
+  const tabs = (root: ShadowRoot) => [...root.querySelectorAll<HTMLElement>('[role="tab"]')];
+
+  it("offers Changes, Files and Search, with one tab stop", async () => {
+    const { root } = await mount();
+    expect(tabs(root).map((t) => t.textContent)).toEqual(["Changes", "Files", "Search"]);
+    expect(tabs(root).map((t) => t.tabIndex)).toEqual([0, -1, -1]);
+    expect(tabs(root)[0]?.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("moves between them with the arrows", async () => {
+    const { el, root } = await mount();
+    const key = (k: string) =>
+      must(root.querySelector('[role="tablist"]')).dispatchEvent(
+        new KeyboardEvent("keydown", { key: k, bubbles: true }),
+      );
+    key("ArrowRight");
+    await el.updateComplete;
+    expect(el.shownTab).toBe("files");
+    key("End");
+    await el.updateComplete;
+    expect(el.shownTab).toBe("search");
+    await el.updateComplete;
+    expect(root.activeElement?.id).toBe("tab-search");
+    key("ArrowRight");
+    await el.updateComplete;
+    expect(el.shownTab).toBe("changes");
+  });
+
+  it("reads only what the open tab needs", async () => {
+    const { el, root } = await mount({ tab: "search" });
+    await el.updateComplete;
+    expect(calls).toEqual([]);
+    must(root.querySelector<HTMLElement>("#tab-changes")).click();
+    await until(() => calls.some((c) => c.endsWith("/changes")));
+  });
+
+  it("keeps what is in Search and Files while another tab shows", async () => {
+    const { el, root } = await mount({ tab: "search" });
+    const files = root.querySelector("inc-conv-files") as IncConvFiles;
+    files.query = "kept";
+    must(root.querySelector<HTMLElement>("#tab-changes")).click();
+    await el.updateComplete;
+    must(root.querySelector<HTMLElement>("#tab-search")).click();
+    await el.updateComplete;
+    expect(root.querySelector("inc-conv-files")).toBe(files);
+    expect(files.query).toBe("kept");
+  });
+
+  it("opens at a file in Files when told to", async () => {
+    const { root } = await mount({ tab: "files", target: { path: "src/a.ts", line: 2 } });
+    const files = root.querySelector("inc-conv-files") as IncConvFiles;
+    await until(() => files.shadowRoot?.querySelector('.ln[aria-current="true"]'));
+    expect(calls.some((c) => c.endsWith("/changes"))).toBe(false);
+  });
+
+  it("closes on Escape from a tab's list, with nothing typed", async () => {
+    const { root } = await mount({ tab: "files" });
+    const closed = vi.fn();
+    root.host.addEventListener("conv-review-close", closed);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", cancelable: true }));
+    expect(closed).toHaveBeenCalledOnce();
+  });
+});
+
+describe("@file in the composer", () => {
+  async function mount(over: Partial<IncConvComposer> = {}) {
+    const el = document.createElement("inc-conv-composer") as IncConvComposer;
+    const send = vi.fn(async () => null as string | null);
+    el.conversationId = `c-${Math.random().toString(36).slice(2)}`;
+    el.name = "Ada";
+    el.chat = { turns: [] } as Any;
+    el.onSend = send;
+    Object.assign(el, over);
+    document.body.append(el);
+    await el.updateComplete;
+    const root = el.shadowRoot as ShadowRoot;
+    return { el, send, root, ta: root.querySelector("textarea") as HTMLTextAreaElement };
+  }
+  const typeIn = async (el: IncConvComposer, ta: HTMLTextAreaElement, text: string) => {
+    ta.value = text;
+    ta.setSelectionRange(text.length, text.length);
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 0));
+    await el.updateComplete;
+  };
+  const press = (ta: HTMLTextAreaElement, key: string, over: KeyboardEventInit = {}) => {
+    const e = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, composed: true, ...over });
+    ta.dispatchEvent(e);
+    return e;
+  };
+  const options = (root: ShadowRoot) => [...root.querySelectorAll("#mention-list [role='option']")];
+
+  it("opens on an @ at the start or after a space, as a listbox the textarea points at", async () => {
+    const { el, root, ta } = await mount();
+    await typeIn(el, ta, "look at @deep");
+    await until(() => options(root).length);
+    expect(options(root).map((o) => o.textContent)).toEqual(["src/deep/b.ts", "src/deep/c.ts"]);
+    expect(ta.getAttribute("aria-expanded")).toBe("true");
+    expect(ta.getAttribute("aria-controls")).toBe("mention-list");
+    expect(ta.getAttribute("aria-activedescendant")).toBe("mention-0");
+    expect(options(root)[0]?.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("doesn't open on an @ inside a word", async () => {
+    const { el, root, ta } = await mount();
+    await typeIn(el, ta, "me@deep");
+    expect(options(root)).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("doesn't open in a new conversation's draft, which has no working copy", async () => {
+    const { el, root, ta } = await mount({ conversationId: "draft:new" });
+    await typeIn(el, ta, "@deep");
+    await new Promise((r) => setTimeout(r, 5));
+    expect(options(root)).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("moves with the arrows, and Enter puts the path in as text and doesn't send", async () => {
+    const { el, send, root, ta } = await mount();
+    await typeIn(el, ta, "read @deep please");
+    ta.setSelectionRange(10, 10);
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+    await until(() => options(root).length);
+    await el.updateComplete;
+    press(ta, "ArrowDown");
+    await el.updateComplete;
+    expect(ta.getAttribute("aria-activedescendant")).toBe("mention-1");
+    expect(press(ta, "Enter").defaultPrevented).toBe(true);
+    await el.updateComplete;
+    expect(el.text).toBe("read src/deep/c.ts  please");
+    expect(send).not.toHaveBeenCalled();
+    expect(options(root)).toEqual([]);
+  });
+
+  it("takes Tab too, and a mouse press keeps focus in the box", async () => {
+    const { el, root, ta } = await mount();
+    await typeIn(el, ta, "@zeb");
+    await until(() => options(root).length);
+    press(ta, "Tab");
+    await el.updateComplete;
+    expect(el.text).toBe("zebra.txt ");
+    await typeIn(el, ta, "@READ");
+    await until(() => options(root).length);
+    must(options(root)[0]).dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    await el.updateComplete;
+    expect(el.text).toBe("README.md ");
+  });
+
+  it("closes on Escape without closing what is behind it, and stays shut for that @", async () => {
+    const { el, send, root, ta } = await mount();
+    await typeIn(el, ta, "@deep");
+    await until(() => options(root).length);
+    const e = press(ta, "Escape");
+    await el.updateComplete;
+    expect(e.defaultPrevented).toBe(true);
+    expect(options(root)).toEqual([]);
+    await typeIn(el, ta, "@deep/");
+    await new Promise((r) => setTimeout(r, 5));
+    expect(options(root)).toEqual([]);
+    await el.updateComplete;
+    press(ta, "Enter");
+    await until(() => send.mock.calls.length);
+  });
+
+  it("sends on Enter when nothing matches", async () => {
+    const { el, send, root, ta } = await mount();
+    await typeIn(el, ta, "@nothing-like-it");
+    await new Promise((r) => setTimeout(r, 5));
+    expect(options(root)).toEqual([]);
+    press(ta, "Enter");
+    await until(() => send.mock.calls.length);
+  });
+
+  it("leaves slash commands alone", async () => {
+    const session = {
+      _meta: { "iinc.commands": [{ name: "remember", description: "Keep a note" }] },
+    } as Any;
+    const { el, root, ta } = await mount({ session });
+    await typeIn(el, ta, "/rem");
+    expect(root.querySelector("#slash-list")).not.toBeNull();
+    expect(options(root)).toEqual([]);
+    expect(calls).toEqual([]);
+    expect(ta.getAttribute("aria-controls")).toBe("slash-list");
+  });
+
+  it("stays out of the way of an IME, and looks again when the composition ends", async () => {
+    const { el, root, ta } = await mount();
+    ta.dispatchEvent(new CompositionEvent("compositionstart"));
+    await typeIn(el, ta, "@deep");
+    await new Promise((r) => setTimeout(r, 5));
+    expect(options(root)).toEqual([]);
+    expect(calls).toEqual([]);
+    ta.dispatchEvent(new CompositionEvent("compositionend"));
+    await until(() => options(root).length);
+    press(ta, "ArrowDown", { isComposing: true });
+    await el.updateComplete;
+    expect(el.mentionIndex).toBe(0);
+    const e = press(ta, "Enter", { isComposing: true });
+    expect(e.defaultPrevented).toBe(false);
+    expect(el.text).toBe("@deep");
+  });
+
+  it("closes when composition starts on an open list", async () => {
+    const { el, root, ta } = await mount();
+    await typeIn(el, ta, "@deep");
+    await until(() => options(root).length);
+    ta.dispatchEvent(new CompositionEvent("compositionstart"));
+    await el.updateComplete;
+    expect(options(root)).toEqual([]);
+  });
+
+  it("drops an answer the owner has typed past", async () => {
+    let release: (r: Response) => void = () => {};
+    vi.stubGlobal(
+      "fetch",
+      () =>
+        new Promise<Response>((r) => {
+          release = r;
+        }),
+    );
+    const { el, root, ta } = await mount();
+    await typeIn(el, ta, "@deep");
+    await typeIn(el, ta, "");
+    release(reply({ files: filesView() }));
+    await new Promise((r) => setTimeout(r, 5));
+    await el.updateComplete;
+    expect(options(root)).toEqual([]);
+  });
+
+  it("says in a sentence when the machine is asleep, and Enter still sends", async () => {
+    listReply = filesView({
+      state: "asleep",
+      paths: [],
+      reason: "Ada's machine is asleep, so the files can't be read right now.",
+    });
+    const { el, send, root, ta } = await mount();
+    await typeIn(el, ta, "@deep");
+    await until(() => root.querySelector(".pop.say"));
+    expect(root.querySelector(".pop.say")?.textContent).toContain("is asleep");
+    expect(ta.getAttribute("aria-expanded")).toBe("false");
+    press(ta, "Enter");
+    await until(() => send.mock.calls.length);
+  });
+
+  it("asks the machine once while the owner types, and again after a failed read", async () => {
+    const id = `c-${Math.random().toString(36).slice(2)}`;
+    const { el, ta } = await mount({ conversationId: id });
+    await typeIn(el, ta, "@d");
+    await typeIn(el, ta, "@de");
+    await typeIn(el, ta, "@dee");
+    expect(calls.filter((c) => c.includes("/files"))).toHaveLength(1);
+    const other = `c-${Math.random().toString(36).slice(2)}`;
+    listReply = filesView({ state: "busy", paths: [], reason: "busy" });
+    await pathsFor(other);
+    await new Promise((r) => setTimeout(r, 0));
+    await pathsFor(other);
+    expect(calls.filter((c) => c.includes(other))).toHaveLength(2);
+  });
+});
+
+describe("a Read card's link", () => {
+  beforeEach(() => {
+    setAhp({
+      chat: () => ({ turns: [] }),
+      stop() {},
+      onChange: () => () => {},
+      onInfo: () => () => {},
+      confirmation: () => undefined,
+    } as Any);
+  });
+  const call = (path: string, line?: number, title = "Read") =>
+    ({
+      toolCallId: "t1",
+      status: "completed",
+      toolName: "read",
+      displayName: title,
+      _meta: { "iinc.locations": [{ path, ...(line ? { line } : {}) }] },
+    }) as Any;
+  async function mount(c: Any, conversationId = "c1") {
+    const el = document.createElement("inc-conv-tool") as IncConvTool;
+    el.call = c;
+    el.chat = CHAT;
+    el.conversationId = conversationId;
+    document.body.append(el);
+    await el.updateComplete;
+    await new Promise((r) => setTimeout(r, 0));
+    await el.updateComplete;
+    return { el, root: el.shadowRoot as ShadowRoot };
+  }
+
+  it("opens the Files tab at the file and line", async () => {
+    const { root } = await mount(call("/home/employee/work/conv-c1/src/a.ts", 7));
+    const link = must(root.querySelector<HTMLButtonElement>(".openf"));
+    expect(link.getAttribute("aria-label")).toBe("Open src/a.ts at line 7");
+    const seen = vi.fn();
+    document.addEventListener("conv-review", seen);
+    link.click();
+    document.removeEventListener("conv-review", seen);
+    expect(seen.mock.calls[0]?.[0].detail).toEqual({ path: "src/a.ts", line: 7, tab: "files", from: "tool" });
+  });
+
+  it("has no link in a ticket's stage, or to a path outside the copy", async () => {
+    expect((await mount(call("src/a.ts"), "")).root.querySelector(".openf")).toBeNull();
+    expect((await mount(call("/etc/passwd"))).root.querySelector(".openf")).toBeNull();
+  });
+
+  it("has no link once the copy's list says the file has gone", async () => {
+    const id = `c-${Math.random().toString(36).slice(2)}`;
+    await pathsFor(id);
+    expect((await mount(call("src/a.ts"), id)).root.querySelector(".openf")).not.toBeNull();
+    expect((await mount(call("src/gone.ts"), id)).root.querySelector(".openf")).toBeNull();
+  });
+});

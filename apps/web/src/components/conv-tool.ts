@@ -9,6 +9,7 @@ import type {
 import { css, html, LitElement, nothing, type SVGTemplateResult, svg, type TemplateResult } from "lit";
 import { ahp } from "../ahp/hub.ts";
 import { ToolCallStatus } from "../ahp/wire.ts";
+import { mayExist, pathInCopy } from "../conversations/files.ts";
 import { renderMarkdown } from "../conversations/markdown.ts";
 import {
   CATEGORY_LABEL,
@@ -22,6 +23,7 @@ import {
   toolError,
   toolFailed,
   toolInputText,
+  toolLocations,
   toolOutputRefs,
   toolOutputText,
   toolTitle,
@@ -58,7 +60,9 @@ export class IncConvTool extends LitElement {
     call: { attribute: false },
     turnId: { type: String },
     chat: { type: String },
+    conversationId: { type: String },
     turnActive: { type: Boolean },
+    gone: { state: true },
     open: { state: true },
     showAll: { state: true },
     sending: { state: true },
@@ -68,7 +72,11 @@ export class IncConvTool extends LitElement {
   declare turnId: string;
   /** The chat this call is in (answers are remembered per chat). */
   declare chat: string;
+  /** The conversation whose working copy this call worked in; empty in a ticket's read-only stage. */
+  declare conversationId: string;
   declare turnActive: boolean;
+  /** The last list of the copy's files doesn't have this path. */
+  declare gone: string;
   declare open: boolean | undefined;
   declare showAll: boolean;
   declare sending: string | null;
@@ -78,6 +86,8 @@ export class IncConvTool extends LitElement {
     super();
     this.turnId = "";
     this.chat = "";
+    this.conversationId = "";
+    this.gone = "";
     this.turnActive = false;
     this.showAll = false;
     this.sending = null;
@@ -91,7 +101,13 @@ export class IncConvTool extends LitElement {
       :host { display: block; min-width: 0; }
       .tool { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); min-width: 0; }
       .tool.pending { border: 2px solid var(--needs-edge); background: var(--needs-surface); }
-      .head { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 8px; width: 100%; min-height: 40px; padding: 4px 10px; cursor: pointer; min-width: 0; }
+      .bar { display: flex; align-items: center; min-width: 0; }
+      .head { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 8px; flex: 1 1 auto; width: 100%; min-height: 40px; padding: 4px 10px; cursor: pointer; min-width: 0; }
+      .openf { flex: none; width: 40px; height: 40px; margin-right: 2px; border: 0; border-radius: 50%; background: transparent; color: var(--reviewing-fg); display: inline-grid; place-items: center; cursor: pointer; }
+      .openf:hover { background: var(--sunken); }
+      .openf:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: -3px; }
+      .openf svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+      @media (pointer: coarse) { .openf { width: 44px; height: 44px; } }
       .head:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 2px; border-radius: 12px; }
       @media (pointer: coarse) { .head { min-height: 44px; } }
       .ico { flex: none; width: 18px; height: 18px; color: var(--ink-2); display: inline-flex; }
@@ -156,6 +172,7 @@ export class IncConvTool extends LitElement {
 
   override updated(changed: Map<string, unknown>): void {
     if (changed.has("open") && this.open) void this.loadImages();
+    if (changed.has("call") || changed.has("conversationId")) this.checkTarget();
   }
 
   private async loadImages(): Promise<void> {
@@ -320,6 +337,32 @@ export class IncConvTool extends LitElement {
     );
   }
 
+  /** Where a Read card's file is in this conversation's copy, with its line, or null. */
+  private readTarget(call: ToolCallState): { path: string; line?: number } | null {
+    if (!this.conversationId || toolCategory(call) !== "read") return null;
+    const at = toolLocations(call)[0];
+    const path = at && pathInCopy(at.path, this.conversationId);
+    return path ? { path, ...(at.line ? { line: at.line } : {}) } : null;
+  }
+
+  private checkTarget() {
+    const target = this.call && this.readTarget(this.call);
+    if (!target) return;
+    void mayExist(this.conversationId, target.path).then((there) => {
+      this.gone = there ? "" : target.path;
+    });
+  }
+
+  private openFile(t: { path: string; line?: number }, e: Event) {
+    e.currentTarget?.dispatchEvent(
+      new CustomEvent("conv-review", {
+        detail: { ...t, tab: "files", from: "tool" },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+
   override render() {
     const call = this.call;
     if (!call) return nothing;
@@ -332,8 +375,9 @@ export class IncConvTool extends LitElement {
     const removed = edits.reduce((n, e) => n + (e.diff?.removed ?? 0), 0);
     const outcome = this.outcome(call);
     const detail = toolDetail(call) || toolTitle(call);
+    const target = this.readTarget(call);
     return html`<div class="tool ${pending ? "pending" : ""}" id="tool-${call.toolCallId}" data-status=${call.status}>
-      <button class="head" type="button" aria-expanded=${open ? "true" : "false"} aria-controls="body-${call.toolCallId}" @click=${this.toggle}>
+      <div class="bar"><button class="head" type="button" aria-expanded=${open ? "true" : "false"} aria-controls="body-${call.toolCallId}" @click=${this.toggle}>
         <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24">${ICONS[cat]}</svg></span>
         <span class="cat">${CATEGORY_LABEL[cat]}</span>
         <span class="detail" title=${detail}>${detail}</span>
@@ -341,6 +385,12 @@ export class IncConvTool extends LitElement {
         ${this.status(call)}
         <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
       </button>
+      ${
+        target && target.path !== this.gone
+          ? html`<button class="openf" type="button" aria-label="Open ${visible(target.path)}${target.line ? ` at line ${target.line}` : ""}" title="Open this file"
+              @click=${(e: Event) => this.openFile(target, e)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></button>`
+          : nothing
+      }</div>
       ${pending ? this.permission(call) : open ? this.body(call) : nothing}
       ${outcome && call.status !== ToolCallStatus.Cancelled ? html`<p class="outcome">${outcome}</p>` : nothing}
     </div>`;

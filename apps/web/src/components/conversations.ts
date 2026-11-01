@@ -13,7 +13,7 @@ import { live } from "../live.ts";
 import { notifyNeedsYou } from "../needs-you.ts";
 import type { SendDetail } from "./conv-composer.ts";
 import type { DraftPick, IncConvDraft } from "./conv-draft.ts";
-import type { IncConvReview } from "./conv-review.ts";
+import type { IncConvReview, ReviewTab } from "./conv-review.ts";
 import type { ShipDone, ShipKind } from "./conv-ship.ts";
 import { base } from "./shared.ts";
 import "./conv-context.ts";
@@ -80,7 +80,7 @@ export class IncConversations extends LitElement {
   /** The ship dialog, while it is open. */
   declare dialog: { kind: ShipKind } | null;
   /** The review pane, while it is open, and the file it opened at. */
-  declare review: { path: string } | null;
+  declare review: { path: string; line?: number; tab?: ReviewTab } | null;
   declare limit: AccountRateLimit | undefined;
   declare accountName: string;
   declare info: ReturnType<typeof ahp>["info"];
@@ -451,11 +451,12 @@ export class IncConversations extends LitElement {
     });
   };
 
-  private openReview = (e: CustomEvent<{ path?: string; from?: string }>) => {
+  private openReview = (e: CustomEvent<{ path?: string; line?: number; tab?: ReviewTab; from?: string }>) => {
     // From a link (the panel's, the composer's), focus goes back to it if it is still there; else to the Changes button.
     this.reviewOpener = e.detail.from ? ((e.composedPath()[0] ?? null) as HTMLElement | null) : null;
     this.sheet = false;
-    this.review = { path: e.detail.path ?? "" };
+    const { path = "", line, tab } = e.detail;
+    this.review = { path, ...(line ? { line } : {}), ...(tab ? { tab } : {}) };
     void this.updateComplete.then(() =>
       this.renderRoot
         .querySelector<IncConvReview>("inc-conv-review")
@@ -563,6 +564,10 @@ export class IncConversations extends LitElement {
     const inline = open && this.wide && !phone;
     const drawer = open && !this.wide && !phone && !this.review;
     const reviewing = !!this.review && !!conv;
+    const reviewTarget =
+      this.review?.tab === "files" && this.review.path
+        ? { path: this.review.path, ...(this.review.line ? { line: this.review.line } : {}) }
+        : null;
     // While the phone's sheet is open, everything behind it is out of reach (of Tab and of a screen reader).
     const modal = (phone && this.sheet && !!conv) || !!this.dialog;
     const drafting = this.showDraft();
@@ -606,7 +611,8 @@ export class IncConversations extends LitElement {
       ${inline ? html`<aside class="pane ctx-pane ${reviewing ? "under" : ""}" ?inert=${reviewing} aria-label="Context">${context}</aside>` : nothing}
       ${
         reviewing
-          ? html`<section class="pane review-pane" aria-label="Changes"><inc-conv-review .conv=${conv} .name=${employee?.name ?? ""} .phone=${phone} .path=${this.review?.path ?? ""}
+          ? html`<section class="pane review-pane" aria-label="Review"><inc-conv-review .conv=${conv} .name=${employee?.name ?? ""} .phone=${phone}
+              .path=${this.review?.tab === "files" ? "" : (this.review?.path ?? "")} .tab=${this.review?.tab ?? "changes"} .target=${reviewTarget}
               @conv-review-close=${this.closeReview} @conv-send-comments=${this.sendComments} @conv-review-answer=${this.answerAgent}></inc-conv-review></section>`
           : nothing
       }

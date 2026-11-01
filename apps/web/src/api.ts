@@ -7,16 +7,20 @@ import type {
   ChangesView,
   DeskEntry,
   DeskView,
+  FilesView,
   FileView,
   KnowledgeView,
   NamedChange,
   NeedsYouView,
+  OpenFileView,
   Page,
   PendingRelease,
   PendingTicket,
   PolicyProposal,
   ProposalView,
   ReviewFile,
+  SearchHit,
+  SearchView,
   ShipBrief,
   ShipView,
   TicketView,
@@ -32,10 +36,12 @@ export type {
   ChangesView,
   DeskEntry,
   DeskView,
+  FilesView,
   FileView,
   KnowledgeView,
   NamedChange,
   NeedsYouView,
+  OpenFileView,
   Page,
   PendingRelease,
   PendingTicket,
@@ -43,6 +49,8 @@ export type {
   ProjectRelease,
   ProposalView,
   ReviewFile,
+  SearchHit,
+  SearchView,
   ShipBrief,
   ShipView,
   TicketEvent,
@@ -394,6 +402,23 @@ export const api = {
       "GET",
       `/api/conversations/${encodeURIComponent(id)}/changes/file?path=${encodeURIComponent(path)}`,
     ).then((r) => r.file),
+  /** Every file in the working copy, whether or not it changed. Never wakes a machine. */
+  files: (id: string) =>
+    call<{ files: FilesView }>("GET", `/api/conversations/${encodeURIComponent(id)}/files`).then(
+      (r) => r.files,
+    ),
+  /** One file as it is on disk. */
+  readFile: (id: string, path: string) =>
+    call<{ file: OpenFileView }>(
+      "GET",
+      `/api/conversations/${encodeURIComponent(id)}/files/read?path=${encodeURIComponent(path)}`,
+    ).then((r) => r.file),
+  /** The lines that hold these exact words. */
+  searchFiles: (id: string, query: string, matchCase: boolean) =>
+    call<{ search: SearchView }>(
+      "GET",
+      `/api/conversations/${encodeURIComponent(id)}/files/search?q=${encodeURIComponent(query)}${matchCase ? "&case=1" : ""}`,
+    ).then((r) => r.search),
   /** Shipping a conversation's work (C22b): the ticket and PR it has, and with `preview` what would be committed. */
   ship: (id: string, preview = false) =>
     call<{ ship: ShipView }>(

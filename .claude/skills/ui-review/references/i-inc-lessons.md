@@ -123,3 +123,8 @@ paths, branch names, structured briefs).
     control goes away with its own action, say where focus goes next. Test `activeElement`, not only the result.
 29. **Only `defaultPrevented` tells an outer Escape it was taken (keyboard).** A menu that closed on Escape left the event
     free, so the document-level handler closed the pane behind it too. → Anything that takes Escape calls `preventDefault`.
+30. **A class isn't a colour (rendering).** The file viewer gave every token its `tk-*` class and the test passed, but the
+    component hadn't loaded `markdownStyles`, so all code rendered plain. Only the screenshot showed it. → When a component
+    uses another's classes, load the stylesheet, and test that the rule is there, not only the class.
+31. **Leading spaces wrap first in `pre-wrap` (layout).** A search result's indented code wrapped whole below its line
+    number. → Drop a line's indent where it is shown as an excerpt.

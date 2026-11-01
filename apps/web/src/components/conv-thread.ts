@@ -1056,9 +1056,9 @@ export class IncConvThread extends LitElement {
                   turns,
                   (t) => t.id,
                   (t) =>
-                    html`<inc-conv-turn .turn=${t} .employee=${name} .chat=${conv.ahpChat} .readOnly=${!!watch}></inc-conv-turn>`,
+                    html`<inc-conv-turn .turn=${t} .employee=${name} .chat=${conv.ahpChat} .conversationId=${conv.id} .readOnly=${!!watch}></inc-conv-turn>`,
                 )}
-                ${chat.activeTurn ? html`<inc-conv-turn .turn=${chat.activeTurn} active .employee=${name} .chat=${conv.ahpChat} .readOnly=${!!watch}></inc-conv-turn>` : nothing}
+                ${chat.activeTurn ? html`<inc-conv-turn .turn=${chat.activeTurn} active .employee=${name} .chat=${conv.ahpChat} .conversationId=${conv.id} .readOnly=${!!watch}></inc-conv-turn>` : nothing}
                 ${
                   empty && watch
                     ? html`<div class="empty"><h2>Nothing here yet</h2><p>${name} hasn't started this stage. It shows here as it happens.</p></div>`

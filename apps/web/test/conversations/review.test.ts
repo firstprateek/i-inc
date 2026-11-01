@@ -1220,7 +1220,7 @@ describe("the screen around it", () => {
     button().click();
     await until(() => root().querySelector("inc-conv-review")?.shadowRoot?.activeElement);
     const review = must(root().querySelector<IncConvReview>("inc-conv-review"));
-    expect(review.shadowRoot?.activeElement?.getAttribute("aria-label")).toBe("Close changes");
+    expect(review.shadowRoot?.activeElement?.getAttribute("aria-label")).toBe("Close review");
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     await until(() => !root().querySelector("inc-conv-review"));
     await el.updateComplete;
