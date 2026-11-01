@@ -1,13 +1,25 @@
 // The review pane: what a conversation's working copy changes, read from git, so changes made by shell commands
 // show too. A file list and a large diff, in the width of the thread and the context panel; one column when
-// that is narrow. Pick a line to comment on it: comments stay in this browser until they go with a message.
+// that is narrow. Pick a line's number to comment on it (the code itself is there to be selected): comments stay
+// in this browser until they go with a message.
 // Everything shown came from a sandbox, so it is rendered as text, through `visible`.
 import { type DiffRow, diffStats, diffWithContext } from "@i-inc/core";
 import { css, html, LitElement, nothing } from "lit";
 import { ahp } from "../ahp/hub.ts";
 import { api, type ChangesView, type Conversation, type FileView, type ReviewFile } from "../api.ts";
-import { visible } from "../conversations/model.ts";
-import { COMMENT_MAX, fileNote, type LineComment, reviewComments } from "../conversations/review.ts";
+import { firstPending, visible } from "../conversations/model.ts";
+import {
+  anchor,
+  COMMENT_MAX,
+  commentDrafts,
+  fileNote,
+  type LineComment,
+  type LineDraft,
+  type LineSpot,
+  placeOf,
+  quoteOf,
+  reviewComments,
+} from "../conversations/review.ts";
 import { cardStyles } from "../conversations/styles.ts";
 import { base } from "./shared.ts";
 
@@ -23,9 +35,10 @@ const STATUS_WORD: Record<ReviewFile["status"], string> = {
 
 type LineRow = Exclude<DiffRow, { kind: "gap" }>;
 
-/** The side and number a comment on this row is about. */
-const place = (r: LineRow): { side: "new" | "old"; line: number } =>
-  r.kind === "del" ? { side: "old", line: r.oldNo ?? 0 } : { side: "new", line: r.newNo ?? 0 };
+const spot = (at: { side: string; line: number }) => `${at.side}-${at.line}`;
+/** A line as a sentence: a removed one and an added one can have the same number. */
+const lineName = (at: { side: string; line: number }) =>
+  `${at.side === "old" ? "removed line" : "line"} ${at.line}`;
 
 export class IncConvReview extends LitElement {
   static override properties = {
@@ -44,8 +57,9 @@ export class IncConvReview extends LitElement {
     rows: { state: true },
     showAll: { state: true },
     comments: { state: true },
-    editing: { state: true },
+    discarding: { state: true },
     running: { state: true },
+    waiting: { state: true },
   };
   declare conv: Conversation | undefined;
   /** The employee's name, for sentences. */
@@ -65,9 +79,11 @@ export class IncConvReview extends LitElement {
   declare rows: DiffRow[];
   declare showAll: boolean;
   declare comments: LineComment[];
-  /** The line whose comment box is open. */
-  declare editing: { side: "new" | "old"; line: number } | null;
+  /** The comment box asking whether to throw its text away. */
+  declare discarding: string | null;
   declare running: boolean;
+  /** The agent is stopped on a permission or a question. */
+  declare waiting: boolean;
 
   private listToken = 0;
   private fileToken = 0;
@@ -87,8 +103,9 @@ export class IncConvReview extends LitElement {
     this.rows = [];
     this.showAll = false;
     this.comments = [];
-    this.editing = null;
+    this.discarding = null;
     this.running = false;
+    this.waiting = false;
   }
 
   static override styles = [
@@ -125,7 +142,7 @@ export class IncConvReview extends LitElement {
       .c .top { display: flex; align-items: center; gap: 4px; min-width: 0; }
       .c .where { flex: 1 1 auto; min-width: 0; text-align: left; font: 600 12.5px var(--mono); overflow-wrap: anywhere; }
       .c blockquote { margin: 0 8px 0 0; color: var(--ink-2); font: 12.5px var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
-      .c p { margin: 0 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+      .c p { margin: 0 8px 0 0; white-space: break-spaces; overflow-wrap: anywhere; }
       .rm { flex: none; width: 44px; height: 44px; border: 0; border-radius: 50%; background: transparent; color: var(--ink-2); cursor: pointer; display: inline-grid; place-items: center; }
       .rm:hover { background: var(--sunken); color: var(--ink); }
       .rm:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: -3px; }
@@ -137,8 +154,9 @@ export class IncConvReview extends LitElement {
       .rows { flex: 1 1 0; min-height: 0; overflow: auto; overscroll-behavior: contain; font: 13px/1.55 var(--mono); font-variant-ligatures: none; container-type: inline-size; }
       .rows:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: -3px; }
       .in { display: inline-block; min-width: 100%; vertical-align: top; }
-      .row { display: grid; grid-template-columns: 7.6em 1.4em minmax(0, 1fr); min-width: max-content; width: 100%; cursor: pointer; }
+      .row { display: grid; grid-template-columns: 7.6em 1.4em minmax(0, 1fr); min-width: max-content; width: 100%; }
       .row > span { padding: 0 6px; white-space: pre; }
+      .row > .sign { padding: 0; }
       .row:hover .no { color: var(--ink); text-decoration: underline; }
       .no { all: unset; box-sizing: border-box; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 0 6px; text-align: right; color: var(--ink-2); cursor: pointer; user-select: none; -webkit-user-select: none; }
       .no:focus-visible { outline: 2px solid var(--reviewing-mark); outline-offset: -2px; }
@@ -153,7 +171,12 @@ export class IncConvReview extends LitElement {
       .box { display: flex; flex-direction: column; gap: 6px; }
       .box textarea { box-sizing: border-box; width: 100%; min-height: 76px; resize: vertical; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--control-edge); background: var(--surface); color: var(--ink); font: 16px/1.4 var(--body); }
       .box textarea:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 1px; }
-      .box .acts { display: flex; gap: 8px; flex-wrap: wrap; }
+      .box .acts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+      .box .acts p { margin: 0; flex: 1 1 100%; }
+      .moved { flex: none; max-height: 45%; overflow-y: auto; border-bottom: 1px solid var(--line); padding-bottom: 6px; font: 14px/1.4 var(--body); }
+      .moved > p { margin: 0; padding: 8px 10px 2px; color: var(--ink-2); }
+      .moved > .c { margin: 6px 10px 0; }
+      .moved .c:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: -3px; }
       .back { display: none; }
       @media (pointer: coarse) { .row { line-height: 2; } }
       /* Narrow: one column, the list or the diff. */
@@ -169,15 +192,14 @@ export class IncConvReview extends LitElement {
     super.connectedCallback();
     document.addEventListener("keydown", this.onKey);
     const c = ahp();
-    this.running = this.chatRunning();
+    this.syncChat();
     this.offs = [
       c.onChange((uris) => {
         const conv = this.conv;
         if (!conv || !uris.has(conv.ahpChat)) return;
-        const now = this.chatRunning();
-        const ended = this.running && !now;
-        this.running = now;
-        if (ended) void this.refresh();
+        const was = this.running;
+        this.syncChat();
+        if (was && !this.running) void this.refresh();
       }),
       reviewComments.subscribe((id) => {
         if (id === this.conv?.id) this.comments = reviewComments.list(id);
@@ -196,13 +218,16 @@ export class IncConvReview extends LitElement {
   override willUpdate(changed: Map<string, unknown>): void {
     if (changed.has("conv") && (changed.get("conv") as Conversation | undefined)?.id !== this.conv?.id) {
       this.comments = this.conv ? reviewComments.list(this.conv.id) : [];
-      this.running = this.chatRunning();
+      this.discarding = null;
+      this.syncChat();
       void this.refresh();
     }
   }
 
-  private chatRunning(): boolean {
-    return this.conv ? !!ahp().chat(this.conv.ahpChat)?.activeTurn : false;
+  private syncChat() {
+    const chat = this.conv ? ahp().chat(this.conv.ahpChat) : undefined;
+    this.running = !!chat?.activeTurn;
+    this.waiting = !!firstPending(chat);
   }
 
   /** Escape closes the pane. A comment box in the way takes it first (its own handler stops it reaching here). */
@@ -250,6 +275,16 @@ export class IncConvReview extends LitElement {
     }
   }
 
+  /** A press of Refresh or Try again. The button may be gone when it ends: focus isn't left on nothing. */
+  private retry = async () => {
+    if (this.loading) return;
+    await this.refresh();
+    await this.updateComplete;
+    if (document.activeElement === document.body) {
+      this.renderRoot.querySelector<HTMLElement>(".refresh")?.focus();
+    }
+  };
+
   private async open(path: string): Promise<void> {
     const conv = this.conv;
     if (!conv) return;
@@ -258,7 +293,7 @@ export class IncConvReview extends LitElement {
       this.file = undefined;
       this.rows = [];
       this.showAll = false;
-      this.editing = null;
+      this.discarding = null;
     }
     this.selected = path;
     this.fileLoading = true;
@@ -296,78 +331,173 @@ export class IncConvReview extends LitElement {
     );
   }
 
-  /** A click on a line opens its comment box, unless it ended a text selection. */
+  /** To a comment's line: the whole diff if it is past the cut, or the comment itself if its line has moved. */
+  private async goTo(c: LineComment) {
+    this.reading = true;
+    if (c.path !== this.selected || !this.file) await this.open(c.path);
+    if (this.selected !== c.path) return;
+    const i = anchor(this.rows, [c]).at.keys().next().value;
+    if (i !== undefined && i >= SHOW_ROWS) this.showAll = true;
+    await this.updateComplete;
+    const to =
+      i !== undefined
+        ? this.renderRoot.querySelector<HTMLElement>(`[data-at="${spot(c)}"] .no`)
+        : this.renderRoot.querySelector<HTMLElement>(`[data-moved="${c.id}"]`);
+    const sc = this.renderRoot.querySelector<HTMLElement>(".rows");
+    if (to && sc && i !== undefined) {
+      // By hand: scrollIntoView would move every scroller around it, and nothing in the app scrolls the page.
+      const a = to.getBoundingClientRect();
+      const b = sc.getBoundingClientRect();
+      sc.scrollTop += a.top - b.top - Math.max(0, (b.height - a.height) / 2);
+    }
+    to?.focus({ preventScroll: true });
+  }
+
+  /** A press of a line's number opens its comment box, or goes to the one already open there. */
   private onRows = (e: Event) => {
-    if (!getSelection()?.isCollapsed) return;
-    const row = (e.target as HTMLElement).closest?.<HTMLElement>("[data-i]");
-    const r = this.rows[Number(row?.dataset.i)];
-    if (!row || !r || r.kind === "gap") return;
-    this.editing = place(r);
-    void this.updateComplete.then(() => this.renderRoot.querySelector<HTMLElement>(".box textarea")?.focus());
+    const conv = this.conv;
+    const path = this.selected;
+    const no = (e.target as HTMLElement).closest?.<HTMLElement>(".no");
+    const r = this.rows[Number(no?.closest<HTMLElement>("[data-i]")?.dataset.i)];
+    if (!conv || !path || !r || r.kind === "gap") return;
+    const at = { path, ...placeOf(r), quote: quoteOf(r.text) };
+    commentDrafts.start(conv.id, at);
+    this.requestUpdate();
+    void this.updateComplete.then(() =>
+      this.renderRoot.querySelector<HTMLElement>(`[data-box="${spot(at)}"] textarea`)?.focus(),
+    );
   };
 
-  private cancelEdit(at: { side: string; line: number }) {
-    this.editing = null;
+  private focusLine(at: LineSpot) {
     void this.updateComplete.then(() =>
-      this.renderRoot.querySelector<HTMLElement>(`[data-at="${at.side}-${at.line}"] .no`)?.focus(),
+      (
+        this.renderRoot.querySelector<HTMLElement>(`[data-at="${spot(at)}"] .no`) ??
+        this.renderRoot.querySelector<HTMLElement>(".x")
+      )?.focus(),
     );
   }
 
-  private addComment(r: LineRow, text: string) {
-    const conv = this.conv;
-    const path = this.selected;
-    if (!conv || !path || !text.trim()) return;
-    const at = place(r);
-    reviewComments.add(conv.id, { path, ...at, quote: r.text.trim(), text });
-    this.cancelEdit(at);
+  private closeBox(d: LineDraft) {
+    if (!this.conv) return;
+    commentDrafts.drop(this.conv.id, d);
+    this.discarding = null;
+    this.requestUpdate();
+    this.focusLine(d);
   }
 
-  private box(r: LineRow) {
-    const at = place(r);
-    const submit = (ta: HTMLTextAreaElement | null | undefined) => this.addComment(r, ta?.value ?? "");
-    return html`<div class="under"><div class="box">
-      <textarea aria-label="Comment on line ${at.line}" maxlength=${COMMENT_MAX} placeholder="Your comment"
-        @keydown=${(e: KeyboardEvent) => {
-          if (e.key === "Escape") {
-            e.stopPropagation();
-            e.preventDefault();
-            this.cancelEdit(at);
-          } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault();
-            submit(e.target as HTMLTextAreaElement);
-          }
-        }}></textarea>
-      <div class="acts"><button class="cbtn primary" type="button" @click=${(e: Event) =>
-        submit((e.target as HTMLElement).closest(".box")?.querySelector("textarea"))}>Add comment</button>
-        <button class="cbtn" type="button" @click=${() => this.cancelEdit(at)}>Cancel</button></div>
+  /** Escape or Cancel. A box with nothing in it just closes; words are only thrown away when the owner says so. */
+  private cancelBox(d: LineDraft) {
+    const typed = commentDrafts.list(this.conv?.id ?? "").find((x) => spot(x) === spot(d))?.text ?? "";
+    if (this.discarding === spot(d)) this.keepWriting(d);
+    else if (typed.trim()) {
+      this.discarding = spot(d);
+      void this.updateComplete.then(() =>
+        this.renderRoot.querySelector<HTMLElement>(`[data-box="${spot(d)}"] .keep`)?.focus(),
+      );
+    } else this.closeBox(d);
+  }
+
+  private keepWriting(d: LineDraft) {
+    this.discarding = null;
+    void this.updateComplete.then(() =>
+      this.renderRoot.querySelector<HTMLElement>(`[data-box="${spot(d)}"] textarea`)?.focus(),
+    );
+  }
+
+  private addComment(d: LineDraft, text: string) {
+    const conv = this.conv;
+    if (!conv || !text.trim()) return;
+    reviewComments.add(conv.id, {
+      path: d.path,
+      side: d.side,
+      line: d.line,
+      quote: d.quote,
+      text,
+    });
+    this.closeBox(d);
+  }
+
+  private box(d: LineDraft) {
+    const asking = this.discarding === spot(d);
+    return html`<div class="under"><div class="box" data-box=${spot(d)} @keydown=${(e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        e.preventDefault();
+        this.cancelBox(d);
+      } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        this.addComment(d, (e.currentTarget as HTMLElement).querySelector("textarea")?.value ?? "");
+      }
+    }}>
+      <textarea aria-label="Comment on ${lineName(d)}" maxlength=${COMMENT_MAX} placeholder="Your comment" .value=${d.text}
+        @input=${(e: Event) => this.conv && commentDrafts.write(this.conv.id, d, (e.target as HTMLTextAreaElement).value)}></textarea>
+      ${
+        asking
+          ? html`<div class="acts"><p>Discard this comment?</p>
+              <button class="cbtn keep" type="button" @click=${() => this.keepWriting(d)}>Keep writing</button>
+              <button class="cbtn" type="button" @click=${() => this.closeBox(d)}>Discard</button></div>`
+          : html`<div class="acts"><button class="cbtn primary" type="button" @click=${(e: Event) =>
+              this.addComment(
+                d,
+                (e.target as HTMLElement).closest(".box")?.querySelector("textarea")?.value ?? "",
+              )}>Add comment</button>
+              <button class="cbtn" type="button" @click=${() => this.cancelBox(d)}>Cancel</button></div>`
+      }
     </div></div>`;
   }
 
-  private comment(c: LineComment, jump: boolean) {
-    return html`<div class="c"><div class="top">
+  /** Focus stays in the list: on the next comment's Remove, or wherever is nearest when that was the last. */
+  private async removeComment(c: LineComment, e: Event) {
+    if (!this.conv) return;
+    const from = [...this.renderRoot.querySelectorAll(".rm")].indexOf(e.currentTarget as Element);
+    reviewComments.remove(this.conv.id, [c.id]);
+    await this.updateComplete;
+    const left = [...this.renderRoot.querySelectorAll<HTMLElement>(".rm")];
+    (
+      left[Math.min(from, left.length - 1)] ??
+      this.renderRoot.querySelector<HTMLElement>('.f[aria-current="true"]') ??
+      this.renderRoot.querySelector<HTMLElement>(".x")
+    )?.focus();
+  }
+
+  /**
+   * `inline`: under its line, which says where it is. `link`: in the list, going to its line. `plain`: in the list
+   * with no diff to go to. `moved`: above the diff, quoting the line that has changed.
+   */
+  private comment(c: LineComment, how: "inline" | "link" | "plain" | "moved") {
+    const list = how === "link" || how === "plain";
+    const where = `${visible(c.path)}:${c.line}${c.side === "old" ? " (removed)" : ""}`;
+    return html`<div class="c" data-moved=${how === "moved" ? c.id : nothing} tabindex=${how === "moved" ? "-1" : nothing}><div class="top">
         ${
-          jump
-            ? html`<button class="link-btn where" type="button" @click=${() => this.pick(c.path)}>${visible(c.path)}:${c.line}${c.side === "old" ? " (removed)" : ""}</button>`
-            : html`<span class="where">${c.side === "old" ? "Removed line" : "Line"} ${c.line}</span>`
+          how === "link"
+            ? html`<button class="link-btn where" type="button" @click=${() => void this.goTo(c)}>${where}</button>`
+            : html`<span class="where">${how === "plain" ? where : `${c.side === "old" ? "Removed line" : "Line"} ${c.line}`}</span>`
         }
-        <button class="rm" type="button" aria-label="Remove comment on ${visible(c.path)} ${c.side === "old" ? "removed line" : "line"} ${c.line}"
-          @click=${() => this.conv && reviewComments.remove(this.conv.id, [c.id])}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg></button></div>
-      ${jump ? html`<blockquote>${visible(c.quote)}</blockquote>` : nothing}
+        <button class="rm" type="button" aria-label="Remove comment on ${visible(c.path)} ${lineName(c)}"
+          @click=${(e: Event) => void this.removeComment(c, e)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg></button></div>
+      ${list || how === "moved" ? html`<blockquote>${visible(c.quote)}</blockquote>` : nothing}
       <p>${c.text}</p></div>`;
   }
 
-  private line(r: LineRow, i: number) {
-    const at = place(r);
-    const here = this.comments.filter(
-      (c) => c.path === this.selected && c.side === at.side && c.line === at.line,
-    );
-    const editing = this.editing?.side === at.side && this.editing.line === at.line;
-    return html`<div class="row ${r.kind}" data-i=${i} data-at="${at.side}-${at.line}">
-        <button class="no" type="button" aria-label="Comment on line ${at.line}"><span>${r.oldNo ?? ""}</span><span>${r.newNo ?? ""}</span></button>
-        <span class="sign" aria-label=${r.kind === "add" ? "added" : r.kind === "del" ? "removed" : "unchanged"}>${r.kind === "add" ? "+" : r.kind === "del" ? "−" : ""}</span>
+  private line(r: LineRow, i: number, comments: LineComment[], drafts: LineDraft[]) {
+    const at = placeOf(r);
+    return html`<div class="row ${r.kind}" data-i=${i} data-at=${spot(at)}>
+        <button class="no" type="button" aria-label="Comment on ${lineName(at)}"><span>${r.oldNo ?? ""}</span><span>${r.newNo ?? ""}</span></button>
+        <span class="sign" role=${r.kind === "add" || r.kind === "del" ? "img" : nothing} aria-label=${r.kind === "add" ? "added" : r.kind === "del" ? "removed" : nothing}>${r.kind === "add" ? "+" : r.kind === "del" ? "−" : ""}</span>
         <span class="text">${visible(r.text)}</span></div>
-      ${here.length ? html`<div class="under">${here.map((c) => this.comment(c, false))}</div>` : nothing}
-      ${editing ? this.box(r) : nothing}`;
+      ${comments.length ? html`<div class="under">${comments.map((c) => this.comment(c, "inline"))}</div>` : nothing}
+      ${drafts.map((d) => this.box(d))}`;
+  }
+
+  /** Shows the rest of the diff, and puts focus on the first line the button was hiding. */
+  private showRest() {
+    this.showAll = true;
+    void this.updateComplete.then(() =>
+      [...this.renderRoot.querySelectorAll<HTMLElement>(".row")]
+        .find((r) => Number(r.dataset.i) >= SHOW_ROWS)
+        ?.querySelector<HTMLElement>(".no")
+        ?.focus(),
+    );
   }
 
   private diff() {
@@ -377,6 +507,15 @@ export class IncConvReview extends LitElement {
     const stats = diffStats(this.rows);
     const note = f ? fileNote(f) : null;
     const shown = this.showAll ? this.rows : this.rows.slice(0, SHOW_ROWS);
+    const comments = anchor(
+      this.rows,
+      this.comments.filter((c) => c.path === path),
+    );
+    const drafts = anchor(
+      this.rows,
+      commentDrafts.list(this.conv?.id ?? "").filter((d) => d.path === path),
+    );
+    const moved = comments.moved.length + drafts.moved.length;
     return html`<div class="diff" role="group" aria-label="Changes to ${visible(path)}">
       <div class="dh"><span class="path" title=${visible(path)}>${visible(path)}</span>
         ${this.rows.length ? html`<span class="plus" aria-label="${stats.added} lines added">+${stats.added}</span><span class="minus" aria-label="${stats.removed} lines removed">−${stats.removed}</span>` : nothing}</div>
@@ -389,25 +528,31 @@ export class IncConvReview extends LitElement {
               ? html`<p class="note" role="status">Loading the file…</p>`
               : note
                 ? html`<p class="note">${note}</p>`
-                : !this.rows.length
+                : !this.rows.length && !moved
                   ? html`<p class="note">No line changes.</p>`
-                  : html`<div class="rows" tabindex="0" aria-label="Diff. Pick a line number to comment on it." @click=${this.onRows}><div class="in">
+                  : html`
+                    ${
+                      moved
+                        ? html`<div class="moved"><p>${moved === 1 ? "This line has" : "These lines have"} changed since the comment was written.</p>
+                            ${comments.moved.map((c) => this.comment(c, "moved"))}${drafts.moved.map((d) => this.box(d))}</div>`
+                        : nothing
+                    }
+                    ${
+                      this.rows.length
+                        ? html`<div class="rows" tabindex="0" aria-label="Diff. Pick a line number to comment on it." @click=${this.onRows}><div class="in">
                       ${shown.map((r, i) =>
                         r.kind === "gap"
                           ? html`<div class="gap">${r.count} unchanged ${r.count === 1 ? "line" : "lines"}</div>`
-                          : this.line(r, i),
+                          : this.line(r, i, comments.at.get(i) ?? [], drafts.at.get(i) ?? []),
                       )}
                       ${
                         this.rows.length > SHOW_ROWS && !this.showAll
-                          ? html`<div class="more"><button class="link-btn" type="button" @click=${(
-                              e: Event,
-                            ) => {
-                              e.stopPropagation();
-                              this.showAll = true;
-                            }}>Show all ${this.rows.length} lines</button></div>`
+                          ? html`<div class="more"><button class="link-btn" type="button" @click=${() => this.showRest()}>Show all ${this.rows.length} lines</button></div>`
                           : nothing
                       }
                     </div></div>`
+                        : nothing
+                    }`
       }
     </div>`;
   }
@@ -425,39 +570,48 @@ export class IncConvReview extends LitElement {
       )}</ul></section>`;
   }
 
-  private commentList() {
+  private commentList(how: "link" | "plain") {
     const list = this.comments;
     if (!list.length) return nothing;
+    const unsaved = this.conv ? reviewComments.unsaved(this.conv.id) : 0;
     return html`<section aria-labelledby="h-comments"><h3 id="h-comments">Comments · ${list.length}</h3>
-      ${list.map((c) => this.comment(c, true))}
+      ${list.map((c) => this.comment(c, how))}
+      ${unsaved ? html`<p class="say">${unsaved === 1 ? "1 comment is" : `${unsaved} comments are`} too much to keep through a reload. Send them before you leave this page.</p>` : nothing}
       <div class="send"><button class="cbtn primary" type="button" @click=${() =>
         this.dispatchEvent(
           new CustomEvent("conv-send-comments", { bubbles: true, composed: true }),
         )}>${this.running ? "Queue comments" : "Send comments"}</button></div></section>`;
   }
 
+  /** The comments with no diff to go to: they, and the way to send them, stay whatever the read did. */
+  private asideComments() {
+    return this.comments.length ? html`<div class="side">${this.commentList("plain")}</div>` : nothing;
+  }
+
   private content() {
     const c = this.changes;
-    if (this.loadError) {
-      return html`<div class="state" role="alert"><p>Couldn't read the changes (${this.loadError}).</p>
-        <button class="cbtn" type="button" @click=${() => void this.refresh()}>Try again</button></div>`;
+    const again = html`<button class="cbtn" type="button" aria-disabled=${this.loading ? "true" : "false"} @click=${this.retry}>Try again</button>`;
+    if (this.loadError && c?.state !== "ok") {
+      return html`<div class="state" role="alert"><p>Couldn't read the changes (${this.loadError}).</p>${again}</div>${this.asideComments()}`;
     }
     if (!c) return html`<div class="state" role="status"><p>Reading the changes…</p></div>`;
     if (c.state === "asleep" || c.state === "busy" || c.state === "failed") {
-      return html`<div class="state" role="status"><p>${c.reason}</p>
-        <button class="cbtn" type="button" ?disabled=${this.loading} @click=${() => void this.refresh()}>Try again</button></div>${this.comments.length ? html`<div class="side">${this.commentList()}</div>` : nothing}`;
+      return html`<div class="state" role="status"><p>${c.reason}</p>${again}</div>${this.asideComments()}`;
     }
     if (!c.files.length) {
-      const empty =
-        c.reason ?? (c.noProject ? "Nothing in this conversation's folder yet." : "Nothing has changed yet.");
-      return html`<div class="state"><p>${empty}</p></div>${this.comments.length ? html`<div class="side">${this.commentList()}</div>` : nothing}`;
+      const empty = c.partial
+        ? "Some files couldn't be read, so this may not be everything."
+        : (c.reason ??
+          (c.noProject ? "Nothing in this conversation's folder yet." : "Nothing has changed yet."));
+      return html`<div class="state"><p>${empty}</p>${c.partial ? again : nothing}</div>${this.asideComments()}`;
     }
     return html`<div class="body ${this.reading ? "reading" : ""}">
       <div class="side">
         ${this.list(c.files)}
         ${c.skipped ? html`<p class="say">${c.skipped === 1 ? "1 file has" : `${c.skipped} files have`} a name that isn't safe to show.</p>` : nothing}
         ${c.truncated ? html`<p class="say">Only the first ${c.files.length} files are listed.</p>` : nothing}
-        ${this.commentList()}
+        ${c.partial ? html`<p class="say">Some files couldn't be read, so this may not be everything.</p>` : nothing}
+        ${this.commentList("link")}
       </div>
       <div class="main"><button class="cbtn back" type="button" @click=${() => this.backToList()}>All files</button>${this.diff()}</div>
     </div>`;
@@ -469,9 +623,24 @@ export class IncConvReview extends LitElement {
     const removed = files.reduce((n, f) => n + f.removed, 0);
     return html`<div class="head"><h2>Changes</h2>
         <span class="sum">${files.length ? `${files.length} ${files.length === 1 ? "file" : "files"} · +${added} −${removed}` : ""}</span>
-        <button class="cbtn" type="button" ?disabled=${this.loading} @click=${() => void this.refresh()}>${this.loading ? "Reading…" : "Refresh"}</button>
+        <button class="cbtn refresh" type="button" aria-disabled=${this.loading ? "true" : "false"} @click=${this.retry}>${this.loading ? "Reading…" : "Refresh"}</button>
         <button class="x" type="button" aria-label="Close changes" @click=${() => this.close()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
-      ${this.running ? html`<p class="say" role="status">${this.name || "The agent"} is working, so this can change. It refreshes when the turn ends.</p>` : nothing}
+      ${
+        this.waiting
+          ? html`<p class="say" role="status">${this.name || "The agent"} is waiting for your answer.
+              <button class="link-btn" type="button" @click=${() =>
+                this.dispatchEvent(
+                  new CustomEvent("conv-review-answer", { bubbles: true, composed: true }),
+                )}>Answer</button></p>`
+          : this.running
+            ? html`<p class="say" role="status">${this.name || "The agent"} is working, so this can change. It refreshes when the turn ends.</p>`
+            : nothing
+      }
+      ${
+        this.loadError && this.changes?.state === "ok"
+          ? html`<p class="say" role="alert">Couldn't read the changes (${this.loadError}). <button class="link-btn" type="button" @click=${this.retry}>Try again</button></p>`
+          : nothing
+      }
       ${this.content()}`;
   }
 }

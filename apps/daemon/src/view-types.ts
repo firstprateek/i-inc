@@ -348,6 +348,8 @@ export interface ReviewListing {
   skipped: number;
   /** There were more than the list holds. */
   truncated: boolean;
+  /** Something in the folder couldn't be read, so the list may be missing files. */
+  partial: boolean;
 }
 
 /** One version of a file. `text` is there for `text` and `link`. */

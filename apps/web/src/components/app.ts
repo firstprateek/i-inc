@@ -410,6 +410,7 @@ export class IncApp extends LitElement {
 
   private onDocumentKeydown = (e: KeyboardEvent) => {
     if (e.key === "Escape" && this.accountOpen) {
+      e.preventDefault(); // this Escape was the menu's: an open pane stays open
       this.accountOpen = false;
       this.renderRoot?.querySelector?.<HTMLButtonElement>(".account-trigger")?.focus();
     }

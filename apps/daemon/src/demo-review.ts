@@ -47,7 +47,7 @@ const scratch: Record<string, { file: ReviewFile; before: FileSide; after: FileS
 export const demoReview: ReviewPort = {
   async list(copy) {
     const files = Object.values(copy.base === null ? scratch : project).map((f) => f.file);
-    return { present: true, files, skipped: 0, truncated: false };
+    return { present: true, files, skipped: 0, truncated: false, partial: false };
   },
   async file(copy, path) {
     const f = (copy.base === null ? scratch : project)[path];

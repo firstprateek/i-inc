@@ -272,6 +272,17 @@ const extraCredential = [
   /\bmachine\s+\S+\s+(?:login\s+\S+\s+)?password\s+\S{4,}/,
 ];
 
+/**
+ * A changed file made safe to show the owner: everything `redactTokens` takes out and the other kinds the scan
+ * stops, so what would stop a push is not sent to a browser in clear. Lines stay where they are: a comment on one
+ * goes to the agent by its number.
+ */
+export function redactFile(text: string): string {
+  return redactTokens(text, { keepLines: true })
+    .replace(/(_authToken\s*=\s*)(?!\$\{)[^\s"']{8,}/g, "$1[redacted]")
+    .replace(/(\bmachine\s+\S+\s+(?:login\s+\S+\s+)?password\s+)\S{4,}/g, "$1[redacted]");
+}
+
 /** `redactTokens` stops at a million characters, so a long text is looked at in pieces of whole lines. */
 export function holdsCredential(added: string): boolean {
   const piece = 400_000;

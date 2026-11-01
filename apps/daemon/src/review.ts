@@ -4,9 +4,11 @@
 // by a shell command shows too; and one file's two versions.
 //
 // Everything here only reads. No fetch, no token, and nothing in the copy is written: not its files, its index,
-// HEAD, a ref or an object. Untracked files are listed from a scratch copy of the index with `add -N`, which
-// records their names, and the diff is taken against the work tree. `add -N` still stores the empty blob, so new
-// objects go to a scratch folder and the copy's own are only read, as alternates.
+// HEAD, a ref or an object. The list is made in a scratch repository outside the folder, which sees the copy's
+// objects and its files, and nothing else of it: not its index (an agent can tell an index to hide a change, and a
+// copy of one can write to the real .git), config, excludes or hooks. What changed is hashed into the scratch
+// index and objects and the diff is between those and the measure, so a file that changes or goes away during the
+// read can't stop the diff, and one that can't be read costs that file, not the list.
 // What comes back was written by whatever runs in the sandbox, so it is treated as an agent's words: every path is
 // checked, every size capped, tokens redacted, and the sections fenced by markers that carry a nonce.
 // A stopped machine stays stopped: the runner this is given refuses rather than boots (T75), and the pane says so.
@@ -16,7 +18,7 @@ import { redactTokens } from "./ahp/sanitize.ts";
 import { type RunScript, TIMED_OUT } from "./harness.ts";
 import { MachineNotRunning } from "./machine-queue.ts";
 import type { Registry } from "./registry.ts";
-import { marker, quote, safeGit, secretFile, section } from "./ship-git.ts";
+import { marker, quote, redactFile, safeGit, secretFile, section } from "./ship-git.ts";
 import type {
   ChangeStatus,
   ChangesState,
@@ -75,59 +77,98 @@ function check(copy: ReviewCopy): void {
   if (copy.base !== null && !isSafeRefName(copy.base)) throw new Error(`not a branch name: ${copy.base}`);
 }
 
+/** How many times the list tries to add the files while they keep going away under it. */
+const LIST_TRIES = 3;
+
 /**
  * Into the copy, with `G` ready and `$mb` set to what the change is measured from: where the branch left main, by
- * the refs already in the machine (never a fetch), or the first commit when they are gone. With no project there
- * is no repository to read, so a scratch one outside the folder looks at it, and `$mb` is the empty tree.
- * `$head` is empty with no project. Optional locks and lazy fetches are off: reading must not write or reach out.
+ * the refs already in the machine (never a fetch), or the first commit when they are gone. With no commit to measure
+ * from (no project, or a copy with no commits or no repository) a scratch repository outside the folder looks at it,
+ * `$mb` is the empty tree, `$head` is empty and every file there is new. Optional locks and lazy fetches are off:
+ * reading must not write or reach out. Git's warnings go nowhere: output is what the script says, and a warning
+ * in the middle of a section would pass for part of it.
  */
 const open = (copy: ReviewCopy): string[] => {
-  const there = `[ -d ${quote(copy.cwd)} ] || { echo @@nocopy; exit 0; }`;
-  if (copy.base === null) {
-    return [
-      "set -u",
-      there,
-      `cd ${quote(copy.cwd)} || { echo @@nocopy; exit 0; }`,
-      `W=$(mktemp -d); trap 'rm -rf "$W"' EXIT; mkdir "$W/home"`,
-      'BE=(env -i PATH="$PATH" LANG=C.UTF-8 HOME="$W/home" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1)',
-      '"${BE[@]}" git init --bare -q --template= "$W/repo" || { echo \'@@fail could not make a scratch repository\'; exit 1; }',
-      'GX=(GIT_DIR="$W/repo" GIT_WORK_TREE="$PWD")',
-      'G() { "${BE[@]}" "${GX[@]}" git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.pager=cat "$@"; }',
-      "mb=$(G hash-object -t tree -w --stdin < /dev/null)",
-      'head=""',
-    ];
-  }
+  const enter = [
+    "set -u",
+    "exec 2>/dev/null",
+    `[ -d ${quote(copy.cwd)} ] || { echo @@nocopy; exit 0; }`,
+    `cd ${quote(copy.cwd)} || { echo @@nocopy; exit 0; }`,
+  ];
+  const scratch = [
+    `W=$(mktemp -d); trap 'rm -rf "$W"' EXIT; mkdir "$W/home"`,
+    'BE=(env -i PATH="$PATH" LANG=C.UTF-8 HOME="$W/home" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1)',
+    '"${BE[@]}" git init --bare -q --template= "$W/repo" || { echo \'@@fail could not make a scratch repository\'; exit 1; }',
+    'GX=(GIT_DIR="$W/repo" GIT_WORK_TREE="$PWD")',
+    'G() { "${BE[@]}" "${GX[@]}" git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.pager=cat "$@"; }',
+    "mb=$(G hash-object -t tree -w --stdin < /dev/null)",
+    'head=""',
+  ];
+  if (copy.base === null) return [...enter, ...scratch];
   const base = copy.base;
   return [
-    "set -u",
-    there,
+    ...enter,
+    "if env -i PATH=\"$PATH\" HOME=/nonexistent GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 git -c core.hooksPath=/dev/null -c core.fsmonitor=false rev-parse --verify --quiet 'HEAD^{commit}' >/dev/null; then",
     ...safeGit(copy),
     "GX=(GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1)",
     "head=$(G rev-parse --verify --quiet 'HEAD^{commit}') || { echo '@@fail the working copy has no commit'; exit 1; }",
     `b=$(G rev-parse --verify --quiet ${quote(`refs/remotes/origin/${base}^{commit}`)} || G rev-parse --verify --quiet ${quote(`refs/heads/${base}^{commit}`)} || true)`,
-    'if [ -n "$b" ]; then mb=$(G merge-base "$b" "$head" 2>/dev/null || echo "$b"); else mb=$(G rev-list --max-parents=0 "$head" | tail -n 1); fi',
+    'if [ -n "$b" ]; then mb=$(G merge-base "$b" "$head" || echo "$b"); else mb=$(G rev-list --max-parents=0 "$head" | tail -n 1); fi',
+    "else",
+    ...scratch,
+    "fi",
   ];
 };
 
-/** The list, in a fixed number of git commands, against a scratch index: the copy's own is only ever copied. */
+/**
+ * The list, in a fixed number of git commands. `ls-files` finds what differs by its content, writing nothing, and
+ * only those files are hashed: into the scratch objects, with the copy's out of sight, because git touches an object
+ * it is asked to write and already has. `--ignore-errors` keeps going past a file that can't be read and says so in
+ * its exit status. A new file that vanishes before it is read stops `add` altogether (128), so that step is
+ * tried again, and the tracked files have gone in first, so they aren't lost with it. Either way the list says it
+ * may be missing files. The diff reads only objects, so one that fails is a failed read.
+ */
 export function listScript(copy: ReviewCopy, nonce: string): string {
   check(copy);
   if (!/^[0-9a-f]{16,64}$/.test(nonce)) throw new Error("not a nonce");
   const m = (name: string) => marker(nonce, name);
   const opts = "--no-renames --no-ext-diff --no-textconv --no-color";
-  const fenced = (name: string, body: string) => [
+  const here = "-- . ':(exclude).inc'";
+  // A name is a name here, whatever it looks like: `:(top)x` and `*` are pathspec magic otherwise.
+  const add = (list: string) =>
+    `G --literal-pathspecs add -A --ignore-errors --pathspec-from-file="$W/${list}" --pathspec-file-nul`;
+  const fail = "{ echo '@@fail the list could not be read'; exit 1; }";
+  const fenced = (name: string) => [
     `echo ${m(`${name}-begin`)}`,
-    `${body} | head -c ${LIST_LIMIT}`,
+    `head -c ${LIST_LIMIT} "$W/${name}"`,
     "echo",
     `echo ${m(`${name}-end`)}`,
+    `[ "$(wc -c < "$W/${name}")" -le ${LIST_LIMIT} ] || echo ${m("cut")}`,
   ];
   return [
     ...open(copy),
-    // A copy of the index keeps its stat cache, so unchanged files aren't read; `--reset` drops what is staged or unmerged.
-    `if [ -n "$head" ]; then cp "$(G rev-parse --git-path index)" "$W/index" 2>/dev/null; o=$(G rev-parse --path-format=absolute --git-common-dir)/objects; mkdir "$W/objects"; GX+=(GIT_INDEX_FILE="$W/index" GIT_OBJECT_DIRECTORY="$W/objects" GIT_ALTERNATE_OBJECT_DIRECTORIES="$o"); G read-tree --reset "$head"; else GX+=(GIT_INDEX_FILE="$W/index"); fi`,
-    "G add -N -- . ':(exclude).inc' 2>/dev/null",
-    ...fenced("numstat", `G diff --numstat -z ${opts} "$mb"`),
-    ...fenced("raw", `G diff --raw -z --abbrev=40 ${opts} "$mb"`),
+    'O() { "$@"; }',
+    'if [ -n "$head" ]; then',
+    "  o=$(G rev-parse --path-format=absolute --git-common-dir)/objects",
+    '  "${BE[@]}" GIT_CONFIG_GLOBAL=/dev/null git init --bare -q --template= "$W/repo" || { echo \'@@fail could not make a scratch repository\'; exit 1; }',
+    '  GX=(GIT_DIR="$W/repo" GIT_WORK_TREE="$PWD" GIT_CONFIG_GLOBAL=/dev/null GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1)',
+    '  O() { local GX=("${GX[@]}" GIT_ALTERNATE_OBJECT_DIRECTORIES="$o"); "$@"; }',
+    `  O G read-tree "$head" || ${fail}`,
+    "fi",
+    `G ls-files -z -m ${here} > "$W/tracked" || ${fail}`,
+    "a=0",
+    `if [ -s "$W/tracked" ]; then ${add("tracked")}; a=$?; fi`,
+    `for try in $(seq ${LIST_TRIES}); do`,
+    `  G ls-files -z -o --exclude-standard ${here} > "$W/new" || ${fail}`,
+    "  n=0",
+    `  if [ -s "$W/new" ]; then ${add("new")}; n=$?; fi`,
+    '  [ "$n" -eq 128 ] || break',
+    "done",
+    `[ "$a" -eq 0 ] && [ "$n" -eq 0 ] || echo ${m("partial")}`,
+    `O G diff --cached --numstat -z ${opts} "$mb" > "$W/numstat" || ${fail}`,
+    `O G diff --cached --raw -z --abbrev=40 ${opts} "$mb" > "$W/raw" || ${fail}`,
+    ...fenced("numstat"),
+    ...fenced("raw"),
     `echo ${m("done")}`,
   ].join("\n");
 }
@@ -172,14 +213,14 @@ const STATUS: Record<string, ChangeStatus> = {
 /** Reads `listScript`'s output. A row it can't read is left out and counted, never passed on. */
 export function readList(output: string, nonce: string): ReviewListing {
   if (/^@@nocopy$/m.test(output) && !output.includes(marker(nonce, "done"))) {
-    return { present: false, files: [], skipped: 0, truncated: false };
+    return { present: false, files: [], skipped: 0, truncated: false, partial: false };
   }
   const numstat = section(output, nonce, "numstat");
   const raw = section(output, nonce, "raw");
   if (numstat === undefined || raw === undefined || !output.includes(marker(nonce, "done"))) {
     throw new Error("the list could not be read");
   }
-  let truncated = numstat.length >= LIST_LIMIT || raw.length >= LIST_LIMIT;
+  let truncated = output.includes(marker(nonce, "cut"));
   // raw -z: `:modes shas status NUL path NUL`.
   const status = new Map<string, ChangeStatus>();
   const tokens = raw.split("\0");
@@ -211,7 +252,7 @@ export function readList(output: string, nonce: string): ReviewListing {
       status: status.get(path) ?? "modified",
     });
   }
-  return { present: true, files, skipped, truncated };
+  return { present: true, files, skipped, truncated, partial: output.includes(marker(nonce, "partial")) };
 }
 
 /** Bytes made into a side: too big, binary (a NUL, or not UTF-8), or text with its tokens redacted. */
@@ -220,7 +261,7 @@ function sideOf(b64: string): FileSide {
   if (bytes.length > MAX_FILE_BYTES) return { state: "too-big" };
   if (bytes.includes(0)) return { state: "binary" };
   try {
-    return { state: "text", text: redactTokens(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) };
+    return { state: "text", text: redactFile(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) };
   } catch {
     return { state: "binary" };
   }
@@ -373,7 +414,13 @@ export class ConversationReview {
 
   private async readChanges(id: string): Promise<ChangesView> {
     const copy = this.copy(id);
-    const empty = { files: [], skipped: 0, truncated: false, noProject: copy?.base === null };
+    const empty = {
+      files: [],
+      skipped: 0,
+      truncated: false,
+      partial: false,
+      noProject: copy?.base === null,
+    };
     if (!copy) return { ...empty, state: "failed", reason: "There is no such conversation." };
     try {
       const { present, ...listing } = await this.within(this.d.port.list(copy));

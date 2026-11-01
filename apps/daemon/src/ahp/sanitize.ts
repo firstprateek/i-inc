@@ -66,7 +66,7 @@ const KEY_RUN = /[ \t]*[A-Za-z0-9+/=\\-]*/y;
  * left half showing, and the words after the key stay. One pass: nothing is looked at twice, and the
  * next end marker is found once and remembered, so any number of begin markers costs one scan.
  */
-function redactPem(t: string): string {
+function redactPem(t: string, keepLines = false): string {
   if (!t.includes("PRIVATE KEY")) return t;
   let out = "";
   let last = 0;
@@ -110,7 +110,8 @@ function redactPem(t: string): string {
         pos++; // the newline is the key's only if another line of it follows
       else if (pos < t.length) break; // the line goes on with something else
     }
-    out += `${t.slice(last, m.index)}[private key]`;
+    const lines = keepLines ? "\n".repeat(t.slice(m.index, stop).split("\n").length - 1) : "";
+    out += `${t.slice(last, m.index)}[private key]${lines}`;
     last = stop;
     PEM_BEGIN.lastIndex = stop;
   }
@@ -124,8 +125,8 @@ function redactPem(t: string): string {
  * secrets, JWTs, bearer headers). Source code and prose alike: none of these mangles either. The one
  * set behind `redactText` (everything an agent says) and `redactTokens` (diffs and files).
  */
-function redactCredentials(text: string): string {
-  let t = redactPem(text);
+function redactCredentials(text: string, keepLines = false): string {
+  let t = redactPem(text, keepLines);
   t = t.replace(USERINFO, "$1[redacted]@").replace(SECRET_QUERY, "$1[redacted]");
   t = t.replace(/(bearer\s+)[A-Za-z0-9._~+/=-]{16,}/gi, "$1[redacted]");
   t = t.replace(/\b(?:ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]{20,}\b/g, "[redacted]");
@@ -221,10 +222,11 @@ export function sanitizeAction<T>(action: T, caps: Pick<Caps, "maxString" | "max
  * Only the patterns that are unmistakably credentials, for file contents (diffs) where the full
  * redactor's hex and base64 rules would mangle source code: GitHub, OpenAI/Anthropic, Google, Slack,
  * AWS and JWT tokens, bearer headers, private key blocks and passwords in URLs: the same set
- * `redactText` starts with (`redactCredentials`). It leaves `token: string` in source code alone.
+ * `redactText` starts with (`redactCredentials`). It leaves `token: string` in source code alone. With
+ * `keepLines`, a key block leaves its line breaks behind, so what follows it keeps its line numbers.
  */
-export function redactTokens(text: string): string {
-  return redactCredentials(text.length > 1_000_000 ? text.slice(0, 1_000_000) : text);
+export function redactTokens(text: string, opts: { keepLines?: boolean } = {}): string {
+  return redactCredentials(text.length > 1_000_000 ? text.slice(0, 1_000_000) : text, opts.keepLines);
 }
 
 /**

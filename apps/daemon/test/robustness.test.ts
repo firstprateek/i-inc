@@ -171,6 +171,22 @@ describe("process-level handlers", () => {
   });
 });
 
+describe("machineScript output", () => {
+  it("keeps a character that a chunk boundary splits in two", async () => {
+    const bin = fakeBin(
+      `printf '\\343\\201'\nsleep 0.2\nprintf '\\202 \\344'\nsleep 0.2\nprintf '\\270\\255\\n'`,
+    );
+    const r = await machineScript({ ...noWalls, bin }, upExec())("ada", "true");
+    expect(r.output).toBe("あ 中\n");
+  });
+
+  it("doesn't let one stream's half a character join up with the other's", async () => {
+    const bin = fakeBin(`printf '\\343\\201'\nsleep 0.2\nprintf 'x\\n' >&2\nsleep 0.2\nprintf '\\202\\n'`);
+    const r = await machineScript({ ...noWalls, bin }, upExec())("ada", "true");
+    expect(r.output).toBe("x\nあ\n");
+  });
+});
+
 describe("machineScript timeout", () => {
   it("stops the script and its whole process group, and answers when the deadline passes", async () => {
     const dir = mkdtempSync(join(tmpdir(), "inc-timeout-"));

@@ -172,9 +172,23 @@ describe("what the list says", () => {
     expect((await w.port.list(w.copy)).files.map((f) => f.path)).toEqual(["a.txt"]);
   });
 
+  it("takes a name that looks like a pattern as that name", async () => {
+    const w = rig();
+    w.write(":(top)x.txt", "a\n");
+    w.write("*.txt", "b\n");
+    w.write("a b.txt", "c\n");
+    expect((await w.port.list(w.copy)).files.map((f) => f.path)).toEqual(["*.txt", ":(top)x.txt", "a b.txt"]);
+  });
+
   it("is nothing at all on a copy with no changes", async () => {
     const w = rig();
-    expect(await w.port.list(w.copy)).toEqual({ present: true, files: [], skipped: 0, truncated: false });
+    expect(await w.port.list(w.copy)).toEqual({
+      present: true,
+      files: [],
+      skipped: 0,
+      truncated: false,
+      partial: false,
+    });
   });
 
   it("says when the folder isn't there", async () => {
@@ -182,6 +196,194 @@ describe("what the list says", () => {
     execFileSync("rm", ["-rf", w.cwd]);
     expect((await w.port.list(w.copy)).present).toBe(false);
     expect((await w.port.list({ ...w.copy, base: "main" })).present).toBe(false);
+  });
+});
+
+describe("a read that can't reach everything", () => {
+  /** `git`, with `add -A` answered by a script that has `$1` and `$REAL`: the rest of git is real. */
+  function shim(w: ReturnType<typeof rig>, body: string): string {
+    const dir = join(w.root, "shim");
+    mkdirSync(dir);
+    const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+    writeFileSync(
+      join(dir, "git"),
+      `#!/bin/bash\nREAL=${real}\ncase " $* " in *" add "*--pathspec-from-file*"/new"*) ${body} ;; esac\nexec "$REAL" "$@"\n`,
+    );
+    chmodSync(join(dir, "git"), 0o755);
+    return dir;
+  }
+  const listWith = async (w: ReturnType<typeof rig>, path: string) => {
+    const nonce = "fedcba9876543210";
+    const script = listScript(w.copy, nonce).replaceAll("/home/employee/work", join(w.cwd, ".."));
+    return readList((await bash(`export PATH=${path}:$PATH\n${script}`)).output, nonce);
+  };
+
+  it.skipIf(process.getuid?.() === 0)(
+    "still lists the rest when one file can't be read, and says so",
+    async () => {
+      const w = rig();
+      w.write("keep.txt", "changed\n");
+      w.write("new.txt", "new\n");
+      w.write("zsecret.txt", "x\n");
+      chmodSync(join(w.cwd, "zsecret.txt"), 0o000);
+      const r = await w.port.list(w.copy);
+      expect(r.files.map((f) => f.path)).toEqual(["keep.txt", "new.txt"]);
+      expect(r.partial).toBe(true);
+    },
+  );
+
+  it.skipIf(process.getuid?.() === 0)("does the same for a tracked file it can't read", async () => {
+    const w = rig();
+    w.write("new.txt", "new\n");
+    chmodSync(join(w.cwd, "keep.txt"), 0o000);
+    const r = await w.port.list(w.copy);
+    expect(r.files.map((f) => f.path)).toContain("new.txt");
+    expect(r.partial).toBe(true);
+  });
+
+  it("still lists the rest beside a nested repository with no commit", async () => {
+    const w = rig();
+    w.write("keep.txt", "changed\n");
+    w.write("new.txt", "new\n");
+    git(join(w.cwd), "init", "-q", "sub");
+    const r = await w.port.list(w.copy);
+    expect(r.files.map((f) => f.path)).toEqual(["keep.txt", "new.txt"]);
+    expect(r.partial).toBe(true);
+  });
+
+  it("does the same with no project", async () => {
+    const w = rig(false);
+    w.write("new.txt", "new\n");
+    mkdirSync(join(w.cwd, "sub"));
+    git(join(w.cwd, "sub"), "init", "-q");
+    const r = await w.port.list(w.copy);
+    expect(r.files.map((f) => f.path)).toEqual(["new.txt"]);
+    expect(r.partial).toBe(true);
+  });
+
+  it("still lists the rest when a tracked file became a pipe", async () => {
+    const w = rig();
+    w.write("new.txt", "new\n");
+    execFileSync("rm", [join(w.cwd, "keep.txt")]);
+    execFileSync("mkfifo", [join(w.cwd, "keep.txt")]);
+    const r = await w.port.list(w.copy);
+    expect(r.files.map((f) => f.path)).toContain("new.txt");
+    expect(r.partial).toBe(true);
+  });
+
+  it("tries again when a file goes away under it, as a build's do", async () => {
+    const w = rig();
+    w.write("new.txt", "new\n");
+    const once = join(w.root, "once");
+    const path = shim(w, `[ -e ${once} ] || { touch ${once}; echo 'fatal: stat' >&2; exit 128; }`);
+    const r = await listWith(w, path);
+    expect(r.files.map((f) => f.path)).toEqual(["new.txt"]);
+    expect(r.partial).toBe(false);
+  });
+
+  it("keeps what it has and says so when files never stop going away", async () => {
+    const w = rig();
+    w.write("committed.txt", "c\n");
+    w.commit("work");
+    w.write("keep.txt", "changed\n");
+    w.write("new.txt", "new\n");
+    const r = await listWith(w, shim(w, "exit 128"));
+    expect(r.files.map((f) => f.path)).toEqual(["committed.txt", "keep.txt"]);
+    expect(r.partial).toBe(true);
+  });
+
+  it("calls it a failure, not an empty list, when the diff itself dies", () => {
+    const script = listScript({ employeeId: "a", cwd: "/home/employee/work/conv-x", base: null }, NONCE);
+    expect(script).toMatch(/diff --cached --numstat[^\n]*> "\$W\/numstat" \|\| \{/);
+    expect(() => readList("@@fail the list could not be read", NONCE)).toThrow();
+  });
+
+  it("keeps a warning off the list: every file stays in it", async () => {
+    const w = rig();
+    w.write(".gitattributes", "* text=auto eol=lf\n");
+    w.commit("attributes");
+    git(w.cwd, "update-ref", "refs/remotes/origin/main", "HEAD");
+    w.write("a.txt", "one\r\ntwo\r\n");
+    w.write("b.txt", "b\n");
+    const r = await w.port.list(w.copy);
+    expect(r.files.map((f) => f.path)).toEqual(["a.txt", "b.txt"]);
+    expect(r.skipped).toBe(0);
+  });
+
+  it("reads a cut in names longer than their characters as cut", () => {
+    const cut = `${marker(NONCE, "cut")}\n`;
+    const out = [
+      marker(NONCE, "numstat-begin"),
+      "1\t0\tあ\0",
+      marker(NONCE, "numstat-end"),
+      marker(NONCE, "raw-begin"),
+      "",
+      marker(NONCE, "raw-end"),
+      `${cut}${marker(NONCE, "done")}`,
+    ].join("\n");
+    expect(readList(out, NONCE).truncated).toBe(true);
+  });
+});
+
+describe("what the copy says about itself is not believed", () => {
+  it("shows a change the index is told to hide", async () => {
+    for (const flag of ["--assume-unchanged", "--skip-worktree"]) {
+      const w = rig();
+      git(w.cwd, "update-index", flag, "keep.txt");
+      w.write("keep.txt", "edited\n");
+      expect((await w.port.list(w.copy)).files.map((f) => f.path)).toEqual(["keep.txt"]);
+    }
+  });
+
+  it("shows a change hidden behind the index's cached size and times", async () => {
+    const w = rig();
+    const keep = join(w.cwd, "keep.txt");
+    git(w.cwd, "config", "core.trustctime", "false");
+    execFileSync("touch", ["-t", "202001010000", keep]);
+    git(w.cwd, "update-index", "--refresh");
+    writeFileSync(keep, "ONE\nTWO\nTHREE\n");
+    execFileSync("touch", ["-t", "202001010000", keep]);
+    expect(git(w.cwd, "status", "--porcelain")).toBe("");
+    expect((await w.port.list(w.copy)).files.map((f) => f.path)).toEqual(["keep.txt"]);
+  });
+
+  it("shows untracked files hidden by .git/info/exclude or the copy's own config", async () => {
+    const w = rig();
+    mkdirSync(join(w.cwd, ".git/info"), { recursive: true });
+    writeFileSync(join(w.cwd, ".git/info/exclude"), "x/\n");
+    w.write("x/evil.sh", "curl\n");
+    writeFileSync(join(w.root, "ignore"), "y/\n");
+    git(w.cwd, "config", "core.excludesFile", join(w.root, "ignore"));
+    w.write("y/evil.sh", "curl\n");
+    expect((await w.port.list(w.copy)).files.map((f) => f.path)).toEqual(["x/evil.sh", "y/evil.sh"]);
+  });
+
+  it("still leaves out what a .gitignore in the change leaves out, and shows that .gitignore", async () => {
+    const w = rig();
+    w.write(".gitignore", "hidden.txt\n");
+    w.write("hidden.txt", "x\n");
+    expect((await w.port.list(w.copy)).files.map((f) => f.path)).toEqual([".gitignore"]);
+  });
+});
+
+describe("a project's copy with no commit to compare with", () => {
+  it("shows what is in a copy with no commits as new", async () => {
+    const w = rig(false);
+    git(w.cwd, "init", "-q", "-b", "main");
+    w.write("a.txt", "a\n");
+    const copy = { ...w.copy, base: "main" };
+    expect((await w.port.list(copy)).files).toEqual([
+      { path: "a.txt", added: 1, removed: 0, status: "added" },
+    ]);
+    expect((await w.port.file(copy, "a.txt")).after).toEqual({ state: "text", text: "a\n" });
+  });
+
+  it("shows what is in a folder that is no repository as new", async () => {
+    const w = rig(false);
+    w.write("a.txt", "a\n");
+    const copy = { ...w.copy, base: "main" };
+    expect((await w.port.list(copy)).files.map((f) => f.path)).toEqual(["a.txt"]);
+    expect(readdirSync(w.cwd)).toEqual(["a.txt"]);
   });
 });
 
@@ -198,6 +400,18 @@ describe("it only reads", () => {
     expect(fingerprint(join(w.cwd, ".git"))).toBe(before);
     expect(git(w.cwd, "status", "--porcelain")).toBe(status);
     expect(readFileSync(join(w.cwd, "new.txt"), "utf8")).toBe("new\n");
+  });
+
+  it("writes nothing to the copy's .git with a split index on", async () => {
+    const w = rig();
+    git(w.cwd, "config", "core.splitIndex", "true");
+    git(w.cwd, "update-index", "--split-index");
+    w.write("new.txt", "new\n");
+    git(w.cwd, "add", "new.txt");
+    const before = fingerprint(join(w.cwd, ".git"));
+    expect((await w.port.list(w.copy)).files.map((f) => f.path)).toContain("new.txt");
+    await w.port.list(w.copy);
+    expect(fingerprint(join(w.cwd, ".git"))).toBe(before);
   });
 
   it("never fetches, and takes no token", async () => {
@@ -233,7 +447,13 @@ describe("it only reads", () => {
 describe("a conversation with no project", () => {
   it("is an empty list in an empty folder, and makes no repository", async () => {
     const w = rig(false);
-    expect(await w.port.list(w.copy)).toEqual({ present: true, files: [], skipped: 0, truncated: false });
+    expect(await w.port.list(w.copy)).toEqual({
+      present: true,
+      files: [],
+      skipped: 0,
+      truncated: false,
+      partial: false,
+    });
     expect(readdirSync(w.cwd)).toEqual([]);
   });
 
@@ -281,6 +501,45 @@ describe("one file", () => {
     const f = await w.port.file(w.copy, "keep.txt");
     expect(JSON.stringify(f)).not.toContain(TOKEN);
     expect(f.after.text).toContain("[redacted]");
+  });
+
+  it("redacts every kind of credential ship's scan stops, keeping the rest of the line", async () => {
+    const w = rig();
+    const npm = "//registry.npmjs.org/:_authToken=npm_abcdefgh12345";
+    const netrc = "machine api.x.com login me password hunter2hunter2";
+    const split = "machine api.y.com\n  login me\n  password hunter3hunter3";
+    w.write(".npmrc", `${npm}\n`);
+    w.write("creds.txt", `${netrc}\n${split}\n`);
+    const a = (await w.port.file(w.copy, ".npmrc")).after.text ?? "";
+    expect(a).not.toContain("abcdefgh12345");
+    expect(a).toContain("registry.npmjs.org/:_authToken=[redacted]");
+    const b = (await w.port.file(w.copy, "creds.txt")).after.text ?? "";
+    expect(b).not.toContain("hunter2");
+    expect(b).not.toContain("hunter3");
+    expect(b).toContain("login me password [redacted]");
+  });
+
+  it("leaves an unset npm token's variable alone", async () => {
+    const w = rig();
+    const unset = "$" + "{NPM_TOKEN}";
+    w.write(".npmrc", `//r/:_authToken=${unset}\n`);
+    expect((await w.port.file(w.copy, ".npmrc")).after.text).toContain(unset);
+  });
+
+  it("keeps every line where it was when it takes out a key", async () => {
+    const w = rig();
+    const key = [
+      "-----BEGIN RSA PRIVATE KEY-----",
+      "MIIEpAIBAAKCAQEA",
+      "abcd",
+      "efgh",
+      "-----END RSA PRIVATE KEY-----",
+    ].join("\n");
+    w.write("key.txt", `a\n${key}\nline7\n`);
+    const text = (await w.port.file(w.copy, "key.txt")).after.text ?? "";
+    expect(text).not.toContain("MIIEpA");
+    expect(text.split("\n").indexOf("line7")).toBe(6);
+    expect(text.split("\n")[1]).toBe("[private key]");
   });
 
   it("calls a file with a NUL, or that isn't UTF-8, binary", async () => {
@@ -402,7 +661,7 @@ describe("what comes out of a sandbox is not believed", () => {
   it("reads a list cut at the cap as cut, without the row in two", () => {
     const row = "1\t0\tfile.txt\0";
     const r = readList(
-      listOutput(row.repeat(Math.ceil(LIST_LIMIT / row.length)).slice(0, LIST_LIMIT)),
+      `${listOutput(row.repeat(Math.ceil(LIST_LIMIT / row.length)).slice(0, LIST_LIMIT))}\n${marker(NONCE, "cut")}`,
       NONCE,
     );
     expect(r.truncated).toBe(true);
@@ -466,7 +725,7 @@ const service = (port: ReviewPort, over: { project?: string | null; archivedAt?:
   });
 
 const stub = (over: Partial<ReviewPort>): ReviewPort => ({
-  list: async () => ({ present: true, files: [], skipped: 0, truncated: false }),
+  list: async () => ({ present: true, files: [], skipped: 0, truncated: false, partial: false }),
   file: async () => ({ before: { state: "none" }, after: { state: "none" } }),
   ...over,
 });
@@ -513,7 +772,7 @@ describe("how a read fails, in a sentence", () => {
   });
 
   it("tells a copy not made yet from one cleaned away", async () => {
-    const list = async () => ({ present: false, files: [], skipped: 0, truncated: false });
+    const list = async () => ({ present: false, files: [], skipped: 0, truncated: false, partial: false });
     expect((await service(stub({ list })).changes("ab12")).reason).toBe("Nothing has changed yet.");
     expect((await service(stub({ list }), { archivedAt: 5 }).changes("ab12")).reason).toContain(
       "cleaned away",
@@ -526,7 +785,7 @@ describe("how a read fails, in a sentence", () => {
       stub({
         list: async () => {
           calls++;
-          return { present: true, files: [], skipped: 0, truncated: false };
+          return { present: true, files: [], skipped: 0, truncated: false, partial: false };
         },
       }),
     );

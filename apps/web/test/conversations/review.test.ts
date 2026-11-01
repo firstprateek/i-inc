@@ -11,13 +11,19 @@ import type { IncConversations } from "../../src/components/conversations.ts";
 import "../../src/components/conversations.ts";
 import { LIMITS } from "../../src/conversations/actions.ts";
 import {
+  anchor,
+  COMMENTS_CAP,
+  commentDrafts,
   commentsBlock,
   fileNote,
+  holdsComments,
+  isCommand,
   type LineComment,
+  quoteOf,
   reviewComments,
   withComments,
 } from "../../src/conversations/review.ts";
-import { DRAFT_CAP, draftMemo } from "../../src/drafts.ts";
+import { draftKey, draftMemo } from "../../src/drafts.ts";
 import { CHAT, hosts, must, SESSION, until } from "../ahp/fake-host.ts";
 
 // biome-ignore lint/suspicious/noExplicitAny: scripted JSON.
@@ -87,19 +93,99 @@ describe("comments", () => {
     expect(reviewComments.list("c1")).toEqual([]);
   });
 
-  it("stays in memory when too big to store, and goes at sign-out either way", () => {
-    for (let i = 0; i < 8; i++) reviewComments.add("c1", note({ text: "x".repeat(4000) }));
-    expect(JSON.stringify(reviewComments.list("c1")).length).toBeGreaterThan(DRAFT_CAP);
-    expect(reviewComments.list("c1").length).toBe(8);
-    expect(localStorage.getItem("inc.chat.draft.comments:c1")).toBeNull();
+  it("keeps a day's comments through a reload, far past a draft's size", () => {
+    for (let i = 0; i < 6; i++) reviewComments.add("c1", note({ text: "x".repeat(3999) }));
+    expect(JSON.parse(localStorage.getItem("inc.chat.draft.comments:c1") ?? "[]").length).toBe(6);
+    expect(reviewComments.unsaved("c1")).toBe(0);
+  });
+
+  it("keeps the ones that fit when the list outgrows storage, says how many won't last, and forgets all at sign-out", () => {
+    const n = Math.ceil(COMMENTS_CAP / 4000) + 3;
+    for (let i = 0; i < n; i++) reviewComments.add("c1", note({ text: "x".repeat(4000) }));
+    expect(reviewComments.list("c1").length).toBe(n);
+    const kept = JSON.parse(localStorage.getItem("inc.chat.draft.comments:c1") ?? "[]");
+    expect(kept.length).toBeGreaterThan(40);
+    expect(reviewComments.unsaved("c1")).toBe(n - kept.length);
     reviewComments.add("c2", note());
     draftMemo.clearAll();
     expect(reviewComments.list("c1")).toEqual([]);
     expect(reviewComments.list("c2")).toEqual([]);
   });
 
+  it("hears another tab send or add comments", () => {
+    const heard: string[] = [];
+    const off = reviewComments.subscribe((id) => heard.push(id));
+    dispatchEvent(new StorageEvent("storage", { key: draftKey("comments:c9") }));
+    dispatchEvent(new StorageEvent("storage", { key: draftKey("conv:c9") }));
+    dispatchEvent(new StorageEvent("storage", { key: "unrelated" }));
+    off();
+    expect(heard).toEqual(["c9"]);
+  });
+
   it("caps a long quoted line", () => {
     expect(reviewComments.add("c1", note({ quote: "q".repeat(5000) })).quote.length).toBeLessThan(310);
+  });
+});
+
+describe("a comment being written", () => {
+  const at = { path: "a.ts", line: 3, side: "new" as const, quote: "x" };
+
+  it("lasts until it is dropped, and a second start doesn't empty it", () => {
+    commentDrafts.start("c1", at);
+    commentDrafts.write("c1", at, "half a thought");
+    commentDrafts.start("c1", at);
+    commentDrafts.start("c1", { ...at, line: 4 });
+    expect(commentDrafts.list("c1").map((d) => d.text)).toEqual(["half a thought", ""]);
+    commentDrafts.drop("c1", at);
+    expect(commentDrafts.list("c1").map((d) => d.line)).toEqual([4]);
+  });
+
+  it("is stored while it has words in it, and goes at sign-out", () => {
+    commentDrafts.start("c1", at);
+    expect(localStorage.getItem(draftKey("comment-drafts:c1"))).toBeNull();
+    commentDrafts.write("c1", at, "kept");
+    expect(localStorage.getItem(draftKey("comment-drafts:c1"))).toContain("kept");
+    draftMemo.clearAll();
+    expect(commentDrafts.list("c1")).toEqual([]);
+  });
+});
+
+describe("where a comment sits", () => {
+  const rows = [
+    { kind: "ctx", text: "  alpha", oldNo: 1, newNo: 1 },
+    { kind: "gap", count: 4 },
+    { kind: "del", text: "beta", oldNo: 6 },
+    { kind: "add", text: "gamma", newNo: 6 },
+  ] as Any;
+  const c = (line: number, side: "new" | "old", quote: string) => ({ path: "a", line, side, quote });
+
+  it("is its line while that line reads as it quoted it", () => {
+    const r = anchor(rows, [c(1, "new", "alpha"), c(6, "old", "beta"), c(6, "new", "gamma")]);
+    expect([...r.at.keys()]).toEqual([0, 2, 3]);
+    expect(r.moved).toEqual([]);
+  });
+
+  it("is nowhere once the line reads otherwise or has gone", () => {
+    const r = anchor(rows, [c(1, "new", "omega"), c(6, "old", "gamma"), c(90, "new", "alpha")]);
+    expect(r.at.size).toBe(0);
+    expect(r.moved.length).toBe(3);
+  });
+
+  it("matches a line too long to quote whole", () => {
+    const long = "y".repeat(5000);
+    const r = anchor([{ kind: "ctx", text: long, oldNo: 1, newNo: 1 }] as Any, [c(1, "new", quoteOf(long))]);
+    expect(r.moved).toEqual([]);
+  });
+});
+
+describe("what counts as a command", () => {
+  it("is a slash and a word at the start, not a path", () => {
+    expect(isCommand("/remember")).toBe(true);
+    expect(isCommand("  /remember the build")).toBe(true);
+    expect(isCommand("/plugin:do x")).toBe(true);
+    expect(isCommand("/usr/bin/env is broken")).toBe(false);
+    expect(isCommand("please /remember")).toBe(false);
+    expect(isCommand("")).toBe(false);
   });
 });
 
@@ -168,6 +254,90 @@ describe("the composer with comments waiting", () => {
     reviewComments.add("c1", note());
     await a.el.submit("queue");
     expect(a.send.mock.calls[1]).toEqual([expect.objectContaining({ intent: "queue" })]);
+  });
+
+  it("leaves comments out of a command, and says they wait", async () => {
+    reviewComments.add("c1", note());
+    const { el, send, root } = await mount();
+    await typeIn(el, "/remember");
+    expect(root.querySelector(".going")?.textContent).toContain("1 comment waits for your next message");
+    await el.submit("turn");
+    expect(send.mock.calls[0]).toEqual([{ text: "/remember", files: [], intent: "turn" }]);
+    expect(reviewComments.list("c1").length).toBe(1);
+  });
+
+  it("takes comments out of the conversation they went from, whatever is open by then", async () => {
+    const a = reviewComments.add("c1", note());
+    const other = reviewComments.add("c2", note({ text: "other" }));
+    const { el, send } = await mount();
+    send.mockImplementationOnce(async () => {
+      el.conversationId = "c2";
+      await el.updateComplete;
+      return null;
+    });
+    await el.submit("turn");
+    expect(reviewComments.list("c1").map((c) => c.id)).not.toContain(a.id);
+    expect(reviewComments.list("c2").map((c) => c.id)).toEqual([other.id]);
+  });
+
+  it("drops what another tab already sent", async () => {
+    const a = reviewComments.add("c1", note());
+    const { el, send, root } = await mount();
+    localStorage.removeItem(draftKey("comments:c1"));
+    await el.submit("turn");
+    expect(send).not.toHaveBeenCalled();
+    dispatchEvent(new StorageEvent("storage", { key: draftKey("comments:c1") }));
+    await el.updateComplete;
+    expect(root.querySelector(".going")).toBeNull();
+    expect(reviewComments.list("c1").map((c) => c.id)).not.toContain(a.id);
+  });
+
+  it("sends the comments alone from the pane, leaving what is in the box where it is", async () => {
+    reviewComments.add("c1", note());
+    const { el, send } = await mount();
+    await typeIn(el, "half a draft");
+    await el.sendComments();
+    expect(send.mock.calls[0]).toEqual([
+      {
+        text: "Comments on the changes:\n\nsrc/a.ts:3\n> const a = 1;\nName this better.",
+        files: [],
+        intent: "turn",
+      },
+    ]);
+    expect(el.text).toBe("half a draft");
+    expect(reviewComments.list("c1")).toEqual([]);
+  });
+
+  it("does nothing on Send comments with no comments", async () => {
+    const { el, send } = await mount();
+    await typeIn(el, "half a draft");
+    await el.sendComments();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("gives queued comments back to the box when their message is removed, and only then", async () => {
+    const text = withComments("", [reviewComments.add("x", note())]);
+    const chat = {
+      turns: [],
+      activeTurn: { id: "t" },
+      queuedMessages: [
+        { id: "q1", message: { text } },
+        { id: "q2", message: { text: "plain" } },
+      ],
+    };
+    const { el, root } = await mount(chat);
+    const seen: Any[] = [];
+    el.addEventListener("conv-unqueue", (e) => seen.push((e as CustomEvent).detail));
+    const buttons = () => [...root.querySelectorAll<HTMLButtonElement>(".queue .icon")];
+    must(buttons()[1]).click();
+    await el.updateComplete;
+    expect(el.text).toBe("");
+    must(buttons()[0]).click();
+    await el.updateComplete;
+    expect(el.text).toBe(text);
+    expect(seen.map((d) => d.id)).toEqual(["q2", "q1"]);
+    expect(holdsComments(text)).toBe(true);
+    expect(holdsComments("plain")).toBe(false);
   });
 
   it("sends comments as a turn when idle, and queues them while one runs", async () => {
@@ -392,7 +562,7 @@ describe("the pane", () => {
   });
 
   it("refreshes when a turn ends, not while one runs, and has Refresh", async () => {
-    chat = { turns: [], activeTurn: { id: "t" } };
+    chat = { turns: [], activeTurn: { id: "t", responseParts: [] } };
     const { el, root } = await mount();
     await settle(el);
     expect(root.querySelector(".say")?.textContent).toContain("Ada is working");
@@ -468,6 +638,15 @@ describe("the pane", () => {
     await el.updateComplete;
   }
 
+  async function typeAt(el: IncConvReview, root: ShadowRoot, row: string, text: string) {
+    must(root.querySelector<HTMLElement>(`${row} .no`)).click();
+    await el.updateComplete;
+    const ta = root.querySelector(`[data-box="${row.endsWith("del") ? "old" : "new"}-2"] textarea`) as HTMLTextAreaElement;
+    ta.value = text;
+    ta.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+    await el.updateComplete;
+  }
+
   it("takes a comment on an added line, with its new number and the quoted line", async () => {
     const { el, root } = await mount();
     await settle(el);
@@ -488,6 +667,298 @@ describe("the pane", () => {
     expect(reviewComments.list("c1")[0]).toMatchObject({ line: 2, side: "old", quote: "two" });
     expect(root.querySelector(".under .where")?.textContent).toBe("Removed line 2");
     expect(root.querySelector(".side .where")?.textContent).toBe("src/a.ts:2 (removed)");
+  });
+
+  it("leaves the code to be selected: only a line's number opens a box", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    must(root.querySelector<HTMLElement>(".row.add .text")).click();
+    must(root.querySelector<HTMLElement>(".row.add .sign")).click();
+    await el.updateComplete;
+    expect(root.querySelector(".box")).toBeNull();
+    must(root.querySelector<HTMLElement>(".row.add .no")).click();
+    await el.updateComplete;
+    expect(root.querySelector(".box")).not.toBeNull();
+  });
+
+  it("keeps a half-written comment when another line is picked", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    await typeAt(el, root, ".row.add", "half written thought");
+    must(root.querySelector<HTMLElement>(".row.del .no")).click();
+    await el.updateComplete;
+    const boxes = [...root.querySelectorAll<HTMLTextAreaElement>(".box textarea")];
+    expect(boxes.map((b) => b.value)).toEqual(["", "half written thought"]);
+    await until(() => root.activeElement === boxes[0]);
+  });
+
+  it("keeps a half-written comment across another file, and closing the pane", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    await typeAt(el, root, ".row.add", "half written thought");
+    must(root.querySelector<HTMLElement>('.f[data-path="new.txt"]')).click();
+    await settle(el);
+    expect(root.querySelector(".box")).toBeNull();
+    must(root.querySelector<HTMLElement>('.f[data-path="src/a.ts"]')).click();
+    await settle(el);
+    await until(() => root.querySelector(".box"));
+    expect(root.querySelector<HTMLTextAreaElement>(".box textarea")?.value).toBe("half written thought");
+    el.remove();
+    const again = await mount();
+    await settle(again.el);
+    await until(() => again.root.querySelector(".box"));
+    expect(again.root.querySelector<HTMLTextAreaElement>(".box textarea")?.value).toBe(
+      "half written thought",
+    );
+  });
+
+  it("asks before Escape or Cancel throws words away, and Escape then keeps them", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    const closed = vi.fn();
+    el.addEventListener("conv-review-close", closed);
+    await typeAt(el, root, ".row.add", "worth keeping");
+    const esc = () =>
+      must(root.querySelector("textarea")).dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, composed: true, cancelable: true }),
+      );
+    esc();
+    await el.updateComplete;
+    expect(root.querySelector(".box .acts p")?.textContent).toBe("Discard this comment?");
+    await until(() => root.activeElement === root.querySelector(".box .keep"));
+    esc();
+    await el.updateComplete;
+    expect(root.querySelector(".box .acts p")).toBeNull();
+    expect(root.querySelector<HTMLTextAreaElement>(".box textarea")?.value).toBe("worth keeping");
+    await until(() => root.activeElement === root.querySelector(".box textarea"));
+    const button = (name: string) =>
+      must([...root.querySelectorAll<HTMLElement>(".box .cbtn")].find((b) => b.textContent === name));
+    button("Cancel").click();
+    await el.updateComplete;
+    button("Discard").click();
+    await el.updateComplete;
+    expect(root.querySelector(".box")).toBeNull();
+    expect(commentDrafts.list("c1")).toEqual([]);
+    expect(closed).not.toHaveBeenCalled();
+    await until(() => root.activeElement === root.querySelector(".row.add .no"));
+  });
+
+  it("closes an empty box with no question", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    must(root.querySelector<HTMLElement>(".row.add .no")).click();
+    await el.updateComplete;
+    must([...root.querySelectorAll<HTMLElement>(".box .cbtn")].find((b) => b.textContent === "Cancel")).click();
+    await el.updateComplete;
+    expect(root.querySelector(".box")).toBeNull();
+  });
+
+  it("marks a comment whose line has changed, and doesn't put it under what took the number", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    await commentOn(root, el, ".row.add", "about this one");
+    fileReply = file({ after: { state: "text", text: "added\nabove\none\n2\nthree\n" } });
+    await el.refresh();
+    await settle(el);
+    expect(root.querySelector(".rows .under .c")).toBeNull();
+    expect(root.querySelector(".moved")?.textContent).toContain("This line has changed");
+    expect(root.querySelector(".moved blockquote")?.textContent).toBe("2");
+    expect(root.querySelector(".moved p:last-child")?.textContent).toBe("about this one");
+  });
+
+  it("keeps a box whose line has changed, with its words", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    await typeAt(el, root, ".row.add", "still mine");
+    fileReply = file({ after: { state: "text", text: "changed\nentirely\n" } });
+    await el.refresh();
+    await settle(el);
+    expect(root.querySelector<HTMLTextAreaElement>(".moved .box textarea")?.value).toBe("still mine");
+    must(root.querySelector<HTMLButtonElement>(".moved .box .primary")).click();
+    await el.updateComplete;
+    expect(reviewComments.list("c1")[0]).toMatchObject({ line: 2, quote: "2", text: "still mine" });
+  });
+
+  it("says apart a removed line and an added one with the same number, in the box too", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    const del = must(root.querySelector<HTMLElement>(".row.del .no"));
+    const add = must(root.querySelector<HTMLElement>(".row.add .no"));
+    expect(del.getAttribute("aria-label")).toBe("Comment on removed line 2");
+    expect(add.getAttribute("aria-label")).toBe("Comment on line 2");
+    del.click();
+    await el.updateComplete;
+    expect(root.querySelector("textarea")?.getAttribute("aria-label")).toBe("Comment on removed line 2");
+    expect(root.querySelector(".row.add .sign")?.getAttribute("role")).toBe("img");
+    expect(root.querySelector(".row.add .sign")?.getAttribute("aria-label")).toBe("added");
+    expect(root.querySelector(".row.ctx .sign")?.hasAttribute("role")).toBe(false);
+  });
+
+  it("keeps focus in the list when a comment is removed", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    await commentOn(root, el, ".row.add", "first");
+    await commentOn(root, el, ".row.del", "second");
+    const side = () => [...root.querySelectorAll<HTMLElement>(".side .rm")];
+    must(side()[0]).focus();
+    must(side()[0]).click();
+    await until(() => reviewComments.list("c1").length === 1);
+    await el.updateComplete;
+    await until(() => root.activeElement?.classList.contains("rm"));
+    (root.activeElement as HTMLElement).click();
+    await until(() => !root.querySelector(".rm"));
+    await until(() => root.activeElement === root.querySelector('.f[aria-current="true"]'));
+  });
+
+  it("goes to a comment's line, past the cut if need be", async () => {
+    const text = (n: number) => Array.from({ length: n }, (_, i) => `line ${i + 1}`).join("\n");
+    fileReply = file({ before: { state: "none" }, after: { state: "text", text: text(1500) } });
+    const { el, root } = await mount();
+    await settle(el);
+    reviewComments.add("c1", note({ line: 1300, quote: "line 1300" }));
+    await el.updateComplete;
+    must(root.querySelector<HTMLElement>(".side .where")).click();
+    await until(() => root.activeElement === root.querySelector('[data-at="new-1300"] .no'));
+    expect(el.showAll).toBe(true);
+    await el.updateComplete;
+    const rows = must(root.querySelector<HTMLElement>(".rows"));
+    const line = must(root.querySelector<HTMLElement>('[data-at="new-1300"] .no'));
+    Object.defineProperty(rows, "scrollTop", { value: 0, writable: true });
+    vi.spyOn(rows, "getBoundingClientRect").mockReturnValue({ top: 0, height: 400 } as DOMRect);
+    vi.spyOn(line, "getBoundingClientRect").mockReturnValue({ top: 2000, height: 20 } as DOMRect);
+    must(root.querySelector<HTMLElement>(".side .where")).click();
+    await until(() => rows.scrollTop === 1810);
+  });
+
+  it("offers no link to a line with no diff to go to", async () => {
+    reviewComments.add("c1", note());
+    changes = listing({ state: "asleep", files: [], reason: "Asleep." });
+    const { el, root } = await mount();
+    await settle(el);
+    expect(root.querySelector(".side button.where")).toBeNull();
+    expect(root.querySelector(".side .where")?.textContent).toBe("src/a.ts:3");
+    expect(root.querySelector(".side blockquote")?.textContent).toBe("const a = 1;");
+  });
+
+  it("goes to a comment above the diff when its line has changed", async () => {
+    reviewComments.add("c1", note({ path: "new.txt", line: 40, quote: "long gone" }));
+    const { el, root } = await mount();
+    await settle(el);
+    must(root.querySelector<HTMLElement>(".side .where")).click();
+    await settle(el);
+    await until(() => root.activeElement === root.querySelector("[data-moved]"));
+    expect(el.selected).toBe("new.txt");
+  });
+
+  it("says when a read couldn't reach every file, and doesn't call that nothing", async () => {
+    changes = listing({ partial: true, files: [] });
+    const first = await mount();
+    expect(first.root.querySelector(".state")?.textContent).toContain("Some files couldn't be read");
+    expect(first.root.querySelector(".state")?.textContent).not.toContain("Nothing has changed");
+    expect(first.root.querySelector(".state .cbtn")?.textContent).toBe("Try again");
+    first.el.remove();
+    changes = listing({ partial: true });
+    const { el, root } = await mount();
+    await settle(el);
+    expect([...root.querySelectorAll(".say")].map((s) => s.textContent)).toContain(
+      "Some files couldn't be read, so this may not be everything.",
+    );
+  });
+
+  it("says how many comments a reload would lose", async () => {
+    const n = Math.ceil(COMMENTS_CAP / 4000) + 2;
+    for (let i = 0; i < n; i++) reviewComments.add("c1", note({ text: "x".repeat(4000) }));
+    const { el, root } = await mount();
+    await settle(el);
+    expect(root.querySelector(".side section .say")?.textContent).toContain("too much to keep through a reload");
+  });
+
+  it("keeps the diff, the comments and Send comments when a refresh fails", async () => {
+    reviewComments.add("c1", note());
+    const { el, root } = await mount();
+    await settle(el);
+    vi.stubGlobal("fetch", async () => reply({ error: "boom" }, 500));
+    await el.refresh();
+    await el.updateComplete;
+    expect(root.querySelector('.say[role="alert"]')?.textContent).toContain("Couldn't read the changes");
+    expect(root.querySelector(".rows")).not.toBeNull();
+    expect(root.querySelector("#h-comments")?.textContent).toBe("Comments · 1");
+    expect(root.querySelector(".send .cbtn")).not.toBeNull();
+  });
+
+  it("keeps the comments when the first read fails", async () => {
+    reviewComments.add("c1", note());
+    vi.stubGlobal("fetch", async () => reply({ error: "boom" }, 500));
+    const { root } = await mount();
+    expect(root.querySelector(".state")?.textContent).toContain("Couldn't read the changes");
+    expect(root.querySelector(".send .cbtn")).not.toBeNull();
+  });
+
+  it("keeps focus on Refresh while it reads, and won't read twice", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    const refresh = must(root.querySelector<HTMLButtonElement>(".refresh"));
+    refresh.focus();
+    let release: (r: Response) => void = () => {};
+    const seen: string[] = [];
+    vi.stubGlobal("fetch", (url: string) => {
+      seen.push(url);
+      return url.includes("/changes/file")
+        ? Promise.resolve(reply({ file: file() }))
+        : new Promise<Response>((r) => {
+            release = r;
+          });
+    });
+    refresh.click();
+    await el.updateComplete;
+    expect(refresh.disabled).toBe(false);
+    expect(refresh.getAttribute("aria-disabled")).toBe("true");
+    expect(root.activeElement).toBe(refresh);
+    refresh.click();
+    expect(seen.length).toBe(1);
+    release(reply({ changes: listing() }));
+    await settle(el);
+    expect(root.activeElement).toBe(refresh);
+  });
+
+  it("moves focus to Refresh when Try again is replaced by the list", async () => {
+    changes = listing({ state: "asleep", files: [], reason: "Asleep." });
+    const { el, root } = await mount();
+    await settle(el);
+    must(root.querySelector<HTMLButtonElement>(".state .cbtn")).focus();
+    changes = listing();
+    must(root.querySelector<HTMLButtonElement>(".state .cbtn")).click();
+    await until(() => root.activeElement === root.querySelector(".refresh"));
+    expect(root.querySelector(".rows")).not.toBeNull();
+  });
+
+  it("puts focus on the first new line after Show all", async () => {
+    const text = Array.from({ length: 1200 }, (_, i) => `line ${i + 1}`).join("\n");
+    fileReply = file({ before: { state: "none" }, after: { state: "text", text } });
+    const { el, root } = await mount();
+    await settle(el);
+    must(root.querySelector<HTMLButtonElement>(".more .link-btn")).click();
+    await until(() => root.activeElement === root.querySelector('[data-i="1000"] .no'));
+  });
+
+  it("says the agent is waiting, not working, and takes the owner to it", async () => {
+    chat = {
+      turns: [],
+      activeTurn: {
+        id: "t",
+        responseParts: [
+          { kind: "toolCall", toolCall: { toolCallId: "p", status: "pending-confirmation" } },
+        ],
+      },
+    };
+    const { el, root } = await mount();
+    await settle(el);
+    expect(root.querySelector(".say")?.textContent).toContain("Ada is waiting for your answer");
+    expect(root.querySelector(".say")?.textContent).not.toContain("working");
+    const answer = vi.fn();
+    el.addEventListener("conv-review-answer", answer);
+    must(root.querySelector<HTMLButtonElement>(".say .link-btn")).click();
+    expect(answer).toHaveBeenCalledTimes(1);
   });
 
   it("doesn't add an empty comment", async () => {
@@ -730,6 +1201,71 @@ describe("the screen around it", () => {
     await composer.updateComplete;
     must(composer.shadowRoot?.querySelector<HTMLButtonElement>(".going .link-btn")).click();
     await until(() => root().querySelector("inc-conv-review"));
+  });
+
+  it("gives focus back to the composer's Review link", async () => {
+    reviewComments.add(conv.id, note());
+    const { el, root, thread } = await mount();
+    const composer = must(thread.shadowRoot?.querySelector("inc-conv-composer")) as IncConvComposer;
+    await composer.updateComplete;
+    const link = must(composer.shadowRoot?.querySelector<HTMLButtonElement>(".going .link-btn"));
+    link.click();
+    await until(() => root().querySelector("inc-conv-review"));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await until(() => !root().querySelector("inc-conv-review"));
+    await el.updateComplete;
+    await until(() => composer.shadowRoot?.activeElement === link);
+  });
+
+  it("leaves the pane open when Escape closes a menu in the list", async () => {
+    const { el, root, button } = await mount();
+    button().click();
+    await until(() => root().querySelector("inc-conv-review"));
+    const list = must(root().querySelector("inc-conv-list")) as Any;
+    await until(() => list.shadowRoot?.querySelector(".dots"));
+    const dots = must(list.shadowRoot?.querySelector(".dots")) as HTMLElement;
+    dots.click();
+    await list.updateComplete;
+    expect(list.shadowRoot?.querySelector(".menu")).not.toBeNull();
+    dots.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true, composed: true, cancelable: true }),
+    );
+    await list.updateComplete;
+    await el.updateComplete;
+    expect(list.shadowRoot?.querySelector(".menu")).toBeNull();
+    expect(root().querySelector("inc-conv-review")).not.toBeNull();
+  });
+
+  it("gives a tablet's focus to the context drawer that comes back over the header", async () => {
+    const { el, root, button } = await mount();
+    vi.stubGlobal("matchMedia", (q: string) => ({
+      matches: false && q,
+      addEventListener() {},
+      removeEventListener() {},
+    }));
+    (el as Any).layout();
+    (el as Any).ctx = "open";
+    await el.updateComplete;
+    expect(root().querySelector(".drawer")).not.toBeNull();
+    button().click();
+    await until(() => root().querySelector("inc-conv-review"));
+    expect(root().querySelector(".drawer")).toBeNull();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await until(() => root().querySelector(".drawer"));
+    const ctx = must(root().querySelector(".drawer inc-conv-context"));
+    await until(() => ctx.shadowRoot?.activeElement === ctx.shadowRoot?.querySelector(".x"));
+    expect(ctx.shadowRoot?.activeElement).not.toBeNull();
+  });
+
+  it("goes back to the thread and the waiting card on Answer", async () => {
+    const { root, thread, button } = await mount();
+    button().click();
+    await until(() => root().querySelector("inc-conv-review"));
+    const review = must(root().querySelector<IncConvReview>("inc-conv-review"));
+    const focus = vi.spyOn(thread as Any, "focusPending");
+    review.dispatchEvent(new CustomEvent("conv-review-answer", { bubbles: true, composed: true }));
+    await until(() => !root().querySelector("inc-conv-review"));
+    await until(() => focus.mock.calls.length === 1);
   });
 
   it("opens at the file a link in the context panel names", async () => {

@@ -452,9 +452,8 @@ export class IncConversations extends LitElement {
   };
 
   private openReview = (e: CustomEvent<{ path?: string; from?: string }>) => {
-    // From the panel, focus goes back to the link that was pressed if it is still there; else to the Changes button.
-    this.reviewOpener =
-      e.detail.from === "context" ? ((e.composedPath()[0] ?? null) as HTMLElement | null) : null;
+    // From a link (the panel's, the composer's), focus goes back to it if it is still there; else to the Changes button.
+    this.reviewOpener = e.detail.from ? ((e.composedPath()[0] ?? null) as HTMLElement | null) : null;
     this.sheet = false;
     this.review = { path: e.detail.path ?? "" };
     void this.updateComplete.then(() =>
@@ -468,7 +467,7 @@ export class IncConversations extends LitElement {
 
   private thread() {
     return this.renderRoot.querySelector("inc-conv-thread") as
-      | (HTMLElement & { focusChangesButton(): void; sendComments(): void })
+      | (HTMLElement & { focusChangesButton(): void; focusPending(): void; sendComments(): void })
       | null;
   }
 
@@ -476,9 +475,13 @@ export class IncConversations extends LitElement {
     this.review = null;
     const opener = this.reviewOpener;
     this.reviewOpener = null;
-    void this.updateComplete.then(() => {
-      if (opener?.isConnected && opener.checkVisibility?.()) opener.focus();
-      else this.thread()?.focusChangesButton();
+    void this.updateComplete.then(async () => {
+      if (opener?.isConnected && opener.checkVisibility?.()) return opener.focus();
+      // A tablet's context drawer comes back over the thread's header, Changes button and all.
+      const drawer = this.renderRoot.querySelector<LitElement>(".drawer inc-conv-context");
+      if (!drawer) return this.thread()?.focusChangesButton();
+      await drawer.updateComplete;
+      drawer.shadowRoot?.querySelector<HTMLElement>(".x")?.focus();
     });
   };
 
@@ -486,6 +489,12 @@ export class IncConversations extends LitElement {
   private sendComments = () => {
     this.closeReview();
     void this.updateComplete.then(() => this.thread()?.sendComments());
+  };
+
+  /** Back to the thread, to the permission or question the agent is stopped on. */
+  private answerAgent = () => {
+    this.closeReview();
+    void this.updateComplete.then(() => this.thread()?.focusPending());
   };
 
   private shipped = (_e: CustomEvent<ShipDone>) => {
@@ -598,7 +607,7 @@ export class IncConversations extends LitElement {
       ${
         reviewing
           ? html`<section class="pane review-pane" aria-label="Changes"><inc-conv-review .conv=${conv} .name=${employee?.name ?? ""} .phone=${phone} .path=${this.review?.path ?? ""}
-              @conv-review-close=${this.closeReview} @conv-send-comments=${this.sendComments}></inc-conv-review></section>`
+              @conv-review-close=${this.closeReview} @conv-send-comments=${this.sendComments} @conv-review-answer=${this.answerAgent}></inc-conv-review></section>`
           : nothing
       }
       ${drawer ? html`<aside class="drawer" aria-label="Context">${context}</aside>` : nothing}

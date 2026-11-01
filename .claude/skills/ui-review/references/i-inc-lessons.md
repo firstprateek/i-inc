@@ -112,3 +112,14 @@ paths, branch names, structured briefs).
     When one grid item overlaps others, give every item an explicit column, and look at the width in the screenshot.
 25. **One more header button took the title (layout).** A fifth 44 px control left a phone's title one letter wide. →
     On a phone the title has its own row and the tools share the next; count a header's controls at 390 px.
+26. **`isCollapsed` lies in a shadow root (interaction).** Chromium reports a selection inside a shadow root as collapsed
+    while `toString()` holds the text, so a "not after a selection" guard never fired, and a click on code opened a
+    comment box. The first click of a double-click has no selection to look at anyway. → Don't guess from a click on
+    text: give the action its own control (the line's number) and leave text to be selected.
+27. **`pre-wrap` hangs its trailing space (overflow).** A wrapped comment ran 2 px outside its box, only on the lines that
+    broke at a space. → Use `break-spaces` for text the owner wrote.
+28. **A disabled or replaced button drops focus to body (a11y).** Refresh was disabled while it read, and Try again
+    and Show all were removed by their own success. → Use `aria-disabled` and a guard while something runs, and when a
+    control goes away with its own action, say where focus goes next. Test `activeElement`, not only the result.
+29. **Only `defaultPrevented` tells an outer Escape it was taken (keyboard).** A menu that closed on Escape left the event
+    free, so the document-level handler closed the pane behind it too. → Anything that takes Escape calls `preventDefault`.
