@@ -106,3 +106,9 @@ paths, branch names, structured briefs).
     the whole segment is tappable; the checker (rightly) saw an element painting over text. → Give the
     overlaid input `pointer-events: none` (the label still takes the tap and the keyboard still works), so
     the text is what is on top.
+24. **An overlay in a grid pushed its neighbours out (layout).** The review pane took `grid-column: 2 / -1` over the
+    thread and the panel, but they were auto-placed, so they moved to new implicit columns, the `1fr` track fell to
+    0 and the pane collapsed to the width of the context panel. The checker saw nothing wrong: every element fit. →
+    When one grid item overlaps others, give every item an explicit column, and look at the width in the screenshot.
+25. **One more header button took the title (layout).** A fifth 44 px control left a phone's title one letter wide. →
+    On a phone the title has its own row and the tools share the next; count a header's controls at 390 px.

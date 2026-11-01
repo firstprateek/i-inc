@@ -208,6 +208,11 @@ export class IncConvThread extends LitElement {
         background: var(--sunken); color: var(--ink); font-size: 14px; font-weight: 600; }
       .card-note button { margin-left: auto; }
       @media (max-width: 767px) {
+        /* The title takes the first row, so it is never squeezed by the tools on theirs. */
+        .head { flex-wrap: wrap; row-gap: 6px; }
+        .who { flex-basis: calc(100% - 110px); }
+        .ship-wrap, .changes-btn { margin-left: 0; }
+        .head > .who + * { margin-left: auto; }
         .title { font-size: 17px; }
         .meta code { display: none; }
         .meta { flex-wrap: wrap; row-gap: 2px; }
@@ -299,6 +304,22 @@ export class IncConvThread extends LitElement {
       items[(at + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus();
     }
   };
+
+  /** Puts focus back on the Changes button (after the review pane closes). */
+  focusChangesButton(): void {
+    this.shadowRoot?.querySelector<HTMLElement>(".changes-btn")?.focus();
+  }
+
+  /** The review pane's Send comments: goes through the composer, so its queue, steering and refusals all hold. */
+  sendComments(): void {
+    (
+      this.renderRoot.querySelector("inc-conv-composer") as
+        | (HTMLElement & { sendComments(): Promise<void> })
+        | null
+    )
+      ?.sendComments()
+      .catch((e: unknown) => this.fail(e instanceof Error ? e.message : String(e)));
+  }
 
   /** Puts focus back on the Ship button (after its menu or its dialog closes). */
   focusShipButton(): void {
@@ -980,7 +1001,14 @@ export class IncConvThread extends LitElement {
             }</div>
         </div>
         ${watch ? nothing : this.shipControl(conv)}
-        <button class="tool-btn" type="button" aria-label="Context panel" aria-pressed=${this.contextOpen ? "true" : "false"} title="Context: plan, files, usage"
+        ${
+          watch
+            ? nothing
+            : html`<button class="tool-btn changes-btn" type="button" aria-label="Changes" title="Changes: review what this conversation changed"
+          @click=${() => this.dispatchEvent(new CustomEvent("conv-review", { detail: {}, bubbles: true, composed: true }))}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10M7 9h10M7 19h10"/></svg></button>`
+        }
+        <button class="tool-btn context-btn" type="button" aria-label="Context panel" aria-pressed=${this.contextOpen ? "true" : "false"} title="Context: plan, files, usage"
           @click=${() => this.dispatchEvent(new CustomEvent("conv-toggle-context", { bubbles: true, composed: true }))}>
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg></button>
         ${

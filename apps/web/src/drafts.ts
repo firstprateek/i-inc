@@ -5,6 +5,7 @@
 // A draft longer than this (in UTF-16 characters) stays in memory only, so one paste can't fill storage.
 export const DRAFT_CAP = 20 * 1024;
 const prefix = "inc.chat.draft.";
+const onClear = new Set<() => void>();
 
 export const draftMemo = {
   get(employeeId: string): string | null {
@@ -34,7 +35,12 @@ export const draftMemo = {
     const stored = draftMemo.get(employeeId);
     if (stored !== null && stored.trim() === sent.trim()) draftMemo.set(employeeId, "");
   },
+  /** Whoever keeps a draft in memory forgets it with the rest. */
+  onClearAll(fn: () => void): void {
+    onClear.add(fn);
+  },
   clearAll(): void {
+    for (const fn of onClear) fn();
     try {
       const keys: string[] = [];
       for (let i = 0; i < localStorage.length; i++) {

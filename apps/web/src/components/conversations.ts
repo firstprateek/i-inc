@@ -13,11 +13,13 @@ import { live } from "../live.ts";
 import { notifyNeedsYou } from "../needs-you.ts";
 import type { SendDetail } from "./conv-composer.ts";
 import type { DraftPick, IncConvDraft } from "./conv-draft.ts";
+import type { IncConvReview } from "./conv-review.ts";
 import type { ShipDone, ShipKind } from "./conv-ship.ts";
 import { base } from "./shared.ts";
 import "./conv-context.ts";
 import "./conv-draft.ts";
 import "./conv-list.ts";
+import "./conv-review.ts";
 import "./conv-ship.ts";
 import "./conv-thread.ts";
 
@@ -50,6 +52,7 @@ export class IncConversations extends LitElement {
     ready: { state: true },
     ship: { state: true },
     dialog: { state: true },
+    review: { state: true },
   };
   declare selectedId: string;
   /** `?card=<id>`: the card a notification opened; the thread brings it into view. */
@@ -76,6 +79,8 @@ export class IncConversations extends LitElement {
   declare ship: ShipView | undefined;
   /** The ship dialog, while it is open. */
   declare dialog: { kind: ShipKind } | null;
+  /** The review pane, while it is open, and the file it opened at. */
+  declare review: { path: string } | null;
   declare limit: AccountRateLimit | undefined;
   declare accountName: string;
   declare info: ReturnType<typeof ahp>["info"];
@@ -92,6 +97,7 @@ export class IncConversations extends LitElement {
   private shipTimer: ReturnType<typeof setTimeout> | undefined;
   private shipPoll: ReturnType<typeof setInterval> | undefined;
   private opener: HTMLElement | null = null;
+  private reviewOpener: HTMLElement | null = null;
 
   constructor() {
     super();
@@ -113,6 +119,7 @@ export class IncConversations extends LitElement {
     this.ready = false;
     this.ship = undefined;
     this.dialog = null;
+    this.review = null;
     this.accountName = "";
     this.info = ahp().info;
   }
@@ -122,10 +129,14 @@ export class IncConversations extends LitElement {
     cardStyles,
     css`
       :host { display: block; height: 100%; min-height: 0; min-width: 0; }
-      .screen { display: grid; grid-template-columns: minmax(260px, 300px) minmax(0, 1fr); gap: 16px; height: 100%; min-height: 0; min-width: 0; position: relative;
+      .screen { display: grid; grid-template-columns: minmax(260px, 300px) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 16px; height: 100%; min-height: 0; min-width: 0; position: relative;
         padding-bottom: var(--kb, 0px); box-sizing: border-box; }
       .screen.ctx.wide { grid-template-columns: minmax(260px, 300px) minmax(0, 1fr) minmax(280px, 340px); }
-      .pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+      .pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; grid-row: 1; }
+      /* The review pane lies over the thread and the panel, which stay laid out so nothing they hold is disturbed. */
+      .list-pane { grid-column: 1; } .thread-pane { grid-column: 2; } .ctx-pane { grid-column: 3; }
+      .review-pane { grid-column: 2 / -1; z-index: 2; }
+      .under { visibility: hidden; }
       .list-pane { border-right: 1px solid var(--line); padding-right: 12px; }
       .ctx-pane { border-left: 1px solid var(--line); padding-left: 12px; }
       .none { margin: auto; max-width: 44ch; text-align: center; display: flex; flex-direction: column; gap: 10px; align-items: center; padding: 0 16px; }
@@ -142,6 +153,7 @@ export class IncConversations extends LitElement {
       .screen.phone .list-pane { border: 0; padding: 0; height: 100%; }
       .screen.phone .thread-pane { height: 100%; }
       .screen.phone .list-pane[hidden], .screen.phone .thread-pane[hidden] { display: none; }
+      .screen.phone .review-pane { position: absolute; inset: 0 0 var(--kb, 0px) 0; }
     `,
   ];
 
@@ -243,6 +255,7 @@ export class IncConversations extends LitElement {
 
   override willUpdate(changed: Map<string, unknown>): void {
     if (changed.has("selectedId") && this.selectedId) this.lost = "";
+    if (changed.has("selectedId") && changed.get("selectedId") !== undefined) this.review = null;
   }
 
   override updated(changed: Map<string, unknown>): void {
@@ -260,7 +273,7 @@ export class IncConversations extends LitElement {
         // Back to the button that opened it.
         this.renderRoot
           .querySelector("inc-conv-thread")
-          ?.shadowRoot?.querySelector<HTMLElement>(".tool-btn")
+          ?.shadowRoot?.querySelector<HTMLElement>(".context-btn")
           ?.focus();
       }
     }
@@ -438,6 +451,43 @@ export class IncConversations extends LitElement {
     });
   };
 
+  private openReview = (e: CustomEvent<{ path?: string; from?: string }>) => {
+    // From the panel, focus goes back to the link that was pressed if it is still there; else to the Changes button.
+    this.reviewOpener =
+      e.detail.from === "context" ? ((e.composedPath()[0] ?? null) as HTMLElement | null) : null;
+    this.sheet = false;
+    this.review = { path: e.detail.path ?? "" };
+    void this.updateComplete.then(() =>
+      this.renderRoot
+        .querySelector<IncConvReview>("inc-conv-review")
+        ?.updateComplete.then(() =>
+          this.renderRoot.querySelector<IncConvReview>("inc-conv-review")?.focusClose(),
+        ),
+    );
+  };
+
+  private thread() {
+    return this.renderRoot.querySelector("inc-conv-thread") as
+      | (HTMLElement & { focusChangesButton(): void; sendComments(): void })
+      | null;
+  }
+
+  private closeReview = () => {
+    this.review = null;
+    const opener = this.reviewOpener;
+    this.reviewOpener = null;
+    void this.updateComplete.then(() => {
+      if (opener?.isConnected && opener.checkVisibility?.()) opener.focus();
+      else this.thread()?.focusChangesButton();
+    });
+  };
+
+  /** Back to the thread, where the message goes through the composer and can be seen going. */
+  private sendComments = () => {
+    this.closeReview();
+    void this.updateComplete.then(() => this.thread()?.sendComments());
+  };
+
   private shipped = (_e: CustomEvent<ShipDone>) => {
     void this.loadShip();
     void this.loadList();
@@ -502,7 +552,8 @@ export class IncConversations extends LitElement {
     const phone = this.phone;
     const open = this.ctxOpen() && !!conv;
     const inline = open && this.wide && !phone;
-    const drawer = open && !this.wide && !phone;
+    const drawer = open && !this.wide && !phone && !this.review;
+    const reviewing = !!this.review && !!conv;
     // While the phone's sheet is open, everything behind it is out of reach (of Tab and of a screen reader).
     const modal = (phone && this.sheet && !!conv) || !!this.dialog;
     const drafting = this.showDraft();
@@ -520,7 +571,7 @@ export class IncConversations extends LitElement {
         this.loading = true;
         void this.loadList();
       }}></inc-conv-list>`;
-    const thread = html`<section class="pane thread-pane" ?inert=${modal} ?hidden=${phone && !this.selectedId && !drafting} aria-label="Conversation">
+    const thread = html`<section class="pane thread-pane ${reviewing ? "under" : ""}" ?inert=${modal || reviewing} ?hidden=${phone && !this.selectedId && !drafting} aria-label="Conversation">
       ${this.lost ? html`<p class="lost" role="alert">${this.lost}</p>` : nothing}
       ${
         conv
@@ -541,9 +592,15 @@ export class IncConversations extends LitElement {
       ? html`<inc-conv-context .conv=${conv} .employee=${employee} .ship=${this.ship} .limit=${this.limit} .accountName=${this.accountName} .closable=${!inline}
           @conv-toggle-context=${this.toggleContext}></inc-conv-context>`
       : nothing;
-    return html`<div class="screen ${phone ? "phone" : ""} ${inline ? "ctx wide" : ""}" @conv-ship=${this.openShip}>
+    return html`<div class="screen ${phone ? "phone" : ""} ${inline ? "ctx wide" : ""}" @conv-ship=${this.openShip} @conv-review=${this.openReview}>
       ${list}${thread}
-      ${inline ? html`<aside class="pane ctx-pane" aria-label="Context">${context}</aside>` : nothing}
+      ${inline ? html`<aside class="pane ctx-pane ${reviewing ? "under" : ""}" ?inert=${reviewing} aria-label="Context">${context}</aside>` : nothing}
+      ${
+        reviewing
+          ? html`<section class="pane review-pane" aria-label="Changes"><inc-conv-review .conv=${conv} .name=${employee?.name ?? ""} .phone=${phone} .path=${this.review?.path ?? ""}
+              @conv-review-close=${this.closeReview} @conv-send-comments=${this.sendComments}></inc-conv-review></section>`
+          : nothing
+      }
       ${drawer ? html`<aside class="drawer" aria-label="Context">${context}</aside>` : nothing}
       ${
         phone && this.sheet && conv

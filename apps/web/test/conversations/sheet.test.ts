@@ -70,7 +70,7 @@ async function mount() {
   const root = () => el.shadowRoot as ShadowRoot;
   await until(() => root().querySelector("inc-conv-thread") && c.chat(CHAT));
   const thread = () => must(root().querySelector("inc-conv-thread"));
-  const toggle = () => must<HTMLButtonElement>(thread().shadowRoot?.querySelector(".tool-btn"));
+  const toggle = () => must<HTMLButtonElement>(thread().shadowRoot?.querySelector(".context-btn"));
   const sheet = () => root().querySelector(".sheet");
   const context = () => must(sheet()?.querySelector("inc-conv-context"));
   const activeInContext = () => {

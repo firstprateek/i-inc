@@ -14,6 +14,7 @@ import {
   type Picker,
   slashQuery,
 } from "../conversations/model.ts";
+import { type LineComment, reviewComments, withComments } from "../conversations/review.ts";
 import { cardStyles } from "../conversations/styles.ts";
 import { draftMemo } from "../drafts.ts";
 import { isTouchDevice } from "./chat.ts";
@@ -57,6 +58,7 @@ export class IncConvComposer extends LitElement {
     attached: { state: true },
     menu: { state: true },
     fileProblem: { state: true },
+    comments: { state: true },
   };
   declare session: SessionState | undefined;
   /** The mode picker of a conversation not started yet (there is no session to read it from). */
@@ -78,6 +80,8 @@ export class IncConvComposer extends LitElement {
   /** The Steer button's menu (Queue), on a narrow screen. */
   declare menu: boolean;
   declare fileProblem: string | null;
+  /** Line comments from the review pane: they go with the next message, whatever it is. */
+  declare comments: LineComment[];
 
   private readonly picker = new ImagePicker(this, {
     id: "conv-images",
@@ -87,6 +91,7 @@ export class IncConvComposer extends LitElement {
   private composing = false;
   private composedAt = 0;
   private draftFor = "";
+  private offComments: (() => void) | undefined;
 
   constructor() {
     super();
@@ -102,6 +107,7 @@ export class IncConvComposer extends LitElement {
     this.attached = [];
     this.fileProblem = null;
     this.menu = false;
+    this.comments = [];
   }
 
   static override styles = [
@@ -178,13 +184,28 @@ export class IncConvComposer extends LitElement {
       .menu button { min-height: 44px; padding: 0 16px; border: 0; background: transparent; border-radius: 8px; font: 600 15px var(--body); color: var(--ink); cursor: pointer; white-space: nowrap; }
       .menu button:hover { background: var(--sunken); }
       .queue { max-height: 88px; overflow-y: auto; }
+      .going { margin: 0; padding: 0 6px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13.5px; color: var(--ink-2); }
     `,
   ];
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    this.offComments = reviewComments.subscribe((id) => {
+      if (id === this.conversationId) this.comments = reviewComments.list(id);
+    });
+    this.comments = reviewComments.list(this.conversationId);
+  }
+
+  override disconnectedCallback(): void {
+    this.offComments?.();
+    super.disconnectedCallback();
+  }
 
   override willUpdate(changed: Map<string, unknown>): void {
     if (changed.has("conversationId") && this.conversationId !== this.draftFor) {
       this.draftFor = this.conversationId;
       this.text = draftMemo.get(`conv:${this.conversationId}`) ?? "";
+      this.comments = reviewComments.list(this.conversationId);
       this.error = null;
       this.slash = [];
       this.picker.clear();
@@ -326,8 +347,15 @@ export class IncConvComposer extends LitElement {
     }
   };
 
+  /** The pane's Send comments: the next message, with whatever is in the box. While a turn runs it waits its turn. */
+  sendComments(): Promise<void> {
+    return this.submit(this.running ? "queue" : "turn");
+  }
+
   async submit(intent: Intent): Promise<void> {
-    const text = this.text.trim();
+    const typed = this.text.trim();
+    const going = this.comments;
+    const text = withComments(typed, going);
     const files = this.allFiles();
     if ((!text && !files.length) || this.sending || this.blocked || !this.onSend) return;
     if (checkOutgoing(text, files)) return; // the box already says why
@@ -345,8 +373,15 @@ export class IncConvComposer extends LitElement {
     this.sending = false;
     if (problem) {
       this.error = problem;
-      this.restore(text, files);
+      // Only what was typed goes back in the box: the comments never left the list.
+      this.restore(typed, files);
       return;
+    }
+    if (going.length) {
+      reviewComments.remove(
+        this.conversationId,
+        going.map((c) => c.id),
+      );
     }
     this.focusInput();
   }
@@ -391,10 +426,10 @@ export class IncConvComposer extends LitElement {
 
   override render() {
     const running = this.running;
-    const hasInput = !!this.text.trim() || this.allFiles().length > 0;
+    const hasInput = !!this.text.trim() || this.allFiles().length > 0 || this.comments.length > 0;
     const mode = this.modes ?? modePicker(this.session);
     const others = otherPickers(this.session);
-    const tooBig = checkOutgoing(this.text, this.allFiles());
+    const tooBig = checkOutgoing(withComments(this.text, this.comments), this.allFiles());
     const dis = !!this.blocked || !!tooBig;
     return html`<form class="composer" @submit=${(e: Event) => e.preventDefault()}
       @dragover=${(e: DragEvent) => {
@@ -431,6 +466,12 @@ export class IncConvComposer extends LitElement {
       ${this.error ? html`<p class="problem" role="alert">${this.error}</p>` : nothing}
       ${tooBig ? html`<p class="problem" role="alert">${tooBig}</p>` : nothing}
       ${this.blocked ? html`<p class="hint" role="status">${this.blocked}</p>` : nothing}
+      ${
+        this.comments.length
+          ? html`<p class="going"><span>${this.comments.length} ${this.comments.length === 1 ? "comment goes" : "comments go"} with this message.</span>
+              <button class="link-btn" type="button" @click=${() => this.emit("conv-review", {})}>Review</button></p>`
+          : nothing
+      }
       <div class="box ${this.dragging ? "drag" : ""}">
         ${this.picker.thumbs({ compact: true })}
         ${
