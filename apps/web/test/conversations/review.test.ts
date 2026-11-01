@@ -1325,6 +1325,23 @@ describe("the screen around it", () => {
     await until(() => focus.mock.calls.length === 1);
   });
 
+  it("opens a Read card's file once, however often the screen draws", async () => {
+    const { el, root, button } = await mount();
+    button().click();
+    await until(() => root().querySelector("inc-conv-review"));
+    must(root().querySelector(".screen")).dispatchEvent(
+      new CustomEvent("conv-review", { detail: { path: "src/a.ts", line: 2, tab: "files" }, bubbles: true }),
+    );
+    await el.updateComplete;
+    const review = root().querySelector("inc-conv-review") as IncConvReview;
+    const target = review.target;
+    expect(target).toEqual({ path: "src/a.ts", line: 2 });
+    el.requestUpdate();
+    await el.updateComplete;
+    await review.updateComplete;
+    expect(review.target).toBe(target);
+  });
+
   it("opens at the file a link in the context panel names", async () => {
     const { root } = await mount();
     const ctx = must(root().querySelector("inc-conv-context"));

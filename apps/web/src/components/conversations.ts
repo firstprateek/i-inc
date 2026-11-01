@@ -13,6 +13,7 @@ import { live } from "../live.ts";
 import { notifyNeedsYou } from "../needs-you.ts";
 import type { SendDetail } from "./conv-composer.ts";
 import type { DraftPick, IncConvDraft } from "./conv-draft.ts";
+import type { FileTarget } from "./conv-files.ts";
 import type { IncConvReview, ReviewTab } from "./conv-review.ts";
 import type { ShipDone, ShipKind } from "./conv-ship.ts";
 import { base } from "./shared.ts";
@@ -80,7 +81,7 @@ export class IncConversations extends LitElement {
   /** The ship dialog, while it is open. */
   declare dialog: { kind: ShipKind } | null;
   /** The review pane, while it is open, and the file it opened at. */
-  declare review: { path: string; line?: number; tab?: ReviewTab } | null;
+  declare review: { path: string; tab?: ReviewTab; target?: FileTarget } | null;
   declare limit: AccountRateLimit | undefined;
   declare accountName: string;
   declare info: ReturnType<typeof ahp>["info"];
@@ -98,6 +99,8 @@ export class IncConversations extends LitElement {
   private shipPoll: ReturnType<typeof setInterval> | undefined;
   private opener: HTMLElement | null = null;
   private reviewOpener: HTMLElement | null = null;
+  /** The pane has a history entry of its own (a phone), for back to take away. */
+  private reviewEntry = false;
 
   constructor() {
     super();
@@ -206,6 +209,7 @@ export class IncConversations extends LitElement {
       this.now = Date.now();
     }, 30_000);
     window.visualViewport?.addEventListener("resize", this.onViewport);
+    addEventListener("popstate", this.onPop);
     void this.loadList();
     void this.loadSide();
   }
@@ -219,6 +223,7 @@ export class IncConversations extends LitElement {
     this.queries = [];
     refresh.removeEventListener("refresh", this.onRefresh);
     window.visualViewport?.removeEventListener("resize", this.onViewport);
+    removeEventListener("popstate", this.onPop);
     document.removeEventListener("keydown", this.sheetKey, true);
     clearTimeout(this.reloadTimer);
     clearTimeout(this.shipTimer);
@@ -456,7 +461,14 @@ export class IncConversations extends LitElement {
     this.reviewOpener = e.detail.from ? ((e.composedPath()[0] ?? null) as HTMLElement | null) : null;
     this.sheet = false;
     const { path = "", line, tab } = e.detail;
-    this.review = { path, ...(line ? { line } : {}), ...(tab ? { tab } : {}) };
+    // Made once: the pane opens a file when it is given a new one, and this screen draws every 30 seconds.
+    const target = tab === "files" && path ? { path, ...(line ? { line } : {}) } : undefined;
+    this.review = { path, ...(tab ? { tab } : {}), ...(target ? { target } : {}) };
+    // A phone's back closes the pane, and doesn't leave the conversation.
+    if (this.phone && !this.reviewEntry) {
+      this.reviewEntry = true;
+      history.pushState(history.state, "");
+    }
     void this.updateComplete.then(() =>
       this.renderRoot
         .querySelector<IncConvReview>("inc-conv-review")
@@ -472,7 +484,18 @@ export class IncConversations extends LitElement {
       | null;
   }
 
+  /** The phone's back, or anything else that moves through history. */
+  private onPop = () => {
+    if (!this.reviewEntry) return;
+    this.reviewEntry = false;
+    if (this.review) this.closeReview();
+  };
+
   private closeReview = () => {
+    if (this.reviewEntry) {
+      this.reviewEntry = false;
+      history.back();
+    }
     this.review = null;
     const opener = this.reviewOpener;
     this.reviewOpener = null;
@@ -564,10 +587,6 @@ export class IncConversations extends LitElement {
     const inline = open && this.wide && !phone;
     const drawer = open && !this.wide && !phone && !this.review;
     const reviewing = !!this.review && !!conv;
-    const reviewTarget =
-      this.review?.tab === "files" && this.review.path
-        ? { path: this.review.path, ...(this.review.line ? { line: this.review.line } : {}) }
-        : null;
     // While the phone's sheet is open, everything behind it is out of reach (of Tab and of a screen reader).
     const modal = (phone && this.sheet && !!conv) || !!this.dialog;
     const drafting = this.showDraft();
@@ -612,7 +631,7 @@ export class IncConversations extends LitElement {
       ${
         reviewing
           ? html`<section class="pane review-pane" aria-label="Review"><inc-conv-review .conv=${conv} .name=${employee?.name ?? ""} .phone=${phone}
-              .path=${this.review?.tab === "files" ? "" : (this.review?.path ?? "")} .tab=${this.review?.tab ?? "changes"} .target=${reviewTarget}
+              .path=${this.review?.tab === "files" ? "" : (this.review?.path ?? "")} .tab=${this.review?.tab ?? "changes"} .target=${this.review?.target ?? null}
               @conv-review-close=${this.closeReview} @conv-send-comments=${this.sendComments} @conv-review-answer=${this.answerAgent}></inc-conv-review></section>`
           : nothing
       }

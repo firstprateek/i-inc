@@ -147,7 +147,8 @@ export function highlight(code: string, lang: string): Token[] {
   if (code.length > 40_000) return [{ s: code }];
   if (name === "diff" || name === "patch") return diffTokens(code);
   if (name === "html" || name === "xml" || name === "svg" || name === "vue") return markupTokens(code);
-  const l = LANGS[name];
+  // Own names only: a file or a code fence can be called `constructor`.
+  const l = Object.hasOwn(LANGS, name) ? LANGS[name] : undefined;
   if (!l) return [{ s: code }];
   return scan(code, l, name === "json" || name === "jsonc");
 }

@@ -268,7 +268,7 @@ describe("the Files tab", () => {
     const { el, root } = await mount();
     el.filter = "nothing";
     await el.updateComplete;
-    expect(root.textContent).toContain("No file's path has that in it.");
+    expect(root.textContent).toContain("No matching paths.");
   });
 
   it("draws a long list in pieces", async () => {
@@ -421,6 +421,182 @@ describe("the Files tab", () => {
     await until(() => calls.some((c) => c.includes("/conversations/c2/files")));
   });
 
+  it("draws the file while the list is still being read, and goes to the line", async () => {
+    let release: (r: Response) => void = () => {};
+    vi.stubGlobal("fetch", (url: string) =>
+      url.includes("/files/read")
+        ? Promise.resolve(reply({ file: opened("src/a.ts") }))
+        : new Promise<Response>((r) => {
+            release = r;
+          }),
+    );
+    const el = document.createElement("inc-conv-files") as IncConvFiles;
+    el.conversationId = "c1";
+    el.target = { path: "src/a.ts", line: 2 };
+    document.body.append(el);
+    const root = el.shadowRoot as ShadowRoot;
+    await until(() => root.activeElement?.matches(".code"));
+    expect(root.querySelector('.ln[aria-current="true"]')?.textContent).toContain("const b");
+    expect(root.textContent).toContain("Reading the files…");
+    release(reply({ files: filesView() }));
+    await until(() => el.list);
+  });
+
+  it("opens a file only when given a new one, whatever redraws it", async () => {
+    const target = { path: "src/a.ts" };
+    const { el, root } = await mount({ target });
+    await until(() => root.querySelector(".code"));
+    calls.length = 0;
+    el.requestUpdate();
+    await el.updateComplete;
+    expect(calls).toEqual([]);
+    el.target = { ...target };
+    await until(() => calls.some((c) => c.includes("/files/read")));
+  });
+
+  it("keeps the list a file is in drawn, past the first rows", async () => {
+    listReply = filesView({
+      paths: Array.from({ length: LIST_ROWS + 50 }, (_, i) => `f${String(i).padStart(4, "0")}`),
+    });
+    const late = `f${String(LIST_ROWS + 20).padStart(4, "0")}`;
+    const { el, root } = await mount();
+    await el.openAt({ path: late });
+    await el.updateComplete;
+    expect(row(root, late).getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("Refresh reads the file too, and a failure leaves what is showing, saying so", async () => {
+    const { el, root } = await mount({ target: { path: "src/a.ts" } });
+    await until(() => root.querySelector(".code"));
+    calls.length = 0;
+    must(root.querySelector<HTMLButtonElement>(".tools .cbtn")).click();
+    await until(() => calls.some((c) => c.includes("/files/read")) && !el.listLoading && !el.fileLoading);
+    expect(calls.some((c) => c.endsWith("/files"))).toBe(true);
+    listReply = filesView({
+      state: "asleep",
+      paths: [],
+      reason: "Ada's machine is asleep, so the files can't be read right now.",
+    });
+    await el.refresh();
+    await el.updateComplete;
+    expect(root.querySelector('.say[role="alert"]')?.textContent).toContain("is asleep");
+    expect(items(root).length).toBeGreaterThan(0);
+    expect(root.querySelector(".code")).not.toBeNull();
+    vi.stubGlobal("fetch", async () => reply({ error: "boom" }, 500));
+    await el.refresh();
+    await el.updateComplete;
+    expect(root.querySelector('.say[role="alert"]')?.textContent).toContain("Couldn't read the files");
+    expect(items(root).length).toBeGreaterThan(0);
+  });
+
+  it("Try again reads a file that couldn't be read when the list couldn't", async () => {
+    const asleep = "Ada's machine is asleep, so the files can't be read right now.";
+    listReply = filesView({ state: "asleep", paths: [], reason: asleep });
+    fileReply = opened("src/a.ts", { state: "asleep", side: { state: "none" }, reason: asleep });
+    const { el, root } = await mount({ target: { path: "src/a.ts" } });
+    await until(() => root.querySelector(".note")?.textContent?.includes("asleep"));
+    listReply = filesView();
+    fileReply = undefined;
+    await el.refresh();
+    await el.updateComplete;
+    expect(root.querySelector(".code")).not.toBeNull();
+    expect(items(root).length).toBeGreaterThan(0);
+  });
+
+  it("keeps the owner's place when the file is read again", async () => {
+    const text = Array.from({ length: 5000 }, (_, i) => `line ${i + 1}`).join("\n");
+    fileReply = opened("big.log", { side: { state: "text", text } });
+    const { el, root } = await mount({ target: { path: "big.log", line: 3000 } });
+    await until(() => root.querySelector(".code"));
+    await el.updateComplete;
+    must(root.querySelectorAll<HTMLButtonElement>(".more .link-btn")[1]).click();
+    await el.updateComplete;
+    const place = [el.from, el.to];
+    await el.refresh();
+    await el.updateComplete;
+    expect([el.from, el.to]).toEqual(place);
+  });
+
+  it("puts focus on the first new row when Show more goes", async () => {
+    listReply = filesView({ paths: Array.from({ length: LIST_ROWS + 3 }, (_, i) => `f${i}.txt`) });
+    const { el, root } = await mount();
+    const more = must(root.querySelector<HTMLButtonElement>(".more .link-btn"));
+    more.focus();
+    more.click();
+    await el.updateComplete;
+    await el.updateComplete;
+    await until(() => root.activeElement?.getAttribute("role") === "treeitem");
+    expect(items(root).filter((r) => r.tabIndex === 0)).toHaveLength(1);
+    expect(root.querySelector('[role="tree"] .more')).toBeNull();
+  });
+
+  it("leaves focus on the pane when a refresh takes the file away", async () => {
+    const { el, root } = await mount({ target: { path: "src/a.ts" } });
+    await until(() => root.activeElement?.matches(".code"));
+    fileReply = opened("src/a.ts", { side: { state: "none" } });
+    await el.refresh();
+    await el.updateComplete;
+    expect(root.querySelector(".code")).toBeNull();
+    expect(root.activeElement).not.toBeNull();
+  });
+
+  it("offers Refresh on an empty folder", async () => {
+    listReply = filesView({ paths: [] });
+    const { root } = await mount();
+    expect(root.querySelector(".state .cbtn")?.textContent).toBe("Refresh");
+  });
+
+  it("says when folders couldn't be read, and only claims what it read", async () => {
+    listReply = filesView({ partial: true, truncated: true });
+    const { el, root } = await mount();
+    expect(root.textContent).toContain("Some folders couldn't be read");
+    el.filter = "nothing";
+    await el.updateComplete;
+    expect(root.textContent).toContain("No matching paths in the first 5 files.");
+  });
+
+  it("keeps one live region, there before there is anything to say", async () => {
+    const { el, root } = await mount();
+    const region = must(root.querySelector('[role="status"]'));
+    expect(region.textContent).toBe("");
+    el.filter = "deep";
+    await el.updateComplete;
+    expect(root.querySelector('[role="status"]')).toBe(region);
+    expect(region.textContent).toBe("2 files");
+  });
+
+  it("works out a filter once however often it is drawn", async () => {
+    const { el, root } = await mount();
+    el.filter = "deep";
+    await el.updateComplete;
+    const first = (el as Any).found.paths;
+    el.requestUpdate();
+    await el.updateComplete;
+    expect((el as Any).found.paths).toBe(first);
+    expect(root.querySelectorAll("li .t")).toHaveLength(2);
+  });
+
+  it("remembers what it held when the pane closes, for that conversation", async () => {
+    const { el, root } = await mount({ conversationId: "held", target: { path: "src/a.ts" } });
+    await until(() => root.querySelector(".code"));
+    el.filter = "deep";
+    el.query = "words";
+    el.remove();
+    const again = await mount({ conversationId: "held" });
+    expect(again.el.filter).toBe("deep");
+    expect(again.el.query).toBe("words");
+    expect(again.el.selected).toBe("src/a.ts");
+    const other = await mount({ conversationId: "other" });
+    expect(other.el.filter).toBe("");
+  });
+
+  it("reads nothing it wasn't told to read for a file called constructor", async () => {
+    expect(langOf("a.constructor")).toBe("constructor");
+    const { root } = await mount({ target: { path: "a.constructor" } });
+    await until(() => root.querySelector(".code"));
+    expect(root.querySelector(".code")?.textContent).toContain("const a = 1;");
+  });
+
   it("refreshes the list and the open file", async () => {
     const { el, root } = await mount({ target: { path: "src/a.ts" } });
     await until(() => root.querySelector(".code"));
@@ -503,6 +679,38 @@ describe("the Search tab", () => {
     expect(root.querySelector(".x")?.textContent).toBe("expect(x)");
   });
 
+  it("keeps its own place on a phone: reading in Files doesn't take over Search", async () => {
+    const { el, root } = await mount();
+    await el.openAt({ path: "src/a.ts" });
+    await el.updateComplete;
+    expect(root.querySelector(".body")?.classList.contains("reading")).toBe(true);
+    el.mode = "files";
+    await until(() => el.list);
+    await el.updateComplete;
+    expect(root.querySelector(".body")?.classList.contains("reading")).toBe(false);
+  });
+
+  it("comes back to the hit it went from", async () => {
+    searchReply = {
+      state: "ok",
+      hits: [
+        { path: "a.ts", line: 12, text: "x" },
+        { path: "a.ts", line: 40, text: "x" },
+      ],
+      skipped: 0,
+      withheld: 0,
+      truncated: false,
+    };
+    const { el, root } = await mount();
+    await search(el, root, "x");
+    must(root.querySelectorAll<HTMLButtonElement>(".hit")[1]).click();
+    await until(() => el.selected);
+    await until(() => !el.fileLoading);
+    await el.updateComplete;
+    must(root.querySelector<HTMLButtonElement>(".back")).click();
+    await until(() => (root.activeElement as HTMLElement)?.dataset?.line === "40");
+  });
+
   it("marks what was searched for, not what is in the box since", async () => {
     searchReply = {
       state: "ok",
@@ -525,8 +733,8 @@ describe("the Search tab", () => {
     searchReply = { state: "ok", hits: [], skipped: 1, withheld: 2, truncated: true };
     await search(el, root, "y");
     expect(root.textContent).toContain("1 match is in a file whose name isn't safe to show.");
-    expect(root.textContent).toContain("2 matches aren't shown");
-    expect(root.textContent).toContain("There are more matches than this.");
+    expect(root.textContent).toContain("2 files holding keys or logins weren't searched.");
+    expect(root.textContent).toContain("at most 20 a file and 500 in all");
     searchReply = {
       state: "asleep",
       hits: [],
@@ -615,6 +823,25 @@ describe("the pane's tabs", () => {
     expect(calls).toEqual([]);
     must(root.querySelector<HTMLElement>("#tab-changes")).click();
     await until(() => calls.some((c) => c.endsWith("/changes")));
+  });
+
+  it("reads no files for a pane that only shows Changes", async () => {
+    await mount();
+    await until(() => calls.some((c) => c.endsWith("/changes")));
+    expect(calls.some((c) => c.includes("/files"))).toBe(false);
+  });
+
+  it("promises a refresh only where one comes", async () => {
+    setAhp({
+      chat: () => ({ turns: [], activeTurn: { id: "t", responseParts: [] } }),
+      stop() {},
+      onChange: () => () => {},
+    } as Any);
+    const { el, root } = await mount({ tab: "search" });
+    expect(root.textContent).not.toContain("It refreshes when the turn ends.");
+    must(root.querySelector<HTMLElement>("#tab-files")).click();
+    await el.updateComplete;
+    expect(root.textContent).toContain("It refreshes when the turn ends.");
   });
 
   it("keeps what is in Search and Files while another tab shows", async () => {
@@ -746,6 +973,71 @@ describe("@file in the composer", () => {
     await until(() => send.mock.calls.length);
   });
 
+  it("opens on the first row every time, and the list follows what is typed", async () => {
+    const { el, root, ta } = await mount();
+    await typeIn(el, ta, "@deep");
+    await until(() => options(root).length);
+    press(ta, "ArrowDown");
+    await el.updateComplete;
+    await typeIn(el, ta, "@deep/c");
+    await until(() => options(root).length === 1);
+    expect(el.mentionIndex).toBe(0);
+    await typeIn(el, ta, "@a");
+    await until(() => options(root).length > 1);
+    press(ta, "ArrowDown");
+    press(ta, "Escape");
+    await el.updateComplete;
+    expect(el.mentionIndex).toBe(0);
+  });
+
+  it("opens again once the dismissed @ has gone, after a send, or in another message", async () => {
+    const { el, root, ta } = await mount();
+    await typeIn(el, ta, "@deep");
+    await until(() => options(root).length);
+    press(ta, "Escape");
+    await typeIn(el, ta, "");
+    await typeIn(el, ta, "@deep");
+    await until(() => options(root).length);
+    press(ta, "Escape");
+    await typeIn(el, ta, "@deep/");
+    await el.submit("turn");
+    await typeIn(el, ta, "@deep");
+    await until(() => options(root).length);
+  });
+
+  it("wraps a path with a space in it", async () => {
+    listReply = filesView({ paths: ["docs/my notes.md"] });
+    const { el, root, ta } = await mount();
+    await typeIn(el, ta, "@notes");
+    await until(() => options(root).length);
+    press(ta, "Enter");
+    await el.updateComplete;
+    expect(el.text).toBe("`docs/my notes.md` ");
+  });
+
+  it("closes when focus leaves the composer", async () => {
+    const { el, root, ta } = await mount();
+    ta.focus();
+    await typeIn(el, ta, "@deep");
+    await until(() => options(root).length);
+    ta.blur();
+    await until(() => !options(root).length);
+  });
+
+  it("looks again once a turn has ended", async () => {
+    const id = `c-${Math.random().toString(36).slice(2)}`;
+    const { el, ta } = await mount({
+      conversationId: id,
+      chat: { turns: [], activeTurn: { id: "t" } } as Any,
+    });
+    await typeIn(el, ta, "@d");
+    expect(calls.filter((c) => c.includes("/files"))).toHaveLength(1);
+    el.chat = { turns: [] } as Any;
+    await el.updateComplete;
+    await typeIn(el, ta, "@de");
+    expect(calls.filter((c) => c.includes("/files"))).toHaveLength(2);
+  });
+
   it("sends on Enter when nothing matches", async () => {
     const { el, send, root, ta } = await mount();
     await typeIn(el, ta, "@nothing-like-it");
@@ -826,7 +1118,7 @@ describe("@file in the composer", () => {
     await until(() => send.mock.calls.length);
   });
 
-  it("asks the machine once while the owner types, and again after a failed read", async () => {
+  it("asks the machine once while the owner types, and again soon after a failed read", async () => {
     const id = `c-${Math.random().toString(36).slice(2)}`;
     const { el, ta } = await mount({ conversationId: id });
     await typeIn(el, ta, "@d");
@@ -838,6 +1130,11 @@ describe("@file in the composer", () => {
     await pathsFor(other);
     await new Promise((r) => setTimeout(r, 0));
     await pathsFor(other);
+    expect(calls.filter((c) => c.includes(other))).toHaveLength(1);
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now + 4000);
+    await pathsFor(other);
+    vi.restoreAllMocks();
     expect(calls.filter((c) => c.includes(other))).toHaveLength(2);
   });
 });
@@ -888,10 +1185,7 @@ describe("a Read card's link", () => {
     expect((await mount(call("/etc/passwd"))).root.querySelector(".openf")).toBeNull();
   });
 
-  it("has no link once the copy's list says the file has gone", async () => {
-    const id = `c-${Math.random().toString(36).slice(2)}`;
-    await pathsFor(id);
-    expect((await mount(call("src/a.ts"), id)).root.querySelector(".openf")).not.toBeNull();
-    expect((await mount(call("src/gone.ts"), id)).root.querySelector(".openf")).toBeNull();
+  it("doesn't call a file gone on a list's word: the viewer says", async () => {
+    expect((await mount(call("src/not-in-any-list.ts"))).root.querySelector(".openf")).not.toBeNull();
   });
 });

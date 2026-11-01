@@ -5,7 +5,7 @@
 import type { ChatState, SessionState } from "@microsoft/agent-host-protocol";
 import { css, html, LitElement, nothing } from "lit";
 import { checkOutgoing, judgeTextFile } from "../conversations/actions.ts";
-import { matchPaths, mentionQuery, pathsFor } from "../conversations/files.ts";
+import { forgetPaths, matchPaths, mentionQuery, pathsFor } from "../conversations/files.ts";
 import {
   type Command,
   commandsOf,
@@ -31,6 +31,10 @@ import { selectField } from "./shared.ts";
 
 /** Paths the `@` list shows at a time. */
 const MENTIONS = 8;
+/** A list's height at most and at least, and the app's bar above it. */
+const MAX_LIST = 280;
+const MIN_LIST = 96;
+const BAR = 72;
 
 export type Intent = "turn" | "steer" | "queue";
 export interface SendDetail {
@@ -180,7 +184,8 @@ export class IncConvComposer extends LitElement {
       .pop [role="option"] { display: flex; flex-direction: column; gap: 1px; padding: 8px 12px; border-radius: 8px; min-height: 44px; box-sizing: border-box; justify-content: center; cursor: pointer; }
       .pop [role="option"][aria-selected="true"], .pop [role="option"]:hover { background: var(--sunken); }
       .pop b { font: 700 14px var(--mono); }
-      .pop .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+      .pop .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; direction: rtl; text-align: left; }
+      .pop .path bdi { direction: ltr; }
       .pop.say { margin: 0; padding: 10px 14px; color: var(--ink-2); font-size: 14px; line-height: 1.4; }
       .pop small { color: var(--ink-2); font-size: 13px; }
       .more { display: none; width: 36px; padding: 0; align-items: center; justify-content: center; border-radius: 0 999px 999px 0; margin-left: -7px; }
@@ -229,6 +234,9 @@ export class IncConvComposer extends LitElement {
   }
 
   override willUpdate(changed: Map<string, unknown>): void {
+    // A turn that ended may have changed the files.
+    const before = changed.get("chat") as ChatState | undefined;
+    if (before?.activeTurn && !this.chat?.activeTurn) forgetPaths(this.conversationId);
     if (changed.has("conversationId") && this.conversationId !== this.draftFor) {
       this.draftFor = this.conversationId;
       this.text = draftMemo.get(`conv:${this.conversationId}`) ?? "";
@@ -236,12 +244,14 @@ export class IncConvComposer extends LitElement {
       this.error = null;
       this.slash = [];
       this.closeMention();
+      this.mentionShut = -1;
       this.picker.clear();
     }
   }
 
   override updated(changed: Map<string, unknown>): void {
     if (changed.has("text") || changed.has("conversationId")) this.fit();
+    if (["slash", "slashIndex", "mention", "mentionIndex"].some((k) => changed.has(k))) this.placeList();
   }
 
   /** Puts a message back in the box (one the host refused, or the connection lost), ahead of anything typed since. */
@@ -323,7 +333,22 @@ export class IncConvComposer extends LitElement {
   private closeMention() {
     this.mentionAsk++;
     this.mention = [];
+    this.mentionIndex = 0;
     this.mentionNote = "";
+  }
+
+  /** The open list fits the room above the box, under the app's bar, and the chosen row is in sight. */
+  private placeList() {
+    const pop = this.renderRoot.querySelector<HTMLElement>(".pop[role='listbox']");
+    if (!pop) return;
+    const room = (this.renderRoot.querySelector("form")?.getBoundingClientRect().top ?? 0) - BAR - 6;
+    pop.style.maxHeight = `${Math.max(MIN_LIST, Math.min(MAX_LIST, room))}px`;
+    const row = pop.querySelector<HTMLElement>('[aria-selected="true"]');
+    if (!row) return;
+    // By hand: scrollIntoView would move every scroller around it, and nothing in the app scrolls the page.
+    const [a, b] = [row.getBoundingClientRect(), pop.getBoundingClientRect()];
+    if (a.top < b.top) pop.scrollTop -= b.top - a.top;
+    else if (a.bottom > b.bottom) pop.scrollTop += a.bottom - b.bottom;
   }
 
   /** A draft has no working copy yet, so `@` is only an `@` there. */
@@ -334,19 +359,22 @@ export class IncConvComposer extends LitElement {
   /** Opens, moves or closes the `@` list. The answer may come after the owner has typed on: it is read for then. */
   private async updateMention(ta: HTMLTextAreaElement) {
     const q = this.hasCopy ? mentionQuery(ta.value, ta.selectionStart ?? ta.value.length) : undefined;
+    // The `@` the owner dismissed stays shut until it has gone from the box.
+    if (q?.start !== this.mentionShut) this.mentionShut = -1;
     if (!q || this.composing || q.start === this.mentionShut) return this.closeMention();
     const id = this.conversationId;
     const ask = ++this.mentionAsk;
     const v = await pathsFor(id).catch(() => null);
     if (ask !== this.mentionAsk || id !== this.conversationId) return;
     if (v?.state === "ok") {
-      this.mention = matchPaths(v.paths, q.word).slice(0, MENTIONS);
+      const list = matchPaths(v.paths, q.word).slice(0, MENTIONS);
+      if (list.join("\n") !== this.mention.join("\n")) this.mentionIndex = 0;
+      this.mention = list;
       this.mentionNote = "";
     } else {
       this.mention = [];
       this.mentionNote = v?.reason ?? "The files can't be read right now.";
     }
-    if (this.mentionIndex >= this.mention.length) this.mentionIndex = 0;
   }
 
   private pickMention(path: string) {
@@ -355,11 +383,13 @@ export class IncConvComposer extends LitElement {
     const cursor = ta.selectionStart ?? ta.value.length;
     const q = mentionQuery(ta.value, cursor);
     if (!q) return;
-    const next = `${ta.value.slice(0, q.start)}${path} ${ta.value.slice(cursor)}`;
+    // A name with a space in it stays one name.
+    const text = /\s/.test(path) ? `\`${path}\`` : path;
+    const next = `${ta.value.slice(0, q.start)}${text} ${ta.value.slice(cursor)}`;
     this.text = next;
     draftMemo.set(`conv:${this.conversationId}`, next);
     this.closeMention();
-    const at = q.start + path.length + 1;
+    const at = q.start + text.length + 1;
     void this.updateComplete.then(() => {
       ta.focus();
       ta.setSelectionRange(at, at);
@@ -470,6 +500,7 @@ export class IncConvComposer extends LitElement {
       this.text = "";
       this.slash = [];
       this.closeMention();
+      this.mentionShut = -1;
       draftMemo.set(`conv:${id}`, "");
       this.picker.clear();
       this.attached = [];
@@ -499,6 +530,9 @@ export class IncConvComposer extends LitElement {
     setTimeout(() => {
       const inside = !!this.renderRoot.querySelector(":focus");
       this.emit("conv-focus", { focused: inside });
+      if (inside) return;
+      this.slash = [];
+      this.closeMention();
     }, 0);
   }
 
@@ -588,7 +622,7 @@ export class IncConvComposer extends LitElement {
                 @mousedown=${(e: Event) => {
                   e.preventDefault();
                   this.pickMention(p);
-                }}><b class="path" title=${visible(p)}>${visible(p)}</b></div>`,
+                }}><b class="path" title=${visible(p)}><bdi>${visible(p)}</bdi></b></div>`,
             )}</div>`
           : this.mentionNote
             ? html`<p class="pop say" role="status">${this.mentionNote}</p>`

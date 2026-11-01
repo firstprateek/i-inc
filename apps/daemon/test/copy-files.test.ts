@@ -2,6 +2,7 @@
 // grep, in a folder that stands in for the sandbox: what matters is what they find, and that they write nothing.
 import { execFileSync, spawn } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -106,6 +107,7 @@ describe("the file list", () => {
       paths: [".gitignore", "keep.txt", "src/new.ts"],
       skipped: 0,
       truncated: false,
+      partial: false,
     });
   });
 
@@ -224,6 +226,15 @@ describe("one file", () => {
     expect(await w.port.read(w.copy, "up/secret.txt")).toEqual({ state: "outside" });
   });
 
+  it("doesn't reach .git or .inc through a link to the folder", async () => {
+    const w = rig();
+    w.write(".inc/photo.txt", "private\n");
+    symlinkSync(".git", join(w.cwd, "g"));
+    symlinkSync(".inc", join(w.cwd, "i"));
+    expect(await w.port.read(w.copy, "g/config")).toEqual({ state: "outside" });
+    expect(await w.port.read(w.copy, "i/photo.txt")).toEqual({ state: "outside" });
+  });
+
   it("shows a link that stays inside as its target", async () => {
     const w = rig();
     symlinkSync("keep.txt", join(w.cwd, "in"));
@@ -307,25 +318,69 @@ describe("a search", () => {
     expect((await w.port.search(w.copy, "--help", false)).hits).toHaveLength(1);
   });
 
-  it("redacts a line, and doesn't say a line holds what redaction hid", async () => {
+  it("redacts a line, and never says a line holds what redaction hid", async () => {
     const w = rig();
     w.write("cfg.txt", `key needle ${TOKEN}\n`);
     const shown = await w.port.search(w.copy, "key needle", false);
     expect(shown.hits[0]?.text).toBe("key needle [redacted]");
     const hidden = await w.port.search(w.copy, TOKEN.slice(0, 12), false);
     expect(hidden.hits).toEqual([]);
-    expect(hidden.withheld).toBe(1);
+    expect(hidden.withheld).toBe(0);
+  });
+
+  it("gives away nothing about a secret by whether a guess at it matched", async () => {
+    const w = rig();
+    w.write("cfg.txt", `value ${TOKEN}\n`);
+    w.write(".env", "API_KEY=hunter2hunter2\n");
+    w.write("key.txt", "-----BEGIN PRIVATE KEY-----\nMIIabcdef\n-----END PRIVATE KEY-----\n");
+    const guess = async (q: string) => {
+      const { hits, withheld, skipped, truncated, partial } = await w.port.search(w.copy, q, true);
+      return { hits, withheld, skipped, truncated, partial };
+    };
+    expect(await guess(TOKEN.slice(0, 8))).toEqual(await guess("ghp_zzzz"));
+    expect(await guess("API_KEY=h")).toEqual(await guess("API_KEY=x"));
+    expect(await guess("MIIabc")).toEqual(await guess("MIIabd"));
+  });
+
+  it("doesn't return a value that sits on the line after its label", async () => {
+    const key = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY12";
+    const pairs = [
+      `aws_secret_access_key:\n  ${key}\n`,
+      `Authorization: Bearer\n  ${key}\n`,
+      `_authToken =\n  ${key}\n`,
+      `machine h login joe password\n  ${key}\n`,
+      `aws_secret_access_key:\n\n  ${key}\n`,
+    ];
+    for (const text of pairs) {
+      const w = rig();
+      w.write("deploy.yaml", text);
+      expect((await w.port.search(w.copy, key.slice(0, 5), true)).hits, text).toEqual([]);
+    }
+  });
+
+  it("still shows the line after a label that has nothing to do with it", async () => {
+    const w = rig();
+    w.write("a.yaml", "name:\n  needle\n");
+    expect((await w.port.search(w.copy, "needle", true)).hits.map((h) => h.path)).toContain("a.yaml");
   });
 
   it("returns no line of a file whose secrets span lines, or that usually holds them", async () => {
     const w = rig();
     w.write("key.txt", "-----BEGIN PRIVATE KEY-----\nMIIneedleBODY\n-----END PRIVATE KEY-----\n");
     w.write("logins", "machine example.com\n  login ada\n  password needlepass\n");
-    w.write(".env", "NEEDLE=value\n");
-    w.write("certs/server.pem", "needle\n");
+    for (const name of [".env", "prod.env", ".envrc", ".PYPIRC", "certs/server.pem"])
+      w.write(name, "needle\n");
     const r = await w.port.search(w.copy, "needle", true);
     expect(r.hits.map((h) => h.path)).toEqual(["gone.txt"]);
-    expect(r.withheld).toBe(3);
+    expect(r.withheld).toBe(2);
+  });
+
+  it("doesn't show a file with a NUL past where binary is looked for", async () => {
+    const w = rig();
+    writeFileSync(join(w.cwd, ".gitattributes"), "* diff\n");
+    w.write("wide.txt", "n\0e\0needle\0\n");
+    const r = await w.port.search(w.copy, "needle", true);
+    expect(r.hits.map((h) => h.path)).toEqual(["gone.txt"]);
   });
 
   it("does the same in plain grep", async () => {
@@ -336,16 +391,40 @@ describe("a search", () => {
     expect(r.withheld).toBe(1);
   });
 
-  it("cuts a long line around the match, and withholds a match past what is read", async () => {
+  it("cuts a long line around the match, and leaves out a match past what is read", async () => {
     const w = rig();
-    w.write("min.js", `${"a".repeat(1000)}needle${"b".repeat(1000)}\n`);
+    w.write("min.js", `${"a ".repeat(500)}needle ${"b ".repeat(500)}\n`);
     const r = await w.port.search(w.copy, "needle", false);
     const hit = r.hits.find((h) => h.path === "min.js");
     expect(hit?.text.startsWith("…")).toBe(true);
     expect(hit?.text.length).toBeLessThan(410);
     expect(hit?.text).toContain("needle");
     w.write("min.js", `${"a".repeat(5000)}needle\n`);
-    expect((await w.port.search(w.copy, "needle", false)).withheld).toBe(1);
+    const past = await w.port.search(w.copy, "needle", false);
+    expect(past.hits.map((h) => h.path)).not.toContain("min.js");
+    expect(past.withheld).toBe(0);
+  });
+
+  it("doesn't show a credential the line's cut split in two", async () => {
+    const fill = (n: number) => "x ".repeat(n / 2);
+    const secrets = [
+      "https://bot:Sup3rS3cretPassw0rd1234567890@example.com/",
+      "aws_secret_access_key=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY12",
+      "AKIAIOSFODNN7EXAMPLE",
+      TOKEN,
+      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+    ];
+    for (const secret of secrets) {
+      for (const offset of [8, 12, 15, 19]) {
+        const w = rig();
+        // The row is the path, its number and the line: the cut lands inside the secret.
+        const before = 2000 - "s.txt".length - 3 - offset;
+        w.write("s.txt", `${fill(before - 7)}needle ${secret}\n`);
+        const r = await w.port.search(w.copy, "needle", true);
+        const shown = r.hits.filter((h) => h.path === "s.txt").map((h) => h.text);
+        expect(shown.join("\n"), `${secret} at ${offset}`).not.toContain(secret.slice(0, offset));
+      }
+    }
   });
 
   it("one enormous line doesn't use up the output", async () => {
@@ -394,6 +473,14 @@ describe("a search", () => {
     expect(r.truncated).toBe(true);
   });
 
+  it("says where a name with a newline can't pass as another file's, and counts it", async () => {
+    const w = rig();
+    w.write("zz\nREADME.md", "needle: this line is not in README.md\n");
+    const r = await w.port.search(w.copy, "needle: this", true);
+    expect(r.hits).toEqual([]);
+    expect(r.skipped).toBe(1);
+  });
+
   it("calls a search that failed a failure, not no results", async () => {
     const w = rig();
     // A git that dies on `grep`: on the PATH, since the script clears everything else from git's environment.
@@ -423,6 +510,78 @@ describe("a search", () => {
       expect(isSearchQuery(bad)).toBe(false);
     }
     expect(() => searchScript(w.copy, "a\nb", false, NONCE)).toThrow(/search for/);
+  });
+});
+
+describe("a failure isn't an answer", () => {
+  /** A stand-in for a tool on the PATH: the script clears everything else from its environment. */
+  function shim(w: ReturnType<typeof rig>, tool: string, body: string) {
+    const dir = join(w.root, "bin");
+    mkdirSync(dir, { recursive: true });
+    const real = execFileSync("which", [tool], { encoding: "utf8" }).trim();
+    writeFileSync(join(dir, tool), `#!/bin/bash\n${body.replaceAll("REAL", real)}\n`, { mode: 0o755 });
+    const run: RunScript = async (_who, script) =>
+      bash(`export PATH=${dir}:$PATH\n${script.replaceAll("/home/employee/work", join(w.root, "work"))}`);
+    return reviewPort(run);
+  }
+
+  it("doesn't call a search whose `cut` died no results", async () => {
+    const w = rig();
+    await expect(shim(w, "cut", "kill -9 $$").search(w.copy, "needle", false)).rejects.toThrow();
+  });
+
+  it("doesn't call a search whose `head` failed no results", async () => {
+    const w = rig();
+    await expect(shim(w, "head", "exit 3").search(w.copy, "needle", false)).rejects.toThrow();
+  });
+
+  it("doesn't call a killed `find` an empty folder", async () => {
+    const w = rig(false);
+    w.write("a.txt", "x\n");
+    await expect(shim(w, "find", "kill -9 $$").tree(w.copy)).rejects.toThrow();
+  });
+
+  it("says a folder it couldn't read may be missing files", async () => {
+    const w = rig(false);
+    w.write("a.txt", "x\n");
+    const t = await shim(w, "find", 'REAL "$@"; exit 1').tree(w.copy);
+    expect(t.paths).toEqual(["a.txt"]);
+    expect(t.partial).toBe(true);
+  });
+
+  it("carries on past a file plain grep can't read, and says so", async () => {
+    const w = rig(false);
+    w.write("a.txt", "needle\n");
+    w.write("b.txt", "needle\n");
+    chmodSync(join(w.cwd, "b.txt"), 0);
+    const r = await w.port.search(w.copy, "needle", false);
+    chmodSync(join(w.cwd, "b.txt"), 0o644);
+    expect(r.hits.map((h) => h.path)).toEqual(["a.txt"]);
+    expect(r.partial).toBe(true);
+  });
+
+  it("doesn't call a file it can't read empty", async () => {
+    const w = rig();
+    w.write("locked.txt", "x\n");
+    chmodSync(join(w.cwd, "locked.txt"), 0);
+    const side = await w.port.read(w.copy, "locked.txt");
+    chmodSync(join(w.cwd, "locked.txt"), 0o644);
+    expect(side).toEqual({ state: "other" });
+  });
+
+  it("fails rather than search past a list of key files too long to read", async () => {
+    const w = rig();
+    const port = shim(
+      w,
+      "git",
+      'case " $* " in *" -l "*) head -c 2100000 /dev/zero | tr "\\0" a; exit 0 ;; esac\nexec REAL "$@"',
+    );
+    await expect(port.search(w.copy, "needle", false)).rejects.toThrow();
+  });
+
+  it("limits a search's memory", () => {
+    const w = rig();
+    expect(searchScript(w.copy, "x", false, NONCE)).toContain("ulimit -v");
   });
 });
 
@@ -583,9 +742,16 @@ describe("how a read fails, in a sentence", () => {
 
   it("says when the copy was cleaned away, or isn't made yet", async () => {
     const gone = stub({
-      tree: async () => ({ present: false, paths: [], skipped: 0, truncated: false }),
+      tree: async () => ({ present: false, paths: [], skipped: 0, truncated: false, partial: false }),
       read: async () => null,
-      search: async () => ({ present: false, hits: [], skipped: 0, withheld: 0, truncated: false }),
+      search: async () => ({
+        present: false,
+        hits: [],
+        skipped: 0,
+        withheld: 0,
+        truncated: false,
+        partial: false,
+      }),
     });
     expect((await service(gone).files("ab12")).reason).toBe("There are no files here yet.");
     expect((await service(gone, { archivedAt: 1 }).files("ab12")).reason).toMatch(/cleaned away/);
@@ -613,7 +779,7 @@ describe("how a read fails, in a sentence", () => {
       stub({
         tree: async () => {
           asked++;
-          return { present: true, paths: [], skipped: 0, truncated: false };
+          return { present: true, paths: [], skipped: 0, truncated: false, partial: false };
         },
       }),
     );

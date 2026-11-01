@@ -1,7 +1,7 @@
 // The Files and Search tabs' model, and `@file`: the working copy's paths as a tree, what matches what is typed, and
 // a file's lines. Pure, apart from the short memory of a conversation's paths. Nothing here reaches a machine by
 // itself: a list that says a machine is asleep is an answer like any other.
-import { api, type FilesView, type OpenFileView, type SearchHit } from "../api.ts";
+import { api, type FilesView, type OpenFileView, type SearchHit, type SearchView } from "../api.ts";
 import { draftMemo } from "../drafts.ts";
 import { highlight, type Token } from "./highlight.ts";
 
@@ -84,32 +84,55 @@ export function mentionQuery(text: string, cursor: number): { word: string; star
 }
 
 const REMEMBERED_MS = 30_000;
-const known = new Map<string, { at: number; list: Promise<FilesView> }>();
-draftMemo.onClearAll(() => known.clear());
+/** A list that didn't answer is asked for again soon, but not once per key. */
+const FAILED_MS = 3000;
+const known = new Map<string, { at: number; for: number; list: Promise<FilesView> }>();
 
 /** A conversation's paths, remembered for a moment: typing `@` shouldn't start a script per letter. */
 export function pathsFor(conversationId: string): Promise<FilesView> {
   const hit = known.get(conversationId);
-  if (hit && Date.now() - hit.at < REMEMBERED_MS) return hit.list;
+  if (hit && Date.now() - hit.at < hit.for) return hit.list;
   const list = api.files(conversationId);
-  known.set(conversationId, { at: Date.now(), list });
-  // A read that didn't answer isn't remembered: the next `@` asks again.
-  void list.then(
-    (v) => {
-      if (v.state !== "ok") known.delete(conversationId);
-    },
-    () => known.delete(conversationId),
-  );
+  const entry = { at: Date.now(), for: REMEMBERED_MS, list };
+  known.set(conversationId, entry);
+  const failed = () => {
+    entry.for = FAILED_MS;
+  };
+  void list.then((v) => {
+    if (v.state !== "ok") failed();
+  }, failed);
   return list;
 }
 
-/** What the last list said about a path, without asking: false only when it was read and the path isn't in it. */
-export async function mayExist(conversationId: string, path: string): Promise<boolean> {
-  const hit = known.get(conversationId);
-  if (!hit) return true;
-  const v = await hit.list.catch(() => null);
-  return v?.state !== "ok" || v.truncated || v.paths.includes(path);
+/** What the agent did may have changed the files: the next `@` asks again. */
+export const forgetPaths = (conversationId: string) => known.delete(conversationId);
+
+/** What the Files and Search tabs held when the pane closed. */
+export interface PaneMemo {
+  filter: string;
+  open: Set<string>;
+  selected: string | null;
+  line: number;
+  query: string;
+  matchCase: boolean;
+  result: SearchView | undefined;
+  searched: { query: string; matchCase: boolean } | undefined;
 }
+
+const MEMOS = 20;
+const panes = new Map<string, PaneMemo>();
+draftMemo.onClearAll(() => {
+  known.clear();
+  panes.clear();
+});
+
+export function rememberPane(conversationId: string, memo: PaneMemo): void {
+  panes.delete(conversationId);
+  panes.set(conversationId, memo);
+  if (panes.size > MEMOS) panes.delete(panes.keys().next().value as string);
+}
+
+export const recallPane = (conversationId: string) => panes.get(conversationId);
 
 /** A tool's path as a path in this conversation's copy, or null when it is anywhere else. */
 export function pathInCopy(path: string, conversationId: string): string | null {
@@ -138,7 +161,7 @@ export function langOf(path: string): string {
   const name = baseName(path);
   const dot = name.lastIndexOf(".");
   const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
-  return LANG_OF[ext] ?? ext;
+  return Object.hasOwn(LANG_OF, ext) ? (LANG_OF[ext] as string) : ext;
 }
 
 /** The file as lines of tokens. A token can span lines (a block comment), so it is cut at each line break. */

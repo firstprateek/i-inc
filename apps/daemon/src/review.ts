@@ -38,11 +38,12 @@ import {
   type ReviewCopy,
   readSides,
   scratchIndex,
+  servedNever,
 } from "./copy-read.ts";
 import { type RunScript, TIMED_OUT } from "./harness.ts";
 import { MachineNotRunning } from "./machine-queue.ts";
 import type { Registry } from "./registry.ts";
-import { marker, quote, secretFile, section } from "./ship-git.ts";
+import { marker, quote, section } from "./ship-git.ts";
 import type {
   ChangeStatus,
   ChangesState,
@@ -354,7 +355,7 @@ export class ConversationReview {
     const none: FileSide = { state: "none" };
     const copy = this.copy(id);
     if (!copy) return { state: "failed", path, before: none, after: none };
-    if (secretFile.some((re) => re.test(path))) {
+    if (servedNever(path)) {
       return { state: "ok", path, before: none, after: none, withheld: true };
     }
     try {
@@ -375,7 +376,7 @@ export class ConversationReview {
 
   private async readFiles(id: string): Promise<FilesView> {
     const copy = this.copy(id);
-    const empty = { paths: [], skipped: 0, truncated: false, noProject: copy?.base === null };
+    const empty = { paths: [], skipped: 0, truncated: false, partial: false, noProject: copy?.base === null };
     if (!copy) return { ...empty, state: "failed", reason: "There is no such conversation." };
     try {
       const { present, ...listing } = await this.within(this.d.port.tree(copy));
@@ -391,7 +392,7 @@ export class ConversationReview {
     const none: FileSide = { state: "none" };
     const copy = this.copy(id);
     if (!copy) return { state: "failed", path, side: none };
-    if (secretFile.some((re) => re.test(path))) return { state: "ok", path, side: none, withheld: true };
+    if (servedNever(path)) return { state: "ok", path, side: none, withheld: true };
     try {
       const side = await this.within(this.d.port.read(copy, path));
       if (side) return { state: "ok", path, side };
@@ -404,7 +405,7 @@ export class ConversationReview {
   /** The lines that hold `query`, as it is written. */
   async search(id: string, query: string, matchCase: boolean): Promise<SearchView> {
     const copy = this.copy(id);
-    const empty = { hits: [], skipped: 0, withheld: 0, truncated: false };
+    const empty = { hits: [], skipped: 0, withheld: 0, truncated: false, partial: false };
     if (!copy) return { ...empty, state: "failed", reason: "There is no such conversation." };
     try {
       const { present, ...found } = await this.within(this.d.port.search(copy, query, matchCase));

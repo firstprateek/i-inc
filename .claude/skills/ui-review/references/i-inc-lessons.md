@@ -128,3 +128,8 @@ paths, branch names, structured briefs).
     uses another's classes, load the stylesheet, and test that the rule is there, not only the class.
 31. **Leading spaces wrap first in `pre-wrap` (layout).** A search result's indented code wrapped whole below its line
     number. → Drop a line's indent where it is shown as an excerpt.
+32. **A list that opens by itself needs its row in sight (keyboard).** The `@` list kept its index when the list changed,
+    so Enter took a path below the fold. → Reset the index when the list changes, and keep the chosen row in view.
+33. **A new object in `render` is a new prop every draw.** The pane's target was built in `render`, so the 30-second clock
+    reopened the file and took focus. → Build it once, where the event happens, and keep it in state.
+34. **A failed refresh must not take away what works (states).** → Say the failure above what is showing, and keep it.

@@ -73,7 +73,7 @@ export const demoReview: ReviewPort = {
   async tree(copy) {
     const binary = copy.base === null ? [] : ["public/logo.png"];
     const paths = [...Object.keys(disk(copy)), ...binary].sort();
-    return { present: true, paths, skipped: 0, truncated: false };
+    return { present: true, paths, skipped: 0, truncated: false, partial: false };
   },
   async read(copy, path) {
     if (copy.base !== null && path === "public/logo.png") return { state: "binary" };
@@ -87,6 +87,6 @@ export const demoReview: ReviewPort = {
         .split("\n")
         .flatMap((line, i) => (fold(line).includes(fold(query)) ? [{ path, line: i + 1, text: line }] : [])),
     );
-    return { present: true, hits, skipped: 0, withheld: 0, truncated: false };
+    return { present: true, hits, skipped: 0, withheld: 0, truncated: false, partial: false };
   },
 };

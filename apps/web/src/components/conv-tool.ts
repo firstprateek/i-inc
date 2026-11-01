@@ -9,7 +9,7 @@ import type {
 import { css, html, LitElement, nothing, type SVGTemplateResult, svg, type TemplateResult } from "lit";
 import { ahp } from "../ahp/hub.ts";
 import { ToolCallStatus } from "../ahp/wire.ts";
-import { mayExist, pathInCopy } from "../conversations/files.ts";
+import { pathInCopy } from "../conversations/files.ts";
 import { renderMarkdown } from "../conversations/markdown.ts";
 import {
   CATEGORY_LABEL,
@@ -62,7 +62,6 @@ export class IncConvTool extends LitElement {
     chat: { type: String },
     conversationId: { type: String },
     turnActive: { type: Boolean },
-    gone: { state: true },
     open: { state: true },
     showAll: { state: true },
     sending: { state: true },
@@ -75,8 +74,6 @@ export class IncConvTool extends LitElement {
   /** The conversation whose working copy this call worked in; empty in a ticket's read-only stage. */
   declare conversationId: string;
   declare turnActive: boolean;
-  /** The last list of the copy's files doesn't have this path. */
-  declare gone: string;
   declare open: boolean | undefined;
   declare showAll: boolean;
   declare sending: string | null;
@@ -87,7 +84,6 @@ export class IncConvTool extends LitElement {
     this.turnId = "";
     this.chat = "";
     this.conversationId = "";
-    this.gone = "";
     this.turnActive = false;
     this.showAll = false;
     this.sending = null;
@@ -172,7 +168,6 @@ export class IncConvTool extends LitElement {
 
   override updated(changed: Map<string, unknown>): void {
     if (changed.has("open") && this.open) void this.loadImages();
-    if (changed.has("call") || changed.has("conversationId")) this.checkTarget();
   }
 
   private async loadImages(): Promise<void> {
@@ -345,14 +340,6 @@ export class IncConvTool extends LitElement {
     return path ? { path, ...(at.line ? { line: at.line } : {}) } : null;
   }
 
-  private checkTarget() {
-    const target = this.call && this.readTarget(this.call);
-    if (!target) return;
-    void mayExist(this.conversationId, target.path).then((there) => {
-      this.gone = there ? "" : target.path;
-    });
-  }
-
   private openFile(t: { path: string; line?: number }, e: Event) {
     e.currentTarget?.dispatchEvent(
       new CustomEvent("conv-review", {
@@ -386,7 +373,7 @@ export class IncConvTool extends LitElement {
         <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
       </button>
       ${
-        target && target.path !== this.gone
+        target
           ? html`<button class="openf" type="button" aria-label="Open ${visible(target.path)}${target.line ? ` at line ${target.line}` : ""}" title="Open this file"
               @click=${(e: Event) => this.openFile(target, e)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></button>`
           : nothing

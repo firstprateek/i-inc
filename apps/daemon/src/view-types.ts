@@ -378,6 +378,8 @@ export interface FilesView {
   skipped: number;
   /** There were more than the list holds. */
   truncated: boolean;
+  /** Something in the folder couldn't be read, so the list may be missing files. */
+  partial: boolean;
   reason?: string;
 }
 
@@ -404,10 +406,12 @@ export interface SearchView {
   hits: SearchHit[];
   /** Matches in names that aren't safe to show. */
   skipped: number;
-  /** Matches left out: in a file that isn't served, or in a part of a line that can't be shown. */
+  /** Files not searched, for what they hold. It depends on nothing typed, so it says nothing about a query. */
   withheld: number;
   /** There were more than the results hold. */
   truncated: boolean;
+  /** Something in the folder couldn't be read, so there may be more. */
+  partial: boolean;
   reason?: string;
 }
 

@@ -58,6 +58,7 @@ export class IncConvReview extends LitElement {
     tab: { type: String },
     target: { attribute: false },
     shownTab: { state: true },
+    filesUsed: { state: true },
     changes: { state: true },
     loadError: { state: true },
     loading: { state: true },
@@ -84,6 +85,8 @@ export class IncConvReview extends LitElement {
   /** The file to open in Files, when the pane was opened from one. */
   declare target: FileTarget | null;
   declare shownTab: ReviewTab;
+  /** Files or Search has been open: until then nothing reads the copy for them. */
+  declare filesUsed: boolean;
   declare changes: ChangesView | undefined;
   declare loadError: string | null;
   declare loading: boolean;
@@ -114,6 +117,7 @@ export class IncConvReview extends LitElement {
     this.tab = "changes";
     this.target = null;
     this.shownTab = "changes";
+    this.filesUsed = false;
     this.loadError = null;
     this.loading = false;
     this.selected = null;
@@ -249,6 +253,7 @@ export class IncConvReview extends LitElement {
 
   override willUpdate(changed: Map<string, unknown>): void {
     if (changed.has("tab")) this.shownTab = this.tab;
+    if (this.shownTab !== "changes") this.filesUsed = true;
     if (changed.has("conv") && (changed.get("conv") as Conversation | undefined)?.id !== this.conv?.id) {
       this.comments = this.conv ? reviewComments.list(this.conv.id) : [];
       this.discarding = null;
@@ -728,7 +733,7 @@ export class IncConvReview extends LitElement {
                   new CustomEvent("conv-review-answer", { bubbles: true, composed: true }),
                 )}>Answer</button></p>`
           : this.running
-            ? html`<p class="say" role="status">${this.name || "The agent"} is working, so this can change. It refreshes when the turn ends.</p>`
+            ? html`<p class="say" role="status">${this.name || "The agent"} is working, so this can change.${this.shownTab === "search" ? "" : " It refreshes when the turn ends."}</p>`
             : nothing
       }
       <div class="panel" id="panel-changes" role="tabpanel" aria-labelledby="tab-changes" ?hidden=${!onChanges}>
@@ -739,7 +744,7 @@ export class IncConvReview extends LitElement {
       }
       ${this.content()}</div>
       <div class="panel" id="panel-files" role="tabpanel" aria-labelledby="tab-${this.shownTab === "search" ? "search" : "files"}" ?hidden=${onChanges}>
-        <inc-conv-files .conversationId=${this.conv?.id ?? ""} .mode=${this.shownTab === "search" ? "search" : "files"} .target=${this.target}></inc-conv-files></div>`;
+        ${this.filesUsed ? html`<inc-conv-files .conversationId=${this.conv?.id ?? ""} .mode=${this.shownTab === "search" ? "search" : "files"} .target=${this.target}></inc-conv-files>` : nothing}</div>`;
   }
 }
 

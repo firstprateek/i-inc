@@ -270,31 +270,34 @@ links into it.
 **Files** and **Search** sit beside **Changes** in the same pane, and show the working copy as it is, whether or not it
 changed. Each read follows the Review rules above: it writes nothing, boots nothing, and believes nothing it is told.
 
-- `GET /api/conversations/:id/files`: `{ files: { state, noProject, paths, skipped, truncated, reason? } }`. In a repository,
+- `GET /api/conversations/:id/files`: `{ files: { state, noProject, paths, skipped, truncated, partial, reason? } }`. In a repository,
   what the commit tracks plus what is new by the scratch index (so `.gitignore` counts and the copy's index and excludes
   don't), less what has gone. With no commit to go on, a bounded `find` that skips `.git`, `.inc` and `node_modules`. At
   most 20,000 paths.
 - `GET /api/conversations/:id/files/read?path=`: `{ file: { state, path, side, withheld?, reason? } }`, one side as in a
   diff, by the same checks: 1 MB, redacted with its lines kept, links never followed, and a file that usually holds secrets
-  is named but not served. A bad path is a 400.
-- `GET /api/conversations/:id/files/search?q=&case=1`: `{ search: { state, hits, skipped, withheld, truncated, reason? } }`,
-  each hit `{ path, line, text }`. A literal query of one line, at most 200 characters: `git grep -F` over the folder,
-  tracked and new, with the scratch index, or a bounded `grep` with no commit. It looks in no binary file and through no
-  link, and has at most 20 hits per file and 500 in all. Case is ignored unless `case=1`.
-- **What a search won't say.** A hit is one line, so what a line alone can't redact is never returned: a file that holds a
-  private key or a `.netrc`-style login, and a file that usually holds secrets. Text is redacted, and a hit whose match
-  isn't in what is shown (it is in what redaction took out, or past 2,000 bytes of a line) is left out and counted: to say
-  a line holds it would tell what is hidden, a letter at a time.
+  is named but not served, and neither is anything reached through a link into `.git` or `.inc`. A bad path is a 400.
+- `GET /api/conversations/:id/files/search?q=&case=1`: `{ search: { state, hits, skipped, withheld, truncated, partial, reason? } }`,
+  each hit `{ path, line, text }`. A literal query of one line, at most 200 characters: `git grep -F` over what isn't
+  ignored, with the scratch index, or a bounded `grep` with no commit. It looks in no binary file and through no link,
+  and has at most 20 hits per file and 500 in all, and 2 GB of memory. Case is ignored unless `case=1`.
+- **What a search won't say.** Redaction looks across lines, so a search reads the two lines before each match, and a line
+  redaction reaches from those isn't shown. A line is read to 2,000 bytes, and a line that long loses its last 512 bytes
+  and any word it ended in, since a credential the cut split matches no pattern. A file that holds a private key or a
+  `.netrc`-style login, or that usually holds secrets, isn't searched; `withheld` counts the first kind, which depends on
+  nothing typed. A match that can't be shown is left out and not counted: to count it would tell what is hidden, a letter
+  at a time.
 - **The pane.** Files is a tree with one tab stop and the tree keys, with a filter over paths; lists draw 400 rows at a
   time. The viewer has line numbers and the highlighter (up to 40 KB, plain after that) and draws 1,000 lines at a time,
   around the line asked for. Search runs when it is asked to, lists hits by file and opens the viewer at the line. Files
   and Search refresh when a turn ends; a search's results stay as they were until the owner searches again.
 - **`@file`.** Typing `@` at the start or after a space opens a list of matching paths, built like the slash list.
-  Enter or Tab puts the path in as text. It stays shut during IME composition, and for an `@` the owner dismissed with
-  Escape. A draft has no working copy, so the list doesn't open there. The list of paths is remembered for 30 seconds; a
-  machine that is asleep is said in a sentence, and Enter still sends.
-- **Read cards.** A Read card whose file is in the copy has a button that opens it in Files at the line. It goes once the
-  last list said the file has gone; a ticket's read-only stage has none.
+  Enter or Tab puts the path in as text (in backticks if it has a space). It stays shut during IME composition, and for an `@` the owner dismissed with
+  Escape, until it has gone from the box. A draft has no working copy, so the list doesn't open there. The list of paths
+  is remembered for 30 seconds or until a turn ends; a machine that is asleep is said in a sentence, and Enter still sends.
+- **Read cards.** A Read card whose path is in the copy has a button that opens it in Files at the line, and the viewer
+  says so if the file has gone since. A ticket's read-only stage has none.
+- **Closing the pane** keeps what Files and Search held, for this page, per conversation. On a phone, back closes it.
 
 ## Data and API
 

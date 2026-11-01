@@ -4,7 +4,7 @@
 // disk becomes something to show. What comes back was written by whatever runs in the sandbox, so nothing is believed.
 import { posix } from "node:path";
 import { redactTokens } from "./ahp/sanitize.ts";
-import { marker, quote, redactFile, safeGit } from "./ship-git.ts";
+import { marker, quote, redactFile, safeGit, secretFile } from "./ship-git.ts";
 import type { FileSide } from "./view-types.ts";
 import { isSafeRefName, isSafeWorkDir } from "./workspace.ts";
 
@@ -35,6 +35,19 @@ export function isReviewPath(path: unknown): path is string {
   if (parts.some((p) => p === "" || p === "." || p === "..")) return false;
   if (parts[0] === ".inc" || parts.some((p) => p.toLowerCase() === ".git")) return false;
   return redactTokens(path) === path;
+}
+
+/**
+ * A file never served or searched, by its name: what ship's scan calls a secrets file, in any case, and a few more
+ * that a change is unlikely to want to show (`prod.env`, `.envrc`).
+ */
+export function servedNever(path: string): boolean {
+  const lower = path.toLowerCase();
+  return (
+    secretFile.some((re) => re.test(path) || re.test(lower)) ||
+    /(^|\/)[^/]+\.env$/.test(lower) ||
+    /(^|\/)\.envrc$/.test(lower)
+  );
 }
 
 export function check(copy: ReviewCopy): void {
@@ -119,11 +132,12 @@ export const diskSide = (head: string): string[] => [
   "root=$(pwd -P)",
   'd=$(cd -P -- "$(dirname -- "./$P")" 2>/dev/null && pwd -P || true)',
   `if [ -z "$d" ]; then echo "${head} none"`,
-  `elif ! case "$d/" in "$root/"*) true ;; *) false ;; esac; then echo "${head} outside"`,
+  `elif ! case "$d/" in "$root/.git/"* | "$root/.inc/"*) false ;; "$root/"*) true ;; *) false ;; esac; then echo "${head} outside"`,
   `elif [ -L "./$P" ]; then echo "${head} link"; printf %s "$(readlink -- "./$P")" | head -c ${MAX_PATH} | base64`,
   'elif [ -f "./$P" ]; then',
   `  s=$(wc -c < "./$P" | tr -d ' ')`,
-  `  if [ "$s" -gt ${MAX_FILE_BYTES} ]; then echo "${head} too-big"; else echo "${head} blob"; head -c ${MAX_FILE_BYTES + 1} < "./$P" | base64; fi`,
+  // No size means it can't be read: that isn't an empty file.
+  `  if [ -z "$s" ]; then echo "${head} other"; elif [ "$s" -gt ${MAX_FILE_BYTES} ]; then echo "${head} too-big"; else echo "${head} blob"; head -c ${MAX_FILE_BYTES + 1} < "./$P" | base64; fi`,
   `elif [ -e "./$P" ]; then echo "${head} other"`,
   `else echo "${head} none"; fi`,
 ];

@@ -727,9 +727,16 @@ const service = (port: ReviewPort, over: { project?: string | null; archivedAt?:
 const stub = (over: Partial<ReviewPort>): ReviewPort => ({
   list: async () => ({ present: true, files: [], skipped: 0, truncated: false, partial: false }),
   file: async () => ({ before: { state: "none" }, after: { state: "none" } }),
-  tree: async () => ({ present: true, paths: [], skipped: 0, truncated: false }),
+  tree: async () => ({ present: true, paths: [], skipped: 0, truncated: false, partial: false }),
   read: async () => ({ state: "none" }),
-  search: async () => ({ present: true, hits: [], skipped: 0, withheld: 0, truncated: false }),
+  search: async () => ({
+    present: true,
+    hits: [],
+    skipped: 0,
+    withheld: 0,
+    truncated: false,
+    partial: false,
+  }),
   ...over,
 });
 
