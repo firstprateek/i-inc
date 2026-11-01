@@ -1,3 +1,4 @@
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell scripts, not templates
 // The Files and Search tabs' reads (docs/design/conversations.md, "Files"): everything in a conversation's working
 // copy, one file as it is on disk, and a literal search of its contents. The same rules as the review's reads
 // (copy-read.ts): nothing in the copy is written, what comes back is believed for nothing, and no machine is booted.
@@ -271,8 +272,8 @@ function excerpt(
   query: string,
   matchCase: boolean,
 ): string | null {
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: a NUL means a binary file got past `-I`
-  if (/\0/.test(line.text)) return null;
+  // A NUL means a binary file got past `-I`.
+  if (line.text.includes("\0")) return null;
   const own = uncut(line);
   const before: string[] = [];
   for (let i = n - 1; i >= n - CONTEXT_LINES && lines.has(i); i--)

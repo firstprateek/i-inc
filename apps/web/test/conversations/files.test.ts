@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetAhp, setAhp } from "../../src/ahp/hub.ts";
 import type { IncConvComposer } from "../../src/components/conv-composer.ts";
 import "../../src/components/conv-composer.ts";
-import { IncConvFiles, LIST_ROWS, VIEW_LINES } from "../../src/components/conv-files.ts";
+import { type IncConvFiles, LIST_ROWS, VIEW_LINES } from "../../src/components/conv-files.ts";
 import type { IncConvReview } from "../../src/components/conv-review.ts";
 import "../../src/components/conv-review.ts";
 import type { IncConvTool } from "../../src/components/conv-tool.ts";
@@ -342,7 +342,7 @@ describe("the Files tab", () => {
     const keyword = must(root.querySelector<HTMLElement>(".tk-kw"));
     expect(keyword.textContent).toBe("const");
     // The class alone isn't the colour: the stylesheet has to be there too.
-    const sheets = (el.constructor as typeof IncConvFiles).styles as unknown as { cssText: string }[];
+    const sheets = (el.constructor as unknown as { styles: { cssText: string }[] }).styles;
     expect(sheets.some((sheet) => sheet.cssText.includes(".tk-kw"))).toBe(true);
     expect(root.activeElement).toBe(root.querySelector(".code"));
   });
