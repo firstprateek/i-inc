@@ -241,7 +241,8 @@ links into it.
   and nothing else of it, not its index (flags and cached stats that hide a change), config, `.git/info/exclude` or
   hooks. Git finds what differs by content, and only those files are hashed, into the scratch objects, with the copy's
   out of sight: git touches an object it is asked to write and already has. So every tracked file is read on each list.
-  Optional locks and lazy fetches are off, and `G` from `ship-git.ts` has no hooks, filters, fsmonitor or external diffs.
+  Optional locks are off, and so are lazy fetches: `GIT_NO_LAZY_FETCH` needs git 2.45 and the image has 2.43, so no
+  protocol is allowed either (`GIT_ALLOW_PROTOCOL=none`). And `G` from `ship-git.ts` has no hooks, filters, fsmonitor or external diffs.
 - **No implicit boots.** It uses the runner that refuses a stopped machine (T75). A read holds an ordinary lease, so it
   runs beside an agent's turn: the pane shows what is there, says the agent is working (or waiting for an answer), and
   refreshes when the turn ends.

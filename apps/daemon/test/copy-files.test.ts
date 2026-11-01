@@ -426,6 +426,55 @@ describe("a search", () => {
 });
 
 describe("it only reads", () => {
+  it("doesn't fetch a missing object on git older than GIT_NO_LAZY_FETCH", async () => {
+    // A partial clone of a server: the old blob isn't here, so asking for it would fetch it and write to .git.
+    const w = rig(false);
+    const server = join(w.root, "server");
+    mkdirSync(server);
+    git(server, "init", "-q", "-b", "main");
+    git(server, "config", "uploadpack.allowFilter", "true");
+    git(server, "config", "uploadpack.allowAnySHA1InWant", "true");
+    const save = (m: string) => {
+      git(server, "add", "-A");
+      git(server, "-c", "user.name=a", "-c", "user.email=a@example.invalid", "commit", "-q", "-m", m);
+    };
+    writeFileSync(join(server, "a.txt"), "old\n");
+    save("old");
+    git(server, "branch", "conv");
+    git(server, "checkout", "-q", "conv");
+    writeFileSync(join(server, "a.txt"), "new\n");
+    save("new");
+    execFileSync("rm", ["-rf", w.cwd]);
+    git(w.root, "clone", "-q", "--filter=blob:none", "-b", "conv", `file://${server}`, w.cwd);
+    const missing = git(server, "rev-parse", "main:a.txt");
+    const has = () => {
+      try {
+        execFileSync("git", ["-c", "core.hooksPath=/dev/null", "cat-file", "-e", missing], {
+          cwd: w.cwd,
+          env: { ...env, GIT_NO_LAZY_FETCH: "1" },
+          stdio: "ignore",
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    expect(has()).toBe(false);
+    // Git 2.43, in the image, knows nothing of this variable.
+    const old: RunScript = async (_who, script) =>
+      bash(
+        script
+          .replaceAll("GIT_NO_LAZY_FETCH=1", "IGNORED=1")
+          .replaceAll("/home/employee/work", join(w.root, "work")),
+      );
+    const port = reviewPort(old);
+    const copy = { ...w.copy, base: "main" };
+    expect((await port.file(copy, "a.txt")).after).toEqual({ state: "text", text: "new\n" });
+    // The list needs that blob, so it says it can't be read: that, not a fetch.
+    await expect(port.list(copy)).rejects.toThrow(/could not be read/);
+    expect(has()).toBe(false);
+  });
+
   it("changes nothing in the copy, however much it lists, opens and searches", async () => {
     const w = rig();
     w.write("new.txt", "needle\n");

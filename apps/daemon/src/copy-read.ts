@@ -50,13 +50,14 @@ export const LIST_TRIES = 3;
  * the refs already in the machine (never a fetch), or the first commit when they are gone. With no commit to measure
  * from (no project, or a copy with no commits or no repository) a scratch repository outside the folder looks at it,
  * `$mb` is the empty tree, `$head` is empty and every file there is new. Optional locks and lazy fetches are off:
- * reading must not write or reach out. Git's warnings go nowhere: output is what the script says, and a warning
+ * reading must not write or reach out. `GIT_NO_LAZY_FETCH` needs git 2.45 and the image has 2.43, where allowing no
+ * protocol is what stops a partial clone fetching what it lacks. Git's warnings go nowhere: output is what the script says, and a warning
  * in the middle of a section would pass for part of it.
  */
 export const open = (copy: ReviewCopy): string[] => {
   const scratch = [
     `W=$(mktemp -d); trap 'rm -rf "$W"' EXIT; mkdir "$W/home"`,
-    'BE=(env -i PATH="$PATH" LANG=C.UTF-8 HOME="$W/home" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1)',
+    'BE=(env -i PATH="$PATH" LANG=C.UTF-8 HOME="$W/home" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none)',
     '"${BE[@]}" git init --bare -q --template= "$W/repo" || { echo \'@@fail could not make a scratch repository\'; exit 1; }',
     'GX=(GIT_DIR="$W/repo" GIT_WORK_TREE="$PWD")',
     'G() { "${BE[@]}" "${GX[@]}" git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.pager=cat "$@"; }',
@@ -67,9 +68,9 @@ export const open = (copy: ReviewCopy): string[] => {
   const base = copy.base;
   return [
     ...enter(copy),
-    "if env -i PATH=\"$PATH\" HOME=/nonexistent GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 git -c core.hooksPath=/dev/null -c core.fsmonitor=false rev-parse --verify --quiet 'HEAD^{commit}' >/dev/null; then",
+    "if env -i PATH=\"$PATH\" HOME=/nonexistent GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 GIT_ALLOW_PROTOCOL=none git -c core.hooksPath=/dev/null -c core.fsmonitor=false rev-parse --verify --quiet 'HEAD^{commit}' >/dev/null; then",
     ...safeGit(copy),
-    "GX=(GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1)",
+    "GX=(GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none)",
     "head=$(G rev-parse --verify --quiet 'HEAD^{commit}') || { echo '@@fail the working copy has no commit'; exit 1; }",
     `b=$(G rev-parse --verify --quiet ${quote(`refs/remotes/origin/${base}^{commit}`)} || G rev-parse --verify --quiet ${quote(`refs/heads/${base}^{commit}`)} || true)`,
     'if [ -n "$b" ]; then mb=$(G merge-base "$b" "$head" || echo "$b"); else mb=$(G rev-list --max-parents=0 "$head" | tail -n 1); fi',
@@ -97,7 +98,7 @@ export const scratchIndex = (fail: string): string[] => [
   'if [ -n "$head" ]; then',
   "  o=$(G rev-parse --path-format=absolute --git-common-dir)/objects",
   '  "${BE[@]}" GIT_CONFIG_GLOBAL=/dev/null git init --bare -q --template= "$W/repo" || { echo \'@@fail could not make a scratch repository\'; exit 1; }',
-  '  GX=(GIT_DIR="$W/repo" GIT_WORK_TREE="$PWD" GIT_CONFIG_GLOBAL=/dev/null GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1)',
+  '  GX=(GIT_DIR="$W/repo" GIT_WORK_TREE="$PWD" GIT_CONFIG_GLOBAL=/dev/null GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none)',
   '  O() { local GX=("${GX[@]}" GIT_ALTERNATE_OBJECT_DIRECTORIES="$o"); "$@"; }',
   `  O G read-tree "$head" || ${fail}`,
   "fi",
