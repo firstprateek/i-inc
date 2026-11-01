@@ -279,8 +279,8 @@ changed. Each read follows the Review rules above: it writes nothing, boots noth
   is named but not served, and neither is anything reached through a link into `.git` or `.inc`. A bad path is a 400.
 - `GET /api/conversations/:id/files/search?q=&case=1`: `{ search: { state, hits, truncated, partial, reason? } }`, each hit
   `{ path, line, text }`. A literal query of one line, at most 200 characters, with case ignored unless `case=1`.
-- **Search looks at what the viewer shows.** `git grep -F` over what isn't ignored, with the scratch index and 2 GB of
-  memory, or a bounded `grep` with no commit, only says which files may hold the query. Those files, up to 200 and 6 MB
+- **Search looks at what the viewer shows.** `git grep -F` over what isn't ignored, in the scratch repository and with
+  2 GB of memory, or a bounded `grep` with no commit, only says which files may hold the query. Those files, up to 200 and 6 MB
   in all and none over 1 MB, come out as the viewer reads them, each is redacted whole, and the query is looked for in
   that text. Redacting a line can't work: a value can sit lines from its label and a key has nothing near it. So what a
   search shows can't be other than what the viewer shows, a match inside what redaction took out is no match, and nothing

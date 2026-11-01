@@ -38,6 +38,7 @@ import {
   type ReviewCopy,
   readSides,
   scratchIndex,
+  scratchObjects,
   servedNever,
 } from "./copy-read.ts";
 import { type RunScript, TIMED_OUT } from "./harness.ts";
@@ -101,6 +102,11 @@ export function listScript(copy: ReviewCopy, nonce: string): string {
   return [
     ...open(copy),
     ...scratchIndex(fail),
+    // What is tracked under a folder that became a link would stop `add` altogether, taking the tracked files with it.
+    'if [ -n "$head" ]; then',
+    '  find . -name .git -prune -o -type l -print0 > "$W/links"',
+    `  if [ -s "$W/links" ]; then O G --literal-pathspecs rm -r -q -f --cached --ignore-unmatch --pathspec-from-file="$W/links" --pathspec-file-nul || echo ${m("partial")}; fi`,
+    "fi",
     `G ls-files -z -m ${here} > "$W/tracked" || ${fail}`,
     "a=0",
     `if [ -s "$W/tracked" ]; then ${add("tracked")}; a=$?; fi`,
@@ -128,11 +134,12 @@ export function fileScript(copy: ReviewCopy, path: string, nonce: string): strin
   const after = marker(nonce, "after");
   return [
     ...open(copy),
+    ...scratchObjects("{ echo '@@fail the file could not be read'; exit 1; }"),
     `P=${quote(path)}`,
-    `t=$(G cat-file -t "$mb:$P" 2>/dev/null || true)`,
+    `t=$(O G cat-file -t "$mb:$P" 2>/dev/null || true)`,
     'if [ "$t" = blob ]; then',
-    '  s=$(G cat-file -s "$mb:$P")',
-    `  if [ "$s" -gt ${MAX_FILE_BYTES} ]; then echo "${before} too-big"; else echo "${before} blob"; G cat-file blob "$mb:$P" | base64; fi`,
+    '  s=$(O G cat-file -s "$mb:$P")',
+    `  if [ "$s" -gt ${MAX_FILE_BYTES} ]; then echo "${before} too-big"; else echo "${before} blob"; O G cat-file blob "$mb:$P" | base64; fi`,
     `elif [ -n "$t" ]; then echo "${before} other"; else echo "${before} none"; fi`,
     ...diskSide(after),
     `echo ${marker(nonce, "done")}`,

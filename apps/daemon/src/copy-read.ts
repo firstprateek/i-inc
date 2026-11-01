@@ -65,8 +65,8 @@ export const LIST_TRIES = 3;
  * from (no project, or a copy with no commits or no repository) a scratch repository outside the folder looks at it,
  * `$mb` is the empty tree, `$head` is empty and every file there is new. Optional locks and lazy fetches are off:
  * reading must not write or reach out. `GIT_NO_LAZY_FETCH` needs git 2.45 and the image has 2.43, where allowing no
- * protocol is what stops a partial clone fetching what it lacks. Git's warnings go nowhere: output is what the script says, and a warning
- * in the middle of a section would pass for part of it.
+ * protocol is what stops a partial clone fetching what it lacks. Git's warnings go nowhere: output is what the script
+ * says, and a warning in the middle of a section would pass for part of it.
  */
 export const open = (copy: ReviewCopy): string[] => {
   const scratch = [
@@ -82,8 +82,10 @@ export const open = (copy: ReviewCopy): string[] => {
   const base = copy.base;
   return [
     ...enter(copy),
-    "if env -i PATH=\"$PATH\" HOME=/nonexistent GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 GIT_ALLOW_PROTOCOL=none git -c core.hooksPath=/dev/null -c core.fsmonitor=false rev-parse --verify --quiet 'HEAD^{commit}' >/dev/null; then",
+    "if env -i PATH=\"$PATH\" HOME=/nonexistent GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none git -c core.hooksPath=/dev/null -c core.fsmonitor=false rev-parse --verify --quiet 'HEAD^{commit}' >/dev/null; then",
     ...safeGit(copy),
+    // Nothing here runs a filter, and a filter's name in the copy's config can be one no `-c` can carry.
+    "FA=()",
     "GX=(GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none)",
     "head=$(G rev-parse --verify --quiet 'HEAD^{commit}') || { echo '@@fail the working copy has no commit'; exit 1; }",
     `b=$(G rev-parse --verify --quiet ${quote(`refs/remotes/origin/${base}^{commit}`)} || G rev-parse --verify --quiet ${quote(`refs/heads/${base}^{commit}`)} || true)`,
@@ -103,19 +105,28 @@ export const enter = (copy: ReviewCopy): string[] => [
 ];
 
 /**
- * After `open`, with a commit to work from: a scratch index holding `$head`, so what git says about the folder rests
- * on content and on `.gitignore`, not on the copy's index, config or excludes. `O` runs a command that needs the
- * copy's objects, which stay out of sight of anything that writes.
+ * After `open`, with a commit to work from: a scratch repository that sees the copy's objects through `O`, and has none
+ * of its config. Objects read here can't start a fetch, which on the image's git can leave a key in the copy's config
+ * even when the fetch is refused.
  */
-export const scratchIndex = (fail: string): string[] => [
+export const scratchObjects = (fail: string): string[] => [
   'O() { "$@"; }',
   'if [ -n "$head" ]; then',
   "  o=$(G rev-parse --path-format=absolute --git-common-dir)/objects",
   '  "${BE[@]}" GIT_CONFIG_GLOBAL=/dev/null git init --bare -q --template= "$W/repo" || { echo \'@@fail could not make a scratch repository\'; exit 1; }',
   '  GX=(GIT_DIR="$W/repo" GIT_WORK_TREE="$PWD" GIT_CONFIG_GLOBAL=/dev/null GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none)',
   '  O() { local GX=("${GX[@]}" GIT_ALTERNATE_OBJECT_DIRECTORIES="$o"); "$@"; }',
-  `  O G read-tree "$head" || ${fail}`,
+  `  [ -n "$o" ] || ${fail}`,
   "fi",
+];
+
+/**
+ * The same with a scratch index holding `$head`, so what git says about the folder rests on content and on
+ * `.gitignore`, not on the copy's index, config or excludes.
+ */
+export const scratchIndex = (fail: string): string[] => [
+  ...scratchObjects(fail),
+  `if [ -n "$head" ]; then O G read-tree "$head" || ${fail}; fi`,
 ];
 
 /** A scratch file sent back between markers, at most LIST_LIMIT of it; past that the list says it is cut. */

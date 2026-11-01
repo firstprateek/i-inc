@@ -112,8 +112,9 @@ export function fileScript(copy: ReviewCopy, path: string, nonce: string): strin
 }
 
 /**
- * A literal search, in two steps. `git grep -F` over the folder, with the scratch index and its empty config so nothing
- * of the copy's runs, or a bounded `grep` with no commit, only says which files may hold the query. The query is one
+ * A literal search, in two steps. `git grep -F --untracked` over the folder, in the scratch repository so nothing of the
+ * copy's runs, or a bounded `grep` with no commit, only says which files may hold the query. `--untracked` looks at the
+ * folder and not an index, so it follows no link to a folder, and leaves out what `.gitignore` does, tracked or not. The query is one
  * quoted word after `-e`, so it can't be a flag or a pattern. Then each of those files comes out as the viewer would
  * read it, and `readSearch` looks in the text the viewer would show. A file is what is redacted, never a line of one:
  * a value can sit lines from its label, and a key has nothing near it at all, so what search shows can't be other
@@ -132,23 +133,30 @@ export function searchScript(copy: ReviewCopy, query: string, matchCase: boolean
     ...open(copy),
     ...scratchIndex(fail),
     'if [ -n "$head" ]; then',
-    `  ( ${limit}; G grep -I -l -z --threads=2 --untracked ${fold}-F -e ${quote(query)} ${HERE} ) > "$W/found"; s=$?`,
+    `  ( ${limit}; G grep -I -l -z --threads=2 --untracked ${fold}-F -e ${quote(query)} ${HERE} ) > "$W/found" 2> "$W/said"; s=$?`,
     `  case "$s" in 0|1) ;; *) ${fail} ;; esac`,
+    // Git carries on past a file it can't read, and only says so.
+    `  [ ! -s "$W/said" ] || echo ${m("partial")}`,
     "else",
-    `  grep -r -l -I -s -D skip --null ${skip} ${fold}-F -e ${quote(query)} . > "$W/found"; s=$?`,
+    `  ( ${limit}; grep -r -l -I -s -D skip --null ${skip} ${fold}-F -e ${quote(query)} . ) > "$W/found"; s=$?`,
     // 2: a file it couldn't read, which grep says while it carries on; what it could read is there.
     `  case "$s" in 0|1) ;; 2) echo ${m("partial")} ;; *) ${fail} ;; esac`,
     "fi",
+    `[ -f "$W/found" ] || ${fail}`,
     `echo ${m("files-begin")}`,
-    "n=0; t=0",
+    "n=0; t=0; root=$(pwd -P)",
     "while IFS= read -r -d '' f; do",
     '  [ -f "./$f" ] && [ ! -L "./$f" ] || continue',
+    // The folder may have become a link since grep went through it.
+    `  d=$(cd -P -- "$(dirname -- "./$f")" 2>/dev/null && pwd -P || true)`,
+    `  case "$d/" in "$root/.git/"* | "$root/"*"/.git/"* | "$root/.inc/"*) continue ;; "$root/"*) ;; *) continue ;; esac`,
     `  z=$(wc -c < "./$f" | tr -d ' ')`,
-    `  [ -n "$z" ] && [ "$z" -le ${MAX_FILE_BYTES} ] || continue`,
+    `  [ -n "$z" ] || { echo ${m("partial")}; continue; }`,
+    `  [ "$z" -le ${MAX_FILE_BYTES} ] || continue`,
     `  n=$((n + 1)); t=$((t + z))`,
     `  if [ "$n" -gt ${MAX_SEARCH_FILES} ] || [ "$t" -gt ${SEARCH_BYTES} ]; then echo ${m("cut")}; break; fi`,
     `  echo "${m("file")} $(printf %s "$f" | base64 | tr -d '\\n')"`,
-    `  base64 < "./$f"`,
+    `  base64 < "./$f" || echo ${m("partial")}`,
     'done < "$W/found"',
     "echo",
     `echo ${m("files-end")}`,
@@ -247,11 +255,13 @@ export function readSearch(output: string, nonce: string, query: string, matchCa
     if (isReviewPath(path) && !servedNever(path)) files.set(path, sideOf(at.b64.join("")));
     at = undefined;
   };
+  // A note can fall after a file's last line: it isn't part of the file.
+  const notes = new Set([marker(nonce, "cut"), marker(nonce, "partial")]);
   for (const line of body.split("\n")) {
     if (line.startsWith(head)) {
       close();
       at = { name: line.slice(head.length), b64: [] };
-    } else at?.b64.push(line);
+    } else if (!notes.has(line)) at?.b64.push(line);
   }
   close();
   let truncated = output.includes(marker(nonce, "cut"));

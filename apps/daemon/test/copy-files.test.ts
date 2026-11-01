@@ -97,6 +97,22 @@ function fingerprint(dir: string): string {
 }
 
 describe("the file list", () => {
+  it("still lists a tracked change beside a folder that became a link", async () => {
+    const w = rig();
+    w.write("d/a.txt", "one\n");
+    w.write("auth.ts", "old\n");
+    git(w.cwd, "add", "-A");
+    git(w.cwd, "-c", "user.name=a", "-c", "user.email=a@example.invalid", "commit", "-q", "-m", "more");
+    git(w.cwd, "update-ref", "refs/remotes/origin/main", "HEAD");
+    w.write("auth.ts", "new\n");
+    w.write("other/b.txt", "two\n");
+    execFileSync("rm", ["-rf", join(w.cwd, "d")]);
+    symlinkSync("other", join(w.cwd, "d"));
+    const list = await w.port.list(w.copy);
+    expect(list.files.map((f) => f.path)).toContain("auth.ts");
+    expect(list.files.map((f) => f.path)).toContain("d/a.txt");
+  });
+
   it("has what is tracked and what is new, and not what is ignored or has gone", async () => {
     const w = rig();
     w.write("src/new.ts", "x\n");
@@ -567,6 +583,39 @@ describe("a failure isn't an answer", () => {
     const side = await w.port.read(w.copy, "locked.txt");
     chmodSync(join(w.cwd, "locked.txt"), 0o644);
     expect(side).toEqual({ state: "other" });
+  });
+
+  it("says a file it couldn't bring out may be missing, not that nothing matched", async () => {
+    const w = rig();
+    // Names come in on a pipe and files don't: this one fails on the files.
+    const port = shim(w, "base64", 'if [ -p /dev/stdin ]; then exec REAL "$@"; fi\nexit 1');
+    expect((await port.search(w.copy, "needle", false)).partial).toBe(true);
+  });
+
+  it("says a file git couldn't read may be missing", async () => {
+    const w = rig();
+    w.write("locked.txt", "needle\n");
+    chmodSync(join(w.cwd, "locked.txt"), 0);
+    const r = await w.port.search(w.copy, "needle", false);
+    chmodSync(join(w.cwd, "locked.txt"), 0o644);
+    expect(r.partial).toBe(true);
+    expect(r.hits.map((h) => h.path)).toContain("gone.txt");
+  });
+
+  it("doesn't lose the last file to the note that the list was cut", async () => {
+    const w = rig(false);
+    for (let i = 0; i < MAX_SEARCH_FILES + 5; i++)
+      w.write(`f${String(i).padStart(3, "0")}.txt`, "needle12\n");
+    const r = await w.port.search(w.copy, "needle", true);
+    expect(r.truncated).toBe(true);
+    expect(r.hits).toHaveLength(MAX_SEARCH_FILES);
+  });
+
+  it("reads past a filter name that can't be passed on git's command line", async () => {
+    const w = rig();
+    git(w.cwd, "config", "filter.a b'c=d.clean", "cat");
+    expect((await w.port.list(w.copy)).present).toBe(true);
+    expect((await w.port.file(w.copy, "keep.txt")).after.state).toBe("text");
   });
 
   it("limits a search's memory", () => {
