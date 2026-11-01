@@ -12,6 +12,7 @@ import {
   brainScopeLabel,
   type ChangedFile,
   changedFiles,
+  contextUsage,
   latestPlan,
   tokens,
   usageLine,
@@ -233,6 +234,7 @@ export class IncConvContext extends LitElement {
     const brain = brainPages(session, chat);
     const usage = usageTotals(chat);
     const last = chat?.activeTurn?.usage ?? chat?.turns.at(-1)?.usage;
+    const context = contextUsage(chat);
     const done = plan?.filter((e) => e.status === "completed").length ?? 0;
     return html`
       <div class="bar"><h2>Context</h2>${this.closable ? html`<button class="x" type="button" aria-label="Close context" @click=${() => this.dispatchEvent(new CustomEvent("conv-toggle-context", { bubbles: true, composed: true }))}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>` : nothing}</div>
@@ -295,6 +297,7 @@ export class IncConvContext extends LitElement {
                 </div>`
               : html`<p class="muted">${this.watch ? "Token use shows here when the session reports it." : "Token use shows here after the first reply."}</p>`
           }
+          ${context ? html`${this.meter("Context", context.used / context.size)}<p class="muted">${tokens(context.used)} of ${tokens(context.size)} tokens</p>` : nothing}
           ${this.limit ? html`${this.meter(`${this.accountName || "Account"} · 5 hours`, this.limit.fiveHourUtilization)}${this.meter(`${this.accountName || "Account"} · 7 days`, this.limit.sevenDayUtilization)}` : nothing}
         </section>
       </div>`;
