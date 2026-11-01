@@ -113,6 +113,7 @@ export interface PaneMemo {
   open: Set<string>;
   selected: string | null;
   line: number;
+  reading: Record<"files" | "search", boolean>;
   query: string;
   matchCase: boolean;
   result: SearchView | undefined;

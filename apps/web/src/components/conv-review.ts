@@ -233,7 +233,7 @@ export class IncConvReview extends LitElement {
         const was = this.running;
         this.syncChat();
         if (was && !this.running) {
-          if (this.changes) void this.refresh();
+          if (this.changes || this.loading) void this.refresh();
           void this.filesPane()?.refresh();
         }
       }),
@@ -253,7 +253,10 @@ export class IncConvReview extends LitElement {
 
   override willUpdate(changed: Map<string, unknown>): void {
     if (changed.has("tab")) this.shownTab = this.tab;
-    if (this.shownTab !== "changes") this.filesUsed = true;
+    if (this.shownTab !== "changes") {
+      this.filesUsed = true;
+      this.filesMode = this.shownTab;
+    }
     if (changed.has("conv") && (changed.get("conv") as Conversation | undefined)?.id !== this.conv?.id) {
       this.comments = this.conv ? reviewComments.list(this.conv.id) : [];
       this.discarding = null;
@@ -268,6 +271,9 @@ export class IncConvReview extends LitElement {
     this.running = !!chat?.activeTurn;
     this.waiting = !!firstPending(chat);
   }
+
+  /** The tab the Files and Search panel last showed: it stays that way behind Changes, and reads nothing new. */
+  private filesMode: "files" | "search" = "files";
 
   private filesPane(): IncConvFiles | null {
     return this.renderRoot.querySelector<IncConvFiles>("inc-conv-files");
@@ -744,7 +750,7 @@ export class IncConvReview extends LitElement {
       }
       ${this.content()}</div>
       <div class="panel" id="panel-files" role="tabpanel" aria-labelledby="tab-${this.shownTab === "search" ? "search" : "files"}" ?hidden=${onChanges}>
-        ${this.filesUsed ? html`<inc-conv-files .conversationId=${this.conv?.id ?? ""} .mode=${this.shownTab === "search" ? "search" : "files"} .target=${this.target}></inc-conv-files>` : nothing}</div>`;
+        ${this.filesUsed ? html`<inc-conv-files .conversationId=${this.conv?.id ?? ""} .mode=${this.filesMode} .target=${this.target}></inc-conv-files>` : nothing}</div>`;
   }
 }
 

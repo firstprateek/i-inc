@@ -51,6 +51,7 @@ export class IncConvFiles extends LitElement {
     file: { state: true },
     fileError: { state: true },
     fileLoading: { state: true },
+    fileNote: { state: true },
     from: { state: true },
     to: { state: true },
     line: { state: true },
@@ -81,6 +82,8 @@ export class IncConvFiles extends LitElement {
   declare file: OpenFileView | undefined;
   declare fileError: string | null;
   declare fileLoading: boolean;
+  /** Why the last read of a file that is still showing didn't work. */
+  declare fileNote: string | null;
   declare from: number;
   declare to: number;
   /** The line asked for, 1-based. */
@@ -117,6 +120,7 @@ export class IncConvFiles extends LitElement {
     this.selected = null;
     this.fileError = null;
     this.fileLoading = false;
+    this.fileNote = null;
     this.from = 0;
     this.to = VIEW_LINES;
     this.line = 0;
@@ -211,6 +215,7 @@ export class IncConvFiles extends LitElement {
       open: this.open,
       selected: this.selected,
       line: this.line,
+      reading: this.reading,
       query: this.query,
       matchCase: this.matchCase,
       result: this.result,
@@ -228,7 +233,15 @@ export class IncConvFiles extends LitElement {
     this.matchCase = m.matchCase;
     this.result = m.result;
     this.searched = m.searched;
-    if (m.selected && !this.target) void this.read(m.selected, m.line);
+    if (!m.selected || this.target) return;
+    this.reading = m.reading;
+    void this.read(m.selected, m.line).then(async () => {
+      await this.updateComplete;
+      this.centre(
+        this.renderRoot.querySelector<HTMLElement>(".code"),
+        this.renderRoot.querySelector<HTMLElement>(`.ln[data-line="${m.line}"]`),
+      );
+    });
   }
 
   private reset() {
@@ -248,6 +261,7 @@ export class IncConvFiles extends LitElement {
     this.selected = null;
     this.file = undefined;
     this.fileError = null;
+    this.fileNote = null;
     this.lines = [];
     this.reading = { files: false, search: false };
     this.result = undefined;
@@ -273,7 +287,7 @@ export class IncConvFiles extends LitElement {
     await this.keepingFocus(async () => {
       forgetPaths(this.conversationId);
       await Promise.all([
-        this.list || this.listError ? this.load() : undefined,
+        this.list || this.listError || this.listLoading ? this.load() : undefined,
         this.selected ? this.read(this.selected, this.line, true) : undefined,
       ]);
     });
@@ -312,13 +326,20 @@ export class IncConvFiles extends LitElement {
       this.file = undefined;
       this.lines = [];
     }
+    // A read again of what is showing that doesn't work says so over it, and doesn't take it away.
+    const showing = keepPlace && this.file?.state === "ok" && this.lines.length > 0;
     this.selected = path;
     this.line = line;
     this.fileLoading = true;
     this.fileError = null;
+    this.fileNote = null;
     try {
       const file = await api.readFile(id, path);
       if (token !== this.fileToken) return;
+      if (showing && file.state !== "ok") {
+        this.fileNote = file.reason ?? "This file couldn't be read again.";
+        return;
+      }
       this.lines =
         file.state === "ok" && !openNote(file) ? codeLines(file.side.text ?? "", langOf(path)) : [];
       this.file = file;
@@ -326,7 +347,10 @@ export class IncConvFiles extends LitElement {
         this.to = Math.min(this.to, this.lines.length);
       } else this.place(line);
     } catch (e) {
-      if (token === this.fileToken) this.fileError = e instanceof Error ? e.message : String(e);
+      if (token !== this.fileToken) return;
+      const words = e instanceof Error ? e.message : String(e);
+      if (showing) this.fileNote = `Couldn't read this file again (${words}).`;
+      else this.fileError = words;
     } finally {
       if (token === this.fileToken) this.fileLoading = false;
     }
@@ -613,6 +637,7 @@ export class IncConvFiles extends LitElement {
       return n === 1 ? "1 file" : `${n} files`;
     }
     if (this.searching) return "Searching…";
+    if (this.searchError) return "";
     const r = this.result;
     if (!r) return "";
     if (r.state !== "ok") return r.reason ?? "";
@@ -677,7 +702,7 @@ export class IncConvFiles extends LitElement {
         ${this.to < this.lines.length ? html`<div class="more"><button class="link-btn" type="button" @click=${() => this.more("down")}>Show ${Math.min(VIEW_LINES, this.lines.length - this.to)} more lines</button></div>` : nothing}
       </div></div>`;
     }
-    return html`<div class="view" role="group" aria-label="File ${title}"><div class="vh" tabindex="-1"><span class="path" title=${title}><bdi>${title}</bdi></span></div>${inner}</div>`;
+    return html`<div class="view" role="group" aria-label="File ${title}"><div class="vh" tabindex="-1"><span class="path" title=${title}><bdi>${title}</bdi></span></div>${this.fileNote ? html`<p class="say" role="alert">${this.fileNote}</p>` : nothing}${inner}</div>`;
   }
 
   private split(side: unknown) {

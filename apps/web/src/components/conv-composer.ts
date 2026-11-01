@@ -31,10 +31,9 @@ import { selectField } from "./shared.ts";
 
 /** Paths the `@` list shows at a time. */
 const MENTIONS = 8;
-/** A list's height at most and at least, and the app's bar above it. */
+/** A list's height at most and at least: at the least, one row and the list's padding. */
 const MAX_LIST = 280;
-const MIN_LIST = 96;
-const BAR = 72;
+const MIN_LIST = 58;
 
 export type Intent = "turn" | "steer" | "queue";
 export interface SendDetail {
@@ -179,7 +178,7 @@ export class IncConvComposer extends LitElement {
       .queue .icon { width: 40px; height: 40px; }
       .queue .tag { flex: none; font-size: 11.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.4px; color: var(--reviewing-fg); }
       .queue .t { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
-      .pop { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 30; max-width: 520px; background: var(--surface); border: 1px solid var(--line-strong);
+      .pop { position: absolute; box-sizing: border-box; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 30; max-width: 520px; background: var(--surface); border: 1px solid var(--line-strong);
         border-radius: 14px; box-shadow: 0 12px 32px rgba(0,0,0,0.16); padding: 6px; max-height: 280px; overflow: auto; }
       .pop [role="option"] { display: flex; flex-direction: column; gap: 1px; padding: 8px 12px; border-radius: 8px; min-height: 44px; box-sizing: border-box; justify-content: center; cursor: pointer; }
       .pop [role="option"][aria-selected="true"], .pop [role="option"]:hover { background: var(--sunken); }
@@ -337,11 +336,13 @@ export class IncConvComposer extends LitElement {
     this.mentionNote = "";
   }
 
-  /** The open list fits the room above the box, under the app's bar, and the chosen row is in sight. */
+  /** The open list fits the room above the box, inside the pane it is in, and the chosen row is in sight. */
   private placeList() {
     const pop = this.renderRoot.querySelector<HTMLElement>(".pop[role='listbox']");
     if (!pop) return;
-    const room = (this.renderRoot.querySelector("form")?.getBoundingClientRect().top ?? 0) - BAR - 6;
+    const pane = this.getRootNode() instanceof ShadowRoot ? (this.getRootNode() as ShadowRoot).host : this;
+    const top = pane.getBoundingClientRect().top;
+    const room = (this.renderRoot.querySelector("form")?.getBoundingClientRect().top ?? 0) - top - 6;
     pop.style.maxHeight = `${Math.max(MIN_LIST, Math.min(MAX_LIST, room))}px`;
     const row = pop.querySelector<HTMLElement>('[aria-selected="true"]');
     if (!row) return;

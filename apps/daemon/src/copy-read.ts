@@ -3,7 +3,6 @@
 // paths may be touched, how a script gets into the copy with nothing of its index, config or hooks, and how a file on
 // disk becomes something to show. What comes back was written by whatever runs in the sandbox, so nothing is believed.
 import { posix } from "node:path";
-import { redactTokens } from "./ahp/sanitize.ts";
 import { marker, quote, redactFile, safeGit, secretFile } from "./ship-git.ts";
 import type { FileSide } from "./view-types.ts";
 import { isSafeRefName, isSafeWorkDir } from "./workspace.ts";

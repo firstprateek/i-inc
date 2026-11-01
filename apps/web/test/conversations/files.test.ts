@@ -540,6 +540,47 @@ describe("the Files tab", () => {
     expect(root.activeElement).not.toBeNull();
   });
 
+  it("says a failed read again over the file, and keeps the file", async () => {
+    const { el, root } = await mount({ target: { path: "src/a.ts", line: 2 } });
+    await until(() => root.querySelector(".code"));
+    fileReply = opened("src/a.ts", {
+      state: "busy",
+      side: { state: "none" },
+      reason: "Ada's machine is busy, so this file can't be read right now.",
+    });
+    await el.refresh();
+    await el.updateComplete;
+    expect(root.querySelector(".view .say")?.textContent).toContain("is busy");
+    expect(root.querySelector(".code")).not.toBeNull();
+    vi.stubGlobal("fetch", async () => reply({ error: "boom" }, 500));
+    await el.refresh();
+    await el.updateComplete;
+    expect(root.querySelector(".view .say")?.textContent).toContain("Couldn't read this file again");
+    expect(root.querySelector(".code")).not.toBeNull();
+  });
+
+  it("reads the list again if a turn ends while the first read is going", async () => {
+    let answer: (r: Response) => void = () => {};
+    let lists = 0;
+    vi.stubGlobal("fetch", (url: string) => {
+      if (!url.endsWith("/files")) return Promise.resolve(reply({}));
+      lists++;
+      return lists === 1
+        ? new Promise<Response>((r) => {
+            answer = r;
+          })
+        : Promise.resolve(reply({ files: filesView() }));
+    });
+    const el = document.createElement("inc-conv-files") as IncConvFiles;
+    el.conversationId = "c1";
+    document.body.append(el);
+    await until(() => el.listLoading);
+    await el.refresh();
+    answer(reply({ files: filesView({ paths: [] }) }));
+    expect(lists).toBe(2);
+    expect(el.list?.paths).toEqual(PATHS);
+  });
+
   it("offers Refresh on an empty folder", async () => {
     listReply = filesView({ paths: [] });
     const { root } = await mount();
@@ -588,6 +629,15 @@ describe("the Files tab", () => {
     expect(again.el.selected).toBe("src/a.ts");
     const other = await mount({ conversationId: "other" });
     expect(other.el.filter).toBe("");
+  });
+
+  it("goes back to reading the file it left, on a phone too", async () => {
+    const { el, root } = await mount({ conversationId: "again", target: { path: "src/a.ts", line: 2 } });
+    await until(() => root.querySelector(".code"));
+    el.remove();
+    const back = await mount({ conversationId: "again" });
+    await until(() => back.root.querySelector('.ln[aria-current="true"]'));
+    expect(back.root.querySelector(".body")?.classList.contains("reading")).toBe(true);
   });
 
   it("reads nothing it wasn't told to read for a file called constructor", async () => {
@@ -741,11 +791,20 @@ describe("the Search tab", () => {
     expect(root.textContent).toContain("is asleep");
   });
 
-  it("says when a search can't be asked", async () => {
+  it("says when a search can't be asked, and the live region keeps no old count", async () => {
+    searchReply = {
+      state: "ok",
+      hits: [{ path: "a", line: 1, text: "x" }],
+      truncated: false,
+      partial: false,
+    };
     const { el, root } = await mount();
+    await search(el, root, "x");
+    expect(root.querySelector('[role="status"]')?.textContent).toBe("1 match in 1 file.");
     vi.stubGlobal("fetch", async () => reply({ error: "That can't be searched for." }, 400));
     await search(el, root, "x");
     expect(root.querySelector('[role="alert"]')?.textContent).toContain("Couldn't search");
+    expect(root.querySelector('[role="status"]')?.textContent).toBe("");
   });
 
   it("does nothing with an empty box, and doesn't search twice at once", async () => {
@@ -823,6 +882,54 @@ describe("the pane's tabs", () => {
     await mount();
     await until(() => calls.some((c) => c.endsWith("/changes")));
     expect(calls.some((c) => c.includes("/files"))).toBe(false);
+  });
+
+  it("reads no files going from Search to Changes", async () => {
+    const { el, root } = await mount({ tab: "search" });
+    must(root.querySelector<HTMLElement>("#tab-changes")).click();
+    await el.updateComplete;
+    await until(() => calls.some((c) => c.endsWith("/changes")));
+    expect(calls.some((c) => c.endsWith("/files"))).toBe(false);
+  });
+
+  it("reads the changes again if a turn ends during the first read", async () => {
+    let listener: (u: Set<string>) => void = () => {};
+    let chat: Any = { turns: [], activeTurn: { id: "t", responseParts: [] } };
+    setAhp({
+      chat: () => chat,
+      stop() {},
+      onChange: (fn: (u: Set<string>) => void) => {
+        listener = fn;
+        return () => {};
+      },
+    } as Any);
+    let reads = 0;
+    let answer: (r: Response) => void = () => {};
+    vi.stubGlobal("fetch", (url: string) => {
+      if (url.endsWith("/changes")) reads++;
+      return reads === 1
+        ? new Promise<Response>((r) => {
+            answer = r;
+          })
+        : Promise.resolve(
+            reply({
+              changes: {
+                state: "ok",
+                noProject: false,
+                files: [],
+                skipped: 0,
+                truncated: false,
+                partial: false,
+              },
+            }),
+          );
+    });
+    await mount();
+    await until(() => reads === 1);
+    chat = { turns: [] };
+    listener(new Set([CHAT]));
+    answer(reply({}));
+    await until(() => reads === 2);
   });
 
   it("promises a refresh only where one comes", async () => {
@@ -1181,5 +1288,30 @@ describe("a Read card's link", () => {
 
   it("doesn't call a file gone on a list's word: the viewer says", async () => {
     expect((await mount(call("src/not-in-any-list.ts"))).root.querySelector(".openf")).not.toBeNull();
+  });
+});
+
+describe("where the list sits", () => {
+  it("stays inside the pane the composer is in, with a row in sight", async () => {
+    const host = document.createElement("div");
+    host.attachShadow({ mode: "open" });
+    document.body.append(host);
+    vi.spyOn(host, "getBoundingClientRect").mockReturnValue({ top: 150 } as DOMRect);
+    const el = document.createElement("inc-conv-composer") as IncConvComposer;
+    el.conversationId = `c-${Math.random().toString(36).slice(2)}`;
+    el.chat = { turns: [] } as Any;
+    host.shadowRoot?.append(el);
+    await el.updateComplete;
+    const root = el.shadowRoot as ShadowRoot;
+    vi.spyOn(must(root.querySelector("form")), "getBoundingClientRect").mockReturnValue({
+      top: 300,
+    } as DOMRect);
+    const ta = root.querySelector("textarea") as HTMLTextAreaElement;
+    ta.value = "@src";
+    ta.setSelectionRange(4, 4);
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+    await until(() => root.querySelector("#mention-list"));
+    await el.updateComplete;
+    expect(must(root.querySelector<HTMLElement>("#mention-list")).style.maxHeight).toBe("144px");
   });
 });
