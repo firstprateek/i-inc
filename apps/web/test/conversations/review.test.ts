@@ -783,6 +783,59 @@ describe("the pane", () => {
     expect(reviewComments.list("c1")[0]).toMatchObject({ line: 2, quote: "2", text: "still mine" });
   });
 
+  it("keeps a comment and a box in reach when their file now shows a note, not lines", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    await commentOn(root, el, ".row.add", "about this one");
+    await typeAt(el, root, ".row.add", "still mine");
+    fileReply = file({ after: { state: "binary" } });
+    await el.refresh();
+    await settle(el);
+    expect(root.querySelector(".diff .note")?.textContent).toContain("binary");
+    expect(root.querySelector(".moved p:last-child")?.textContent).toBe("about this one");
+    expect(root.querySelector<HTMLTextAreaElement>(".moved .box textarea")?.value).toBe("still mine");
+  });
+
+  it("goes to a comment on a file that now shows a note", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    await commentOn(root, el, ".row.add", "about this one");
+    fileReply = file({ after: { state: "too-big" } });
+    await el.refresh();
+    await settle(el);
+    must(root.querySelector<HTMLButtonElement>(".side .where")).click();
+    await until(() => root.activeElement?.matches(".moved .c"));
+  });
+
+  it("keeps a way to a half-written comment on a file that left the list", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    await typeAt(el, root, ".row.add", "still mine");
+    changes = listing({ files: [{ path: "other.ts", added: 1, removed: 0, status: "modified" }] });
+    await el.refresh();
+    await settle(el);
+    expect(root.querySelector(".box")).toBeNull();
+    const link = must(root.querySelector<HTMLButtonElement>(".stray"));
+    expect(link.textContent).toBe("src/a.ts:2");
+    fileReply = file({ before: { state: "none" }, after: { state: "none" } });
+    link.click();
+    await settle(el);
+    expect(root.querySelector<HTMLTextAreaElement>(".moved .box textarea")?.value).toBe("still mine");
+  });
+
+  it("doesn't drop focus when a file's Try again is replaced by the file", async () => {
+    fileReply = file({
+      state: "asleep",
+      reason: "Ada's machine is asleep, so the changes can't be read right now.",
+    });
+    const { el, root } = await mount();
+    await settle(el);
+    must(root.querySelector<HTMLButtonElement>(".diff .note .link-btn")).focus();
+    fileReply = file();
+    must(root.querySelector<HTMLButtonElement>(".diff .note .link-btn")).click();
+    await until(() => root.activeElement?.matches(".rows"));
+  });
+
   it("says apart a removed line and an added one with the same number, in the box too", async () => {
     const { el, root } = await mount();
     await settle(el);

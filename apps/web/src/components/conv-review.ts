@@ -177,6 +177,7 @@ export class IncConvReview extends LitElement {
       .moved > p { margin: 0; padding: 8px 10px 2px; color: var(--ink-2); }
       .moved > .c { margin: 6px 10px 0; }
       .moved .c:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: -3px; }
+      .stray { min-height: 44px; font: 600 12.5px var(--mono); text-align: left; overflow-wrap: anywhere; }
       .back { display: none; }
       @media (pointer: coarse) { .row { line-height: 2; } }
       /* Narrow: one column, the list or the diff. */
@@ -310,6 +311,18 @@ export class IncConvReview extends LitElement {
       if (token === this.fileToken) this.fileError = e instanceof Error ? e.message : String(e);
     } finally {
       if (token === this.fileToken) this.fileLoading = false;
+    }
+  }
+
+  /** A file's Try again. It goes when the file comes, so focus moves on to what took its place. */
+  private async retryFile(path: string) {
+    await this.open(path);
+    await this.updateComplete;
+    if (document.activeElement === document.body) {
+      (
+        this.renderRoot.querySelector<HTMLElement>(".rows") ??
+        this.renderRoot.querySelector<HTMLElement>(".refresh")
+      )?.focus();
     }
   }
 
@@ -516,27 +529,26 @@ export class IncConvReview extends LitElement {
       commentDrafts.list(this.conv?.id ?? "").filter((d) => d.path === path),
     );
     const moved = comments.moved.length + drafts.moved.length;
+    const changed = moved
+      ? html`<div class="moved"><p>${moved === 1 ? "This line has" : "These lines have"} changed since the comment was written.</p>
+          ${comments.moved.map((c) => this.comment(c, "moved"))}${drafts.moved.map((d) => this.box(d))}</div>`
+      : nothing;
     return html`<div class="diff" role="group" aria-label="Changes to ${visible(path)}">
       <div class="dh"><span class="path" title=${visible(path)}>${visible(path)}</span>
         ${this.rows.length ? html`<span class="plus" aria-label="${stats.added} lines added">+${stats.added}</span><span class="minus" aria-label="${stats.removed} lines removed">−${stats.removed}</span>` : nothing}</div>
       ${
         this.fileError
-          ? html`<p class="note">Couldn't load this file (${this.fileError}). <button class="link-btn" type="button" @click=${() => void this.open(path)}>Try again</button></p>`
+          ? html`<p class="note">Couldn't load this file (${this.fileError}). <button class="link-btn" type="button" @click=${() => void this.retryFile(path)}>Try again</button></p>`
           : f && f.state !== "ok"
-            ? html`<p class="note" role="status">${f.reason} <button class="link-btn" type="button" @click=${() => void this.open(path)}>Try again</button></p>`
+            ? html`<p class="note" role="status">${f.reason} <button class="link-btn" type="button" @click=${() => void this.retryFile(path)}>Try again</button></p>`
             : !f
               ? html`<p class="note" role="status">Loading the file…</p>`
               : note
-                ? html`<p class="note">${note}</p>`
+                ? html`${changed}<p class="note">${note}</p>`
                 : !this.rows.length && !moved
                   ? html`<p class="note">No line changes.</p>`
                   : html`
-                    ${
-                      moved
-                        ? html`<div class="moved"><p>${moved === 1 ? "This line has" : "These lines have"} changed since the comment was written.</p>
-                            ${comments.moved.map((c) => this.comment(c, "moved"))}${drafts.moved.map((d) => this.box(d))}</div>`
-                        : nothing
-                    }
+                    ${changed}
                     ${
                       this.rows.length
                         ? html`<div class="rows" tabindex="0" aria-label="Diff. Pick a line number to comment on it." @click=${this.onRows}><div class="in">
@@ -567,6 +579,19 @@ export class IncConvReview extends LitElement {
           <span class="n"><span class="p" title=${visible(f.path)}><bdi>${visible(f.path)}</bdi></span>
             <small>${STATUS_WORD[f.status]}${n(f.path) ? ` · ${n(f.path)} ${n(f.path) === 1 ? "comment" : "comments"}` : ""}</small></span>
           ${f.added ? html`<span class="plus">+${f.added}</span>` : nothing}${f.removed ? html`<span class="minus">−${f.removed}</span>` : nothing}</button></li>`,
+      )}</ul></section>`;
+  }
+
+  /** Half-written comments on files the list no longer has: their words stay, so the way to them stays too. */
+  private unfinished(files: ReviewFile[]) {
+    const left = commentDrafts
+      .list(this.conv?.id ?? "")
+      .filter((d) => d.text.trim() && !files.some((f) => f.path === d.path));
+    if (!left.length) return nothing;
+    return html`<section aria-labelledby="h-unfinished"><h3 id="h-unfinished">Unfinished comments · ${left.length}</h3>
+      <ul>${left.map(
+        (d) =>
+          html`<li><button class="link-btn stray" type="button" @click=${() => this.pick(d.path)}>${visible(d.path)}:${d.line}</button></li>`,
       )}</ul></section>`;
   }
 
@@ -611,6 +636,7 @@ export class IncConvReview extends LitElement {
         ${c.skipped ? html`<p class="say">${c.skipped === 1 ? "1 file has" : `${c.skipped} files have`} a name that isn't safe to show.</p>` : nothing}
         ${c.truncated ? html`<p class="say">Only the first ${c.files.length} files are listed.</p>` : nothing}
         ${c.partial ? html`<p class="say">Some files couldn't be read, so this may not be everything.</p>` : nothing}
+        ${this.unfinished(c.files)}
         ${this.commentList("link")}
       </div>
       <div class="main"><button class="cbtn back" type="button" @click=${() => this.backToList()}>All files</button>${this.diff()}</div>
