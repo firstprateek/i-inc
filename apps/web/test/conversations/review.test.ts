@@ -641,7 +641,9 @@ describe("the pane", () => {
   async function typeAt(el: IncConvReview, root: ShadowRoot, row: string, text: string) {
     must(root.querySelector<HTMLElement>(`${row} .no`)).click();
     await el.updateComplete;
-    const ta = root.querySelector(`[data-box="${row.endsWith("del") ? "old" : "new"}-2"] textarea`) as HTMLTextAreaElement;
+    const ta = root.querySelector(
+      `[data-box="${row.endsWith("del") ? "old" : "new"}-2"] textarea`,
+    ) as HTMLTextAreaElement;
     ta.value = text;
     ta.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
     await el.updateComplete;
@@ -748,7 +750,9 @@ describe("the pane", () => {
     await settle(el);
     must(root.querySelector<HTMLElement>(".row.add .no")).click();
     await el.updateComplete;
-    must([...root.querySelectorAll<HTMLElement>(".box .cbtn")].find((b) => b.textContent === "Cancel")).click();
+    must(
+      [...root.querySelectorAll<HTMLElement>(".box .cbtn")].find((b) => b.textContent === "Cancel"),
+    ).click();
     await el.updateComplete;
     expect(root.querySelector(".box")).toBeNull();
   });
@@ -870,7 +874,9 @@ describe("the pane", () => {
     for (let i = 0; i < n; i++) reviewComments.add("c1", note({ text: "x".repeat(4000) }));
     const { el, root } = await mount();
     await settle(el);
-    expect(root.querySelector(".side section .say")?.textContent).toContain("too much to keep through a reload");
+    expect(root.querySelector(".side section .say")?.textContent).toContain(
+      "too much to keep through a reload",
+    );
   });
 
   it("keeps the diff, the comments and Send comments when a refresh fails", async () => {
@@ -911,7 +917,7 @@ describe("the pane", () => {
     });
     refresh.click();
     await el.updateComplete;
-    expect(refresh.disabled).toBe(false);
+    expect((refresh as HTMLButtonElement).disabled).toBe(false);
     expect(refresh.getAttribute("aria-disabled")).toBe("true");
     expect(root.activeElement).toBe(refresh);
     refresh.click();
@@ -946,9 +952,7 @@ describe("the pane", () => {
       turns: [],
       activeTurn: {
         id: "t",
-        responseParts: [
-          { kind: "toolCall", toolCall: { toolCallId: "p", status: "pending-confirmation" } },
-        ],
+        responseParts: [{ kind: "toolCall", toolCall: { toolCallId: "p", status: "pending-confirmation" } }],
       },
     };
     const { el, root } = await mount();
