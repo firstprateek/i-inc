@@ -1,12 +1,12 @@
 // The Conversations context panel lists the brain pages the host says the conversation used
 // (`_meta["iinc.brain"]` on the session, contract C19), each with where it lives, whether the agent
-// opened it itself, and whether it is untrusted.
+// opened it itself, and whether it is untrusted. It also shows the usage, with how full the context is.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AhpConnection } from "../../src/ahp/connection.ts";
 import { resetAhp, setAhp } from "../../src/ahp/hub.ts";
 import "../../src/components/conv-context.ts";
 import type { Conversation } from "../../src/api.ts";
-import { CHAT, hosts, SESSION, sessionState, until } from "../ahp/fake-host.ts";
+import { CHAT, chatState, hosts, SESSION, sessionState, until } from "../ahp/fake-host.ts";
 
 const conv: Conversation = {
   id: "ab12cd34",
@@ -35,9 +35,12 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function panel(meta: unknown) {
+async function panel(meta: unknown, chat?: unknown) {
   const h = hosts();
-  h.onConnect = (host) => host.states.set(SESSION, sessionState(meta === undefined ? {} : { _meta: meta }));
+  h.onConnect = (host) => {
+    host.states.set(SESSION, sessionState(meta === undefined ? {} : { _meta: meta }));
+    if (chat) host.states.set(CHAT, chatState(chat));
+  };
   const c = new AhpConnection({
     connect: h.connect,
     clientId: "me",
@@ -94,5 +97,58 @@ describe("the context panel's brain pages", () => {
   it("hides the section when the host reports none", async () => {
     const root = await panel(undefined);
     expect(root.querySelector("#h-brain")).toBeNull();
+  });
+});
+
+describe("the context panel's usage", () => {
+  const reading = { model: "opus", _meta: { contextUsed: 180_000, contextSize: 200_000 } };
+  const message = { text: "hi", origin: { kind: "user" } };
+  const turn = (id: string, usage: unknown, state = "complete") => ({
+    id,
+    state,
+    message,
+    usage,
+    responseParts: [],
+    duration: 1,
+  });
+  const running = (usage: unknown) => ({
+    id: "2",
+    startedAt: "2026-10-21T10:00:00.000Z",
+    message,
+    usage,
+    responseParts: [],
+  });
+  const rows = (root: ShadowRoot) =>
+    [...root.querySelectorAll<HTMLElement>("#h-usage ~ .kv > div")].map((d) => d.textContent?.trim());
+  const meter = async (chat: unknown) => {
+    const root = await panel(undefined, chat);
+    await until(() => root.querySelector("#h-usage"));
+    return root;
+  };
+
+  it("shows the running turn's context reading on a first turn, and no token use it doesn't have", async () => {
+    const root = await meter({ activeTurn: running(reading) });
+    const usage = root.querySelector("#h-usage")?.parentElement?.textContent ?? "";
+    expect(usage).toContain("180k of 200k tokens");
+    expect(usage).toContain("Token use shows here after the first reply.");
+    expect(usage).not.toContain("0 in");
+    expect(usage).not.toContain("Latest turn");
+  });
+
+  it("keeps the last turn's numbers on 'Latest turn' while a turn has only its context reading", async () => {
+    const root = await meter({
+      turns: [turn("1", { inputTokens: 1000, outputTokens: 20 })],
+      activeTurn: running(reading),
+    });
+    expect(rows(root).some((r) => r?.startsWith("Latest turn") && r.includes("1.0k in"))).toBe(true);
+  });
+
+  it("hides 'Latest turn' when the last turn stopped with only its context reading", async () => {
+    const root = await meter({
+      turns: [turn("1", { inputTokens: 1000, outputTokens: 20 }), turn("2", reading, "cancelled")],
+    });
+    expect(rows(root).some((r) => r?.startsWith("Latest turn"))).toBe(false);
+    expect(rows(root).some((r) => r?.startsWith("This conversation"))).toBe(true);
+    expect(root.textContent).toContain("180k of 200k tokens");
   });
 });

@@ -233,7 +233,8 @@ export class IncConvContext extends LitElement {
     const files = this.files(chat);
     const brain = brainPages(session, chat);
     const usage = usageTotals(chat);
-    const last = chat?.activeTurn?.usage ?? chat?.turns.at(-1)?.usage;
+    // A running turn may have only its context reading so far, and a stopped one no token counts at all.
+    const last = usageLine(chat?.activeTurn?.usage) || usageLine(chat?.turns.at(-1)?.usage);
     const context = contextUsage(chat);
     const done = plan?.filter((e) => e.status === "completed").length ?? 0;
     return html`
@@ -292,7 +293,7 @@ export class IncConvContext extends LitElement {
             usage.turns
               ? html`<div class="kv">
                   <div><span>${this.watch ? "This session" : "This conversation"}</span><span>${tokens(usage.input)} in · ${tokens(usage.output)} out</span></div>
-                  ${last ? html`<div><span>Latest turn</span><span>${usageLine(last)}</span></div>` : nothing}
+                  ${last ? html`<div><span>Latest turn</span><span>${last}</span></div>` : nothing}
                   ${usage.model ? html`<div><span>Model</span><span>${usage.model}</span></div>` : nothing}
                 </div>`
               : html`<p class="muted">${this.watch ? "Token use shows here when the session reports it." : "Token use shows here after the first reply."}</p>`

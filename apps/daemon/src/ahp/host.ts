@@ -2373,6 +2373,7 @@ export class AhpHost {
     if (!st?.activeTurn) return;
     const duration = Math.max(0, this.now() - Date.parse(st.activeTurn.startedAt));
     if (run) {
+      this.o.backend.flushTurn?.(run.run);
       run.over = true;
       run.controller.abort();
     }
