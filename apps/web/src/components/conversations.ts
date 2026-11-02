@@ -523,6 +523,8 @@ export class IncConversations extends LitElement {
   }
 
   private openShip = (e: CustomEvent<{ kind: ShipKind; from?: string }>) => {
+    // One at a time: a dialog is about the conversation it was opened on, and holds what the owner typed for that.
+    if (this.dialog) return;
     // From the panel, focus goes back to the button that was pressed; from the header, to the Ship button.
     this.opener = e.detail.from === "context" ? ((e.composedPath()[0] ?? null) as HTMLElement | null) : null;
     const conv = this.selected();
@@ -724,7 +726,7 @@ export class IncConversations extends LitElement {
       : nothing;
     return html`<div class="screen ${phone ? "phone" : ""} ${inline ? "ctx wide" : ""}" @conv-ship=${this.openShip} @conv-review=${this.openReview}>
       ${list}${thread}
-      ${inline ? html`<aside class="pane ctx-pane ${reviewing ? "under" : ""}" ?inert=${reviewing} aria-label="Context">${context}</aside>` : nothing}
+      ${inline ? html`<aside class="pane ctx-pane ${reviewing ? "under" : ""}" ?inert=${modal || reviewing} aria-label="Context">${context}</aside>` : nothing}
       ${
         reviewing
           ? html`<section class="pane review-pane" aria-label="Review"><inc-conv-review .conv=${conv} .name=${employee?.name ?? ""} .phone=${phone}
@@ -732,7 +734,7 @@ export class IncConversations extends LitElement {
               @conv-review-close=${this.closeReview} @conv-send-comments=${this.sendComments} @conv-review-answer=${this.answerAgent}></inc-conv-review></section>`
           : nothing
       }
-      ${drawer ? html`<aside class="drawer" aria-label="Context">${context}</aside>` : nothing}
+      ${drawer ? html`<aside class="drawer" ?inert=${modal} aria-label="Context">${context}</aside>` : nothing}
       ${
         phone && this.sheet && conv
           ? html`<div class="backdrop" @click=${() => {

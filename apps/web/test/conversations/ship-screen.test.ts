@@ -271,6 +271,82 @@ describe("a ship request the owner moves away from", () => {
     expect(shipOutcomes.list()).toEqual([]);
   });
 
+  describe("while one is open", () => {
+    const pressed = (m: { context: () => Element }, kind: "ticket" | "pr") =>
+      m
+        .context()
+        .dispatchEvent(
+          new CustomEvent("conv-ship", { detail: { kind, from: "context" }, bubbles: true, composed: true }),
+        );
+
+    it("keeps the context panel out of reach, here and on the conversation moved to", async () => {
+      const m = await sending();
+      expect(m.root().querySelector(".ctx-pane")?.hasAttribute("inert")).toBe(true);
+      await moveOn(m.el, other.id);
+      expect(m.root().querySelector(".ctx-pane")?.hasAttribute("inert")).toBe(true);
+      asked[0]?.land(refused());
+      await until(() => !m.dlg.busy);
+      must<HTMLElement>(m.dlg.shadowRoot.querySelector("header .x")).click();
+      await until(() => !m.root().querySelector("inc-conv-ship"));
+      expect(m.root().querySelector(".ctx-pane")?.hasAttribute("inert")).toBe(false);
+    });
+
+    it("keeps a tablet's context drawer out of reach", async () => {
+      vi.stubGlobal("matchMedia", () => ({
+        matches: false,
+        addEventListener() {},
+        removeEventListener() {},
+      }));
+      const m = await sending();
+      m.thread().dispatchEvent(new CustomEvent("conv-toggle-context", { bubbles: true, composed: true }));
+      await until(() => m.root().querySelector(".drawer"));
+      expect(m.root().querySelector(".drawer")?.hasAttribute("inert")).toBe(true);
+    });
+
+    it("isn't taken over by another conversation's button", async () => {
+      const { el, dlg, main, ...m } = await sending();
+      dlg.title = "Title typed for A";
+      await moveOn(el, other.id);
+      await until(() => m.root().querySelector("inc-conv-context"));
+      pressed(m, "ticket");
+      await el.updateComplete;
+      await dlg.updateComplete;
+      expect(dlg.conv.id).toBe(conv.id);
+      asked[0]?.land(refused());
+      await until(() => !dlg.busy);
+      await dlg.updateComplete;
+      main().click();
+      await until(() => asked.length === 2);
+      expect(asked[1]?.url).toBe(`/api/conversations/${conv.id}/ticket`);
+      expect(asked[1]?.body.title).toBe("Title typed for A");
+    });
+
+    it("isn't turned into a pull request, which would skip i.inc's review", async () => {
+      const { el, dlg, main, ...m } = await sending();
+      pressed(m, "pr");
+      await el.updateComplete;
+      await dlg.updateComplete;
+      expect(dlg.kind).toBe("ticket");
+      asked[0]?.land(refused());
+      await until(() => !dlg.busy);
+      await dlg.updateComplete;
+      main().click();
+      await until(() => asked.length === 2);
+      expect(asked[1]?.url).toBe(`/api/conversations/${conv.id}/ticket`);
+    });
+
+    it("keeps the button focus goes back to", async () => {
+      const { el, dlg, root, thread, shipBtn, ...m } = await sending();
+      pressed(m, "pr");
+      await el.updateComplete;
+      asked[0]?.land(refused());
+      await until(() => !dlg.busy);
+      must<HTMLElement>(dlg.shadowRoot.querySelector("header .x")).click();
+      await until(() => !root().querySelector("inc-conv-ship"));
+      await until(() => focusedIn(thread().shadowRoot) === shipBtn());
+    });
+  });
+
   it("keeps it on going back to the list too, and shows a pull request's link", async () => {
     const { el, root, dlg } = await sending("pr");
     await moveOn(el, "");

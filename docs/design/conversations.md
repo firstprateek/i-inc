@@ -238,6 +238,8 @@ shapes against a real adapter on the mini first.
   a success goes when the owner moves on. Whenever a dialog goes before the owner has closed it or followed its link,
   the shell says how it ended on whatever page they are on, with the link, or a way back to the conversation, until
   they dismiss it. That includes leaving the screen altogether. What they typed in the dialog goes with the screen.
+  While a dialog is up everything behind it is out of reach, the context panel and a tablet's drawer too, and pressing
+  Ship again can't reach it: a dialog never changes to another conversation or kind under the owner's words.
 - **A link the list doesn't hold** (archived, or stale). The screen reads that one conversation, even if the list
   itself failed. A 404 says it wasn't found. Any other failure says it couldn't load this conversation, with Try
   again, and doesn't say it has gone; the next list that loads asks again, once for each list, so a read that goes on
