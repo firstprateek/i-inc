@@ -94,7 +94,8 @@ Pieces in the daemon:
    for goes in `_meta` (the full table is in [ahp-spike.md](ahp-spike.md)): the agent's **plan** is a
    pseudo tool call `x-iinc-plan` with the entries in `_meta["iinc.plan"]`, slash commands are in the
    session's `_meta["iinc.commands"]` (served by `completions`), tool-call `locations` are in
-   `_meta["iinc.locations"]`, and allow-once versus allow-always is the confirmation option's `group`.
+   `_meta["iinc.locations"]` (the last ones given are kept to the end of the call), and allow-once versus
+   allow-always is the confirmation option's `group`.
    **Modes are session config** (`session/configChanged`, the agent's own names as the schema's enum
    labels); per-chat mode needs spec 1.1. **"Needs you"** is the session's `inputNeeded` list.
 3. **State store.** Every channel's actions are appended to SQLite with their host-wide `serverSeq`
@@ -315,7 +316,8 @@ changed. Each read follows the Review rules above: it writes nothing, boots noth
   Escape, until it has gone from the box. A draft has no working copy, so the list doesn't open there. The list of paths
   is remembered for 30 seconds or until a turn ends; a machine that is asleep is said in a sentence, and Enter still sends.
 - **Read cards.** A Read card whose path is in the copy has a button that opens it in Files at the line, and the viewer
-  says so if the file has gone since. A ticket's read-only stage has none.
+  says so if the file has gone since. The path is the call's locations, or its arguments (`file_path`, `offset`) while it
+  has given none, so a running call has the button too. A ticket's read-only stage has none.
 - **Closing the pane** keeps what Files and Search held, for this page, per conversation. On a phone, back closes it.
 
 ## Data and API

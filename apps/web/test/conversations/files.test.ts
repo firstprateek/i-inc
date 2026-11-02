@@ -1290,6 +1290,44 @@ describe("a Read card's link", () => {
   it("doesn't call a file gone on a list's word: the viewer says", async () => {
     expect((await mount(call("src/not-in-any-list.ts"))).root.querySelector(".openf")).not.toBeNull();
   });
+
+  describe("a call that gives no locations yet", () => {
+    const noted = (input: unknown, status = "running") =>
+      ({
+        toolCallId: "t1",
+        status,
+        toolName: "read",
+        displayName: "Read",
+        invocationMessage: "Read",
+        toolInput: JSON.stringify(input),
+      }) as Any;
+    const label = async (input: unknown) =>
+      (await mount(noted(input))).root.querySelector(".openf")?.getAttribute("aria-label");
+
+    it("goes by its arguments, with the offset as the line", async () => {
+      const path = "/home/employee/work/conv-c1/src/a.ts";
+      expect(await label({ file_path: path, offset: 40 })).toBe("Open src/a.ts at line 40");
+      expect(await label({ path: "src/b.ts" })).toBe("Open src/b.ts");
+    });
+
+    it("takes the locations over the arguments", async () => {
+      const both = {
+        ...noted({ file_path: "src/a.ts" }),
+        _meta: { "iinc.locations": [{ path: "src/b.ts" }] },
+      };
+      expect((await mount(both)).root.querySelector(".openf")?.getAttribute("aria-label")).toBe(
+        "Open src/b.ts",
+      );
+    });
+
+    it("has no link for arguments outside the copy, or an offset that isn't a line", async () => {
+      expect(await label({ file_path: "/etc/passwd" })).toBeUndefined();
+      expect(await label({ file_path: "../secret" })).toBeUndefined();
+      expect(await label({})).toBeUndefined();
+      expect(await label({ file_path: "src/a.ts", offset: -3 })).toBe("Open src/a.ts");
+      expect(await label({ file_path: "src/a.ts", offset: "7" })).toBe("Open src/a.ts");
+    });
+  });
 });
 
 describe("where the list sits", () => {
