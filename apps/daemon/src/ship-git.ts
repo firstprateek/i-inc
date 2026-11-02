@@ -277,14 +277,24 @@ const KEY_BEGIN =
   /^[ \t]*(?:(?:#|\/\/|\*|>|;|--)[ \t]*)?-{4,5} ?BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY[A-Z ]{0,10}-{4,5}[ \t]*$/gm;
 const KEY_END =
   /^[ \t]*(?:(?:#|\/\/|\*|>|;|--)[ \t]*)?-{4,5} ?END [A-Z0-9 ]{0,40}PRIVATE KEY[A-Z ]{0,10}-{4,5}[ \t]*$/gm;
+/** A line of a key's body, behind a comment's mark if it has one: base64, or one of the armor's headers. */
+const KEY_LINE =
+  /^[ \t]*(?:(?:#|\/\/|\*|>|;|--)[ \t]*)?(?:[A-Za-z0-9+/=]+|(?:Proc-Type|DEK-Info|Version|Comment|Hash|Charset|Subject): .*)[ \t\r]*$/;
 /** The biggest block taken for a key: an 8192-bit RSA key is under 7 KB. Past this it is two markers in a long text. */
 const MAX_KEY_BLOCK = 16_384;
 
+/** A block from its first marker through its last, with the key gone and its lines kept; null if it holds no key. */
+function keyless(block: string): string | null {
+  const body = block.split("\n").slice(1, -1);
+  if (!body.some((line) => KEY_LINE.test(line))) return null;
+  return ["[private key]", ...body.map((line) => (KEY_LINE.test(line) ? "" : line)), ""].join("\n");
+}
+
 /**
- * Everything between a key's markers goes, keeping its lines, whatever the lines in between look like: a key in a
- * comment or a quoted block is no less a key. With no end marker it is `redactTokens`' to judge. What this takes,
- * `holdsCredential` stops, so nothing can be hidden from the owner's review and still be pushed. One pass: the next
- * end marker is found once and remembered.
+ * A key goes with its markers, keeping its lines, wherever it sits: a key in a comment or a quoted block is no less a
+ * key. A line between the markers that isn't key material stays, so two markers can't hide code, and with no key
+ * there, or no end marker, the block is `redactTokens`' to judge. What this takes, `holdsCredential` stops, so nothing
+ * can be hidden from the owner's review and still be pushed. One pass: the next end marker is found once and remembered.
  */
 function redactKeyBlocks(t: string): string {
   if (!t.includes("PRIVATE KEY")) return t;
@@ -308,8 +318,9 @@ function redactKeyBlocks(t: string): string {
       continue;
     }
     const stop = end.index + end[0].length;
-    if (stop - m.index <= MAX_KEY_BLOCK) {
-      out += `${t.slice(last, m.index)}[private key]${"\n".repeat(t.slice(m.index, stop).split("\n").length - 1)}`;
+    const kept = stop - m.index <= MAX_KEY_BLOCK ? keyless(t.slice(m.index, stop)) : null;
+    if (kept !== null) {
+      out += `${t.slice(last, m.index)}${kept}`;
       last = stop;
     }
     KEY_BEGIN.lastIndex = stop;
@@ -334,8 +345,12 @@ export function redactFile(text: string): string {
     .replace(/(\bmachine\s+\S+\s+(?:login\s+\S+\s+)?password\s+)\S{4,}/g, "$1[redacted]");
 }
 
-/** `redactTokens` stops at a million characters, so a long text is looked at in pieces of whole lines. */
+/**
+ * `redactTokens` stops at a million characters, so a long text is looked at in pieces of whole lines. A key block
+ * is looked for first, in the whole text: `redactFile` sees a file whole, and a block can lie across two pieces.
+ */
 export function holdsCredential(added: string): boolean {
+  if (redactKeyBlocks(added) !== added) return true;
   const piece = 400_000;
   let chunk = "";
   const looks = (t: string) =>

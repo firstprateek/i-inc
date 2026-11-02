@@ -264,8 +264,9 @@ links into it.
   every file there is new.
 - **Untrusted.** Paths must be relative, with no `..`, NUL, control character, leading `-`, `.git` or `.inc`, and a name
   that fails is left out and counted. Files stop at 1 MB, every kind of credential ship's scan stops is redacted (a key
-  block keeps its lines, so line numbers hold), and what is redacted is what ship's scan stops, so nothing can be hidden
-  from review and still be pushed. For the same reason the diff withholds only the files ship stops by name (`.env`,
+  block keeps its lines, so line numbers hold, and a line in it that isn't key material stays in sight, so two markers
+  can't hide code), and what is redacted is what ship's scan stops, so nothing can be hidden from review and still be
+  pushed. For the same reason the diff withholds only the files ship stops by name (`.env`,
   `*.pem` and the like): they are listed but not served. A file with a name that only suggests secrets (`.envrc`,
   `prod.env`, `.pgpass`) can be pushed, so its diff shows, redacted like any other. Links are never followed, and the
   pane renders all of it as text.

