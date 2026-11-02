@@ -118,8 +118,11 @@ function redactPem(t: string, keepLines = false): string {
   return out + t.slice(last);
 }
 
-/** Where the usual pattern stopped in a webhook secret, until `whole` takes the rest: a noncharacter, so in no text. */
-const SECRET_CUT = "\uFDD0";
+/**
+ * Where the usual pattern stopped in a webhook secret, until `whole` takes the rest. Made for each text: what comes after
+ * it goes, so an agent must not be able to write one in front of a password, and a noncharacter alone it can.
+ */
+const secretCut = () => `\uFDD0${crypto.randomUUID()}\uFDD0`;
 
 /**
  * The patterns that are unmistakably credentials, whatever the text is: private key blocks (PGP's
@@ -129,6 +132,7 @@ const SECRET_CUT = "\uFDD0";
  * set behind `redactText` (everything an agent says) and `redactTokens` (diffs and files).
  */
 function redactCredentials(text: string, keepLines = false, whole = false): string {
+  const cut = whole ? secretCut() : "";
   let t = redactPem(text, keepLines);
   t = t.replace(USERINFO, "$1[redacted]@").replace(SECRET_QUERY, "$1[redacted]");
   t = t.replace(/(bearer\s+)[A-Za-z0-9._~+/=-]{16,}/gi, "$1[redacted]");
@@ -139,7 +143,7 @@ function redactCredentials(text: string, keepLines = false, whole = false): stri
   t = redactJwts(t, /\beyJ[A-Za-z0-9_-]{8,}$/);
   t = t.replace(/\bAKIA[0-9A-Z]{16}\b/g, "[redacted]");
   t = t.replace(/\b(?:[sr]k_live|whsec)_[A-Za-z0-9]{8,}\b/g, (m) =>
-    whole && m.startsWith("whsec") ? `[redacted]${SECRET_CUT}` : "[redacted]",
+    whole && m.startsWith("whsec") ? `[redacted]${cut}` : "[redacted]",
   );
   t = t.replace(/\bnpm_[A-Za-z0-9]{20,}\b/g, "[redacted]");
   // AWS's 40-character secret access key, named: aws_secret_access_key = ..., "SecretAccessKey": "..."
@@ -151,7 +155,7 @@ function redactCredentials(text: string, keepLines = false, whole = false): stri
   // Last, and only taking more out: taken any earlier, a secret's end could take what another pattern looks for.
   return (
     t
-      .replace(/\uFDD0[A-Za-z0-9+/=_-]*/g, "")
+      .replace(new RegExp(`${cut}[A-Za-z0-9+/=_-]*`, "g"), "")
       .replace(/\b[sr]k_live_[A-Za-z0-9]{16,}\w*/g, "[redacted]")
       // Eight characters before any `_` or `-`: `whsec_your_webhook_secret` is a placeholder for one.
       .replace(/\bwhsec_[A-Za-z0-9+/=]{8,}[A-Za-z0-9+/=_-]*/g, "[redacted]")

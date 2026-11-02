@@ -38,7 +38,7 @@ import { machineScript, type RunScript } from "../src/harness.ts";
 import { MachineNotRunning, queueFor } from "../src/machine-queue.ts";
 import { defaultMachineSettings } from "../src/machines.ts";
 import { ConversationReview, type ReviewCopy, type ReviewPort, reviewPort } from "../src/review.ts";
-import { holdsCredential, marker, redactFile } from "../src/ship-git.ts";
+import { holdsCredential, marker, redactFile, scanPatch } from "../src/ship-git.ts";
 
 const NONCE = "0123456789abcdef";
 const TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
@@ -483,6 +483,29 @@ describe("a search", () => {
     expect((await w.port.read(w.copy, "k.txt"))?.text).toBe("[redacted]\n[redacted]\n");
   });
 
+  describe("a noncharacter planted in a file", () => {
+    const planted = "\uFDD0";
+
+    it("takes nothing with it, so what follows it is still hidden", () => {
+      const password = "hunter2hunter2";
+      const netrc = `${planted}machine api.github.com login bot password ${password}\n`;
+      expect(redactFile(netrc)).toBe(`${planted}machine api.github.com login bot password [redacted]\n`);
+      expect(redactFile(`_authToken=abcdefg${planted}h\n`)).toBe("_authToken=[redacted]\n");
+      expect(sideOf(Buffer.from(netrc).toString("base64")).text).not.toContain(password);
+    });
+
+    it("doesn't stop the scan by itself, or lose a thing beside it", () => {
+      const text = `const a = 1;\n${planted}abc\n`;
+      expect(redactFile(text)).toBe(text);
+      expect(holdsCredential(text)).toBe(false);
+    });
+
+    it("leaves no mark of its own behind, however many webhook secrets are in the text", () => {
+      const text = `whsec_abcdefgh+ijkl ${planted} whsec_abcdefgh+mnop\n`;
+      expect(redactFile(text)).toBe(`[redacted] ${planted} [redacted]\n`);
+    });
+  });
+
   it("takes no real code for a key", async () => {
     const code = `const pem = "-----BEGIN PRIVATE KEY-----";\nconst keep = 1;\nconst end = "-----END PRIVATE KEY-----";\n`;
     expect(redactFile(code)).toContain("const keep = 1;");
@@ -740,6 +763,107 @@ describe("a search", () => {
       const code = `const a = "${begin}";\nconst keep = 1;\nconst b = "${end}"; const c = 2;\n`;
       expect(redactFile(code)).toContain("const keep = 1;");
       expect(redactFile(code)).toContain("const c = 2;");
+    });
+
+    describe("with a marker named in a string in the way", () => {
+      const line = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj";
+      const dashes = ["-----BEGIN PRIVATE KEY-----", "-----END PRIVATE KEY-----"];
+      const four = ["---- BEGIN PRIVATE KEY ----", "---- END PRIVATE KEY ----"];
+      const patchOf = (text: string) => {
+        const added = text.split("\n").map((l) => `+${l}`);
+        return `--- /dev/null\n+++ b/k.txt\n@@ -0,0 +1,${added.length} @@\n${added.join("\n")}\n`;
+      };
+
+      it.each([
+        ["an end before the key", (b: string, e: string) => [b, `const e = "${e}";`, line, e]],
+        ["a begin after the key", (b: string, e: string) => [b, line, `const b = "${b}";`, e]],
+        ["a begin before the key", (b: string, e: string) => [`const b = "${b}";`, b, line, e]],
+        ["an end after an armor header", (b: string, e: string) => [b, "Comment: x", `"${e}";`, line, e]],
+        ["an end after the first of two lines", (b: string, e: string) => [b, line, `"${e}";`, line, e]],
+      ])("hides the key, and scans the same, with %s", (_, lines) => {
+        for (const [b, e] of [dashes, four] as [string, string][]) {
+          const text = `${lines(b, e).join("\n")}\nafter\n`;
+          const seen = redactFile(text);
+          expect(seen, text).not.toContain("MIIE");
+          expect(seen.split("\n").length).toBe(text.split("\n").length);
+          expect(seen, text).toMatch(/after\n$/);
+          expect(holdsCredential(text), text).toBe(true);
+          expect(scanPatch(patchOf(text)), text).toBe(true);
+          expect(sideOf(Buffer.from(text).toString("base64")).text, text).not.toContain("MIIE");
+        }
+      });
+
+      it("cuts a line at the marker it names, and gives a second key its own block", () => {
+        const text = [begin, `const e = "${end}"; f();`, line, end, "keep();", begin, line, end, ""].join(
+          "\n",
+        );
+        expect(redactFile(text)).toBe(`[private key]\n"; f();\n\n\nkeep();\n[private key]\n\n\n`);
+      });
+
+      it.each([
+        [
+          "an end the block runs past",
+          (b: string, e: string) => [b, line, `${"Ab1+".repeat(5)}${e}`, line, e],
+        ],
+        [
+          "a begin the block runs past",
+          (b: string, e: string) => [b, line, `f(); ${b}${"Ab1+".repeat(5)}`, line, e],
+        ],
+      ])("takes what runs into %s", (_, lines) => {
+        for (const [b, e] of [dashes, four] as [string, string][]) {
+          const seen = redactFile(`${lines(b, e).join("\n")}\nafter\n`);
+          expect(seen).not.toContain("Ab1+");
+          expect(seen).toMatch(/after\n$/);
+        }
+      });
+
+      it.each([
+        ["a begin", (b: string, e: string) => [b, `${line}\\/# ${b}`, `; ${e}`, "f(x)"]],
+        ["a begin, after an end", (b: string, e: string) => [b, `f(); "${e}";`, `${b}${line}`, "f(x)", e]],
+      ])("sees a key on the line of %s", (_, lines) => {
+        const text = lines(four[0] as string, four[1] as string).join("\n");
+        expect(redactFile(text)).not.toContain("MIIE");
+        expect(holdsCredential(text)).toBe(true);
+      });
+
+      describe("in a form only the key blocks take", () => {
+        const b = "# ---- BEGIN X PRIVATE KEY----";
+        const e = "# ---- END X PRIVATE KEY----";
+        const key = `# ${line}`;
+
+        it("stays inside a block's limit: what is past it is two markers in a long text", () => {
+          const text = `${b}\n"${e}";\n${"const keep = 1;\n".repeat(2000)}${key}\n${e}\n`;
+          expect(redactFile(text)).toContain(line);
+          expect(holdsCredential(text)).toBe(false);
+        });
+
+        it("takes a late begin for the start when the first is too far from the end", () => {
+          const text = `${b}\n${"abc\n".repeat(5000)}${b}\n${key}\n${e}\n`;
+          expect(redactFile(text)).not.toContain("MIIE");
+          expect(redactFile(text)).toContain("abc");
+          expect(holdsCredential(text)).toBe(true);
+        });
+
+        it("runs only as far as the limit past the key", () => {
+          const text = `${b}\n${key}\n${e}\n${"const keep = 1;\n".repeat(2000)}${e}\nafter\n`;
+          expect(redactFile(text)).toContain(`\n${"const keep = 1;\n".repeat(2000)}${e}\nafter\n`);
+        });
+      });
+
+      it.each([
+        ["many ends", `${begin}\n${`${end}\n`.repeat(40_000)}`],
+        ["many ends, each block", `${begin}\n${`${end}\n`.repeat(100)}`.repeat(400)],
+        ["ends and code", `${begin}\n${`${end}\nconst keep = 1;\n`.repeat(25_000)}`],
+        ["many begins", `${`${begin}\n`.repeat(40_000)}${line}\n${end}\n`],
+        ["pairs on one line", `${`${begin} ${end} `.repeat(20_000)}\n${line}\n${end}\n`],
+        ["pairs on one long line, then a line", `${`${begin} ${end} `.repeat(20_000)}\nx\n`.repeat(2)],
+        ["blocks of short lines", `${begin}\n${"x y\n".repeat(4000)}${end}\n${end}\n`.repeat(60)],
+      ])("is one pass over a megabyte of %s", (_, text) => {
+        const at = performance.now();
+        redactFile(text);
+        holdsCredential(text);
+        expect(performance.now() - at).toBeLessThan(1000);
+      });
     });
   });
 

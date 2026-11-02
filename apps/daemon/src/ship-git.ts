@@ -291,34 +291,67 @@ const MAX_KEY_BLOCK = 16_384;
 
 /**
  * Where the keys are, from a block's first marker through its last, in order; two markers with no line of key between
- * are not a block. One pass: the next end marker is found once and remembered.
+ * are not a block. A marker can be a name in a string, so none settles anything alone. With no key yet, a later begin
+ * is where the block really starts, and an end is passed over for the next. Once there is a key, a begin is passed over,
+ * and the block runs to the last end before another begin. All of it within `MAX_KEY_BLOCK`. One pass: each marker is
+ * looked for from the last one found, and each line is read once.
  */
 function keyBlocks(t: string): { from: number; to: number }[] {
   const blocks: { from: number; to: number }[] = [];
   if (!t.includes("PRIVATE KEY")) return blocks;
-  let end: RegExpExecArray | null | undefined;
-  KEY_BEGIN.lastIndex = 0;
-  let m = KEY_BEGIN.exec(t);
+  type Found = RegExpExecArray | null | undefined;
+  const seek = (marker: RegExp, at: number, known: Found): Found => {
+    if (known === null || (known && known.index >= at)) return known;
+    marker.lastIndex = at;
+    return marker.exec(t);
+  };
+  const lineEnd = (at: number) => {
+    const found = t.indexOf("\n", at);
+    return found < 0 ? t.length : found;
+  };
+  let start = 0;
+  let stop = lineEnd(0);
+  const nextLine = () => {
+    start = stop + 1;
+    stop = lineEnd(start);
+  };
+  let keyed = false;
+  let m = seek(KEY_BEGIN, 0, undefined);
+  let next: Found;
+  let end: Found;
   while (m) {
     const from = m.index + m[0].length;
-    if (end === undefined || (end && end.index < from)) {
-      KEY_END.lastIndex = from;
-      end = KEY_END.exec(t);
-    }
+    next = seek(KEY_BEGIN, from, next);
+    end = seek(KEY_END, from, end);
     if (!end) break;
-    KEY_BEGIN.lastIndex = from;
-    const next = KEY_BEGIN.exec(t);
-    // A later begin before the end is where the block really starts.
-    if (next && next.index < end.index) {
-      m = next;
-      continue;
+    const nearest = next && next.index < end.index ? next : end;
+    // Through the marker's own line: a key can run straight up to one.
+    const limit = Math.min(nearest.index, m.index + MAX_KEY_BLOCK);
+    while (start <= from) nextLine();
+    while (!keyed && start <= limit) {
+      keyed = isKeyLine(t.slice(start, stop));
+      nextLine();
     }
     const to = end.index + end[0].length;
-    if (to - m.index <= MAX_KEY_BLOCK && t.slice(m.index, to).split("\n").slice(1, -1).some(isKeyLine)) {
-      blocks.push({ from: m.index, to });
+    const fits = to - m.index <= MAX_KEY_BLOCK;
+    if (fits && !keyed && nearest === end) {
+      end = seek(KEY_END, to, end);
+      continue;
     }
-    KEY_BEGIN.lastIndex = to;
-    m = KEY_BEGIN.exec(t);
+    if (fits && keyed) {
+      let last = to;
+      next = seek(KEY_BEGIN, to, next);
+      end = seek(KEY_END, to, end);
+      while (end && (!next || end.index < next.index)) {
+        const past = end.index + end[0].length;
+        if (past - m.index > MAX_KEY_BLOCK) break;
+        last = past;
+        end = seek(KEY_END, last, end);
+      }
+      blocks.push({ from: m.index, to: last });
+    }
+    m = next;
+    keyed = false;
   }
   return blocks;
 }
@@ -338,10 +371,10 @@ const cutAt = (line: string, marker: RegExp, keep: (found: RegExpExecArray) => s
  * What `redactTokens` hides stays hidden by construction: its result is the starting point, and the blocks below can
  * only take more out of it. A key goes with its markers, keeping its lines, wherever it sits: a key in a comment, a
  * quoted block or a string joined over several lines is no less a key. A line between the markers that doesn't read
- * as key material shows as `redactTokens` left it. A block in the added lines, `holdsCredential` stops. A block already
- * in the file it doesn't: the scan reads added lines only and they hold no marker, so a line added inside that block
- * that reads as key material, as any base64 or armor header does, is hidden from the owner's review and can be pushed.
- * That is a known gap, pinned in ship-git.test.ts.
+ * as key material shows as `redactTokens` left it, up to or from any marker it names, as a key can run into one. A
+ * block in the added lines, `holdsCredential` stops. A block already in the file it doesn't: the scan reads added lines
+ * only and they hold no marker, so a line added inside that block that reads as key material, as any base64 or armor
+ * header does, is hidden from the owner's review and can be pushed. That is a known gap, pinned in ship-git.test.ts.
  */
 export function redactFile(text: string): string {
   const shown = redactTokens(text, { keepLines: true, whole: true }).split("\n");
@@ -355,11 +388,13 @@ export function redactFile(text: string): string {
     line += text.slice(at, from).split("\n").length - 1;
     at = from;
     const lines = text.slice(from, to).split("\n");
-    change(line, (l) => cutAt(l, KEY_BEGIN, (m) => `${l.slice(0, m.index)}[private key]`));
+    const fromBegin = (l: string) => cutAt(l, KEY_BEGIN, (m) => `${l.slice(0, m.index)}[private key]`);
+    const toEnd = (l: string) => cutAt(l, KEY_END, (m) => l.slice(m.index + m[0].length));
+    change(line, fromBegin);
     for (const [i, body] of lines.slice(1, -1).entries()) {
-      if (isKeyLine(body)) change(line + 1 + i, () => "");
+      change(line + 1 + i, (l) => (isKeyLine(body) ? "" : toEnd(fromBegin(l))));
     }
-    change(line + lines.length - 1, (l) => cutAt(l, KEY_END, (m) => l.slice(m.index + m[0].length)));
+    change(line + lines.length - 1, toEnd);
   }
   return shown
     .join("\n")
