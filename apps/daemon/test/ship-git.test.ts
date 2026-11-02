@@ -67,6 +67,35 @@ describe("the scan for credentials", () => {
     }
   });
 
+  describe("a webhook secret", () => {
+    it("stops a real one, however it is written", () => {
+      for (const text of [
+        "whsec_MfKQ9r8+GKYq/rTwjUPD8ILPZIo2LaLa==",
+        "whsec_abcdefghijklmnopqrstuvwx",
+        "whsec_abcdefgh",
+        "whsec_abc+defgh",
+        "whsec_abcdefgh_ijklmnop-qrstuvwx",
+        "STRIPE_WEBHOOK_SECRET=whsec_MfKQ9r8+GKYq/rTwjUPD8ILPZIo2LaLa==",
+      ]) {
+        expect(holdsCredential(text), text).toBe(true);
+        expect(redactFile(text), text).not.toContain("whsec_");
+      }
+    });
+
+    it("lets a placeholder through, and shows it", () => {
+      for (const text of [
+        "STRIPE_WEBHOOK_SECRET=whsec_your_webhook_secret",
+        "whsec_your_webhook_secret_here",
+        "whsec_your_webhook_signing_secret",
+        "whsec_test_secret",
+        "whsec_...",
+      ]) {
+        expect(holdsCredential(text), text).toBe(false);
+        expect(redactFile(text), text).toBe(text);
+      }
+    });
+  });
+
   describe("a JWT, at any length", () => {
     const run = (n: number) => "aB3dE6gH9k".repeat(Math.ceil(n / 10)).slice(0, n);
     const jwt = (head: number, payload: number, sig: number) =>

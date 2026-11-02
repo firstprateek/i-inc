@@ -327,7 +327,8 @@ export function redactFile(text: string): string {
   // These two first: `redactTokens` stops at the end of a shorter run and would leave the rest of the secret.
   const wide = redactKeyBlocks(text)
     .replace(/\b[sr]k_live_[A-Za-z0-9]{16,}\w*/g, "[redacted]")
-    .replace(/\bwhsec_[A-Za-z0-9+/=_-]{8,}/g, "[redacted]");
+    // Eight characters before any `_` or `-`: `whsec_your_webhook_secret` is a placeholder for one.
+    .replace(/\bwhsec_[A-Za-z0-9+/=]{8,}[A-Za-z0-9+/=_-]*/g, "[redacted]");
   return redactTokens(wide, { keepLines: true })
     .replace(/(_authToken\s*=\s*)(?!\$\{)[^\s"']{8,}/g, "$1[redacted]")
     .replace(/(\bmachine\s+\S+\s+(?:login\s+\S+\s+)?password\s+)\S{4,}/g, "$1[redacted]");
