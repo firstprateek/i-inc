@@ -7,6 +7,7 @@ import { css, html, LitElement, nothing } from "lit";
 import { ahp, useAhp } from "../ahp/hub.ts";
 import { type AccountRateLimit, ApiError, api, type Conversation, refresh, type ShipView } from "../api.ts";
 import { friendlyError } from "../conversations/actions.ts";
+import { shipOutcomes } from "../conversations/outcomes.ts";
 import { cardStyles } from "../conversations/styles.ts";
 import { messageSent } from "../first-run.ts";
 import { live } from "../live.ts";
@@ -15,7 +16,7 @@ import type { SendDetail } from "./conv-composer.ts";
 import type { DraftPick, IncConvDraft } from "./conv-draft.ts";
 import type { FileTarget } from "./conv-files.ts";
 import type { IncConvReview, ReviewTab } from "./conv-review.ts";
-import type { ShipDone, ShipKind } from "./conv-ship.ts";
+import type { IncConvShip, ShipKind } from "./conv-ship.ts";
 import { base } from "./shared.ts";
 import "./conv-context.ts";
 import "./conv-draft.ts";
@@ -84,8 +85,13 @@ export class IncConversations extends LitElement {
   declare ready: boolean;
   /** Shipping (C22b) for the selected conversation: its ticket and PR, and what can be pressed. */
   declare ship: ShipView | undefined;
-  /** The ship dialog, while it is open. */
-  declare dialog: { kind: ShipKind } | null;
+  /** The ship dialog, while it is open, with what it was opened on: a request under way outlasts the selection. */
+  declare dialog: {
+    kind: ShipKind;
+    conv: Conversation;
+    employee: Employee | undefined;
+    ship: ShipView | undefined;
+  } | null;
   /** The review pane, while it is open, and the file it opened at. */
   declare review: { path: string; tab?: ReviewTab; target?: FileTarget } | null;
   declare limit: AccountRateLimit | undefined;
@@ -187,6 +193,12 @@ export class IncConversations extends LitElement {
       c.onRoster(() => this.scheduleReload(500)),
     ];
     refresh.addEventListener("refresh", this.onRefresh);
+    // A request from a dialog this screen no longer holds has ended.
+    this.offs.push(
+      shipOutcomes.subscribe((added) => {
+        if (added) this.shipped();
+      }),
+    );
     // A ticket changed: if it is this conversation's, its stage and status are news.
     this.offs.push(
       live.subscribe("ticket", () => {
@@ -280,9 +292,17 @@ export class IncConversations extends LitElement {
       this.review = null;
       this.reviewEntry = false;
       this.sheet = false;
-      this.dialog = null;
+      this.closeDialog();
       this.opener = null;
     }
+  }
+
+  /**
+   * The ship dialog goes with what it was over, unless a request is under way: it stays to show how that ended, a
+   * link or a failure with the owner's words still in it, and anything sent from it goes to its own conversation.
+   */
+  private closeDialog() {
+    if (!this.renderRoot.querySelector<IncConvShip>("inc-conv-ship")?.busy) this.dialog = null;
   }
 
   override updated(changed: Map<string, unknown>): void {
@@ -435,7 +455,7 @@ export class IncConversations extends LitElement {
     this.lost = why;
     this.readError = "";
     this.sheet = false;
-    this.dialog = null;
+    this.closeDialog();
     this.opener = null;
     if (this.review) this.closeReview();
   }
@@ -504,7 +524,10 @@ export class IncConversations extends LitElement {
   private openShip = (e: CustomEvent<{ kind: ShipKind; from?: string }>) => {
     // From the panel, focus goes back to the button that was pressed; from the header, to the Ship button.
     this.opener = e.detail.from === "context" ? ((e.composedPath()[0] ?? null) as HTMLElement | null) : null;
-    this.dialog = { kind: e.detail.kind };
+    const conv = this.selected();
+    if (!conv) return;
+    const employee = this.employees.find((x) => x.id === conv.employeeId);
+    this.dialog = { kind: e.detail.kind, conv, employee, ship: this.ship };
   };
 
   private closeShip = () => {
@@ -587,7 +610,7 @@ export class IncConversations extends LitElement {
     void this.updateComplete.then(() => this.thread()?.focusPending());
   };
 
-  private shipped = (_e: CustomEvent<ShipDone>) => {
+  private shipped = () => {
     void this.loadShip();
     void this.loadList();
   };
@@ -714,8 +737,8 @@ export class IncConversations extends LitElement {
           : nothing
       }
       ${
-        this.dialog && conv
-          ? html`<inc-conv-ship .conv=${conv} .employee=${employee} .kind=${this.dialog.kind} .ship=${this.ship}
+        this.dialog
+          ? html`<inc-conv-ship .conv=${this.dialog.conv} .employee=${this.dialog.employee} .kind=${this.dialog.kind} .ship=${this.dialog.ship}
               @conv-ship-close=${this.closeShip} @conv-ship-done=${this.shipped}></inc-conv-ship>`
           : nothing
       }

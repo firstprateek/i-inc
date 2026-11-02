@@ -5,6 +5,7 @@
 import type { Employee } from "@i-inc/core";
 import { css, html, LitElement, nothing } from "lit";
 import { api, type Conversation, type ShipView } from "../api.ts";
+import { shipOutcomes } from "../conversations/outcomes.ts";
 import { cardStyles } from "../conversations/styles.ts";
 import { web } from "../links.ts";
 import { base } from "./shared.ts";
@@ -224,14 +225,19 @@ export class IncConvShip extends LitElement {
       this.failure = why;
       return;
     }
+    const kind = this.kind;
+    // With the screen gone, nothing is left to show how this ended, so the shell does.
+    const tell = (o: { done: ShipDone } | { failure: string }) => {
+      if (!this.isConnected) shipOutcomes.add({ conversationId: conv.id, title: conv.title, kind, ...o });
+    };
     this.busy = true;
     this.failure = "";
     try {
       const confirm = this.confirmBinary ? { confirmBinary: true } : {};
-      if (this.kind === "takeback") {
+      if (kind === "takeback") {
         const r = await api.takeBack(conv.id);
         this.result = { kind: "takeback", prState: r.pr, ...(r.prProblem ? { prProblem: r.prProblem } : {}) };
-      } else if (this.kind === "ticket") {
+      } else if (kind === "ticket") {
         const r = await api.makeTicket(conv.id, {
           title: this.title.trim(),
           doneWhen: this.items.map((i) => i.trim()).filter(Boolean),
@@ -245,10 +251,12 @@ export class IncConvShip extends LitElement {
       this.dispatchEvent(
         new CustomEvent<ShipDone>("conv-ship-done", { detail: this.result, bubbles: true, composed: true }),
       );
+      tell({ done: this.result });
       await this.updateComplete;
       this.focusFirst();
     } catch (e) {
       this.failure = e instanceof Error ? e.message : String(e);
+      tell({ failure: this.failure });
     } finally {
       this.busy = false;
     }
