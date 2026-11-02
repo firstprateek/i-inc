@@ -1,4 +1,5 @@
 // The ACP <-> AHP mapper, case by case (docs/design/ahp-spike.md has the table these come from).
+import { wasCut } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
 import { configFromAcp, mapToolContent, promptBlocks, TurnMapper } from "../../src/ahp/acp-mapper.ts";
 import type { ChatAction } from "../../src/ahp/wire.ts";
@@ -425,6 +426,7 @@ describe("tool content", () => {
     });
     expect(kept.length).toBeLessThan(1_100_000);
     expect(kept).toContain("[…truncated]");
+    expect(wasCut(kept)).toBe(true);
   });
 
   it("counts an edit past the point where a side is cut", () => {

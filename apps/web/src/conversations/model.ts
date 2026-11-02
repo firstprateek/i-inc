@@ -321,20 +321,16 @@ export function changedFiles(chat: ChatState | undefined): ChangedFile[] {
       const uri = edit.after?.uri ?? edit.before?.uri;
       if (!uri) continue;
       const prev = by.get(uri);
-      // The first "before" and the last "after" make the whole change to the file.
+      const added = (prev?.added ?? 0) + (edit.diff?.added ?? 0);
+      const removed = (prev?.removed ?? 0) + (edit.diff?.removed ?? 0);
+      // The first "before" and the last "after" make the whole change to the file; its counts add up over its edits.
       const merged: FileEdit = {
         ...((prev?.edit.before ?? edit.before) ? { before: prev?.edit.before ?? edit.before } : {}),
         ...(edit.after ? { after: edit.after } : {}),
-        diff: edit.diff ?? {},
+        diff: { added, removed },
       } as FileEdit;
       by.delete(uri);
-      by.set(uri, {
-        uri,
-        path: pathOf(uri),
-        edit: merged,
-        added: (prev?.added ?? 0) + (edit.diff?.added ?? 0),
-        removed: (prev?.removed ?? 0) + (edit.diff?.removed ?? 0),
-      });
+      by.set(uri, { uri, path: pathOf(uri), edit: merged, added, removed });
     }
   }
   return [...by.values()].reverse();
@@ -355,7 +351,8 @@ export function usageTotals(chat: ChatState | undefined): UsageTotals {
   if (chat.activeTurn) all.push(chat.activeTurn);
   for (const turn of all) {
     const u = turn.usage;
-    if (!u) continue;
+    // No token counts yet: a running or stopped turn has only its context reading, which is not a turn's usage.
+    if (!u || !usageLine(u)) continue;
     t.turns++;
     t.input += u.inputTokens ?? 0;
     t.output += u.outputTokens ?? 0;
@@ -412,6 +409,14 @@ export function durationText(ms: number | undefined): string {
 /** The session's "Needs you" list: pending confirmations and questions across its chats. */
 export function inputNeeded(session: SessionState | undefined): SessionInputRequest[] {
   return session?.inputNeeded ?? [];
+}
+
+/** How the chat's last turn ended, for a screen reader. */
+export function turnEnding(name: string, chat: ChatState | undefined): string {
+  const state = chat?.turns.at(-1)?.state;
+  if (state === ("error" as never)) return `${name} hit an error`;
+  if (state === ("cancelled" as never)) return `${name} stopped`;
+  return `${name} finished`;
 }
 
 /** The first pending confirmation or question in a chat, for focusing it when the conversation opens. */

@@ -7,7 +7,7 @@ import { type DiffRow, diffStats, diffWithContext } from "@i-inc/core";
 import { css, html, LitElement, nothing } from "lit";
 import { ahp } from "../ahp/hub.ts";
 import { api, type ChangesView, type Conversation, type FileView, type ReviewFile } from "../api.ts";
-import { firstPending, visible } from "../conversations/model.ts";
+import { firstPending, turnEnding, visible } from "../conversations/model.ts";
 import {
   anchor,
   COMMENT_MAX,
@@ -45,6 +45,11 @@ const TABS: { id: ReviewTab; label: string }[] = [
 ];
 
 const spot = (at: { side: string; line: number }) => `${at.side}-${at.line}`;
+/** A comment box: two files can have one on the same line number, and both can be showing. */
+const boxKey = (at: LineSpot) => `${at.path}|${spot(at)}`;
+const unsafeNames = (n: number) =>
+  `${n === 1 ? "1 file has" : `${n} files have`} a name that isn't safe to show.`;
+const PARTIAL = "Some files couldn't be read, so this may not be everything.";
 /** A line as a sentence: a removed one and an added one can have the same number. */
 const lineName = (at: { side: string; line: number }) =>
   `${at.side === "old" ? "removed line" : "line"} ${at.line}`;
@@ -60,12 +65,14 @@ export class IncConvReview extends LitElement {
     shownTab: { state: true },
     filesUsed: { state: true },
     changes: { state: true },
+    listNote: { state: true },
     loadError: { state: true },
     loading: { state: true },
     selected: { state: true },
     reading: { state: true },
     file: { state: true },
     fileError: { state: true },
+    fileStale: { state: true },
     fileLoading: { state: true },
     rows: { state: true },
     showAll: { state: true },
@@ -73,6 +80,7 @@ export class IncConvReview extends LitElement {
     discarding: { state: true },
     running: { state: true },
     waiting: { state: true },
+    spoken: { state: true },
   };
   declare conv: Conversation | undefined;
   /** The employee's name, for sentences. */
@@ -88,6 +96,8 @@ export class IncConvReview extends LitElement {
   /** Files or Search has been open: until then nothing reads the copy for them. */
   declare filesUsed: boolean;
   declare changes: ChangesView | undefined;
+  /** Why the list showing couldn't be read again. */
+  declare listNote: string | null;
   declare loadError: string | null;
   declare loading: boolean;
   declare selected: string | null;
@@ -95,6 +105,8 @@ export class IncConvReview extends LitElement {
   declare reading: boolean;
   declare file: FileView | undefined;
   declare fileError: string | null;
+  /** Why the file showing couldn't be read again. */
+  declare fileStale: string | null;
   declare fileLoading: boolean;
   declare rows: DiffRow[];
   declare showAll: boolean;
@@ -104,10 +116,14 @@ export class IncConvReview extends LitElement {
   declare running: boolean;
   /** The agent is stopped on a permission or a question. */
   declare waiting: boolean;
+  /** What changed in the turn, for a screen reader: the thread's own live region is hidden behind the pane. */
+  declare spoken: string;
 
   private listToken = 0;
   private fileToken = 0;
   private offs: (() => void)[] = [];
+  /** The box a read found the owner in, until the read's update is drawn. */
+  private typing: ReturnType<IncConvReview["boxInFocus"]>;
 
   constructor() {
     super();
@@ -118,11 +134,13 @@ export class IncConvReview extends LitElement {
     this.target = null;
     this.shownTab = "changes";
     this.filesUsed = false;
+    this.listNote = null;
     this.loadError = null;
     this.loading = false;
     this.selected = null;
     this.reading = false;
     this.fileError = null;
+    this.fileStale = null;
     this.fileLoading = false;
     this.rows = [];
     this.showAll = false;
@@ -130,6 +148,7 @@ export class IncConvReview extends LitElement {
     this.discarding = null;
     this.running = false;
     this.waiting = false;
+    this.spoken = "";
   }
 
   static override styles = [
@@ -209,7 +228,9 @@ export class IncConvReview extends LitElement {
       .moved > p { margin: 0; padding: 8px 10px 2px; color: var(--ink-2); }
       .moved > .c { margin: 6px 10px 0; }
       .moved .c:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: -3px; }
+      .aside { margin-top: 24px; }
       .stray { min-height: 44px; font: 600 12.5px var(--mono); text-align: left; overflow-wrap: anywhere; }
+      .c .under { position: static; width: auto; padding: 4px 8px 0 0; }
       .back { display: none; }
       @media (pointer: coarse) { .row { line-height: 2; } }
       /* Narrow: one column, the list or the diff. */
@@ -236,7 +257,7 @@ export class IncConvReview extends LitElement {
         const conv = this.conv;
         if (!conv || !uris.has(conv.ahpChat)) return;
         const was = this.running;
-        this.syncChat();
+        this.syncChat(true);
         if (was && !this.running) {
           if (this.changes || this.loading) void this.refresh();
           void this.filesPane()?.refresh();
@@ -265,16 +286,62 @@ export class IncConvReview extends LitElement {
     if (changed.has("conv") && (changed.get("conv") as Conversation | undefined)?.id !== this.conv?.id) {
       this.comments = this.conv ? reviewComments.list(this.conv.id) : [];
       this.discarding = null;
-      this.syncChat();
+      // What was kept through a failed read is another conversation's now.
       this.changes = undefined;
+      this.listNote = null;
+      this.selected = null;
+      this.file = undefined;
+      this.fileError = null;
+      this.fileStale = null;
+      this.rows = [];
+      this.showAll = false;
+      this.reading = false;
+      this.syncChat();
       if (this.shownTab === "changes") void this.refresh();
     }
+    const read = changed.has("rows") || changed.has("file") || changed.has("changes");
+    this.typing = read ? this.boxInFocus() : undefined;
   }
 
-  private syncChat() {
+  /** What a read brings can move the box being typed in, or take it away: focus, and the caret, go with it. */
+  override updated(): void {
+    const was = this.typing;
+    this.typing = undefined;
+    if (!was || this.boxInFocus()?.key === was.key) return;
+    const ta = this.boxOf(was.key)?.querySelector("textarea");
+    if (ta) {
+      ta.focus({ preventScroll: true });
+      if (was.caret) ta.setSelectionRange(was.caret[0], was.caret[1]);
+      this.bringIntoView(ta);
+      return;
+    }
+    // Its file has gone from the diff. A key pressed next lands here, so not on a button that would close the pane.
+    (
+      this.renderRoot.querySelector<HTMLElement>(".stray") ??
+      this.renderRoot.querySelector<HTMLElement>(".refresh")
+    )?.focus({ preventScroll: true });
+  }
+
+  private boxInFocus() {
+    const on = (this.renderRoot as ShadowRoot).activeElement;
+    const key = on?.closest<HTMLElement>("[data-box]")?.dataset.box;
+    if (key === undefined) return undefined;
+    const typed = on instanceof HTMLTextAreaElement ? on : null;
+    return { key, caret: typed ? ([typed.selectionStart, typed.selectionEnd] as const) : null };
+  }
+
+  /** `tell`: this is a change, not what was already going on when the pane opened, which is not news. */
+  private syncChat(tell = false) {
     const chat = this.conv ? ahp().chat(this.conv.ahpChat) : undefined;
+    const was = { running: this.running, waiting: this.waiting };
     this.running = !!chat?.activeTurn;
     this.waiting = !!firstPending(chat);
+    const who = this.name || "The agent";
+    if (!tell) this.spoken = "";
+    else if (this.waiting && !was.waiting) this.spoken = `${who} needs your answer`;
+    else if (this.running && (!was.running || (was.waiting && !this.waiting))) {
+      this.spoken = `${who} is working`;
+    } else if (was.running && !this.running) this.spoken = turnEnding(who, chat);
   }
 
   /** The tab the Files and Search panel last showed: it stays that way behind Changes, and reads nothing new. */
@@ -335,8 +402,15 @@ export class IncConvReview extends LitElement {
     try {
       const changes = await api.changes(conv.id);
       if (token !== this.listToken) return;
-      this.changes = changes;
       this.loadError = null;
+      // A read that didn't work says so above the list it has, and doesn't take that list away.
+      const failed = changes.state === "asleep" || changes.state === "busy" || changes.state === "failed";
+      if (failed && this.changes?.state === "ok") {
+        this.listNote = changes.reason ?? "Couldn't read the changes.";
+        return;
+      }
+      this.listNote = null;
+      this.changes = changes;
       if (changes.state !== "ok") return;
       const wanted = this.selected ?? (this.path || null);
       const there = changes.files.some((f) => f.path === wanted);
@@ -350,7 +424,9 @@ export class IncConvReview extends LitElement {
         this.reading = false;
       }
     } catch (e) {
-      if (token === this.listToken) this.loadError = e instanceof Error ? e.message : String(e);
+      if (token !== this.listToken) return;
+      this.listNote = null;
+      this.loadError = e instanceof Error ? e.message : String(e);
     } finally {
       if (token === this.listToken) this.loading = false;
     }
@@ -375,20 +451,34 @@ export class IncConvReview extends LitElement {
       this.rows = [];
       this.showAll = false;
       this.discarding = null;
+      this.fileStale = null;
     }
+    // A read again of what is showing that doesn't work says so over it, and doesn't take it away.
+    const showing = this.file?.state === "ok";
     this.selected = path;
     this.fileLoading = true;
     this.fileError = null;
     try {
       const file = await api.changedFile(conv.id, path);
       if (token !== this.fileToken) return;
+      if (showing && file.state !== "ok") {
+        this.fileStale = file.reason ?? "This file couldn't be read again.";
+        return;
+      }
+      this.fileStale = null;
       this.file = file;
       this.rows =
         file.state === "ok" && !fileNote(file)
           ? diffWithContext(file.before.text ?? "", file.after.text ?? "", 3)
           : [];
+      // Nothing else says a comment being written is past the cut, so it isn't left there.
+      const written = commentDrafts.list(conv.id).filter((d) => d.path === path && d.text.trim());
+      if ([...anchor(this.rows, written).at.keys()].some((i) => i >= SHOW_ROWS)) this.showAll = true;
     } catch (e) {
-      if (token === this.fileToken) this.fileError = e instanceof Error ? e.message : String(e);
+      if (token !== this.fileToken) return;
+      const words = e instanceof Error ? e.message : String(e);
+      if (showing) this.fileStale = `Couldn't read this file again (${words}).`;
+      else this.fileError = words;
     } finally {
       if (token === this.fileToken) this.fileLoading = false;
     }
@@ -436,14 +526,17 @@ export class IncConvReview extends LitElement {
       i !== undefined
         ? this.renderRoot.querySelector<HTMLElement>(`[data-at="${spot(c)}"] .no`)
         : this.renderRoot.querySelector<HTMLElement>(`[data-moved="${c.id}"]`);
-    const sc = this.renderRoot.querySelector<HTMLElement>(".rows");
-    if (to && sc && i !== undefined) {
-      // By hand: scrollIntoView would move every scroller around it, and nothing in the app scrolls the page.
-      const a = to.getBoundingClientRect();
-      const b = sc.getBoundingClientRect();
-      sc.scrollTop += a.top - b.top - Math.max(0, (b.height - a.height) / 2);
-    }
+    if (to) this.bringIntoView(to);
     to?.focus({ preventScroll: true });
+  }
+
+  /** By hand: scrollIntoView would move every scroller around it, and nothing in the app scrolls the page. */
+  private bringIntoView(el: HTMLElement) {
+    const sc = this.renderRoot.querySelector<HTMLElement>(".rows");
+    if (!sc?.contains(el)) return;
+    const a = el.getBoundingClientRect();
+    const b = sc.getBoundingClientRect();
+    sc.scrollTop += a.top - b.top - Math.max(0, (b.height - a.height) / 2);
   }
 
   /** A press of a line's number opens its comment box, or goes to the one already open there. */
@@ -456,10 +549,14 @@ export class IncConvReview extends LitElement {
     const at = { path, ...placeOf(r), quote: quoteOf(r.text) };
     commentDrafts.start(conv.id, at);
     this.requestUpdate();
-    void this.updateComplete.then(() =>
-      this.renderRoot.querySelector<HTMLElement>(`[data-box="${spot(at)}"] textarea`)?.focus(),
-    );
+    void this.updateComplete.then(() => this.boxOf(boxKey(at))?.querySelector("textarea")?.focus());
   };
+
+  private boxOf(key: string) {
+    return [...this.renderRoot.querySelectorAll<HTMLElement>("[data-box]")].find(
+      (b) => b.dataset.box === key,
+    );
+  }
 
   private focusLine(at: LineSpot) {
     void this.updateComplete.then(() =>
@@ -480,21 +577,21 @@ export class IncConvReview extends LitElement {
 
   /** Escape or Cancel. A box with nothing in it just closes; words are only thrown away when the owner says so. */
   private cancelBox(d: LineDraft) {
-    const typed = commentDrafts.list(this.conv?.id ?? "").find((x) => spot(x) === spot(d))?.text ?? "";
-    if (this.discarding === spot(d)) this.keepWriting(d);
+    const typed =
+      commentDrafts.list(this.conv?.id ?? "").find((x) => x.path === d.path && spot(x) === spot(d))?.text ??
+      "";
+    if (this.discarding === boxKey(d)) this.keepWriting(d);
     else if (typed.trim()) {
-      this.discarding = spot(d);
+      this.discarding = boxKey(d);
       void this.updateComplete.then(() =>
-        this.renderRoot.querySelector<HTMLElement>(`[data-box="${spot(d)}"] .keep`)?.focus(),
+        this.boxOf(boxKey(d))?.querySelector<HTMLElement>(".keep")?.focus(),
       );
     } else this.closeBox(d);
   }
 
   private keepWriting(d: LineDraft) {
     this.discarding = null;
-    void this.updateComplete.then(() =>
-      this.renderRoot.querySelector<HTMLElement>(`[data-box="${spot(d)}"] textarea`)?.focus(),
-    );
+    void this.updateComplete.then(() => this.boxOf(boxKey(d))?.querySelector("textarea")?.focus());
   }
 
   private addComment(d: LineDraft, text: string) {
@@ -510,9 +607,9 @@ export class IncConvReview extends LitElement {
     this.closeBox(d);
   }
 
-  private box(d: LineDraft) {
-    const asking = this.discarding === spot(d);
-    return html`<div class="under"><div class="box" data-box=${spot(d)} @keydown=${(e: KeyboardEvent) => {
+  private box(d: LineDraft, name = lineName(d)) {
+    const asking = this.discarding === boxKey(d);
+    return html`<div class="under"><div class="box" data-box=${boxKey(d)} @keydown=${(e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
         e.preventDefault();
@@ -522,7 +619,7 @@ export class IncConvReview extends LitElement {
         this.addComment(d, (e.currentTarget as HTMLElement).querySelector("textarea")?.value ?? "");
       }
     }}>
-      <textarea aria-label="Comment on ${lineName(d)}" maxlength=${COMMENT_MAX} placeholder="Your comment" .value=${d.text}
+      <textarea aria-label="Comment on ${name}" maxlength=${COMMENT_MAX} placeholder="Your comment" .value=${d.text}
         @input=${(e: Event) => this.conv && commentDrafts.write(this.conv.id, d, (e.target as HTMLTextAreaElement).value)}></textarea>
       ${
         asking
@@ -616,6 +713,7 @@ export class IncConvReview extends LitElement {
     return html`<div class="diff" role="group" aria-label="Changes to ${visible(path)}">
       <div class="dh"><span class="path" title=${visible(path)}>${visible(path)}</span>
         ${this.rows.length ? html`<span class="plus" aria-label="${stats.added} lines added">+${stats.added}</span><span class="minus" aria-label="${stats.removed} lines removed">−${stats.removed}</span>` : nothing}</div>
+      ${this.fileStale ? html`<p class="note" role="alert">${this.fileStale} <button class="link-btn" type="button" @click=${() => void this.retryFile(path)}>Try again</button></p>` : nothing}
       ${
         this.fileError
           ? html`<p class="note">Couldn't load this file (${this.fileError}). <button class="link-btn" type="button" @click=${() => void this.retryFile(path)}>Try again</button></p>`
@@ -662,17 +760,30 @@ export class IncConvReview extends LitElement {
       )}</ul></section>`;
   }
 
-  /** Half-written comments on files the list no longer has: their words stay, so the way to them stays too. */
-  private unfinished(files: ReviewFile[]) {
-    const left = commentDrafts
+  /** Half-written comments on files the list doesn't hold: their words stay, so the way to them stays too. */
+  private strays(files: ReviewFile[]) {
+    return commentDrafts
       .list(this.conv?.id ?? "")
       .filter((d) => d.text.trim() && !files.some((f) => f.path === d.path));
+  }
+
+  /** `link`: going to the box above that file's diff. `box`: the box itself, when no diff can be drawn to hold it. */
+  private unfinished(left: LineDraft[], how: "link" | "box") {
     if (!left.length) return nothing;
     return html`<section aria-labelledby="h-unfinished"><h3 id="h-unfinished">Unfinished comments · ${left.length}</h3>
-      <ul>${left.map(
-        (d) =>
-          html`<li><button class="link-btn stray" type="button" @click=${() => this.pick(d.path)}>${visible(d.path)}:${d.line}</button></li>`,
-      )}</ul></section>`;
+      ${
+        how === "box"
+          ? left.map(
+              (
+                d,
+              ) => html`<div class="c"><div class="top"><span class="where">${visible(d.path)}:${d.line}${d.side === "old" ? " (removed)" : ""}</span></div>
+                <blockquote>${visible(d.quote)}</blockquote>${this.box(d, `${visible(d.path)} ${lineName(d)}`)}</div>`,
+            )
+          : html`<ul>${left.map(
+              (d) =>
+                html`<li><button class="link-btn stray" type="button" @click=${() => this.pick(d.path)}>${visible(d.path)}:${d.line}</button></li>`,
+            )}</ul>`
+      }</section>`;
   }
 
   private commentList(how: "link" | "plain") {
@@ -688,9 +799,11 @@ export class IncConvReview extends LitElement {
         )}>${this.running ? "Queue comments" : "Send comments"}</button></div></section>`;
   }
 
-  /** The comments with no diff to go to: they, and the way to send them, stay whatever the read did. */
+  /** What is the owner's with no diff to go to: it, and the way to finish or send it, stays whatever the read did. */
   private asideComments() {
-    return this.comments.length ? html`<div class="side">${this.commentList("plain")}</div>` : nothing;
+    const left = this.strays([]);
+    if (!this.comments.length && !left.length) return nothing;
+    return html`<div class="side aside">${this.unfinished(left, "box")}${this.commentList("plain")}</div>`;
   }
 
   private content() {
@@ -704,19 +817,21 @@ export class IncConvReview extends LitElement {
       return html`<div class="state" role="status"><p>${c.reason}</p>${again}</div>${this.asideComments()}`;
     }
     if (!c.files.length) {
-      const empty = c.partial
-        ? "Some files couldn't be read, so this may not be everything."
-        : (c.reason ??
+      // An empty list isn't "nothing changed" when something was left out of it.
+      const left = [c.skipped ? unsafeNames(c.skipped) : "", c.partial ? PARTIAL : ""].filter(Boolean);
+      const empty =
+        left.join(" ") ||
+        (c.reason ??
           (c.noProject ? "Nothing in this conversation's folder yet." : "Nothing has changed yet."));
       return html`<div class="state"><p>${empty}</p>${c.partial ? again : nothing}</div>${this.asideComments()}`;
     }
     return html`<div class="body ${this.reading ? "reading" : ""}">
       <div class="side">
         ${this.list(c.files)}
-        ${c.skipped ? html`<p class="say">${c.skipped === 1 ? "1 file has" : `${c.skipped} files have`} a name that isn't safe to show.</p>` : nothing}
+        ${c.skipped ? html`<p class="say">${unsafeNames(c.skipped)}</p>` : nothing}
         ${c.truncated ? html`<p class="say">Only the first ${c.files.length} files are listed.</p>` : nothing}
-        ${c.partial ? html`<p class="say">Some files couldn't be read, so this may not be everything.</p>` : nothing}
-        ${this.unfinished(c.files)}
+        ${c.partial ? html`<p class="say">${PARTIAL}</p>` : nothing}
+        ${this.unfinished(this.strays(c.files), "link")}
         ${this.commentList("link")}
       </div>
       <div class="main"><button class="cbtn back" type="button" @click=${() => this.backToList()}>All files</button>${this.diff()}</div>
@@ -728,29 +843,31 @@ export class IncConvReview extends LitElement {
     const added = files.reduce((n, f) => n + f.added, 0);
     const removed = files.reduce((n, f) => n + f.removed, 0);
     const onChanges = this.shownTab === "changes";
-    return html`<div class="head"><div class="tabs" role="tablist" aria-label="Review" @keydown=${this.onTabKey}>${TABS.map(
-      (t) =>
-        html`<button class="tab" id="tab-${t.id}" type="button" role="tab" aria-selected=${t.id === this.shownTab ? "true" : "false"} aria-controls="panel-${t.id === "changes" ? "changes" : "files"}"
+    const failed = this.loadError ? `Couldn't read the changes (${this.loadError}).` : this.listNote;
+    return html`<p class="sr-only" role="status">${this.spoken}</p>
+      <div class="head"><div class="tabs" role="tablist" aria-label="Review" @keydown=${this.onTabKey}>${TABS.map(
+        (t) =>
+          html`<button class="tab" id="tab-${t.id}" type="button" role="tab" aria-selected=${t.id === this.shownTab ? "true" : "false"} aria-controls="panel-${t.id === "changes" ? "changes" : "files"}"
           tabindex=${t.id === this.shownTab ? "0" : "-1"} @click=${() => this.pickTab(t.id)}>${t.label}</button>`,
-    )}</div>
+      )}</div>
         <span class="sum">${onChanges && files.length ? `${files.length} ${files.length === 1 ? "file" : "files"} · +${added} −${removed}` : ""}</span><span class="grow"></span>
         ${onChanges ? html`<button class="cbtn refresh" type="button" aria-disabled=${this.loading ? "true" : "false"} @click=${this.retry}>${this.loading ? "Reading…" : "Refresh"}</button>` : nothing}
         <button class="x" type="button" aria-label="Close review" @click=${() => this.close()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
       ${
         this.waiting
-          ? html`<p class="say" role="status">${this.name || "The agent"} is waiting for your answer.
+          ? html`<p class="say">${this.name || "The agent"} is waiting for your answer.
               <button class="link-btn" type="button" @click=${() =>
                 this.dispatchEvent(
                   new CustomEvent("conv-review-answer", { bubbles: true, composed: true }),
                 )}>Answer</button></p>`
           : this.running
-            ? html`<p class="say" role="status">${this.name || "The agent"} is working, so this can change.${this.shownTab === "search" ? "" : " It refreshes when the turn ends."}</p>`
+            ? html`<p class="say">${this.name || "The agent"} is working, so this can change.${this.shownTab === "search" ? "" : " It refreshes when the turn ends."}</p>`
             : nothing
       }
       <div class="panel" id="panel-changes" role="tabpanel" aria-labelledby="tab-changes" ?hidden=${!onChanges}>
       ${
-        this.loadError && this.changes?.state === "ok"
-          ? html`<p class="say" role="alert">Couldn't read the changes (${this.loadError}). <button class="link-btn" type="button" @click=${this.retry}>Try again</button></p>`
+        failed && this.changes?.state === "ok"
+          ? html`<p class="say" role="alert">${failed} <button class="link-btn" type="button" @click=${this.retry}>Try again</button></p>`
           : nothing
       }
       ${this.content()}</div>

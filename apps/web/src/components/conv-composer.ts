@@ -1,7 +1,8 @@
 // The composer: a multi-line box. Enter sends (Shift+Enter breaks a line; a phone's Enter breaks a line, since
 // it has a Send button), never while an IME is composing. Paste or drop images. `/` opens the agent's slash
-// commands, and `@` the working copy's files. The agent's own modes and models are pickers. While a turn runs: Stop, and typing offers Steer
-// (runs next, ahead of the queue) or Queue; the queued messages are listed and removable.
+// commands, and `@` the working copy's files. The agent's own modes and models are pickers. While a turn runs: Stop,
+// and typing offers Steer (runs next, ahead of the queue; one at a time, so a second joins the queue) or Queue; the
+// queued messages are listed and removable.
 import type { ChatState, SessionState } from "@microsoft/agent-host-protocol";
 import { css, html, LitElement, nothing } from "lit";
 import { checkOutgoing, judgeTextFile } from "../conversations/actions.ts";
@@ -507,7 +508,9 @@ export class IncConvComposer extends LitElement {
       this.attached = [];
       this.fileProblem = null;
     }
-    const problem = await this.onSend({ text, files, intent });
+    // A chat holds one steering message: a second would replace the first, with any comments in it.
+    const how = intent === "steer" && this.chat?.steeringMessage ? "queue" : intent;
+    const problem = await this.onSend({ text, files, intent: how });
     this.sending = false;
     if (problem) {
       this.error = problem;
@@ -583,6 +586,7 @@ export class IncConvComposer extends LitElement {
     const going = isCommand(this.text) ? [] : this.comments;
     const tooBig = checkOutgoing(withComments(this.text, going), this.allFiles());
     const dis = !!this.blocked || !!tooBig;
+    const steerTaken = !!this.chat?.steeringMessage;
     return html`<form class="composer" @submit=${(e: Event) => e.preventDefault()}
       @dragover=${(e: DragEvent) => {
         if (e.dataTransfer?.types.includes("Files")) {
@@ -647,6 +651,7 @@ export class IncConvComposer extends LitElement {
                 )}>Review</button></p>`
           : nothing
       }
+      ${running && hasInput && steerTaken ? html`<p class="hint">A steering message is already waiting, so this one joins the queue.</p>` : nothing}
       <div class="box ${this.dragging ? "drag" : ""}">
         ${this.picker.thumbs({ compact: true })}
         ${
@@ -706,7 +711,7 @@ export class IncConvComposer extends LitElement {
             running
               ? html`${
                   hasInput
-                    ? html`<span class="split"><button class="cbtn steer" type="button" ?disabled=${dis || this.sending} title="Runs next, ahead of the queue" @click=${() => void this.submit("steer")}>Steer</button>
+                    ? html`<span class="split"><button class="cbtn steer" type="button" ?disabled=${dis || this.sending} title=${steerTaken ? "Joins the queue: a steering message is already waiting" : "Runs next, ahead of the queue"} @click=${() => void this.submit("steer")}>Steer</button>
                       <button class="cbtn qbtn" type="button" ?disabled=${dis || this.sending} title="Waits for its turn (Alt+Enter)" @click=${() => void this.submit("queue")}>Queue</button>
                       <button class="cbtn more" type="button" aria-haspopup="menu" aria-expanded=${this.menu ? "true" : "false"} aria-label="More send options" ?disabled=${dis || this.sending}
                         @click=${() => {

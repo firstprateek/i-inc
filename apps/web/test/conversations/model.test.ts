@@ -271,6 +271,8 @@ describe("the thread's state", () => {
     ]);
     expect(files[0]?.edit.before?.content.uri).toBe("b1");
     expect(files[0]?.edit.after?.content.uri).toBe("a2");
+    // the opened diff keeps these when a side was cut, so they are the file's, not the last edit's
+    expect(files[0]?.edit.diff).toEqual({ added: 3, removed: 2 });
   });
   it("reads how full the context is from the latest turn that says", () => {
     const turn = (id: string, _meta?: unknown) => ({
@@ -293,6 +295,26 @@ describe("the thread's state", () => {
     expect(
       contextUsage({ turns: [turn("1", { contextUsed: "10", contextSize: 100 })] } as Any),
     ).toBeUndefined();
+  });
+  it("reads the running turn's context reading ahead of the last finished turn's", () => {
+    const chat: Any = {
+      turns: [{ id: "1", usage: { _meta: { contextUsed: 60, contextSize: 200 } }, responseParts: [] }],
+      activeTurn: { id: "2", usage: { _meta: { contextUsed: 180, contextSize: 200 } }, responseParts: [] },
+    };
+    expect(contextUsage(chat)).toEqual({ used: 180, size: 200 });
+  });
+  it("doesn't take a context reading for a turn's token use", () => {
+    const reading = { model: "m", _meta: { contextUsed: 10, contextSize: 100 } };
+    const running: Any = { turns: [], activeTurn: { id: "1", usage: reading, responseParts: [] } };
+    expect(usageTotals(running)).toMatchObject({ input: 0, output: 0, turns: 0 });
+    // however many readings a turn had, it is counted once, with the counts of its end
+    const ended: Any = {
+      turns: [
+        { id: "1", usage: { inputTokens: 100, outputTokens: 5, _meta: reading._meta }, responseParts: [] },
+        { id: "2", usage: reading, state: "cancelled", responseParts: [] },
+      ],
+    };
+    expect(usageTotals(ended)).toMatchObject({ input: 100, output: 5, turns: 1 });
   });
   it("sums usage and finds what waits for the owner", () => {
     const chat: Any = {

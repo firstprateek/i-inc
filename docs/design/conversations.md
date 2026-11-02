@@ -87,7 +87,10 @@ Pieces in the daemon:
    `agent_thought_chunk` → `chat/reasoning`; `tool_call` / `tool_call_update` →
    `chat/toolCallStart` / `chat/toolCallReady` / `chat/toolCallComplete` (with content and diffs);
    `session/request_permission` → a pending confirmation answered by `chat/toolCallConfirmed`;
-   token usage → `chat/usage`. Everything agent-specific stays in the mapper. What AHP 1.0 has no place
+   token usage → `chat/usage`, sent again as the agent reports how full its context is (at most every
+   5 seconds and only on a change, for conversations and ticket stages; the reading goes in the usage's
+   `_meta`, and each `chat/usage` replaces the turn's usage, so nothing adds up). A turn that is stopped
+   or fails keeps its last reading. Everything agent-specific stays in the mapper. What AHP 1.0 has no place
    for goes in `_meta` (the full table is in [ahp-spike.md](ahp-spike.md)): the agent's **plan** is a
    pseudo tool call `x-iinc-plan` with the entries in `_meta["iinc.plan"]`, slash commands are in the
    session's `_meta["iinc.commands"]` (served by `completions`), tool-call `locations` are in
@@ -210,15 +213,21 @@ shapes against a real adapter on the mini first.
   the view when the owner has no conversations or has not opened one.
 - **Centre: the thread.** Markdown with highlighted code; reasoning collapsed under "Thinking";
   tool calls as compact one-line cards (Read, Edit, Run, Search…) that expand to input and output;
-  edits show a diff; long terminal output is truncated with "show all"; errors carry Retry.
+  edits show a diff; long terminal output is truncated with "show all"; errors carry Retry. A card
+  counts the lines an edit changed in the whole file. The sides it keeps stop at 1 MB, or 32,000
+  characters in a ticket's stage view, so an opened diff keeps the card's counts and says when some
+  or all of the change is past that point.
 - **Composer.** Multi-line, Enter sends and Shift+Enter breaks a line; paste or drop images and
   files; the agent's slash commands (from `available_commands_update`); mode and model pickers;
   a **Stop** button while a turn runs. Typing while it runs **queues** a message or sends it as a
   **steering** message (AHP pending messages). A steering message runs as the next turn, ahead of the
   queue; it does not interrupt the current turn, because ACP has no way to inject into a running one. To
-  interrupt, press **Stop**.
+  interrupt, press **Stop**. A chat holds one steering message, and a second would replace it, so while one
+  waits another joins the queue instead: the composer says so, and the host does the same for a message it
+  couldn't see coming (another tab, or a second press before the first's echo).
 - **Right: context panel (collapsible).** Project and branch, files changed with diffs, the
-  agent's plan, the brain pages used for this turn, and usage.
+  agent's plan, the brain pages used for this turn, and usage. Usage has a meter of how full the
+  agent's context is, which moves during a turn; "Latest turn" shows only when a turn has reported tokens.
 - **Phone:** the same stream in one column; the context panel becomes a sheet.
 
 ## Review (the Changes pane)
@@ -230,12 +239,15 @@ links into it.
 
 - `GET /api/conversations/:id/changes`: `{ changes: { state, noProject, files, skipped, truncated, partial, reason? } }`, each
   file `{ path, added, removed, binary?, status }`, and status one of added, modified, deleted, type-changed. Renames show
-  as a deletion and an addition. `partial`: something in the folder couldn't be read (no permission, a pipe, a nested repo
-  with no commit, files that kept going away), so the list may be missing files. The pane says so.
+  as a deletion and an addition. `partial`: something in the folder couldn't be read (no permission on a file or on a
+  folder that isn't ignored, a pipe, a nested repo with no commit, files that kept going away), so the list may be missing
+  files. The pane says so.
 - `GET /api/conversations/:id/changes/file?path=`: `{ file: { state, path, before, after, withheld?, reason? } }`. Each side
   is `{ state, text? }`, and state one of none, text, binary, too-big, link, outside, other. A bad path is a 400.
 - `state` is `ok`, or why the read didn't happen, with `reason` in one sentence: `asleep`, `busy` (the read outlasted its
-  wait or its time limit), `no-copy` or `failed`. These are 200s. The pane says the sentence and offers Try again.
+  wait or its time limit), `no-copy` or `failed`. These are 200s. The pane says the sentence and offers Try again. A
+  refresh that gets `asleep`, `busy` or `failed` says so above the list and the diff it already has, and leaves them,
+  and any comment box, where they are; the same goes for the open file when it can't be read again.
 - **Read-only, and the copy's word isn't taken.** No fetch, no token, and nothing in the copy is written:
   `apps/daemon/src/review.ts` lists from a scratch repository outside the folder, which sees the copy's objects and files
   and nothing else of it, not its index (flags and cached stats that hide a change), config, `.git/info/exclude` or
@@ -245,7 +257,8 @@ links into it.
   protocol is allowed either (`GIT_ALLOW_PROTOCOL=none`). And `G` from `ship-git.ts` has no hooks, filters, fsmonitor or external diffs.
 - **No implicit boots.** It uses the runner that refuses a stopped machine (T75). A read holds an ordinary lease, so it
   runs beside an agent's turn: the pane shows what is there, says the agent is working (or waiting for an answer), and
-  refreshes when the turn ends.
+  refreshes when the turn ends. Listings run one at a time, and a request made during one gets a read that starts
+  after it, so that refresh can't come back with a list from before the turn's last edit.
 - **No project,** or a project's copy with no commits or no repository: the scratch repository looks at the folder, and
   every file there is new.
 - **Untrusted.** Paths must be relative, with no `..`, NUL, control character, leading `-`, `.git` or `.inc`, and a name
@@ -256,7 +269,10 @@ links into it.
 - **Line comments** are the owner's, in this browser, per conversation, kept with the drafts (and forgotten with them at
   sign-out), across tabs. No route takes them. A line's number opens its box; the code itself is there to select. A
   half-written comment stays through another line, another file or closing the pane, and is only thrown away when the
-  owner says so. A comment sits under its line while the line still reads as it quoted it; after that it is listed above
+  owner says so. It is never out of reach: past the point where a long diff is cut, its file opens with every line
+  showing; once its file has left the list, Unfinished comments leads to it; and with no list or diff to show, that
+  section holds the box itself. A read that lands while the owner types doesn't take them out of the box: focus and the
+  caret go wherever it is drawn next. A comment sits under its line while the line still reads as it quoted it; after that it is listed above
   the diff as changed, never under whatever took the number. Past about 200 KB the newest are kept for this page only,
   and the pane says so.
 - **Sending them.** Comments are added to the next message as `path:line`, the quoted line and the comment, and cleared
@@ -264,7 +280,8 @@ links into it.
   alone through the composer, so a running turn queues them and the composer's refusals hold, and what is in the box
   stays there. If the host refuses it later, or the owner removes it from the queue, it comes back in the box as text.
 - **While the agent waits.** If it is stopped on a permission or a question the pane says so and **Answer** goes to the
-  card.
+  card. The thread's live region is hidden behind the pane, so the pane has its own, there from the start, which says
+  when the agent starts working, needs an answer, or finishes, stops or hits an error.
 
 ## Files (the Files and Search tabs)
 

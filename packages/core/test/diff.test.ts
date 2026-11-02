@@ -1,6 +1,6 @@
 // The line diff behind a file edit's counts and rows, past the size the exact table can hold.
 import { describe, expect, it } from "vitest";
-import { diffLines, diffStats } from "../src/index.ts";
+import { diffLines, diffStats, SIDE_CUT, STAGE_SIDE_CUT, wasCut } from "../src/index.ts";
 
 const file = (n: number) => Array.from({ length: n }, (_, i) => `line ${i}`);
 const text = (lines: string[]) => `${lines.join("\n")}\n`;
@@ -33,5 +33,15 @@ describe("a big file", () => {
     const before = file(3_000);
     const after = before.map((l) => `${l}, rewritten`);
     expect(diffStats(diffLines(text(before), text(after)))).toEqual({ added: 3_000, removed: 3_000 });
+  });
+});
+
+describe("a side the host cut", () => {
+  it("is known by the mark it ends in", () => {
+    expect(wasCut(`line${SIDE_CUT}`)).toBe(true);
+    expect(wasCut(`line${STAGE_SIDE_CUT}`)).toBe(true);
+    expect(wasCut("line\n")).toBe(false);
+    expect(wasCut(`${SIDE_CUT}\nthe file goes on\n`)).toBe(false);
+    expect(wasCut("")).toBe(false);
   });
 });

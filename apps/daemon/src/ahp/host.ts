@@ -1913,9 +1913,18 @@ export class AhpHost {
           const message = this.checkMessage(raw.message);
           const held = this.hooks.canStartTurn?.(channel);
           if (held) return no(held);
+          // A chat holds one steering message, and a second would replace it, comments and all, saying nothing. The
+          // client can't always see the first (another tab, or its echo on the way), so the second joins the queue.
+          const steering = this.chatState(channel)?.steeringMessage;
+          const taken = raw.kind === PendingMessageKind.Steering && steering && steering.id !== id;
           this.apply(
             channel,
-            { type: ActionType.ChatPendingMessageSet, kind: raw.kind, id, message },
+            {
+              type: ActionType.ChatPendingMessageSet,
+              kind: taken ? PendingMessageKind.Queued : raw.kind,
+              id,
+              message,
+            },
             origin,
           );
           this.drain(channel);
@@ -2373,6 +2382,7 @@ export class AhpHost {
     if (!st?.activeTurn) return;
     const duration = Math.max(0, this.now() - Date.parse(st.activeTurn.startedAt));
     if (run) {
+      this.o.backend.flushTurn?.(run.run);
       run.over = true;
       run.controller.abort();
     }

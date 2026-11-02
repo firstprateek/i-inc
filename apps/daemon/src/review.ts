@@ -87,7 +87,9 @@ export interface ReviewPort {
  * it is asked to write and already has. `--ignore-errors` keeps going past a file that can't be read and says so in
  * its exit status. A new file that vanishes before it is read stops `add` altogether (128), so that step is
  * tried again, and the tracked files have gone in first, so they aren't lost with it. Either way the list says it
- * may be missing files. The diff reads only objects, so one that fails is a failed read.
+ * may be missing files. `ls-files` passes over a folder it can't enter with a warning and a good exit status, so its
+ * warnings are kept to see: what is behind that folder is missing too. The diff reads only objects, so one that
+ * fails is a failed read.
  */
 export function listScript(copy: ReviewCopy, nonce: string): string {
   check(copy);
@@ -107,16 +109,16 @@ export function listScript(copy: ReviewCopy, nonce: string): string {
     '  find . -name .git -prune -o -type l -print0 > "$W/links"',
     `  if [ -s "$W/links" ]; then O G --literal-pathspecs rm -r -q -f --cached --ignore-unmatch --pathspec-from-file="$W/links" --pathspec-file-nul || echo ${m("partial")}; fi`,
     "fi",
-    `G ls-files -z -m ${here} > "$W/tracked" || ${fail}`,
+    `G ls-files -z -m ${here} > "$W/tracked" 2>> "$W/said" || ${fail}`,
     "a=0",
     `if [ -s "$W/tracked" ]; then ${add("tracked")}; a=$?; fi`,
     `for try in $(seq ${LIST_TRIES}); do`,
-    `  G ls-files -z -o --exclude-standard ${here} > "$W/new" || ${fail}`,
+    `  G ls-files -z -o --exclude-standard ${here} > "$W/new" 2>> "$W/said" || ${fail}`,
     "  n=0",
     `  if [ -s "$W/new" ]; then ${add("new")}; n=$?; fi`,
     '  [ "$n" -eq 128 ] || break',
     "done",
-    `[ "$a" -eq 0 ] && [ "$n" -eq 0 ] || echo ${m("partial")}`,
+    `if [ "$a" -ne 0 ] || [ "$n" -ne 0 ] || grep -qE 'could not open|cannot lstat' "$W/said"; then echo ${m("partial")}; fi`,
     `O G diff --cached --numstat -z ${opts} "$mb" > "$W/numstat" || ${fail}`,
     `O G diff --cached --raw -z --abbrev=40 ${opts} "$mb" > "$W/raw" || ${fail}`,
     ...fenced(nonce, "numstat"),
@@ -275,8 +277,10 @@ export interface ReviewDeps {
 
 /** What the routes call: finds the copy, and turns every way a read can fail into a state and a sentence. */
 export class ConversationReview {
-  /** One listing per conversation at a time: pressing Refresh twice doesn't start a second script. */
+  /** One listing per conversation at a time: pressing Refresh twice doesn't run two scripts side by side. */
   private readonly listing = new Map<string, Promise<ChangesView>>();
+  /** The one read that follows a running listing, shared by everyone who asked while that one ran. */
+  private readonly nextListing = new Map<string, Promise<ChangesView>>();
   private readonly trees = new Map<string, Promise<FilesView>>();
 
   constructor(private readonly d: ReviewDeps) {}
@@ -331,9 +335,30 @@ export class ConversationReview {
     return gone ? "This conversation's working copy was cleaned away." : none;
   }
 
+  /**
+   * What the copy changes now. A listing that is running may already be past a file, so it can't answer for now: a
+   * request made during one gets the read that starts after it, or a turn's last edit could be missing from the
+   * refresh that turn's end asked for.
+   */
   changes(id: string): Promise<ChangesView> {
+    const waiting = this.nextListing.get(id);
+    if (waiting) return waiting;
     const running = this.listing.get(id);
-    if (running) return running;
+    if (!running) return this.startListing(id);
+    const next = running.then(
+      () => this.followListing(id),
+      () => this.followListing(id),
+    );
+    this.nextListing.set(id, next);
+    return next;
+  }
+
+  private followListing(id: string): Promise<ChangesView> {
+    this.nextListing.delete(id);
+    return this.startListing(id);
+  }
+
+  private startListing(id: string): Promise<ChangesView> {
     const work = this.readChanges(id).finally(() => this.listing.delete(id));
     this.listing.set(id, work);
     return work;
