@@ -1,7 +1,8 @@
 // The ACP <-> AHP mapper, case by case (docs/design/ahp-spike.md has the table these come from).
-import { wasCut } from "@i-inc/core";
+import { SIDE_CUT, wasCut } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
 import { configFromAcp, mapToolContent, promptBlocks, TurnMapper } from "../../src/ahp/acp-mapper.ts";
+import { MAX_REDACTED, redactTokens } from "../../src/ahp/sanitize.ts";
 import type { ChatAction } from "../../src/ahp/wire.ts";
 import type { Any } from "./support.ts";
 
@@ -437,6 +438,46 @@ describe("tool content", () => {
       put,
     );
     expect(out[0]?.diff).toEqual({ added: 1, removed: 1 });
+  });
+
+  describe("through the session host's redaction", () => {
+    /** What session-host's `put` keeps of each side, in order. */
+    const sides = (oldText: string, newText: string) => {
+      const kept: string[] = [];
+      mapToolContent([{ type: "diff", path: "/big", oldText, newText }], (d) => {
+        kept.push(typeof d === "string" ? redactTokens(d) : "");
+        return { uri: "ahp-content:/1", sizeHint: 0, contentType: "text/plain" };
+      });
+      return kept;
+    };
+
+    it("keeps a cut side's mark, however far past the limit it was cut", () => {
+      const head = "x".repeat(1_199_999);
+      for (const side of sides(`${head}\n`, `${head}\ntail\n`)) {
+        expect(side.length).toBeLessThanOrEqual(MAX_REDACTED);
+        expect(wasCut(side)).toBe(true);
+      }
+    });
+
+    it.each([1_000_000, 1_000_001, 1_024_000, 1_048_576])(
+      "marks a side of %i characters, between the mapper's limit and the old one",
+      (n) => {
+        const [before, after] = sides("x".repeat(n), `${"x".repeat(n)}tail\n`);
+        expect(wasCut(before ?? "")).toBe(true);
+        expect(wasCut(after ?? "")).toBe(true);
+      },
+    );
+
+    it("keeps the mark when the cut falls inside a private key", () => {
+      const key = `-----BEGIN PRIVATE KEY-----\n${"MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n".repeat(40_000)}`;
+      const [, side] = sides("", key);
+      expect(side).toBe(`[private key]${SIDE_CUT}`);
+    });
+
+    it("leaves a side that fits alone", () => {
+      const fits = "x".repeat(MAX_REDACTED - SIDE_CUT.length);
+      expect(sides(fits, fits)).toEqual([fits, fits]);
+    });
   });
 });
 

@@ -215,8 +215,8 @@ shapes against a real adapter on the mini first.
 - **Centre: the thread.** Markdown with highlighted code; reasoning collapsed under "Thinking";
   tool calls as compact one-line cards (Read, Edit, Run, Search…) that expand to input and output;
   edits show a diff; long terminal output is truncated with "show all"; errors carry Retry. A card
-  counts the lines an edit changed in the whole file. The sides it keeps stop at 1 MB, or 32,000
-  characters in a ticket's stage view, so an opened diff keeps the card's counts and says when some
+  counts the lines an edit changed in the whole file. The sides it keeps stop at a million characters,
+  or 32,000 in a ticket's stage view, so an opened diff keeps the card's counts and says when some
   or all of the change is past that point.
 - **Composer.** Multi-line, Enter sends and Shift+Enter breaks a line; paste or drop images and
   files; the agent's slash commands (from `available_commands_update`); mode and model pickers;
@@ -274,9 +274,10 @@ links into it.
   sign-out), across tabs. No route takes them. A line's number opens its box; the code itself is there to select. A
   half-written comment stays through another line, another file or closing the pane, and is only thrown away when the
   owner says so. It is never out of reach: past the point where a long diff is cut, its file opens with every line
-  showing; once its file has left the list, Unfinished comments leads to it; and with no list or diff to show, that
-  section holds the box itself. A read that lands while the owner types doesn't take them out of the box: focus and the
-  caret go wherever it is drawn next. A comment sits under its line while the line still reads as it quoted it; after that it is listed above
+  showing; once its file has left the list, Unfinished comments leads to it; when its file can't be read, the box sits
+  above the reason, saying which line it is about; and with no list or diff to show, that section holds the box itself.
+  A box emptied there to write it again stays while the owner is in it. A read that lands while the owner types doesn't
+  take them out of the box: focus and the caret go wherever it is drawn next. A comment sits under its line while the line still reads as it quoted it; after that it is listed above
   the diff as changed, never under whatever took the number. Past about 200 KB the newest are kept for this page only,
   and the pane says so.
 - **Sending them.** Comments are added to the next message as `path:line`, the quoted line and the comment, and cleared
