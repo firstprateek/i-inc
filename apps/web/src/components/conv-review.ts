@@ -257,7 +257,11 @@ export class IncConvReview extends LitElement {
       void this.refresh();
     }
     const read =
-      changed.has("rows") || changed.has("file") || changed.has("changes") || changed.has("loadError");
+      changed.has("rows") ||
+      changed.has("file") ||
+      changed.has("fileError") ||
+      changed.has("changes") ||
+      changed.has("loadError");
     this.typing = read ? this.boxInFocus() : undefined;
   }
 

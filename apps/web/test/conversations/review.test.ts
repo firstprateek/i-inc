@@ -1303,6 +1303,40 @@ describe("the pane", () => {
         expect([now.selectionStart, now.selectionEnd]).toEqual([4, 6]);
       });
 
+      it.each([
+        ["answers 500", () => reply({ error: "boom" }, 500)],
+        ["drops the connection", () => Promise.reject(new TypeError("Failed to fetch"))],
+      ])("keeps focus and the caret in the box when the file's read %s", async (_how, answer) => {
+        const { el, root } = await typingAside();
+        let land = () => {};
+        const held = new Promise<void>((done) => {
+          land = done;
+        });
+        vi.stubGlobal("fetch", async (url: string) => {
+          if (!url.includes("/changes/file")) return reply({ changes });
+          await held;
+          return answer();
+        });
+        changes = listing();
+        const reading = el.refresh();
+        await until(() => el.selected === place.path);
+        await el.updateComplete;
+        land();
+        await reading;
+        await settle(el);
+        expect(el.fileError).not.toBeNull();
+        const now = root.querySelector(".main .moved .box textarea") as HTMLTextAreaElement;
+        expect(now.value).toBe("half a thought");
+        expect(root.activeElement).toBe(now);
+        expect([now.selectionStart, now.selectionEnd]).toEqual([4, 6]);
+        // So the next Escape is the box's, and doesn't reach the document and close the pane.
+        now.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true, composed: true, cancelable: true }),
+        );
+        await el.updateComplete;
+        expect(root.querySelector(".box .acts p")?.textContent).toBe("Discard this comment?");
+      });
+
       it("draws only the boxes while a file loads: comments are in the list until they have a place", async () => {
         const { el, root } = await typingAside();
         reviewComments.add("c1", note({ path: place.path, line: 3, quote: "three", text: "about this" }));
