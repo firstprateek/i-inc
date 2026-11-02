@@ -400,7 +400,9 @@ export class IncConvReview extends LitElement {
 
   /** Escape or Cancel. A box with nothing in it just closes; words are only thrown away when the owner says so. */
   private cancelBox(d: LineDraft) {
-    const typed = commentDrafts.list(this.conv?.id ?? "").find((x) => spot(x) === spot(d))?.text ?? "";
+    const typed =
+      commentDrafts.list(this.conv?.id ?? "").find((x) => x.path === d.path && spot(x) === spot(d))?.text ??
+      "";
     if (this.discarding === spot(d)) this.keepWriting(d);
     else if (typed.trim()) {
       this.discarding = spot(d);

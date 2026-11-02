@@ -745,6 +745,31 @@ describe("the pane", () => {
     await until(() => root.activeElement === root.querySelector(".row.add .no"));
   });
 
+  it("goes by the box's own file when another file has a box on the same line number", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    must(root.querySelector<HTMLElement>(".row.add .no")).click();
+    await el.updateComplete;
+    must(root.querySelector<HTMLElement>('.f[data-path="new.txt"]')).click();
+    await settle(el);
+    await typeAt(el, root, ".row.add", "worth keeping");
+    const esc = () =>
+      must(root.querySelector("textarea")).dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, composed: true, cancelable: true }),
+      );
+    esc();
+    await el.updateComplete;
+    expect(root.querySelector(".box .acts p")?.textContent).toBe("Discard this comment?");
+    expect(commentDrafts.list("c1").find((d) => d.path === "new.txt")?.text).toBe("worth keeping");
+    // the other way round: the empty box has nothing to ask about
+    must(root.querySelector<HTMLElement>('.f[data-path="src/a.ts"]')).click();
+    await settle(el);
+    esc();
+    await el.updateComplete;
+    expect(root.querySelector(".box")).toBeNull();
+    expect(commentDrafts.list("c1").map((d) => d.path)).toEqual(["new.txt"]);
+  });
+
   it("closes an empty box with no question", async () => {
     const { el, root } = await mount();
     await settle(el);
