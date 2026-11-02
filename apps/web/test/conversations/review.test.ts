@@ -577,6 +577,27 @@ describe("the pane", () => {
     expect(says).toContain("Only the first 2 files are listed.");
   });
 
+  it("doesn't call it nothing when every change has a name it won't show", async () => {
+    changes = listing({ files: [], skipped: 1 });
+    const a = await mount();
+    await settle(a.el);
+    expect(a.root.querySelector(".state p")?.textContent).toBe("1 file has a name that isn't safe to show.");
+    a.el.remove();
+    changes = listing({ files: [], skipped: 2, noProject: true });
+    const b = await mount();
+    await settle(b.el);
+    expect(b.root.querySelector(".state p")?.textContent).toBe(
+      "2 files have a name that isn't safe to show.",
+    );
+    b.el.remove();
+    changes = listing({ files: [], skipped: 1, partial: true });
+    const c = await mount();
+    await settle(c.el);
+    expect(c.root.querySelector(".state p")?.textContent).toBe(
+      "1 file has a name that isn't safe to show. Some files couldn't be read, so this may not be everything.",
+    );
+  });
+
   it("refreshes when a turn ends, not while one runs, and has Refresh", async () => {
     chat = { turns: [], activeTurn: { id: "t", responseParts: [] } };
     const { el, root } = await mount();

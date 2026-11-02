@@ -38,6 +38,9 @@ type LineRow = Exclude<DiffRow, { kind: "gap" }>;
 const spot = (at: { side: string; line: number }) => `${at.side}-${at.line}`;
 /** A comment box: two files can have one on the same line number, and both can be showing. */
 const boxKey = (at: LineSpot) => `${at.path}|${spot(at)}`;
+const unsafeNames = (n: number) =>
+  `${n === 1 ? "1 file has" : `${n} files have`} a name that isn't safe to show.`;
+const PARTIAL = "Some files couldn't be read, so this may not be everything.";
 /** A line as a sentence: a removed one and an added one can have the same number. */
 const lineName = (at: { side: string; line: number }) =>
   `${at.side === "old" ? "removed line" : "line"} ${at.line}`;
@@ -686,18 +689,20 @@ export class IncConvReview extends LitElement {
       return html`<div class="state" role="status"><p>${c.reason}</p>${again}</div>${this.asideComments()}`;
     }
     if (!c.files.length) {
-      const empty = c.partial
-        ? "Some files couldn't be read, so this may not be everything."
-        : (c.reason ??
+      // An empty list isn't "nothing changed" when something was left out of it.
+      const left = [c.skipped ? unsafeNames(c.skipped) : "", c.partial ? PARTIAL : ""].filter(Boolean);
+      const empty =
+        left.join(" ") ||
+        (c.reason ??
           (c.noProject ? "Nothing in this conversation's folder yet." : "Nothing has changed yet."));
       return html`<div class="state"><p>${empty}</p>${c.partial ? again : nothing}</div>${this.asideComments()}`;
     }
     return html`<div class="body ${this.reading ? "reading" : ""}">
       <div class="side">
         ${this.list(c.files)}
-        ${c.skipped ? html`<p class="say">${c.skipped === 1 ? "1 file has" : `${c.skipped} files have`} a name that isn't safe to show.</p>` : nothing}
+        ${c.skipped ? html`<p class="say">${unsafeNames(c.skipped)}</p>` : nothing}
         ${c.truncated ? html`<p class="say">Only the first ${c.files.length} files are listed.</p>` : nothing}
-        ${c.partial ? html`<p class="say">Some files couldn't be read, so this may not be everything.</p>` : nothing}
+        ${c.partial ? html`<p class="say">${PARTIAL}</p>` : nothing}
         ${this.unfinished(this.strays(c.files), "link")}
         ${this.commentList("link")}
       </div>
