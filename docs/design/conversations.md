@@ -285,8 +285,8 @@ links into it.
   rather than lines, the box sits above the reason, saying which line it is about, as it does while its file is loading;
   and with no list or diff to show, that section holds the box itself. A box emptied there to write it again stays while
   the owner is in it. When the list comes back, the box they are in opens its own file, in view, whichever file is first
-  and on a list-first phone too. A read that lands while the owner types doesn't take them out of the box: focus and the
-  caret go wherever it is drawn next. A comment sits under its line while the line still reads as it quoted it; after that it is listed above
+  and on a list-first phone too. A read that lands while the owner types, or fails, doesn't take them out of the box: focus
+  and the caret go wherever it is drawn next. A comment sits under its line while the line still reads as it quoted it; after that it is listed above
   the diff as changed, never under whatever took the number. Past about 200 KB the newest are kept for this page only,
   and the pane says so.
 - **Sending them.** Comments are added to the next message as `path:line`, the quoted line and the comment, and cleared
