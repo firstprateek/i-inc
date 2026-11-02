@@ -271,6 +271,8 @@ describe("the thread's state", () => {
     ]);
     expect(files[0]?.edit.before?.content.uri).toBe("b1");
     expect(files[0]?.edit.after?.content.uri).toBe("a2");
+    // the opened diff keeps these when a side was cut, so they are the file's, not the last edit's
+    expect(files[0]?.edit.diff).toEqual({ added: 3, removed: 2 });
   });
   it("reads how full the context is from the latest turn that says", () => {
     const turn = (id: string, _meta?: unknown) => ({

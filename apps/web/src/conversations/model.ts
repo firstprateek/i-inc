@@ -321,20 +321,16 @@ export function changedFiles(chat: ChatState | undefined): ChangedFile[] {
       const uri = edit.after?.uri ?? edit.before?.uri;
       if (!uri) continue;
       const prev = by.get(uri);
-      // The first "before" and the last "after" make the whole change to the file.
+      const added = (prev?.added ?? 0) + (edit.diff?.added ?? 0);
+      const removed = (prev?.removed ?? 0) + (edit.diff?.removed ?? 0);
+      // The first "before" and the last "after" make the whole change to the file; its counts add up over its edits.
       const merged: FileEdit = {
         ...((prev?.edit.before ?? edit.before) ? { before: prev?.edit.before ?? edit.before } : {}),
         ...(edit.after ? { after: edit.after } : {}),
-        diff: edit.diff ?? {},
+        diff: { added, removed },
       } as FileEdit;
       by.delete(uri);
-      by.set(uri, {
-        uri,
-        path: pathOf(uri),
-        edit: merged,
-        added: (prev?.added ?? 0) + (edit.diff?.added ?? 0),
-        removed: (prev?.removed ?? 0) + (edit.diff?.removed ?? 0),
-      });
+      by.set(uri, { uri, path: pathOf(uri), edit: merged, added, removed });
     }
   }
   return [...by.values()].reverse();

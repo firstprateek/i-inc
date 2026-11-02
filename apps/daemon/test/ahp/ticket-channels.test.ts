@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import type { Agent, SessionOutcome, SessionRequest } from "@i-inc/core";
+import { type Agent, type SessionOutcome, type SessionRequest, wasCut } from "@i-inc/core";
 import { FakeAgent } from "@i-inc/core/testing";
 import { describe, expect, it } from "vitest";
 import { AcpAgent, type AgentProcess } from "../../src/acp.ts";
@@ -590,6 +590,37 @@ describe("bounds", () => {
     expect(out).toContain("truncated");
     expect((t1.toolInput as string).length).toBeLessThan(MAX_TOOL_TEXT + 400);
     expect(parts[1].toolCall.content[0].text).toBe("all green");
+  });
+
+  it("marks a diff's side it cuts, so the opened diff can say so", async () => {
+    const app = await testApp();
+    const feed = app.ahp.tickets.begin({
+      ticketId: "9",
+      ticketTitle: "Big file",
+      stage: "build",
+      sessionId: 62,
+      employeeId: "ada",
+      engineId: "opus",
+      model: "m",
+      brief: "b",
+      startedAt: app.clock.now(),
+    });
+    const head = "a line of a very long file\n".repeat(2_000);
+    feed.update({
+      sessionUpdate: "tool_call",
+      toolCallId: "t1",
+      title: "Edit big",
+      kind: "edit",
+      status: "completed",
+      content: [{ type: "diff", path: "/work/big.ts", oldText: `${head}old\n`, newText: `${head}new\n` }],
+    });
+    feed.end({ kind: "done", output: "ok" });
+    const edit = (turnOf(app, stageChatUri(62)) as Any).responseParts[0].toolCall.content[0];
+    expect(edit.diff).toEqual({ added: 1, removed: 1 });
+    const hash = String(edit.after.content.uri).replace("ahp-content:/", "");
+    const blobs = app.db.all<{ hash: string; data: Uint8Array }>("SELECT hash, data FROM ahp_blobs");
+    const kept = blobs.find((b) => b.hash === hash);
+    expect(wasCut(Buffer.from(kept?.data ?? []).toString("utf8"))).toBe(true);
   });
 
   it("a view that breaks never fails the stage, and is not left running", async () => {

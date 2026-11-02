@@ -7,6 +7,13 @@ export type DiffRow =
   | { kind: "ctx" | "add" | "del"; oldNo: number | null; newNo: number | null; text: string }
   | { kind: "gap"; count: number };
 
+/** What ends a side of a file edit that the host cut. */
+export const SIDE_CUT = "\n[…truncated]";
+/** The same, for the shorter cut of a ticket's stage view. */
+export const STAGE_SIDE_CUT = "\n[…cut]";
+/** Was this side cut? A diff of it may then miss changes, so only the host's counts are whole. */
+export const wasCut = (side: string): boolean => side.endsWith(SIDE_CUT) || side.endsWith(STAGE_SIDE_CUT);
+
 const MAX_CELLS = 4_000_000;
 /** Myers' search keeps about the square of this many numbers, the same memory as the table's `MAX_CELLS`. */
 const MAX_EDITS = 2_000;

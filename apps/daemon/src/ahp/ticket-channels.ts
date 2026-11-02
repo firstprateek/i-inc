@@ -9,7 +9,7 @@
 // user turn; what the agent does is its reply. Clients cannot act on these channels (host.ts refuses it): the
 // stage keeps its own permission handling, and `ticket_session_items` stays the historical record the ticket page
 // reads. Nothing here may fail a stage: every call is guarded, and a view that breaks just stops updating.
-import type { Id, SessionOutcome, SessionTranscriptItem } from "@i-inc/core";
+import { type Id, type SessionOutcome, type SessionTranscriptItem, STAGE_SIDE_CUT } from "@i-inc/core";
 import type { Db } from "../db.ts";
 import { capText, safeReason } from "../sessions.ts";
 import { TurnMapper } from "./acp-mapper.ts";
@@ -285,7 +285,9 @@ export class StageFeed {
   /** What a tool left in a file or image, in the size the view keeps. */
   private keepable(data: string | Uint8Array): string | Uint8Array {
     if (typeof data === "string")
-      return redactTokens(data.length > MAX_DIFF_CHARS ? `${data.slice(0, MAX_DIFF_CHARS)}\n[…cut]` : data);
+      return redactTokens(
+        data.length > MAX_DIFF_CHARS ? `${data.slice(0, MAX_DIFF_CHARS)}${STAGE_SIDE_CUT}` : data,
+      );
     return data.byteLength > MAX_BINARY_BYTES ? `[not kept: ${data.byteLength} bytes]` : data;
   }
 
