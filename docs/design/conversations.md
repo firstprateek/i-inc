@@ -278,7 +278,8 @@ links into it.
   alone through the composer, so a running turn queues them and the composer's refusals hold, and what is in the box
   stays there. If the host refuses it later, or the owner removes it from the queue, it comes back in the box as text.
 - **While the agent waits.** If it is stopped on a permission or a question the pane says so and **Answer** goes to the
-  card.
+  card. The thread's live region is hidden behind the pane, so the pane has its own, there from the start, which says
+  when the agent starts working, needs an answer, or finishes, stops or hits an error.
 
 ## Data and API
 

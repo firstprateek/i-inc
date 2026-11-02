@@ -411,6 +411,14 @@ export function inputNeeded(session: SessionState | undefined): SessionInputRequ
   return session?.inputNeeded ?? [];
 }
 
+/** How the chat's last turn ended, for a screen reader. */
+export function turnEnding(name: string, chat: ChatState | undefined): string {
+  const state = chat?.turns.at(-1)?.state;
+  if (state === ("error" as never)) return `${name} hit an error`;
+  if (state === ("cancelled" as never)) return `${name} stopped`;
+  return `${name} finished`;
+}
+
 /** The first pending confirmation or question in a chat, for focusing it when the conversation opens. */
 export function firstPending(chat: ChatState | undefined): { turnId: string; id: string } | undefined {
   const turn = chat?.activeTurn;

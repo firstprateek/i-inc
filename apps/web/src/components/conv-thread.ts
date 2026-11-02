@@ -30,6 +30,7 @@ import {
   isPending,
   modePicker,
   statusText,
+  turnEnding,
   visible,
 } from "../conversations/model.ts";
 import { cardStyles } from "../conversations/styles.ts";
@@ -551,16 +552,7 @@ export class IncConvThread extends LitElement {
       return;
     }
     if (active && active !== this.prevActive) this.say(`${name} started working`);
-    else if (!active && this.prevActive) {
-      const last = chat.turns.at(-1);
-      this.say(
-        last?.state === ("error" as never)
-          ? `${name} hit an error`
-          : last?.state === ("cancelled" as never)
-            ? `${name} stopped`
-            : `${name} finished`,
-      );
-    }
+    else if (!active && this.prevActive) this.say(turnEnding(name, chat));
     this.prevActive = active;
     const now = new Set<string>();
     const pending = firstPending(chat);

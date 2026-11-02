@@ -7,7 +7,7 @@ import { type DiffRow, diffStats, diffWithContext } from "@i-inc/core";
 import { css, html, LitElement, nothing } from "lit";
 import { ahp } from "../ahp/hub.ts";
 import { api, type ChangesView, type Conversation, type FileView, type ReviewFile } from "../api.ts";
-import { firstPending, visible } from "../conversations/model.ts";
+import { firstPending, turnEnding, visible } from "../conversations/model.ts";
 import {
   anchor,
   COMMENT_MAX,
@@ -67,6 +67,7 @@ export class IncConvReview extends LitElement {
     discarding: { state: true },
     running: { state: true },
     waiting: { state: true },
+    spoken: { state: true },
   };
   declare conv: Conversation | undefined;
   /** The employee's name, for sentences. */
@@ -95,6 +96,8 @@ export class IncConvReview extends LitElement {
   declare running: boolean;
   /** The agent is stopped on a permission or a question. */
   declare waiting: boolean;
+  /** What changed in the turn, for a screen reader: the thread's own live region is hidden behind the pane. */
+  declare spoken: string;
 
   private listToken = 0;
   private fileToken = 0;
@@ -121,6 +124,7 @@ export class IncConvReview extends LitElement {
     this.discarding = null;
     this.running = false;
     this.waiting = false;
+    this.spoken = "";
   }
 
   static override styles = [
@@ -215,7 +219,7 @@ export class IncConvReview extends LitElement {
         const conv = this.conv;
         if (!conv || !uris.has(conv.ahpChat)) return;
         const was = this.running;
-        this.syncChat();
+        this.syncChat(true);
         if (was && !this.running) void this.refresh();
       }),
       reviewComments.subscribe((id) => {
@@ -280,10 +284,18 @@ export class IncConvReview extends LitElement {
     return { key, caret: typed ? ([typed.selectionStart, typed.selectionEnd] as const) : null };
   }
 
-  private syncChat() {
+  /** `tell`: this is a change, not what was already going on when the pane opened, which is not news. */
+  private syncChat(tell = false) {
     const chat = this.conv ? ahp().chat(this.conv.ahpChat) : undefined;
+    const was = { running: this.running, waiting: this.waiting };
     this.running = !!chat?.activeTurn;
     this.waiting = !!firstPending(chat);
+    const who = this.name || "The agent";
+    if (!tell) this.spoken = "";
+    else if (this.waiting && !was.waiting) this.spoken = `${who} needs your answer`;
+    else if (this.running && (!was.running || (was.waiting && !this.waiting))) {
+      this.spoken = `${who} is working`;
+    } else if (was.running && !this.running) this.spoken = turnEnding(who, chat);
   }
 
   /** Escape closes the pane. A comment box in the way takes it first (its own handler stops it reaching here). */
@@ -751,19 +763,20 @@ export class IncConvReview extends LitElement {
     const added = files.reduce((n, f) => n + f.added, 0);
     const removed = files.reduce((n, f) => n + f.removed, 0);
     const failed = this.loadError ? `Couldn't read the changes (${this.loadError}).` : this.listNote;
-    return html`<div class="head"><h2>Changes</h2>
+    return html`<p class="sr-only" role="status">${this.spoken}</p>
+      <div class="head"><h2>Changes</h2>
         <span class="sum">${files.length ? `${files.length} ${files.length === 1 ? "file" : "files"} · +${added} −${removed}` : ""}</span>
         <button class="cbtn refresh" type="button" aria-disabled=${this.loading ? "true" : "false"} @click=${this.retry}>${this.loading ? "Reading…" : "Refresh"}</button>
         <button class="x" type="button" aria-label="Close changes" @click=${() => this.close()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
       ${
         this.waiting
-          ? html`<p class="say" role="status">${this.name || "The agent"} is waiting for your answer.
+          ? html`<p class="say">${this.name || "The agent"} is waiting for your answer.
               <button class="link-btn" type="button" @click=${() =>
                 this.dispatchEvent(
                   new CustomEvent("conv-review-answer", { bubbles: true, composed: true }),
                 )}>Answer</button></p>`
           : this.running
-            ? html`<p class="say" role="status">${this.name || "The agent"} is working, so this can change. It refreshes when the turn ends.</p>`
+            ? html`<p class="say">${this.name || "The agent"} is working, so this can change. It refreshes when the turn ends.</p>`
             : nothing
       }
       ${

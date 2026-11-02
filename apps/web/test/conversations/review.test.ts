@@ -1368,6 +1368,56 @@ describe("the pane", () => {
     expect(answer).toHaveBeenCalledTimes(1);
   });
 
+  describe("for a screen reader", () => {
+    const pending = (id: string) => ({
+      kind: "toolCall",
+      toolCall: { toolCallId: id, status: "pending-confirmation" },
+    });
+    const region = (root: ShadowRoot) => must(root.querySelector('.sr-only[role="status"]'));
+    const change = async (el: IncConvReview, next: Any) => {
+      chat = next;
+      notify(new Set([CHAT]));
+      await el.updateComplete;
+    };
+
+    it("says what changed in one region that was there from the start", async () => {
+      const { el, root } = await mount();
+      await settle(el);
+      const live = region(root);
+      expect(live.textContent).toBe("");
+      await change(el, { turns: [], activeTurn: { id: "t", responseParts: [] } });
+      expect(live.textContent).toBe("Ada is working");
+      await change(el, { turns: [], activeTurn: { id: "t", responseParts: [pending("p")] } });
+      expect(live.textContent).toBe("Ada needs your answer");
+      await change(el, { turns: [], activeTurn: { id: "t", responseParts: [] } });
+      expect(live.textContent).toBe("Ada is working");
+      await change(el, { turns: [{ id: "t", state: "complete" }] });
+      expect(live.textContent).toBe("Ada finished");
+      await settle(el);
+      expect(region(root)).toBe(live);
+    });
+
+    it("says a turn that didn't finish for what it was", async () => {
+      chat = { turns: [], activeTurn: { id: "t", responseParts: [] } };
+      const { el, root } = await mount();
+      await settle(el);
+      await change(el, { turns: [{ id: "t", state: "cancelled" }] });
+      expect(region(root).textContent).toBe("Ada stopped");
+      await change(el, { turns: [], activeTurn: { id: "u", responseParts: [] } });
+      await change(el, { turns: [{ id: "u", state: "error" }] });
+      expect(region(root).textContent).toBe("Ada hit an error");
+    });
+
+    it("doesn't tell what was already going on when the pane opened, and leaves the shown line out", async () => {
+      chat = { turns: [], activeTurn: { id: "t", responseParts: [pending("p")] } };
+      const { el, root } = await mount();
+      await settle(el);
+      expect(region(root).textContent).toBe("");
+      expect(root.querySelector(".say")?.textContent).toContain("is waiting for your answer");
+      expect(root.querySelector('.say[role="status"]')).toBeNull();
+    });
+  });
+
   it("doesn't add an empty comment", async () => {
     const { el, root } = await mount();
     await settle(el);
