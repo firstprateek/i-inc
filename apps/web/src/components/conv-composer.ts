@@ -395,6 +395,7 @@ export class IncConvComposer extends LitElement {
     this.text = next;
     draftMemo.set(`conv:${this.conversationId}`, next);
     this.closeMention();
+    this.composing = false;
     const at = q.start + text.length + 1;
     void this.updateComplete.then(() => {
       ta.focus();
@@ -419,6 +420,7 @@ export class IncConvComposer extends LitElement {
     this.text = next;
     draftMemo.set(`conv:${this.conversationId}`, next);
     this.slash = [];
+    this.composing = false;
     const at = q.start + c.name.length + 2;
     void this.updateComplete.then(() => {
       ta.focus();

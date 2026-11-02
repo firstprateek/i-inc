@@ -1059,6 +1059,27 @@ describe("@file in the composer", () => {
     expect(el.text).toBe("README.md ");
   });
 
+  it("ends a composition that a pick by mouse cut short: no compositionend follows", async () => {
+    const { el, send, root, ta } = await mount();
+    ta.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    await typeIn(el, ta, "@zeb");
+    await until(() => options(root).length);
+    must(options(root)[0]).dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    await el.updateComplete;
+    expect(el.text).toBe("zebra.txt ");
+    await typeIn(el, ta, "@deep");
+    await until(() => options(root).length);
+    await el.updateComplete;
+    press(ta, "ArrowDown");
+    await el.updateComplete;
+    expect(ta.getAttribute("aria-activedescendant")).toBe("mention-1");
+    expect(press(ta, "Tab").defaultPrevented).toBe(true);
+    await el.updateComplete;
+    await typeIn(el, ta, "send me");
+    press(ta, "Enter");
+    await until(() => send.mock.calls.length);
+  });
+
   it("closes on Escape without closing what is behind it, and stays shut for that @", async () => {
     const { el, send, root, ta } = await mount();
     await typeIn(el, ta, "@deep");

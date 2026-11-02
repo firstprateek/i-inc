@@ -264,10 +264,13 @@ links into it.
   every file there is new.
 - **Untrusted.** Paths must be relative, with no `..`, NUL, control character, leading `-`, `.git` or `.inc`, and a name
   that fails is left out and counted. Files stop at 1 MB, every kind of credential ship's scan stops is redacted (a key
-  block keeps its lines, so line numbers hold, and a line in it that isn't key material stays in sight, so two markers
-  can't hide code), and what is redacted is what ship's scan stops, so nothing can be hidden from review and still be
-  pushed. For the same reason the diff withholds only the files ship stops by name (`.env`,
-  `*.pem` and the like): they are listed but not served. A file with a name that only suggests secrets (`.envrc`,
+  block keeps its lines, so line numbers hold, and a line in it that doesn't read as key material stays in sight). A
+  block in the change, ship's scan stops. **Known gap:** the pane redacts whole files and the scan reads added lines
+  only, so they can disagree. A line added inside a key block already in the file is hidden if it reads as key material
+  (base64, or an armor header such as `Comment:`), and so is a token added under an old `Authorization: Bearer` line.
+  The owner sees a blank or `[redacted]`, and the scan doesn't stop it, so what is hidden there can still be pushed.
+  ship-git.test.ts pins this until the scan is changed. The diff withholds only the files ship stops by name (`.env`,
+  `*.pem` and the like), because anything wider would hide a file that can still be pushed: they are listed but not served. A file with a name that only suggests secrets (`.envrc`,
   `prod.env`, `.pgpass`) can be pushed, so its diff shows, redacted like any other. Links are never followed, and the
   pane renders all of it as text.
 - **Line comments** are the owner's, in this browser, per conversation, kept with the drafts (and forgotten with them at

