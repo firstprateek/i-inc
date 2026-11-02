@@ -1161,30 +1161,75 @@ describe("@file in the composer", () => {
     expect(ta.getAttribute("aria-controls")).toBe("slash-list");
   });
 
-  it("stays out of the way of an IME, and looks again when the composition ends", async () => {
-    const { el, root, ta } = await mount();
-    ta.dispatchEvent(new CompositionEvent("compositionstart"));
-    await typeIn(el, ta, "@deep");
-    await new Promise((r) => setTimeout(r, 5));
-    expect(options(root)).toEqual([]);
-    expect(calls).toEqual([]);
-    ta.dispatchEvent(new CompositionEvent("compositionend"));
-    await until(() => options(root).length);
-    press(ta, "ArrowDown", { isComposing: true });
-    await el.updateComplete;
-    expect(el.mentionIndex).toBe(0);
-    const e = press(ta, "Enter", { isComposing: true });
-    expect(e.defaultPrevented).toBe(false);
-    expect(el.text).toBe("@deep");
-  });
+  describe("during a composition, as a phone's keyboard makes every word", () => {
+    const compose = async (el: IncConvComposer, ta: HTMLTextAreaElement, text: string) => {
+      ta.value = text;
+      ta.setSelectionRange(text.length, text.length);
+      ta.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true }));
+      await new Promise((r) => setTimeout(r, 5));
+      await el.updateComplete;
+    };
 
-  it("closes when composition starts on an open list", async () => {
-    const { el, root, ta } = await mount();
-    await typeIn(el, ta, "@deep");
-    await until(() => options(root).length);
-    ta.dispatchEvent(new CompositionEvent("compositionstart"));
-    await el.updateComplete;
-    expect(options(root)).toEqual([]);
+    it("follows the text, and narrows as the word grows", async () => {
+      const { el, root, ta } = await mount();
+      await typeIn(el, ta, "@");
+      await until(() => options(root).length === PATHS.length);
+      ta.dispatchEvent(new CompositionEvent("compositionstart"));
+      await el.updateComplete;
+      expect(options(root).length).toBe(PATHS.length);
+      await compose(el, ta, "@dee");
+      await until(() => options(root).length === 2);
+      await compose(el, ta, "@deep/b");
+      await until(() => options(root).length === 1);
+      await compose(el, ta, "@deep/bnothing");
+      await until(() => options(root).length === 0);
+    });
+
+    it("opens if the first letter of the word starts one", async () => {
+      const { el, root, ta } = await mount();
+      ta.dispatchEvent(new CompositionEvent("compositionstart"));
+      await compose(el, ta, "@dee");
+      await until(() => options(root).length === 2);
+    });
+
+    it("leaves the keys to the IME: nothing is picked, moved, sent or dismissed", async () => {
+      const { el, root, send, ta } = await mount();
+      ta.dispatchEvent(new CompositionEvent("compositionstart"));
+      await compose(el, ta, "@");
+      await until(() => options(root).length > 1);
+      for (const key of ["ArrowDown", "Enter", "Tab", "Escape"]) {
+        expect(press(ta, key, { isComposing: true }).defaultPrevented, key).toBe(false);
+        expect(press(ta, key, { isComposing: false, keyCode: 229 }).defaultPrevented, key).toBe(false);
+      }
+      expect(press(ta, "Enter", { isComposing: false }).defaultPrevented).toBe(false);
+      await el.updateComplete;
+      expect(el.mentionIndex).toBe(0);
+      expect(el.text).toBe("@");
+      expect(send).not.toHaveBeenCalled();
+      expect(options(root).length).toBeGreaterThan(1);
+    });
+
+    it("gets its keys back when the composition ends", async () => {
+      const { el, root, ta } = await mount();
+      ta.dispatchEvent(new CompositionEvent("compositionstart"));
+      await compose(el, ta, "@zebra");
+      await until(() => options(root).length === 1);
+      ta.dispatchEvent(new CompositionEvent("compositionend"));
+      await el.updateComplete;
+      expect(press(ta, "Tab").defaultPrevented).toBe(true);
+      await el.updateComplete;
+      expect(el.text).toBe("zebra.txt ");
+    });
+
+    it("looks again when the composition ends, for a browser that fires its input first", async () => {
+      const { el, root, ta } = await mount();
+      ta.dispatchEvent(new CompositionEvent("compositionstart"));
+      ta.value = "@zebra";
+      ta.setSelectionRange(6, 6);
+      ta.dispatchEvent(new CompositionEvent("compositionend"));
+      await until(() => options(root).length === 1);
+      expect(el.mentionIndex).toBe(0);
+    });
   });
 
   it("drops an answer the owner has typed past", async () => {
@@ -1289,6 +1334,44 @@ describe("a Read card's link", () => {
 
   it("doesn't call a file gone on a list's word: the viewer says", async () => {
     expect((await mount(call("src/not-in-any-list.ts"))).root.querySelector(".openf")).not.toBeNull();
+  });
+
+  describe("a call that gives no locations yet", () => {
+    const noted = (input: unknown, status = "running") =>
+      ({
+        toolCallId: "t1",
+        status,
+        toolName: "read",
+        displayName: "Read",
+        invocationMessage: "Read",
+        toolInput: JSON.stringify(input),
+      }) as Any;
+    const label = async (input: unknown) =>
+      (await mount(noted(input))).root.querySelector(".openf")?.getAttribute("aria-label");
+
+    it("goes by its arguments, with the offset as the line", async () => {
+      const path = "/home/employee/work/conv-c1/src/a.ts";
+      expect(await label({ file_path: path, offset: 40 })).toBe("Open src/a.ts at line 40");
+      expect(await label({ path: "src/b.ts" })).toBe("Open src/b.ts");
+    });
+
+    it("takes the locations over the arguments", async () => {
+      const both = {
+        ...noted({ file_path: "src/a.ts" }),
+        _meta: { "iinc.locations": [{ path: "src/b.ts" }] },
+      };
+      expect((await mount(both)).root.querySelector(".openf")?.getAttribute("aria-label")).toBe(
+        "Open src/b.ts",
+      );
+    });
+
+    it("has no link for arguments outside the copy, or an offset that isn't a line", async () => {
+      expect(await label({ file_path: "/etc/passwd" })).toBeUndefined();
+      expect(await label({ file_path: "../secret" })).toBeUndefined();
+      expect(await label({})).toBeUndefined();
+      expect(await label({ file_path: "src/a.ts", offset: -3 })).toBe("Open src/a.ts");
+      expect(await label({ file_path: "src/a.ts", offset: "7" })).toBe("Open src/a.ts");
+    });
   });
 });
 

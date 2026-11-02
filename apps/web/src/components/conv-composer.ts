@@ -1,7 +1,8 @@
 // The composer: a multi-line box. Enter sends (Shift+Enter breaks a line; a phone's Enter breaks a line, since
 // it has a Send button), never while an IME is composing. Paste or drop images. `/` opens the agent's slash
-// commands, and `@` the working copy's files. The agent's own modes and models are pickers. While a turn runs: Stop, and typing offers Steer
-// (runs next, ahead of the queue) or Queue; the queued messages are listed and removable.
+// commands, and `@` the working copy's files. The agent's own modes and models are pickers. While a turn runs: Stop,
+// and typing offers Steer (runs next, ahead of the queue; one at a time, so a second joins the queue) or Queue; the
+// queued messages are listed and removable.
 import type { ChatState, SessionState } from "@microsoft/agent-host-protocol";
 import { css, html, LitElement, nothing } from "lit";
 import { checkOutgoing, judgeTextFile } from "../conversations/actions.ts";
@@ -326,7 +327,7 @@ export class IncConvComposer extends LitElement {
     this.text = ta.value;
     draftMemo.set(`conv:${this.conversationId}`, this.text);
     this.updateSlash(ta);
-    if (!(e as InputEvent).isComposing) void this.updateMention(ta);
+    void this.updateMention(ta);
   };
 
   private closeMention() {
@@ -357,12 +358,16 @@ export class IncConvComposer extends LitElement {
     return !!this.conversationId && !this.conversationId.startsWith("draft:");
   }
 
-  /** Opens, moves or closes the `@` list. The answer may come after the owner has typed on: it is read for then. */
+  /**
+   * Opens, moves or closes the `@` list. The answer may come after the owner has typed on: it is read for then. It
+   * follows the text during a composition too: a phone's keyboard can compose every word, so there would be no other
+   * time, and the keys that pick from the list stay the IME's until it ends.
+   */
   private async updateMention(ta: HTMLTextAreaElement) {
     const q = this.hasCopy ? mentionQuery(ta.value, ta.selectionStart ?? ta.value.length) : undefined;
     // The `@` the owner dismissed stays shut until it has gone from the box.
     if (q?.start !== this.mentionShut) this.mentionShut = -1;
-    if (!q || this.composing || q.start === this.mentionShut) return this.closeMention();
+    if (!q || q.start === this.mentionShut) return this.closeMention();
     const id = this.conversationId;
     const ask = ++this.mentionAsk;
     const v = await pathsFor(id).catch(() => null);
@@ -443,7 +448,7 @@ export class IncConvComposer extends LitElement {
       }
     }
     const composing = e.isComposing || this.composing || e.keyCode === 229;
-    if (e.key === "Escape" && (this.mention.length || this.mentionNote)) {
+    if (e.key === "Escape" && !composing && (this.mention.length || this.mentionNote)) {
       e.preventDefault();
       e.stopPropagation();
       const ta = e.target as HTMLTextAreaElement;
@@ -507,7 +512,9 @@ export class IncConvComposer extends LitElement {
       this.attached = [];
       this.fileProblem = null;
     }
-    const problem = await this.onSend({ text, files, intent });
+    // A chat holds one steering message: a second would replace the first, with any comments in it.
+    const how = intent === "steer" && this.chat?.steeringMessage ? "queue" : intent;
+    const problem = await this.onSend({ text, files, intent: how });
     this.sending = false;
     if (problem) {
       this.error = problem;
@@ -583,6 +590,7 @@ export class IncConvComposer extends LitElement {
     const going = isCommand(this.text) ? [] : this.comments;
     const tooBig = checkOutgoing(withComments(this.text, going), this.allFiles());
     const dis = !!this.blocked || !!tooBig;
+    const steerTaken = !!this.chat?.steeringMessage;
     return html`<form class="composer" @submit=${(e: Event) => e.preventDefault()}
       @dragover=${(e: DragEvent) => {
         if (e.dataTransfer?.types.includes("Files")) {
@@ -647,6 +655,7 @@ export class IncConvComposer extends LitElement {
                 )}>Review</button></p>`
           : nothing
       }
+      ${running && hasInput && steerTaken ? html`<p class="hint">A steering message is already waiting, so this one joins the queue.</p>` : nothing}
       <div class="box ${this.dragging ? "drag" : ""}">
         ${this.picker.thumbs({ compact: true })}
         ${
@@ -682,7 +691,6 @@ export class IncConvComposer extends LitElement {
           @paste=${this.onPaste}
           @compositionstart=${() => {
             this.composing = true;
-            this.closeMention();
           }}
           @compositionend=${() => {
             this.composing = false;
@@ -706,7 +714,7 @@ export class IncConvComposer extends LitElement {
             running
               ? html`${
                   hasInput
-                    ? html`<span class="split"><button class="cbtn steer" type="button" ?disabled=${dis || this.sending} title="Runs next, ahead of the queue" @click=${() => void this.submit("steer")}>Steer</button>
+                    ? html`<span class="split"><button class="cbtn steer" type="button" ?disabled=${dis || this.sending} title=${steerTaken ? "Joins the queue: a steering message is already waiting" : "Runs next, ahead of the queue"} @click=${() => void this.submit("steer")}>Steer</button>
                       <button class="cbtn qbtn" type="button" ?disabled=${dis || this.sending} title="Waits for its turn (Alt+Enter)" @click=${() => void this.submit("queue")}>Queue</button>
                       <button class="cbtn more" type="button" aria-haspopup="menu" aria-expanded=${this.menu ? "true" : "false"} aria-label="More send options" ?disabled=${dis || this.sending}
                         @click=${() => {

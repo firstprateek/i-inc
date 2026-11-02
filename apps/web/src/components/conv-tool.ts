@@ -22,6 +22,7 @@ import {
   toolEdits,
   toolError,
   toolFailed,
+  toolInputLocation,
   toolInputText,
   toolLocations,
   toolOutputRefs,
@@ -335,7 +336,7 @@ export class IncConvTool extends LitElement {
   /** Where a Read card's file is in this conversation's copy, with its line, or null. */
   private readTarget(call: ToolCallState): { path: string; line?: number } | null {
     if (!this.conversationId || toolCategory(call) !== "read") return null;
-    const at = toolLocations(call)[0];
+    const at = toolLocations(call)[0] ?? toolInputLocation(call);
     const path = at && pathInCopy(at.path, this.conversationId);
     return path ? { path, ...(at.line ? { line: at.line } : {}) } : null;
   }

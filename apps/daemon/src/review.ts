@@ -44,7 +44,7 @@ import {
 import { type RunScript, TIMED_OUT } from "./harness.ts";
 import { MachineNotRunning } from "./machine-queue.ts";
 import type { Registry } from "./registry.ts";
-import { marker, quote, section } from "./ship-git.ts";
+import { marker, quote, secretFile, section } from "./ship-git.ts";
 import type {
   ChangeStatus,
   ChangesState,
@@ -87,7 +87,9 @@ export interface ReviewPort {
  * it is asked to write and already has. `--ignore-errors` keeps going past a file that can't be read and says so in
  * its exit status. A new file that vanishes before it is read stops `add` altogether (128), so that step is
  * tried again, and the tracked files have gone in first, so they aren't lost with it. Either way the list says it
- * may be missing files. The diff reads only objects, so one that fails is a failed read.
+ * may be missing files. `ls-files` passes over a folder it can't enter with a warning and a good exit status, so its
+ * warnings are kept to see: what is behind that folder is missing too. The diff reads only objects, so one that
+ * fails is a failed read.
  */
 export function listScript(copy: ReviewCopy, nonce: string): string {
   check(copy);
@@ -103,20 +105,21 @@ export function listScript(copy: ReviewCopy, nonce: string): string {
     ...open(copy),
     ...scratchIndex(fail),
     // What is tracked under a folder that became a link would stop `add` altogether, taking the tracked files with it.
+    // The `/` keeps this to what is under a link: a link's own entry stays, or one `.gitignore` covers would read as deleted.
     'if [ -n "$head" ]; then',
-    '  find . -name .git -prune -o -type l -print0 > "$W/links"',
+    `  find . -name .git -prune -o -type l -exec printf '%s/\\0' {} + > "$W/links"`,
     `  if [ -s "$W/links" ]; then O G --literal-pathspecs rm -r -q -f --cached --ignore-unmatch --pathspec-from-file="$W/links" --pathspec-file-nul || echo ${m("partial")}; fi`,
     "fi",
-    `G ls-files -z -m ${here} > "$W/tracked" || ${fail}`,
+    `G ls-files -z -m ${here} > "$W/tracked" 2>> "$W/said" || ${fail}`,
     "a=0",
     `if [ -s "$W/tracked" ]; then ${add("tracked")}; a=$?; fi`,
     `for try in $(seq ${LIST_TRIES}); do`,
-    `  G ls-files -z -o --exclude-standard ${here} > "$W/new" || ${fail}`,
+    `  G ls-files -z -o --exclude-standard ${here} > "$W/new" 2>> "$W/said" || ${fail}`,
     "  n=0",
     `  if [ -s "$W/new" ]; then ${add("new")}; n=$?; fi`,
     '  [ "$n" -eq 128 ] || break',
     "done",
-    `[ "$a" -eq 0 ] && [ "$n" -eq 0 ] || echo ${m("partial")}`,
+    `if [ "$a" -ne 0 ] || [ "$n" -ne 0 ] || grep -qE 'could not open|cannot lstat' "$W/said"; then echo ${m("partial")}; fi`,
     `O G diff --cached --numstat -z ${opts} "$mb" > "$W/numstat" || ${fail}`,
     `O G diff --cached --raw -z --abbrev=40 ${opts} "$mb" > "$W/raw" || ${fail}`,
     ...fenced(nonce, "numstat"),
@@ -273,11 +276,43 @@ export interface ReviewDeps {
   log?: (msg: string) => void;
 }
 
+/**
+ * One read per conversation at a time: pressing Refresh twice doesn't run two scripts side by side. A read that is
+ * running may already be past a file, so it can't answer for now: a request made during one gets the read that starts
+ * after it, shared by everyone who asked meanwhile, or a turn's last edit could be missing from the refresh that turn's
+ * end asked for.
+ */
+class OneAtATime<T> {
+  private readonly running = new Map<string, Promise<T>>();
+  private readonly next = new Map<string, Promise<T>>();
+
+  constructor(private readonly read: (id: string) => Promise<T>) {}
+
+  get(id: string): Promise<T> {
+    const waiting = this.next.get(id);
+    if (waiting) return waiting;
+    const running = this.running.get(id);
+    if (!running) return this.start(id);
+    const follow = () => {
+      this.next.delete(id);
+      return this.start(id);
+    };
+    const next = running.then(follow, follow);
+    this.next.set(id, next);
+    return next;
+  }
+
+  private start(id: string): Promise<T> {
+    const work = this.read(id).finally(() => this.running.delete(id));
+    this.running.set(id, work);
+    return work;
+  }
+}
+
 /** What the routes call: finds the copy, and turns every way a read can fail into a state and a sentence. */
 export class ConversationReview {
-  /** One listing per conversation at a time: pressing Refresh twice doesn't start a second script. */
-  private readonly listing = new Map<string, Promise<ChangesView>>();
-  private readonly trees = new Map<string, Promise<FilesView>>();
+  private readonly lists = new OneAtATime<ChangesView>((id) => this.readChanges(id));
+  private readonly trees = new OneAtATime<FilesView>((id) => this.readFiles(id));
 
   constructor(private readonly d: ReviewDeps) {}
 
@@ -331,12 +366,9 @@ export class ConversationReview {
     return gone ? "This conversation's working copy was cleaned away." : none;
   }
 
+  /** What the copy changes now. */
   changes(id: string): Promise<ChangesView> {
-    const running = this.listing.get(id);
-    if (running) return running;
-    const work = this.readChanges(id).finally(() => this.listing.delete(id));
-    this.listing.set(id, work);
-    return work;
+    return this.lists.get(id);
   }
 
   private async readChanges(id: string): Promise<ChangesView> {
@@ -362,7 +394,8 @@ export class ConversationReview {
     const none: FileSide = { state: "none" };
     const copy = this.copy(id);
     if (!copy) return { state: "failed", path, before: none, after: none };
-    if (servedNever(path)) {
+    // Ship's rule and no wider: a file ship would push is one the owner must be able to read first.
+    if (secretFile.some((re) => re.test(path))) {
       return { state: "ok", path, before: none, after: none, withheld: true };
     }
     try {
@@ -374,11 +407,7 @@ export class ConversationReview {
 
   /** Every file in the working copy, whether or not it changed. */
   files(id: string): Promise<FilesView> {
-    const running = this.trees.get(id);
-    if (running) return running;
-    const work = this.readFiles(id).finally(() => this.trees.delete(id));
-    this.trees.set(id, work);
-    return work;
+    return this.trees.get(id);
   }
 
   private async readFiles(id: string): Promise<FilesView> {
@@ -394,7 +423,7 @@ export class ConversationReview {
     }
   }
 
-  /** One file as it is now. A file that usually holds secrets is named but never served, as in a diff. */
+  /** One file as it is now. A file that usually holds secrets is named but never served, by a wider rule than a diff's. */
   async read(id: string, path: string): Promise<OpenFileView> {
     const none: FileSide = { state: "none" };
     const copy = this.copy(id);

@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import type { Agent, SessionOutcome, SessionRequest } from "@i-inc/core";
+import { type Agent, type SessionOutcome, type SessionRequest, wasCut } from "@i-inc/core";
 import { FakeAgent } from "@i-inc/core/testing";
 import { describe, expect, it } from "vitest";
 import { AcpAgent, type AgentProcess } from "../../src/acp.ts";
@@ -590,6 +590,101 @@ describe("bounds", () => {
     expect(out).toContain("truncated");
     expect((t1.toolInput as string).length).toBeLessThan(MAX_TOOL_TEXT + 400);
     expect(parts[1].toolCall.content[0].text).toBe("all green");
+  });
+
+  it("marks a diff's side it cuts, so the opened diff can say so", async () => {
+    const app = await testApp();
+    const feed = app.ahp.tickets.begin({
+      ticketId: "9",
+      ticketTitle: "Big file",
+      stage: "build",
+      sessionId: 62,
+      employeeId: "ada",
+      engineId: "opus",
+      model: "m",
+      brief: "b",
+      startedAt: app.clock.now(),
+    });
+    const head = "a line of a very long file\n".repeat(2_000);
+    feed.update({
+      sessionUpdate: "tool_call",
+      toolCallId: "t1",
+      title: "Edit big",
+      kind: "edit",
+      status: "completed",
+      content: [{ type: "diff", path: "/work/big.ts", oldText: `${head}old\n`, newText: `${head}new\n` }],
+    });
+    feed.end({ kind: "done", output: "ok" });
+    const edit = (turnOf(app, stageChatUri(62)) as Any).responseParts[0].toolCall.content[0];
+    expect(edit.diff).toEqual({ added: 1, removed: 1 });
+    const hash = String(edit.after.content.uri).replace("ahp-content:/", "");
+    const blobs = app.db.all<{ hash: string; data: Uint8Array }>("SELECT hash, data FROM ahp_blobs");
+    const kept = blobs.find((b) => b.hash === hash);
+    expect(wasCut(Buffer.from(kept?.data ?? []).toString("utf8"))).toBe(true);
+  });
+
+  it("shows the context reading while the stage runs, keeps it to one row every 5 seconds, and keeps the last", async () => {
+    const app = await testApp();
+    const feed = app.ahp.tickets.begin({
+      ticketId: "9",
+      ticketTitle: "Long stage",
+      stage: "build",
+      sessionId: 41,
+      employeeId: "ada",
+      engineId: "opus",
+      model: "Claude Opus",
+      brief: "b",
+      startedAt: app.clock.now(),
+    });
+    const chat = stageChatUri(41);
+    const report = (used: number) => feed.update({ sessionUpdate: "usage_update", used, size: 200_000 });
+    const rows = () =>
+      app.db
+        .all<{ action: string }>("SELECT action FROM ahp_actions WHERE channel = ?", chat)
+        .filter((r) => JSON.parse(r.action).type === ActionType.ChatUsage);
+    const live = () => app.ahp.host.chatState(chat)?.activeTurn?.usage as Any;
+
+    report(60_000);
+    expect(live()).toMatchObject({
+      model: "Claude Opus",
+      _meta: { contextUsed: 60_000, contextSize: 200_000 },
+    });
+    // no change, however long it has been
+    for (let i = 0; i < 20; i++) {
+      app.clock.advance(0.1);
+      report(60_000);
+    }
+    expect(rows()).toHaveLength(1);
+    // a change after the wait goes at once, and what comes straight after it waits
+    report(70_000);
+    report(180_000);
+    expect(rows()).toHaveLength(2);
+    expect(live()._meta.contextUsed).toBe(70_000);
+    // past the cap on steps the meter still moves
+    for (let i = 0; i < MAX_STAGE_PARTS; i++) {
+      feed.update({ sessionUpdate: "tool_call", toolCallId: `c${i}`, title: "Read", kind: "read" });
+    }
+    app.clock.advance(0.1);
+    report(190_000);
+    expect(live()._meta.contextUsed).toBe(190_000);
+
+    // a stage that is stopped keeps the newest, held back or not
+    report(195_000);
+    feed.end({ kind: "interrupted", reason: "stopped" } as never);
+    const turn = app.ahp.host.chatState(chat)?.turns[0] as Any;
+    expect(turn.usage._meta.contextUsed).toBe(195_000);
+  });
+
+  it("writes the context reading to the view only, never to the ticket's transcript", async () => {
+    const { app } = await ranTicket();
+    const items = app.db.all<{ kind: string; text: string | null; title: string | null }>(
+      "SELECT kind, text, title FROM ticket_session_items",
+    );
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.some((i) => /usage|contextUsed/.test(`${i.text} ${i.title}`))).toBe(false);
+    // and it never counts as a step of the view
+    expect(turnOf(app).usage._meta).toMatchObject({ contextUsed: 1200 });
+    expect(turnOf(app).responseParts.some((p: Any) => /usage/.test(JSON.stringify(p)))).toBe(false);
   });
 
   it("a view that breaks never fails the stage, and is not left running", async () => {

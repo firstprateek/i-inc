@@ -1,4 +1,5 @@
 // The ACP <-> AHP mapper, case by case (docs/design/ahp-spike.md has the table these come from).
+import { wasCut } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
 import { configFromAcp, mapToolContent, promptBlocks, TurnMapper } from "../../src/ahp/acp-mapper.ts";
 import type { ChatAction } from "../../src/ahp/wire.ts";
@@ -425,6 +426,7 @@ describe("tool content", () => {
     });
     expect(kept.length).toBeLessThan(1_100_000);
     expect(kept).toContain("[…truncated]");
+    expect(wasCut(kept)).toBe(true);
   });
 
   it("counts an edit past the point where a side is cut", () => {
@@ -563,5 +565,47 @@ describe("locations", () => {
     });
     const done = out.find((a) => a.type === "chat/toolCallComplete");
     expect(JSON.stringify(done._meta)).not.toContain(TOKEN);
+  });
+
+  it("carries locations that come after the start through to the end of the call", () => {
+    const { m, out } = mapper();
+    const at = [{ path: "src/a.ts", line: 40 }];
+    const update = { sessionUpdate: "tool_call_update", toolCallId: "r1" };
+    m.update({
+      sessionUpdate: "tool_call",
+      toolCallId: "r1",
+      title: "Read",
+      kind: "read",
+      status: "pending",
+      rawInput: {},
+      locations: [],
+    });
+    expect(out[0]._meta).toBeUndefined();
+    m.update({ ...update, rawInput: { file_path: "src/a.ts", offset: 40 }, locations: at });
+    m.update({ ...update, status: "in_progress", locations: [] });
+    m.update({
+      ...update,
+      status: "completed",
+      content: [{ type: "content", content: { type: "text", text: "the file" } }],
+    });
+    const of = (type: string) => out.find((a) => a.type === type);
+    expect(of("chat/toolCallReady")._meta).toEqual({ "iinc.locations": at });
+    expect(of("chat/toolCallComplete")._meta).toEqual({ "iinc.locations": at });
+  });
+
+  it("keeps the last locations given, not the first", () => {
+    const { m, out } = mapper();
+    const update = { sessionUpdate: "tool_call_update", toolCallId: "r1" };
+    m.update({
+      sessionUpdate: "tool_call",
+      toolCallId: "r1",
+      title: "Read",
+      kind: "read",
+      status: "in_progress",
+      locations: [{ path: "old.ts" }],
+    });
+    m.update({ ...update, locations: [{ path: "new.ts" }] });
+    m.update({ ...update, status: "completed" });
+    expect(out.at(-1)._meta).toEqual({ "iinc.locations": [{ path: "new.ts" }] });
   });
 });

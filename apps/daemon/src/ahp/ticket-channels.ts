@@ -9,10 +9,11 @@
 // user turn; what the agent does is its reply. Clients cannot act on these channels (host.ts refuses it): the
 // stage keeps its own permission handling, and `ticket_session_items` stays the historical record the ticket page
 // reads. Nothing here may fail a stage: every call is guarded, and a view that breaks just stops updating.
-import type { Id, SessionOutcome, SessionTranscriptItem } from "@i-inc/core";
+import { type Id, type SessionOutcome, type SessionTranscriptItem, STAGE_SIDE_CUT } from "@i-inc/core";
 import type { Db } from "../db.ts";
 import { capText, safeReason } from "../sessions.ts";
 import { TurnMapper } from "./acp-mapper.ts";
+import { ContextMeter } from "./context-meter.ts";
 import type { AhpHost } from "./host.ts";
 import { redactText, redactTokens } from "./sanitize.ts";
 import { ActionType, type ChatAction, type Json, ResponsePartKind, USER_ORIGIN } from "./wire.ts";
@@ -211,7 +212,7 @@ export class StageFeed {
   private readonly started = new Set<string>();
   private readonly texts = new Map<string, string>();
   private fallbackTools = 0;
-  private contextUsage: { used: unknown; size: unknown } | undefined;
+  private readonly context: ContextMeter;
   private promptUsage: Json | undefined;
 
   constructor(
@@ -222,6 +223,7 @@ export class StageFeed {
     private readonly log: (m: string) => void,
   ) {
     this.turnId = `stage-${info.sessionId}`;
+    this.context = new ContextMeter(() => this.sendUsage(), now);
   }
 
   /** Runs `fn`, and turns whatever it throws into a note in the log: the stage goes on. */
@@ -269,7 +271,7 @@ export class StageFeed {
       emit: (a) => this.emit(a),
       put: (data, mime) => host.putContent(this.keepable(data), mime),
       side: (kind, u) => {
-        if (kind === "usage") this.contextUsage = { used: u.used, size: u.size };
+        if (kind === "usage") this.context.note(u.used, u.size);
       },
     });
     this.chat = chat;
@@ -285,7 +287,9 @@ export class StageFeed {
   /** What a tool left in a file or image, in the size the view keeps. */
   private keepable(data: string | Uint8Array): string | Uint8Array {
     if (typeof data === "string")
-      return redactTokens(data.length > MAX_DIFF_CHARS ? `${data.slice(0, MAX_DIFF_CHARS)}\n[…cut]` : data);
+      return redactTokens(
+        data.length > MAX_DIFF_CHARS ? `${data.slice(0, MAX_DIFF_CHARS)}${STAGE_SIDE_CUT}` : data,
+      );
     return data.byteLength > MAX_BINARY_BYTES ? `[not kept: ${data.byteLength} bytes]` : data;
   }
 
@@ -402,6 +406,27 @@ export class StageFeed {
     });
   }
 
+  /** The session's usage as it stands. A timer can call this, so it keeps to the guard like everything else. */
+  private sendUsage(): boolean {
+    const usage = this.promptUsage;
+    const context = this.context.latest;
+    let sent = false;
+    this.guard("the usage", () => {
+      sent = this.emit({
+        type: ActionType.ChatUsage,
+        turnId: this.turnId,
+        usage: {
+          ...(typeof usage?.inputTokens === "number" ? { inputTokens: usage.inputTokens } : {}),
+          ...(typeof usage?.outputTokens === "number" ? { outputTokens: usage.outputTokens } : {}),
+          ...(typeof usage?.cachedReadTokens === "number" ? { cacheReadTokens: usage.cachedReadTokens } : {}),
+          model: this.info.model,
+          ...(context ? { _meta: context } : {}),
+        },
+      } as never);
+    });
+    return sent;
+  }
+
   /** A text part at the end of the turn, in the slots the cap keeps for it. */
   private emitTail(id: string, content: string): void {
     this.host.emit(
@@ -417,6 +442,7 @@ export class StageFeed {
   /** The session is over. Safe to call twice. */
   end(how: StageEnd): void {
     if (this.ended) return;
+    this.context.stop();
     // A view that broke part-way still must not be left "running".
     if (this.broken && this.chat) {
       try {
@@ -444,24 +470,7 @@ export class StageFeed {
       }
       if (showAnswer) this.emitTail("answer", capText(out, MAX_ANSWER_CHARS));
       this.mapper?.finish();
-      const usage = this.promptUsage;
-      if (usage || this.contextUsage) {
-        this.host.emit(chat, {
-          type: ActionType.ChatUsage,
-          turnId: this.turnId,
-          usage: {
-            ...(typeof usage?.inputTokens === "number" ? { inputTokens: usage.inputTokens } : {}),
-            ...(typeof usage?.outputTokens === "number" ? { outputTokens: usage.outputTokens } : {}),
-            ...(typeof usage?.cachedReadTokens === "number"
-              ? { cacheReadTokens: usage.cachedReadTokens }
-              : {}),
-            model: this.info.model,
-            ...(this.contextUsage
-              ? { _meta: { contextUsed: this.contextUsage.used, contextSize: this.contextUsage.size } }
-              : {}),
-          },
-        } as never);
-      }
+      if (this.promptUsage || this.context.latest) this.sendUsage();
       const duration = Math.max(0, this.now() - this.info.startedAt);
       const base = { turnId: this.turnId, duration };
       const error = (errorType: string, message: string) =>

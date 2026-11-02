@@ -256,6 +256,22 @@ describe("the composer with comments waiting", () => {
     expect(a.send.mock.calls[1]).toEqual([expect.objectContaining({ intent: "queue" })]);
   });
 
+  it("doesn't let a second steer displace comments that went as the first", async () => {
+    const chat = {
+      turns: [],
+      activeTurn: { id: "t" },
+      steeringMessage: { id: "s", message: { text: withComments("", [note() as LineComment]) } },
+    };
+    reviewComments.add("c1", note({ text: "written since" }));
+    const { el, send } = await mount(chat);
+    await typeIn(el, "also fix the tests");
+    await el.submit("steer");
+    expect(send.mock.calls[0]).toEqual([
+      expect.objectContaining({ intent: "queue", text: expect.stringContaining("written since") }),
+    ]);
+    expect(reviewComments.list("c1")).toEqual([]);
+  });
+
   it("leaves comments out of a command, and says they wait", async () => {
     reviewComments.add("c1", note());
     const { el, send, root } = await mount();
@@ -561,6 +577,27 @@ describe("the pane", () => {
     expect(says).toContain("Only the first 2 files are listed.");
   });
 
+  it("doesn't call it nothing when every change has a name it won't show", async () => {
+    changes = listing({ files: [], skipped: 1 });
+    const a = await mount();
+    await settle(a.el);
+    expect(a.root.querySelector(".state p")?.textContent).toBe("1 file has a name that isn't safe to show.");
+    a.el.remove();
+    changes = listing({ files: [], skipped: 2, noProject: true });
+    const b = await mount();
+    await settle(b.el);
+    expect(b.root.querySelector(".state p")?.textContent).toBe(
+      "2 files have a name that isn't safe to show.",
+    );
+    b.el.remove();
+    changes = listing({ files: [], skipped: 1, partial: true });
+    const c = await mount();
+    await settle(c.el);
+    expect(c.root.querySelector(".state p")?.textContent).toBe(
+      "1 file has a name that isn't safe to show. Some files couldn't be read, so this may not be everything.",
+    );
+  });
+
   it("refreshes when a turn ends, not while one runs, and has Refresh", async () => {
     chat = { turns: [], activeTurn: { id: "t", responseParts: [] } };
     const { el, root } = await mount();
@@ -642,7 +679,7 @@ describe("the pane", () => {
     must(root.querySelector<HTMLElement>(`${row} .no`)).click();
     await el.updateComplete;
     const ta = root.querySelector(
-      `[data-box="${row.endsWith("del") ? "old" : "new"}-2"] textarea`,
+      `[data-box="${el.selected}|${row.endsWith("del") ? "old" : "new"}-2"] textarea`,
     ) as HTMLTextAreaElement;
     ta.value = text;
     ta.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
@@ -745,6 +782,31 @@ describe("the pane", () => {
     await until(() => root.activeElement === root.querySelector(".row.add .no"));
   });
 
+  it("goes by the box's own file when another file has a box on the same line number", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    must(root.querySelector<HTMLElement>(".row.add .no")).click();
+    await el.updateComplete;
+    must(root.querySelector<HTMLElement>('.f[data-path="new.txt"]')).click();
+    await settle(el);
+    await typeAt(el, root, ".row.add", "worth keeping");
+    const esc = () =>
+      must(root.querySelector("textarea")).dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, composed: true, cancelable: true }),
+      );
+    esc();
+    await el.updateComplete;
+    expect(root.querySelector(".box .acts p")?.textContent).toBe("Discard this comment?");
+    expect(commentDrafts.list("c1").find((d) => d.path === "new.txt")?.text).toBe("worth keeping");
+    // the other way round: the empty box has nothing to ask about
+    must(root.querySelector<HTMLElement>('.f[data-path="src/a.ts"]')).click();
+    await settle(el);
+    esc();
+    await el.updateComplete;
+    expect(root.querySelector(".box")).toBeNull();
+    expect(commentDrafts.list("c1").map((d) => d.path)).toEqual(["new.txt"]);
+  });
+
   it("closes an empty box with no question", async () => {
     const { el, root } = await mount();
     await settle(el);
@@ -821,6 +883,203 @@ describe("the pane", () => {
     link.click();
     await settle(el);
     expect(root.querySelector<HTMLTextAreaElement>(".moved .box textarea")?.value).toBe("still mine");
+  });
+
+  it("keeps a half-written comment in reach, to finish or discard, when the list empties", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    await typeAt(el, root, ".row.add", "still mine");
+    changes = listing({ files: [] });
+    await el.refresh();
+    await settle(el);
+    expect(root.querySelector(".state")?.textContent).toContain("Nothing has changed yet.");
+    expect(root.querySelector("#h-unfinished")?.textContent).toBe("Unfinished comments · 1");
+    const ta = root.querySelector(".side .box textarea") as HTMLTextAreaElement;
+    expect(ta.value).toBe("still mine");
+    expect(ta.getAttribute("aria-label")).toBe("Comment on src/a.ts line 2");
+    expect(root.querySelector(".side .where")?.textContent).toBe("src/a.ts:2");
+    must(root.querySelector<HTMLButtonElement>(".side .box .primary")).click();
+    await el.updateComplete;
+    expect(reviewComments.list("c1").map((c) => c.text)).toEqual(["still mine"]);
+    expect(commentDrafts.list("c1")).toEqual([]);
+    expect(root.querySelector("#h-unfinished")).toBeNull();
+    expect(root.querySelector("#h-comments")?.textContent).toBe("Comments · 1");
+  });
+
+  it("keeps it in reach when the machine is asleep, and asks before it goes", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    await typeAt(el, root, ".row.add", "still mine");
+    el.remove();
+    changes = listing({
+      state: "asleep",
+      files: [],
+      reason: "Ada's machine is asleep, so the changes can't be read right now.",
+    });
+    const again = await mount();
+    await settle(again.el);
+    const button = (name: string) =>
+      must([...again.root.querySelectorAll<HTMLElement>(".box .cbtn")].find((b) => b.textContent === name));
+    expect(again.root.querySelector(".state")?.textContent).toContain("is asleep");
+    expect(again.root.querySelector<HTMLTextAreaElement>(".side .box textarea")?.value).toBe("still mine");
+    button("Cancel").click();
+    await again.el.updateComplete;
+    expect(again.root.querySelector(".box .acts p")?.textContent).toBe("Discard this comment?");
+    button("Discard").click();
+    await again.el.updateComplete;
+    expect(commentDrafts.list("c1")).toEqual([]);
+    expect(again.root.querySelector(".side")).toBeNull();
+  });
+
+  it("asks about one box at a time when two files have one on the same line number", async () => {
+    const at = { line: 2, side: "new" as const, quote: "2" };
+    for (const path of ["a.ts", "b.ts"]) {
+      commentDrafts.start("c1", { ...at, path });
+      commentDrafts.write("c1", { ...at, path }, `on ${path}`);
+    }
+    changes = listing({ files: [] });
+    const { el, root } = await mount();
+    await settle(el);
+    const boxes = [...root.querySelectorAll<HTMLElement>(".box")];
+    expect(boxes.length).toBe(2);
+    must(
+      [...(boxes[1] as HTMLElement).querySelectorAll<HTMLElement>(".cbtn")].find(
+        (b) => b.textContent === "Cancel",
+      ),
+    ).click();
+    await el.updateComplete;
+    const asked = [...root.querySelectorAll(".box .acts p")];
+    expect(asked.length).toBe(1);
+    expect(asked[0]?.closest<HTMLElement>(".box")?.dataset.box).toBe("b.ts|new-2");
+    await until(() => root.activeElement === root.querySelectorAll(".box")[1]?.querySelector(".keep"));
+  });
+
+  it("shows a written comment past the cut when its file opens again", async () => {
+    const before = `${Array.from({ length: 1400 }, (_, i) => `old ${i + 1}`).join("\n")}\n`;
+    const after = `${Array.from({ length: 1400 }, (_, i) => `new ${i + 1}`).join("\n")}\n`;
+    fileReply = file({
+      before: { state: "text", text: before },
+      after: { state: "text", text: after },
+    });
+    const place = { path: "src/a.ts", line: 1200, side: "new" as const, quote: "new 1200" };
+    commentDrafts.start("c1", place);
+    commentDrafts.write("c1", place, "far down");
+    const { el, root } = await mount();
+    await settle(el);
+    expect(el.showAll).toBe(true);
+    expect(root.querySelector<HTMLTextAreaElement>(".rows .box textarea")?.value).toBe("far down");
+    expect(root.querySelector(".more")).toBeNull();
+    // An empty box says nothing is waiting, and a long diff stays cut
+    commentDrafts.write("c1", place, "");
+    el.remove();
+    const again = await mount();
+    await settle(again.el);
+    expect(again.el.showAll).toBe(false);
+    expect(again.root.querySelector(".more")).not.toBeNull();
+  });
+
+  describe("with the owner typing in a box as a read lands", () => {
+    const typing = async (el: IncConvReview, root: ShadowRoot) => {
+      await settle(el);
+      await typeAt(el, root, ".row.add", "half a thought");
+      const ta = root.querySelector(".box textarea") as HTMLTextAreaElement;
+      ta.focus();
+      ta.setSelectionRange(4, 6);
+      return ta;
+    };
+
+    it("keeps focus and the caret when a turn's end moves the box to another row", async () => {
+      chat = { turns: [], activeTurn: { id: "t", responseParts: [] } };
+      const { el, root } = await mount();
+      const ta = await typing(el, root);
+      // A new first line takes a row above the box; line 2 reads as it did, so the box stays with it.
+      fileReply = file({
+        before: { state: "text", text: "gone\none\ntwo\nthree\n" },
+        after: { state: "text", text: "one\n2\nthree\n" },
+      });
+      chat = { turns: [] };
+      notify(new Set([CHAT]));
+      await until(() => el.rows.length === 5);
+      await settle(el);
+      const now = root.querySelector(".rows .box textarea") as HTMLTextAreaElement;
+      expect(now).not.toBe(ta);
+      expect(now.value).toBe("half a thought");
+      await until(() => root.activeElement === now);
+      expect([now.selectionStart, now.selectionEnd]).toEqual([4, 6]);
+    });
+
+    it("follows the box out of the diff when its line changes", async () => {
+      const { el, root } = await mount();
+      await typing(el, root);
+      fileReply = file({ after: { state: "text", text: "one\nchanged\nthree\n" } });
+      await el.refresh();
+      await settle(el);
+      const now = root.querySelector(".moved .box textarea") as HTMLTextAreaElement;
+      expect(root.activeElement).toBe(now);
+      expect([now.selectionStart, now.selectionEnd]).toEqual([4, 6]);
+    });
+
+    it("stays with its own comment when the row's box is drawn for another", async () => {
+      const { el, root } = await mount();
+      await settle(el);
+      const second = { path: "src/a.ts", line: 3, side: "new" as const, quote: "three" };
+      commentDrafts.start("c1", second);
+      commentDrafts.write("c1", second, "second");
+      await typeAt(el, root, ".row.add", "first");
+      const ta = root.querySelector(".rows .box textarea") as HTMLTextAreaElement;
+      expect(ta.value).toBe("first");
+      ta.focus();
+      // Line 2 now reads otherwise, so "first" leaves the diff, and "second" lands on the row it was on: that row's
+      // box stays in the page, with focus still in it, holding someone else's words.
+      fileReply = file({
+        before: { state: "text", text: "one\nb\nthree\nz\n" },
+        after: { state: "text", text: "one\nb\nthree\ny\n" },
+      });
+      await el.refresh();
+      await settle(el);
+      expect(root.querySelector<HTMLElement>(".rows .box")?.dataset.box).toBe("src/a.ts|new-3");
+      expect(root.activeElement).toBe(root.querySelector(".moved .box textarea"));
+      expect((root.activeElement as HTMLTextAreaElement).value).toBe("first");
+    });
+
+    it("follows the box into Unfinished comments when the list empties", async () => {
+      const { el, root } = await mount();
+      await typing(el, root);
+      changes = listing({ files: [] });
+      await el.refresh();
+      await settle(el);
+      expect(root.activeElement).toBe(root.querySelector(".side .box textarea"));
+    });
+
+    it("goes to the way back when the box's file leaves the list", async () => {
+      const { el, root } = await mount();
+      await typing(el, root);
+      changes = listing({ files: [{ path: "other.ts", added: 1, removed: 0, status: "modified" }] });
+      await el.refresh();
+      await settle(el);
+      expect(root.activeElement).toBe(root.querySelector(".stray"));
+    });
+
+    it("leaves focus alone when it isn't in a box", async () => {
+      const { el, root } = await mount();
+      await typing(el, root);
+      const refresh = must(root.querySelector<HTMLButtonElement>(".refresh"));
+      refresh.focus();
+      fileReply = file({ after: { state: "text", text: "one\nchanged\nthree\n" } });
+      await el.refresh();
+      await settle(el);
+      expect(root.activeElement).toBe(refresh);
+    });
+
+    it("leaves focus where it is when the box hasn't moved", async () => {
+      const { el, root } = await mount();
+      const ta = await typing(el, root);
+      await el.refresh();
+      await settle(el);
+      expect(root.querySelector(".box textarea")).toBe(ta);
+      expect(root.activeElement).toBe(ta);
+      expect([ta.selectionStart, ta.selectionEnd]).toEqual([4, 6]);
+    });
   });
 
   it("doesn't drop focus when a file's Try again is replaced by the file", async () => {
@@ -945,6 +1204,97 @@ describe("the pane", () => {
     expect(root.querySelector(".send .cbtn")).not.toBeNull();
   });
 
+  it("keeps the list, the diff and a box when a refresh is answered asleep, and says so", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    await typeAt(el, root, ".row.add", "half a thought");
+    const reason = "Ada's machine is asleep, so the changes can't be read right now.";
+    changes = listing({ state: "asleep", files: [], reason });
+    await el.refresh();
+    await settle(el);
+    expect(root.querySelector(".rows")).not.toBeNull();
+    expect(root.querySelector("#h-files")?.textContent).toBe("Files · 2");
+    expect(root.querySelector<HTMLTextAreaElement>(".rows .box textarea")?.value).toBe("half a thought");
+    expect(root.querySelector(".state")).toBeNull();
+    expect(root.querySelector('.say[role="alert"]')?.textContent).toContain(reason);
+    // Its Try again works, and the note goes with the read that worked
+    changes = listing();
+    const again = must(root.querySelector<HTMLButtonElement>('.say[role="alert"] .link-btn'));
+    again.focus();
+    again.click();
+    await until(() => !root.querySelector('.say[role="alert"]'));
+    await settle(el);
+    await until(() => root.activeElement === root.querySelector(".refresh"));
+  });
+
+  it("keeps it for busy and failed too, but takes a copy that has gone at its word", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    for (const state of ["busy", "failed"]) {
+      changes = listing({ state, files: [], reason: `It is ${state}.` });
+      await el.refresh();
+      await settle(el);
+      expect(root.querySelector(".rows")).not.toBeNull();
+      expect(root.querySelector('.say[role="alert"]')?.textContent).toContain(`It is ${state}.`);
+    }
+    changes = listing({ state: "no-copy", files: [], reason: "This working copy was cleaned away." });
+    await el.refresh();
+    await settle(el);
+    expect(root.querySelector(".rows")).toBeNull();
+    expect(root.querySelector(".state")?.textContent).toContain("cleaned away");
+    expect(root.querySelector('.say[role="alert"]')).toBeNull();
+  });
+
+  it("keeps the file showing when it can't be read again, and says so above it", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    await typeAt(el, root, ".row.add", "half a thought");
+    fileReply = file({
+      state: "busy",
+      reason: "Ada's machine is busy, so the changes can't be read right now.",
+    });
+    await el.refresh();
+    await settle(el);
+    expect(root.querySelector(".rows")).not.toBeNull();
+    expect(el.rows.length).toBeGreaterThan(0);
+    expect(root.querySelector<HTMLTextAreaElement>(".rows .box textarea")?.value).toBe("half a thought");
+    expect(root.querySelector('.diff .note[role="alert"]')?.textContent).toContain("is busy");
+    // Its Try again brings the file back, and focus moves on to it
+    fileReply = file();
+    const again = must(root.querySelector<HTMLButtonElement>('.diff .note[role="alert"] .link-btn'));
+    again.focus();
+    again.click();
+    await until(() => !root.querySelector('.diff .note[role="alert"]'));
+    await settle(el);
+    expect(root.querySelector(".rows")).not.toBeNull();
+  });
+
+  it("keeps the file showing when a read again throws", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    vi.stubGlobal("fetch", async (url: string) =>
+      url.includes("/changes/file") ? reply({ error: "boom" }, 500) : reply({ changes }),
+    );
+    await el.refresh();
+    await settle(el);
+    expect(root.querySelector(".rows")).not.toBeNull();
+    expect(root.querySelector('.diff .note[role="alert"]')?.textContent).toContain(
+      "Couldn't read this file again",
+    );
+  });
+
+  it("doesn't keep one conversation's list for another that can't be read", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    changes = listing({ state: "asleep", files: [], reason: "Grace's machine is asleep." });
+    el.conv = { id: "c2", ahpChat: CHAT, ahpSession: SESSION } as Any;
+    await el.updateComplete;
+    await settle(el);
+    expect(root.querySelector(".rows")).toBeNull();
+    expect(root.querySelector("#h-files")).toBeNull();
+    expect(root.querySelector(".state")?.textContent).toContain("Grace's machine is asleep.");
+  });
+
   it("keeps the comments when the first read fails", async () => {
     reviewComments.add("c1", note());
     vi.stubGlobal("fetch", async () => reply({ error: "boom" }, 500));
@@ -1016,6 +1366,56 @@ describe("the pane", () => {
     el.addEventListener("conv-review-answer", answer);
     must(root.querySelector<HTMLButtonElement>(".say .link-btn")).click();
     expect(answer).toHaveBeenCalledTimes(1);
+  });
+
+  describe("for a screen reader", () => {
+    const pending = (id: string) => ({
+      kind: "toolCall",
+      toolCall: { toolCallId: id, status: "pending-confirmation" },
+    });
+    const region = (root: ShadowRoot) => must(root.querySelector('.sr-only[role="status"]'));
+    const change = async (el: IncConvReview, next: Any) => {
+      chat = next;
+      notify(new Set([CHAT]));
+      await el.updateComplete;
+    };
+
+    it("says what changed in one region that was there from the start", async () => {
+      const { el, root } = await mount();
+      await settle(el);
+      const live = region(root);
+      expect(live.textContent).toBe("");
+      await change(el, { turns: [], activeTurn: { id: "t", responseParts: [] } });
+      expect(live.textContent).toBe("Ada is working");
+      await change(el, { turns: [], activeTurn: { id: "t", responseParts: [pending("p")] } });
+      expect(live.textContent).toBe("Ada needs your answer");
+      await change(el, { turns: [], activeTurn: { id: "t", responseParts: [] } });
+      expect(live.textContent).toBe("Ada is working");
+      await change(el, { turns: [{ id: "t", state: "complete" }] });
+      expect(live.textContent).toBe("Ada finished");
+      await settle(el);
+      expect(region(root)).toBe(live);
+    });
+
+    it("says a turn that didn't finish for what it was", async () => {
+      chat = { turns: [], activeTurn: { id: "t", responseParts: [] } };
+      const { el, root } = await mount();
+      await settle(el);
+      await change(el, { turns: [{ id: "t", state: "cancelled" }] });
+      expect(region(root).textContent).toBe("Ada stopped");
+      await change(el, { turns: [], activeTurn: { id: "u", responseParts: [] } });
+      await change(el, { turns: [{ id: "u", state: "error" }] });
+      expect(region(root).textContent).toBe("Ada hit an error");
+    });
+
+    it("doesn't tell what was already going on when the pane opened, and leaves the shown line out", async () => {
+      chat = { turns: [], activeTurn: { id: "t", responseParts: [pending("p")] } };
+      const { el, root } = await mount();
+      await settle(el);
+      expect(region(root).textContent).toBe("");
+      expect(root.querySelector(".say")?.textContent).toContain("is waiting for your answer");
+      expect(root.querySelector('.say[role="status"]')).toBeNull();
+    });
   });
 
   it("doesn't add an empty comment", async () => {

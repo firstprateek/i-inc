@@ -38,7 +38,7 @@ import {
   readList,
   reviewPort,
 } from "../src/review.ts";
-import { marker } from "../src/ship-git.ts";
+import { marker, secretFile } from "../src/ship-git.ts";
 
 const { wallsMarker: _, ...noWalls } = defaultMachineSettings;
 const NONCE = "0123456789abcdef";
@@ -239,6 +239,43 @@ describe("a read that can't reach everything", () => {
     const r = await w.port.list(w.copy);
     expect(r.files.map((f) => f.path)).toContain("new.txt");
     expect(r.partial).toBe(true);
+  });
+
+  it.skipIf(process.getuid?.() === 0)(
+    "says when a folder it can't enter may hold changes, new or tracked",
+    async () => {
+      for (const project of [true, false]) {
+        const w = rig(project);
+        w.write("seen.txt", "changed\n");
+        w.write("shut/new.txt", "new\n");
+        chmodSync(join(w.cwd, "shut"), 0o000);
+        const r = await w.port.list(w.copy);
+        chmodSync(join(w.cwd, "shut"), 0o755);
+        expect(r.files.map((f) => f.path)).toContain("seen.txt");
+        expect(r.partial).toBe(true);
+      }
+      // A tracked file edited behind a shut folder is no longer seen at all, and that isn't "nothing changed".
+      const w = rig();
+      w.write("d/b.txt", "one\n");
+      w.commit("more");
+      git(w.cwd, "update-ref", "refs/remotes/origin/main", "HEAD");
+      w.write("d/b.txt", "two\n");
+      chmodSync(join(w.cwd, "d"), 0o000);
+      const r = await w.port.list(w.copy);
+      chmodSync(join(w.cwd, "d"), 0o755);
+      expect(r.partial).toBe(true);
+    },
+  );
+
+  it.skipIf(process.getuid?.() === 0)("doesn't mind a shut folder that .gitignore covers", async () => {
+    const w = rig();
+    w.write(".gitignore", "shut/\n");
+    w.write("shut/x.txt", "x\n");
+    chmodSync(join(w.cwd, "shut"), 0o000);
+    const r = await w.port.list(w.copy);
+    chmodSync(join(w.cwd, "shut"), 0o755);
+    expect(r.files.map((f) => f.path)).toEqual([".gitignore"]);
+    expect(r.partial).toBe(false);
   });
 
   it("still lists the rest beside a nested repository with no commit", async () => {
@@ -789,20 +826,71 @@ describe("how a read fails, in a sentence", () => {
     );
   });
 
-  it("runs one listing at a time per conversation", async () => {
+  it("runs one listing at a time per conversation, and at most one more after it", async () => {
     let calls = 0;
+    let running = 0;
+    let most = 0;
     const r = service(
       stub({
         list: async () => {
           calls++;
+          most = Math.max(most, ++running);
+          await new Promise((go) => setTimeout(go, 5));
+          running--;
           return { present: true, files: [], skipped: 0, truncated: false, partial: false };
         },
       }),
     );
-    await Promise.all([r.changes("ab12"), r.changes("ab12")]);
-    expect(calls).toBe(1);
-    await r.changes("ab12");
+    // Three overlapping requests: the first read, and one read after it that the other two share.
+    await Promise.all([r.changes("ab12"), r.changes("ab12"), r.changes("ab12")]);
     expect(calls).toBe(2);
+    expect(most).toBe(1);
+    await r.changes("ab12");
+    expect(calls).toBe(3);
+  });
+
+  it("answers a request made during a listing with a read that starts after it", async () => {
+    const copy = ["a.ts"];
+    const held: (() => void)[] = [];
+    const r = service(
+      stub({
+        list: async () => {
+          const files = copy.map((path) => ({ path, added: 1, removed: 0, status: "added" as const }));
+          await new Promise<void>((go) => held.push(go));
+          return { present: true, files, skipped: 0, truncated: false, partial: false };
+        },
+      }),
+    );
+    const before = r.changes("ab12");
+    // The agent's last edit lands after the running read went past, and the turn's end asks for the list.
+    copy.push("last-edit.ts");
+    const after = r.changes("ab12");
+    held.shift()?.();
+    expect((await before).files.map((f) => f.path)).toEqual(["a.ts"]);
+    await new Promise((go) => setTimeout(go, 0));
+    held.shift()?.();
+    expect((await after).files.map((f) => f.path)).toEqual(["a.ts", "last-edit.ts"]);
+  });
+
+  it("still reads after a listing that failed", async () => {
+    let calls = 0;
+    const held: (() => void)[] = [];
+    const r = service(
+      stub({
+        list: async () => {
+          if (++calls === 1) {
+            await new Promise<void>((go) => held.push(go));
+            throw new Error("boom");
+          }
+          return { present: true, files: [], skipped: 0, truncated: false, partial: false };
+        },
+      }),
+    );
+    const first = r.changes("ab12");
+    const second = r.changes("ab12");
+    held.shift()?.();
+    expect((await first).state).toBe("failed");
+    expect((await second).state).toBe("ok");
   });
 
   it("serves neither side of a file that usually holds secrets, without asking the machine", async () => {
@@ -817,6 +905,62 @@ describe("how a read fails, in a sentence", () => {
     );
     expect(await r.file("ab12", "config/.env")).toMatchObject({ withheld: true, after: { state: "none" } });
     expect(await r.file("ab12", "deploy/server.pem")).toMatchObject({ withheld: true });
+    expect(asked).toBe(0);
+  });
+
+  it("shows in the diff every file ship would push, whatever its name suggests", async () => {
+    const after = { state: "text", text: "export DB_PASSWORD=hunter2hunter2" } as const;
+    const r = service(stub({ file: async () => ({ before: { state: "none" }, after }) }));
+    const names = [
+      ".envrc",
+      "prod.env",
+      "deploy/staging.env",
+      "credentials",
+      ".pgpass",
+      ".git-credentials",
+      "key.ppk",
+      "ID_RSA",
+    ];
+    for (const path of names) {
+      expect(
+        secretFile.some((re) => re.test(path)),
+        path,
+      ).toBe(false);
+      const seen = await r.file("ab12", path);
+      expect(seen.withheld, path).toBeUndefined();
+      expect(seen.after, path).toEqual(after);
+    }
+  });
+
+  it("withholds in the diff nothing but what ship stops by name", async () => {
+    const r = service(stub({}));
+    for (const path of [".env", ".env.local", "server.pem", "keys/id_rsa", ".netrc", ".pypirc"]) {
+      expect(
+        secretFile.some((re) => re.test(path)),
+        path,
+      ).toBe(true);
+      expect((await r.file("ab12", path)).withheld, path).toBe(true);
+    }
+  });
+
+  it("still keeps those wider names out of Files and Search", async () => {
+    let asked = 0;
+    const read = async () => {
+      asked++;
+      return { state: "text" as const, text: "x" };
+    };
+    const r = service(stub({ read }));
+    for (const path of [
+      ".envrc",
+      "prod.env",
+      "credentials",
+      ".pgpass",
+      ".git-credentials",
+      "key.ppk",
+      "ID_RSA",
+    ]) {
+      expect((await r.read("ab12", path)).withheld, path).toBe(true);
+    }
     expect(asked).toBe(0);
   });
 
