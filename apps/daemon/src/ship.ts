@@ -25,7 +25,7 @@ import {
 import type { AgentBackend } from "./ahp/backend.ts";
 import { type ConversationService, type ConversationView, conversationDir } from "./ahp/conversations.ts";
 import { type AhpHost, DEFAULT_TITLE } from "./ahp/host.ts";
-import { redactText } from "./ahp/sanitize.ts";
+import { redactHead, redactText } from "./ahp/sanitize.ts";
 import type { Db } from "./db.ts";
 import { type PrChecks, type PrInfo, UpstreamGitHubError } from "./github.ts";
 import { describeGitHubError } from "./github-projects.ts";
@@ -87,7 +87,8 @@ const PENDING_MS = 10 * 60_000;
 const PR_CACHE_MS = 20_000;
 const RECONCILE_MS = 60_000;
 
-const clean = (s: string, max: number) => redactText(s.replace(/\s+/g, " ").trim()).slice(0, max);
+/** A line from what someone wrote, as long as `max`. An owner's message can run to megabytes: only its start is read. */
+export const clean = (s: string, max: number) => redactHead(s.replace(/\s+/g, " ").trim(), max).slice(0, max);
 
 /** A conventional-commit type for a title: a fix when it says so, else a feature. */
 export function typeOf(title: string): "fix" | "feat" {

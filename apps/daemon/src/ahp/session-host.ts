@@ -41,7 +41,7 @@ import type {
 } from "./backend.ts";
 import { ContextMeter } from "./context-meter.ts";
 import { type AhpHost, DEFAULT_TITLE } from "./host.ts";
-import { redactText, redactTokens } from "./sanitize.ts";
+import { redactHead, redactTokens } from "./sanitize.ts";
 import { ActionType, type ChatState, type Json, ResponsePartKind, SessionStatus } from "./wire.ts";
 
 /** A conversation, as the session host needs to know it. */
@@ -198,6 +198,39 @@ function rememberPrompt(note: string): string {
 
 const fileUriPath = (uri: string): string | undefined =>
   uri.startsWith("file://") ? uri.slice(7) : undefined;
+
+/**
+ * A conversation resumed on a blank agent: what was said, short enough to put at the top of a prompt. Only the start of
+ * each message is read: an agent's turn can be many parts of 2 MiB each, and all of it would be read here at once.
+ */
+export function continuationBrief(chat: ChatState | undefined, next: Pick<Message, "text">): string {
+  const parts: string[] = [
+    "You are resuming a conversation with the owner. Your memory of it was lost when your session ended; the files in your working copy are as you left them.",
+    "Here is how it went so far, most recent last (long messages are cut):",
+  ];
+  const turns = (chat?.turns ?? []).slice(-6);
+  const said = (t: ChatState["turns"][number]) => {
+    const text = t.responseParts
+      .map((p) =>
+        p.kind === ResponsePartKind.Markdown
+          ? p.content
+          : p.kind === ResponsePartKind.ToolCall
+            ? `[${p.toolCall.displayName}]`
+            : "",
+      )
+      .filter(Boolean)
+      .join(" ");
+    const safe = redactHead(text, 1200);
+    return safe.length > 1200 ? `${safe.slice(0, 1200)}…` : safe;
+  };
+  for (const t of turns) {
+    const text = redactHead(t.message.text, 1200);
+    const user = text.length > 1200 ? `${text.slice(0, 1200)}…` : text;
+    parts.push(`Owner: ${user}`, `You: ${said(t) || "(no reply)"}`);
+  }
+  parts.push("", "The owner's new message:", next.text);
+  return parts.join("\n");
+}
 
 export class SessionHost implements AgentBackend {
   private host: AhpHost | undefined;
@@ -403,7 +436,10 @@ export class SessionHost implements AgentBackend {
     const message = remember ? { ...run.message, text: rememberPrompt(remember[1] ?? "") } : run.message;
     let blocks = promptBlocks(message, live.caps);
     if (blank) {
-      blocks = [{ type: "text", text: this.continuationBrief(live, run.message) }, ...blocks.slice(1)];
+      blocks = [
+        { type: "text", text: continuationBrief(this.h.chatState(live.chat), run.message) },
+        ...blocks.slice(1),
+      ];
     }
     // The brain goes in after the owner's message, as its own block.
     const home = this.o.homeNotes?.(live.info.employeeId) ?? "";
@@ -1058,37 +1094,6 @@ export class SessionHost implements AgentBackend {
     return key === "mode" && live.modeViaModes
       ? conn.request("session/set_mode", { sessionId, modeId: value }, 30_000)
       : conn.request("session/set_config_option", { sessionId, configId: key, value }, 30_000);
-  }
-
-  /** A conversation resumed on a blank agent: what was said, short enough to put at the top of a prompt. */
-  private continuationBrief(live: Live, next: Message): string {
-    const chat = this.h.chatState(live.chat);
-    const parts: string[] = [
-      "You are resuming a conversation with the owner. Your memory of it was lost when your session ended; the files in your working copy are as you left them.",
-      "Here is how it went so far, most recent last (long messages are cut):",
-    ];
-    const turns = (chat?.turns ?? []).slice(-6);
-    const said = (t: ChatState["turns"][number]) => {
-      const text = t.responseParts
-        .map((p) =>
-          p.kind === ResponsePartKind.Markdown
-            ? p.content
-            : p.kind === ResponsePartKind.ToolCall
-              ? `[${p.toolCall.displayName}]`
-              : "",
-        )
-        .filter(Boolean)
-        .join(" ");
-      const safe = redactText(text);
-      return safe.length > 1200 ? `${safe.slice(0, 1200)}…` : safe;
-    };
-    for (const t of turns) {
-      const text = redactText(t.message.text);
-      const user = text.length > 1200 ? `${text.slice(0, 1200)}…` : text;
-      parts.push(`Owner: ${user}`, `You: ${said(t) || "(no reply)"}`);
-    }
-    parts.push("", "The owner's new message:", next.text);
-    return parts.join("\n");
   }
 
   // ───────────────────────────── what the agent says ─────────────────────────────

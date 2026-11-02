@@ -283,9 +283,15 @@ links into it.
   shapes they stop short of: a URL password with a `/`, `?` or `#` in it, userinfo or a secret query value past their
   limits, and a token straight after a word character. `redactText`, `redactTokens`, `redactProse` and `redactFile` end
   with it, after every other pass they run, so it can't take a secret's name or a query's label before the pass that
-  looks for it. `redactText` runs the usual passes up to three times first, until they change nothing, since a brief, a
-  notification or a resumed prompt reads its text again and a later read can find what the first uncovered. Ticket
-  transcripts' `redactSecrets` doesn't run the last step. A link is outside or not by its target as written, not by what
+  looks for it. `redactText` and `redactProse` run the usual passes up to three times first, until they change nothing,
+  since a brief, a notification, a resumed prompt or a brain page reads its text again and a later read can find what the
+  first uncovered. Three doesn't bound them: a text can need as many reads as it is long, and a suggestion sent back is
+  read up to five times. So when the last step cuts through a value a usual pass has begun on, it takes that value's
+  whole reach, up to a `&`, a blank or a quote, and a token keeps a secret's name it ran into, for a read after marks or
+  blanks are taken out. A run of 500 or more goes whole if a token is in it, so its pieces don't pass as short. Ticket
+  transcripts' `redactSecrets` doesn't run the last step. A caller that keeps only the start of a text reads only that,
+  plus 4 KB, with `redactHead`: a resumed prompt reads the start of each message, and a title the start of the owner's.
+  A link is outside or not by its target as written, not by what
   redaction left of it. A block keeps its lines, so line numbers hold. Its markers count wherever they sit, in a
   string joined over several lines or after code, once there is a line of key between them; a line in it that doesn't
   read as key material shows as `redactTokens` left it, which is in sight unless it runs straight on from the key, and

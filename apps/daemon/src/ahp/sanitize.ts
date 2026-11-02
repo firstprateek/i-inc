@@ -43,9 +43,9 @@ const marker = (n: number) => `\n[…${n} more characters not kept]`;
 
 /** An unbroken run of this many token characters or more that survives redaction is not kept. */
 const LONG_RUN = /(?<![A-Za-z0-9_+/=.-])[A-Za-z0-9_+/=.-]{500,}/g;
-/** How a long run's note ends, which is all that is left of it once a value before it has taken the start. */
-const RUN_NOTE = " characters in one unbroken run, not kept]";
-const LEFT_OF_RUN_NOTE = new RegExp(String.raw`(?:\[\d+)?${RUN_NOTE.replace("]", "\\]")}`, "g");
+/** The words of a long run's note, and how it ends. Some of it may be all that is left once a value before it has taken the start. */
+const RUN_NOTE_WORDS = " characters in one unbroken run, not kept";
+const RUN_NOTE = `${RUN_NOTE_WORDS}]`;
 /** A run of blanks this long (spaces, tabs, newlines) is worth one blank. */
 const BLANK_RUN = /\s{200,}/g;
 const DATA_URI =
@@ -78,6 +78,10 @@ const NEXT_SCHEME = /[a-z][a-z0-9+.-]{0,30}:$/i;
 const withoutNextScheme = (a: string) => a.slice(0, -32) + a.slice(-32).replace(NEXT_SCHEME, "");
 const URL_BLANK = /\s/g;
 const AUTHORITY_END = /[/?#\s]/g;
+/** What a usual pass left of a value it has begun on: `?pwd=[redacted]`, or a user's `-ux:[redacted]`. */
+const VALUE_BEGUN = /[=:]\[redacted\]/;
+/** What ends such a value on any read: what stops both `SECRET_QUERY` and the `=` rule of `redactKeyed`. */
+const VALUE_END = /[&\s"']/g;
 /**
  * A token with a word character straight before it (`foo_ghp_...`), which a pattern with a `\b` passes over. Its prefix
  * won't do alone: `highs_and_lows` holds `ghs_`, `task-` holds `sk-`, `disk_live_` holds `sk_live_` and `pnpm_` holds
@@ -89,6 +93,13 @@ const AUTHORITY_END = /[/?#\s]/g;
 const GLUED_TOKEN =
   /gh[opsu]_(?![0-9a-f]+(?![A-Za-z0-9]))(?![0-9A-F]+(?![A-Za-z0-9]))[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9]{20,}\w*|sk-(?:ant|proj|svcacct|admin)-[A-Za-z0-9_-]{16,}|(?<![A-Za-z])sk-[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z])|xox[baprs]-[0-9][0-9A-Za-z-]{9,}|AKIA[0-9A-Z]{16}(?![0-9A-Za-z])|[sr]k_live_(?![0-9a-f]+(?![A-Za-z0-9]))(?![0-9A-F]+(?![A-Za-z0-9]))(?=[A-Za-z]*[0-9])[A-Za-z0-9]{24,}\w*|npm_[A-Za-z0-9]{36}(?![A-Za-z0-9])/g;
 const NAMED_KEY = /^sk-(?:ant|proj|svcacct|admin)-/;
+/** A secret's name at the end of what a token's letters took, as in `x_sk-ant-...-password: hunter2`. */
+const NAME_AT_END = /[-_]*(?:password|token|secret|api[-_]?key|bearer|authorization)[-_]*$/i;
+/**
+ * A token goes, and a secret's name it ran into stays: a read after marks or blanks are taken out, as for a notification
+ * or a stage title, finds the value by that name. Only the end is searched, as a token can be as long as the text.
+ */
+const withoutToken = (m: string) => `[redacted]${NAME_AT_END.exec(m.slice(-40))?.[0] ?? ""}`;
 /** The shortest key that goes by a prefix alone after a letter: `sk-proj-` and 48 characters. */
 const SHORTEST_NAMED_KEY = 56;
 /**
@@ -98,9 +109,9 @@ const SHORTEST_NAMED_KEY = 56;
  * `flask-admin-UserProfileController-base` has such a run, and a name past 56 characters can have a `Q3` and a capital.
  */
 const gluedToken = (m: string, at: number, t: string): string => {
-  if (!NAMED_KEY.test(m) || !/[A-Za-z]/.test(t.charAt(at - 1))) return "[redacted]";
+  if (!NAMED_KEY.test(m) || !/[A-Za-z]/.test(t.charAt(at - 1))) return withoutToken(m);
   const run = m.match(/[A-Za-z0-9]{16,}/g)?.some((r) => /\d/.test(r) || (/[a-z]/.test(r) && /[A-Z]/.test(r)));
-  return run || (m.length >= SHORTEST_NAMED_KEY && /[A-Z]/.test(m) && /\d/.test(m)) ? "[redacted]" : m;
+  return run || (m.length >= SHORTEST_NAMED_KEY && /[A-Z]/.test(m) && /\d/.test(m)) ? withoutToken(m) : m;
 };
 // RSA, EC, OPENSSH and plain PRIVATE KEY blocks, and PGP's `PRIVATE KEY BLOCK`.
 const PEM_BEGIN = /-----BEGIN [A-Z ]{0,30}PRIVATE KEY(?: BLOCK)?-----/g;
@@ -200,6 +211,18 @@ function schemeStart(t: string, at: number): number {
 }
 
 /**
+ * Where a cut from `from` to `end` stops. It takes the name of any value in it, so if a usual pass has begun on one, no
+ * later read can go on with that value. Each read takes more of one: `?pwd=[redacted]#;#;@tail` loses a piece each time,
+ * as many as the text is long, since `SECRET_QUERY` stops at a `#` and the `=` rule of `redactKeyed` at a `;`, and a value
+ * with a limit goes on past it. So all that those reads would take goes now.
+ */
+function cutEnd(t: string, from: number, end: number): number {
+  if (!VALUE_BEGUN.test(t.slice(from, end))) return end;
+  VALUE_END.lastIndex = end;
+  return VALUE_END.test(t) ? VALUE_END.lastIndex - 1 : t.length;
+}
+
+/**
  * URL userinfo whose password holds a `/`, `?` or `#`: `postgres://u:ab/cd@h`. Any of those ends the authority, and an `@`
  * after one is usually the path's (`http://localhost:3000/@vite/client`, `https://x.example/react@18`), so `USERINFO` stops
  * there. This goes on only where what it stopped at can't be a host and port, and takes all up to the URL's last `@`.
@@ -224,6 +247,8 @@ function redactCutPasswords(t: string): string {
   let run = -1;
   let lastAt = -1;
   for (let at = t.indexOf("://"); at >= 0; at = t.indexOf("://", Math.max(at + 3, last))) {
+    const scheme = schemeStart(t, at);
+    if (scheme < 0) continue;
     const from = at + 3;
     if (from > run) {
       URL_BLANK.lastIndex = from;
@@ -238,8 +263,6 @@ function redactCutPasswords(t: string): string {
     if (!stopsInPassword(t.startsWith("//", stop) ? withoutNextScheme(authority) : authority)) continue;
     HASH_HOLE.lastIndex = stop;
     if (HASH_HOLE.test(t)) continue;
-    const scheme = schemeStart(t, at);
-    if (scheme < 0) continue;
     let end = lastAt;
     const open = scheme - 1;
     const quote = t[open];
@@ -255,7 +278,7 @@ function redactCutPasswords(t: string): string {
         const read = t.slice(from, first);
         if (!stopsInPassword(read) || (read.endsWith(":") && /[+.]/.test(t.charAt(first + 1)))) continue;
       }
-      const close = closeFrom(stop);
+      const close = first >= 0 && first < stop ? closeFrom(stop) : first;
       if (close >= 0 && close < end) {
         const inside = t.slice(stop, close).lastIndexOf("@");
         if (inside < 0) continue;
@@ -263,7 +286,7 @@ function redactCutPasswords(t: string): string {
       }
     }
     out += `${t.slice(last, from)}[redacted]`;
-    last = end;
+    last = cutEnd(t, from, end);
   }
   return out + t.slice(last);
 }
@@ -277,13 +300,14 @@ function redactLongUserinfo(t: string): string {
   let out = "";
   let last = 0;
   for (let at = t.indexOf("://"); at >= 0; at = t.indexOf("://", Math.max(at + 3, last))) {
+    if (schemeStart(t, at) < last) continue;
     const from = at + 3;
     USERINFO_END.lastIndex = from;
     const end = USERINFO_END.test(t) ? USERINFO_END.lastIndex - 1 : t.length;
     const found = t.slice(from, end).lastIndexOf("@");
-    if (found < 1 || schemeStart(t, at) < last) continue;
+    if (found < 1) continue;
     out += `${t.slice(last, from)}[redacted]`;
-    last = from + found;
+    last = cutEnd(t, from, from + found);
   }
   return out + t.slice(last);
 }
@@ -294,21 +318,38 @@ function redactLongUserinfo(t: string): string {
  * every other pass has finished with, so it can't take what one of them looks for, such as a secret's name, and what
  * those passes hide stays hidden. It only takes out: what it leaves, without its `[redacted]`, was all there before.
  * `redactTokens`, `redactText` and `redactProse` end with it, and `redactFile`, which has passes of its own. A note of a
- * long run stands for that run, so its blanks are kept out of the way: they don't end a URL or a value.
+ * long run stands for that run, so its words are one character while this runs: its blanks don't end a URL or a value,
+ * and a text of notes doesn't take memory in proportion to them.
  */
 export function redactLast(text: string): string {
   if (!text.includes(RUN_NOTE)) return lastPasses(text);
-  const gap = secretCut();
-  return lastPasses(text.replace(LEFT_OF_RUN_NOTE, (m) => m.replaceAll(" ", gap))).replaceAll(gap, " ");
+  const gap = unusedCharacter(text);
+  return lastPasses(text.replaceAll(RUN_NOTE, `${gap}]`)).replaceAll(gap, RUN_NOTE_WORDS);
+}
+
+/** A noncharacter that isn't in the text, or a string that can't be, if it holds all of them. */
+function unusedCharacter(text: string): string {
+  for (let c = 0xfdd0; c <= 0xfdef; c++) {
+    const gap = String.fromCharCode(c);
+    if (!text.includes(gap)) return gap;
+  }
+  return secretCut();
+}
+
+/** Glued tokens wherever they are, and glued JWTs and webhook secrets. */
+function redactGlued(text: string): string {
+  const t = redactJwts(text.replace(GLUED_TOKEN, gluedToken), /eyJ[A-Za-z0-9_-]{8,}$/);
+  return t.replace(/whsec_[A-Za-z0-9+/=]{24,}[A-Za-z0-9+/=_-]*/g, (m) =>
+    /[0-9A-Z]/.test(m) ? withoutToken(m) : m,
+  );
 }
 
 function lastPasses(text: string): string {
-  const t = redactLongUserinfo(redactCutPasswords(text))
-    .replace(LONG_SECRET_QUERY, "$1[redacted]")
-    .replace(GLUED_TOKEN, gluedToken);
-  return redactJwts(t, /eyJ[A-Za-z0-9_-]{8,}$/).replace(/whsec_[A-Za-z0-9+/=]{24,}[A-Za-z0-9+/=_-]*/g, (m) =>
-    /[0-9A-Z]/.test(m) ? "[redacted]" : m,
-  );
+  const t = redactLongUserinfo(redactCutPasswords(text)).replace(LONG_SECRET_QUERY, "$1[redacted]");
+  const glued = redactGlued(t);
+  if (glued === t) return t;
+  // A run this long goes whole if a token is in it: split, its pieces are short enough for `LONG_RUN` to pass over.
+  return redactGlued(t.replace(LONG_RUN, (m) => (redactGlued(m) === m ? m : "[redacted]")));
 }
 
 /**
@@ -356,10 +397,12 @@ function redactCredentials(text: string, keepLines = false, whole = false): stri
 }
 
 /**
- * The most times one text is read on its way out. A brief is read for the view and again by the host, what an agent says
- * on the way in and again for a notification or a resumed prompt, and a suggestion the owner sends back a third time. A
- * later read can find what an earlier one uncovered, and `redactLast` must not take the label it finds it by, so all of
- * them come before `redactLast`, here, on the first read.
+ * How many times the usual passes run before `redactLast`. A text is read more than once on its way out: a brief for the
+ * view and again by the host, what an agent says on the way in and again for a notification or a resumed prompt, a brain
+ * page at each harvest, and what the owner sends back from a suggestion up to five times. A later read can find what an
+ * earlier one uncovered, and `redactLast` must not take the name it finds it by. This is no bound: a text can need as
+ * many reads as it is long. So `cutEnd` takes the rest of a value whose name a cut takes, `withoutToken` keeps a name a
+ * token ran into, and every other name is there for the next read.
  */
 const MOST_READS = 3;
 
@@ -375,7 +418,7 @@ const MOST_READS = 3;
  *    or a path with no end in sight, is replaced by a note of its length;
  *  - all that again until it changes nothing, `MOST_READS` at most, as later reads of the text would do;
  *  - last, `redactLast`.
- * It is all one pass over the whole text, so no secret can fall between pieces of it.
+ * Every read covers the whole text, so no secret can fall between pieces of it.
  */
 export function redactText(text: string): string {
   let t = text;
@@ -385,6 +428,24 @@ export function redactText(text: string): string {
     t = again;
   }
   return redactLast(t);
+}
+
+/** How far past what it can keep `redactHead` reads, twice over. No usual pass needs to see further to take what it takes. */
+const HEAD_MARGIN = 2048;
+
+/**
+ * `redactText` for a caller that keeps only the first `max` characters, reading no more than it needs: a text can run to
+ * megabytes, and each read of it costs. The end of what is read can be the start of something a pattern needs the rest of
+ * (a URL before its `@`, a quoted value before its quote, a long run), so `HEAD_MARGIN` of what is left is dropped, which
+ * is more than any of them reaches. A text whose start shrinks by more than `HEAD_MARGIN` keeps less than `max`, so one
+ * that opens with 5 KB of a blob may keep nothing. The one thing that reaches further is a URL password that holds a `/`,
+ * `?` or `#`, which `redactLast` needs the `@` of: its start can show.
+ */
+export function redactHead(text: string, max: number): string {
+  const read = max + 2 * HEAD_MARGIN;
+  if (text.length <= read) return redactText(text);
+  const seen = redactText(text.slice(0, read));
+  return seen.slice(0, Math.max(0, seen.length - HEAD_MARGIN));
 }
 
 function redactUsual(text: string): string {
@@ -475,12 +536,21 @@ export function redactKnown(text: string, opts: { keepLines?: boolean; whole?: b
 /**
  * For prose that people read later, such as brain pages: every credential `redactTokens` finds, and anything
  * named like a secret (`password: x`, `API_KEY=x`, `--token x`), the same sets `redactText` uses, without its
- * hex and base64 guesses (a commit id in a page stays).
+ * hex and base64 guesses (a commit id in a page stays). A page is read again at each harvest and when an agent reads it,
+ * so like `redactText` these run until they change nothing, `MOST_READS` at most, before `redactLast`.
  */
 export function redactProse(text: string): string {
-  return redactLast(
-    redactKeyed(redactKnown(text))
-      .replace(/(client[_-]?secret["']?\s*[:=]\s*)(["']?)[^\s"',;]{4,}\2/gi, "$1[redacted]")
-      .replace(/(\bsecret["']?\s*=\s*)(?:(["'])[^"'\n]{1,500}\2|[^\s"',;]{4,})/gi, "$1[redacted]"),
-  );
+  let t = text;
+  for (let read = 0; read < MOST_READS; read++) {
+    const again = proseUsual(t);
+    if (again === t) break;
+    t = again;
+  }
+  return redactLast(t);
+}
+
+function proseUsual(text: string): string {
+  return redactKeyed(redactKnown(text))
+    .replace(/(client[_-]?secret["']?\s*[:=]\s*)(["']?)[^\s"',;]{4,}\2/gi, "$1[redacted]")
+    .replace(/(\bsecret["']?\s*=\s*)(?:(["'])[^"'\n]{1,500}\2|[^\s"',;]{4,})/gi, "$1[redacted]");
 }
