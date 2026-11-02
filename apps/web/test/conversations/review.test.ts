@@ -1164,13 +1164,20 @@ describe("the screen around it", () => {
     modifiedAt: 1,
   };
 
-  async function mount() {
+  /** Set, the conversation has been archived elsewhere: the list drops it, and asking for it says so. */
+  let archivedElsewhere = false;
+
+  async function mount(phone = false) {
+    archivedElsewhere = false;
     vi.stubGlobal("matchMedia", (q: string) => ({
-      matches: /min-width: 1200px/.test(q),
+      matches: phone ? /max-width: 767px/.test(q) : /min-width: 1200px/.test(q),
       addEventListener() {},
       removeEventListener() {},
     }));
     vi.stubGlobal("fetch", async (url: string) => {
+      if (archivedElsewhere && url.endsWith(`/api/conversations/${conv.id}`))
+        return reply({ conversation: { ...conv, archivedAt: 5 } });
+      if (archivedElsewhere && url.includes("/api/conversations")) return reply({ conversations: [] });
       if (url.includes("/changes/file")) return reply({ file: file() });
       if (url.includes("/changes")) return reply({ changes: listing() });
       if (url.includes("/api/conversations")) return reply({ conversations: [conv] });
@@ -1202,6 +1209,24 @@ describe("the screen around it", () => {
     const button = () => must(thread.shadowRoot?.querySelector<HTMLButtonElement>(".changes-btn"));
     return { el, root, thread, button };
   }
+
+  it("closes when the conversation is archived elsewhere, and leaves nothing set behind it", async () => {
+    const back = vi.spyOn(history, "back").mockImplementation(() => {});
+    const { el, root, thread } = await mount(true);
+    thread.dispatchEvent(new CustomEvent("conv-review", { detail: {}, bubbles: true, composed: true }));
+    await until(() => root().querySelector("inc-conv-review"));
+    expect((el as Any).reviewEntry).toBe(true);
+    archivedElsewhere = true;
+    await (el as Any).loadList();
+    await until(() => root().querySelector(".lost"));
+    expect(root().querySelector(".lost")?.textContent).toBe("That conversation was archived.");
+    expect(root().querySelector("inc-conv-review")).toBeNull();
+    expect((el as Any).review).toBeNull();
+    expect((el as Any).reviewEntry).toBe(false);
+    // The pane's entry in a phone's history goes with it, so Back doesn't land on nothing.
+    expect(back).toHaveBeenCalledOnce();
+    back.mockRestore();
+  });
 
   it("opens from the header over the thread and panel, and leaves the thread in place", async () => {
     const { el, root, thread, button } = await mount();

@@ -5,7 +5,7 @@
 import type { Employee } from "@i-inc/core";
 import { css, html, LitElement, nothing } from "lit";
 import { ahp, useAhp } from "../ahp/hub.ts";
-import { type AccountRateLimit, api, type Conversation, refresh, type ShipView } from "../api.ts";
+import { type AccountRateLimit, ApiError, api, type Conversation, refresh, type ShipView } from "../api.ts";
 import { friendlyError } from "../conversations/actions.ts";
 import { cardStyles } from "../conversations/styles.ts";
 import { messageSent } from "../first-run.ts";
@@ -92,7 +92,8 @@ export class IncConversations extends LitElement {
   private reloadTimer: ReturnType<typeof setTimeout> | undefined;
   private clock: ReturnType<typeof setInterval> | undefined;
   private loadToken = 0;
-  private fetched = new Set<string>();
+  /** The conversations being asked for one by one, so a burst of reloads asks once. */
+  private asking = new Set<string>();
   private shipToken = 0;
   private shipFor = "";
   private shipTimer: ReturnType<typeof setTimeout> | undefined;
@@ -155,6 +156,7 @@ export class IncConversations extends LitElement {
       .screen.phone { display: block; }
       .screen.phone .list-pane { border: 0; padding: 0; height: 100%; }
       .screen.phone .thread-pane { height: 100%; }
+      .screen.phone .lost { margin-top: 8px; }
       .screen.phone .list-pane[hidden], .screen.phone .thread-pane[hidden] { display: none; }
       .screen.phone .review-pane { position: absolute; inset: 0 0 var(--kb, 0px) 0; }
     `,
@@ -259,7 +261,8 @@ export class IncConversations extends LitElement {
   }
 
   override willUpdate(changed: Map<string, unknown>): void {
-    if (changed.has("selectedId") && this.selectedId) this.lost = "";
+    // Left it, or it is back: Show archived, or unarchived elsewhere.
+    if (changed.has("selectedId") || this.selected()) this.lost = "";
     if (changed.has("selectedId") && changed.get("selectedId") !== undefined) this.review = null;
   }
 
@@ -282,7 +285,7 @@ export class IncConversations extends LitElement {
           ?.focus();
       }
     }
-    if (changed.has("selectedId") || changed.has("list")) void this.ensureSelected();
+    if (changed.has("selectedId") || changed.has("list")) this.ensureSelected();
     if (changed.has("selectedId") || changed.has("list")) this.syncShip();
   }
 
@@ -293,8 +296,12 @@ export class IncConversations extends LitElement {
     try {
       const rows = await api.conversations(this.showArchived ? "all" : undefined);
       if (token !== this.loadToken) return;
-      this.list = rows;
+      // The open conversation stays on screen until the daemon says why the list no longer holds it.
+      const open = this.selected();
+      const dropped = open && !rows.some((c) => c.id === open.id);
+      this.list = dropped ? [open, ...rows] : rows;
       this.listError = "";
+      if (dropped) void this.ask(open.id, open);
     } catch (e) {
       if (token !== this.loadToken) return;
       this.listError = e instanceof Error ? e.message : String(e);
@@ -359,19 +366,39 @@ export class IncConversations extends LitElement {
   }
 
   /** A link to a conversation the list does not hold (archived, or a stale link): fetch that one. */
-  private async ensureSelected(): Promise<void> {
+  private ensureSelected() {
     const id = this.selectedId;
-    if (!id || this.loading || this.selected() || this.fetched.has(id)) {
-      if (id && this.selected()) this.pickLimit();
-      return;
-    }
-    this.fetched.add(id);
+    if (id && this.selected()) this.pickLimit();
+    else if (id && !this.loading && !this.lost) void this.ask(id);
+  }
+
+  /** Fetch one conversation. `open` is its row on screen, when the list has just dropped it. */
+  private async ask(id: string, open?: Conversation): Promise<void> {
+    if (this.asking.has(id)) return;
+    this.asking.add(id);
     try {
       const c = await api.conversation(id);
-      this.list = [c, ...this.list.filter((x) => x.id !== c.id)];
-    } catch {
-      this.lost = "That conversation wasn't found. It may have been removed.";
+      if (id !== this.selectedId) return;
+      if (open && !open.archivedAt && c.archivedAt) this.leave("That conversation was archived.");
+      else this.list = [c, ...this.list.filter((x) => x.id !== c.id)];
+    } catch (e) {
+      if (id !== this.selectedId) return;
+      // A failed read says nothing about a conversation already open: the next reload asks again.
+      if (!open || (e instanceof ApiError && e.status === 404))
+        this.leave("That conversation wasn't found. It may have been removed.");
+    } finally {
+      this.asking.delete(id);
     }
+  }
+
+  /** The selected conversation has gone: say so, and close what was open over it, which has nothing left to show. */
+  private leave(why: string) {
+    this.list = this.list.filter((c) => c.id !== this.selectedId);
+    this.lost = why;
+    this.sheet = false;
+    this.dialog = null;
+    this.opener = null;
+    if (this.review) this.closeReview();
   }
 
   // ───────────────────────────── actions ─────────────────────────────

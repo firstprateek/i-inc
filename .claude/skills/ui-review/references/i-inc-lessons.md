@@ -136,3 +136,6 @@ paths, branch names, structured briefs).
 35. **Check a phone's header with every control it can hold (layout).** The Files tab's header fit, but Changes adds
     Refresh and pushed the close button into the screen's edge, which the checker didn't report. → Render each tab of a
     tabbed header at 390 px and measure the last control against the gutter.
+36. **A pane drawn on `state && subject` outlives its subject (states).** The review pane vanished when its conversation
+    left, with `review` still set, and a ship dialog left the same way would have kept the screen inert behind nothing. →
+    When the subject goes, clear what depends on it, and keep the subject on screen until you know it has gone.

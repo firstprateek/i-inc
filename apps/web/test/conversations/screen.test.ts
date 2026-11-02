@@ -31,11 +31,17 @@ const row = {
 let phone = false;
 let rows: Any[] = [];
 let posted: Any[] = [];
+/** What `GET /api/conversations/:id` says, when a test cares. */
+let byId: (() => Response | Promise<Response>) | undefined;
+/** `?archived=all`: what the list holds with Show archived on. */
+let allRows: Any[] = [];
 
 beforeEach(() => {
   phone = false;
   rows = [];
   posted = [];
+  byId = undefined;
+  allRows = [];
   localStorage.clear();
   location.hash = "";
   vi.stubGlobal("matchMedia", (q: string) => ({
@@ -48,6 +54,8 @@ beforeEach(() => {
       posted.push(JSON.parse(String(init.body)));
       return json({ conversation: { ...row, id: "99887766", employeeId: posted.at(-1).employeeId } }, 201);
     }
+    if (byId && /\/api\/conversations\/[^/?]+$/.test(url)) return byId();
+    if (url.includes("archived=all")) return json({ conversations: allRows });
     const body = url.includes("/api/conversations")
       ? { conversations: rows }
       : url.includes("/api/employees")
@@ -183,5 +191,131 @@ describe("the first message", () => {
     expect(posted).toEqual([{ employeeId: "kit" }]);
     expect(replace).toHaveBeenCalledWith("#/conversations/99887766");
     expect((el as Any).first).toMatchObject({ id: "99887766", text: "hi there" });
+  });
+});
+
+describe("when the open conversation leaves the list", () => {
+  const archived = { ...row, archivedAt: 5, status: 1 };
+  const reload = async (el: IncConversations) => {
+    await (el as Any).loadList();
+    await new Promise((r) => setTimeout(r));
+    await el.updateComplete;
+  };
+  const shown = (thread: () => HTMLElement) => ({
+    open: !!thread().querySelector("inc-conv-thread"),
+    loading: !!thread().querySelector("[aria-busy]"),
+    lost: thread().querySelector(".lost")?.textContent ?? "",
+  });
+
+  it("says it was archived, and goes on saying so through later reloads", async () => {
+    rows = [row];
+    const { el, thread } = await mount({ selectedId: row.id });
+    rows = [];
+    byId = () => json({ conversation: archived });
+    await reload(el);
+    await reload(el);
+    await reload(el);
+    expect(shown(thread)).toEqual({ open: false, loading: false, lost: "That conversation was archived." });
+  });
+
+  it("says it wasn't found when it was removed", async () => {
+    rows = [row];
+    const { el, thread } = await mount({ selectedId: row.id });
+    rows = [];
+    byId = () => json({ error: "no such conversation" }, 404);
+    await reload(el);
+    await reload(el);
+    expect(shown(thread)).toEqual({
+      open: false,
+      loading: false,
+      lost: "That conversation wasn't found. It may have been removed.",
+    });
+  });
+
+  it("keeps the thread up while it asks, and through an answer that says nothing about the conversation", async () => {
+    rows = [row];
+    const { el, thread } = await mount({ selectedId: row.id });
+    const before = thread().querySelector("inc-conv-thread");
+    rows = [];
+    byId = () => json({ error: "try later" }, 500);
+    await reload(el);
+    expect(thread().querySelector("inc-conv-thread")).toBe(before);
+    expect(shown(thread).lost).toBe("");
+    byId = () => json({ conversation: archived });
+    await reload(el);
+    expect(shown(thread).lost).toBe("That conversation was archived.");
+  });
+
+  it("keeps a conversation open that a link opened already archived, through every reload", async () => {
+    byId = () => json({ conversation: archived });
+    const { el, thread } = await mount({ selectedId: row.id });
+    await until(() => thread().querySelector("inc-conv-thread"));
+    await reload(el);
+    await reload(el);
+    expect(shown(thread)).toEqual({ open: true, loading: false, lost: "" });
+  });
+
+  it("takes down what was open over it, so the screen behind can be used", async () => {
+    phone = true;
+    rows = [row];
+    const { el, root, thread } = await mount({ selectedId: row.id });
+    (el as Any).sheet = true;
+    (el as Any).dialog = { kind: "ticket" };
+    await el.updateComplete;
+    expect(thread().hasAttribute("inert")).toBe(true);
+    rows = [];
+    byId = () => json({ conversation: archived });
+    await reload(el);
+    expect((el as Any).sheet).toBe(false);
+    expect((el as Any).dialog).toBeNull();
+    expect(thread().hasAttribute("inert")).toBe(false);
+    expect(root().querySelector(".list-pane")?.hasAttribute("inert")).toBe(false);
+    const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    document.body.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(false);
+  });
+
+  it("brings the thread back and drops the message when Show archived holds it again", async () => {
+    rows = [row];
+    const { el, thread } = await mount({ selectedId: row.id });
+    rows = [];
+    byId = () => json({ conversation: archived });
+    await reload(el);
+    expect(shown(thread).lost).toBe("That conversation was archived.");
+    allRows = [archived];
+    (el as Any).showArchived = true;
+    await reload(el);
+    expect(shown(thread)).toEqual({ open: true, loading: false, lost: "" });
+  });
+
+  it("drops the message on leaving, and asks again on coming back", async () => {
+    byId = () => json({ error: "no such conversation" }, 404);
+    const { el, thread } = await mount({ selectedId: row.id });
+    await until(() => shown(thread).lost);
+    el.selectedId = "";
+    await el.updateComplete;
+    expect(shown(thread).lost).toBe("");
+    byId = () => json({ conversation: row });
+    el.selectedId = row.id;
+    await until(() => thread().querySelector("inc-conv-thread"));
+    expect(shown(thread)).toEqual({ open: true, loading: false, lost: "" });
+  });
+
+  it("ignores an answer that comes after the owner has moved on", async () => {
+    rows = [row];
+    const { el, thread } = await mount({ selectedId: row.id });
+    rows = [];
+    let answer: (r: Response) => void = () => {};
+    byId = () =>
+      new Promise<Response>((r) => {
+        answer = r;
+      });
+    await (el as Any).loadList();
+    el.selectedId = "";
+    await el.updateComplete;
+    answer(json({ conversation: archived }));
+    await new Promise((r) => setTimeout(r));
+    await el.updateComplete;
+    expect(shown(thread).lost).toBe("");
   });
 });
