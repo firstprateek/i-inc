@@ -978,6 +978,110 @@ describe("the pane", () => {
     expect(again.root.querySelector(".more")).not.toBeNull();
   });
 
+  describe("with the owner typing in a box as a read lands", () => {
+    const typing = async (el: IncConvReview, root: ShadowRoot) => {
+      await settle(el);
+      await typeAt(el, root, ".row.add", "half a thought");
+      const ta = root.querySelector(".box textarea") as HTMLTextAreaElement;
+      ta.focus();
+      ta.setSelectionRange(4, 6);
+      return ta;
+    };
+
+    it("keeps focus and the caret when a turn's end moves the box to another row", async () => {
+      chat = { turns: [], activeTurn: { id: "t", responseParts: [] } };
+      const { el, root } = await mount();
+      const ta = await typing(el, root);
+      // A new first line takes a row above the box; line 2 reads as it did, so the box stays with it.
+      fileReply = file({
+        before: { state: "text", text: "gone\none\ntwo\nthree\n" },
+        after: { state: "text", text: "one\n2\nthree\n" },
+      });
+      chat = { turns: [] };
+      notify(new Set([CHAT]));
+      await until(() => el.rows.length === 5);
+      await settle(el);
+      const now = root.querySelector(".rows .box textarea") as HTMLTextAreaElement;
+      expect(now).not.toBe(ta);
+      expect(now.value).toBe("half a thought");
+      await until(() => root.activeElement === now);
+      expect([now.selectionStart, now.selectionEnd]).toEqual([4, 6]);
+    });
+
+    it("follows the box out of the diff when its line changes", async () => {
+      const { el, root } = await mount();
+      await typing(el, root);
+      fileReply = file({ after: { state: "text", text: "one\nchanged\nthree\n" } });
+      await el.refresh();
+      await settle(el);
+      const now = root.querySelector(".moved .box textarea") as HTMLTextAreaElement;
+      expect(root.activeElement).toBe(now);
+      expect([now.selectionStart, now.selectionEnd]).toEqual([4, 6]);
+    });
+
+    it("stays with its own comment when the row's box is drawn for another", async () => {
+      const { el, root } = await mount();
+      await settle(el);
+      const second = { path: "src/a.ts", line: 3, side: "new" as const, quote: "three" };
+      commentDrafts.start("c1", second);
+      commentDrafts.write("c1", second, "second");
+      await typeAt(el, root, ".row.add", "first");
+      const ta = root.querySelector(".rows .box textarea") as HTMLTextAreaElement;
+      expect(ta.value).toBe("first");
+      ta.focus();
+      // Line 2 now reads otherwise, so "first" leaves the diff, and "second" lands on the row it was on: that row's
+      // box stays in the page, with focus still in it, holding someone else's words.
+      fileReply = file({
+        before: { state: "text", text: "one\nb\nthree\nz\n" },
+        after: { state: "text", text: "one\nb\nthree\ny\n" },
+      });
+      await el.refresh();
+      await settle(el);
+      expect(root.querySelector<HTMLElement>(".rows .box")?.dataset.box).toBe("src/a.ts|new-3");
+      expect(root.activeElement).toBe(root.querySelector(".moved .box textarea"));
+      expect((root.activeElement as HTMLTextAreaElement).value).toBe("first");
+    });
+
+    it("follows the box into Unfinished comments when the list empties", async () => {
+      const { el, root } = await mount();
+      await typing(el, root);
+      changes = listing({ files: [] });
+      await el.refresh();
+      await settle(el);
+      expect(root.activeElement).toBe(root.querySelector(".side .box textarea"));
+    });
+
+    it("goes to the way back when the box's file leaves the list", async () => {
+      const { el, root } = await mount();
+      await typing(el, root);
+      changes = listing({ files: [{ path: "other.ts", added: 1, removed: 0, status: "modified" }] });
+      await el.refresh();
+      await settle(el);
+      expect(root.activeElement).toBe(root.querySelector(".stray"));
+    });
+
+    it("leaves focus alone when it isn't in a box", async () => {
+      const { el, root } = await mount();
+      await typing(el, root);
+      const refresh = must(root.querySelector<HTMLButtonElement>(".refresh"));
+      refresh.focus();
+      fileReply = file({ after: { state: "text", text: "one\nchanged\nthree\n" } });
+      await el.refresh();
+      await settle(el);
+      expect(root.activeElement).toBe(refresh);
+    });
+
+    it("leaves focus where it is when the box hasn't moved", async () => {
+      const { el, root } = await mount();
+      const ta = await typing(el, root);
+      await el.refresh();
+      await settle(el);
+      expect(root.querySelector(".box textarea")).toBe(ta);
+      expect(root.activeElement).toBe(ta);
+      expect([ta.selectionStart, ta.selectionEnd]).toEqual([4, 6]);
+    });
+  });
+
   it("doesn't drop focus when a file's Try again is replaced by the file", async () => {
     fileReply = file({
       state: "asleep",

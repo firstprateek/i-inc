@@ -99,6 +99,8 @@ export class IncConvReview extends LitElement {
   private listToken = 0;
   private fileToken = 0;
   private offs: (() => void)[] = [];
+  /** The box a read found the owner in, until the read's update is drawn. */
+  private typing: ReturnType<IncConvReview["boxInFocus"]>;
 
   constructor() {
     super();
@@ -247,6 +249,35 @@ export class IncConvReview extends LitElement {
       this.syncChat();
       void this.refresh();
     }
+    const read = changed.has("rows") || changed.has("file") || changed.has("changes");
+    this.typing = read ? this.boxInFocus() : undefined;
+  }
+
+  /** What a read brings can move the box being typed in, or take it away: focus, and the caret, go with it. */
+  override updated(): void {
+    const was = this.typing;
+    this.typing = undefined;
+    if (!was || this.boxInFocus()?.key === was.key) return;
+    const ta = this.boxOf(was.key)?.querySelector("textarea");
+    if (ta) {
+      ta.focus({ preventScroll: true });
+      if (was.caret) ta.setSelectionRange(was.caret[0], was.caret[1]);
+      this.bringIntoView(ta);
+      return;
+    }
+    // Its file has gone from the diff. A key pressed next lands here, so not on a button that would close the pane.
+    (
+      this.renderRoot.querySelector<HTMLElement>(".stray") ??
+      this.renderRoot.querySelector<HTMLElement>(".refresh")
+    )?.focus({ preventScroll: true });
+  }
+
+  private boxInFocus() {
+    const on = (this.renderRoot as ShadowRoot).activeElement;
+    const key = on?.closest<HTMLElement>("[data-box]")?.dataset.box;
+    if (key === undefined) return undefined;
+    const typed = on instanceof HTMLTextAreaElement ? on : null;
+    return { key, caret: typed ? ([typed.selectionStart, typed.selectionEnd] as const) : null };
   }
 
   private syncChat() {
@@ -403,14 +434,17 @@ export class IncConvReview extends LitElement {
       i !== undefined
         ? this.renderRoot.querySelector<HTMLElement>(`[data-at="${spot(c)}"] .no`)
         : this.renderRoot.querySelector<HTMLElement>(`[data-moved="${c.id}"]`);
-    const sc = this.renderRoot.querySelector<HTMLElement>(".rows");
-    if (to && sc && i !== undefined) {
-      // By hand: scrollIntoView would move every scroller around it, and nothing in the app scrolls the page.
-      const a = to.getBoundingClientRect();
-      const b = sc.getBoundingClientRect();
-      sc.scrollTop += a.top - b.top - Math.max(0, (b.height - a.height) / 2);
-    }
+    if (to) this.bringIntoView(to);
     to?.focus({ preventScroll: true });
+  }
+
+  /** By hand: scrollIntoView would move every scroller around it, and nothing in the app scrolls the page. */
+  private bringIntoView(el: HTMLElement) {
+    const sc = this.renderRoot.querySelector<HTMLElement>(".rows");
+    if (!sc?.contains(el)) return;
+    const a = el.getBoundingClientRect();
+    const b = sc.getBoundingClientRect();
+    sc.scrollTop += a.top - b.top - Math.max(0, (b.height - a.height) / 2);
   }
 
   /** A press of a line's number opens its comment box, or goes to the one already open there. */
@@ -423,12 +457,12 @@ export class IncConvReview extends LitElement {
     const at = { path, ...placeOf(r), quote: quoteOf(r.text) };
     commentDrafts.start(conv.id, at);
     this.requestUpdate();
-    void this.updateComplete.then(() => this.boxOf(at)?.querySelector("textarea")?.focus());
+    void this.updateComplete.then(() => this.boxOf(boxKey(at))?.querySelector("textarea")?.focus());
   };
 
-  private boxOf(at: LineSpot) {
+  private boxOf(key: string) {
     return [...this.renderRoot.querySelectorAll<HTMLElement>("[data-box]")].find(
-      (b) => b.dataset.box === boxKey(at),
+      (b) => b.dataset.box === key,
     );
   }
 
@@ -457,13 +491,15 @@ export class IncConvReview extends LitElement {
     if (this.discarding === boxKey(d)) this.keepWriting(d);
     else if (typed.trim()) {
       this.discarding = boxKey(d);
-      void this.updateComplete.then(() => this.boxOf(d)?.querySelector<HTMLElement>(".keep")?.focus());
+      void this.updateComplete.then(() =>
+        this.boxOf(boxKey(d))?.querySelector<HTMLElement>(".keep")?.focus(),
+      );
     } else this.closeBox(d);
   }
 
   private keepWriting(d: LineDraft) {
     this.discarding = null;
-    void this.updateComplete.then(() => this.boxOf(d)?.querySelector("textarea")?.focus());
+    void this.updateComplete.then(() => this.boxOf(boxKey(d))?.querySelector("textarea")?.focus());
   }
 
   private addComment(d: LineDraft, text: string) {
