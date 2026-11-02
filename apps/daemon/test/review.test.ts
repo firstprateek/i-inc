@@ -38,7 +38,7 @@ import {
   readList,
   reviewPort,
 } from "../src/review.ts";
-import { marker } from "../src/ship-git.ts";
+import { marker, secretFile } from "../src/ship-git.ts";
 
 const { wallsMarker: _, ...noWalls } = defaultMachineSettings;
 const NONCE = "0123456789abcdef";
@@ -764,6 +764,16 @@ const service = (port: ReviewPort, over: { project?: string | null; archivedAt?:
 const stub = (over: Partial<ReviewPort>): ReviewPort => ({
   list: async () => ({ present: true, files: [], skipped: 0, truncated: false, partial: false }),
   file: async () => ({ before: { state: "none" }, after: { state: "none" } }),
+  tree: async () => ({ present: true, paths: [], skipped: 0, truncated: false, partial: false }),
+  read: async () => ({ state: "none" }),
+  search: async () => ({
+    present: true,
+    hits: [],
+    skipped: 0,
+    withheld: 0,
+    truncated: false,
+    partial: false,
+  }),
   ...over,
 });
 
@@ -895,6 +905,62 @@ describe("how a read fails, in a sentence", () => {
     );
     expect(await r.file("ab12", "config/.env")).toMatchObject({ withheld: true, after: { state: "none" } });
     expect(await r.file("ab12", "deploy/server.pem")).toMatchObject({ withheld: true });
+    expect(asked).toBe(0);
+  });
+
+  it("shows in the diff every file ship would push, whatever its name suggests", async () => {
+    const after = { state: "text", text: "export DB_PASSWORD=hunter2hunter2" } as const;
+    const r = service(stub({ file: async () => ({ before: { state: "none" }, after }) }));
+    const names = [
+      ".envrc",
+      "prod.env",
+      "deploy/staging.env",
+      "credentials",
+      ".pgpass",
+      ".git-credentials",
+      "key.ppk",
+      "ID_RSA",
+    ];
+    for (const path of names) {
+      expect(
+        secretFile.some((re) => re.test(path)),
+        path,
+      ).toBe(false);
+      const seen = await r.file("ab12", path);
+      expect(seen.withheld, path).toBeUndefined();
+      expect(seen.after, path).toEqual(after);
+    }
+  });
+
+  it("withholds in the diff nothing but what ship stops by name", async () => {
+    const r = service(stub({}));
+    for (const path of [".env", ".env.local", "server.pem", "keys/id_rsa", ".netrc", ".pypirc"]) {
+      expect(
+        secretFile.some((re) => re.test(path)),
+        path,
+      ).toBe(true);
+      expect((await r.file("ab12", path)).withheld, path).toBe(true);
+    }
+  });
+
+  it("still keeps those wider names out of Files and Search", async () => {
+    let asked = 0;
+    const read = async () => {
+      asked++;
+      return { state: "text" as const, text: "x" };
+    };
+    const r = service(stub({ read }));
+    for (const path of [
+      ".envrc",
+      "prod.env",
+      "credentials",
+      ".pgpass",
+      ".git-credentials",
+      "key.ppk",
+      "ID_RSA",
+    ]) {
+      expect((await r.read("ab12", path)).withheld, path).toBe(true);
+    }
     expect(asked).toBe(0);
   });
 

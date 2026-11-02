@@ -21,6 +21,8 @@ import {
   reviewComments,
 } from "../conversations/review.ts";
 import { cardStyles } from "../conversations/styles.ts";
+import type { FileTarget, IncConvFiles } from "./conv-files.ts";
+import "./conv-files.ts";
 import { base } from "./shared.ts";
 
 /** Rows drawn before "Show all": a whole new file can be tens of thousands. */
@@ -34,6 +36,13 @@ const STATUS_WORD: Record<ReviewFile["status"], string> = {
 };
 
 type LineRow = Exclude<DiffRow, { kind: "gap" }>;
+
+export type ReviewTab = "changes" | "files" | "search";
+const TABS: { id: ReviewTab; label: string }[] = [
+  { id: "changes", label: "Changes" },
+  { id: "files", label: "Files" },
+  { id: "search", label: "Search" },
+];
 
 const spot = (at: { side: string; line: number }) => `${at.side}-${at.line}`;
 /** A comment box: two files can have one on the same line number, and both can be showing. */
@@ -51,6 +60,10 @@ export class IncConvReview extends LitElement {
     name: { type: String },
     phone: { type: Boolean },
     path: { type: String },
+    tab: { type: String },
+    target: { attribute: false },
+    shownTab: { state: true },
+    filesUsed: { state: true },
     changes: { state: true },
     listNote: { state: true },
     loadError: { state: true },
@@ -75,6 +88,13 @@ export class IncConvReview extends LitElement {
   declare phone: boolean;
   /** The file to open with, when the pane was opened from one. */
   declare path: string;
+  /** The tab to open at. */
+  declare tab: ReviewTab;
+  /** The file to open in Files, when the pane was opened from one. */
+  declare target: FileTarget | null;
+  declare shownTab: ReviewTab;
+  /** Files or Search has been open: until then nothing reads the copy for them. */
+  declare filesUsed: boolean;
   declare changes: ChangesView | undefined;
   /** Why the list showing couldn't be read again. */
   declare listNote: string | null;
@@ -110,6 +130,10 @@ export class IncConvReview extends LitElement {
     this.name = "";
     this.phone = false;
     this.path = "";
+    this.tab = "changes";
+    this.target = null;
+    this.shownTab = "changes";
+    this.filesUsed = false;
     this.listNote = null;
     this.loadError = null;
     this.loading = false;
@@ -133,7 +157,15 @@ export class IncConvReview extends LitElement {
     css`
       :host { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; background: var(--ground); container-type: inline-size; }
       .head { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 4px 10px; border-bottom: 1px solid var(--line); min-width: 0; }
-      .head h2 { margin: 0; font: 700 18px/1.25 var(--display); }
+      .tabs { flex: 0 1 auto; min-width: 0; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }
+      .tab { flex: none; }
+      .refresh { flex: none; }
+      .tab { min-height: 44px; padding: 0 12px; border: 0; border-radius: 10px; background: transparent; color: var(--ink-2); font: 700 15px var(--body); cursor: pointer; }
+      .tab:hover { background: var(--sunken); color: var(--ink); }
+      .tab[aria-selected="true"] { color: var(--ink); box-shadow: inset 0 -3px 0 var(--ink); border-radius: 10px 10px 0 0; }
+      .tab:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: -3px; }
+      .panel { flex: 1 1 0; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+      .panel[hidden] { display: none; }
       .sum { flex: 1 1 auto; min-width: 0; color: var(--ink-2); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .x { flex: none; width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--line-strong); background: transparent; color: var(--ink); cursor: pointer; display: inline-grid; place-items: center; }
       .x:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 2px; }
@@ -205,6 +237,11 @@ export class IncConvReview extends LitElement {
       @media (pointer: coarse) { .row { line-height: 2; } }
       /* Narrow: one column, the list or the diff. */
       @container (max-width: 680px) {
+        .sum { display: none; }
+        .head { gap: 6px; }
+        .tab { padding: 0 8px; }
+        .refresh { padding: 0 12px; }
+        .head .grow { flex: 1 1 auto; }
         .body { grid-template-columns: minmax(0, 1fr); }
         .body.reading .side, .body:not(.reading) .main { display: none; }
         .back { display: inline-flex; align-items: center; align-self: flex-start; }
@@ -223,7 +260,10 @@ export class IncConvReview extends LitElement {
         if (!conv || !uris.has(conv.ahpChat)) return;
         const was = this.running;
         this.syncChat(true);
-        if (was && !this.running) void this.refresh();
+        if (was && !this.running) {
+          if (this.changes || this.loading) void this.refresh();
+          void this.filesPane()?.refresh();
+        }
       }),
       reviewComments.subscribe((id) => {
         if (id === this.conv?.id) this.comments = reviewComments.list(id);
@@ -240,6 +280,11 @@ export class IncConvReview extends LitElement {
   }
 
   override willUpdate(changed: Map<string, unknown>): void {
+    if (changed.has("tab")) this.shownTab = this.tab;
+    if (this.shownTab !== "changes") {
+      this.filesUsed = true;
+      this.filesMode = this.shownTab;
+    }
     if (changed.has("conv") && (changed.get("conv") as Conversation | undefined)?.id !== this.conv?.id) {
       this.comments = this.conv ? reviewComments.list(this.conv.id) : [];
       this.discarding = null;
@@ -254,7 +299,7 @@ export class IncConvReview extends LitElement {
       this.showAll = false;
       this.reading = false;
       this.syncChat();
-      void this.refresh();
+      if (this.shownTab === "changes") void this.refresh();
     }
     const read =
       changed.has("rows") ||
@@ -306,6 +351,40 @@ export class IncConvReview extends LitElement {
       this.spoken = `${who} is working`;
     } else if (was.running && !this.running) this.spoken = turnEnding(who, chat);
   }
+
+  /** The tab the Files and Search panel last showed: it stays that way behind Changes, and reads nothing new. */
+  private filesMode: "files" | "search" = "files";
+
+  private filesPane(): IncConvFiles | null {
+    return this.renderRoot.querySelector<IncConvFiles>("inc-conv-files");
+  }
+
+  private pickTab(tab: ReviewTab) {
+    this.shownTab = tab;
+    if (tab === "changes" && !this.changes && !this.loading) void this.refresh();
+  }
+
+  /** The tabs' keys: arrows move and choose, as the WAI tabs pattern has them. */
+  private onTabKey = (e: KeyboardEvent) => {
+    const i = TABS.findIndex((t) => t.id === this.shownTab);
+    const to =
+      e.key === "ArrowRight"
+        ? (i + 1) % TABS.length
+        : e.key === "ArrowLeft"
+          ? (i + TABS.length - 1) % TABS.length
+          : e.key === "Home"
+            ? 0
+            : e.key === "End"
+              ? TABS.length - 1
+              : -1;
+    const tab = TABS[to];
+    if (!tab) return;
+    e.preventDefault();
+    this.pickTab(tab.id);
+    void this.updateComplete.then(() =>
+      this.renderRoot.querySelector<HTMLElement>(`#tab-${tab.id}`)?.focus(),
+    );
+  };
 
   /** Escape closes the pane. A comment box in the way takes it first (its own handler stops it reaching here). */
   private onKey = (e: KeyboardEvent) => {
@@ -799,12 +878,17 @@ export class IncConvReview extends LitElement {
     const files = this.changes?.files ?? [];
     const added = files.reduce((n, f) => n + f.added, 0);
     const removed = files.reduce((n, f) => n + f.removed, 0);
+    const onChanges = this.shownTab === "changes";
     const failed = this.loadError ? `Couldn't read the changes (${this.loadError}).` : this.listNote;
     return html`<p class="sr-only" role="status">${this.spoken}</p>
-      <div class="head"><h2>Changes</h2>
-        <span class="sum">${files.length ? `${files.length} ${files.length === 1 ? "file" : "files"} · +${added} −${removed}` : ""}</span>
-        <button class="cbtn refresh" type="button" aria-disabled=${this.loading ? "true" : "false"} @click=${this.retry}>${this.loading ? "Reading…" : "Refresh"}</button>
-        <button class="x" type="button" aria-label="Close changes" @click=${() => this.close()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+      <div class="head"><div class="tabs" role="tablist" aria-label="Review" @keydown=${this.onTabKey}>${TABS.map(
+        (t) =>
+          html`<button class="tab" id="tab-${t.id}" type="button" role="tab" aria-selected=${t.id === this.shownTab ? "true" : "false"} aria-controls="panel-${t.id === "changes" ? "changes" : "files"}"
+          tabindex=${t.id === this.shownTab ? "0" : "-1"} @click=${() => this.pickTab(t.id)}>${t.label}</button>`,
+      )}</div>
+        <span class="sum">${onChanges && files.length ? `${files.length} ${files.length === 1 ? "file" : "files"} · +${added} −${removed}` : ""}</span><span class="grow"></span>
+        ${onChanges ? html`<button class="cbtn refresh" type="button" aria-disabled=${this.loading ? "true" : "false"} @click=${this.retry}>${this.loading ? "Reading…" : "Refresh"}</button>` : nothing}
+        <button class="x" type="button" aria-label="Close review" @click=${() => this.close()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
       ${
         this.waiting
           ? html`<p class="say">${this.name || "The agent"} is waiting for your answer.
@@ -813,15 +897,18 @@ export class IncConvReview extends LitElement {
                   new CustomEvent("conv-review-answer", { bubbles: true, composed: true }),
                 )}>Answer</button></p>`
           : this.running
-            ? html`<p class="say">${this.name || "The agent"} is working, so this can change. It refreshes when the turn ends.</p>`
+            ? html`<p class="say">${this.name || "The agent"} is working, so this can change.${this.shownTab === "search" ? "" : " It refreshes when the turn ends."}</p>`
             : nothing
       }
+      <div class="panel" id="panel-changes" role="tabpanel" aria-labelledby="tab-changes" ?hidden=${!onChanges}>
       ${
         failed && this.changes?.state === "ok"
           ? html`<p class="say" role="alert">${failed} <button class="link-btn" type="button" @click=${this.retry}>Try again</button></p>`
           : nothing
       }
-      ${this.content()}`;
+      ${this.content()}</div>
+      <div class="panel" id="panel-files" role="tabpanel" aria-labelledby="tab-${this.shownTab === "search" ? "search" : "files"}" ?hidden=${onChanges}>
+        ${this.filesUsed ? html`<inc-conv-files .conversationId=${this.conv?.id ?? ""} .mode=${this.filesMode} .target=${this.target}></inc-conv-files>` : nothing}</div>`;
   }
 }
 

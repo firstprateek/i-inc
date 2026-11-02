@@ -13,112 +13,73 @@
 // checked, every size capped, tokens redacted, and the sections fenced by markers that carry a nonce.
 // A stopped machine stays stopped: the runner this is given refuses rather than boots (T75), and the pane says so.
 import { randomBytes } from "node:crypto";
-import { posix } from "node:path";
-import { redactTokens } from "./ahp/sanitize.ts";
+import {
+  type FilesListing,
+  isSearchQuery,
+  readOpenFile,
+  fileScript as readScript,
+  readSearch,
+  readTree,
+  type SearchListing,
+  searchScript,
+  treeScript,
+} from "./copy-files.ts";
+import {
+  check,
+  diskSide,
+  fenced,
+  isReviewPath,
+  LIST_LIMIT,
+  LIST_TRIES,
+  linkStaysInside,
+  MAX_FILE_BYTES,
+  MAX_PATH,
+  open,
+  type ReviewCopy,
+  readSides,
+  scratchIndex,
+  scratchObjects,
+  servedNever,
+} from "./copy-read.ts";
 import { type RunScript, TIMED_OUT } from "./harness.ts";
 import { MachineNotRunning } from "./machine-queue.ts";
 import type { Registry } from "./registry.ts";
-import { marker, quote, redactFile, safeGit, secretFile, section } from "./ship-git.ts";
+import { marker, quote, secretFile, section } from "./ship-git.ts";
 import type {
   ChangeStatus,
   ChangesState,
   ChangesView,
   FileSide,
+  FilesView,
   FileView,
+  OpenFileView,
   ReviewFile,
   ReviewListing,
+  SearchView,
 } from "./view-types.ts";
-import { isSafeRefName, isSafeWorkDir } from "./workspace.ts";
 
-export type { ChangesView, FileSide, FileView, ReviewFile, ReviewListing };
-
-/** The biggest file shown: `redactTokens` stops at a million characters, and a bigger file is no use in a diff. */
-export const MAX_FILE_BYTES = 1_000_000;
+export type { ReviewCopy } from "./copy-read.ts";
+export { isReviewPath, isSearchQuery, LIST_LIMIT, linkStaysInside, MAX_FILE_BYTES, MAX_PATH };
 /** The most files listed. */
 export const MAX_FILES = 3000;
-/** The most text the list reads per section; past it the list says it is cut. */
-export const LIST_LIMIT = 2_000_000;
-export const MAX_PATH = 1024;
 const LIST_TIMEOUT_MS = 20_000;
 const FILE_TIMEOUT_MS = 15_000;
+const SEARCH_TIMEOUT_MS = 20_000;
 /** How long a read waits for its turn in the machine's queue and its script, whatever holds it up. */
 const WAIT_MS = 30_000;
 
-/** A conversation's working copy. `base` is the project's main; null: no project, an empty folder that is no repo. */
-export interface ReviewCopy {
-  employeeId: string;
-  cwd: string;
-  base: string | null;
-  machine?: string;
-}
+export type { ChangesView, FileSide, FileView, ReviewFile, ReviewListing };
 
 export interface ReviewPort {
   list(copy: ReviewCopy): Promise<ReviewListing>;
   file(copy: ReviewCopy, path: string): Promise<{ before: FileSide; after: FileSide }>;
+  /** Every file in the copy. */
+  tree(copy: ReviewCopy): Promise<FilesListing>;
+  /** One file as it is on disk; null when the copy isn't there. */
+  read(copy: ReviewCopy, path: string): Promise<FileSide | null>;
+  /** The lines holding `query`, as it is written. */
+  search(copy: ReviewCopy, query: string, matchCase: boolean): Promise<SearchListing>;
 }
-
-/**
- * A path the review will touch: relative, no `..`, no leading `-`, no control characters, nothing a token could be
- * hiding in, and not in `.git` or `.inc` (the owner's images, which are never part of the work).
- */
-export function isReviewPath(path: unknown): path is string {
-  if (typeof path !== "string" || path === "" || path.length > MAX_PATH) return false;
-  if (path.startsWith("/") || path.startsWith("-") || path.includes("�")) return false;
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what this refuses
-  if (/[\u0000-\u001f\u007f]/.test(path)) return false;
-  const parts = path.split("/");
-  if (parts.some((p) => p === "" || p === "." || p === "..")) return false;
-  if (parts[0] === ".inc" || parts.some((p) => p.toLowerCase() === ".git")) return false;
-  return redactTokens(path) === path;
-}
-
-function check(copy: ReviewCopy): void {
-  if (!isSafeWorkDir(copy.cwd)) throw new Error(`not a safe folder: ${String(copy.cwd)}`);
-  if (copy.base !== null && !isSafeRefName(copy.base)) throw new Error(`not a branch name: ${copy.base}`);
-}
-
-/** How many times the list tries to add the files while they keep going away under it. */
-const LIST_TRIES = 3;
-
-/**
- * Into the copy, with `G` ready and `$mb` set to what the change is measured from: where the branch left main, by
- * the refs already in the machine (never a fetch), or the first commit when they are gone. With no commit to measure
- * from (no project, or a copy with no commits or no repository) a scratch repository outside the folder looks at it,
- * `$mb` is the empty tree, `$head` is empty and every file there is new. Optional locks and lazy fetches are off:
- * reading must not write or reach out. Git's warnings go nowhere: output is what the script says, and a warning
- * in the middle of a section would pass for part of it.
- */
-const open = (copy: ReviewCopy): string[] => {
-  const enter = [
-    "set -u",
-    "exec 2>/dev/null",
-    `[ -d ${quote(copy.cwd)} ] || { echo @@nocopy; exit 0; }`,
-    `cd ${quote(copy.cwd)} || { echo @@nocopy; exit 0; }`,
-  ];
-  const scratch = [
-    `W=$(mktemp -d); trap 'rm -rf "$W"' EXIT; mkdir "$W/home"`,
-    'BE=(env -i PATH="$PATH" LANG=C.UTF-8 HOME="$W/home" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1)',
-    '"${BE[@]}" git init --bare -q --template= "$W/repo" || { echo \'@@fail could not make a scratch repository\'; exit 1; }',
-    'GX=(GIT_DIR="$W/repo" GIT_WORK_TREE="$PWD")',
-    'G() { "${BE[@]}" "${GX[@]}" git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.pager=cat "$@"; }',
-    "mb=$(G hash-object -t tree -w --stdin < /dev/null)",
-    'head=""',
-  ];
-  if (copy.base === null) return [...enter, ...scratch];
-  const base = copy.base;
-  return [
-    ...enter,
-    "if env -i PATH=\"$PATH\" HOME=/nonexistent GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 git -c core.hooksPath=/dev/null -c core.fsmonitor=false rev-parse --verify --quiet 'HEAD^{commit}' >/dev/null; then",
-    ...safeGit(copy),
-    "GX=(GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1)",
-    "head=$(G rev-parse --verify --quiet 'HEAD^{commit}') || { echo '@@fail the working copy has no commit'; exit 1; }",
-    `b=$(G rev-parse --verify --quiet ${quote(`refs/remotes/origin/${base}^{commit}`)} || G rev-parse --verify --quiet ${quote(`refs/heads/${base}^{commit}`)} || true)`,
-    'if [ -n "$b" ]; then mb=$(G merge-base "$b" "$head" || echo "$b"); else mb=$(G rev-list --max-parents=0 "$head" | tail -n 1); fi',
-    "else",
-    ...scratch,
-    "fi",
-  ];
-};
 
 /**
  * The list, in a fixed number of git commands. `ls-files` finds what differs by its content, writing nothing, and
@@ -140,22 +101,14 @@ export function listScript(copy: ReviewCopy, nonce: string): string {
   const add = (list: string) =>
     `G --literal-pathspecs add -A --ignore-errors --pathspec-from-file="$W/${list}" --pathspec-file-nul`;
   const fail = "{ echo '@@fail the list could not be read'; exit 1; }";
-  const fenced = (name: string) => [
-    `echo ${m(`${name}-begin`)}`,
-    `head -c ${LIST_LIMIT} "$W/${name}"`,
-    "echo",
-    `echo ${m(`${name}-end`)}`,
-    `[ "$(wc -c < "$W/${name}")" -le ${LIST_LIMIT} ] || echo ${m("cut")}`,
-  ];
   return [
     ...open(copy),
-    'O() { "$@"; }',
+    ...scratchIndex(fail),
+    // What is tracked under a folder that became a link would stop `add` altogether, taking the tracked files with it.
+    // The `/` keeps this to what is under a link: a link's own entry stays, or one `.gitignore` covers would read as deleted.
     'if [ -n "$head" ]; then',
-    "  o=$(G rev-parse --path-format=absolute --git-common-dir)/objects",
-    '  "${BE[@]}" GIT_CONFIG_GLOBAL=/dev/null git init --bare -q --template= "$W/repo" || { echo \'@@fail could not make a scratch repository\'; exit 1; }',
-    '  GX=(GIT_DIR="$W/repo" GIT_WORK_TREE="$PWD" GIT_CONFIG_GLOBAL=/dev/null GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1)',
-    '  O() { local GX=("${GX[@]}" GIT_ALTERNATE_OBJECT_DIRECTORIES="$o"); "$@"; }',
-    `  O G read-tree "$head" || ${fail}`,
+    `  find . -name .git -prune -o -type l -exec printf '%s/\\0' {} + > "$W/links"`,
+    `  if [ -s "$W/links" ]; then O G --literal-pathspecs rm -r -q -f --cached --ignore-unmatch --pathspec-from-file="$W/links" --pathspec-file-nul || echo ${m("partial")}; fi`,
     "fi",
     `G ls-files -z -m ${here} > "$W/tracked" 2>> "$W/said" || ${fail}`,
     "a=0",
@@ -169,8 +122,8 @@ export function listScript(copy: ReviewCopy, nonce: string): string {
     `if [ "$a" -ne 0 ] || [ "$n" -ne 0 ] || grep -qE 'could not open|cannot lstat' "$W/said"; then echo ${m("partial")}; fi`,
     `O G diff --cached --numstat -z ${opts} "$mb" > "$W/numstat" || ${fail}`,
     `O G diff --cached --raw -z --abbrev=40 ${opts} "$mb" > "$W/raw" || ${fail}`,
-    ...fenced("numstat"),
-    ...fenced("raw"),
+    ...fenced(nonce, "numstat"),
+    ...fenced(nonce, "raw"),
     `echo ${m("done")}`,
   ].join("\n");
 }
@@ -184,23 +137,14 @@ export function fileScript(copy: ReviewCopy, path: string, nonce: string): strin
   const after = marker(nonce, "after");
   return [
     ...open(copy),
+    ...scratchObjects("{ echo '@@fail the file could not be read'; exit 1; }"),
     `P=${quote(path)}`,
-    `t=$(G cat-file -t "$mb:$P" 2>/dev/null || true)`,
+    `t=$(O G cat-file -t "$mb:$P" 2>/dev/null || true)`,
     'if [ "$t" = blob ]; then',
-    '  s=$(G cat-file -s "$mb:$P")',
-    `  if [ "$s" -gt ${MAX_FILE_BYTES} ]; then echo "${before} too-big"; else echo "${before} blob"; G cat-file blob "$mb:$P" | base64; fi`,
+    '  s=$(O G cat-file -s "$mb:$P")',
+    `  if [ "$s" -gt ${MAX_FILE_BYTES} ]; then echo "${before} too-big"; else echo "${before} blob"; O G cat-file blob "$mb:$P" | base64; fi`,
     `elif [ -n "$t" ]; then echo "${before} other"; else echo "${before} none"; fi`,
-    // Every folder on the way must be inside the copy, however it was reached.
-    "root=$(pwd -P)",
-    'd=$(cd -P -- "$(dirname -- "./$P")" 2>/dev/null && pwd -P || true)',
-    `if [ -z "$d" ]; then echo "${after} none"`,
-    `elif ! case "$d/" in "$root/"*) true ;; *) false ;; esac; then echo "${after} outside"`,
-    `elif [ -L "./$P" ]; then echo "${after} link"; printf %s "$(readlink -- "./$P")" | head -c ${MAX_PATH} | base64`,
-    'elif [ -f "./$P" ]; then',
-    `  s=$(wc -c < "./$P" | tr -d ' ')`,
-    `  if [ "$s" -gt ${MAX_FILE_BYTES} ]; then echo "${after} too-big"; else echo "${after} blob"; head -c ${MAX_FILE_BYTES + 1} < "./$P" | base64; fi`,
-    `elif [ -e "./$P" ]; then echo "${after} other"`,
-    `else echo "${after} none"; fi`,
+    ...diskSide(after),
     `echo ${marker(nonce, "done")}`,
   ].join("\n");
 }
@@ -257,25 +201,6 @@ export function readList(output: string, nonce: string): ReviewListing {
   return { present: true, files, skipped, truncated, partial: output.includes(marker(nonce, "partial")) };
 }
 
-/** Bytes made into a side: too big, binary (a NUL, or not UTF-8), or text with its tokens redacted. */
-function sideOf(b64: string): FileSide {
-  const bytes = Buffer.from(b64, "base64");
-  if (bytes.length > MAX_FILE_BYTES) return { state: "too-big" };
-  if (bytes.includes(0)) return { state: "binary" };
-  try {
-    return { state: "text", text: redactFile(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) };
-  } catch {
-    return { state: "binary" };
-  }
-}
-
-/** Does a link at `path` with this target stay in the copy? Worked out here, from the words alone: nothing follows it. */
-export function linkStaysInside(path: string, target: string): boolean {
-  if (target === "" || target.startsWith("/")) return false;
-  const to = posix.normalize(posix.join(posix.dirname(path), target));
-  return to !== ".." && !to.startsWith("../");
-}
-
 /** Reads `fileScript`'s output. */
 export function readFile(
   output: string,
@@ -286,32 +211,7 @@ export function readFile(
     if (/^@@nocopy$/m.test(output)) return null;
     throw new Error("the file could not be read");
   }
-  const sides: Record<string, FileSide> = {};
-  let at: { name: string; state: string; b64: string[] } | undefined;
-  const close = () => {
-    if (!at) return;
-    const { name, state, b64 } = at;
-    if (state === "blob") sides[name] = sideOf(b64.join(""));
-    else if (state === "link") {
-      const side = sideOf(b64.join(""));
-      sides[name] =
-        side.text !== undefined && linkStaysInside(path, side.text)
-          ? { state: "link", text: side.text }
-          : { state: "outside" };
-    } else if (["none", "too-big", "other", "outside"].includes(state)) {
-      sides[name] = { state: state as FileSide["state"] };
-    } else sides[name] = { state: "other" };
-    at = undefined;
-  };
-  const head = new RegExp(`^${marker(nonce, "(before|after)")} ([a-z-]+)$`);
-  for (const line of output.split("\n")) {
-    const m = head.exec(line);
-    if (m) {
-      close();
-      at = { name: m[1] ?? "", state: m[2] ?? "", b64: [] };
-    } else if (line === marker(nonce, "done")) close();
-    else at?.b64.push(line);
-  }
+  const sides = readSides(output, nonce, path);
   if (!sides.before || !sides.after) throw new Error("the file could not be read");
   return { before: sides.before, after: sides.after };
 }
@@ -341,6 +241,23 @@ export function reviewPort(run: RunScript): ReviewPort {
       const r = await exec(copy, fileScript(copy, path, nonce), FILE_TIMEOUT_MS);
       return readFile(r.output, nonce, path) ?? { before: { state: "none" }, after: { state: "none" } };
     },
+    async tree(copy) {
+      const nonce = randomBytes(16).toString("hex");
+      return readTree((await exec(copy, treeScript(copy, nonce), LIST_TIMEOUT_MS)).output, nonce);
+    },
+    async read(copy, path) {
+      const nonce = randomBytes(16).toString("hex");
+      return readOpenFile(
+        (await exec(copy, readScript(copy, path, nonce), FILE_TIMEOUT_MS)).output,
+        nonce,
+        path,
+      );
+    },
+    async search(copy, query, matchCase) {
+      const nonce = randomBytes(16).toString("hex");
+      const r = await exec(copy, searchScript(copy, query, matchCase, nonce), SEARCH_TIMEOUT_MS);
+      return readSearch(r.output, nonce, query, matchCase);
+    },
   };
 }
 
@@ -359,12 +276,43 @@ export interface ReviewDeps {
   log?: (msg: string) => void;
 }
 
+/**
+ * One read per conversation at a time: pressing Refresh twice doesn't run two scripts side by side. A read that is
+ * running may already be past a file, so it can't answer for now: a request made during one gets the read that starts
+ * after it, shared by everyone who asked meanwhile, or a turn's last edit could be missing from the refresh that turn's
+ * end asked for.
+ */
+class OneAtATime<T> {
+  private readonly running = new Map<string, Promise<T>>();
+  private readonly next = new Map<string, Promise<T>>();
+
+  constructor(private readonly read: (id: string) => Promise<T>) {}
+
+  get(id: string): Promise<T> {
+    const waiting = this.next.get(id);
+    if (waiting) return waiting;
+    const running = this.running.get(id);
+    if (!running) return this.start(id);
+    const follow = () => {
+      this.next.delete(id);
+      return this.start(id);
+    };
+    const next = running.then(follow, follow);
+    this.next.set(id, next);
+    return next;
+  }
+
+  private start(id: string): Promise<T> {
+    const work = this.read(id).finally(() => this.running.delete(id));
+    this.running.set(id, work);
+    return work;
+  }
+}
+
 /** What the routes call: finds the copy, and turns every way a read can fail into a state and a sentence. */
 export class ConversationReview {
-  /** One listing per conversation at a time: pressing Refresh twice doesn't run two scripts side by side. */
-  private readonly listing = new Map<string, Promise<ChangesView>>();
-  /** The one read that follows a running listing, shared by everyone who asked while that one ran. */
-  private readonly nextListing = new Map<string, Promise<ChangesView>>();
+  private readonly lists = new OneAtATime<ChangesView>((id) => this.readChanges(id));
+  private readonly trees = new OneAtATime<FilesView>((id) => this.readFiles(id));
 
   constructor(private readonly d: ReviewDeps) {}
 
@@ -393,48 +341,34 @@ export class ConversationReview {
     });
   }
 
-  private failure(employeeId: string, e: unknown): { state: ChangesState; reason: string } {
+  private failure(
+    employeeId: string,
+    e: unknown,
+    what = "the changes",
+  ): { state: ChangesState; reason: string } {
     const name = this.name(employeeId);
     if (e instanceof MachineNotRunning) {
       return {
         state: "asleep",
-        reason: `${name}'s machine is asleep, so the changes can't be read right now.`,
+        reason: `${name}'s machine is asleep, so ${what} can't be read right now.`,
       };
     }
     if (e instanceof ReviewTimeout) {
-      return { state: "busy", reason: `${name}'s machine is busy, so the changes can't be read right now.` };
+      return { state: "busy", reason: `${name}'s machine is busy, so ${what} can't be read right now.` };
     }
     this.d.log?.(`review: ${e instanceof Error ? e.message : String(e)}`);
-    return { state: "failed", reason: `Couldn't read the changes in ${name}'s machine.` };
+    return { state: "failed", reason: `Couldn't read ${what} in ${name}'s machine.` };
   }
 
-  /**
-   * What the copy changes now. A listing that is running may already be past a file, so it can't answer for now: a
-   * request made during one gets the read that starts after it, or a turn's last edit could be missing from the
-   * refresh that turn's end asked for.
-   */
+  /** Why a copy that isn't there isn't. */
+  private missing(id: string, none: string): string {
+    const gone = (this.d.conversations.get(id)?.archivedAt ?? null) !== null;
+    return gone ? "This conversation's working copy was cleaned away." : none;
+  }
+
+  /** What the copy changes now. */
   changes(id: string): Promise<ChangesView> {
-    const waiting = this.nextListing.get(id);
-    if (waiting) return waiting;
-    const running = this.listing.get(id);
-    if (!running) return this.startListing(id);
-    const next = running.then(
-      () => this.followListing(id),
-      () => this.followListing(id),
-    );
-    this.nextListing.set(id, next);
-    return next;
-  }
-
-  private followListing(id: string): Promise<ChangesView> {
-    this.nextListing.delete(id);
-    return this.startListing(id);
-  }
-
-  private startListing(id: string): Promise<ChangesView> {
-    const work = this.readChanges(id).finally(() => this.listing.delete(id));
-    this.listing.set(id, work);
-    return work;
+    return this.lists.get(id);
   }
 
   private async readChanges(id: string): Promise<ChangesView> {
@@ -450,12 +384,7 @@ export class ConversationReview {
     try {
       const { present, ...listing } = await this.within(this.d.port.list(copy));
       if (present) return { ...listing, state: "ok", noProject: copy.base === null };
-      const gone = (this.d.conversations.get(id)?.archivedAt ?? null) !== null;
-      return {
-        ...empty,
-        state: "no-copy",
-        reason: gone ? "This conversation's working copy was cleaned away." : "Nothing has changed yet.",
-      };
+      return { ...empty, state: "no-copy", reason: this.missing(id, "Nothing has changed yet.") };
     } catch (e) {
       return { ...empty, ...this.failure(copy.employeeId, e) };
     }
@@ -465,6 +394,7 @@ export class ConversationReview {
     const none: FileSide = { state: "none" };
     const copy = this.copy(id);
     if (!copy) return { state: "failed", path, before: none, after: none };
+    // Ship's rule and no wider: a file ship would push is one the owner must be able to read first.
     if (secretFile.some((re) => re.test(path))) {
       return { state: "ok", path, before: none, after: none, withheld: true };
     }
@@ -472,6 +402,53 @@ export class ConversationReview {
       return { state: "ok", path, ...(await this.within(this.d.port.file(copy, path))) };
     } catch (e) {
       return { path, before: none, after: none, ...this.failure(copy.employeeId, e) };
+    }
+  }
+
+  /** Every file in the working copy, whether or not it changed. */
+  files(id: string): Promise<FilesView> {
+    return this.trees.get(id);
+  }
+
+  private async readFiles(id: string): Promise<FilesView> {
+    const copy = this.copy(id);
+    const empty = { paths: [], skipped: 0, truncated: false, partial: false, noProject: copy?.base === null };
+    if (!copy) return { ...empty, state: "failed", reason: "There is no such conversation." };
+    try {
+      const { present, ...listing } = await this.within(this.d.port.tree(copy));
+      if (present) return { ...listing, state: "ok", noProject: copy.base === null };
+      return { ...empty, state: "no-copy", reason: this.missing(id, "There are no files here yet.") };
+    } catch (e) {
+      return { ...empty, ...this.failure(copy.employeeId, e, "the files") };
+    }
+  }
+
+  /** One file as it is now. A file that usually holds secrets is named but never served, by a wider rule than a diff's. */
+  async read(id: string, path: string): Promise<OpenFileView> {
+    const none: FileSide = { state: "none" };
+    const copy = this.copy(id);
+    if (!copy) return { state: "failed", path, side: none };
+    if (servedNever(path)) return { state: "ok", path, side: none, withheld: true };
+    try {
+      const side = await this.within(this.d.port.read(copy, path));
+      if (side) return { state: "ok", path, side };
+      return { state: "no-copy", path, side: none, reason: this.missing(id, "There are no files here yet.") };
+    } catch (e) {
+      return { path, side: none, ...this.failure(copy.employeeId, e, "this file") };
+    }
+  }
+
+  /** The lines that hold `query`, as it is written. */
+  async search(id: string, query: string, matchCase: boolean): Promise<SearchView> {
+    const copy = this.copy(id);
+    const empty = { hits: [], truncated: false, partial: false };
+    if (!copy) return { ...empty, state: "failed", reason: "There is no such conversation." };
+    try {
+      const { present, ...found } = await this.within(this.d.port.search(copy, query, matchCase));
+      if (present) return { ...found, state: "ok" };
+      return { ...empty, state: "no-copy", reason: this.missing(id, "There are no files here yet.") };
+    } catch (e) {
+      return { ...empty, ...this.failure(copy.employeeId, e, "the files") };
     }
   }
 }

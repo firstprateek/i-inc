@@ -369,6 +369,51 @@ export interface ChangesView extends Omit<ReviewListing, "present"> {
   reason?: string;
 }
 
+/** Every file in a working copy (GET /api/conversations/:id/files). */
+export interface FilesView {
+  state: ChangesState;
+  noProject: boolean;
+  paths: string[];
+  /** Names left out because they aren't safe to show. */
+  skipped: number;
+  /** There were more than the list holds. */
+  truncated: boolean;
+  /** Something in the folder couldn't be read, so the list may be missing files. */
+  partial: boolean;
+  reason?: string;
+}
+
+/** One file as it is on disk (GET /api/conversations/:id/files/read). */
+export interface OpenFileView {
+  state: ChangesState;
+  path: string;
+  side: FileSide;
+  /** The file usually holds secrets, so it isn't served. */
+  withheld?: true;
+  reason?: string;
+}
+
+/** A line holding what was searched for, as the viewer shows it, cut around the match. */
+export interface SearchHit {
+  path: string;
+  line: number;
+  text: string;
+}
+
+/**
+ * What a search of a working copy found (GET /api/conversations/:id/files/search). There is no count of what wasn't
+ * shown: a count that moved with the query would tell what is hidden.
+ */
+export interface SearchView {
+  state: ChangesState;
+  hits: SearchHit[];
+  /** There were more than the results hold. */
+  truncated: boolean;
+  /** Something in the folder couldn't be read, so there may be more. */
+  partial: boolean;
+  reason?: string;
+}
+
 /** A file's two versions (GET /api/conversations/:id/changes/file). */
 export interface FileView {
   state: ChangesState;

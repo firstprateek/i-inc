@@ -23,6 +23,7 @@ export class IncConvTurn extends LitElement {
     employee: { type: String },
     chat: { type: String },
     readOnly: { type: Boolean, attribute: "read-only" },
+    conversationId: { type: String },
     images: { state: true },
   };
   declare turn: AnyTurn | undefined;
@@ -31,6 +32,7 @@ export class IncConvTurn extends LitElement {
   declare chat: string;
   /** A ticket stage being watched (T69): the first message is the stage's brief, and nothing can be retried. */
   declare readOnly: boolean;
+  declare conversationId: string;
   declare images: Record<string, string>;
   private readonly caches = new Map<string, MarkdownCache>();
 
@@ -40,6 +42,7 @@ export class IncConvTurn extends LitElement {
     this.employee = "";
     this.chat = "";
     this.readOnly = false;
+    this.conversationId = "";
     this.images = {};
   }
 
@@ -155,7 +158,7 @@ export class IncConvTurn extends LitElement {
       case ResponsePartKind.Reasoning:
         return html`<details class="think"><summary>${this.active && last ? "Thinking…" : "Thinking"}</summary><div class="md">${this.cache(p.id).render(p.content, this.active && last)}</div></details>`;
       case ResponsePartKind.ToolCall:
-        return html`<inc-conv-tool .call=${p.toolCall} .turnId=${turn.id} .chat=${this.chat} .turnActive=${this.active}></inc-conv-tool>`;
+        return html`<inc-conv-tool .call=${p.toolCall} .turnId=${turn.id} .chat=${this.chat} .conversationId=${this.readOnly ? "" : this.conversationId} .turnActive=${this.active}></inc-conv-tool>`;
       case ResponsePartKind.InputRequest:
         return html`<inc-conv-question .request=${p.request} .response=${p.response} .chat=${this.chat}></inc-conv-question>`;
       case ResponsePartKind.SystemNotification:

@@ -19,6 +19,33 @@ export function capText(s: string, maxBytes = 4096): string {
 const secretName =
   /password|passwd|passphrase|\bpwd\b|token|secret|(?:[-_]key|apikey|privatekey|accesskey|authkey|\bkey)(?:[-_][a-zA-Z0-9_-]{1,60})?$/i;
 
+/** A JWT's last two parts. */
+const JWT_REST = /\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\b/g;
+const TOKEN_CHAR = /[A-Za-z0-9_-]/;
+
+/**
+ * Every JWT, however long: one with a certificate chain in its header runs to many kilobytes, and a bound here would be
+ * a length past which a token ships. A pattern that starts at the first part can't have no bound and stay fast, since
+ * a run of `eyJ-` is a fresh start at every step. So this finds the last two parts, which no run can restart, and looks
+ * back from them along the run before the dot, for the first place `head` matches. One pass, however the text is built.
+ */
+export function redactJwts(text: string, head: RegExp): string {
+  if (!text.includes(".eyJ")) return text;
+  let out = "";
+  let last = 0;
+  JWT_REST.lastIndex = 0;
+  for (let m = JWT_REST.exec(text); m; m = JWT_REST.exec(text)) {
+    let from = m.index;
+    while (from > last && TOKEN_CHAR.test(text.charAt(from - 1))) from--;
+    const start = head.exec(text.slice(from, m.index));
+    if (start) {
+      out += `${text.slice(last, from + start.index)}[redacted]`;
+      last = m.index + m[0].length;
+    } else JWT_REST.lastIndex = m.index + 1; // not a JWT, and its second part may be one's first
+  }
+  return out + text.slice(last);
+}
+
 /**
  * Rules 1-14 of `redactSecrets`: tokens of known kinds and anything named like a secret (`password: x`,
  * `API_KEY=x`, `--token x`, a JSON key). Without the hex and base64 rules, so it never mangles a commit id or
@@ -53,7 +80,7 @@ export function redactKeyed(text: string): string {
   out = out.replace(/xox[baprs]-[0-9A-Za-z-]{8,}\b/g, "[redacted]");
 
   // 7. JWT-like tokens (eyJ...\.eyJ...\....)
-  out = out.replace(/eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\b/g, "[redacted]");
+  out = redactJwts(out, /eyJ[A-Za-z0-9_-]{8,}$/);
 
   // 8. AWS Access Key IDs (AKIA...)
   out = out.replace(/AKIA[0-9A-Z]{16}(?![0-9A-Za-z])/g, "[redacted]");

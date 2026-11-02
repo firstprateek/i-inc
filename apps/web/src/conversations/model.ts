@@ -167,6 +167,16 @@ export function toolLocations(tc: ToolCallState): { path: string; line?: number 
   return raw.filter((l): l is { path: string; line?: number } => isObj(l) && typeof l.path === "string");
 }
 
+/** The file a call's arguments name, with the line it starts at: what a call has before it gives any locations. */
+export function toolInputLocation(tc: ToolCallState): { path: string; line?: number } | undefined {
+  const input = toolInput(tc);
+  if (!isObj(input)) return undefined;
+  const path = [input.file_path, input.filePath, input.path].find((p) => typeof p === "string" && p);
+  if (typeof path !== "string") return undefined;
+  const line = input.offset;
+  return { path, ...(typeof line === "number" && Number.isInteger(line) && line > 0 ? { line } : {}) };
+}
+
 /** A short second part for the one-line card: the file, the command, the pattern. */
 export function toolDetail(tc: ToolCallState): string {
   const loc = toolLocations(tc)[0];

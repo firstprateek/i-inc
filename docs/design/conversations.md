@@ -94,7 +94,8 @@ Pieces in the daemon:
    for goes in `_meta` (the full table is in [ahp-spike.md](ahp-spike.md)): the agent's **plan** is a
    pseudo tool call `x-iinc-plan` with the entries in `_meta["iinc.plan"]`, slash commands are in the
    session's `_meta["iinc.commands"]` (served by `completions`), tool-call `locations` are in
-   `_meta["iinc.locations"]`, and allow-once versus allow-always is the confirmation option's `group`.
+   `_meta["iinc.locations"]` (the last ones given are kept to the end of the call), and allow-once versus
+   allow-always is the confirmation option's `group`.
    **Modes are session config** (`session/configChanged`, the agent's own names as the schema's enum
    labels); per-chat mode needs spec 1.1. **"Needs you"** is the session's `inputNeeded` list.
 3. **State store.** Every channel's actions are appended to SQLite with their host-wide `serverSeq`
@@ -253,7 +254,8 @@ links into it.
   and nothing else of it, not its index (flags and cached stats that hide a change), config, `.git/info/exclude` or
   hooks. Git finds what differs by content, and only those files are hashed, into the scratch objects, with the copy's
   out of sight: git touches an object it is asked to write and already has. So every tracked file is read on each list.
-  Optional locks and lazy fetches are off, and `G` from `ship-git.ts` has no hooks, filters, fsmonitor or external diffs.
+  Optional locks are off, and so are lazy fetches: `GIT_NO_LAZY_FETCH` needs git 2.45 and the image has 2.43, so no
+  protocol is allowed either (`GIT_ALLOW_PROTOCOL=none`). And `G` from `ship-git.ts` has no hooks, filters, fsmonitor or external diffs.
 - **No implicit boots.** It uses the runner that refuses a stopped machine (T75). A read holds an ordinary lease, so it
   runs beside an agent's turn: the pane shows what is there, says the agent is working (or waiting for an answer), and
   refreshes when the turn ends. Listings run one at a time, and a request made during one gets a read that starts
@@ -261,9 +263,24 @@ links into it.
 - **No project,** or a project's copy with no commits or no repository: the scratch repository looks at the folder, and
   every file there is new.
 - **Untrusted.** Paths must be relative, with no `..`, NUL, control character, leading `-`, `.git` or `.inc`, and a name
-  that fails is left out and counted. Files stop at 1 MB, every kind of credential ship's scan stops is redacted (a key
-  block keeps its lines, so line numbers hold), a file that usually holds secrets is listed but never served, links are
-  never followed, and the pane renders all of it as text.
+  that fails is left out and counted. Files stop at 1 MB, every kind of credential ship's scan stops is redacted. The
+  result of `redactTokens` is the starting point and the key blocks only take more out of it, so what that hides stays
+  hidden whatever they find. A block keeps its lines, so line numbers hold. Its markers count wherever they sit, in a
+  string joined over several lines or after code, once there is a line of key between them; a line in it that doesn't
+  read as key material shows as `redactTokens` left it, which is in sight unless it runs straight on from the key, and
+  a line that names a marker is cut at it, as a key can run into one. A marker named in a string doesn't end a block or
+  restart it: before a key, an end is passed over for the next one and a
+  later begin is where the block starts, and after a key, the block runs to the last end before another begin, all
+  within 16 KB. So a source file that names a begin and two ends around any line that reads as key material is taken for
+  a key, and the scan stops it: the safe way to be wrong. A block in the change, ship's scan stops. **Known gap:** the pane redacts whole files and the scan reads added lines
+  only, so they can disagree. A line added inside a key block already in the file is hidden if it reads as key material
+  (base64, or any armor header, which to `redactTokens` is any `Word: text` line in the key's run), and so is a token
+  added under an old `Authorization: Bearer` line.
+  The owner sees a blank or `[redacted]`, and the scan doesn't stop it, so what is hidden there can still be pushed.
+  ship-git.test.ts pins this until the scan is changed. The diff withholds only the files ship stops by name (`.env`,
+  `*.pem` and the like), because anything wider would hide a file that can still be pushed: they are listed but not served. A file with a name that only suggests secrets (`.envrc`,
+  `prod.env`, `.pgpass`) can be pushed, so its diff shows, redacted like any other. Links are never followed, and the
+  pane renders all of it as text.
 - **Line comments** are the owner's, in this browser, per conversation, kept with the drafts (and forgotten with them at
   sign-out), across tabs. No route takes them. A line's number opens its box; the code itself is there to select. A
   half-written comment stays through another line, another file or closing the pane, and is only thrown away when the
@@ -283,6 +300,46 @@ links into it.
 - **While the agent waits.** If it is stopped on a permission or a question the pane says so and **Answer** goes to the
   card. The thread's live region is hidden behind the pane, so the pane has its own, there from the start, which says
   when the agent starts working, needs an answer, or finishes, stops or hits an error.
+
+## Files (the Files and Search tabs)
+
+**Files** and **Search** sit beside **Changes** in the same pane, and show the working copy as it is, whether or not it
+changed. Each read follows the Review rules above: it writes nothing, boots nothing, and believes nothing it is told.
+
+- `GET /api/conversations/:id/files`: `{ files: { state, noProject, paths, skipped, truncated, partial, reason? } }`. In a repository,
+  what the commit tracks plus what is new by the scratch index (so `.gitignore` counts and the copy's index and excludes
+  don't), less what has gone. With no commit to go on, a bounded `find` that skips `.git`, `.inc` and `node_modules`. At
+  most 20,000 paths. `partial`, as in Changes: a folder that isn't ignored couldn't be read, so what is behind it, tracked
+  or new, is missing from the list. The pane says so.
+- `GET /api/conversations/:id/files/read?path=`: `{ file: { state, path, side, withheld?, reason? } }`, one side as in a
+  diff, by the same checks: 1 MB, redacted with its lines kept, links never followed. A file that usually holds secrets,
+  by a wider rule than the diff's (`.envrc`, `prod.env`, `.pgpass` and `.ppk` too, and any case), is named but not served,
+  and neither is anything reached through a link into `.git` or `.inc`. Search leaves out the same files. A bad path is a 400.
+- `GET /api/conversations/:id/files/search?q=&case=1`: `{ search: { state, hits, truncated, partial, reason? } }`, each hit
+  `{ path, line, text }`. A literal query of one line, at most 200 characters, with case ignored unless `case=1`.
+- **Search looks at what the viewer shows.** `git grep -F` over what isn't ignored, in the scratch repository and with
+  2 GB of memory, or a bounded `grep` with no commit, only says which files may hold the query. Those files, up to 200 and 6 MB
+  in all and none over 1 MB, come out as the viewer reads them, each is redacted whole, and the query is looked for in
+  that text. Redacting a line can't work: a value can sit lines from its label and a key has nothing near it. So what a
+  search shows can't be other than what the viewer shows, a match inside what redaction took out is no match, and nothing
+  counts what wasn't shown: a count that moved with the query would tell what is hidden, a letter at a time. Two things
+  still move with a right guess, and only for someone who has planted files holding it: a match counts towards the file
+  limits before anything is read, so past 200 files or 6 MB it can change which files are looked through; and a file
+  brought out takes a few milliseconds more than one that isn't. Hits are at most 20 a file and 500 in all.
+- **The pane.** Files is a tree with one tab stop and the tree keys, with a filter over paths; lists draw 400 rows at a
+  time. The viewer has line numbers and the highlighter (up to 40 KB, plain after that) and draws 1,000 lines at a time,
+  around the line asked for. Search runs when it is asked to, lists hits by file and opens the viewer at the line. Files
+  and Search refresh when a turn ends; a search's results stay as they were until the owner searches again. Lists run
+  one at a time here too, and a request made during one gets a read that starts after it.
+- **`@file`.** Typing `@` at the start or after a space opens a list of matching paths, built like the slash list.
+  Enter or Tab puts the path in as text (in backticks if it has a space). It follows the text during IME composition, because a phone's keyboard can
+  compose every word, while the keys that pick from it stay the IME's until the composition ends. It stays shut for an
+  `@` the owner dismissed with Escape, until that has gone from the box. A draft has no working copy, so the list doesn't open there. The list of paths
+  is remembered for 30 seconds or until a turn ends; a machine that is asleep is said in a sentence, and Enter still sends.
+- **Read cards.** A Read card whose path is in the copy has a button that opens it in Files at the line, and the viewer
+  says so if the file has gone since. The path is the call's locations, or its arguments (`file_path`, `offset`) while it
+  has given none, so a running call has the button too. A ticket's read-only stage has none.
+- **Closing the pane** keeps what Files and Search held, for this page, per conversation. On a phone, back closes it.
 
 ## Data and API
 

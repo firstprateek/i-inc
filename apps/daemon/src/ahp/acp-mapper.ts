@@ -30,6 +30,8 @@ interface ToolState {
   phase: "streaming" | "pending-confirmation" | "running" | "done";
   /** What the agent said it was calling the tool with, kept for when the call becomes ready. */
   rawInput?: unknown;
+  /** Where it last said it worked: most updates say nothing, and a call often says it only after it starts. */
+  locations?: Json[];
   /** Why the call is running, for when its input is updated after it started. */
   confirmed?: (typeof ToolCallConfirmationReason)[keyof typeof ToolCallConfirmationReason];
   /** ACP option kinds by optionId, kept so a confirmation can be answered with the right option. */
@@ -55,6 +57,14 @@ export function cleanLocations(locations: unknown): Json[] {
   }
   return out;
 }
+
+/** An update with no locations, or an empty list of them, leaves the ones the call already gave. */
+function keepLocations(t: ToolState, u: Json): void {
+  const locations = cleanLocations(u.locations);
+  if (locations.length) t.locations = locations;
+}
+
+const locationsMeta = (t: ToolState) => (t.locations ? { _meta: { "iinc.locations": t.locations } } : {});
 
 /** A side and its cut mark fit in what the host's `put` redacts, which would otherwise drop the mark. */
 const MAX_DIFF_SIDE = MAX_REDACTED - SIDE_CUT.length;
@@ -200,14 +210,15 @@ export class TurnMapper {
     const id = String(u.toolCallId);
     const title = String(u.title ?? id);
     const kind = String(u.kind ?? "other");
-    const locations = cleanLocations(u.locations);
-    this.tools.set(id, { title, kind, phase: "streaming", rawInput: u.rawInput });
+    const t: ToolState = { title, kind, phase: "streaming", rawInput: u.rawInput };
+    this.tools.set(id, t);
+    keepLocations(t, u);
     this.emit({
       type: ActionType.ChatToolCallStart,
       toolCallId: id,
       toolName: kind,
       displayName: title,
-      ...(locations.length ? { _meta: { "iinc.locations": locations } } : {}),
+      ...locationsMeta(t),
     });
     // `pending` means the agent may still ask for permission. Anything else is already past that:
     // in_progress is running (its content so far shows), and completed or failed is over, with its
@@ -234,9 +245,7 @@ export class TurnMapper {
         content: mapToolContent(u.content as Json[] | undefined, this.env.put),
         ...(ok ? {} : { error: { message: `${t.title} failed` } }),
       },
-      ...(cleanLocations(u.locations).length
-        ? { _meta: { "iinc.locations": cleanLocations(u.locations) } }
-        : {}),
+      ...locationsMeta(t),
     });
   }
 
@@ -251,12 +260,14 @@ export class TurnMapper {
     t.phase = confirmed ? "running" : "pending-confirmation";
     if (confirmed) t.confirmed = confirmed;
     if (u.rawInput !== undefined) t.rawInput = u.rawInput;
+    keepLocations(t, u);
     this.emit({
       type: ActionType.ChatToolCallReady,
       toolCallId: id,
       invocationMessage: String(u.title ?? t.title),
       ...(t.rawInput !== undefined ? { toolInput: JSON.stringify(t.rawInput) } : {}),
       ...(confirmed ? { confirmed } : {}),
+      ...locationsMeta(t),
       ...extra,
     });
   }
@@ -277,6 +288,7 @@ export class TurnMapper {
     }
     if (!t || t.phase === "done") return;
     if (u.title) t.title = String(u.title);
+    keepLocations(t, u);
     // The agent fills in the arguments as it learns them: a call already announced gets them again.
     if (u.rawInput !== undefined && JSON.stringify(u.rawInput) !== JSON.stringify(t.rawInput)) {
       t.rawInput = u.rawInput;
@@ -287,6 +299,7 @@ export class TurnMapper {
           invocationMessage: t.title,
           toolInput: JSON.stringify(u.rawInput),
           ...(t.phase === "running" && t.confirmed ? { confirmed: t.confirmed } : {}),
+          ...locationsMeta(t),
         });
       }
     }

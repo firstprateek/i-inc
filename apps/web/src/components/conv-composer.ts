@@ -1,11 +1,12 @@
 // The composer: a multi-line box. Enter sends (Shift+Enter breaks a line; a phone's Enter breaks a line, since
 // it has a Send button), never while an IME is composing. Paste or drop images. `/` opens the agent's slash
-// commands. The agent's own modes and models are pickers. While a turn runs: Stop, and typing offers Steer
-// (runs next, ahead of the queue; one at a time, so a second joins the queue) or Queue; the queued messages are
-// listed and removable.
+// commands, and `@` the working copy's files. The agent's own modes and models are pickers. While a turn runs: Stop,
+// and typing offers Steer (runs next, ahead of the queue; one at a time, so a second joins the queue) or Queue; the
+// queued messages are listed and removable.
 import type { ChatState, SessionState } from "@microsoft/agent-host-protocol";
 import { css, html, LitElement, nothing } from "lit";
 import { checkOutgoing, judgeTextFile } from "../conversations/actions.ts";
+import { forgetPaths, matchPaths, mentionQuery, pathsFor } from "../conversations/files.ts";
 import {
   type Command,
   commandsOf,
@@ -14,6 +15,7 @@ import {
   otherPickers,
   type Picker,
   slashQuery,
+  visible,
 } from "../conversations/model.ts";
 import {
   holdsComments,
@@ -27,6 +29,12 @@ import { draftMemo } from "../drafts.ts";
 import { isTouchDevice } from "./chat.ts";
 import { ImagePicker, imagePickerStyles } from "./image-picker.ts";
 import { selectField } from "./shared.ts";
+
+/** Paths the `@` list shows at a time. */
+const MENTIONS = 8;
+/** A list's height at most and at least: at the least, one row and the list's padding. */
+const MAX_LIST = 280;
+const MIN_LIST = 58;
 
 export type Intent = "turn" | "steer" | "queue";
 export interface SendDetail {
@@ -61,6 +69,9 @@ export class IncConvComposer extends LitElement {
     error: { state: true },
     slash: { state: true },
     slashIndex: { state: true },
+    mention: { state: true },
+    mentionIndex: { state: true },
+    mentionNote: { state: true },
     dragging: { state: true },
     attached: { state: true },
     menu: { state: true },
@@ -81,6 +92,11 @@ export class IncConvComposer extends LitElement {
   declare error: string | null;
   declare slash: Command[];
   declare slashIndex: number;
+  /** The paths the `@` list shows. */
+  declare mention: string[];
+  declare mentionIndex: number;
+  /** Why the `@` list has no paths (a machine asleep, say). */
+  declare mentionNote: string;
   declare dragging: boolean;
   /** Text files added to the message (images are in the picker). */
   declare attached: File[];
@@ -98,6 +114,9 @@ export class IncConvComposer extends LitElement {
   private composing = false;
   private composedAt = 0;
   private draftFor = "";
+  /** Where the `@` the owner dismissed is: the list stays shut for that one. */
+  private mentionShut = -1;
+  private mentionAsk = 0;
   private offComments: (() => void) | undefined;
 
   constructor() {
@@ -110,6 +129,9 @@ export class IncConvComposer extends LitElement {
     this.error = null;
     this.slash = [];
     this.slashIndex = 0;
+    this.mention = [];
+    this.mentionIndex = 0;
+    this.mentionNote = "";
     this.dragging = false;
     this.attached = [];
     this.fileProblem = null;
@@ -157,11 +179,14 @@ export class IncConvComposer extends LitElement {
       .queue .icon { width: 40px; height: 40px; }
       .queue .tag { flex: none; font-size: 11.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.4px; color: var(--reviewing-fg); }
       .queue .t { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
-      .pop { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 30; max-width: 520px; background: var(--surface); border: 1px solid var(--line-strong);
+      .pop { position: absolute; box-sizing: border-box; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 30; max-width: 520px; background: var(--surface); border: 1px solid var(--line-strong);
         border-radius: 14px; box-shadow: 0 12px 32px rgba(0,0,0,0.16); padding: 6px; max-height: 280px; overflow: auto; }
       .pop [role="option"] { display: flex; flex-direction: column; gap: 1px; padding: 8px 12px; border-radius: 8px; min-height: 44px; box-sizing: border-box; justify-content: center; cursor: pointer; }
       .pop [role="option"][aria-selected="true"], .pop [role="option"]:hover { background: var(--sunken); }
       .pop b { font: 700 14px var(--mono); }
+      .pop .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; direction: rtl; text-align: left; }
+      .pop .path bdi { direction: ltr; }
+      .pop.say { margin: 0; padding: 10px 14px; color: var(--ink-2); font-size: 14px; line-height: 1.4; }
       .pop small { color: var(--ink-2); font-size: 13px; }
       .more { display: none; width: 36px; padding: 0; align-items: center; justify-content: center; border-radius: 0 999px 999px 0; margin-left: -7px; }
       /* The mode picker sizes to its words ("Bypass permissions" must not be cut), on a line of its own if need be. */
@@ -209,18 +234,24 @@ export class IncConvComposer extends LitElement {
   }
 
   override willUpdate(changed: Map<string, unknown>): void {
+    // A turn that ended may have changed the files.
+    const before = changed.get("chat") as ChatState | undefined;
+    if (before?.activeTurn && !this.chat?.activeTurn) forgetPaths(this.conversationId);
     if (changed.has("conversationId") && this.conversationId !== this.draftFor) {
       this.draftFor = this.conversationId;
       this.text = draftMemo.get(`conv:${this.conversationId}`) ?? "";
       this.comments = reviewComments.list(this.conversationId);
       this.error = null;
       this.slash = [];
+      this.closeMention();
+      this.mentionShut = -1;
       this.picker.clear();
     }
   }
 
   override updated(changed: Map<string, unknown>): void {
     if (changed.has("text") || changed.has("conversationId")) this.fit();
+    if (["slash", "slashIndex", "mention", "mentionIndex"].some((k) => changed.has(k))) this.placeList();
   }
 
   /** Puts a message back in the box (one the host refused, or the connection lost), ahead of anything typed since. */
@@ -296,7 +327,81 @@ export class IncConvComposer extends LitElement {
     this.text = ta.value;
     draftMemo.set(`conv:${this.conversationId}`, this.text);
     this.updateSlash(ta);
+    void this.updateMention(ta);
   };
+
+  private closeMention() {
+    this.mentionAsk++;
+    this.mention = [];
+    this.mentionIndex = 0;
+    this.mentionNote = "";
+  }
+
+  /** The open list fits the room above the box, inside the pane it is in, and the chosen row is in sight. */
+  private placeList() {
+    const pop = this.renderRoot.querySelector<HTMLElement>(".pop[role='listbox']");
+    if (!pop) return;
+    const pane = this.getRootNode() instanceof ShadowRoot ? (this.getRootNode() as ShadowRoot).host : this;
+    const top = pane.getBoundingClientRect().top;
+    const room = (this.renderRoot.querySelector("form")?.getBoundingClientRect().top ?? 0) - top - 6;
+    pop.style.maxHeight = `${Math.max(MIN_LIST, Math.min(MAX_LIST, room))}px`;
+    const row = pop.querySelector<HTMLElement>('[aria-selected="true"]');
+    if (!row) return;
+    // By hand: scrollIntoView would move every scroller around it, and nothing in the app scrolls the page.
+    const [a, b] = [row.getBoundingClientRect(), pop.getBoundingClientRect()];
+    if (a.top < b.top) pop.scrollTop -= b.top - a.top;
+    else if (a.bottom > b.bottom) pop.scrollTop += a.bottom - b.bottom;
+  }
+
+  /** A draft has no working copy yet, so `@` is only an `@` there. */
+  private get hasCopy(): boolean {
+    return !!this.conversationId && !this.conversationId.startsWith("draft:");
+  }
+
+  /**
+   * Opens, moves or closes the `@` list. The answer may come after the owner has typed on: it is read for then. It
+   * follows the text during a composition too: a phone's keyboard can compose every word, so there would be no other
+   * time, and the keys that pick from the list stay the IME's until it ends.
+   */
+  private async updateMention(ta: HTMLTextAreaElement) {
+    const q = this.hasCopy ? mentionQuery(ta.value, ta.selectionStart ?? ta.value.length) : undefined;
+    // The `@` the owner dismissed stays shut until it has gone from the box.
+    if (q?.start !== this.mentionShut) this.mentionShut = -1;
+    if (!q || q.start === this.mentionShut) return this.closeMention();
+    const id = this.conversationId;
+    const ask = ++this.mentionAsk;
+    const v = await pathsFor(id).catch(() => null);
+    if (ask !== this.mentionAsk || id !== this.conversationId) return;
+    if (v?.state === "ok") {
+      const list = matchPaths(v.paths, q.word).slice(0, MENTIONS);
+      if (list.join("\n") !== this.mention.join("\n")) this.mentionIndex = 0;
+      this.mention = list;
+      this.mentionNote = "";
+    } else {
+      this.mention = [];
+      this.mentionNote = v?.reason ?? "The files can't be read right now.";
+    }
+  }
+
+  private pickMention(path: string) {
+    const ta = this.renderRoot.querySelector<HTMLTextAreaElement>("textarea");
+    if (!ta) return;
+    const cursor = ta.selectionStart ?? ta.value.length;
+    const q = mentionQuery(ta.value, cursor);
+    if (!q) return;
+    // A name with a space in it stays one name.
+    const text = /\s/.test(path) ? `\`${path}\`` : path;
+    const next = `${ta.value.slice(0, q.start)}${text} ${ta.value.slice(cursor)}`;
+    this.text = next;
+    draftMemo.set(`conv:${this.conversationId}`, next);
+    this.closeMention();
+    this.composing = false;
+    const at = q.start + text.length + 1;
+    void this.updateComplete.then(() => {
+      ta.focus();
+      ta.setSelectionRange(at, at);
+    });
+  }
 
   private updateSlash(ta: HTMLTextAreaElement) {
     const q = slashQuery(ta.value, ta.selectionStart ?? ta.value.length);
@@ -315,6 +420,7 @@ export class IncConvComposer extends LitElement {
     this.text = next;
     draftMemo.set(`conv:${this.conversationId}`, next);
     this.slash = [];
+    this.composing = false;
     const at = q.start + c.name.length + 2;
     void this.updateComplete.then(() => {
       ta.focus();
@@ -340,6 +446,29 @@ export class IncConvComposer extends LitElement {
         e.preventDefault();
         e.stopPropagation();
         this.slash = [];
+        return;
+      }
+    }
+    const composing = e.isComposing || this.composing || e.keyCode === 229;
+    if (e.key === "Escape" && !composing && (this.mention.length || this.mentionNote)) {
+      e.preventDefault();
+      e.stopPropagation();
+      const ta = e.target as HTMLTextAreaElement;
+      this.mentionShut = mentionQuery(ta.value, ta.selectionStart ?? ta.value.length)?.start ?? -1;
+      this.closeMention();
+      return;
+    }
+    if (this.mention.length && !composing) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const n = this.mention.length;
+        this.mentionIndex = (this.mentionIndex + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
+        return;
+      }
+      if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey) {
+        e.preventDefault();
+        const path = this.mention[this.mentionIndex];
+        if (path) this.pickMention(path);
         return;
       }
     }
@@ -378,6 +507,8 @@ export class IncConvComposer extends LitElement {
       // the next message, and is not wiped by this one's success. If it fails, the message comes back.
       this.text = "";
       this.slash = [];
+      this.closeMention();
+      this.mentionShut = -1;
       draftMemo.set(`conv:${id}`, "");
       this.picker.clear();
       this.attached = [];
@@ -409,6 +540,9 @@ export class IncConvComposer extends LitElement {
     setTimeout(() => {
       const inside = !!this.renderRoot.querySelector(":focus");
       this.emit("conv-focus", { focused: inside });
+      if (inside) return;
+      this.slash = [];
+      this.closeMention();
     }, 0);
   }
 
@@ -489,6 +623,22 @@ export class IncConvComposer extends LitElement {
             )}</div>`
           : nothing
       }
+      ${
+        this.mention.length
+          ? html`<div class="pop" role="listbox" id="mention-list" aria-label="Files">${this.mention.map(
+              (
+                p,
+                i,
+              ) => html`<div role="option" id="mention-${i}" aria-selected=${i === this.mentionIndex ? "true" : "false"}
+                @mousedown=${(e: Event) => {
+                  e.preventDefault();
+                  this.pickMention(p);
+                }}><b class="path" title=${visible(p)}><bdi>${visible(p)}</bdi></b></div>`,
+            )}</div>`
+          : this.mentionNote
+            ? html`<p class="pop say" role="status">${this.mentionNote}</p>`
+            : nothing
+      }
       ${this.picker.problem ? html`<p class="problem" role="alert">${this.picker.problem}</p>` : nothing}
       ${this.fileProblem ? html`<p class="problem" role="alert">${this.fileProblem}</p>` : nothing}
       ${this.error ? html`<p class="problem" role="alert">${this.error}</p>` : nothing}
@@ -523,11 +673,21 @@ export class IncConvComposer extends LitElement {
             : nothing
         }
         <textarea rows="1" .value=${this.text} placeholder=${running ? "Type to steer or queue…" : `Message ${this.name || "the agent"}…`}
-          aria-label="Message" role="combobox" aria-autocomplete="list" aria-expanded=${this.slash.length ? "true" : "false"}
-          aria-controls=${this.slash.length ? "slash-list" : nothing} aria-activedescendant=${this.slash.length ? `slash-${this.slashIndex}` : nothing}
+          aria-label="Message" role="combobox" aria-autocomplete="list" aria-expanded=${this.slash.length || this.mention.length ? "true" : "false"}
+          aria-controls=${this.slash.length ? "slash-list" : this.mention.length ? "mention-list" : nothing}
+          aria-activedescendant=${this.slash.length ? `slash-${this.slashIndex}` : this.mention.length ? `mention-${this.mentionIndex}` : nothing}
           enterkeyhint="send" autocomplete="off" autocapitalize="sentences"
           @input=${this.onInput} @keydown=${this.onKeydown}
-          @click=${(e: Event) => this.updateSlash(e.target as HTMLTextAreaElement)}
+          @click=${(e: Event) => {
+            const ta = e.target as HTMLTextAreaElement;
+            this.updateSlash(ta);
+            void this.updateMention(ta);
+          }}
+          @keyup=${(e: KeyboardEvent) => {
+            if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
+              void this.updateMention(e.target as HTMLTextAreaElement);
+            }
+          }}
           @focus=${() => this.focusChanged(true)}
           @blur=${() => this.focusChanged(false)}
           @paste=${this.onPaste}
@@ -537,6 +697,7 @@ export class IncConvComposer extends LitElement {
           @compositionend=${() => {
             this.composing = false;
             this.composedAt = Date.now();
+            void this.updateMention(this.renderRoot.querySelector("textarea") as HTMLTextAreaElement);
           }}></textarea>
         <div class="row ${running && hasInput ? "fold" : ""}">
           <input id="conv-files-input" type="file" multiple hidden accept="image/png,image/jpeg,image/webp,image/gif,text/*,.md,.json,.yaml,.yml,.toml,.ts,.tsx,.js,.jsx,.py,.go,.rs,.java,.sh,.sql,.css,.html,.xml,.csv,.log,.diff,.patch"
@@ -590,7 +751,7 @@ export class IncConvComposer extends LitElement {
           }
         </div>
       </div>
-      ${running ? nothing : html`<p class="hint kbd">Enter sends · Shift+Enter for a new line · / for commands</p>`}
+      ${running ? nothing : html`<p class="hint kbd">Enter sends · Shift+Enter for a new line · / for commands${this.hasCopy ? " · @ for files" : ""}</p>`}
     </form>`;
   }
 }

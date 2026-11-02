@@ -5,7 +5,7 @@
 // `data`) are left alone: the redactor's hex and base64 rules would mangle them. Streaming deltas are
 // redacted chunk by chunk, so a secret split across two chunks is not caught; tool results, which
 // arrive whole, are.
-import { redactKeyed, redactSecrets } from "../sessions.ts";
+import { redactJwts, redactKeyed, redactSecrets } from "../sessions.ts";
 import type { Json } from "./wire.ts";
 
 /** Keys whose string values are free text from an agent or a tool. */
@@ -119,13 +119,20 @@ function redactPem(t: string, keepLines = false): string {
 }
 
 /**
+ * Where the usual pattern stopped in a webhook secret, until `whole` takes the rest. Made for each text: what comes after
+ * it goes, so an agent must not be able to write one in front of a password, and a noncharacter alone it can.
+ */
+const secretCut = () => `\uFDD0${crypto.randomUUID()}\uFDD0`;
+
+/**
  * The patterns that are unmistakably credentials, whatever the text is: private key blocks (PGP's
  * too), URL userinfo (a password may hold an `@`), secret-looking query parameters (`?pwd=`, `?token=`),
  * and tokens of the known kinds (GitHub, OpenAI/Anthropic, Google, Slack, AWS key ids and keyed
  * secrets, JWTs, bearer headers). Source code and prose alike: none of these mangles either. The one
  * set behind `redactText` (everything an agent says) and `redactTokens` (diffs and files).
  */
-function redactCredentials(text: string, keepLines = false): string {
+function redactCredentials(text: string, keepLines = false, whole = false): string {
+  const cut = whole ? secretCut() : "";
   let t = redactPem(text, keepLines);
   t = t.replace(USERINFO, "$1[redacted]@").replace(SECRET_QUERY, "$1[redacted]");
   t = t.replace(/(bearer\s+)[A-Za-z0-9._~+/=-]{16,}/gi, "$1[redacted]");
@@ -133,16 +140,26 @@ function redactCredentials(text: string, keepLines = false): string {
   t = t.replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, "[redacted]");
   t = t.replace(/\bAIza[0-9A-Za-z_-]{30,}\b/g, "[redacted]");
   t = t.replace(/\bxox[baprs]-[0-9A-Za-z-]{10,}\b/g, "[redacted]");
-  t = t.replace(/\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\b/g, "[redacted]");
+  t = redactJwts(t, /\beyJ[A-Za-z0-9_-]{8,}$/);
   t = t.replace(/\bAKIA[0-9A-Z]{16}\b/g, "[redacted]");
-  t = t.replace(/\b(?:[sr]k_live|whsec)_[A-Za-z0-9]{8,}\b/g, "[redacted]");
+  t = t.replace(/\b(?:[sr]k_live|whsec)_[A-Za-z0-9]{8,}\b/g, (m) =>
+    whole && m.startsWith("whsec") ? `[redacted]${cut}` : "[redacted]",
+  );
   t = t.replace(/\bnpm_[A-Za-z0-9]{20,}\b/g, "[redacted]");
   // AWS's 40-character secret access key, named: aws_secret_access_key = ..., "SecretAccessKey": "..."
   t = t.replace(
     /((?:aws[_-]?)?secret[_-]?(?:access[_-]?)?key["']?\s{0,5}[=:]\s{0,5}["']?)[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/gi,
     "$1[redacted]",
   );
-  return t;
+  if (!whole) return t;
+  // Last, and only taking more out: taken any earlier, a secret's end could take what another pattern looks for.
+  return (
+    t
+      .replace(new RegExp(`${cut}[A-Za-z0-9+/=_-]*`, "g"), "")
+      .replace(/\b[sr]k_live_[A-Za-z0-9]{16,}\w*/g, "[redacted]")
+      // Eight characters before any `_` or `-`: `whsec_your_webhook_secret` is a placeholder for one.
+      .replace(/\bwhsec_[A-Za-z0-9+/=]{8,}[A-Za-z0-9+/=_-]*/g, "[redacted]")
+  );
 }
 
 /**
@@ -226,10 +243,15 @@ export const MAX_REDACTED = 1_000_000;
  * redactor's hex and base64 rules would mangle source code: GitHub, OpenAI/Anthropic, Google, Slack,
  * AWS and JWT tokens, bearer headers, private key blocks and passwords in URLs: the same set
  * `redactText` starts with (`redactCredentials`). It leaves `token: string` in source code alone. With
- * `keepLines`, a key block leaves its line breaks behind, so what follows it keeps its line numbers.
+ * `keepLines`, a key block leaves its line breaks behind, so what follows it keeps its line numbers. With
+ * `whole`, a live payment key or webhook secret goes to its end, past what the usual pattern takes.
  */
-export function redactTokens(text: string, opts: { keepLines?: boolean } = {}): string {
-  return redactCredentials(text.length > MAX_REDACTED ? text.slice(0, MAX_REDACTED) : text, opts.keepLines);
+export function redactTokens(text: string, opts: { keepLines?: boolean; whole?: boolean } = {}): string {
+  return redactCredentials(
+    text.length > MAX_REDACTED ? text.slice(0, MAX_REDACTED) : text,
+    opts.keepLines,
+    opts.whole,
+  );
 }
 
 /**

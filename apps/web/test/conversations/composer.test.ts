@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { enterSends, type IncConvComposer } from "../../src/components/conv-composer.ts";
-import { must } from "../ahp/fake-host.ts";
+import { must, until } from "../ahp/fake-host.ts";
 import "../../src/components/conv-composer.ts";
 
 // biome-ignore lint/suspicious/noExplicitAny: scripted protocol state.
@@ -265,6 +265,22 @@ describe("slash commands", () => {
     expect(send).not.toHaveBeenCalled();
     expect(ta.value).toBe("/review ");
     expect(options()).toEqual([]);
+  });
+
+  it("ends a composition that a pick by mouse cut short: no compositionend follows", async () => {
+    const { el, ta, type, send } = await mount({ session });
+    ta.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    await type("/");
+    ta.setSelectionRange(1, 1);
+    ta.dispatchEvent(new Event("click"));
+    await el.updateComplete;
+    must(el.shadowRoot?.querySelector('[role="option"]')).dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+    );
+    await el.updateComplete;
+    expect(ta.value).toBe("/compact ");
+    ta.dispatchEvent(key());
+    await until(() => send.mock.calls.length);
   });
 });
 

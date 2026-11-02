@@ -272,23 +272,146 @@ const extraCredential = [
   /\bmachine\s+\S+\s+(?:login\s+\S+\s+)?password\s+\S{4,}/,
 ];
 
+// A marker can sit in a string or behind code as well as alone on its line. A line of key between two is what makes
+// them a key's edges, not where they sit: two named in source code with only code between are not.
+const KEY_BEGIN = /-{4,5} ?BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY[A-Z ]{0,10}-{4,5}/g;
+const KEY_END = /-{4,5} ?END [A-Z0-9 ]{0,40}PRIVATE KEY[A-Z ]{0,10}-{4,5}/g;
+/**
+ * A line of a key's body, behind a comment's mark if it has one: one of the armor's headers, or a run of what
+ * `redactPem` takes for key (base64, with `\\` and `-`), as a list item, in quotes or before what joins a string to
+ * the next if it has them. `[^\n]*`, not `.*`: `.` stops at a carriage return, and backing off from one is quadratic.
+ */
+const KEY_LINE =
+  /^[ \t]*(?:(?:#|\/\/|\*|>|;|--)[ \t]*)?(?:(?:- )?[a-z]?["'`]?[A-Za-z0-9+/=\\-]+["'`}\]),;<>]*(?:[ \t]*(?:\+|\\|\|\||\.))?|(?:Proc-Type|DEK-Info|Version|Comment|Hash|Charset|Subject): [^\n]*)[ \t\r]*$/;
+/** A run this long is a key's line, whatever is around it, as it is to `redactPem`. */
+const KEY_LONG_RUN = /[A-Za-z0-9+/=\\-]{60,}/;
+const isKeyLine = (line: string) => KEY_LINE.test(line) || KEY_LONG_RUN.test(line);
+/** The biggest block taken for a key: an 8192-bit RSA key is under 7 KB. Past this it is two markers in a long text. */
+const MAX_KEY_BLOCK = 16_384;
+
+/**
+ * Where the keys are, from a block's first marker through its last, in order; two markers with no line of key between
+ * are not a block. A marker can be a name in a string, so none settles anything alone. With no key yet, a later begin
+ * is where the block really starts, and an end is passed over for the next. Once there is a key, a begin is passed over,
+ * and the block runs to the last end before another begin. All of it within `MAX_KEY_BLOCK`. One pass: each marker is
+ * looked for from the last one found, and each line is read once.
+ */
+function keyBlocks(t: string): { from: number; to: number }[] {
+  const blocks: { from: number; to: number }[] = [];
+  if (!t.includes("PRIVATE KEY")) return blocks;
+  type Found = RegExpExecArray | null | undefined;
+  const seek = (marker: RegExp, at: number, known: Found): Found => {
+    if (known === null || (known && known.index >= at)) return known;
+    marker.lastIndex = at;
+    return marker.exec(t);
+  };
+  const lineEnd = (at: number) => {
+    const found = t.indexOf("\n", at);
+    return found < 0 ? t.length : found;
+  };
+  let start = 0;
+  let stop = lineEnd(0);
+  const nextLine = () => {
+    start = stop + 1;
+    stop = lineEnd(start);
+  };
+  let keyed = false;
+  let m = seek(KEY_BEGIN, 0, undefined);
+  let next: Found;
+  let end: Found;
+  while (m) {
+    const from = m.index + m[0].length;
+    next = seek(KEY_BEGIN, from, next);
+    end = seek(KEY_END, from, end);
+    if (!end) break;
+    const nearest = next && next.index < end.index ? next : end;
+    // Through the marker's own line: a key can run straight up to one.
+    const limit = Math.min(nearest.index, m.index + MAX_KEY_BLOCK);
+    while (start <= from) nextLine();
+    while (!keyed && start <= limit) {
+      keyed = isKeyLine(t.slice(start, stop));
+      nextLine();
+    }
+    const to = end.index + end[0].length;
+    const fits = to - m.index <= MAX_KEY_BLOCK;
+    if (fits && !keyed && nearest === end) {
+      end = seek(KEY_END, to, end);
+      continue;
+    }
+    if (fits && keyed) {
+      let last = to;
+      next = seek(KEY_BEGIN, to, next);
+      end = seek(KEY_END, to, end);
+      while (end && (!next || end.index < next.index)) {
+        const past = end.index + end[0].length;
+        if (past - m.index > MAX_KEY_BLOCK) break;
+        last = past;
+        end = seek(KEY_END, last, end);
+      }
+      blocks.push({ from: m.index, to: last });
+    }
+    m = next;
+    keyed = false;
+  }
+  return blocks;
+}
+
+/** A line cut at a marker, or as it was: a marker `redactTokens` took has gone already, with what it took. */
+const cutAt = (line: string, marker: RegExp, keep: (found: RegExpExecArray) => string) => {
+  marker.lastIndex = 0;
+  const found = marker.exec(line);
+  return found ? keep(found) : line;
+};
+
 /**
  * A changed file made safe to show the owner: everything `redactTokens` takes out and the other kinds the scan
  * stops, so what would stop a push is not sent to a browser in clear. Lines stay where they are: a comment on one
  * goes to the agent by its number.
+ *
+ * What `redactTokens` hides stays hidden by construction: its result is the starting point, and the blocks below can
+ * only take more out of it. A key goes with its markers, keeping its lines, wherever it sits: a key in a comment, a
+ * quoted block or a string joined over several lines is no less a key. A line between the markers that doesn't read
+ * as key material shows as `redactTokens` left it, up to or from any marker it names, as a key can run into one. A
+ * block in the added lines, `holdsCredential` stops. A block already in the file it doesn't: the scan reads added lines
+ * only and they hold no marker, so a line added inside that block that reads as key material, as any base64 or armor
+ * header does, is hidden from the owner's review and can be pushed. That is a known gap, pinned in ship-git.test.ts.
  */
 export function redactFile(text: string): string {
-  return redactTokens(text, { keepLines: true })
+  const shown = redactTokens(text, { keepLines: true, whole: true }).split("\n");
+  const change = (i: number, to: (line: string) => string) => {
+    const line = shown[i];
+    if (line !== undefined) shown[i] = to(line);
+  };
+  let at = 0;
+  let line = 0;
+  for (const { from, to } of keyBlocks(text)) {
+    line += text.slice(at, from).split("\n").length - 1;
+    at = from;
+    const lines = text.slice(from, to).split("\n");
+    const fromBegin = (l: string) => cutAt(l, KEY_BEGIN, (m) => `${l.slice(0, m.index)}[private key]`);
+    const toEnd = (l: string) => cutAt(l, KEY_END, (m) => l.slice(m.index + m[0].length));
+    change(line, fromBegin);
+    for (const [i, body] of lines.slice(1, -1).entries()) {
+      change(line + 1 + i, (l) => (isKeyLine(body) ? "" : toEnd(fromBegin(l))));
+    }
+    change(line + lines.length - 1, toEnd);
+  }
+  return shown
+    .join("\n")
     .replace(/(_authToken\s*=\s*)(?!\$\{)[^\s"']{8,}/g, "$1[redacted]")
     .replace(/(\bmachine\s+\S+\s+(?:login\s+\S+\s+)?password\s+)\S{4,}/g, "$1[redacted]");
 }
 
-/** `redactTokens` stops at a million characters, so a long text is looked at in pieces of whole lines. */
+/**
+ * `redactTokens` stops at a million characters, so a long text is looked at in pieces of whole lines. A key block
+ * is looked for first, in the whole text: `redactFile` sees a file whole, and a block can lie across two pieces.
+ */
 export function holdsCredential(added: string): boolean {
+  if (keyBlocks(added).length) return true;
   const piece = 400_000;
   let chunk = "";
   const looks = (t: string) =>
-    t.length > 0 && (redactTokens(t) !== t || extraCredential.some((re) => re.test(t)));
+    t.length > 0 && (redactFile(t) !== t || extraCredential.some((re) => re.test(t)));
   for (const line of added.split("\n")) {
     if (chunk.length + line.length + 1 > piece) {
       if (looks(chunk)) return true;
