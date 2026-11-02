@@ -858,6 +858,29 @@ describe("the pane", () => {
     expect(root.querySelector<HTMLTextAreaElement>(".moved .box textarea")?.value).toBe("still mine");
   });
 
+  it("says why a comment on a file showing a note isn't on its line, and which line its box is about", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    await typeAt(el, root, ".row.add", "still mine");
+    for (const after of [{ state: "binary" }, { state: "too-big" }]) {
+      fileReply = file({ after });
+      await el.refresh();
+      await settle(el);
+      expect(root.querySelector(".moved p")?.textContent).toBe(
+        "This file can't be read, so this comment isn't on its line.",
+      );
+      expect(root.querySelector(".moved .where")?.textContent).toBe("src/a.ts:2");
+      expect(root.querySelector(".moved blockquote")?.textContent).toBe("2");
+      expect(root.querySelector(".moved .box textarea")?.getAttribute("aria-label")).toBe(
+        "Comment on src/a.ts line 2",
+      );
+    }
+    fileReply = file({ withheld: true });
+    await el.refresh();
+    await settle(el);
+    expect(root.querySelector(".moved p")?.textContent).toContain("isn't on its line");
+  });
+
   it("goes to a comment on a file that now shows a note", async () => {
     const { el, root } = await mount();
     await settle(el);
@@ -1230,6 +1253,121 @@ describe("the pane", () => {
       expect(now.value).toBe("half a thought");
       expect(root.activeElement).toBe(now);
       expect([now.selectionStart, now.selectionEnd]).toEqual([4, 6]);
+    });
+
+    describe("in an aside box as the list comes back", () => {
+      const place = { path: "src/a.ts", line: 2, side: "new" as const, quote: "2" };
+      const typingAside = async (over: Partial<IncConvReview> = {}) => {
+        commentDrafts.start("c1", place);
+        commentDrafts.write("c1", place, "half a thought");
+        changes = listing({ state: "busy", files: [], reason: "It is busy." });
+        const { el, root } = await mount(over);
+        await settle(el);
+        const ta = root.querySelector(".side .box textarea") as HTMLTextAreaElement;
+        ta.focus();
+        ta.setSelectionRange(4, 6);
+        return { el, root };
+      };
+      const fileHeld = () => {
+        let land = () => {};
+        const held = new Promise<void>((done) => {
+          land = done;
+        });
+        vi.stubGlobal("fetch", async (url: string) => {
+          if (!url.includes("/changes/file")) return reply({ changes });
+          await held;
+          return reply({ file: fileReply });
+        });
+        return () => land();
+      };
+
+      it("keeps focus and the caret in the box while the file loads, and takes them to its line", async () => {
+        const { el, root } = await typingAside();
+        const land = fileHeld();
+        changes = listing();
+        const reading = el.refresh();
+        await until(() => el.selected === place.path);
+        await el.updateComplete;
+        const box = root.querySelector(".main .moved .box textarea") as HTMLTextAreaElement;
+        expect(root.querySelector(".main .note")?.textContent).toBe("Loading the file…");
+        expect(root.querySelector(".moved p")).toBeNull();
+        expect(root.querySelector(".moved .where")?.textContent).toBe("src/a.ts:2");
+        expect(box.value).toBe("half a thought");
+        expect(root.activeElement).toBe(box);
+        expect([box.selectionStart, box.selectionEnd]).toEqual([4, 6]);
+        land();
+        await reading;
+        await settle(el);
+        const now = root.querySelector(".rows .box textarea") as HTMLTextAreaElement;
+        expect(root.activeElement).toBe(now);
+        expect([now.selectionStart, now.selectionEnd]).toEqual([4, 6]);
+      });
+
+      it("draws only the boxes while a file loads: comments are in the list until they have a place", async () => {
+        const { el, root } = await typingAside();
+        reviewComments.add("c1", note({ path: place.path, line: 3, quote: "three", text: "about this" }));
+        const land = fileHeld();
+        changes = listing();
+        const reading = el.refresh();
+        await until(() => el.selected === place.path);
+        await el.updateComplete;
+        expect(root.querySelector(".moved [data-moved]")).toBeNull();
+        expect(root.querySelector(".side .c")?.textContent).toContain("about this");
+        land();
+        await reading;
+      });
+
+      it("opens the box's own file, not the first in the list", async () => {
+        const { el, root } = await typingAside();
+        changes = listing({
+          files: [
+            { path: "other.ts", added: 1, removed: 0, status: "modified" },
+            { path: place.path, added: 1, removed: 1, status: "modified" },
+          ],
+        });
+        await el.refresh();
+        await settle(el);
+        expect(el.selected).toBe(place.path);
+        expect(root.activeElement).toBe(root.querySelector(".rows .box textarea"));
+      });
+
+      it("stays with a box whose file isn't in the list", async () => {
+        const { el, root } = await typingAside();
+        changes = listing({ files: [{ path: "other.ts", added: 1, removed: 0, status: "modified" }] });
+        await el.refresh();
+        await settle(el);
+        expect(el.selected).toBe(place.path);
+        expect(root.querySelector(".stray")).not.toBeNull();
+        expect(root.activeElement).toBe(root.querySelector(".box textarea"));
+      });
+
+      it("shows the box in one column, and on a phone", async () => {
+        for (const phone of [false, true]) {
+          const { el, root } = await typingAside({ phone });
+          changes = listing();
+          await el.refresh();
+          await settle(el);
+          expect(el.reading).toBe(true);
+          expect(root.querySelector(".body")?.classList.contains("reading")).toBe(true);
+          expect(root.activeElement).toBe(root.querySelector(".rows .box textarea"));
+          el.remove();
+          commentDrafts.drop("c1", place);
+        }
+      });
+
+      it("leaves the list to choose the file when the owner isn't in a box", async () => {
+        const { el, root } = await typingAside();
+        (root.activeElement as HTMLElement).blur();
+        changes = listing({
+          files: [
+            { path: "other.ts", added: 1, removed: 0, status: "modified" },
+            { path: place.path, added: 1, removed: 1, status: "modified" },
+          ],
+        });
+        await el.refresh();
+        await settle(el);
+        expect(el.selected).toBe("other.ts");
+      });
     });
 
     describe("in an aside box, emptied to write it again", () => {

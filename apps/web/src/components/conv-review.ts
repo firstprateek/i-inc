@@ -337,6 +337,14 @@ export class IncConvReview extends LitElement {
       this.listNote = null;
       this.changes = changes;
       if (changes.state !== "ok") return;
+      // The aside goes now. The box the owner is in goes to its own file, whatever else is first, and stays in view.
+      const on = this.boxInFocus()?.key;
+      const typed = commentDrafts.list(conv.id).find((d) => boxKey(d) === on)?.path;
+      if (typed && !this.selected && changes.files.length) {
+        this.reading = true;
+        await this.open(typed);
+        return;
+      }
       const wanted = this.selected ?? (this.path || null);
       const there = changes.files.some((f) => f.path === wanted);
       if (there && wanted) {
@@ -631,19 +639,26 @@ export class IncConvReview extends LitElement {
       this.rows,
       commentDrafts.list(this.conv?.id ?? "").filter((d) => d.path === path),
     );
-    const moved = comments.moved.length + drafts.moved.length;
     const unread = this.fileError
       ? `Couldn't load this file (${this.fileError}).`
       : f && f.state !== "ok"
         ? (f.reason ?? "This file couldn't be read.")
         : null;
+    // Until the file comes nothing is known to have moved. Only the boxes are drawn, as the owner may be typing in one.
+    const coming = !f && unread === null;
+    const noLines = unread ?? note;
+    const moved = (coming ? 0 : comments.moved.length) + drafts.moved.length;
     const changed = moved
-      ? html`<div class="moved ${this.rows.length ? "" : "alone"}"><p>${
-          unread === null
-            ? `${moved === 1 ? "This line has" : "These lines have"} changed since the comment was written.`
-            : `This file can't be read, so ${moved === 1 ? "this comment isn't on its line" : "these comments aren't on their lines"}.`
-        }</p>
-          ${comments.moved.map((c) => this.comment(c, "moved"))}${drafts.moved.map((d) => (unread === null ? this.box(d) : this.looseBox(d)))}</div>`
+      ? html`<div class="moved ${this.rows.length ? "" : "alone"}">${
+          coming
+            ? nothing
+            : html`<p>${
+                noLines === null
+                  ? `${moved === 1 ? "This line has" : "These lines have"} changed since the comment was written.`
+                  : `This file can't be read, so ${moved === 1 ? "this comment isn't on its line" : "these comments aren't on their lines"}.`
+              }</p>`
+        }
+          ${coming ? nothing : comments.moved.map((c) => this.comment(c, "moved"))}${drafts.moved.map((d) => (f && noLines === null ? this.box(d) : this.looseBox(d)))}</div>`
       : nothing;
     return html`<div class="diff" role="group" aria-label="Changes to ${visible(path)}">
       <div class="dh"><span class="path" title=${visible(path)}>${visible(path)}</span>
@@ -653,7 +668,7 @@ export class IncConvReview extends LitElement {
         unread !== null
           ? html`${changed}<p class="note" role="status">${unread} <button class="link-btn" type="button" @click=${() => void this.retryFile(path)}>Try again</button></p>`
           : !f
-            ? html`<p class="note" role="status">Loading the file…</p>`
+            ? html`${changed}<p class="note" role="status">Loading the file…</p>`
             : note
               ? html`${changed}<p class="note">${note}</p>`
               : !this.rows.length && !moved
