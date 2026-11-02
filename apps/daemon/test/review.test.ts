@@ -241,6 +241,43 @@ describe("a read that can't reach everything", () => {
     expect(r.partial).toBe(true);
   });
 
+  it.skipIf(process.getuid?.() === 0)(
+    "says when a folder it can't enter may hold changes, new or tracked",
+    async () => {
+      for (const project of [true, false]) {
+        const w = rig(project);
+        w.write("seen.txt", "changed\n");
+        w.write("shut/new.txt", "new\n");
+        chmodSync(join(w.cwd, "shut"), 0o000);
+        const r = await w.port.list(w.copy);
+        chmodSync(join(w.cwd, "shut"), 0o755);
+        expect(r.files.map((f) => f.path)).toContain("seen.txt");
+        expect(r.partial).toBe(true);
+      }
+      // A tracked file edited behind a shut folder is no longer seen at all, and that isn't "nothing changed".
+      const w = rig();
+      w.write("d/b.txt", "one\n");
+      w.commit("more");
+      git(w.cwd, "update-ref", "refs/remotes/origin/main", "HEAD");
+      w.write("d/b.txt", "two\n");
+      chmodSync(join(w.cwd, "d"), 0o000);
+      const r = await w.port.list(w.copy);
+      chmodSync(join(w.cwd, "d"), 0o755);
+      expect(r.partial).toBe(true);
+    },
+  );
+
+  it.skipIf(process.getuid?.() === 0)("doesn't mind a shut folder that .gitignore covers", async () => {
+    const w = rig();
+    w.write(".gitignore", "shut/\n");
+    w.write("shut/x.txt", "x\n");
+    chmodSync(join(w.cwd, "shut"), 0o000);
+    const r = await w.port.list(w.copy);
+    chmodSync(join(w.cwd, "shut"), 0o755);
+    expect(r.files.map((f) => f.path)).toEqual([".gitignore"]);
+    expect(r.partial).toBe(false);
+  });
+
   it("still lists the rest beside a nested repository with no commit", async () => {
     const w = rig();
     w.write("keep.txt", "changed\n");

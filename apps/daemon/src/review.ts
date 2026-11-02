@@ -126,7 +126,9 @@ const open = (copy: ReviewCopy): string[] => {
  * it is asked to write and already has. `--ignore-errors` keeps going past a file that can't be read and says so in
  * its exit status. A new file that vanishes before it is read stops `add` altogether (128), so that step is
  * tried again, and the tracked files have gone in first, so they aren't lost with it. Either way the list says it
- * may be missing files. The diff reads only objects, so one that fails is a failed read.
+ * may be missing files. `ls-files` passes over a folder it can't enter with a warning and a good exit status, so its
+ * warnings are kept to see: what is behind that folder is missing too. The diff reads only objects, so one that
+ * fails is a failed read.
  */
 export function listScript(copy: ReviewCopy, nonce: string): string {
   check(copy);
@@ -155,16 +157,16 @@ export function listScript(copy: ReviewCopy, nonce: string): string {
     '  O() { local GX=("${GX[@]}" GIT_ALTERNATE_OBJECT_DIRECTORIES="$o"); "$@"; }',
     `  O G read-tree "$head" || ${fail}`,
     "fi",
-    `G ls-files -z -m ${here} > "$W/tracked" || ${fail}`,
+    `G ls-files -z -m ${here} > "$W/tracked" 2>> "$W/said" || ${fail}`,
     "a=0",
     `if [ -s "$W/tracked" ]; then ${add("tracked")}; a=$?; fi`,
     `for try in $(seq ${LIST_TRIES}); do`,
-    `  G ls-files -z -o --exclude-standard ${here} > "$W/new" || ${fail}`,
+    `  G ls-files -z -o --exclude-standard ${here} > "$W/new" 2>> "$W/said" || ${fail}`,
     "  n=0",
     `  if [ -s "$W/new" ]; then ${add("new")}; n=$?; fi`,
     '  [ "$n" -eq 128 ] || break',
     "done",
-    `[ "$a" -eq 0 ] && [ "$n" -eq 0 ] || echo ${m("partial")}`,
+    `if [ "$a" -ne 0 ] || [ "$n" -ne 0 ] || grep -qE 'could not open|cannot lstat' "$W/said"; then echo ${m("partial")}; fi`,
     `O G diff --cached --numstat -z ${opts} "$mb" > "$W/numstat" || ${fail}`,
     `O G diff --cached --raw -z --abbrev=40 ${opts} "$mb" > "$W/raw" || ${fail}`,
     ...fenced("numstat"),

@@ -237,8 +237,9 @@ links into it.
 
 - `GET /api/conversations/:id/changes`: `{ changes: { state, noProject, files, skipped, truncated, partial, reason? } }`, each
   file `{ path, added, removed, binary?, status }`, and status one of added, modified, deleted, type-changed. Renames show
-  as a deletion and an addition. `partial`: something in the folder couldn't be read (no permission, a pipe, a nested repo
-  with no commit, files that kept going away), so the list may be missing files. The pane says so.
+  as a deletion and an addition. `partial`: something in the folder couldn't be read (no permission on a file or on a
+  folder that isn't ignored, a pipe, a nested repo with no commit, files that kept going away), so the list may be missing
+  files. The pane says so.
 - `GET /api/conversations/:id/changes/file?path=`: `{ file: { state, path, before, after, withheld?, reason? } }`. Each side
   is `{ state, text? }`, and state one of none, text, binary, too-big, link, outside, other. A bad path is a 400.
 - `state` is `ok`, or why the read didn't happen, with `reason` in one sentence: `asleep`, `busy` (the read outlasted its
