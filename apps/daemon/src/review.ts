@@ -359,8 +359,10 @@ export interface ReviewDeps {
 
 /** What the routes call: finds the copy, and turns every way a read can fail into a state and a sentence. */
 export class ConversationReview {
-  /** One listing per conversation at a time: pressing Refresh twice doesn't start a second script. */
+  /** One listing per conversation at a time: pressing Refresh twice doesn't run two scripts side by side. */
   private readonly listing = new Map<string, Promise<ChangesView>>();
+  /** The one read that follows a running listing, shared by everyone who asked while that one ran. */
+  private readonly nextListing = new Map<string, Promise<ChangesView>>();
 
   constructor(private readonly d: ReviewDeps) {}
 
@@ -404,9 +406,30 @@ export class ConversationReview {
     return { state: "failed", reason: `Couldn't read the changes in ${name}'s machine.` };
   }
 
+  /**
+   * What the copy changes now. A listing that is running may already be past a file, so it can't answer for now: a
+   * request made during one gets the read that starts after it, or a turn's last edit could be missing from the
+   * refresh that turn's end asked for.
+   */
   changes(id: string): Promise<ChangesView> {
+    const waiting = this.nextListing.get(id);
+    if (waiting) return waiting;
     const running = this.listing.get(id);
-    if (running) return running;
+    if (!running) return this.startListing(id);
+    const next = running.then(
+      () => this.followListing(id),
+      () => this.followListing(id),
+    );
+    this.nextListing.set(id, next);
+    return next;
+  }
+
+  private followListing(id: string): Promise<ChangesView> {
+    this.nextListing.delete(id);
+    return this.startListing(id);
+  }
+
+  private startListing(id: string): Promise<ChangesView> {
     const work = this.readChanges(id).finally(() => this.listing.delete(id));
     this.listing.set(id, work);
     return work;

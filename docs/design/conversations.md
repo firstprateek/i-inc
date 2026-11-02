@@ -251,7 +251,8 @@ links into it.
   Optional locks and lazy fetches are off, and `G` from `ship-git.ts` has no hooks, filters, fsmonitor or external diffs.
 - **No implicit boots.** It uses the runner that refuses a stopped machine (T75). A read holds an ordinary lease, so it
   runs beside an agent's turn: the pane shows what is there, says the agent is working (or waiting for an answer), and
-  refreshes when the turn ends.
+  refreshes when the turn ends. Listings run one at a time, and a request made during one gets a read that starts
+  after it, so that refresh can't come back with a list from before the turn's last edit.
 - **No project,** or a project's copy with no commits or no repository: the scratch repository looks at the folder, and
   every file there is new.
 - **Untrusted.** Paths must be relative, with no `..`, NUL, control character, leading `-`, `.git` or `.inc`, and a name
