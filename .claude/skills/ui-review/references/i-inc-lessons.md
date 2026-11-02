@@ -151,3 +151,7 @@ paths, branch names, structured briefs).
 39. **A pane drawn on `state && subject` outlives its subject (states).** The review pane vanished when its conversation
     left, with `review` still set, and a ship dialog left the same way would have kept the screen inert behind nothing. →
     When the subject goes, clear what depends on it, and keep the subject on screen until you know it has gone.
+40. **A wait has to end when what it waits on fails (states).** "Loading…" asked for a link's conversation only when the
+    list changed, and a failed list changes nothing, so it sat there for good. A failed read then said the conversation
+    "wasn't found", which only a 404 can say. → Trigger on the load ending, not on its result; say "couldn't load" with
+    Try again for any other failure; and don't assign what triggers the ask from its own failure path, which loops.

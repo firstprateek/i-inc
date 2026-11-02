@@ -48,6 +48,8 @@ export class IncConversations extends LitElement {
     limit: { state: true },
     accountName: { state: true },
     lost: { state: true },
+    readError: { state: true },
+    retrying: { state: true },
     kb: { state: true },
     sheet: { state: true },
     ready: { state: true },
@@ -73,6 +75,10 @@ export class IncConversations extends LitElement {
   declare ctx: "open" | "closed" | null;
   declare now: number;
   declare lost: string;
+  /** Why the read of a link's conversation failed. It may well be there, so the next list asks again. */
+  declare readError: string;
+  /** Try again is asking. */
+  declare retrying: boolean;
   declare kb: number;
   declare sheet: boolean;
   declare ready: boolean;
@@ -118,6 +124,8 @@ export class IncConversations extends LitElement {
     this.ctx = null;
     this.now = Date.now();
     this.lost = "";
+    this.readError = "";
+    this.retrying = false;
     this.kb = 0;
     this.sheet = false;
     this.ready = false;
@@ -262,7 +270,10 @@ export class IncConversations extends LitElement {
 
   override willUpdate(changed: Map<string, unknown>): void {
     // Left it, or it is back: Show archived, or unarchived elsewhere.
-    if (changed.has("selectedId") || this.selected()) this.lost = "";
+    if (changed.has("selectedId") || this.selected()) {
+      this.lost = "";
+      this.readError = "";
+    }
     if (changed.has("selectedId") && changed.get("selectedId") !== undefined) {
       // Back or a link moved on, so what was open over the last one goes with it. The pane's history entry is
       // behind us now, and the next pane needs its own.
@@ -293,7 +304,8 @@ export class IncConversations extends LitElement {
           ?.focus();
       }
     }
-    if (changed.has("selectedId") || changed.has("list")) this.ensureSelected();
+    // `loading` too: a list that failed changes nothing else, and a link would wait on it for good.
+    if (changed.has("selectedId") || changed.has("list") || changed.has("loading")) this.ensureSelected();
     if (changed.has("selectedId") || changed.has("list")) this.syncShip();
   }
 
@@ -391,18 +403,37 @@ export class IncConversations extends LitElement {
       else this.list = [c, ...this.list.filter((x) => x.id !== c.id)];
     } catch (e) {
       if (id !== this.selectedId) return;
-      // A failed read says nothing about a conversation already open: the next reload asks again.
-      if (!open || (e instanceof ApiError && e.status === 404))
+      if (e instanceof ApiError && e.status === 404) {
         this.leave("That conversation wasn't found. It may have been removed.");
+        return;
+      }
+      // Anything else says nothing about the conversation. One already open stays, and a link says it couldn't
+      // read it. The next reload asks again, so `list` isn't touched here: that would ask again at once, for ever.
+      if (!open) this.readError = e instanceof Error ? e.message : String(e);
     } finally {
       this.asking.delete(id);
     }
   }
 
+  /** Try again, on a link that wouldn't read. The button stays while it asks, and goes with its own success. */
+  private readAgain = async () => {
+    if (this.retrying) return;
+    this.retrying = true;
+    await this.ask(this.selectedId);
+    this.retrying = false;
+    await this.updateComplete;
+    const thread = this.thread() as (HTMLElement & LitElement) | null;
+    await thread?.updateComplete;
+    if (document.activeElement === document.body) {
+      thread?.shadowRoot?.querySelector<HTMLElement>(".context-btn")?.focus();
+    }
+  };
+
   /** The selected conversation has gone: say so, and close what was open over it, which has nothing left to show. */
   private leave(why: string) {
     this.list = this.list.filter((c) => c.id !== this.selectedId);
     this.lost = why;
+    this.readError = "";
     this.sheet = false;
     this.dialog = null;
     this.opener = null;
@@ -650,9 +681,12 @@ export class IncConversations extends LitElement {
                 void this.updateComplete.then(() => requestAnimationFrame(() => this.focusComposer()));
               }}
               @conv-toggle-context=${this.toggleContext}></inc-conv-thread>`
-          : this.selectedId && !this.lost
-            ? html`<div class="none" aria-busy="true"><p>Loading…</p></div>`
-            : html`<inc-conv-draft .employees=${this.employees} .projects=${this.projects} .preset=${this.draft} .ready=${this.ready}
+          : this.readError
+            ? html`<div class="none" aria-busy=${this.retrying ? "true" : nothing}><p role="alert">${this.retrying ? "Loading…" : `Couldn't load this conversation (${this.readError}).`}</p>
+                <button class="btn ghost" type="button" aria-disabled=${this.retrying ? "true" : "false"} @click=${this.readAgain}>Try again</button></div>`
+            : this.selectedId && !this.lost
+              ? html`<div class="none" aria-busy="true"><p>Loading…</p></div>`
+              : html`<inc-conv-draft .employees=${this.employees} .projects=${this.projects} .preset=${this.draft} .ready=${this.ready}
                 .phone=${phone} .back=${phone && !!this.list.length} .onCreate=${this.createFromDraft}></inc-conv-draft>`
       }
     </section>`;

@@ -232,6 +232,10 @@ shapes against a real adapter on the mini first.
 - **Phone:** the same stream in one column; the context panel becomes a sheet.
 - **Moving on.** Leaving a conversation by Back or a link closes what was open over it: the ship dialog, the
   phone's sheet and the review pane. The next conversation opens with none of them up.
+- **A link the list doesn't hold** (archived, or stale). The screen reads that one conversation, even if the list
+  itself failed. A 404 says it wasn't found. Any other failure says it couldn't load this conversation, with Try
+  again, and doesn't say it has gone; the next list that loads asks again, once for each list, so a read that goes on
+  failing makes no requests of its own.
 
 ## Review (the Changes pane)
 

@@ -35,6 +35,10 @@ let posted: Any[] = [];
 let byId: (() => Response | Promise<Response>) | undefined;
 /** `?archived=all`: what the list holds with Show archived on. */
 let allRows: Any[] = [];
+/** Set, `GET /api/conversations` fails this way. */
+let listFails: (() => Response) | undefined;
+/** How many times `GET /api/conversations/:id` was asked. */
+let reads = 0;
 
 beforeEach(() => {
   phone = false;
@@ -42,6 +46,8 @@ beforeEach(() => {
   posted = [];
   byId = undefined;
   allRows = [];
+  listFails = undefined;
+  reads = 0;
   localStorage.clear();
   location.hash = "";
   vi.stubGlobal("matchMedia", (q: string) => ({
@@ -54,7 +60,11 @@ beforeEach(() => {
       posted.push(JSON.parse(String(init.body)));
       return json({ conversation: { ...row, id: "99887766", employeeId: posted.at(-1).employeeId } }, 201);
     }
-    if (byId && /\/api\/conversations\/[^/?]+$/.test(url)) return byId();
+    if (byId && /\/api\/conversations\/[^/?]+$/.test(url)) {
+      reads += 1;
+      return byId();
+    }
+    if (listFails && /\/api\/conversations(\?|$)/.test(url)) return listFails();
     if (url.includes("archived=all")) return json({ conversations: allRows });
     const body = url.includes("/api/conversations")
       ? { conversations: rows }
@@ -366,5 +376,172 @@ describe("when the open conversation leaves the list", () => {
     await new Promise((r) => setTimeout(r));
     await el.updateComplete;
     expect(shown(thread).lost).toBe("");
+  });
+});
+
+describe("a link to a conversation the list doesn't hold", () => {
+  const archived = { ...row, archivedAt: 5, status: 1 };
+  const settle = async (el: IncConversations) => {
+    for (let i = 0; i < 5; i++) {
+      await new Promise((r) => setTimeout(r));
+      await el.updateComplete;
+    }
+  };
+  const reload = async (el: IncConversations) => {
+    await (el as Any).loadList();
+    await settle(el);
+  };
+  const failed = (thread: () => HTMLElement) => thread().querySelector("[role='alert']")?.textContent ?? "";
+  const retry = (thread: () => HTMLElement) =>
+    must<HTMLButtonElement>(thread().querySelector(".none button"));
+
+  it("says a failed read couldn't load it, not that it has gone, and a good reload opens it", async () => {
+    byId = () => json({ error: "try later" }, 500);
+    const { el, thread } = await mount({ selectedId: row.id });
+    await until(() => failed(thread));
+    expect(failed(thread)).toBe("Couldn't load this conversation (try later).");
+    expect(thread().querySelector(".lost")).toBeNull();
+    expect(thread().querySelector("[aria-busy]")).toBeNull();
+    expect(thread().querySelector("inc-conv-draft")).toBeNull();
+    byId = () => json({ conversation: archived });
+    await reload(el);
+    expect(thread().querySelector("inc-conv-thread")).not.toBeNull();
+    expect(failed(thread)).toBe("");
+  });
+
+  it("says it couldn't reach i.inc when the network drops, and opens after reconnecting", async () => {
+    byId = () => {
+      throw new TypeError("Failed to fetch");
+    };
+    const { el, thread } = await mount({ selectedId: row.id });
+    await until(() => failed(thread));
+    expect(failed(thread)).toBe("Couldn't load this conversation (Can't reach i.inc).");
+    byId = () => json({ conversation: archived });
+    await reload(el);
+    expect(thread().querySelector("inc-conv-thread")).not.toBeNull();
+  });
+
+  it("says it wasn't found when a later read says so", async () => {
+    byId = () => json({ error: "try later" }, 500);
+    const { el, thread } = await mount({ selectedId: row.id });
+    await until(() => failed(thread));
+    byId = () => json({ error: "no such conversation" }, 404);
+    await reload(el);
+    expect(thread().querySelector(".lost")?.textContent).toBe(
+      "That conversation wasn't found. It may have been removed.",
+    );
+    expect(thread().querySelector(".none button")).toBeNull();
+  });
+
+  it("forgets a failed read on moving to another conversation", async () => {
+    byId = () => json({ error: "try later" }, 500);
+    const { el, thread } = await mount({ selectedId: row.id });
+    await until(() => failed(thread));
+    let answer: (r: Response) => void = () => {};
+    byId = () =>
+      new Promise<Response>((r) => {
+        answer = r;
+      });
+    el.selectedId = "cd34ef56";
+    await el.updateComplete;
+    expect(failed(thread)).toBe("");
+    expect(thread().querySelector("[aria-busy]")).not.toBeNull();
+    answer(json({ conversation: { ...row, id: "cd34ef56" } }));
+    await until(() => thread().querySelector("inc-conv-thread"));
+  });
+
+  it("asks once for each list, and not again by itself, while the read goes on failing", async () => {
+    byId = () => json({ error: "try later" }, 500);
+    const { el, thread } = await mount({ selectedId: row.id });
+    await until(() => failed(thread));
+    await settle(el);
+    expect(reads).toBe(1);
+    await reload(el);
+    expect(reads).toBe(2);
+    await settle(el);
+    expect(reads).toBe(2);
+  });
+
+  describe("while the list request fails", () => {
+    beforeEach(() => {
+      listFails = () => json({ error: "the list broke" }, 500);
+    });
+
+    it("still reads the conversation, and doesn't sit on Loading", async () => {
+      byId = () => json({ conversation: archived });
+      const { thread } = await mount({ selectedId: row.id });
+      await until(() => thread().querySelector("inc-conv-thread"));
+      expect(thread().querySelector("[aria-busy]")).toBeNull();
+    });
+
+    it("says so when the read fails too, and stops asking", async () => {
+      byId = () => json({ error: "try later" }, 500);
+      const { el, thread } = await mount({ selectedId: row.id });
+      await until(() => failed(thread));
+      expect(failed(thread)).toBe("Couldn't load this conversation (try later).");
+      await settle(el);
+      await reload(el);
+      expect(reads).toBe(1);
+    });
+
+    it("opens when the list comes back", async () => {
+      byId = () => json({ error: "try later" }, 500);
+      const { el, thread } = await mount({ selectedId: row.id });
+      await until(() => failed(thread));
+      listFails = undefined;
+      rows = [row];
+      await reload(el);
+      expect(thread().querySelector("inc-conv-thread")).not.toBeNull();
+      expect(failed(thread)).toBe("");
+    });
+
+    it("says it wasn't found on a 404, whatever the list says", async () => {
+      byId = () => json({ error: "no such conversation" }, 404);
+      const { thread } = await mount({ selectedId: row.id });
+      await until(() => thread().querySelector(".lost"));
+      expect(thread().querySelector("[aria-busy]")).toBeNull();
+    });
+  });
+
+  describe("Try again", () => {
+    it("keeps the button and focus while it asks, and again when it fails", async () => {
+      byId = () => json({ error: "try later" }, 500);
+      const { el, root, thread } = await mount({ selectedId: row.id });
+      await until(() => failed(thread));
+      retry(thread).focus();
+      let answer: (r: Response) => void = () => {};
+      byId = () =>
+        new Promise<Response>((r) => {
+          answer = r;
+        });
+      retry(thread).click();
+      await el.updateComplete;
+      expect(failed(thread)).toBe("Loading…");
+      expect(retry(thread).getAttribute("aria-disabled")).toBe("true");
+      expect(thread().querySelector("[aria-busy]")).not.toBeNull();
+      // A second press while it asks is nothing.
+      retry(thread).click();
+      await settle(el);
+      expect(reads).toBe(2);
+      expect(failed(thread)).toBe("Loading…");
+      answer(json({ error: "still broken" }, 500));
+      await until(() => failed(thread).startsWith("Couldn't"));
+      expect(failed(thread)).toBe("Couldn't load this conversation (still broken).");
+      expect(retry(thread).getAttribute("aria-disabled")).toBe("false");
+      expect(root().activeElement).toBe(retry(thread));
+    });
+
+    it("gives focus to the thread's header when it works, not to nothing", async () => {
+      byId = () => json({ error: "try later" }, 500);
+      const { el, thread } = await mount({ selectedId: row.id });
+      await until(() => failed(thread));
+      retry(thread).focus();
+      byId = () => json({ conversation: archived });
+      retry(thread).click();
+      await until(() => thread().querySelector("inc-conv-thread"));
+      await settle(el);
+      const shown = must<HTMLElement>(thread().querySelector("inc-conv-thread"));
+      expect(shown.shadowRoot?.activeElement).toBe(shown.shadowRoot?.querySelector(".context-btn"));
+    });
   });
 });
