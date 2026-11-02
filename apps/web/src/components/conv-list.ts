@@ -122,6 +122,7 @@ export class IncConvList extends LitElement {
 
   private onKeydown = (e: KeyboardEvent) => {
     if (e.key === "Escape" && this.menu) {
+      e.preventDefault(); // this Escape was the menu's: nothing further out closes as well
       this.menu = null;
       return;
     }

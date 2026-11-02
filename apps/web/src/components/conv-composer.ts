@@ -1,7 +1,8 @@
 // The composer: a multi-line box. Enter sends (Shift+Enter breaks a line; a phone's Enter breaks a line, since
 // it has a Send button), never while an IME is composing. Paste or drop images. `/` opens the agent's slash
 // commands. The agent's own modes and models are pickers. While a turn runs: Stop, and typing offers Steer
-// (runs next, ahead of the queue) or Queue; the queued messages are listed and removable.
+// (runs next, ahead of the queue; one at a time, so a second joins the queue) or Queue; the queued messages are
+// listed and removable.
 import type { ChatState, SessionState } from "@microsoft/agent-host-protocol";
 import { css, html, LitElement, nothing } from "lit";
 import { checkOutgoing, judgeTextFile } from "../conversations/actions.ts";
@@ -14,6 +15,13 @@ import {
   type Picker,
   slashQuery,
 } from "../conversations/model.ts";
+import {
+  holdsComments,
+  isCommand,
+  type LineComment,
+  reviewComments,
+  withComments,
+} from "../conversations/review.ts";
 import { cardStyles } from "../conversations/styles.ts";
 import { draftMemo } from "../drafts.ts";
 import { isTouchDevice } from "./chat.ts";
@@ -57,6 +65,7 @@ export class IncConvComposer extends LitElement {
     attached: { state: true },
     menu: { state: true },
     fileProblem: { state: true },
+    comments: { state: true },
   };
   declare session: SessionState | undefined;
   /** The mode picker of a conversation not started yet (there is no session to read it from). */
@@ -78,6 +87,8 @@ export class IncConvComposer extends LitElement {
   /** The Steer button's menu (Queue), on a narrow screen. */
   declare menu: boolean;
   declare fileProblem: string | null;
+  /** Line comments from the review pane: they go with the next message that isn't a command. */
+  declare comments: LineComment[];
 
   private readonly picker = new ImagePicker(this, {
     id: "conv-images",
@@ -87,6 +98,7 @@ export class IncConvComposer extends LitElement {
   private composing = false;
   private composedAt = 0;
   private draftFor = "";
+  private offComments: (() => void) | undefined;
 
   constructor() {
     super();
@@ -102,6 +114,7 @@ export class IncConvComposer extends LitElement {
     this.attached = [];
     this.fileProblem = null;
     this.menu = false;
+    this.comments = [];
   }
 
   static override styles = [
@@ -178,13 +191,28 @@ export class IncConvComposer extends LitElement {
       .menu button { min-height: 44px; padding: 0 16px; border: 0; background: transparent; border-radius: 8px; font: 600 15px var(--body); color: var(--ink); cursor: pointer; white-space: nowrap; }
       .menu button:hover { background: var(--sunken); }
       .queue { max-height: 88px; overflow-y: auto; }
+      .going { margin: 0; padding: 0 6px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13.5px; color: var(--ink-2); }
     `,
   ];
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    this.offComments = reviewComments.subscribe((id) => {
+      if (id === this.conversationId) this.comments = reviewComments.list(id);
+    });
+    this.comments = reviewComments.list(this.conversationId);
+  }
+
+  override disconnectedCallback(): void {
+    this.offComments?.();
+    super.disconnectedCallback();
+  }
 
   override willUpdate(changed: Map<string, unknown>): void {
     if (changed.has("conversationId") && this.conversationId !== this.draftFor) {
       this.draftFor = this.conversationId;
       this.text = draftMemo.get(`conv:${this.conversationId}`) ?? "";
+      this.comments = reviewComments.list(this.conversationId);
       this.error = null;
       this.slash = [];
       this.picker.clear();
@@ -326,27 +354,50 @@ export class IncConvComposer extends LitElement {
     }
   };
 
-  async submit(intent: Intent): Promise<void> {
-    const text = this.text.trim();
-    const files = this.allFiles();
+  /**
+   * The pane's Send comments: a message of the comments alone, so nothing half-written in the box, hidden behind the
+   * pane, leaves with them. While a turn runs it waits its turn.
+   */
+  sendComments(): Promise<void> {
+    return this.submit(this.running ? "queue" : "turn", true);
+  }
+
+  async submit(intent: Intent, commentsOnly = false): Promise<void> {
+    // The conversation can change while this waits: what it took out, it takes out of the one it came from.
+    const id = this.conversationId;
+    const typed = commentsOnly ? "" : this.text.trim();
+    const going = isCommand(typed) ? [] : reviewComments.list(id);
+    const text = withComments(typed, going);
+    const files = commentsOnly ? [] : this.allFiles();
     if ((!text && !files.length) || this.sending || this.blocked || !this.onSend) return;
     if (checkOutgoing(text, files)) return; // the box already says why
     this.sending = true;
     this.error = null;
-    // Take the message out of the box now, before any await: what is typed while the files are read belongs to
-    // the next message, and is not wiped by this one's success. If it fails, the message comes back.
-    this.text = "";
-    this.slash = [];
-    draftMemo.set(`conv:${this.conversationId}`, "");
-    this.picker.clear();
-    this.attached = [];
-    this.fileProblem = null;
-    const problem = await this.onSend({ text, files, intent });
+    if (!commentsOnly) {
+      // Take the message out of the box now, before any await: what is typed while the files are read belongs to
+      // the next message, and is not wiped by this one's success. If it fails, the message comes back.
+      this.text = "";
+      this.slash = [];
+      draftMemo.set(`conv:${id}`, "");
+      this.picker.clear();
+      this.attached = [];
+      this.fileProblem = null;
+    }
+    // A chat holds one steering message: a second would replace the first, with any comments in it.
+    const how = intent === "steer" && this.chat?.steeringMessage ? "queue" : intent;
+    const problem = await this.onSend({ text, files, intent: how });
     this.sending = false;
     if (problem) {
       this.error = problem;
-      this.restore(text, files);
+      // Only what was typed goes back in the box: the comments never left the list.
+      if (!commentsOnly) this.restore(typed, files);
       return;
+    }
+    if (going.length) {
+      reviewComments.remove(
+        id,
+        going.map((c) => c.id),
+      );
     }
     this.focusInput();
   }
@@ -385,17 +436,29 @@ export class IncConvComposer extends LitElement {
         m,
       ) => html`<li><span class="tag" title=${m.kind === "steering" ? "Steering message: runs next, ahead of the queue" : "Queued message: runs after this turn"}>${m.kind === "steering" ? "Steer" : "Queued"}</span><span class="t" title=${m.text}>${m.text}</span>
         <button class="icon" type="button" aria-label="Remove ${m.kind === "steering" ? "steering" : "queued"} message: ${m.text.slice(0, 40)}"
-          @click=${() => this.emit("conv-unqueue", { kind: m.kind, id: m.id })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg></button></li>`,
+          @click=${() => {
+            this.emit("conv-unqueue", { kind: m.kind, id: m.id });
+            // The comments left the list when they were queued, so this message is all there is of them.
+            if (holdsComments(m.text)) this.restore(m.text);
+          }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg></button></li>`,
     )}</ul>`;
+  }
+
+  private commentsLine(going: boolean): string {
+    const n = this.comments.length;
+    if (going) return `${n} ${n === 1 ? "comment goes" : "comments go"} with this message.`;
+    return `${n} ${n === 1 ? "comment waits" : "comments wait"} for your next message.`;
   }
 
   override render() {
     const running = this.running;
-    const hasInput = !!this.text.trim() || this.allFiles().length > 0;
+    const hasInput = !!this.text.trim() || this.allFiles().length > 0 || this.comments.length > 0;
     const mode = this.modes ?? modePicker(this.session);
     const others = otherPickers(this.session);
-    const tooBig = checkOutgoing(this.text, this.allFiles());
+    const going = isCommand(this.text) ? [] : this.comments;
+    const tooBig = checkOutgoing(withComments(this.text, going), this.allFiles());
     const dis = !!this.blocked || !!tooBig;
+    const steerTaken = !!this.chat?.steeringMessage;
     return html`<form class="composer" @submit=${(e: Event) => e.preventDefault()}
       @dragover=${(e: DragEvent) => {
         if (e.dataTransfer?.types.includes("Files")) {
@@ -431,6 +494,20 @@ export class IncConvComposer extends LitElement {
       ${this.error ? html`<p class="problem" role="alert">${this.error}</p>` : nothing}
       ${tooBig ? html`<p class="problem" role="alert">${tooBig}</p>` : nothing}
       ${this.blocked ? html`<p class="hint" role="status">${this.blocked}</p>` : nothing}
+      ${
+        this.comments.length
+          ? html`<p class="going"><span>${this.commentsLine(going.length > 0)}</span>
+              <button class="link-btn" type="button" @click=${(e: Event) =>
+                e.currentTarget?.dispatchEvent(
+                  new CustomEvent("conv-review", {
+                    detail: { from: "composer" },
+                    bubbles: true,
+                    composed: true,
+                  }),
+                )}>Review</button></p>`
+          : nothing
+      }
+      ${running && hasInput && steerTaken ? html`<p class="hint">A steering message is already waiting, so this one joins the queue.</p>` : nothing}
       <div class="box ${this.dragging ? "drag" : ""}">
         ${this.picker.thumbs({ compact: true })}
         ${
@@ -478,7 +555,7 @@ export class IncConvComposer extends LitElement {
             running
               ? html`${
                   hasInput
-                    ? html`<span class="split"><button class="cbtn steer" type="button" ?disabled=${dis || this.sending} title="Runs next, ahead of the queue" @click=${() => void this.submit("steer")}>Steer</button>
+                    ? html`<span class="split"><button class="cbtn steer" type="button" ?disabled=${dis || this.sending} title=${steerTaken ? "Joins the queue: a steering message is already waiting" : "Runs next, ahead of the queue"} @click=${() => void this.submit("steer")}>Steer</button>
                       <button class="cbtn qbtn" type="button" ?disabled=${dis || this.sending} title="Waits for its turn (Alt+Enter)" @click=${() => void this.submit("queue")}>Queue</button>
                       <button class="cbtn more" type="button" aria-haspopup="menu" aria-expanded=${this.menu ? "true" : "false"} aria-label="More send options" ?disabled=${dis || this.sending}
                         @click=${() => {

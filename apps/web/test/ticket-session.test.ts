@@ -248,6 +248,7 @@ describe("the session view", () => {
     expect(root().querySelector("inc-conv-composer")).toBeNull();
     expect(head.querySelector(".ship-btn")).toBeNull();
     expect(head.querySelector('[aria-label="Remember this"]')).toBeNull();
+    expect(head.querySelector(".changes-btn")).toBeNull();
     expect(root().querySelector(".ro-note")?.textContent).toContain("Read-only");
     expect(root().querySelector(".ro-note a")?.getAttribute("href")).toBe("#/ticket/12");
     // the brief is the first turn, folded

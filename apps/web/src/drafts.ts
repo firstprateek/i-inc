@@ -5,6 +5,9 @@
 // A draft longer than this (in UTF-16 characters) stays in memory only, so one paste can't fill storage.
 export const DRAFT_CAP = 20 * 1024;
 const prefix = "inc.chat.draft.";
+/** The name a draft has in localStorage: what a `storage` event from another tab says changed. */
+export const draftKey = (name: string) => prefix + name;
+const onClear = new Set<() => void>();
 
 export const draftMemo = {
   get(employeeId: string): string | null {
@@ -14,11 +17,11 @@ export const draftMemo = {
       return null;
     }
   },
-  set(employeeId: string, text: string): void {
+  set(employeeId: string, text: string, cap = DRAFT_CAP): void {
     const key = prefix + employeeId;
     try {
       // Blank or oversized: drop the key, so an older draft can't come back after a reload.
-      if (text.trim() && text.length <= DRAFT_CAP) localStorage.setItem(key, text);
+      if (text.trim() && text.length <= cap) localStorage.setItem(key, text);
       else localStorage.removeItem(key);
     } catch {
       // Quota, private mode or blocked storage: drafts last only for this page. Don't leave a stale one.
@@ -34,7 +37,12 @@ export const draftMemo = {
     const stored = draftMemo.get(employeeId);
     if (stored !== null && stored.trim() === sent.trim()) draftMemo.set(employeeId, "");
   },
+  /** Whoever keeps a draft in memory forgets it with the rest. */
+  onClearAll(fn: () => void): void {
+    onClear.add(fn);
+  },
   clearAll(): void {
+    for (const fn of onClear) fn();
     try {
       const keys: string[] = [];
       for (let i = 0; i < localStorage.length; i++) {

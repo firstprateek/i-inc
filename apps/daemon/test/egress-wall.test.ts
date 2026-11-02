@@ -124,6 +124,11 @@ const fakeChild = () =>
     kill: () => true,
   }) as unknown as ChildProcessWithoutNullStreams;
 
+/** Never the real client: on the mini `container` is installed, and `machine run` boots a stopped machine. */
+const noClient = (): never => {
+  throw new Error("spawn container ENOENT");
+};
+
 const pa = "pip";
 const setIp = (name: string, ip: string) => {
   const m = machines.get(name);
@@ -249,7 +254,7 @@ describe("the new walls", () => {
       const m = make();
       await m.ensureUp(pa);
       setIp("inc-home-pip", "192.168.64.77"); // not let out: shut in, as an address nobody declared is
-      await expect(machineScript(settings, exec)(pa, "true")).rejects.toThrow(/ENOENT/); // got to the (absent) container
+      await expect(machineScript(settings, exec, undefined, noClient)(pa, "true")).rejects.toThrow(/ENOENT/); // got to the client
     });
 
     it("is walled whatever its team is called, when the registry says it holds a PA", async () => {
@@ -340,7 +345,7 @@ describe("the old walls (the daemon is deployed, install-walls.sh has not been r
     await l.run();
     expect(l.spawned).toHaveLength(1);
     expect(readDeclared()).toBeUndefined();
-    await expect(machineScript(settings, exec)("ada", "true")).rejects.toThrow(/ENOENT/); // got through to the binary
+    await expect(machineScript(settings, exec, undefined, noClient)("ada", "true")).rejects.toThrow(/ENOENT/); // got through to the client
     // The only looks at `machine ls` are the ones every run makes, inside the machine's queue, to see that it is
     // running (T75): runIn's, the launch's and the script's. No walls look: the walls are the old ones.
     expect(calls.filter((c) => c.args[1] === "ls")).toHaveLength(3);

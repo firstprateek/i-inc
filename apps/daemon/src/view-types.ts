@@ -327,3 +327,55 @@ export interface NeedsYouView {
   /** Conversations with a permission or a question waiting. */
   conversations: unknown[];
 }
+
+export type ChangeStatus = "added" | "modified" | "deleted" | "type-changed";
+
+/** One file in a conversation's change, as git sees it (GET /api/conversations/:id/changes). */
+export interface ReviewFile {
+  path: string;
+  added: number;
+  removed: number;
+  /** Binary files have no line counts. */
+  binary?: true;
+  status: ChangeStatus;
+}
+
+export interface ReviewListing {
+  /** False: the folder isn't there (not made yet, or cleaned away). */
+  present: boolean;
+  files: ReviewFile[];
+  /** Files left out because their names aren't safe to handle. */
+  skipped: number;
+  /** There were more than the list holds. */
+  truncated: boolean;
+  /** Something in the folder couldn't be read, so the list may be missing files. */
+  partial: boolean;
+}
+
+/** One version of a file. `text` is there for `text` and `link`. */
+export interface FileSide {
+  state: "none" | "text" | "binary" | "too-big" | "link" | "outside" | "other";
+  text?: string;
+}
+
+/** Why a read didn't happen. `asleep` and `busy` are worth a retry; `no-copy` means nothing is there yet. */
+export type ChangesState = "ok" | "no-copy" | "asleep" | "busy" | "failed";
+
+export interface ChangesView extends Omit<ReviewListing, "present"> {
+  state: ChangesState;
+  /** No project: everything in the scratch folder counts as new. */
+  noProject: boolean;
+  /** One plain sentence when `state` isn't ok. */
+  reason?: string;
+}
+
+/** A file's two versions (GET /api/conversations/:id/changes/file). */
+export interface FileView {
+  state: ChangesState;
+  path: string;
+  before: FileSide;
+  after: FileSide;
+  /** The file usually holds secrets, so neither version is served. */
+  withheld?: true;
+  reason?: string;
+}

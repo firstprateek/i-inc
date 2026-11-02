@@ -84,9 +84,10 @@ export class IncConvContext extends LitElement {
       .plan .in_progress .dot { border-color: var(--reviewing-mark); }
       .plan .in_progress .dot::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--reviewing-mark); }
       .plan svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 3.4; stroke-linecap: round; stroke-linejoin: round; }
-      .file button { all: unset; box-sizing: border-box; width: 100%; min-height: 44px; display: flex; align-items: center; gap: 8px; cursor: pointer; border-radius: 10px; padding: 0 6px; }
-      .file button:hover { background: var(--sunken); }
-      .file button:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: -2px; }
+      .file .f-row { all: unset; box-sizing: border-box; width: 100%; min-height: 44px; display: flex; align-items: center; gap: 8px; cursor: pointer; border-radius: 10px; padding: 0 6px; }
+      .file .f-row:hover { background: var(--sunken); }
+      .file .f-row:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: -2px; }
+      .file .to-review { align-self: flex-start; }
       .file .p { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12.5px var(--mono); direction: rtl; text-align: left; }
       .file .p bdi { direction: ltr; }
       .plus { color: var(--diff-add-fg); background: var(--diff-add-bg); border-radius: 4px; padding: 0 5px; font: 700 11.5px var(--mono); }
@@ -134,6 +135,17 @@ export class IncConvContext extends LitElement {
     // The screen opens the dialog; the opener is remembered there so focus can go back to it.
     e.currentTarget?.dispatchEvent(
       new CustomEvent("conv-ship", { detail: { kind, from: "context" }, bubbles: true, composed: true }),
+    );
+  }
+
+  /** Into the review pane, at this file if one is named. */
+  private review(e: Event, path?: string) {
+    e.currentTarget?.dispatchEvent(
+      new CustomEvent("conv-review", {
+        detail: { from: "context", ...(path ? { path } : {}) },
+        bubbles: true,
+        composed: true,
+      }),
     );
   }
 
@@ -265,13 +277,14 @@ export class IncConvContext extends LitElement {
         ${
           files.length
             ? html`<section class="file" aria-labelledby="h-files"><h3 id="h-files">Files changed · ${files.length}</h3>
+          ${this.watch ? nothing : html`<button class="link-btn to-review" type="button" @click=${(e: Event) => this.review(e)}>Review all changes</button>`}
           <ul>${files.map(
             (
               f,
-            ) => html`<li><button type="button" aria-expanded=${this.openFile === f.uri ? "true" : "false"} @click=${() => {
+            ) => html`<li><button class="f-row" type="button" aria-expanded=${this.openFile === f.uri ? "true" : "false"} @click=${() => {
               this.openFile = this.openFile === f.uri ? null : f.uri;
             }}><span class="p" title=${f.path}><bdi>${f.path}</bdi></span><span class="plus">+${f.added}</span><span class="minus">−${f.removed}</span></button>
-            ${this.openFile === f.uri ? html`<inc-conv-diff .edit=${f.edit}></inc-conv-diff>` : nothing}</li>`,
+            ${this.openFile === f.uri ? html`${this.watch ? nothing : html`<button class="link-btn" type="button" @click=${(e: Event) => this.review(e, f.path)}>Open in Changes</button>`}<inc-conv-diff .edit=${f.edit}></inc-conv-diff>` : nothing}</li>`,
           )}</ul></section>`
             : nothing
         }

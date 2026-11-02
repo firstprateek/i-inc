@@ -4,8 +4,10 @@ import type {
   BoardSummaryView,
   BrainChangesView,
   BrainChangeView,
+  ChangesView,
   DeskEntry,
   DeskView,
+  FileView,
   KnowledgeView,
   NamedChange,
   NeedsYouView,
@@ -14,6 +16,7 @@ import type {
   PendingTicket,
   PolicyProposal,
   ProposalView,
+  ReviewFile,
   ShipBrief,
   ShipView,
   TicketView,
@@ -26,8 +29,10 @@ export type {
   BoardSummaryView,
   BrainChangesView,
   BrainChangeView,
+  ChangesView,
   DeskEntry,
   DeskView,
+  FileView,
   KnowledgeView,
   NamedChange,
   NeedsYouView,
@@ -37,6 +42,7 @@ export type {
   PolicyProposal,
   ProjectRelease,
   ProposalView,
+  ReviewFile,
   ShipBrief,
   ShipView,
   TicketEvent,
@@ -377,6 +383,17 @@ export const api = {
     call<{ settings: NotifySettings }>("GET", "/api/push/settings").then((r) => r.settings),
   setNotifySettings: (patch: Partial<NotifySettings>) =>
     call<{ settings: NotifySettings }>("PUT", "/api/push/settings", patch).then((r) => r.settings),
+  /** What the working copy changes against where its branch left main, read from git. Never wakes a machine. */
+  changes: (id: string) =>
+    call<{ changes: ChangesView }>("GET", `/api/conversations/${encodeURIComponent(id)}/changes`).then(
+      (r) => r.changes,
+    ),
+  /** One changed file's two versions. */
+  changedFile: (id: string, path: string) =>
+    call<{ file: FileView }>(
+      "GET",
+      `/api/conversations/${encodeURIComponent(id)}/changes/file?path=${encodeURIComponent(path)}`,
+    ).then((r) => r.file),
   /** Shipping a conversation's work (C22b): the ticket and PR it has, and with `preview` what would be committed. */
   ship: (id: string, preview = false) =>
     call<{ ship: ShipView }>(

@@ -255,6 +255,11 @@ export class ConversationService {
     }));
   }
 
+  /** The machine this conversation's working copy is in, when it was noted: it stays there if the employee moves. */
+  machineFor(id: string): string | null {
+    return this.db.all<Row>("SELECT * FROM conversations WHERE id = ?", id)[0]?.machine ?? null;
+  }
+
   /** Wires the host's hooks: AHP clients can create conversations, rename and archive them too. */
   private attach(): void {
     const hooks = this.host.hooks;

@@ -32,6 +32,7 @@ import { LiveEvents } from "./live.ts";
 import { Proposals } from "./proposals.ts";
 import { type PushService, WebPushSender } from "./push.ts";
 import { Registry } from "./registry.ts";
+import { ConversationReview, type ReviewPort } from "./review.ts";
 import { migrate } from "./schema.ts";
 import { SessionStore } from "./sessions.ts";
 import { Shipping } from "./ship.ts";
@@ -87,6 +88,8 @@ export interface AppOptions extends ApiOptions {
   ahpBackend?: FromRegistry<AgentBackend>;
   /** The git side of shipping a conversation's work (T62b); absent without GitHub. */
   ship?: FromRegistry<ShipPort>;
+  /** Reads a conversation's working copy for the review pane; never boots a machine. */
+  review?: FromRegistry<ReviewPort>;
   ahpLimits?: Partial<TransportLimits>;
   /** Timings of the conversation pushes (T65), for tests: the grace, the re-look, a long reply, the scheduler. */
   ahpPush?: Partial<
@@ -269,6 +272,14 @@ export async function createApp(o: AppOptions) {
       awake: (employeeId) => daemon.noteAwake(employeeId),
       tick: () => daemon.tick(),
       running: (id) => daemon.isRunning(id),
+      ...(o.log ? { log: o.log } : {}),
+    });
+  }
+  if (o.review) {
+    deps.review = new ConversationReview({
+      conversations,
+      registry,
+      port: make(o.review),
       ...(o.log ? { log: o.log } : {}),
     });
   }

@@ -106,3 +106,28 @@ paths, branch names, structured briefs).
     the whole segment is tappable; the checker (rightly) saw an element painting over text. → Give the
     overlaid input `pointer-events: none` (the label still takes the tap and the keyboard still works), so
     the text is what is on top.
+24. **An overlay in a grid pushed its neighbours out (layout).** The review pane took `grid-column: 2 / -1` over the
+    thread and the panel, but they were auto-placed, so they moved to new implicit columns, the `1fr` track fell to
+    0 and the pane collapsed to the width of the context panel. The checker saw nothing wrong: every element fit. →
+    When one grid item overlaps others, give every item an explicit column, and look at the width in the screenshot.
+25. **One more header button took the title (layout).** A fifth 44 px control left a phone's title one letter wide. →
+    On a phone the title has its own row and the tools share the next; count a header's controls at 390 px.
+26. **`isCollapsed` lies in a shadow root (interaction).** Chromium reports a selection inside a shadow root as collapsed
+    while `toString()` holds the text, so a "not after a selection" guard never fired, and a click on code opened a
+    comment box. The first click of a double-click has no selection to look at anyway. → Don't guess from a click on
+    text: give the action its own control (the line's number) and leave text to be selected.
+27. **`pre-wrap` hangs its trailing space (overflow).** A wrapped comment ran 2 px outside its box, only on the lines that
+    broke at a space. → Use `break-spaces` for text the owner wrote.
+28. **A disabled or replaced button drops focus to body (a11y).** Refresh was disabled while it read, and Try again
+    and Show all were removed by their own success. → Use `aria-disabled` and a guard while something runs, and when a
+    control goes away with its own action, say where focus goes next. Test `activeElement`, not only the result.
+29. **Only `defaultPrevented` tells an outer Escape it was taken (keyboard).** A menu that closed on Escape left the event
+    free, so the document-level handler closed the pane behind it too. → Anything that takes Escape calls `preventDefault`.
+30. **A way back that leads nowhere (states).** Unfinished comments was a list of links that open a file's diff, so
+    drawing it in the empty and asleep states would have given the owner a link that does nothing: those states never
+    draw a diff. The render and the checker can't see that, only pressing it can. → In every state a list is drawn,
+    ask where its links go. With nothing to go to, draw the thing itself, the way the plain comment list does.
+31. **Focus can survive on the wrong record (a11y).** Rows are drawn unkeyed, so when a refresh put another comment's
+    box on the row the owner was typing in, the textarea stayed in the page with focus still in it, now holding someone
+    else's words, and the keys went into that comment. Checking "did focus drop to body?" would have passed. → When
+    what is drawn can be reused for another record, follow focus by the record's key, not by the element.

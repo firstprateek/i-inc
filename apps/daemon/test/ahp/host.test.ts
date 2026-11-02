@@ -431,6 +431,43 @@ describe("turns and pending messages", () => {
     expect(st?.steeringMessage).toBeUndefined();
   });
 
+  it("loses neither message when a second steering message comes while one waits", async () => {
+    const t = await rig();
+    const { chat } = await t.session();
+    const a = t.client();
+    await a.init([ROOT, chat]);
+    const g = gate();
+    const order: string[] = [];
+    t.backend.script = async (run) => {
+      order.push(run.message.text);
+      if (run.message.text === "one") await g.promise;
+      return { kind: "complete" };
+    };
+    a.dispatch(chat, turnStarted("one", "t1"));
+    await settle();
+    const steer = (id: string, text: string) =>
+      a.dispatch(chat, {
+        type: ActionType.ChatPendingMessageSet,
+        kind: PendingMessageKind.Steering,
+        id,
+        message: userMessage(text),
+      });
+    steer("s1", "the comments");
+    steer("s2", "also fix the tests");
+    expect(a.rejections()).toEqual([]);
+    expect(t.host.chatState(chat)?.steeringMessage?.message.text).toBe("the comments");
+    expect(t.host.chatState(chat)?.queuedMessages?.map((m) => m.message.text)).toEqual([
+      "also fix the tests",
+    ]);
+    // The same id is the same message, not a second one
+    steer("s1", "the comments, again");
+    expect(t.host.chatState(chat)?.steeringMessage?.message.text).toBe("the comments, again");
+    expect(t.host.chatState(chat)?.queuedMessages?.length).toBe(1);
+    g.resolve();
+    await t.host.idle();
+    expect(order).toEqual(["one", "the comments, again", "also fix the tests"]);
+  });
+
   it("starts a message set while idle straight away, and can reorder and remove queued ones", async () => {
     const t = await rig();
     const { chat } = await t.session();

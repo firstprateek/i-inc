@@ -222,11 +222,67 @@ shapes against a real adapter on the mini first.
   a **Stop** button while a turn runs. Typing while it runs **queues** a message or sends it as a
   **steering** message (AHP pending messages). A steering message runs as the next turn, ahead of the
   queue; it does not interrupt the current turn, because ACP has no way to inject into a running one. To
-  interrupt, press **Stop**.
+  interrupt, press **Stop**. A chat holds one steering message, and a second would replace it, so while one
+  waits another joins the queue instead: the composer says so, and the host does the same for a message it
+  couldn't see coming (another tab, or a second press before the first's echo).
 - **Right: context panel (collapsible).** Project and branch, files changed with diffs, the
   agent's plan, the brain pages used for this turn, and usage. Usage has a meter of how full the
   agent's context is, which moves during a turn; "Latest turn" shows only when a turn has reported tokens.
 - **Phone:** the same stream in one column; the context panel becomes a sheet.
+
+## Review (the Changes pane)
+
+**Changes** in the thread's header opens a pane over the thread and the context panel: everything the conversation's
+working copy changes against where its branch left the project's main, committed or not, with untracked files. It comes
+from git, not from tool calls, so a change made by a shell command shows too. The panel's Files changed list stays, and
+links into it.
+
+- `GET /api/conversations/:id/changes`: `{ changes: { state, noProject, files, skipped, truncated, partial, reason? } }`, each
+  file `{ path, added, removed, binary?, status }`, and status one of added, modified, deleted, type-changed. Renames show
+  as a deletion and an addition. `partial`: something in the folder couldn't be read (no permission on a file or on a
+  folder that isn't ignored, a pipe, a nested repo with no commit, files that kept going away), so the list may be missing
+  files. The pane says so.
+- `GET /api/conversations/:id/changes/file?path=`: `{ file: { state, path, before, after, withheld?, reason? } }`. Each side
+  is `{ state, text? }`, and state one of none, text, binary, too-big, link, outside, other. A bad path is a 400.
+- `state` is `ok`, or why the read didn't happen, with `reason` in one sentence: `asleep`, `busy` (the read outlasted its
+  wait or its time limit), `no-copy` or `failed`. These are 200s. The pane says the sentence and offers Try again. A
+  refresh that gets `asleep`, `busy` or `failed` says so above the list and the diff it already has, and leaves them,
+  and any comment box, where they are; the same goes for the open file when it can't be read again.
+- **Read-only, and the copy's word isn't taken.** No fetch, no token, and nothing in the copy is written:
+  `apps/daemon/src/review.ts` lists from a scratch repository outside the folder, which sees the copy's objects and files
+  and nothing else of it, not its index (flags and cached stats that hide a change), config, `.git/info/exclude` or
+  hooks. Git finds what differs by content, and only those files are hashed, into the scratch objects, with the copy's
+  out of sight: git touches an object it is asked to write and already has. So every tracked file is read on each list.
+  Optional locks and lazy fetches are off, and `G` from `ship-git.ts` has no hooks, filters, fsmonitor or external diffs.
+- **No implicit boots.** It uses the runner that refuses a stopped machine (T75). A read holds an ordinary lease, so it
+  runs beside an agent's turn: the pane shows what is there, says the agent is working (or waiting for an answer), and
+  refreshes when the turn ends. Listings run one at a time, and a request made during one gets a read that starts
+  after it, so that refresh can't come back with a list from before the turn's last edit.
+- **No project,** or a project's copy with no commits or no repository: the scratch repository looks at the folder, and
+  every file there is new.
+- **Untrusted.** Paths must be relative, with no `..`, NUL, control character, leading `-`, `.git` or `.inc`, and a name
+  that fails is left out and counted. Files stop at 1 MB, every kind of credential ship's scan stops is redacted (a key
+  block keeps its lines, so line numbers hold), a file that usually holds secrets is listed but never served, links are
+  never followed, and the pane renders all of it as text.
+- **Line comments** are the owner's, in this browser, per conversation, kept with the drafts (and forgotten with them at
+  sign-out), across tabs. No route takes them. A line's number opens its box; the code itself is there to select. A
+  half-written comment stays through another line, another file or closing the pane, and is only thrown away when the
+  owner says so. It is never out of reach: past the point where a long diff is cut, its file opens with every line
+  showing; once its file has left the list, Unfinished comments leads to it; when its file can't be read or shows a note
+  rather than lines, the box sits above the reason, saying which line it is about, as it does while its file is loading;
+  and with no list or diff to show, that section holds the box itself. A box emptied there to write it again stays while
+  the owner is in it. When the list comes back, the box they are in opens its own file, in view, whichever file is first
+  and on a list-first phone too. A read that lands while the owner types, or fails, doesn't take them out of the box: focus
+  and the caret go wherever it is drawn next. A comment sits under its line while the line still reads as it quoted it; after that it is listed above
+  the diff as changed, never under whatever took the number. Past about 200 KB the newest are kept for this page only,
+  and the pane says so.
+- **Sending them.** Comments are added to the next message as `path:line`, the quoted line and the comment, and cleared
+  once it is sent. A message that is a command (`/remember`) leaves them for the next one. **Send comments** sends them
+  alone through the composer, so a running turn queues them and the composer's refusals hold, and what is in the box
+  stays there. If the host refuses it later, or the owner removes it from the queue, it comes back in the box as text.
+- **While the agent waits.** If it is stopped on a permission or a question the pane says so and **Answer** goes to the
+  card. The thread's live region is hidden behind the pane, so the pane has its own, there from the start, which says
+  when the agent starts working, needs an answer, or finishes, stops or hits an error.
 
 ## Data and API
 

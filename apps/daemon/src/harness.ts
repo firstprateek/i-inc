@@ -1,6 +1,7 @@
 // The real harness (spec §6, stages 4 and 8): the project's check recipe and the final gates, run in
 // the builder's machine. Scripts go in on stdin through `container machine run -i … -- bash -s`,
 // because `machine run` re-splits its arguments (M1).
+import { StringDecoder } from "node:string_decoder";
 import type { ChecksResult, GatesOptions, GatesResult, Harness, ProjectPolicy, Ticket } from "@i-inc/core";
 import { type ApprovalCard, type HostPush, HostPushError } from "./host-push.ts";
 import { MachineNotRunning, queueFor } from "./machine-queue.ts";
@@ -125,7 +126,8 @@ function runScript(
       // A script that prints without end (a runaway check, a hostile machine) is stopped at the cap, not held in
       // memory. A bundle (bundle.ts) is capped well under it.
       let size = 0;
-      const take = (chunk: Buffer | string) => {
+      // A chunk can end inside a character, so bytes are decoded per stream: the rest of it is in that stream's next.
+      const take = (decoder: StringDecoder) => (chunk: Buffer | string) => {
         if (settled) return;
         size += chunk.length;
         if (size > MAX_SCRIPT_OUTPUT) {
@@ -136,10 +138,10 @@ function runScript(
           });
           return;
         }
-        output += chunk;
+        output += typeof chunk === "string" ? chunk : decoder.write(chunk);
       };
-      child.stdout.on("data", take);
-      child.stderr.on("data", take);
+      child.stdout.on("data", take(new StringDecoder("utf8")));
+      child.stderr.on("data", take(new StringDecoder("utf8")));
       // A write to a child that has already exited is EPIPE: its exit is the answer, not a crash.
       guardStdin(child.stdin);
       child.on("error", (err) => {

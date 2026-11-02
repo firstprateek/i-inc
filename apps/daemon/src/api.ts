@@ -80,6 +80,7 @@ import type { Change, Repo } from "./knowledge.ts";
 import { type ProposalStatus, RECOVERED_BODY } from "./proposals.ts";
 import { type NotifySettings, notifyKeys, notifySettings, type PushSubscription } from "./push.ts";
 import { defaultTeam, type Project } from "./registry.ts";
+import { isReviewPath } from "./review.ts";
 import { ShipError } from "./ship.ts";
 import { clientKey, GuessLimit } from "./throttle.ts";
 import type { NewAttachment, NewTicket, TicketRecord } from "./tickets.ts";
@@ -1969,6 +1970,31 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         } catch (e) {
           return shipFailure(e);
         }
+      },
+    ],
+
+    // The review pane: what the working copy changes against where its branch left main, read from git, so
+    // changes made by shell commands show too. Read-only, and neither route boots a machine: `state` says why not.
+    [
+      "GET",
+      "/api/conversations/:id/changes",
+      async (_req, p) => {
+        if (!d.conversations?.get(p.id ?? "")) return json({ error: "There is no such conversation." }, 404);
+        if (!d.review) return json({ error: "Changes can't be read on this daemon." }, 409);
+        return json({ changes: await d.review.changes(p.id ?? "") });
+      },
+    ],
+
+    [
+      "GET",
+      "/api/conversations/:id/changes/file",
+      async (req, p) => {
+        if (!d.conversations?.get(p.id ?? "")) return json({ error: "There is no such conversation." }, 404);
+        if (!d.review) return json({ error: "Changes can't be read on this daemon." }, 409);
+        const path = new URL(req.url).searchParams.get("path");
+        if (path === null || !isReviewPath(path))
+          return json({ error: "That isn't a file in this change." }, 400);
+        return json({ file: await d.review.file(p.id ?? "", path) });
       },
     ],
 

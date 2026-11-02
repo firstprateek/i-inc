@@ -16,6 +16,7 @@ import { createApp } from "./app.ts";
 import { configDir, readCredentials, webToken } from "./config.ts";
 import { seedDemo, seedDemoLater, seedDemoProposals, seedDemoTickets } from "./demo.ts";
 import { demoLaunch } from "./demo-agent.ts";
+import { demoReview } from "./demo-review.ts";
 import { resolveVersion } from "./deploys.ts";
 import { GitHubApp, readGitHubAppConfig } from "./github.ts";
 import { installGuards, serverError } from "./guards.ts";
@@ -115,6 +116,7 @@ const app = demo
       harness,
       helper: new FakeHelper(),
       chat: new FakeChat(),
+      review: () => demoReview,
       // Conversations: a scripted agent in the daemon's own process (demo-agent.ts), no sandbox needed.
       ahpBackend: (registry) =>
         new SessionHost({

@@ -32,6 +32,7 @@ import {
 import { OllamaChat, OllamaHelper, type OllamaOptions } from "./ollama.ts";
 import { type Reap, reaper, reapMachines } from "./reaper.ts";
 import type { Registry } from "./registry.ts";
+import { type ReviewPort, reviewPort } from "./review.ts";
 import { conversationShip, type ShipPort } from "./ship-git.ts";
 import type { Tickets } from "./tickets.ts";
 import { timeoutsMs } from "./timeouts.ts";
@@ -83,7 +84,16 @@ const loginEveryMs = 25 * 60_000;
 
 export function realPorts(o: RealOptions): Pick<
   AppOptions,
-  "machines" | "agent" | "harness" | "workspace" | "tokens" | "helper" | "chat" | "ahpBackend" | "ship"
+  | "machines"
+  | "agent"
+  | "harness"
+  | "workspace"
+  | "tokens"
+  | "helper"
+  | "chat"
+  | "ahpBackend"
+  | "ship"
+  | "review"
 > & {
   /** Renews the GitHub sign-in of every sandbox in use. main.ts calls it on a timer. */
   keepLoginsFresh: () => Promise<void>;
@@ -343,6 +353,8 @@ export function realPorts(o: RealOptions): Pick<
             }),
         }
       : {}),
+    // The review pane only reads, so it uses the runner that never boots a stopped machine (T75).
+    review: (registry: Registry): ReviewPort => reviewPort(run(registry)),
     // Conversations: long-lived agent sessions in the same team sandboxes, behind the AHP host.
     ahpBackend: (registry, _tickets, brain, harvest: BrainHarvest): AgentBackend =>
       new SessionHost({

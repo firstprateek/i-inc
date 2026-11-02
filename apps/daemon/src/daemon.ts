@@ -58,6 +58,7 @@ import type { LiveEvents } from "./live.ts";
 import type { Proposals } from "./proposals.ts";
 import type { NotificationPayload, PushService } from "./push.ts";
 import type { Registry } from "./registry.ts";
+import type { ConversationReview } from "./review.ts";
 import { capText, type SessionStore, safeReason } from "./sessions.ts";
 import type { Shipping } from "./ship.ts";
 import type { Storage } from "./storage.ts";
@@ -102,6 +103,8 @@ export interface DaemonDeps {
   conversations?: ConversationService;
   /** Shipping a conversation's work as a ticket or a PR (T62b); absent without GitHub. */
   shipping?: Shipping;
+  /** The review pane's reads of a conversation's working copy; absent without a port. */
+  review?: ConversationReview;
   /** Every stage session as a read-only AHP chat, for "Open the session" (T69); absent in the few places that build deps by hand. */
   ticketChannels?: TicketChannels;
 }
