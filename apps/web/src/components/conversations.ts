@@ -5,8 +5,9 @@
 import type { Employee } from "@i-inc/core";
 import { css, html, LitElement, nothing } from "lit";
 import { ahp, useAhp } from "../ahp/hub.ts";
-import { type AccountRateLimit, api, type Conversation, refresh, type ShipView } from "../api.ts";
+import { type AccountRateLimit, ApiError, api, type Conversation, refresh, type ShipView } from "../api.ts";
 import { friendlyError } from "../conversations/actions.ts";
+import { shipOutcomes } from "../conversations/outcomes.ts";
 import { cardStyles } from "../conversations/styles.ts";
 import { messageSent } from "../first-run.ts";
 import { live } from "../live.ts";
@@ -15,7 +16,7 @@ import type { SendDetail } from "./conv-composer.ts";
 import type { DraftPick, IncConvDraft } from "./conv-draft.ts";
 import type { FileTarget } from "./conv-files.ts";
 import type { IncConvReview, ReviewTab } from "./conv-review.ts";
-import type { ShipDone, ShipKind } from "./conv-ship.ts";
+import type { IncConvShip, ShipKind } from "./conv-ship.ts";
 import { base } from "./shared.ts";
 import "./conv-context.ts";
 import "./conv-draft.ts";
@@ -48,6 +49,8 @@ export class IncConversations extends LitElement {
     limit: { state: true },
     accountName: { state: true },
     lost: { state: true },
+    readError: { state: true },
+    retrying: { state: true },
     kb: { state: true },
     sheet: { state: true },
     ready: { state: true },
@@ -73,13 +76,22 @@ export class IncConversations extends LitElement {
   declare ctx: "open" | "closed" | null;
   declare now: number;
   declare lost: string;
+  /** Why the read of a link's conversation failed. It may well be there, so the next list asks again. */
+  declare readError: string;
+  /** Try again is asking. */
+  declare retrying: boolean;
   declare kb: number;
   declare sheet: boolean;
   declare ready: boolean;
   /** Shipping (C22b) for the selected conversation: its ticket and PR, and what can be pressed. */
   declare ship: ShipView | undefined;
-  /** The ship dialog, while it is open. */
-  declare dialog: { kind: ShipKind } | null;
+  /** The ship dialog, while it is open, with what it was opened on: a request under way outlasts the selection. */
+  declare dialog: {
+    kind: ShipKind;
+    conv: Conversation;
+    employee: Employee | undefined;
+    ship: ShipView | undefined;
+  } | null;
   /** The review pane, while it is open, and the file it opened at. */
   declare review: { path: string; tab?: ReviewTab; target?: FileTarget } | null;
   declare limit: AccountRateLimit | undefined;
@@ -92,7 +104,8 @@ export class IncConversations extends LitElement {
   private reloadTimer: ReturnType<typeof setTimeout> | undefined;
   private clock: ReturnType<typeof setInterval> | undefined;
   private loadToken = 0;
-  private fetched = new Set<string>();
+  /** The conversations being asked for one by one, so a burst of reloads asks once. */
+  private asking = new Set<string>();
   private shipToken = 0;
   private shipFor = "";
   private shipTimer: ReturnType<typeof setTimeout> | undefined;
@@ -117,6 +130,8 @@ export class IncConversations extends LitElement {
     this.ctx = null;
     this.now = Date.now();
     this.lost = "";
+    this.readError = "";
+    this.retrying = false;
     this.kb = 0;
     this.sheet = false;
     this.ready = false;
@@ -155,6 +170,7 @@ export class IncConversations extends LitElement {
       .screen.phone { display: block; }
       .screen.phone .list-pane { border: 0; padding: 0; height: 100%; }
       .screen.phone .thread-pane { height: 100%; }
+      .screen.phone .lost { margin-top: 8px; }
       .screen.phone .list-pane[hidden], .screen.phone .thread-pane[hidden] { display: none; }
       .screen.phone .review-pane { position: absolute; inset: 0 0 var(--kb, 0px) 0; }
     `,
@@ -177,6 +193,12 @@ export class IncConversations extends LitElement {
       c.onRoster(() => this.scheduleReload(500)),
     ];
     refresh.addEventListener("refresh", this.onRefresh);
+    // A request from a dialog this screen no longer holds has ended.
+    this.offs.push(
+      shipOutcomes.subscribe((added) => {
+        if (added) this.shipped();
+      }),
+    );
     // A ticket changed: if it is this conversation's, its stage and status are news.
     this.offs.push(
       live.subscribe("ticket", () => {
@@ -259,8 +281,29 @@ export class IncConversations extends LitElement {
   }
 
   override willUpdate(changed: Map<string, unknown>): void {
-    if (changed.has("selectedId") && this.selectedId) this.lost = "";
-    if (changed.has("selectedId") && changed.get("selectedId") !== undefined) this.review = null;
+    // Left it, or it is back: Show archived, or unarchived elsewhere.
+    if (changed.has("selectedId") || this.selected()) {
+      this.lost = "";
+      this.readError = "";
+    }
+    if (changed.has("selectedId") && changed.get("selectedId") !== undefined) {
+      // Back or a link moved on, so what was open over the last one goes with it. The pane's history entry is
+      // behind us now, and the next pane needs its own.
+      this.review = null;
+      this.reviewEntry = false;
+      this.sheet = false;
+      this.closeDialog();
+      this.opener = null;
+    }
+  }
+
+  /**
+   * The ship dialog goes with what it was over, unless a request is under way, or failed: it stays to show how that
+   * ended, a link or a failure with the owner's words still in it, and anything sent from it goes to its own
+   * conversation. A dialog showing a success goes, and hands its link to the shell.
+   */
+  private closeDialog() {
+    if (!this.renderRoot.querySelector<IncConvShip>("inc-conv-ship")?.staying) this.dialog = null;
   }
 
   override updated(changed: Map<string, unknown>): void {
@@ -282,7 +325,8 @@ export class IncConversations extends LitElement {
           ?.focus();
       }
     }
-    if (changed.has("selectedId") || changed.has("list")) void this.ensureSelected();
+    // `loading` too: a list that failed changes nothing else, and a link would wait on it for good.
+    if (changed.has("selectedId") || changed.has("list") || changed.has("loading")) this.ensureSelected();
     if (changed.has("selectedId") || changed.has("list")) this.syncShip();
   }
 
@@ -293,8 +337,12 @@ export class IncConversations extends LitElement {
     try {
       const rows = await api.conversations(this.showArchived ? "all" : undefined);
       if (token !== this.loadToken) return;
-      this.list = rows;
+      // The open conversation stays on screen until the daemon says why the list no longer holds it.
+      const open = this.selected();
+      const dropped = open && !rows.some((c) => c.id === open.id);
+      this.list = dropped ? [open, ...rows] : rows;
       this.listError = "";
+      if (dropped) void this.ask(open.id, open);
     } catch (e) {
       if (token !== this.loadToken) return;
       this.listError = e instanceof Error ? e.message : String(e);
@@ -359,19 +407,58 @@ export class IncConversations extends LitElement {
   }
 
   /** A link to a conversation the list does not hold (archived, or a stale link): fetch that one. */
-  private async ensureSelected(): Promise<void> {
+  private ensureSelected() {
     const id = this.selectedId;
-    if (!id || this.loading || this.selected() || this.fetched.has(id)) {
-      if (id && this.selected()) this.pickLimit();
-      return;
-    }
-    this.fetched.add(id);
+    if (id && this.selected()) this.pickLimit();
+    else if (id && !this.loading && !this.lost) void this.ask(id);
+  }
+
+  /** Fetch one conversation. `open` is its row on screen, when the list has just dropped it. */
+  private async ask(id: string, open?: Conversation): Promise<void> {
+    if (this.asking.has(id)) return;
+    this.asking.add(id);
     try {
       const c = await api.conversation(id);
-      this.list = [c, ...this.list.filter((x) => x.id !== c.id)];
-    } catch {
-      this.lost = "That conversation wasn't found. It may have been removed.";
+      if (id !== this.selectedId) return;
+      if (open && !open.archivedAt && c.archivedAt) this.leave("That conversation was archived.");
+      else this.list = [c, ...this.list.filter((x) => x.id !== c.id)];
+    } catch (e) {
+      if (id !== this.selectedId) return;
+      if (e instanceof ApiError && e.status === 404) {
+        this.leave("That conversation wasn't found. It may have been removed.");
+        return;
+      }
+      // Anything else says nothing about the conversation. One already open stays, and a link says it couldn't
+      // read it. The next reload asks again, so `list` isn't touched here: that would ask again at once, for ever.
+      if (!open) this.readError = e instanceof Error ? e.message : String(e);
+    } finally {
+      this.asking.delete(id);
     }
+  }
+
+  /** Try again, on a link that wouldn't read. The button stays while it asks, and goes with its own success. */
+  private readAgain = async () => {
+    if (this.retrying) return;
+    this.retrying = true;
+    await this.ask(this.selectedId);
+    this.retrying = false;
+    await this.updateComplete;
+    const thread = this.thread() as (HTMLElement & LitElement) | null;
+    await thread?.updateComplete;
+    if (document.activeElement === document.body) {
+      thread?.shadowRoot?.querySelector<HTMLElement>(".context-btn")?.focus();
+    }
+  };
+
+  /** The selected conversation has gone: say so, and close what was open over it, which has nothing left to show. */
+  private leave(why: string) {
+    this.list = this.list.filter((c) => c.id !== this.selectedId);
+    this.lost = why;
+    this.readError = "";
+    this.sheet = false;
+    this.closeDialog();
+    this.opener = null;
+    if (this.review) this.closeReview();
   }
 
   // ───────────────────────────── actions ─────────────────────────────
@@ -436,9 +523,14 @@ export class IncConversations extends LitElement {
   }
 
   private openShip = (e: CustomEvent<{ kind: ShipKind; from?: string }>) => {
+    // One at a time: a dialog is about the conversation it was opened on, and holds what the owner typed for that.
+    if (this.dialog) return;
     // From the panel, focus goes back to the button that was pressed; from the header, to the Ship button.
     this.opener = e.detail.from === "context" ? ((e.composedPath()[0] ?? null) as HTMLElement | null) : null;
-    this.dialog = { kind: e.detail.kind };
+    const conv = this.selected();
+    if (!conv) return;
+    const employee = this.employees.find((x) => x.id === conv.employeeId);
+    this.dialog = { kind: e.detail.kind, conv, employee, ship: this.ship };
   };
 
   private closeShip = () => {
@@ -446,13 +538,17 @@ export class IncConversations extends LitElement {
     const opener = this.opener;
     this.opener = null;
     void this.updateComplete.then(() => {
-      // Back to the button that opened it: the header's, or the one in the panel.
-      if (opener?.isConnected) opener.focus();
-      else
-        this.renderRoot
-          .querySelector("inc-conv-thread")
-          ?.shadowRoot?.querySelector<HTMLElement>(".ship-btn")
-          ?.focus();
+      const thread = this.renderRoot.querySelector("inc-conv-thread")?.shadowRoot;
+      const list = this.renderRoot.querySelector("inc-conv-list")?.shadowRoot;
+      // Back to the button that opened it: the header's, or the one in the panel. A dialog can outlast both: the
+      // conversation showing now may have no project to ship, and there may be no conversation showing.
+      (opener?.isConnected
+        ? opener
+        : (thread?.querySelector<HTMLElement>(".ship-btn") ??
+          thread?.querySelector<HTMLElement>(".context-btn") ??
+          list?.querySelector<HTMLElement>('.open[tabindex="0"]') ??
+          list?.querySelector<HTMLElement>(".new"))
+      )?.focus();
     });
   };
 
@@ -521,7 +617,7 @@ export class IncConversations extends LitElement {
     void this.updateComplete.then(() => this.thread()?.focusPending());
   };
 
-  private shipped = (_e: CustomEvent<ShipDone>) => {
+  private shipped = () => {
     void this.loadShip();
     void this.loadList();
   };
@@ -615,9 +711,12 @@ export class IncConversations extends LitElement {
                 void this.updateComplete.then(() => requestAnimationFrame(() => this.focusComposer()));
               }}
               @conv-toggle-context=${this.toggleContext}></inc-conv-thread>`
-          : this.selectedId && !this.lost
-            ? html`<div class="none" aria-busy="true"><p>Loading…</p></div>`
-            : html`<inc-conv-draft .employees=${this.employees} .projects=${this.projects} .preset=${this.draft} .ready=${this.ready}
+          : this.readError
+            ? html`<div class="none" aria-busy=${this.retrying ? "true" : nothing}><p role="alert">${this.retrying ? "Loading…" : `Couldn't load this conversation (${this.readError}).`}</p>
+                <button class="btn ghost" type="button" aria-disabled=${this.retrying ? "true" : "false"} @click=${this.readAgain}>Try again</button></div>`
+            : this.selectedId && !this.lost
+              ? html`<div class="none" aria-busy="true"><p>Loading…</p></div>`
+              : html`<inc-conv-draft .employees=${this.employees} .projects=${this.projects} .preset=${this.draft} .ready=${this.ready}
                 .phone=${phone} .back=${phone && !!this.list.length} .onCreate=${this.createFromDraft}></inc-conv-draft>`
       }
     </section>`;
@@ -627,7 +726,7 @@ export class IncConversations extends LitElement {
       : nothing;
     return html`<div class="screen ${phone ? "phone" : ""} ${inline ? "ctx wide" : ""}" @conv-ship=${this.openShip} @conv-review=${this.openReview}>
       ${list}${thread}
-      ${inline ? html`<aside class="pane ctx-pane ${reviewing ? "under" : ""}" ?inert=${reviewing} aria-label="Context">${context}</aside>` : nothing}
+      ${inline ? html`<aside class="pane ctx-pane ${reviewing ? "under" : ""}" ?inert=${modal || reviewing} aria-label="Context">${context}</aside>` : nothing}
       ${
         reviewing
           ? html`<section class="pane review-pane" aria-label="Review"><inc-conv-review .conv=${conv} .name=${employee?.name ?? ""} .phone=${phone}
@@ -635,7 +734,7 @@ export class IncConversations extends LitElement {
               @conv-review-close=${this.closeReview} @conv-send-comments=${this.sendComments} @conv-review-answer=${this.answerAgent}></inc-conv-review></section>`
           : nothing
       }
-      ${drawer ? html`<aside class="drawer" aria-label="Context">${context}</aside>` : nothing}
+      ${drawer ? html`<aside class="drawer" ?inert=${modal} aria-label="Context">${context}</aside>` : nothing}
       ${
         phone && this.sheet && conv
           ? html`<div class="backdrop" @click=${() => {
@@ -645,8 +744,8 @@ export class IncConversations extends LitElement {
           : nothing
       }
       ${
-        this.dialog && conv
-          ? html`<inc-conv-ship .conv=${conv} .employee=${employee} .kind=${this.dialog.kind} .ship=${this.ship}
+        this.dialog
+          ? html`<inc-conv-ship .conv=${this.dialog.conv} .employee=${this.dialog.employee} .kind=${this.dialog.kind} .ship=${this.dialog.ship}
               @conv-ship-close=${this.closeShip} @conv-ship-done=${this.shipped}></inc-conv-ship>`
           : nothing
       }

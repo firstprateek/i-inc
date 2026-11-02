@@ -210,6 +210,7 @@ export class IncConvComposer extends LitElement {
       .more svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
       .split { position: relative; display: inline-flex; flex: none; }
       .split .steer { border-radius: 999px 0 0 999px; }
+      .split .qbtn { border-radius: 0 999px 999px 0; margin-left: -1px; }
       @media (max-width: 767px) { .split .steer { padding: 0 12px; } }
       .menu { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 40; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 12px;
         box-shadow: 0 12px 32px rgba(0,0,0,0.18); padding: 4px; }

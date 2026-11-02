@@ -148,3 +148,21 @@ paths, branch names, structured briefs).
     phone's keyboard composes every Latin word, so on Android the list could never be narrowed by typing. → Let what
     reads the text follow it during a composition; what is held back is the keys that act on it (Enter, Tab, arrows,
     Escape), which are the IME's until it ends.
+39. **A pane drawn on `state && subject` outlives its subject (states).** The review pane vanished when its conversation
+    left, with `review` still set, and a ship dialog left the same way would have kept the screen inert behind nothing. →
+    When the subject goes, clear what depends on it, and keep the subject on screen until you know it has gone.
+40. **A wait has to end when what it waits on fails (states).** "Loading…" asked for a link's conversation only when the
+    list changed, and a failed list changes nothing, so it sat there for good. A failed read then said the conversation
+    "wasn't found", which only a 404 can say. → Trigger on the load ending, not on its result; say "couldn't load" with
+    Try again for any other failure; and don't assign what triggers the ask from its own failure path, which loops.
+41. **Half a split button (layout).** Steer's right corners were squared to meet the button beside it, but only the
+    phone's chevron had the matching corners. The desktop's Queue stayed a whole pill, so a notch showed between them,
+    in a state that takes a running turn and typed text to reach. → When a breakpoint swaps a split button's second half,
+    give each version its corners, and render the control in the state that draws it at both widths.
+42. **A link that takes its own row away (states).** A banner's link dismissed the banner as it was pressed. The list had
+    no key, so Lit gave the first row's `<a>` to the next outcome before the browser followed it, and "Open ticket #12"
+    landed on #13. A script's `el.click()` goes to the right place, so a test can't see this. → Key any list whose rows
+    remove themselves on a click, and try it with a real mouse click and two rows.
+43. **What a dialog says, under the fold (states).** A ship dialog's failure sat last in a long scrolling body, under the
+    fields, so a request that failed looked like a request that did nothing. → A message that appears after an action
+    has to be in view when it appears: scroll to it, and look at the screenshot with the dialog at its longest.
