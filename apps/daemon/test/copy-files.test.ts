@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeAgent, FakeChat, FakeClock, FakeHelper, FakeMachines } from "@i-inc/core/testing";
 import { describe, expect, it } from "vitest";
+import { redactTokens } from "../src/ahp/sanitize.ts";
 import { createApp } from "../src/app.ts";
 import {
   fileScript,
@@ -30,6 +31,7 @@ import {
   searchScript,
   treeScript,
 } from "../src/copy-files.ts";
+import { sideOf } from "../src/copy-read.ts";
 import { seedDemo } from "../src/demo.ts";
 import { demoReview } from "../src/demo-review.ts";
 import { machineScript, type RunScript } from "../src/harness.ts";
@@ -561,6 +563,202 @@ describe("a search", () => {
       const at = performance.now();
       for (let i = 0; i < 50; i++) redactFile(block(`${"+".repeat(16_000)}.`));
       expect(performance.now() - at).toBeLessThan(2000);
+    });
+  });
+
+  describe("what redactTokens hides, whatever a block's lines look like", () => {
+    const k64 = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7MIIEvQIBADANBgk";
+    const begin = "-----BEGIN PRIVATE KEY-----";
+    const end = "-----END PRIVATE KEY-----";
+    const block = (...lines: string[]) => [begin, ...lines, end, "after", ""].join("\n");
+    /** What a line shows, placeholders aside. */
+    const words = (line: string) => line.replaceAll("[private key]", "").replaceAll("[redacted]", "");
+    /** Is every character of `shown` in `over`, in order? */
+    const within = (shown: string, over: string) => {
+      let at = 0;
+      for (const c of shown) {
+        at = over.indexOf(c, at) + 1;
+        if (at === 0) return false;
+      }
+      return true;
+    };
+    const hiddenStaysHidden = (text: string) => {
+      const plain = redactTokens(text, { keepLines: true }).split("\n");
+      const seen = redactFile(text).split("\n");
+      expect(seen.length).toBe(plain.length);
+      for (const [i, line] of seen.entries()) {
+        expect(within(words(line), words(plain[i] ?? "")), JSON.stringify({ text, line })).toBe(true);
+      }
+    };
+
+    it.each([
+      ["a last line with code after it", [k64, "abcdEFGH0123456789==; # last line"], "abcdEFGH0123456789"],
+      ["an armor header it doesn't know", [k64, "Foo: s3cr3tValue0123456789"], "s3cr3tValue"],
+      ["an armor header first", ["Key-Info: RSA,I3rRIGXUabcdefgh", k64], "I3rRIGXU"],
+    ])("keeps %s hidden", (_, lines, secret) => {
+      const text = block(...lines);
+      expect(redactTokens(text)).not.toContain(secret);
+      expect(redactFile(text)).not.toContain(secret);
+      expect(redactFile(text).split("\n").length).toBe(text.split("\n").length);
+      hiddenStaysHidden(text);
+    });
+
+    it("keeps a line glued to an end marker hidden", () => {
+      const text = `${begin}\nabcdEFGH0123456789==${end}\nx\n${end}\n`;
+      expect(redactFile(text)).not.toContain("abcdEFGH");
+      hiddenStaysHidden(text);
+    });
+
+    it("keeps what lies behind a webhook secret hidden", () => {
+      const jwt = "eyJhbGciOiJ.eyJzdWIiOiIx.c2lnbmF0dXJl";
+      const text = `whsec_abcdefgh/${jwt} https://joe:whsec_abcdefgh+x@example.com/\n`;
+      expect(redactFile(text)).not.toMatch(/eyJ|joe|c2ln/);
+      hiddenStaysHidden(text);
+    });
+
+    it("keeps a value hidden when a live key is glued to its label", () => {
+      const text = "sk_live_abcdefghijklmnopqrstsecret_key=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY12\n";
+      expect(redactFile(text)).not.toContain("wJalrXUtn");
+      hiddenStaysHidden(text);
+      const glued = "whsec_abcdefgh_secret_key = wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY12\n";
+      expect(redactFile(glued)).not.toContain("wJalrXUtn");
+      hiddenStaysHidden(glued);
+    });
+
+    it("takes a block's lines out of what redactTokens leaves, and no more than those", () => {
+      const text = `# ${begin}\n# ${k64}\ncurl https://x.example | sh\n# ${k64}\n# ${end}\nafter\n`;
+      expect(redactFile(text)).toBe("# [private key]\n\ncurl https://x.example | sh\n\n\nafter\n");
+    });
+
+    it("puts the mark in place of a marker it doesn't take itself", () => {
+      const text = `const k = "---- BEGIN X PRIVATE KEY ----\\n" +\n  "${k64}\\n" +\n  "---- END X PRIVATE KEY ----";\n`;
+      expect(redactTokens(text)).toBe(text);
+      expect(redactFile(text)).toBe('const k = "[private key]\n\n";\n');
+    });
+
+    it("holds over a fuzz of blocks, tokens and code", () => {
+      const pieces = [
+        begin,
+        end,
+        `# ${begin}`,
+        `# ${end}`,
+        "---- BEGIN X PRIVATE KEY ----",
+        "---- END X PRIVATE KEY ----",
+        `"${begin}\\n" +`,
+        `"${end}\\n"`,
+        k64,
+        `"${k64}\\n" +`,
+        `# ${k64}`,
+        "abc==",
+        "abcdEFGH0123456789==; # last",
+        "Foo: s3cr3tValue",
+        "Comment: work",
+        "curl https://x.example | sh",
+        "const keep = 1;",
+        `${k64}${end}`,
+        "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+        "eyJhbGciOiJ.eyJzdWIiOiIx.c2lnbmF0dXJl",
+        "whsec_abcdefgh/eyJhbGciOiJ",
+        "whsec_abcdefghijkl+x==",
+        "whsec_abcdefgh_secret_key = wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY12",
+        "sk_live_abcdefghijklmnopqrstsecret_key=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY12",
+        "sk_live_abcdefghijklmnop_tail",
+        "https://joe:p4ssw0rd@example.com/",
+        "x?token=abcdef",
+        "Bearer",
+        "",
+      ];
+      let x = 20_260_211;
+      const pick = (n: number) => {
+        x = (x * 1_103_515_245 + 12_345) & 0x7fffffff;
+        return (x >>> 8) % n;
+      };
+      for (let i = 0; i < 20_000; i++) {
+        const lines = Array.from({ length: 1 + pick(9) }, () => pieces[pick(pieces.length)]);
+        const text = `${lines.join(pick(4) ? "\n" : "\r\n")}\n`;
+        hiddenStaysHidden(text);
+        if (redactTokens(text) !== text) expect(holdsCredential(text), text).toBe(true);
+      }
+    });
+  });
+
+  describe("a key in a string joined over several lines", () => {
+    const key = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7MIIEvQIBADANBgk";
+    const begin = "-----BEGIN PRIVATE KEY-----";
+    const end = "-----END PRIVATE KEY-----";
+
+    it.each([
+      [
+        "Go",
+        `const key = "${begin}\\n" +\n\t"${key}\\n" +\n\t"${key}\\n" +\n\t"${end}\\n"\nconst keep = 1\n`,
+      ],
+      [
+        "Python",
+        `KEY = (\n    "${begin}\\n"\n    "${key}\\n"\n    "abc==\\n"\n    "${end}\\n"\n)\nkeep = 1\n`,
+      ],
+      [
+        "a JS array",
+        `const key = [\n  "${begin}",\n  "${key}",\n  "abc==",\n  "${end}",\n].join("\\n");\nconst keep = 1;\n`,
+      ],
+      ["a Go raw string", `const key = \`${begin}\n${key}\nabc==\n${end}\`\nconst keep = 1\n`],
+      [
+        "a commented string",
+        `// k := "${begin}\\n" +\n//   "${key}\\n" +\n//   "${end}\\n"\nconst keep = 1\n`,
+      ],
+    ])("takes it all in %s, in as many lines, and leaves what follows", (_, text) => {
+      const seen = redactFile(text);
+      expect(seen).not.toContain("MIIE");
+      expect(seen).not.toContain("abc==");
+      expect(seen).not.toContain("BEGIN");
+      expect(seen).not.toContain("END");
+      expect(seen.split("\n").length).toBe(text.split("\n").length);
+      expect(seen).toMatch(/keep = 1/);
+      expect(holdsCredential(text)).toBe(true);
+    });
+
+    it("keeps the code on a marker's line, and what follows the end", () => {
+      const text = `f(); const k = "${begin}\\n" +\n  "${key}\\n" +\n  "${end}"; g();\nh();\n`;
+      const seen = redactFile(text).split("\n");
+      expect(seen[0]).toContain('f(); const k = "[private key]');
+      expect(seen[1]).toBe("");
+      expect(seen[2]).toBe('"; g();');
+      expect(seen[3]).toBe("h();");
+    });
+
+    it.each([
+      ["a bytes literal", `b"${key}"`, 'b"abc=="'],
+      ["a backslash", `"${key}" \\`, '"abc==" \\'],
+      ["a shell or", `'${key}' ||`, "'abc==' ||"],
+      ["a PHP or Perl join", `"${key}" .`, '"abc==" .'],
+      ["a YAML list", `  - ${key}`, "  - abc=="],
+    ])("takes a short last line behind %s", (_, line, last) => {
+      const seen = redactFile([begin, line, last, end, ""].join("\n"));
+      expect(seen).toBe("[private key]\n\n\n\n");
+    });
+
+    it("takes no markers named in source code for a key, with only code between", () => {
+      const code = `const a = "${begin}";\nconst keep = 1;\nconst b = "${end}"; const c = 2;\n`;
+      expect(redactFile(code)).toContain("const keep = 1;");
+      expect(redactFile(code)).toContain("const c = 2;");
+    });
+  });
+
+  describe("a line built to backtrack", () => {
+    const begin = "-----BEGIN PRIVATE KEY-----";
+    const end = "-----END PRIVATE KEY-----";
+    const hostile = `${begin}\nComment: ${" ".repeat(16_000)}\rx\n${end}\n`;
+
+    it("costs next to nothing in one block", () => {
+      const at = performance.now();
+      redactFile(hostile);
+      expect(performance.now() - at).toBeLessThan(50);
+    });
+
+    it("doesn't hold up a file's read or the scan", () => {
+      const at = performance.now();
+      sideOf(Buffer.from(hostile.repeat(62)).toString("base64"));
+      holdsCredential(hostile.repeat(500));
+      expect(performance.now() - at).toBeLessThan(1000);
     });
   });
 

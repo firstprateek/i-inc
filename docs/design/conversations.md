@@ -274,11 +274,15 @@ links into it.
 - **No project,** or a project's copy with no commits or no repository: the scratch repository looks at the folder, and
   every file there is new.
 - **Untrusted.** Paths must be relative, with no `..`, NUL, control character, leading `-`, `.git` or `.inc`, and a name
-  that fails is left out and counted. Files stop at 1 MB, every kind of credential ship's scan stops is redacted (a key
-  block keeps its lines, so line numbers hold, and a line in it that doesn't read as key material stays in sight). A
+  that fails is left out and counted. Files stop at 1 MB, every kind of credential ship's scan stops is redacted. The
+  result of `redactTokens` is the starting point and the key blocks only take more out of it, so what that hides stays
+  hidden whatever they find. A block keeps its lines, so line numbers hold. Its markers count wherever they sit, in a
+  string joined over several lines or after code, once there is a line of key between them; a line in it that doesn't
+  read as key material shows as `redactTokens` left it, which is in sight unless it runs straight on from the key. A
   block in the change, ship's scan stops. **Known gap:** the pane redacts whole files and the scan reads added lines
   only, so they can disagree. A line added inside a key block already in the file is hidden if it reads as key material
-  (base64, or an armor header such as `Comment:`), and so is a token added under an old `Authorization: Bearer` line.
+  (base64, or any armor header, which to `redactTokens` is any `Word: text` line in the key's run), and so is a token
+  added under an old `Authorization: Bearer` line.
   The owner sees a blank or `[redacted]`, and the scan doesn't stop it, so what is hidden there can still be pushed.
   ship-git.test.ts pins this until the scan is changed. The diff withholds only the files ship stops by name (`.env`,
   `*.pem` and the like), because anything wider would hide a file that can still be pushed: they are listed but not served. A file with a name that only suggests secrets (`.envrc`,
@@ -288,10 +292,12 @@ links into it.
   sign-out), across tabs. No route takes them. A line's number opens its box; the code itself is there to select. A
   half-written comment stays through another line, another file or closing the pane, and is only thrown away when the
   owner says so. It is never out of reach: past the point where a long diff is cut, its file opens with every line
-  showing; once its file has left the list, Unfinished comments leads to it; when its file can't be read, the box sits
-  above the reason, saying which line it is about; and with no list or diff to show, that section holds the box itself.
-  A box emptied there to write it again stays while the owner is in it. A read that lands while the owner types doesn't
-  take them out of the box: focus and the caret go wherever it is drawn next. A comment sits under its line while the line still reads as it quoted it; after that it is listed above
+  showing; once its file has left the list, Unfinished comments leads to it; when its file can't be read or shows a note
+  rather than lines, the box sits above the reason, saying which line it is about, as it does while its file is loading;
+  and with no list or diff to show, that section holds the box itself. A box emptied there to write it again stays while
+  the owner is in it. When the list comes back, the box they are in opens its own file, in view, whichever file is first
+  and on a list-first phone too. A read that lands while the owner types doesn't take them out of the box: focus and the
+  caret go wherever it is drawn next. A comment sits under its line while the line still reads as it quoted it; after that it is listed above
   the diff as changed, never under whatever took the number. Past about 200 KB the newest are kept for this page only,
   and the pane says so.
 - **Sending them.** Comments are added to the next message as `path:line`, the quoted line and the comment, and cleared
