@@ -199,6 +199,31 @@ describe("while a turn runs", () => {
     ta.dispatchEvent(key({ altKey: true }));
     await vi.waitFor(() => expect(send).toHaveBeenCalledWith({ text: "two", files: [], intent: "queue" }));
   });
+  it("queues a second steer, on Enter and on the Steer button, and says so", async () => {
+    const chat = { ...running, steeringMessage: { id: "s", message: { text: "go now" } } };
+    const { el, ta, type, send } = await mount({}, chat);
+    await type("one");
+    expect(el.shadowRoot?.querySelector(".hint")?.textContent).toBe(
+      "A steering message is already waiting, so this one joins the queue.",
+    );
+    expect(el.shadowRoot?.querySelector(".steer")?.getAttribute("title")).toMatch(/^Joins the queue/);
+    ta.dispatchEvent(key());
+    await vi.waitFor(() => expect(send).toHaveBeenCalledWith({ text: "one", files: [], intent: "queue" }));
+    await type("two");
+    must<HTMLButtonElement>(el.shadowRoot?.querySelector(".steer")).click();
+    await vi.waitFor(() => expect(send).toHaveBeenCalledWith({ text: "two", files: [], intent: "queue" }));
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it("steers when nothing is waiting, and doesn't speak of the queue", async () => {
+    const { el, type } = await mount({}, running);
+    await type("one");
+    expect(el.shadowRoot?.querySelector(".steer")?.getAttribute("title")).toBe(
+      "Runs next, ahead of the queue",
+    );
+    expect(el.shadowRoot?.textContent).not.toContain("already waiting");
+  });
+
   it("lists the queue and lets you remove a message", async () => {
     const chat = {
       ...running,

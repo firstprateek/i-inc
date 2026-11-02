@@ -256,6 +256,22 @@ describe("the composer with comments waiting", () => {
     expect(a.send.mock.calls[1]).toEqual([expect.objectContaining({ intent: "queue" })]);
   });
 
+  it("doesn't let a second steer displace comments that went as the first", async () => {
+    const chat = {
+      turns: [],
+      activeTurn: { id: "t" },
+      steeringMessage: { id: "s", message: { text: withComments("", [note() as LineComment]) } },
+    };
+    reviewComments.add("c1", note({ text: "written since" }));
+    const { el, send } = await mount(chat);
+    await typeIn(el, "also fix the tests");
+    await el.submit("steer");
+    expect(send.mock.calls[0]).toEqual([
+      expect.objectContaining({ intent: "queue", text: expect.stringContaining("written since") }),
+    ]);
+    expect(reviewComments.list("c1")).toEqual([]);
+  });
+
   it("leaves comments out of a command, and says they wait", async () => {
     reviewComments.add("c1", note());
     const { el, send, root } = await mount();

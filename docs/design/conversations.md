@@ -222,7 +222,9 @@ shapes against a real adapter on the mini first.
   a **Stop** button while a turn runs. Typing while it runs **queues** a message or sends it as a
   **steering** message (AHP pending messages). A steering message runs as the next turn, ahead of the
   queue; it does not interrupt the current turn, because ACP has no way to inject into a running one. To
-  interrupt, press **Stop**.
+  interrupt, press **Stop**. A chat holds one steering message, and a second would replace it, so while one
+  waits another joins the queue instead: the composer says so, and the host does the same for a message it
+  couldn't see coming (another tab, or a second press before the first's echo).
 - **Right: context panel (collapsible).** Project and branch, files changed with diffs, the
   agent's plan, the brain pages used for this turn, and usage. Usage has a meter of how full the
   agent's context is, which moves during a turn; "Latest turn" shows only when a turn has reported tokens.
