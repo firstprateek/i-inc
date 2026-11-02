@@ -66,6 +66,8 @@ export class FakeAcpAgent {
   readonly permissionAnswers: Json[] = [];
   private seq = 0;
   gateOpen = false;
+  /** Set during a `gate` turn: the prompt fails with these words instead of finishing. */
+  gateError: string | undefined;
 
   constructor(readonly opts: FakeOptions = {}) {
     this.stdin.on("data", (chunk: Buffer) => {
@@ -103,6 +105,11 @@ export class FakeAcpAgent {
     });
   }
   private sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  /** The agent says how full its context is, in every session it has. */
+  report(used: number, size: number): void {
+    for (const id of this.sessions.keys()) this.update(id, { sessionUpdate: "usage_update", used, size });
+  }
 
   /** The process ends (killed, crashed, or its stdin closed). */
   die(code: number | null): void {
@@ -316,7 +323,9 @@ export class FakeAcpAgent {
     }
     if (said.startsWith("gate")) {
       // works until the test lets it finish, then ends normally
-      while (!this.gateOpen && this.exitCode === undefined) await this.sleep(3);
+      while (!this.gateOpen && this.gateError === undefined && this.exitCode === undefined)
+        await this.sleep(3);
+      if (this.gateError !== undefined) throw Object.assign(new Error(this.gateError), { rpc: -32603 });
       this.update(sessionId, {
         sessionUpdate: "agent_message_chunk",
         content: { type: "text", text: "gate done" },
