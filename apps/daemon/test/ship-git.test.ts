@@ -155,7 +155,7 @@ describe("the scan for credentials", () => {
     }
 
     it("takes exactly what the plain pattern takes, on text built to confuse it", () => {
-      const plain = /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\b/g;
+      const plain = /eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\b/g;
       const parts = ["eyJ", ".", "-", "_", "x", "abcdefgh", "eyJabcdefgh", ".eyJabcdefgh.", "--", " ", "\n"];
       let seed = 7;
       const next = (n: number) => {

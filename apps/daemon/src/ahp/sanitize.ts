@@ -48,9 +48,23 @@ const BLANK_RUN = /\s{200,}/g;
 const DATA_URI =
   /data:([a-z0-9.+-]{1,60}\/[a-z0-9.+-]{1,60})(?:;[a-z0-9=._+-]{1,60}){0,5},([A-Za-z0-9+/=%_-]{200,})/gi;
 const SECRET_QUERY =
-  /([?&;](?:access_token|refresh_token|id_token|token|key|api_key|apikey|sig|signature|secret|client_secret|password|passwd|pwd|pass|passphrase|code|auth|x-amz-[a-z0-9-]{1,40}|x-goog-[a-z0-9-]{1,40})=)[^&\s"'#<>]{1,2000}/gi;
-// Everything between `://` and the last `@` before the path: a password may hold an `@`.
-const USERINFO = /([a-z][a-z0-9+.-]{0,30}:\/\/)[^/\s?#]{1,400}@/gi;
+  /([?&;](?:access_token|refresh_token|id_token|token|key|api_key|apikey|sig|signature|secret|client_secret|password|passwd|pwd|pass|passphrase|code|auth|x-amz-[a-z0-9-]{1,40}|x-goog-[a-z0-9-]{1,40})=)[^&\s"'#<>]+/gi;
+// Everything between `://` and the last `@` before the path: a password may hold an `@`. Any length: every `://` has a
+// `/`, where the one before it stops, so no character is read twice however many there are.
+const USERINFO = /([a-z][a-z0-9+.-]{0,30}:\/\/)[^/\s?#]+@/gi;
+/** What follows the `:` of a host when no password does: a port (or a list of hosts), the word, a template's hole. */
+const PORT = /^(?:\d{1,5}(?:,.*)?|port|\*|\$\w+|\$\{.*\}|\$\(\w+\)|\{\{?[\w.\s-]*\}?\}|<\w+>|%[sdv])$/i;
+const URL_BLANK = /\s/g;
+const AUTHORITY_END = /[/?#\s]/g;
+const SCHEME_END = /[a-z][a-z0-9+.-]{0,30}$/i;
+/**
+ * A token with a word character straight before it (`foo_ghp_...`), which a pattern with a `\b` passes over. Its prefix
+ * won't do alone: `highs_and_lows` holds `ghs_`, `task-` holds `sk-`, `disk_live_` holds `sk_live_` and `pnpm_` holds
+ * `npm_`. So here each kind has its real length and letters, which no name in source code has. An `sk-` key with only that
+ * prefix to go on is looked for after a `_` or a digit, not a letter: `task-` then a hash is an ordinary name.
+ */
+const GLUED_TOKEN =
+  /gh[opsu]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9]{20,}\w*|sk-(?:ant|proj|svcacct|admin)-[A-Za-z0-9_-]{16,}|(?<![A-Za-z])sk-[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])|xox[baprs]-[0-9][0-9A-Za-z-]{9,}|AKIA[0-9A-Z]{16}(?![0-9A-Za-z])|[sr]k_live_[A-Za-z0-9]{24,}\w*|npm_[A-Za-z0-9]{36}(?![A-Za-z0-9])/g;
 // RSA, EC, OPENSSH and plain PRIVATE KEY blocks, and PGP's `PRIVATE KEY BLOCK`.
 const PEM_BEGIN = /-----BEGIN [A-Z ]{0,30}PRIVATE KEY(?: BLOCK)?-----/g;
 const PEM_END = /-----END [A-Z ]{0,30}PRIVATE KEY(?: BLOCK)?-----/g;
@@ -118,6 +132,65 @@ function redactPem(t: string, keepLines = false): string {
   return out + t.slice(last);
 }
 
+/** Does what comes before a URL's first `/`, `?` or `#` stop inside a password, not at a host and port? */
+function stopsInPassword(authority: string): boolean {
+  const at = authority.lastIndexOf("@");
+  const host = authority.slice(at + 1).replace(/^\[.*\]/, ""); // an IPv6 address is all colons
+  const colon = host.indexOf(":");
+  if (colon >= 0) return !PORT.test(host.slice(colon + 1));
+  const first = authority.indexOf(":");
+  return first >= 0 && first < at;
+}
+
+/**
+ * URL userinfo whose password holds a `/`, `?` or `#`: `postgres://u:ab/cd@h`. Any of those ends the authority, and an `@`
+ * after one is usually the path's (`http://localhost:3000/@vite/client`, `https://x.example/react@18`), so `USERINFO` stops
+ * there. This goes on only where what it stopped at can't be a host and port, and takes all up to the URL's last `@`. A URL
+ * ends at a blank or at the quote that opened it, written the same way (a `\"` doesn't close a `"`), so
+ * `"http://a:b/c","me@x"` keeps what is outside the string. A password of up to five digits then a `/` reads as a port and
+ * stays: that is `localhost:3000/` to anything that reads it.
+ *
+ * One pass: a run of non-blanks is searched once for its last `@`, an authority ends at the next `://` at the latest, and
+ * strings opened by the same quote don't overlap.
+ */
+function redactCutPasswords(t: string): string {
+  if (!t.includes("@")) return t;
+  let out = "";
+  let last = 0;
+  let run = -1;
+  let lastAt = -1;
+  for (let at = t.indexOf("://"); at >= 0; at = t.indexOf("://", Math.max(at + 3, last))) {
+    const from = at + 3;
+    if (from > run) {
+      URL_BLANK.lastIndex = from;
+      run = URL_BLANK.exec(t)?.index ?? t.length;
+      const found = t.slice(from, run).lastIndexOf("@");
+      lastAt = found < 0 ? -1 : from + found;
+    }
+    AUTHORITY_END.lastIndex = from;
+    const stop = AUTHORITY_END.exec(t)?.index ?? t.length;
+    if (stop >= lastAt || !stopsInPassword(t.slice(from, stop))) continue;
+    const scheme = SCHEME_END.exec(t.slice(Math.max(0, at - 31), at));
+    if (!scheme) continue;
+    let end = lastAt;
+    const open = at - scheme[0].length - 1;
+    const quote = t[open];
+    if (quote === '"' || quote === "'" || quote === "`") {
+      let close = t.indexOf(quote, stop);
+      while (close >= 0 && (t[close - 1] === "\\") !== (t[open - 1] === "\\"))
+        close = t.indexOf(quote, close + 1);
+      if (close >= 0 && close < end) {
+        const inside = t.slice(stop, close).lastIndexOf("@");
+        if (inside < 0) continue;
+        end = stop + inside;
+      }
+    }
+    out += `${t.slice(last, from)}[redacted]`;
+    last = end;
+  }
+  return out + t.slice(last);
+}
+
 /**
  * Where the usual pattern stopped in a webhook secret, until `whole` takes the rest. Made for each text: what comes after
  * it goes, so an agent must not be able to write one in front of a password, and a noncharacter alone it can.
@@ -126,23 +199,23 @@ const secretCut = () => `\uFDD0${crypto.randomUUID()}\uFDD0`;
 
 /**
  * The patterns that are unmistakably credentials, whatever the text is: private key blocks (PGP's
- * too), URL userinfo (a password may hold an `@`), secret-looking query parameters (`?pwd=`, `?token=`),
+ * too), URL userinfo (a password may hold an `@`, `/`, `?` or `#`), secret-looking query parameters (`?pwd=`, `?token=`),
  * and tokens of the known kinds (GitHub, OpenAI/Anthropic, Google, Slack, AWS key ids and keyed
  * secrets, JWTs, bearer headers). Source code and prose alike: none of these mangles either. The one
  * set behind `redactText` (everything an agent says) and `redactTokens` (diffs and files).
  */
 function redactCredentials(text: string, keepLines = false, whole = false): string {
   const cut = whole ? secretCut() : "";
-  let t = redactPem(text, keepLines);
+  let t = redactCutPasswords(redactPem(text, keepLines));
   t = t.replace(USERINFO, "$1[redacted]@").replace(SECRET_QUERY, "$1[redacted]");
   t = t.replace(/(bearer\s+)[A-Za-z0-9._~+/=-]{16,}/gi, "$1[redacted]");
   t = t.replace(/\b(?:ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]{20,}\b/g, "[redacted]");
   t = t.replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, "[redacted]");
   t = t.replace(/\bAIza[0-9A-Za-z_-]{30,}\b/g, "[redacted]");
   t = t.replace(/\bxox[baprs]-[0-9A-Za-z-]{10,}\b/g, "[redacted]");
-  t = redactJwts(t, /\beyJ[A-Za-z0-9_-]{8,}$/);
+  t = redactJwts(t, /eyJ[A-Za-z0-9_-]{8,}$/);
   t = t.replace(/\bAKIA[0-9A-Z]{16}\b/g, "[redacted]");
-  t = t.replace(/\b(?:[sr]k_live|whsec)_[A-Za-z0-9]{8,}\b/g, (m) =>
+  t = t.replace(/(?:\b[sr]k_live|whsec)_[A-Za-z0-9]{8,}\b/g, (m) =>
     whole && m.startsWith("whsec") ? `[redacted]${cut}` : "[redacted]",
   );
   t = t.replace(/\bnpm_[A-Za-z0-9]{20,}\b/g, "[redacted]");
@@ -151,6 +224,8 @@ function redactCredentials(text: string, keepLines = false, whole = false): stri
     /((?:aws[_-]?)?secret[_-]?(?:access[_-]?)?key["']?\s{0,5}[=:]\s{0,5}["']?)[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/gi,
     "$1[redacted]",
   );
+  // After that one: a token's end can run into the name it looks for (`sk_live_...secret_key=`).
+  t = t.replace(GLUED_TOKEN, "[redacted]");
   if (!whole) return t;
   // Last, and only taking more out: taken any earlier, a secret's end could take what another pattern looks for.
   return (
@@ -158,7 +233,7 @@ function redactCredentials(text: string, keepLines = false, whole = false): stri
       .replace(new RegExp(`${cut}[A-Za-z0-9+/=_-]*`, "g"), "")
       .replace(/\b[sr]k_live_[A-Za-z0-9]{16,}\w*/g, "[redacted]")
       // Eight characters before any `_` or `-`: `whsec_your_webhook_secret` is a placeholder for one.
-      .replace(/\bwhsec_[A-Za-z0-9+/=]{8,}[A-Za-z0-9+/=_-]*/g, "[redacted]")
+      .replace(/whsec_[A-Za-z0-9+/=]{8,}[A-Za-z0-9+/=_-]*/g, "[redacted]")
   );
 }
 
