@@ -642,7 +642,7 @@ describe("the pane", () => {
     must(root.querySelector<HTMLElement>(`${row} .no`)).click();
     await el.updateComplete;
     const ta = root.querySelector(
-      `[data-box="${row.endsWith("del") ? "old" : "new"}-2"] textarea`,
+      `[data-box="${el.selected}|${row.endsWith("del") ? "old" : "new"}-2"] textarea`,
     ) as HTMLTextAreaElement;
     ta.value = text;
     ta.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
@@ -846,6 +846,99 @@ describe("the pane", () => {
     link.click();
     await settle(el);
     expect(root.querySelector<HTMLTextAreaElement>(".moved .box textarea")?.value).toBe("still mine");
+  });
+
+  it("keeps a half-written comment in reach, to finish or discard, when the list empties", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    await typeAt(el, root, ".row.add", "still mine");
+    changes = listing({ files: [] });
+    await el.refresh();
+    await settle(el);
+    expect(root.querySelector(".state")?.textContent).toContain("Nothing has changed yet.");
+    expect(root.querySelector("#h-unfinished")?.textContent).toBe("Unfinished comments · 1");
+    const ta = root.querySelector(".side .box textarea") as HTMLTextAreaElement;
+    expect(ta.value).toBe("still mine");
+    expect(ta.getAttribute("aria-label")).toBe("Comment on src/a.ts line 2");
+    expect(root.querySelector(".side .where")?.textContent).toBe("src/a.ts:2");
+    must(root.querySelector<HTMLButtonElement>(".side .box .primary")).click();
+    await el.updateComplete;
+    expect(reviewComments.list("c1").map((c) => c.text)).toEqual(["still mine"]);
+    expect(commentDrafts.list("c1")).toEqual([]);
+    expect(root.querySelector("#h-unfinished")).toBeNull();
+    expect(root.querySelector("#h-comments")?.textContent).toBe("Comments · 1");
+  });
+
+  it("keeps it in reach when the machine is asleep, and asks before it goes", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    await typeAt(el, root, ".row.add", "still mine");
+    el.remove();
+    changes = listing({
+      state: "asleep",
+      files: [],
+      reason: "Ada's machine is asleep, so the changes can't be read right now.",
+    });
+    const again = await mount();
+    await settle(again.el);
+    const button = (name: string) =>
+      must([...again.root.querySelectorAll<HTMLElement>(".box .cbtn")].find((b) => b.textContent === name));
+    expect(again.root.querySelector(".state")?.textContent).toContain("is asleep");
+    expect(again.root.querySelector<HTMLTextAreaElement>(".side .box textarea")?.value).toBe("still mine");
+    button("Cancel").click();
+    await again.el.updateComplete;
+    expect(again.root.querySelector(".box .acts p")?.textContent).toBe("Discard this comment?");
+    button("Discard").click();
+    await again.el.updateComplete;
+    expect(commentDrafts.list("c1")).toEqual([]);
+    expect(again.root.querySelector(".side")).toBeNull();
+  });
+
+  it("asks about one box at a time when two files have one on the same line number", async () => {
+    const at = { line: 2, side: "new" as const, quote: "2" };
+    for (const path of ["a.ts", "b.ts"]) {
+      commentDrafts.start("c1", { ...at, path });
+      commentDrafts.write("c1", { ...at, path }, `on ${path}`);
+    }
+    changes = listing({ files: [] });
+    const { el, root } = await mount();
+    await settle(el);
+    const boxes = [...root.querySelectorAll<HTMLElement>(".box")];
+    expect(boxes.length).toBe(2);
+    must(
+      [...(boxes[1] as HTMLElement).querySelectorAll<HTMLElement>(".cbtn")].find(
+        (b) => b.textContent === "Cancel",
+      ),
+    ).click();
+    await el.updateComplete;
+    const asked = [...root.querySelectorAll(".box .acts p")];
+    expect(asked.length).toBe(1);
+    expect(asked[0]?.closest<HTMLElement>(".box")?.dataset.box).toBe("b.ts|new-2");
+    await until(() => root.activeElement === root.querySelectorAll(".box")[1]?.querySelector(".keep"));
+  });
+
+  it("shows a written comment past the cut when its file opens again", async () => {
+    const before = `${Array.from({ length: 1400 }, (_, i) => `old ${i + 1}`).join("\n")}\n`;
+    const after = `${Array.from({ length: 1400 }, (_, i) => `new ${i + 1}`).join("\n")}\n`;
+    fileReply = file({
+      before: { state: "text", text: before },
+      after: { state: "text", text: after },
+    });
+    const place = { path: "src/a.ts", line: 1200, side: "new" as const, quote: "new 1200" };
+    commentDrafts.start("c1", place);
+    commentDrafts.write("c1", place, "far down");
+    const { el, root } = await mount();
+    await settle(el);
+    expect(el.showAll).toBe(true);
+    expect(root.querySelector<HTMLTextAreaElement>(".rows .box textarea")?.value).toBe("far down");
+    expect(root.querySelector(".more")).toBeNull();
+    // An empty box says nothing is waiting, and a long diff stays cut
+    commentDrafts.write("c1", place, "");
+    el.remove();
+    const again = await mount();
+    await settle(again.el);
+    expect(again.el.showAll).toBe(false);
+    expect(again.root.querySelector(".more")).not.toBeNull();
   });
 
   it("doesn't drop focus when a file's Try again is replaced by the file", async () => {

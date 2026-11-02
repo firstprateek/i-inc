@@ -36,6 +36,8 @@ const STATUS_WORD: Record<ReviewFile["status"], string> = {
 type LineRow = Exclude<DiffRow, { kind: "gap" }>;
 
 const spot = (at: { side: string; line: number }) => `${at.side}-${at.line}`;
+/** A comment box: two files can have one on the same line number, and both can be showing. */
+const boxKey = (at: LineSpot) => `${at.path}|${spot(at)}`;
 /** A line as a sentence: a removed one and an added one can have the same number. */
 const lineName = (at: { side: string; line: number }) =>
   `${at.side === "old" ? "removed line" : "line"} ${at.line}`;
@@ -178,6 +180,7 @@ export class IncConvReview extends LitElement {
       .moved > .c { margin: 6px 10px 0; }
       .moved .c:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: -3px; }
       .stray { min-height: 44px; font: 600 12.5px var(--mono); text-align: left; overflow-wrap: anywhere; }
+      .c .under { position: static; width: auto; padding: 4px 8px 0 0; }
       .back { display: none; }
       @media (pointer: coarse) { .row { line-height: 2; } }
       /* Narrow: one column, the list or the diff. */
@@ -307,6 +310,9 @@ export class IncConvReview extends LitElement {
         file.state === "ok" && !fileNote(file)
           ? diffWithContext(file.before.text ?? "", file.after.text ?? "", 3)
           : [];
+      // Nothing else says a comment being written is past the cut, so it isn't left there.
+      const written = commentDrafts.list(conv.id).filter((d) => d.path === path && d.text.trim());
+      if ([...anchor(this.rows, written).at.keys()].some((i) => i >= SHOW_ROWS)) this.showAll = true;
     } catch (e) {
       if (token === this.fileToken) this.fileError = e instanceof Error ? e.message : String(e);
     } finally {
@@ -376,10 +382,14 @@ export class IncConvReview extends LitElement {
     const at = { path, ...placeOf(r), quote: quoteOf(r.text) };
     commentDrafts.start(conv.id, at);
     this.requestUpdate();
-    void this.updateComplete.then(() =>
-      this.renderRoot.querySelector<HTMLElement>(`[data-box="${spot(at)}"] textarea`)?.focus(),
-    );
+    void this.updateComplete.then(() => this.boxOf(at)?.querySelector("textarea")?.focus());
   };
+
+  private boxOf(at: LineSpot) {
+    return [...this.renderRoot.querySelectorAll<HTMLElement>("[data-box]")].find(
+      (b) => b.dataset.box === boxKey(at),
+    );
+  }
 
   private focusLine(at: LineSpot) {
     void this.updateComplete.then(() =>
@@ -403,20 +413,16 @@ export class IncConvReview extends LitElement {
     const typed =
       commentDrafts.list(this.conv?.id ?? "").find((x) => x.path === d.path && spot(x) === spot(d))?.text ??
       "";
-    if (this.discarding === spot(d)) this.keepWriting(d);
+    if (this.discarding === boxKey(d)) this.keepWriting(d);
     else if (typed.trim()) {
-      this.discarding = spot(d);
-      void this.updateComplete.then(() =>
-        this.renderRoot.querySelector<HTMLElement>(`[data-box="${spot(d)}"] .keep`)?.focus(),
-      );
+      this.discarding = boxKey(d);
+      void this.updateComplete.then(() => this.boxOf(d)?.querySelector<HTMLElement>(".keep")?.focus());
     } else this.closeBox(d);
   }
 
   private keepWriting(d: LineDraft) {
     this.discarding = null;
-    void this.updateComplete.then(() =>
-      this.renderRoot.querySelector<HTMLElement>(`[data-box="${spot(d)}"] textarea`)?.focus(),
-    );
+    void this.updateComplete.then(() => this.boxOf(d)?.querySelector("textarea")?.focus());
   }
 
   private addComment(d: LineDraft, text: string) {
@@ -432,9 +438,9 @@ export class IncConvReview extends LitElement {
     this.closeBox(d);
   }
 
-  private box(d: LineDraft) {
-    const asking = this.discarding === spot(d);
-    return html`<div class="under"><div class="box" data-box=${spot(d)} @keydown=${(e: KeyboardEvent) => {
+  private box(d: LineDraft, name = lineName(d)) {
+    const asking = this.discarding === boxKey(d);
+    return html`<div class="under"><div class="box" data-box=${boxKey(d)} @keydown=${(e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
         e.preventDefault();
@@ -444,7 +450,7 @@ export class IncConvReview extends LitElement {
         this.addComment(d, (e.currentTarget as HTMLElement).querySelector("textarea")?.value ?? "");
       }
     }}>
-      <textarea aria-label="Comment on ${lineName(d)}" maxlength=${COMMENT_MAX} placeholder="Your comment" .value=${d.text}
+      <textarea aria-label="Comment on ${name}" maxlength=${COMMENT_MAX} placeholder="Your comment" .value=${d.text}
         @input=${(e: Event) => this.conv && commentDrafts.write(this.conv.id, d, (e.target as HTMLTextAreaElement).value)}></textarea>
       ${
         asking
@@ -584,17 +590,30 @@ export class IncConvReview extends LitElement {
       )}</ul></section>`;
   }
 
-  /** Half-written comments on files the list no longer has: their words stay, so the way to them stays too. */
-  private unfinished(files: ReviewFile[]) {
-    const left = commentDrafts
+  /** Half-written comments on files the list doesn't hold: their words stay, so the way to them stays too. */
+  private strays(files: ReviewFile[]) {
+    return commentDrafts
       .list(this.conv?.id ?? "")
       .filter((d) => d.text.trim() && !files.some((f) => f.path === d.path));
+  }
+
+  /** `link`: going to the box above that file's diff. `box`: the box itself, when no diff can be drawn to hold it. */
+  private unfinished(left: LineDraft[], how: "link" | "box") {
     if (!left.length) return nothing;
     return html`<section aria-labelledby="h-unfinished"><h3 id="h-unfinished">Unfinished comments · ${left.length}</h3>
-      <ul>${left.map(
-        (d) =>
-          html`<li><button class="link-btn stray" type="button" @click=${() => this.pick(d.path)}>${visible(d.path)}:${d.line}</button></li>`,
-      )}</ul></section>`;
+      ${
+        how === "box"
+          ? left.map(
+              (
+                d,
+              ) => html`<div class="c"><div class="top"><span class="where">${visible(d.path)}:${d.line}${d.side === "old" ? " (removed)" : ""}</span></div>
+                <blockquote>${visible(d.quote)}</blockquote>${this.box(d, `${visible(d.path)} ${lineName(d)}`)}</div>`,
+            )
+          : html`<ul>${left.map(
+              (d) =>
+                html`<li><button class="link-btn stray" type="button" @click=${() => this.pick(d.path)}>${visible(d.path)}:${d.line}</button></li>`,
+            )}</ul>`
+      }</section>`;
   }
 
   private commentList(how: "link" | "plain") {
@@ -610,9 +629,11 @@ export class IncConvReview extends LitElement {
         )}>${this.running ? "Queue comments" : "Send comments"}</button></div></section>`;
   }
 
-  /** The comments with no diff to go to: they, and the way to send them, stay whatever the read did. */
+  /** What is the owner's with no diff to go to: it, and the way to finish or send it, stays whatever the read did. */
   private asideComments() {
-    return this.comments.length ? html`<div class="side">${this.commentList("plain")}</div>` : nothing;
+    const left = this.strays([]);
+    if (!this.comments.length && !left.length) return nothing;
+    return html`<div class="side">${this.unfinished(left, "box")}${this.commentList("plain")}</div>`;
   }
 
   private content() {
@@ -638,7 +659,7 @@ export class IncConvReview extends LitElement {
         ${c.skipped ? html`<p class="say">${c.skipped === 1 ? "1 file has" : `${c.skipped} files have`} a name that isn't safe to show.</p>` : nothing}
         ${c.truncated ? html`<p class="say">Only the first ${c.files.length} files are listed.</p>` : nothing}
         ${c.partial ? html`<p class="say">Some files couldn't be read, so this may not be everything.</p>` : nothing}
-        ${this.unfinished(c.files)}
+        ${this.unfinished(this.strays(c.files), "link")}
         ${this.commentList("link")}
       </div>
       <div class="main"><button class="cbtn back" type="button" @click=${() => this.backToList()}>All files</button>${this.diff()}</div>

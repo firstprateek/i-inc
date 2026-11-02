@@ -263,7 +263,9 @@ links into it.
 - **Line comments** are the owner's, in this browser, per conversation, kept with the drafts (and forgotten with them at
   sign-out), across tabs. No route takes them. A line's number opens its box; the code itself is there to select. A
   half-written comment stays through another line, another file or closing the pane, and is only thrown away when the
-  owner says so. A comment sits under its line while the line still reads as it quoted it; after that it is listed above
+  owner says so. It is never out of reach: past the point where a long diff is cut, its file opens with every line
+  showing; once its file has left the list, Unfinished comments leads to it; and with no list or diff to show, that
+  section holds the box itself. A comment sits under its line while the line still reads as it quoted it; after that it is listed above
   the diff as changed, never under whatever took the number. Past about 200 KB the newest are kept for this page only,
   and the pane says so.
 - **Sending them.** Comments are added to the next message as `path:line`, the quoted line and the comment, and cleared
