@@ -351,7 +351,8 @@ export function usageTotals(chat: ChatState | undefined): UsageTotals {
   if (chat.activeTurn) all.push(chat.activeTurn);
   for (const turn of all) {
     const u = turn.usage;
-    if (!u) continue;
+    // No token counts yet: a running or stopped turn has only its context reading, which is not a turn's usage.
+    if (!u || !usageLine(u)) continue;
     t.turns++;
     t.input += u.inputTokens ?? 0;
     t.output += u.outputTokens ?? 0;

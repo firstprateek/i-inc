@@ -118,6 +118,8 @@ export interface AgentBackend {
    * writes there. Returns false, and does nothing, while a turn is running.
    */
   hold?(session: string): boolean;
+  /** A turn is about to be cancelled: the last moment it can emit what the backend has been holding back. */
+  flushTurn?(run: TurnRun): void;
   /** Called when a turn is cancelled, after its signal is aborted. */
   cancelTurn?(run: TurnRun): void;
   /** The first client answer to a pending confirmation (later ones never reach the backend). */

@@ -959,6 +959,117 @@ describe("the sandbox", () => {
   });
 });
 
+describe("the context reading", () => {
+  const reading = (turn: Any) => turn?.usage?._meta?.contextUsed;
+  const usageRows = (t: { db: Any }, chat: string) =>
+    t.db
+      .all("SELECT action FROM ahp_actions WHERE channel = ? ORDER BY server_seq", chat)
+      .map((r: Any) => JSON.parse(r.action))
+      .filter((x: Any) => x.type === ActionType.ChatUsage);
+
+  async function running(o: Parameters<typeof sessionRig>[0] = {}) {
+    const t = await sessionRig(o);
+    const c = await t.create();
+    const a = await t.client(c);
+    a.dispatch(c.chat, turnStarted("gate", "t1"));
+    await until(() => t.sandbox.last?.prompts.length === 1, 4000, "the prompt");
+    const active = () => t.host.chatState(c.chat)?.activeTurn;
+    return { t, c, a, agent: t.sandbox.last, active };
+  }
+
+  it("reaches the running turn as the agent reports it, before the prompt returns", async () => {
+    const { t, c, agent, active } = await running();
+    agent.report(60_000, 200_000);
+    await until(() => reading(active()) === 60_000, 4000, "the reading on the active turn");
+    expect(active()?.usage?._meta).toEqual({ contextUsed: 60_000, contextSize: 200_000 });
+    expect(active()?.usage?.inputTokens).toBeUndefined();
+
+    // the reading follows the agent while the same turn goes on, compaction included
+    t.time.now += 5000;
+    agent.report(20_000, 200_000);
+    await until(() => reading(active()) === 20_000, 4000, "the next reading");
+
+    agent.gateOpen = true;
+    await t.host.idle();
+    expect(reading(t.host.chatState(c.chat)?.turns[0])).toBe(20_000);
+  });
+
+  it("sends a reading only when it changed, and at most every 5 seconds", async () => {
+    const { t, c, agent, active } = await running();
+    agent.report(1000, 200_000);
+    await until(() => reading(active()) === 1000, 4000, "the first reading");
+    // the same reading again and again is no news, however long it has been
+    for (let i = 0; i < 50; i++) {
+      t.time.now += 6000;
+      agent.report(1000, 200_000);
+    }
+    // a burst of new ones: one row for the first, the others wait
+    t.time.now += 6000;
+    for (let i = 2; i < 52; i++) agent.report(i * 1000, 200_000);
+    await until(() => reading(active()) === 2000, 4000, "the burst's first reading");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(usageRows(t, c.chat)).toHaveLength(2);
+    expect(reading(active())).toBe(2000);
+    // the end of the turn says the newest, and the turn's usage stays one usage
+    agent.gateOpen = true;
+    await t.host.idle();
+    expect(usageRows(t, c.chat)).toHaveLength(3);
+    expect(reading(t.host.chatState(c.chat)?.turns[0])).toBe(51_000);
+  });
+
+  it("keeps the token counts of the turn's end: a reading replaces the usage, it doesn't add to it", async () => {
+    const t = await sessionRig();
+    const c = await t.create();
+    const a = await t.client(c);
+    await t.say(a, c.chat, "hello");
+    const turn = t.host.chatState(c.chat)?.turns[0] as Any;
+    expect(turn.usage).toMatchObject({ inputTokens: 1200, outputTokens: 34 });
+    expect(turn.usage._meta).toEqual({ contextUsed: 1234, contextSize: 200_000 });
+    // the agent reported once, so the live send and the end's send are the only two
+    expect(usageRows(t, c.chat)).toHaveLength(2);
+  });
+
+  it("is kept by a turn the owner stops, even one still being held back", async () => {
+    const { t, c, a, agent, active } = await running();
+    agent.report(20_000, 200_000);
+    await until(() => reading(active()) === 20_000, 4000, "the first reading");
+    agent.report(180_000, 200_000);
+    await new Promise((r) => setTimeout(r, 20)); // it has arrived, and waits its turn
+    expect(reading(active())).toBe(20_000);
+    a.dispatch(c.chat, { type: ActionType.ChatTurnCancelled, turnId: "t1", duration: 0 });
+    const turn = t.host.chatState(c.chat)?.turns[0] as Any;
+    expect(turn.state).toBe(TurnState.Cancelled);
+    expect(reading(turn)).toBe(180_000);
+    agent.gateOpen = true;
+    await t.host.idle();
+  });
+
+  it("is kept by a turn that fails, and by one whose agent dies", async () => {
+    const limited = await running();
+    limited.agent.report(20_000, 200_000);
+    await until(() => reading(limited.active()) === 20_000, 4000, "the first reading");
+    limited.agent.report(180_000, 200_000); // held back when the prompt fails
+    await new Promise((r) => setTimeout(r, 20));
+    limited.agent.gateError = "You've hit your session limit · resets 3:30am (UTC)";
+    await limited.t.host.idle();
+    const failed = limited.t.host.chatState(limited.c.chat)?.turns[0] as Any;
+    expect(failed.state).toBe(TurnState.Error);
+    expect(failed.responseParts.at(-1).error.errorType).toBe("rate_limited");
+    expect(reading(failed)).toBe(180_000);
+
+    const crashed = await running();
+    crashed.agent.report(30_000, 200_000);
+    await until(() => reading(crashed.active()) === 30_000, 4000, "the first reading");
+    crashed.agent.report(90_000, 200_000);
+    await new Promise((r) => setTimeout(r, 20));
+    crashed.agent.die(1);
+    await crashed.t.host.idle();
+    const died = crashed.t.host.chatState(crashed.c.chat)?.turns[0] as Any;
+    expect(died.responseParts.at(-1).error.errorType).toBe("agent_exited");
+    expect(reading(died)).toBe(90_000);
+  });
+});
+
 describe("when the agent fails", () => {
   it("ends the turn with an error when the process dies mid-turn, and starts it again on the next message", async () => {
     const t = await sessionRig();

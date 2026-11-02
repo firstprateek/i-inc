@@ -87,7 +87,10 @@ Pieces in the daemon:
    `agent_thought_chunk` → `chat/reasoning`; `tool_call` / `tool_call_update` →
    `chat/toolCallStart` / `chat/toolCallReady` / `chat/toolCallComplete` (with content and diffs);
    `session/request_permission` → a pending confirmation answered by `chat/toolCallConfirmed`;
-   token usage → `chat/usage`. Everything agent-specific stays in the mapper. What AHP 1.0 has no place
+   token usage → `chat/usage`, sent again as the agent reports how full its context is (at most every
+   5 seconds and only on a change, for conversations and ticket stages; the reading goes in the usage's
+   `_meta`, and each `chat/usage` replaces the turn's usage, so nothing adds up). A turn that is stopped
+   or fails keeps its last reading. Everything agent-specific stays in the mapper. What AHP 1.0 has no place
    for goes in `_meta` (the full table is in [ahp-spike.md](ahp-spike.md)): the agent's **plan** is a
    pseudo tool call `x-iinc-plan` with the entries in `_meta["iinc.plan"]`, slash commands are in the
    session's `_meta["iinc.commands"]` (served by `completions`), tool-call `locations` are in
@@ -221,7 +224,8 @@ shapes against a real adapter on the mini first.
   queue; it does not interrupt the current turn, because ACP has no way to inject into a running one. To
   interrupt, press **Stop**.
 - **Right: context panel (collapsible).** Project and branch, files changed with diffs, the
-  agent's plan, the brain pages used for this turn, and usage.
+  agent's plan, the brain pages used for this turn, and usage. Usage has a meter of how full the
+  agent's context is, which moves during a turn; "Latest turn" shows only when a turn has reported tokens.
 - **Phone:** the same stream in one column; the context panel becomes a sheet.
 
 ## Review (the Changes pane)

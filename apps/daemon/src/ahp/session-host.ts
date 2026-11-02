@@ -39,6 +39,7 @@ import type {
   TurnOutcome,
   TurnRun,
 } from "./backend.ts";
+import { ContextMeter } from "./context-meter.ts";
 import { type AhpHost, DEFAULT_TITLE } from "./host.ts";
 import { redactText, redactTokens } from "./sanitize.ts";
 import { ActionType, type ChatState, type Json, ResponsePartKind, SessionStatus } from "./wire.ts";
@@ -132,7 +133,7 @@ interface ActiveRun {
   mapper: TurnMapper;
   permissions: Map<string, (outcome: Json) => void>;
   cancelled: boolean;
-  usage: Json | undefined;
+  context: ContextMeter;
   killTimer: ReturnType<typeof setTimeout> | undefined;
 }
 
@@ -378,7 +379,10 @@ export class SessionHost implements AgentBackend {
       mapper,
       permissions: new Map(),
       cancelled: false,
-      usage: undefined,
+      context: new ContextMeter(
+        () => this.sendUsage(live, active),
+        () => this.now(),
+      ),
       killTimer: undefined,
     };
     live.run = active;
@@ -423,6 +427,7 @@ export class SessionHost implements AgentBackend {
     } finally {
       endActivity?.();
       if (active.killTimer) clearTimeout(active.killTimer);
+      active.context.stop();
       if (live.run === active) live.run = undefined;
       live.lastActive = this.now();
       // A finished turn makes the conversation idle, and so a slot for one that is waiting. The host
@@ -497,6 +502,11 @@ export class SessionHost implements AgentBackend {
       type: ActionType.SessionMetaChanged,
       _meta: { ...(session._meta ?? {}), "iinc.brain": entries },
     });
+  }
+
+  flushTurn(run: TurnRun): void {
+    const active = this.lives.get(run.session)?.run;
+    if (active?.turn === run) active.context.flush();
   }
 
   cancelTurn(run: TurnRun): void {
@@ -1142,7 +1152,7 @@ export class SessionHost implements AgentBackend {
   private onSide(live: Live, kind: string, u: Json): void {
     const session = this.h.sessionState(live.session);
     if (kind === "usage") {
-      if (live.run) live.run.usage = { contextUsed: u.used, contextSize: u.size };
+      live.run?.context.note(u.used, u.size);
       return;
     }
     // While we start or resume the agent we are the ones changing its modes: its echoes are not news.
@@ -1219,6 +1229,10 @@ export class SessionHost implements AgentBackend {
     const { turn } = active;
     const text = String(done.error?.message ?? "");
     if (active.cancelled || turn.signal.aborted) return { kind: "cancelled" };
+    const result = (done.result ?? {}) as Json;
+    const usage = (result._meta as Json | undefined)?.usage as Json | undefined;
+    // Before the error: a failed turn has no token counts, but it keeps how full it left the context.
+    if (usage || active.context.latest) this.sendUsage(live, active, usage);
     if (done.error) {
       if (done.error.code === EXITED && this.shuttingDown) {
         return {
@@ -1264,21 +1278,6 @@ export class SessionHost implements AgentBackend {
       }
       return { kind: "error", errorType: "agent_error", message: upstreamReason(done.error) };
     }
-    const result = (done.result ?? {}) as Json;
-    const usage = (result._meta as Json | undefined)?.usage as Json | undefined;
-    if (usage || active.usage) {
-      turn.emit({
-        type: ActionType.ChatUsage,
-        turnId: turn.turnId,
-        usage: {
-          ...(typeof usage?.inputTokens === "number" ? { inputTokens: usage.inputTokens } : {}),
-          ...(typeof usage?.outputTokens === "number" ? { outputTokens: usage.outputTokens } : {}),
-          ...(typeof usage?.cachedReadTokens === "number" ? { cacheReadTokens: usage.cachedReadTokens } : {}),
-          model: live.info.engine.model,
-          ...(active.usage ? { _meta: active.usage } : {}),
-        },
-      });
-    }
     const stop = String(result.stopReason ?? "end_turn");
     if (stop === "cancelled") return { kind: "cancelled" };
     if (stop === "end_turn") {
@@ -1291,6 +1290,22 @@ export class SessionHost implements AgentBackend {
       errorType: stop,
       message: `The agent stopped early (${stop}). Send a message to carry on.`,
     };
+  }
+
+  /** The turn's usage as it stands: the agent's token counts when it has said them, and the context reading. */
+  private sendUsage(live: Live, active: ActiveRun, usage?: Json): boolean {
+    const context = active.context.latest;
+    return active.turn.emit({
+      type: ActionType.ChatUsage,
+      turnId: active.turn.turnId,
+      usage: {
+        ...(typeof usage?.inputTokens === "number" ? { inputTokens: usage.inputTokens } : {}),
+        ...(typeof usage?.outputTokens === "number" ? { outputTokens: usage.outputTokens } : {}),
+        ...(typeof usage?.cachedReadTokens === "number" ? { cacheReadTokens: usage.cachedReadTokens } : {}),
+        model: live.info.engine.model,
+        ...(context ? { _meta: context } : {}),
+      },
+    });
   }
 
   private startFailure(e: unknown): TurnOutcome {
