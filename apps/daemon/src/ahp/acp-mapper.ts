@@ -7,7 +7,7 @@
 // config schema).
 //
 // What AHP 1.0 has no field for travels in `_meta` (contract C22): tool-call locations, the plan.
-import { diffLines, diffStats } from "@i-inc/core";
+import { diffLines, diffStats, SIDE_CUT } from "@i-inc/core";
 import type { ContentRef, Message, SessionConfigState } from "@microsoft/agent-host-protocol";
 import { redactTokens } from "./sanitize.ts";
 import {
@@ -57,7 +57,7 @@ export function cleanLocations(locations: unknown): Json[] {
 }
 
 const MAX_DIFF_SIDE = 1024 * 1024;
-const cutSide = (s: string) => (s.length > MAX_DIFF_SIDE ? `${s.slice(0, MAX_DIFF_SIDE)}\n[…truncated]` : s);
+const cutSide = (s: string) => (s.length > MAX_DIFF_SIDE ? `${s.slice(0, MAX_DIFF_SIDE)}${SIDE_CUT}` : s);
 
 /** ACP tool-call content into AHP tool result content. Diffs become file edits with content refs. */
 export function mapToolContent(content: Json[] | undefined, put: PutContent): Json[] {

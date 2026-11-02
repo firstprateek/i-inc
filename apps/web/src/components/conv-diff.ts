@@ -1,6 +1,7 @@
 // A file edit as a diff: both sides are fetched from the host (`ahp-content:` blobs), diffed here, and shown
-// with a few lines of context. Long diffs stop at a screenful with "Show all".
-import { type DiffRow, diffStats, diffWithContext } from "@i-inc/core";
+// with a few lines of context. Long diffs stop at a screenful with "Show all". A side the host cut can hide
+// changes, so the counts then stay the host's, taken from the whole file, and the diff says what it can't show.
+import { type DiffRow, diffStats, diffWithContext, wasCut } from "@i-inc/core";
 import type { FileEdit } from "@microsoft/agent-host-protocol";
 import { css, html, LitElement, nothing } from "lit";
 import { ahp } from "../ahp/hub.ts";
@@ -14,12 +15,14 @@ export class IncConvDiff extends LitElement {
     edit: { attribute: false },
     expandAll: { state: true },
     rows: { state: true },
+    cut: { state: true },
     error: { state: true },
     loading: { state: true },
   };
   declare edit: FileEdit | undefined;
   declare expandAll: boolean;
   declare rows: DiffRow[] | undefined;
+  declare cut: boolean;
   declare error: string | null;
   declare loading: boolean;
   private loadedFor: FileEdit | undefined;
@@ -27,6 +30,7 @@ export class IncConvDiff extends LitElement {
   constructor() {
     super();
     this.expandAll = false;
+    this.cut = false;
     this.error = null;
     this.loading = false;
   }
@@ -51,6 +55,7 @@ export class IncConvDiff extends LitElement {
       .gap { padding: 2px 12px; color: var(--ink-2); font: 12px var(--body); background: var(--sunken); }
       .more { padding: 6px 12px; border-top: 1px solid var(--line); }
       .note { padding: 10px 12px; color: var(--ink-2); font-size: 13px; }
+      .note.rest { border-top: 1px solid var(--line); }
     `,
   ];
 
@@ -76,6 +81,7 @@ export class IncConvDiff extends LitElement {
       ]);
       if (this.edit !== edit) return;
       this.rows = diffWithContext(before.text ?? "", after.text ?? "", 3);
+      this.cut = wasCut(before.text ?? "") || wasCut(after.text ?? "");
     } catch (e) {
       if (this.edit !== edit) return;
       this.error = e instanceof Error ? e.message : String(e);
@@ -89,9 +95,10 @@ export class IncConvDiff extends LitElement {
     const edit = this.edit;
     if (!edit) return nothing;
     const uri = edit.after?.uri ?? edit.before?.uri ?? "";
-    const stats = this.rows
-      ? diffStats(this.rows)
-      : { added: edit.diff?.added ?? 0, removed: edit.diff?.removed ?? 0 };
+    const counted = { added: edit.diff?.added ?? 0, removed: edit.diff?.removed ?? 0 };
+    const seen = this.rows ? diffStats(this.rows) : counted;
+    const stats = this.cut ? counted : seen;
+    const hidden = this.cut && (seen.added !== counted.added || seen.removed !== counted.removed);
     const rows = this.rows ?? [];
     const shown = this.expandAll ? rows : rows.slice(0, SHOW_ROWS);
     return html`<div class="diff" role="group" aria-label="Changes to ${pathOf(uri)}">
@@ -104,7 +111,7 @@ export class IncConvDiff extends LitElement {
           : this.loading && !this.rows
             ? html`<div class="note" role="status">Loading the diff…</div>`
             : rows.length === 0
-              ? html`<div class="note">No line changes.</div>`
+              ? html`<div class="note">${hidden ? "This change is past the part of the file kept here." : "No line changes."}</div>`
               : html`<div class="rows" tabindex="0" aria-label="Diff">
                   ${shown.map((r) =>
                     r.kind === "gap"
@@ -118,7 +125,8 @@ export class IncConvDiff extends LitElement {
                         this.expandAll = true;
                       }}>Show all ${rows.length} lines</button></div>`
                     : nothing
-                }`
+                }
+                ${hidden ? html`<div class="note rest">Some of this change is past the part of the file kept here.</div>` : nothing}`
       }
     </div>`;
   }
