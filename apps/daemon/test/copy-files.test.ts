@@ -953,18 +953,68 @@ describe("how a read fails, in a sentence", () => {
     expect(asked).toBe(0);
   });
 
-  it("doesn't start a second list while one is going", async () => {
+  it("runs one list at a time, and at most one more after it", async () => {
     let asked = 0;
+    let running = 0;
+    let most = 0;
     const r = service(
       stub({
         tree: async () => {
           asked++;
+          most = Math.max(most, ++running);
+          await new Promise((go) => setTimeout(go, 5));
+          running--;
           return { present: true, paths: [], skipped: 0, truncated: false, partial: false };
         },
       }),
     );
-    await Promise.all([r.files("ab12"), r.files("ab12")]);
-    expect(asked).toBe(1);
+    await Promise.all([r.files("ab12"), r.files("ab12"), r.files("ab12")]);
+    expect(asked).toBe(2);
+    expect(most).toBe(1);
+  });
+
+  it("answers a request made during a list with a read that starts after it", async () => {
+    const copy = ["a.ts"];
+    const held: (() => void)[] = [];
+    const r = service(
+      stub({
+        tree: async () => {
+          const paths = [...copy];
+          await new Promise<void>((go) => held.push(go));
+          return { present: true, paths, skipped: 0, truncated: false, partial: false };
+        },
+      }),
+    );
+    const before = r.files("ab12");
+    // The agent's last edit lands after the running read went past, and the turn's end asks for the list.
+    copy.push("last-edit.ts");
+    const after = r.files("ab12");
+    held.shift()?.();
+    expect((await before).paths).toEqual(["a.ts"]);
+    await new Promise((go) => setTimeout(go, 0));
+    held.shift()?.();
+    expect((await after).paths).toEqual(["a.ts", "last-edit.ts"]);
+  });
+
+  it("still lists after a list that failed", async () => {
+    let asked = 0;
+    const held: (() => void)[] = [];
+    const r = service(
+      stub({
+        tree: async () => {
+          if (++asked === 1) {
+            await new Promise<void>((go) => held.push(go));
+            throw new Error("boom");
+          }
+          return { present: true, paths: [], skipped: 0, truncated: false, partial: false };
+        },
+      }),
+    );
+    const first = r.files("ab12");
+    const second = r.files("ab12");
+    held.shift()?.();
+    expect((await first).state).toBe("failed");
+    expect((await second).state).toBe("ok");
   });
 });
 

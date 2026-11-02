@@ -276,13 +276,43 @@ export interface ReviewDeps {
   log?: (msg: string) => void;
 }
 
+/**
+ * One read per conversation at a time: pressing Refresh twice doesn't run two scripts side by side. A read that is
+ * running may already be past a file, so it can't answer for now: a request made during one gets the read that starts
+ * after it, shared by everyone who asked meanwhile, or a turn's last edit could be missing from the refresh that turn's
+ * end asked for.
+ */
+class OneAtATime<T> {
+  private readonly running = new Map<string, Promise<T>>();
+  private readonly next = new Map<string, Promise<T>>();
+
+  constructor(private readonly read: (id: string) => Promise<T>) {}
+
+  get(id: string): Promise<T> {
+    const waiting = this.next.get(id);
+    if (waiting) return waiting;
+    const running = this.running.get(id);
+    if (!running) return this.start(id);
+    const follow = () => {
+      this.next.delete(id);
+      return this.start(id);
+    };
+    const next = running.then(follow, follow);
+    this.next.set(id, next);
+    return next;
+  }
+
+  private start(id: string): Promise<T> {
+    const work = this.read(id).finally(() => this.running.delete(id));
+    this.running.set(id, work);
+    return work;
+  }
+}
+
 /** What the routes call: finds the copy, and turns every way a read can fail into a state and a sentence. */
 export class ConversationReview {
-  /** One listing per conversation at a time: pressing Refresh twice doesn't run two scripts side by side. */
-  private readonly listing = new Map<string, Promise<ChangesView>>();
-  /** The one read that follows a running listing, shared by everyone who asked while that one ran. */
-  private readonly nextListing = new Map<string, Promise<ChangesView>>();
-  private readonly trees = new Map<string, Promise<FilesView>>();
+  private readonly lists = new OneAtATime<ChangesView>((id) => this.readChanges(id));
+  private readonly trees = new OneAtATime<FilesView>((id) => this.readFiles(id));
 
   constructor(private readonly d: ReviewDeps) {}
 
@@ -336,33 +366,9 @@ export class ConversationReview {
     return gone ? "This conversation's working copy was cleaned away." : none;
   }
 
-  /**
-   * What the copy changes now. A listing that is running may already be past a file, so it can't answer for now: a
-   * request made during one gets the read that starts after it, or a turn's last edit could be missing from the
-   * refresh that turn's end asked for.
-   */
+  /** What the copy changes now. */
   changes(id: string): Promise<ChangesView> {
-    const waiting = this.nextListing.get(id);
-    if (waiting) return waiting;
-    const running = this.listing.get(id);
-    if (!running) return this.startListing(id);
-    const next = running.then(
-      () => this.followListing(id),
-      () => this.followListing(id),
-    );
-    this.nextListing.set(id, next);
-    return next;
-  }
-
-  private followListing(id: string): Promise<ChangesView> {
-    this.nextListing.delete(id);
-    return this.startListing(id);
-  }
-
-  private startListing(id: string): Promise<ChangesView> {
-    const work = this.readChanges(id).finally(() => this.listing.delete(id));
-    this.listing.set(id, work);
-    return work;
+    return this.lists.get(id);
   }
 
   private async readChanges(id: string): Promise<ChangesView> {
@@ -401,11 +407,7 @@ export class ConversationReview {
 
   /** Every file in the working copy, whether or not it changed. */
   files(id: string): Promise<FilesView> {
-    const running = this.trees.get(id);
-    if (running) return running;
-    const work = this.readFiles(id).finally(() => this.trees.delete(id));
-    this.trees.set(id, work);
-    return work;
+    return this.trees.get(id);
   }
 
   private async readFiles(id: string): Promise<FilesView> {

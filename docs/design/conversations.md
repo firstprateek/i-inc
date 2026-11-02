@@ -313,7 +313,8 @@ changed. Each read follows the Review rules above: it writes nothing, boots noth
 - **The pane.** Files is a tree with one tab stop and the tree keys, with a filter over paths; lists draw 400 rows at a
   time. The viewer has line numbers and the highlighter (up to 40 KB, plain after that) and draws 1,000 lines at a time,
   around the line asked for. Search runs when it is asked to, lists hits by file and opens the viewer at the line. Files
-  and Search refresh when a turn ends; a search's results stay as they were until the owner searches again.
+  and Search refresh when a turn ends; a search's results stay as they were until the owner searches again. Lists run
+  one at a time here too, and a request made during one gets a read that starts after it.
 - **`@file`.** Typing `@` at the start or after a space opens a list of matching paths, built like the slash list.
   Enter or Tab puts the path in as text (in backticks if it has a space). It stays shut during IME composition, and for an `@` the owner dismissed with
   Escape, until it has gone from the box. A draft has no working copy, so the list doesn't open there. The list of paths
