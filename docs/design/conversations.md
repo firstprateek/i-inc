@@ -295,7 +295,8 @@ changed. Each read follows the Review rules above: it writes nothing, boots noth
 - `GET /api/conversations/:id/files`: `{ files: { state, noProject, paths, skipped, truncated, partial, reason? } }`. In a repository,
   what the commit tracks plus what is new by the scratch index (so `.gitignore` counts and the copy's index and excludes
   don't), less what has gone. With no commit to go on, a bounded `find` that skips `.git`, `.inc` and `node_modules`. At
-  most 20,000 paths.
+  most 20,000 paths. `partial`, as in Changes: a folder that isn't ignored couldn't be read, so what is behind it, tracked
+  or new, is missing from the list. The pane says so.
 - `GET /api/conversations/:id/files/read?path=`: `{ file: { state, path, side, withheld?, reason? } }`, one side as in a
   diff, by the same checks: 1 MB, redacted with its lines kept, links never followed. A file that usually holds secrets,
   by a wider rule than the diff's (`.envrc`, `prod.env`, `.pgpass` and `.ppk` too, and any case), is named but not served,
