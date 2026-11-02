@@ -275,6 +275,55 @@ describe("when the open conversation leaves the list", () => {
     expect(tab.defaultPrevented).toBe(false);
   });
 
+  it("takes the ship dialog down on going back to the list, so the list can be used", async () => {
+    rows = [row];
+    const { el, root, list, thread } = await mount({ selectedId: row.id });
+    (el as Any).dialog = { kind: "ticket" };
+    await el.updateComplete;
+    expect(root().querySelector("inc-conv-ship")).not.toBeNull();
+    expect(list().hasAttribute("inert")).toBe(true);
+    el.selectedId = "";
+    await el.updateComplete;
+    expect((el as Any).dialog).toBeNull();
+    expect(root().querySelector("inc-conv-ship")).toBeNull();
+    expect(list().hasAttribute("inert")).toBe(false);
+    expect(thread().hasAttribute("inert")).toBe(false);
+  });
+
+  it("doesn't carry the ship dialog to the next conversation, with the first one's text in it", async () => {
+    const other = { ...row, id: "cd34ef56", title: "Other work" };
+    rows = [row, other];
+    const { el, root } = await mount({ selectedId: row.id });
+    (el as Any).dialog = { kind: "ticket" };
+    (el as Any).opener = document.body;
+    await el.updateComplete;
+    expect(root().querySelector("inc-conv-ship")).not.toBeNull();
+    el.selectedId = other.id;
+    await el.updateComplete;
+    expect(root().querySelector("inc-conv-ship")).toBeNull();
+    expect((el as Any).opener).toBeNull();
+    expect(root().querySelector(".list-pane")?.hasAttribute("inert")).toBe(false);
+  });
+
+  it("doesn't open the next conversation with the phone's sheet up, or hold on to Tab", async () => {
+    phone = true;
+    const other = { ...row, id: "cd34ef56", title: "Other work" };
+    rows = [row, other];
+    const { el, root } = await mount({ selectedId: row.id });
+    (el as Any).sheet = true;
+    await el.updateComplete;
+    expect(root().querySelector(".sheet")).not.toBeNull();
+    el.selectedId = "";
+    await el.updateComplete;
+    const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    document.body.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(false);
+    el.selectedId = other.id;
+    await el.updateComplete;
+    expect(root().querySelector(".sheet")).toBeNull();
+    expect((el as Any).sheet).toBe(false);
+  });
+
   it("brings the thread back and drops the message when Show archived holds it again", async () => {
     rows = [row];
     const { el, thread } = await mount({ selectedId: row.id });

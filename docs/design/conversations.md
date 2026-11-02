@@ -230,6 +230,8 @@ shapes against a real adapter on the mini first.
   agent's plan, the brain pages used for this turn, and usage. Usage has a meter of how full the
   agent's context is, which moves during a turn; "Latest turn" shows only when a turn has reported tokens.
 - **Phone:** the same stream in one column; the context panel becomes a sheet.
+- **Moving on.** Leaving a conversation by Back or a link closes what was open over it: the ship dialog, the
+  phone's sheet and the review pane. The next conversation opens with none of them up.
 
 ## Review (the Changes pane)
 

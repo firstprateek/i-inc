@@ -1628,6 +1628,27 @@ describe("the screen around it", () => {
     back.mockRestore();
   });
 
+  it("a phone's next pane gets its own history entry after a link moved on from one left open", async () => {
+    const back = vi.spyOn(history, "back").mockImplementation(() => {});
+    const { el, root, thread } = await mount(true);
+    thread.dispatchEvent(new CustomEvent("conv-review", { detail: {}, bubbles: true, composed: true }));
+    await until(() => root().querySelector("inc-conv-review"));
+    const push = vi.spyOn(history, "pushState");
+    el.selectedId = "cd34ef56";
+    await el.updateComplete;
+    expect((el as Any).review).toBeNull();
+    el.selectedId = conv.id;
+    await until(() => root().querySelector("inc-conv-thread"));
+    must(root().querySelector("inc-conv-thread")).dispatchEvent(
+      new CustomEvent("conv-review", { detail: {}, bubbles: true, composed: true }),
+    );
+    await until(() => root().querySelector("inc-conv-review"));
+    expect(push).toHaveBeenCalledOnce();
+    expect(back).not.toHaveBeenCalled();
+    push.mockRestore();
+    back.mockRestore();
+  });
+
   it("opens from the header over the thread and panel, and leaves the thread in place", async () => {
     const { el, root, thread, button } = await mount();
     button().click();

@@ -263,7 +263,15 @@ export class IncConversations extends LitElement {
   override willUpdate(changed: Map<string, unknown>): void {
     // Left it, or it is back: Show archived, or unarchived elsewhere.
     if (changed.has("selectedId") || this.selected()) this.lost = "";
-    if (changed.has("selectedId") && changed.get("selectedId") !== undefined) this.review = null;
+    if (changed.has("selectedId") && changed.get("selectedId") !== undefined) {
+      // Back or a link moved on, so what was open over the last one goes with it. The pane's history entry is
+      // behind us now, and the next pane needs its own.
+      this.review = null;
+      this.reviewEntry = false;
+      this.sheet = false;
+      this.dialog = null;
+      this.opener = null;
+    }
   }
 
   override updated(changed: Map<string, unknown>): void {
