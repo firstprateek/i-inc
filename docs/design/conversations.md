@@ -214,8 +214,8 @@ shapes against a real adapter on the mini first.
 - **Centre: the thread.** Markdown with highlighted code; reasoning collapsed under "Thinking";
   tool calls as compact one-line cards (Read, Edit, Run, Search…) that expand to input and output;
   edits show a diff; long terminal output is truncated with "show all"; errors carry Retry. A card
-  counts the lines an edit changed in the whole file. The sides it keeps stop at 1 MB, or 32,000
-  characters in a ticket's stage view, so an opened diff keeps the card's counts and says when some
+  counts the lines an edit changed in the whole file. The sides it keeps stop at a million characters,
+  or 32,000 in a ticket's stage view, so an opened diff keeps the card's counts and says when some
   or all of the change is past that point.
 - **Composer.** Multi-line, Enter sends and Shift+Enter breaks a line; paste or drop images and
   files; the agent's slash commands (from `available_commands_update`); mode and model pickers;
