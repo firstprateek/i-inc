@@ -37,8 +37,9 @@ export function isReviewPath(path: unknown): path is string {
 }
 
 /**
- * A file never served or searched, by its name: what ship's scan calls a secrets file, in any case, and a few more
- * that a change is unlikely to want to show (`prod.env`, `.envrc`, `.pgpass`).
+ * A file Files and Search never serve, by its name: what ship's scan calls a secrets file, in any case, and a few more
+ * that are better named than shown (`prod.env`, `.envrc`, `.pgpass`). The Changes diff goes by ship's rule alone
+ * (`review.ts`), because anything wider there would hide a file that can still be pushed.
  */
 export function servedNever(path: string): boolean {
   const lower = path.toLowerCase();

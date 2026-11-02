@@ -44,7 +44,7 @@ import {
 import { type RunScript, TIMED_OUT } from "./harness.ts";
 import { MachineNotRunning } from "./machine-queue.ts";
 import type { Registry } from "./registry.ts";
-import { marker, quote, section } from "./ship-git.ts";
+import { marker, quote, secretFile, section } from "./ship-git.ts";
 import type {
   ChangeStatus,
   ChangesState,
@@ -387,7 +387,8 @@ export class ConversationReview {
     const none: FileSide = { state: "none" };
     const copy = this.copy(id);
     if (!copy) return { state: "failed", path, before: none, after: none };
-    if (servedNever(path)) {
+    // Ship's rule and no wider: a file ship would push is one the owner must be able to read first.
+    if (secretFile.some((re) => re.test(path))) {
       return { state: "ok", path, before: none, after: none, withheld: true };
     }
     try {
@@ -419,7 +420,7 @@ export class ConversationReview {
     }
   }
 
-  /** One file as it is now. A file that usually holds secrets is named but never served, as in a diff. */
+  /** One file as it is now. A file that usually holds secrets is named but never served, by a wider rule than a diff's. */
   async read(id: string, path: string): Promise<OpenFileView> {
     const none: FileSide = { state: "none" };
     const copy = this.copy(id);

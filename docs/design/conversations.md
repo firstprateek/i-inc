@@ -265,8 +265,10 @@ links into it.
 - **Untrusted.** Paths must be relative, with no `..`, NUL, control character, leading `-`, `.git` or `.inc`, and a name
   that fails is left out and counted. Files stop at 1 MB, every kind of credential ship's scan stops is redacted (a key
   block keeps its lines, so line numbers hold), and what is redacted is what ship's scan stops, so nothing can be hidden
-  from review and still be pushed, a file that usually holds secrets is listed but never served, links are
-  never followed, and the pane renders all of it as text.
+  from review and still be pushed. For the same reason the diff withholds only the files ship stops by name (`.env`,
+  `*.pem` and the like): they are listed but not served. A file with a name that only suggests secrets (`.envrc`,
+  `prod.env`, `.pgpass`) can be pushed, so its diff shows, redacted like any other. Links are never followed, and the
+  pane renders all of it as text.
 - **Line comments** are the owner's, in this browser, per conversation, kept with the drafts (and forgotten with them at
   sign-out), across tabs. No route takes them. A line's number opens its box; the code itself is there to select. A
   half-written comment stays through another line, another file or closing the pane, and is only thrown away when the
@@ -294,8 +296,9 @@ changed. Each read follows the Review rules above: it writes nothing, boots noth
   don't), less what has gone. With no commit to go on, a bounded `find` that skips `.git`, `.inc` and `node_modules`. At
   most 20,000 paths.
 - `GET /api/conversations/:id/files/read?path=`: `{ file: { state, path, side, withheld?, reason? } }`, one side as in a
-  diff, by the same checks: 1 MB, redacted with its lines kept, links never followed, and a file that usually holds secrets
-  is named but not served, and neither is anything reached through a link into `.git` or `.inc`. A bad path is a 400.
+  diff, by the same checks: 1 MB, redacted with its lines kept, links never followed. A file that usually holds secrets,
+  by a wider rule than the diff's (`.envrc`, `prod.env`, `.pgpass` and `.ppk` too, and any case), is named but not served,
+  and neither is anything reached through a link into `.git` or `.inc`. Search leaves out the same files. A bad path is a 400.
 - `GET /api/conversations/:id/files/search?q=&case=1`: `{ search: { state, hits, truncated, partial, reason? } }`, each hit
   `{ path, line, text }`. A literal query of one line, at most 200 characters, with case ignored unless `case=1`.
 - **Search looks at what the viewer shows.** `git grep -F` over what isn't ignored, in the scratch repository and with
