@@ -155,3 +155,7 @@ paths, branch names, structured briefs).
     list changed, and a failed list changes nothing, so it sat there for good. A failed read then said the conversation
     "wasn't found", which only a 404 can say. → Trigger on the load ending, not on its result; say "couldn't load" with
     Try again for any other failure; and don't assign what triggers the ask from its own failure path, which loops.
+41. **Half a split button (layout).** Steer's right corners were squared to meet the button beside it, but only the
+    phone's chevron had the matching corners. The desktop's Queue stayed a whole pill, so a notch showed between them,
+    in a state that takes a running turn and typed text to reach. → When a breakpoint swaps a split button's second half,
+    give each version its corners, and render the control in the state that draws it at both widths.

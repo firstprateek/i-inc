@@ -88,6 +88,8 @@ export class IncConvContext extends LitElement {
       .file .f-row:hover { background: var(--sunken); }
       .file .f-row:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: -2px; }
       .file .to-review { align-self: flex-start; }
+      /* Text on the file names' edge: a row is inset 6px for its hover box. */
+      .file .link-btn { padding-left: 6px; }
       .file .p { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12.5px var(--mono); direction: rtl; text-align: left; }
       .file .p bdi { direction: ltr; }
       .plus { color: var(--diff-add-fg); background: var(--diff-add-bg); border-radius: 4px; padding: 0 5px; font: 700 11.5px var(--mono); }
