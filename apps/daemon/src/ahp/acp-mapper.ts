@@ -9,7 +9,7 @@
 // What AHP 1.0 has no field for travels in `_meta` (contract C22): tool-call locations, the plan.
 import { diffLines, diffStats, SIDE_CUT } from "@i-inc/core";
 import type { ContentRef, Message, SessionConfigState } from "@microsoft/agent-host-protocol";
-import { redactTokens } from "./sanitize.ts";
+import { MAX_REDACTED, redactTokens } from "./sanitize.ts";
 import {
   ActionType,
   type ChatAction,
@@ -56,7 +56,8 @@ export function cleanLocations(locations: unknown): Json[] {
   return out;
 }
 
-const MAX_DIFF_SIDE = 1024 * 1024;
+/** A side and its cut mark fit in what the host's `put` redacts, which would otherwise drop the mark. */
+const MAX_DIFF_SIDE = MAX_REDACTED - SIDE_CUT.length;
 const cutSide = (s: string) => (s.length > MAX_DIFF_SIDE ? `${s.slice(0, MAX_DIFF_SIDE)}${SIDE_CUT}` : s);
 
 /** ACP tool-call content into AHP tool result content. Diffs become file edits with content refs. */
