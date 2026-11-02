@@ -96,6 +96,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   document.body.innerHTML = "";
+  shipOutcomes.clear();
   resetAhp();
   vi.unstubAllGlobals();
   vi.useRealTimers();
@@ -267,6 +268,7 @@ describe("a ship request the owner moves away from", () => {
     must<HTMLElement>(dlg.shadowRoot.querySelector("header .x")).click();
     await until(() => !root().querySelector("inc-conv-ship"));
     expect(root().querySelector(".list-pane")?.hasAttribute("inert")).toBe(false);
+    expect(shipOutcomes.list()).toEqual([]);
   });
 
   it("keeps it on going back to the list too, and shows a pull request's link", async () => {
@@ -307,13 +309,162 @@ describe("a ship request the owner moves away from", () => {
     await until(() => dlg.shadowRoot.querySelector(".finished"));
   });
 
-  it("closes as usual once the request has ended", async () => {
+  it("closes as usual once a request has worked, and the shell keeps its link", async () => {
     const { el, root, dlg } = await sending();
     await moveOn(el, other.id);
     asked[0]?.land(made());
     await until(() => !dlg.busy);
     await moveOn(el, conv.id);
     expect(root().querySelector("inc-conv-ship")).toBeNull();
+    expect(shipOutcomes.list()).toMatchObject([{ conversationId: conv.id, done: { ticketId: "12" } }]);
+  });
+
+  it("stays with a failure through the next move, with the owner's words, and only the shell's when they leave", async () => {
+    const { el, root, dlg } = await sending();
+    dlg.title = "My own title";
+    await moveOn(el, other.id);
+    asked[0]?.land(refused());
+    await until(() => !dlg.busy);
+    await moveOn(el, "");
+    expect(root().querySelector("inc-conv-ship")).toBe(dlg);
+    expect(dlg.shadowRoot.querySelector("#ship-title")?.value).toBe("My own title");
+    expect(dlg.shadowRoot.querySelector(".alert")?.textContent).toBe("The working copy changed.");
+    expect(shipOutcomes.list()).toEqual([]);
+    el.remove();
+    expect(shipOutcomes.list()).toMatchObject([
+      { conversationId: conv.id, kind: "ticket", failure: "The working copy changed." },
+    ]);
+  });
+
+  it("hands the shell a request that ended just before the screen went", async () => {
+    for (const [land, end] of [
+      [refused, { failure: "The working copy changed." }],
+      [made, { done: { ticketId: "12" } }],
+    ] as const) {
+      asked.length = 0;
+      const { el, dlg } = await sending();
+      asked[0]?.land(land());
+      await until(() => !dlg.busy);
+      el.remove();
+      expect(shipOutcomes.list()).toMatchObject([end]);
+      shipOutcomes.clear();
+      document.body.innerHTML = "";
+      resetAhp();
+    }
+  });
+
+  it("says nothing more once the owner has closed the dialog on how it ended", async () => {
+    for (const land of [refused, made]) {
+      asked.length = 0;
+      const { el, root, dlg } = await sending();
+      asked[0]?.land(land());
+      await until(() => !dlg.busy);
+      must<HTMLElement>(dlg.shadowRoot.querySelector("header .x")).click();
+      await until(() => !root().querySelector("inc-conv-ship"));
+      el.remove();
+      expect(shipOutcomes.list()).toEqual([]);
+      document.body.innerHTML = "";
+      resetAhp();
+    }
+  });
+
+  it("tells how the last try ended, and nothing about the one before it", async () => {
+    const { el, dlg, main } = await sending();
+    asked[0]?.land(refused());
+    await until(() => !dlg.busy);
+    await dlg.updateComplete;
+    main().click();
+    await until(() => asked.length === 2);
+    el.remove();
+    expect(shipOutcomes.list()).toEqual([]);
+    asked[1]?.land(made());
+    await until(() => shipOutcomes.list().length);
+    expect(shipOutcomes.list()).toMatchObject([{ done: { ticketId: "12" } }]);
+    expect(shipOutcomes.list()).toHaveLength(1);
+  });
+
+  it("says nothing more once the owner has followed the dialog's link", async () => {
+    const { el, dlg } = await sending();
+    asked[0]?.land(made());
+    await until(() => dlg.shadowRoot.querySelector(".finished a"));
+    const link = must<HTMLAnchorElement>(dlg.shadowRoot.querySelector(".finished a"));
+    link.addEventListener("click", (e) => e.preventDefault());
+    link.click();
+    el.remove();
+    expect(shipOutcomes.list()).toEqual([]);
+  });
+
+  it("leaves a refusal of the dialog's own to close with the conversation, with nothing to tell", async () => {
+    const m = await mount();
+    await until(() => (m.thread() as Any).ship);
+    m.thread().dispatchEvent(
+      new CustomEvent("conv-ship", { detail: { kind: "ticket" }, bubbles: true, composed: true }),
+    );
+    await until(() => m.root().querySelector("inc-conv-ship"));
+    const dlg = m.root().querySelector("inc-conv-ship") as Any;
+    await until(() => dlg.shadowRoot.querySelector("#ship-title"));
+    await dlg.updateComplete;
+    dlg.title = " ";
+    const main = () => dlg.shadowRoot.querySelector("[data-main]") as HTMLButtonElement;
+    await until(() => !main().disabled);
+    main().click();
+    await until(() => dlg.shadowRoot.querySelector(".alert")?.textContent === "Give it a title.");
+    await moveOn(m.el, other.id);
+    expect(m.root().querySelector("inc-conv-ship")).toBeNull();
+    expect(shipOutcomes.list()).toEqual([]);
+  });
+
+  it("brings a failure into view, under the fields of a long dialog", async () => {
+    const { dlg } = await sending();
+    const body = must<HTMLElement>(dlg.shadowRoot.querySelector(".body"));
+    Object.defineProperty(body, "scrollHeight", { value: 900 });
+    asked[0]?.land(refused());
+    await until(() => dlg.shadowRoot.querySelector(".alert"));
+    await dlg.updateComplete;
+    expect(body.scrollTop).toBe(900);
+  });
+
+  it("brings focus back into the dialog with a failure, wherever a route change left it", async () => {
+    const { el, dlg } = await sending();
+    await moveOn(el, other.id);
+    const elsewhere = document.createElement("button");
+    document.body.append(elsewhere);
+    elsewhere.focus();
+    asked[0]?.land(refused());
+    await until(() => !dlg.busy);
+    await until(() => focusedIn(dlg.shadowRoot) === dlg.shadowRoot.querySelector("#ship-title"));
+    expect(dlg.shadowRoot.querySelector("#ship-title").disabled).toBe(false);
+  });
+
+  describe("closing a dialog that outlived its conversation", () => {
+    const close = async (m: Any) => {
+      must<HTMLElement>(m.dlg.shadowRoot.querySelector("header .x")).click();
+      await until(() => !m.root().querySelector("inc-conv-ship"));
+      await m.el.updateComplete;
+    };
+
+    it("gives focus to the panel's button when the conversation showing can't ship", async () => {
+      const m = await sending();
+      await moveOn(m.el, other.id);
+      asked[0]?.land(refused());
+      await until(() => !m.dlg.busy);
+      const thread = () => m.root().querySelector("inc-conv-thread") as Any;
+      await until(() => thread()?.shadowRoot?.querySelector(".context-btn"));
+      const button = thread().shadowRoot.querySelector(".ship-btn");
+      button?.remove();
+      await close(m);
+      await until(() => focusedIn(thread().shadowRoot)?.matches(".context-btn"));
+    });
+
+    it("gives focus to the list when no conversation is showing", async () => {
+      const m = await sending();
+      await moveOn(m.el, "");
+      asked[0]?.land(refused());
+      await until(() => !m.dlg.busy);
+      await close(m);
+      const list = () => m.root().querySelector("inc-conv-list") as Any;
+      await until(() => focusedIn(list()?.shadowRoot)?.matches(".open, .new"));
+    });
   });
 
   it("leaves an idle dialog to close with the conversation, as it did", async () => {

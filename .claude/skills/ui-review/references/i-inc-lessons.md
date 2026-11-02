@@ -159,3 +159,10 @@ paths, branch names, structured briefs).
     phone's chevron had the matching corners. The desktop's Queue stayed a whole pill, so a notch showed between them,
     in a state that takes a running turn and typed text to reach. → When a breakpoint swaps a split button's second half,
     give each version its corners, and render the control in the state that draws it at both widths.
+42. **A link that takes its own row away (states).** A banner's link dismissed the banner as it was pressed. The list had
+    no key, so Lit gave the first row's `<a>` to the next outcome before the browser followed it, and "Open ticket #12"
+    landed on #13. A script's `el.click()` goes to the right place, so a test can't see this. → Key any list whose rows
+    remove themselves on a click, and try it with a real mouse click and two rows.
+43. **What a dialog says, under the fold (states).** A ship dialog's failure sat last in a long scrolling body, under the
+    fields, so a request that failed looked like a request that did nothing. → A message that appears after an action
+    has to be in view when it appears: scroll to it, and look at the screenshot with the dialog at its longest.

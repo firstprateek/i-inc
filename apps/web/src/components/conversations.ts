@@ -298,11 +298,12 @@ export class IncConversations extends LitElement {
   }
 
   /**
-   * The ship dialog goes with what it was over, unless a request is under way: it stays to show how that ended, a
-   * link or a failure with the owner's words still in it, and anything sent from it goes to its own conversation.
+   * The ship dialog goes with what it was over, unless a request is under way, or failed: it stays to show how that
+   * ended, a link or a failure with the owner's words still in it, and anything sent from it goes to its own
+   * conversation. A dialog showing a success goes, and hands its link to the shell.
    */
   private closeDialog() {
-    if (!this.renderRoot.querySelector<IncConvShip>("inc-conv-ship")?.busy) this.dialog = null;
+    if (!this.renderRoot.querySelector<IncConvShip>("inc-conv-ship")?.staying) this.dialog = null;
   }
 
   override updated(changed: Map<string, unknown>): void {
@@ -535,13 +536,17 @@ export class IncConversations extends LitElement {
     const opener = this.opener;
     this.opener = null;
     void this.updateComplete.then(() => {
-      // Back to the button that opened it: the header's, or the one in the panel.
-      if (opener?.isConnected) opener.focus();
-      else
-        this.renderRoot
-          .querySelector("inc-conv-thread")
-          ?.shadowRoot?.querySelector<HTMLElement>(".ship-btn")
-          ?.focus();
+      const thread = this.renderRoot.querySelector("inc-conv-thread")?.shadowRoot;
+      const list = this.renderRoot.querySelector("inc-conv-list")?.shadowRoot;
+      // Back to the button that opened it: the header's, or the one in the panel. A dialog can outlast both: the
+      // conversation showing now may have no project to ship, and there may be no conversation showing.
+      (opener?.isConnected
+        ? opener
+        : (thread?.querySelector<HTMLElement>(".ship-btn") ??
+          thread?.querySelector<HTMLElement>(".context-btn") ??
+          list?.querySelector<HTMLElement>('.open[tabindex="0"]') ??
+          list?.querySelector<HTMLElement>(".new"))
+      )?.focus();
     });
   };
 

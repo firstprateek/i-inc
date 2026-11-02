@@ -1,6 +1,7 @@
-// How a ticket or PR request ended, once its dialog has gone. Leaving the Conversations screen doesn't stop a request
-// that is under way, and while the screen is up its dialog stays to say how it ended. With the screen gone, this holds
-// the outcome, and the shell shows it on whatever page the owner is on until they dismiss it. It lasts as long as the page.
+// How a ticket or PR request ended, once its dialog has gone before the owner closed it. Leaving the Conversations
+// screen doesn't stop a request that is under way, and while the screen is up its dialog stays to say how it ended. With
+// the dialog gone, this holds the outcome, and the shell shows it on whatever page the owner is on until they dismiss
+// it. It lasts as long as the page.
 import type { ShipDone, ShipKind } from "../components/conv-ship.ts";
 import { webHref } from "../links.ts";
 

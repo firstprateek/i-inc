@@ -57,6 +57,8 @@ export class IncConvShip extends LitElement {
   declare failure: string;
   declare result: ShipDone | undefined;
   private loadToken = 0;
+  /** How the last request ended, until the owner has closed the dialog on it or followed its link. */
+  private ended: { done: ShipDone } | { failure: string } | undefined;
 
   constructor() {
     super();
@@ -133,12 +135,36 @@ export class IncConvShip extends LitElement {
   override disconnectedCallback(): void {
     document.removeEventListener("keydown", this.onKey, true);
     this.loadToken++;
+    this.handOver();
     super.disconnectedCallback();
   }
+
+  /** A request under way, or one that failed with the owner's words still here: moving on leaves these up. */
+  get staying(): boolean {
+    return this.busy || (this.ended !== undefined && "failure" in this.ended);
+  }
+
+  /** With the dialog gone before the owner closed it, nothing is left to show how this ended, so the shell does. */
+  private handOver() {
+    const [conv, ended] = [this.conv, this.ended];
+    this.ended = undefined;
+    if (conv && ended) {
+      shipOutcomes.add({ conversationId: conv.id, title: conv.title, kind: this.kind, ...ended });
+    }
+  }
+
+  private seen = () => {
+    this.ended = undefined;
+  };
 
   override updated(changed: Map<string, unknown>): void {
     // The preview arrived: the title is the first thing to edit.
     if (changed.get("loading") === true && !this.loading) this.focusFirst();
+    // It is the last thing in the body, under the fields, so a long dialog would leave it out of sight.
+    if (changed.has("failure") && this.failure) {
+      const scroller = this.renderRoot.querySelector<HTMLElement>(".body");
+      if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    }
   }
 
   override firstUpdated(): void {
@@ -161,6 +187,7 @@ export class IncConvShip extends LitElement {
   }
 
   private close = () => {
+    this.seen();
     this.dispatchEvent(new CustomEvent("conv-ship-close", { bubbles: true, composed: true }));
   };
 
@@ -226,12 +253,9 @@ export class IncConvShip extends LitElement {
       return;
     }
     const kind = this.kind;
-    // With the screen gone, nothing is left to show how this ended, so the shell does.
-    const tell = (o: { done: ShipDone } | { failure: string }) => {
-      if (!this.isConnected) shipOutcomes.add({ conversationId: conv.id, title: conv.title, kind, ...o });
-    };
     this.busy = true;
     this.failure = "";
+    this.ended = undefined;
     try {
       const confirm = this.confirmBinary ? { confirmBinary: true } : {};
       if (kind === "takeback") {
@@ -248,18 +272,23 @@ export class IncConvShip extends LitElement {
         const r = await api.openPr(conv.id, { title: this.title.trim(), ...confirm });
         this.result = { kind: "pr", pr: { number: r.pr.number, url: r.pr.url } };
       }
+      this.ended = { done: this.result };
       this.dispatchEvent(
         new CustomEvent<ShipDone>("conv-ship-done", { detail: this.result, bubbles: true, composed: true }),
       );
-      tell({ done: this.result });
-      await this.updateComplete;
-      this.focusFirst();
     } catch (e) {
       this.failure = e instanceof Error ? e.message : String(e);
-      tell({ failure: this.failure });
+      this.ended = { failure: this.failure };
     } finally {
       this.busy = false;
     }
+    if (!this.isConnected) {
+      this.handOver();
+      return;
+    }
+    // Back in here, however it ended: a route change while it ran will have taken focus out behind the dialog.
+    await this.updateComplete;
+    this.focusFirst();
   };
 
   // ───────────────────────────── view ─────────────────────────────
@@ -388,9 +417,9 @@ export class IncConvShip extends LitElement {
             }`
           : r.kind === "ticket"
             ? html`<p><b>Done.</b> This work is now ticket #${r.ticketId}. ${this.name()} is paused on this conversation's files while it runs; you can follow it here or on the ticket.</p>
-            <a href="#/ticket/${r.ticketId}" data-main>Open ticket #${r.ticketId}</a>`
+            <a href="#/ticket/${r.ticketId}" data-main @click=${this.seen}>Open ticket #${r.ticketId}</a>`
             : html`<p><b>Done.</b> Pull request #${r.pr?.number} is open as a draft. Its checks show in the context panel.</p>
-            <a href=${web(r.pr?.url)} target="_blank" rel="noopener" data-main>Open it on GitHub</a>`
+            <a href=${web(r.pr?.url)} target="_blank" rel="noopener" data-main @click=${this.seen}>Open it on GitHub</a>`
       }
     </div>`;
   }

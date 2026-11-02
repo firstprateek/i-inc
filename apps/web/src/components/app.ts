@@ -1,4 +1,5 @@
 import { css, html, LitElement, nothing } from "lit";
+import { repeat } from "lit/directives/repeat.js";
 import { logout, refresh, refreshNow } from "../api.ts";
 import { connection, isOffline } from "../connection.ts";
 import { outcomeView, shipOutcomes } from "../conversations/outcomes.ts";
@@ -408,10 +409,15 @@ export class IncApp extends LitElement {
 
   /** How a ticket or PR request ended after the owner left the screen it started on. One each, until dismissed. */
   private outcomes() {
-    return shipOutcomes.list().map((o) => {
-      const { text, href, label, external } = outcomeView(o);
-      const dismiss = () => shipOutcomes.dismiss(o.id);
-      return html`<div slot="notice" class="load-error outcome" role=${o.failure === undefined ? "status" : "alert"}>
+    // Keyed: a link takes its banner down as it is pressed, before the browser follows it, and with no key the next
+    // banner would have this one's elements by then, and the browser would follow that banner's address.
+    return repeat(
+      shipOutcomes.list(),
+      (o) => o.id,
+      (o) => {
+        const { text, href, label, external } = outcomeView(o);
+        const dismiss = () => shipOutcomes.dismiss(o.id);
+        return html`<div slot="notice" class="load-error outcome" role=${o.failure === undefined ? "status" : "alert"}>
         <span>${text}</span>
         ${
           href
@@ -420,7 +426,8 @@ export class IncApp extends LitElement {
         }
         <button class="btn ghost" type="button" @click=${dismiss}>Dismiss</button>
       </div>`;
-    });
+      },
+    );
   }
 
   private onDocumentClick = (e: MouseEvent) => {

@@ -103,6 +103,30 @@ describe("the shell", () => {
     expect(shipOutcomes.list()).toEqual([]);
   });
 
+  // A browser follows a link after the click's microtasks have run, so what it follows is whatever the element holds
+  // by then. happy-dom can't show that (it reads the address at once, like el.click()), so this pins what makes it
+  // right: a banner's elements stay that banner's, whatever happens to the one before it.
+  it("keeps each banner's elements its own when the one before it goes", async () => {
+    const app = await mount();
+    const made = (ticketId: string) => ({
+      conversationId: "ab12cd34",
+      title: "Greeting",
+      kind: "ticket" as const,
+      done: { kind: "ticket" as const, ticketId },
+    });
+    shipOutcomes.add(made("12"));
+    shipOutcomes.add(made("13"));
+    await until(() => banners(app).length === 2);
+    const [first, second] = [must(banners(app)[0]), must(banners(app)[1])];
+    const link = must(first.querySelector("a"));
+    link.addEventListener("click", (e) => e.preventDefault());
+    link.click();
+    await until(() => banners(app).length === 1);
+    expect(link.getAttribute("href")).toBe("#/ticket/12");
+    expect(banners(app)[0]).toBe(second);
+    expect(second.querySelector("a")?.getAttribute("href")).toBe("#/ticket/13");
+  });
+
   it("calls a failure out, opens a pull request in a new tab, and following a link takes the banner down", async () => {
     const app = await mount();
     shipOutcomes.add({ conversationId: "ab12cd34", title: "Greeting", kind: "ticket", failure: "No." });
