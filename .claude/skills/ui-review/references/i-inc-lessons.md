@@ -123,3 +123,11 @@ paths, branch names, structured briefs).
     control goes away with its own action, say where focus goes next. Test `activeElement`, not only the result.
 29. **Only `defaultPrevented` tells an outer Escape it was taken (keyboard).** A menu that closed on Escape left the event
     free, so the document-level handler closed the pane behind it too. → Anything that takes Escape calls `preventDefault`.
+30. **A way back that leads nowhere (states).** Unfinished comments was a list of links that open a file's diff, so
+    drawing it in the empty and asleep states would have given the owner a link that does nothing: those states never
+    draw a diff. The render and the checker can't see that, only pressing it can. → In every state a list is drawn,
+    ask where its links go. With nothing to go to, draw the thing itself, the way the plain comment list does.
+31. **Focus can survive on the wrong record (a11y).** Rows are drawn unkeyed, so when a refresh put another comment's
+    box on the row the owner was typing in, the textarea stayed in the page with focus still in it, now holding someone
+    else's words, and the keys went into that comment. Checking "did focus drop to body?" would have passed. → When
+    what is drawn can be reused for another record, follow focus by the record's key, not by the element.

@@ -196,6 +196,7 @@ export class IncConvReview extends LitElement {
       .moved > p { margin: 0; padding: 8px 10px 2px; color: var(--ink-2); }
       .moved > .c { margin: 6px 10px 0; }
       .moved .c:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: -3px; }
+      .aside { margin-top: 24px; }
       .stray { min-height: 44px; font: 600 12.5px var(--mono); text-align: left; overflow-wrap: anywhere; }
       .c .under { position: static; width: auto; padding: 4px 8px 0 0; }
       .back { display: none; }
@@ -723,7 +724,7 @@ export class IncConvReview extends LitElement {
   private asideComments() {
     const left = this.strays([]);
     if (!this.comments.length && !left.length) return nothing;
-    return html`<div class="side">${this.unfinished(left, "box")}${this.commentList("plain")}</div>`;
+    return html`<div class="side aside">${this.unfinished(left, "box")}${this.commentList("plain")}</div>`;
   }
 
   private content() {
