@@ -217,6 +217,9 @@ export function sanitizeAction<T>(action: T, caps: Pick<Caps, "maxString" | "max
   return out as T;
 }
 
+/** The most of a text `redactTokens` reads: the rest is dropped. */
+export const MAX_REDACTED = 1_000_000;
+
 /**
  * Only the patterns that are unmistakably credentials, for file contents (diffs) where the full
  * redactor's hex and base64 rules would mangle source code: GitHub, OpenAI/Anthropic, Google, Slack,
@@ -224,7 +227,7 @@ export function sanitizeAction<T>(action: T, caps: Pick<Caps, "maxString" | "max
  * `redactText` starts with (`redactCredentials`). It leaves `token: string` in source code alone.
  */
 export function redactTokens(text: string): string {
-  return redactCredentials(text.length > 1_000_000 ? text.slice(0, 1_000_000) : text);
+  return redactCredentials(text.length > MAX_REDACTED ? text.slice(0, MAX_REDACTED) : text);
 }
 
 /**

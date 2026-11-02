@@ -5,6 +5,7 @@ export * from "./brain-retrieval.ts";
 export * from "./brief.ts";
 export * from "./chat.ts";
 export * from "./desk.ts";
+export * from "./diff.ts";
 export * from "./engines.ts";
 export * from "./events.ts";
 export * from "./hiring.ts";
