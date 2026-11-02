@@ -281,8 +281,12 @@ links into it.
   usual patterns' result (`redactKnown`) is the starting point, and the key blocks and then the last step (`redactLast`)
   only take more out of it, so what those patterns hide stays hidden whatever the rest finds. The last step takes the
   shapes they stop short of: a URL password with a `/`, `?` or `#` in it, userinfo or a secret query value past their
-  limits, and a token straight after a word character. It comes after every other pass here and in the transcripts, so
-  it can't take a secret's name or a query's label before the pass that looks for it. A block keeps its lines, so line numbers hold. Its markers count wherever they sit, in a
+  limits, and a token straight after a word character. `redactText`, `redactTokens`, `redactProse` and `redactFile` end
+  with it, after every other pass they run, so it can't take a secret's name or a query's label before the pass that
+  looks for it. `redactText` runs the usual passes up to three times first, until they change nothing, since a brief, a
+  notification or a resumed prompt reads its text again and a later read can find what the first uncovered. Ticket
+  transcripts' `redactSecrets` doesn't run the last step. A link is outside or not by its target as written, not by what
+  redaction left of it. A block keeps its lines, so line numbers hold. Its markers count wherever they sit, in a
   string joined over several lines or after code, once there is a line of key between them; a line in it that doesn't
   read as key material shows as `redactTokens` left it, which is in sight unless it runs straight on from the key, and
   a line that names a marker is cut at it, as a key can run into one. A marker named in a string doesn't end a block or

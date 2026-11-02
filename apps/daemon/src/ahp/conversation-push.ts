@@ -95,7 +95,12 @@ export function oneLine(raw: string, max = BODY_MAX): string {
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/\s+/g, " ")
     .trim();
-  t = redactText(t).replace(/\s+/g, " ").trim();
+  // All of a word with a secret in it: the marks taken out above can join what is around a token into something the host
+  // has already read, and a line on a lock screen loses nothing by it.
+  t = redactText(t)
+    .replace(/(?<!\S)\S*\[redacted\]\S*/g, "[redacted]")
+    .replace(/\s+/g, " ")
+    .trim();
   return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t;
 }
 

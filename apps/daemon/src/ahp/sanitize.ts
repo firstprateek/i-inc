@@ -43,6 +43,9 @@ const marker = (n: number) => `\n[…${n} more characters not kept]`;
 
 /** An unbroken run of this many token characters or more that survives redaction is not kept. */
 const LONG_RUN = /(?<![A-Za-z0-9_+/=.-])[A-Za-z0-9_+/=.-]{500,}/g;
+/** How a long run's note ends, which is all that is left of it once a value before it has taken the start. */
+const RUN_NOTE = " characters in one unbroken run, not kept]";
+const LEFT_OF_RUN_NOTE = new RegExp(String.raw`(?:\[\d+)?${RUN_NOTE.replace("]", "\\]")}`, "g");
 /** A run of blanks this long (spaces, tabs, newlines) is worth one blank. */
 const BLANK_RUN = /\s{200,}/g;
 const DATA_URI =
@@ -51,49 +54,53 @@ const SECRET_QUERY =
   /([?&;](?:access_token|refresh_token|id_token|token|key|api_key|apikey|sig|signature|secret|client_secret|password|passwd|pwd|pass|passphrase|code|auth|x-amz-[a-z0-9-]{1,40}|x-goog-[a-z0-9-]{1,40})=)[^&\s"'#<>]{1,2000}/gi;
 // Everything between `://` and the last `@` before the path: a password may hold an `@`.
 const USERINFO = /([a-z][a-z0-9+.-]{0,30}:\/\/)[^/\s?#]{1,400}@/gi;
-/**
- * What `USERINFO` stopped short of, at any length. Past its limit a quote means a string ended, not that a password goes
- * on: a minified file has no blank or `/` for thousands of characters. Every `://` has a `/`, where the one before it
- * stops, so no character is read twice however many there are.
- */
-const LONG_USERINFO = /([a-z][a-z0-9+.-]{0,30}:\/\/)[^/\s?#"'`]+@/gi;
-/** What `SECRET_QUERY` stopped short of, at any length, with the end of a `LONG_RUN` note the tail may have become. */
-const LONG_SECRET_QUERY = new RegExp(
-  `${SECRET_QUERY.source.replace("{1,2000}", "+")}(?: characters in one unbroken run, not kept\\])?`,
-  "gi",
-);
+/** Where `redactLongUserinfo` stops: past `USERINFO`'s limit a quote means a string ended, not that a password goes on. */
+const USERINFO_END = /[/\s?#"'`]/g;
+/** What `SECRET_QUERY` stopped short of, at any length. */
+const LONG_SECRET_QUERY = new RegExp(SECRET_QUERY.source.replace("{1,2000}", "+"), "gi");
 /** A template's hole, where a host or a port will go. */
 const HOLE = String.raw`\$\w+|\$\{.*\}|\$\(\w+\)|\\\([\w.]+\)|\{\{?[^{}]*\}?\}|<\w+>|%\(\w+\)[a-z]|%[sduv]`;
-/** What follows the `:` of a host when no password does: a port (or a list of hosts), the word, a hole. */
-const PORT = new RegExp(`^(?:\\d{1,5}(?:,.*)?|port|\\*|${HOLE})$`, "i");
+/** What closes a URL or parts one from the next, when it comes straight after a port. A `\` is the start of a `\"` or a `\n`. */
+const AFTER_PORT = String.raw`[,;|)\]}>"'${"`"}<\\&*\u0080-\uffff]`;
+/**
+ * What follows the `:` of a host when no password does: a port, the word, or a hole, on its own or with a closer and
+ * whatever comes next (a list of hosts, `8080</td><td>`).
+ */
+const PORT = new RegExp(`^(?:\\d{1,5}|port|\\*|${HOLE})(?:${AFTER_PORT}.*)?$`, "i");
 /** What before a `:` is a host and no one's user name. A dotted name won't do: `first.last` and `postgres.abcdef` are users. */
 const NOT_A_USER = new RegExp(`^(?:localhost|\\d{1,3}(?:\\.\\d{1,3}){3}|${HOLE})(?::|$)`, "i");
+/** What no user name holds, so that the `:` after it is a later field's: `example.com","time":"12:34/@me`. */
+const NOT_A_NAME = /["'`<>()[\]|;,=&+\\\u0080-\uffff]/;
 /** A hole in Ruby's or Elixir's way, which starts with the `#` that ends an authority. */
 const HASH_HOLE = /#\{[^}\s]{0,200}\}/y;
 const NEXT_SCHEME = /[a-z][a-z0-9+.-]{0,30}:$/i;
+/** An authority without the scheme it ends in. Only the end is searched: an authority can be as long as the text. */
+const withoutNextScheme = (a: string) => a.slice(0, -32) + a.slice(-32).replace(NEXT_SCHEME, "");
 const URL_BLANK = /\s/g;
 const AUTHORITY_END = /[/?#\s]/g;
-const SCHEME_END = /[a-z][a-z0-9+.-]{0,30}$/i;
 /**
  * A token with a word character straight before it (`foo_ghp_...`), which a pattern with a `\b` passes over. Its prefix
  * won't do alone: `highs_and_lows` holds `ghs_`, `task-` holds `sk-`, `disk_live_` holds `sk_live_` and `pnpm_` holds
- * `npm_`. So each kind needs its real length and letters. All hex after `gh?_` or `?k_live_` is a hash, which those
- * vendors don't issue, and a `k_live_` run needs a digit (`network_live_connectionStringPassword`). An `sk-` key with only
- * that prefix to go on is looked for after a `_` or a digit, not a letter: `task-` then a hash is an ordinary name. All
- * of this lowers the odds and no more: a name of the right length and letters still matches.
+ * `npm_`. So each kind needs its real length and letters. All hex in one case after `gh?_` or `?k_live_` is a hash, which
+ * those vendors don't issue, and a `k_live_` run needs a digit (`network_live_connectionStringPassword`). An `sk-` key
+ * with only that prefix to go on is looked for after a `_` or a digit, not a letter: `task-` then a hash is an ordinary
+ * name. All of this lowers the odds and no more: a name of the right length and letters still matches.
  */
 const GLUED_TOKEN =
-  /gh[opsu]_(?![0-9a-f]+(?![A-Za-z0-9]))[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9]{20,}\w*|sk-(?:ant|proj|svcacct|admin)-[A-Za-z0-9_-]{16,}|(?<![A-Za-z])sk-[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{35}|xox[baprs]-[0-9][0-9A-Za-z-]{9,}|AKIA[0-9A-Z]{16}(?![0-9A-Za-z])|[sr]k_live_(?![0-9a-f]+(?![A-Za-z0-9]))(?=[A-Za-z]*[0-9])[A-Za-z0-9]{24,}\w*|npm_[A-Za-z0-9]{36}(?![A-Za-z0-9])/g;
+  /gh[opsu]_(?![0-9a-f]+(?![A-Za-z0-9]))(?![0-9A-F]+(?![A-Za-z0-9]))[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9]{20,}\w*|sk-(?:ant|proj|svcacct|admin)-[A-Za-z0-9_-]{16,}|(?<![A-Za-z])sk-[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z])|xox[baprs]-[0-9][0-9A-Za-z-]{9,}|AKIA[0-9A-Z]{16}(?![0-9A-Za-z])|[sr]k_live_(?![0-9a-f]+(?![A-Za-z0-9]))(?![0-9A-F]+(?![A-Za-z0-9]))(?=[A-Za-z]*[0-9])[A-Za-z0-9]{24,}\w*|npm_[A-Za-z0-9]{36}(?![A-Za-z0-9])/g;
 const NAMED_KEY = /^sk-(?:ant|proj|svcacct|admin)-/;
+/** The shortest key that goes by a prefix alone after a letter: `sk-proj-` and 48 characters. */
+const SHORTEST_NAMED_KEY = 56;
 /**
- * After a letter, `sk-admin-` is as likely a name's (`task-admin-dashboard-settings`), so it needs what a key has and a
- * name hasn't: 16 letters and digits in a row, among them a digit or both cases. A short key's `-` and `_` can break up
- * every such run, so capitals and digits anywhere will also do: a name in that case has neither together.
+ * After a letter, `sk-admin-` is as likely a name's (`task-admin-dashboard-settings`), so it needs what a key has and most
+ * names haven't: 16 letters and digits in a row, among them a digit or both cases. A key's `-` and `_` can break up every
+ * such run, so a key's whole length with capitals and digits anywhere will also do. That lowers the odds and no more:
+ * `flask-admin-UserProfileController-base` has such a run, and a name past 56 characters can have a `Q3` and a capital.
  */
 const gluedToken = (m: string, at: number, t: string): string => {
   if (!NAMED_KEY.test(m) || !/[A-Za-z]/.test(t.charAt(at - 1))) return "[redacted]";
   const run = m.match(/[A-Za-z0-9]{16,}/g)?.some((r) => /\d/.test(r) || (/[a-z]/.test(r) && /[A-Z]/.test(r)));
-  return run || (/[A-Z]/.test(m) && /\d/.test(m)) ? "[redacted]" : m;
+  return run || (m.length >= SHORTEST_NAMED_KEY && /[A-Z]/.test(m) && /\d/.test(m)) ? "[redacted]" : m;
 };
 // RSA, EC, OPENSSH and plain PRIVATE KEY blocks, and PGP's `PRIVATE KEY BLOCK`.
 const PEM_BEGIN = /-----BEGIN [A-Z ]{0,30}PRIVATE KEY(?: BLOCK)?-----/g;
@@ -170,9 +177,26 @@ function stopsInPassword(authority: string): boolean {
   const at = authority.lastIndexOf("@");
   const host = authority.slice(at + 1).replace(/^\[.*\]/, ""); // an IPv6 address is all colons
   const colon = host.indexOf(":");
-  if (colon >= 0) return !((at < 0 && NOT_A_USER.test(host)) || PORT.test(host.slice(colon + 1)));
+  if (colon >= 0) {
+    if (at < 0 && (NOT_A_USER.test(host) || NOT_A_NAME.test(host.slice(0, colon)))) return false;
+    return !PORT.test(host.slice(colon + 1));
+  }
   const first = authority.indexOf(":");
   return (first >= 0 && first < at) || authority.startsWith("[redacted]@");
+}
+
+/**
+ * Where the scheme before a `://` at `at` starts, or -1. By hand, as this runs for each URL and a regular expression here
+ * costs more than the rest of the scanner: `[a-z][a-z0-9+.-]{0,30}` ending at `at`, as long as it will go.
+ */
+function schemeStart(t: string, at: number): number {
+  let start = -1;
+  for (let i = at - 1; i >= 0 && i >= at - 31; i--) {
+    const c = t.charCodeAt(i);
+    if ((c >= 97 && c <= 122) || (c >= 65 && c <= 90)) start = i;
+    else if (!((c >= 48 && c <= 57) || c === 43 || c === 45 || c === 46)) break;
+  }
+  return start;
 }
 
 /**
@@ -182,10 +206,13 @@ function stopsInPassword(authority: string): boolean {
  *
  * A URL ends at a blank. It ends at the quote that opened it, written the same way (a `\"` doesn't close a `"`), if what
  * comes before that quote reads as a host: `"https://a.example","/@me"` is two strings, and `"postgres://u:a"b/c@h"` is a
- * password with a quote in it. After a `/`, `?` or `#` any such quote ends it, so `"http://a:b/c","me@x"` keeps what is
- * outside the string, and a password that holds its opening quote there shows. A `://` is the next URL's, and its scheme
- * isn't read as a password: `[a](https://a.example)[b](https://b.example/@c)`. A password of up to five digits before a
- * `/`, `?` or `#` reads as a port and stays: that is `localhost:3000/` to anything that reads it.
+ * password with a quote in it. A string that ends at a `:` and is joined to the next, `'http://h:'+port+'/@me'`, is a host
+ * as well. After a `/`, `?` or `#` any such quote ends it, so `"http://a:b/c","me@x"` keeps what is outside the string, and
+ * a password that holds its opening quote there shows. A URL not straight after a quote has no end to go by: the `:` of
+ * a later field can then read as a password's, unless what is before it is no one's name (`NOT_A_NAME`). A `://` is the
+ * next URL's, and its scheme isn't read as a password: `[a](https://a.example)[b](https://b.example/@c)`. A password of up
+ * to five digits before a `/`, `?` or `#`, or before a closer, reads as a port and stays: that is `localhost:3000/` to
+ * anything that reads it.
  *
  * One pass: a run of non-blanks is searched once for its last `@`, an authority ends at the next `://` at the latest, and
  * strings opened by the same quote don't overlap.
@@ -200,21 +227,21 @@ function redactCutPasswords(t: string): string {
     const from = at + 3;
     if (from > run) {
       URL_BLANK.lastIndex = from;
-      run = URL_BLANK.exec(t)?.index ?? t.length;
+      run = URL_BLANK.test(t) ? URL_BLANK.lastIndex - 1 : t.length;
       const found = t.slice(from, run).lastIndexOf("@");
       lastAt = found < 0 ? -1 : from + found;
     }
     AUTHORITY_END.lastIndex = from;
-    const stop = AUTHORITY_END.exec(t)?.index ?? t.length;
+    const stop = AUTHORITY_END.test(t) ? AUTHORITY_END.lastIndex - 1 : t.length;
     if (stop >= lastAt) continue;
     const authority = t.slice(from, stop);
-    if (!stopsInPassword(t.startsWith("//", stop) ? authority.replace(NEXT_SCHEME, "") : authority)) continue;
+    if (!stopsInPassword(t.startsWith("//", stop) ? withoutNextScheme(authority) : authority)) continue;
     HASH_HOLE.lastIndex = stop;
     if (HASH_HOLE.test(t)) continue;
-    const scheme = SCHEME_END.exec(t.slice(Math.max(0, at - 31), at));
-    if (!scheme) continue;
+    const scheme = schemeStart(t, at);
+    if (scheme < 0) continue;
     let end = lastAt;
-    const open = at - scheme[0].length - 1;
+    const open = scheme - 1;
     const quote = t[open];
     if (quote === '"' || quote === "'" || quote === "`") {
       const closeFrom = (pos: number) => {
@@ -224,7 +251,10 @@ function redactCutPasswords(t: string): string {
         return close;
       };
       const first = closeFrom(from);
-      if (first >= 0 && first < stop && !stopsInPassword(t.slice(from, first))) continue;
+      if (first >= 0 && first < stop) {
+        const read = t.slice(from, first);
+        if (!stopsInPassword(read) || (read.endsWith(":") && /[+.]/.test(t.charAt(first + 1)))) continue;
+      }
       const close = closeFrom(stop);
       if (close >= 0 && close < end) {
         const inside = t.slice(stop, close).lastIndexOf("@");
@@ -239,20 +269,45 @@ function redactCutPasswords(t: string): string {
 }
 
 /**
+ * What `USERINFO` stopped short of, at any length: everything from a `://` to the last `@` before `USERINFO_END`. A `://`
+ * holds a `/`, where the run after the one before it stops, so no run is searched twice however many there are.
+ */
+function redactLongUserinfo(t: string): string {
+  if (!t.includes("@")) return t;
+  let out = "";
+  let last = 0;
+  for (let at = t.indexOf("://"); at >= 0; at = t.indexOf("://", Math.max(at + 3, last))) {
+    const from = at + 3;
+    USERINFO_END.lastIndex = from;
+    const end = USERINFO_END.test(t) ? USERINFO_END.lastIndex - 1 : t.length;
+    const found = t.slice(from, end).lastIndexOf("@");
+    if (found < 1 || schemeStart(t, at) < last) continue;
+    out += `${t.slice(last, from)}[redacted]`;
+    last = from + found;
+  }
+  return out + t.slice(last);
+}
+
+/**
  * The shapes the usual patterns stop short of: a password in a URL that holds a `/`, `?` or `#`, userinfo or a secret
  * query value past their limits, and a token with a word character straight before it. The very last step, on text
  * every other pass has finished with, so it can't take what one of them looks for, such as a secret's name, and what
  * those passes hide stays hidden. It only takes out: what it leaves, without its `[redacted]`, was all there before.
- * `redactTokens`, `redactText` and `redactProse` end with it, and `redactFile`, which has passes of its own.
+ * `redactTokens`, `redactText` and `redactProse` end with it, and `redactFile`, which has passes of its own. A note of a
+ * long run stands for that run, so its blanks are kept out of the way: they don't end a URL or a value.
  */
 export function redactLast(text: string): string {
-  const t = redactCutPasswords(text)
-    .replace(LONG_USERINFO, "$1[redacted]@")
+  if (!text.includes(RUN_NOTE)) return lastPasses(text);
+  const gap = secretCut();
+  return lastPasses(text.replace(LEFT_OF_RUN_NOTE, (m) => m.replaceAll(" ", gap))).replaceAll(gap, " ");
+}
+
+function lastPasses(text: string): string {
+  const t = redactLongUserinfo(redactCutPasswords(text))
     .replace(LONG_SECRET_QUERY, "$1[redacted]")
     .replace(GLUED_TOKEN, gluedToken);
-  return redactJwts(t, /eyJ[A-Za-z0-9_-]{8,}$/).replace(
-    /whsec_[A-Za-z0-9+/=]{24,}[A-Za-z0-9+/=_-]*/g,
-    "[redacted]",
+  return redactJwts(t, /eyJ[A-Za-z0-9_-]{8,}$/).replace(/whsec_[A-Za-z0-9+/=]{24,}[A-Za-z0-9+/=_-]*/g, (m) =>
+    /[0-9A-Z]/.test(m) ? "[redacted]" : m,
   );
 }
 
@@ -301,6 +356,14 @@ function redactCredentials(text: string, keepLines = false, whole = false): stri
 }
 
 /**
+ * The most times one text is read on its way out. A brief is read for the view and again by the host, what an agent says
+ * on the way in and again for a notification or a resumed prompt, and a suggestion the owner sends back a third time. A
+ * later read can find what an earlier one uncovered, and `redactLast` must not take the label it finds it by, so all of
+ * them come before `redactLast`, here, on the first read.
+ */
+const MOST_READS = 3;
+
+/**
  * `redactSecrets` over a text of any length, in time linear in it (`redactSecrets` itself is bounded:
  * no pattern rescans a long run). In order:
  *  - runs of blanks collapse, so a 64 KB block of newlines costs nothing;
@@ -310,10 +373,21 @@ function redactCredentials(text: string, keepLines = false, whole = false): stri
  *  - the redactor's own patterns (tokens of every sort at any length, JWTs, passwords, key=value);
  *  - an unbroken run of 500 or more token characters that is still there, base64 of something
  *    or a path with no end in sight, is replaced by a note of its length;
+ *  - all that again until it changes nothing, `MOST_READS` at most, as later reads of the text would do;
  *  - last, `redactLast`.
  * It is all one pass over the whole text, so no secret can fall between pieces of it.
  */
 export function redactText(text: string): string {
+  let t = text;
+  for (let read = 0; read < MOST_READS; read++) {
+    const again = redactUsual(t);
+    if (again === t) break;
+    t = again;
+  }
+  return redactLast(t);
+}
+
+function redactUsual(text: string): string {
   let t = text.replace(BLANK_RUN, (m) => (m.includes("\n") ? "\n" : " "));
   t = t.replace(
     DATA_URI,
@@ -322,7 +396,7 @@ export function redactText(text: string): string {
   );
   t = redactCredentials(t);
   t = redactSecrets(t);
-  return redactLast(t.replace(LONG_RUN, (m) => `[${m.length} characters in one unbroken run, not kept]`));
+  return t.replace(LONG_RUN, (m) => `[${m.length}${RUN_NOTE}`);
 }
 
 /**

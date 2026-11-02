@@ -187,9 +187,11 @@ export function readSides(output: string, nonce: string, path: string): Record<s
     const { name, state, b64 } = at;
     if (state === "blob") sides[name] = sideOf(b64.join(""));
     else if (state === "link") {
-      const side = sideOf(b64.join(""));
+      const data = b64.join("");
+      const side = sideOf(data);
+      // The target as written decides, not what redaction left of it: `[redacted]` can hide the `..` that leaves.
       sides[name] =
-        side.text !== undefined && linkStaysInside(path, side.text)
+        side.text !== undefined && linkStaysInside(path, Buffer.from(data, "base64").toString())
           ? { state: "link", text: side.text }
           : { state: "outside" };
     } else if (["none", "too-big", "other", "outside"].includes(state)) {

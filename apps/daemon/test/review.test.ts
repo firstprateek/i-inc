@@ -729,6 +729,32 @@ describe("what comes out of a sandbox is not believed", () => {
     expect(readFileOutput(out, NONCE, "a.txt")?.after).toEqual({ state: "outside" });
   });
 
+  it.each([
+    ["a password that takes the way out with it", "x://u:p/../../../../../etc/shadow@h"],
+    ["a query value that does", "x:/a?token=/../../../../../etc/shadow"],
+  ])("goes by a link's target as written, not what redaction leaves: %s", (_, target) => {
+    const out = [
+      `${marker(NONCE, "before")} none`,
+      `${marker(NONCE, "after")} link`,
+      Buffer.from(target).toString("base64"),
+      marker(NONCE, "done"),
+    ].join("\n");
+    expect(readFileOutput(out, NONCE, "a/link")?.after).toEqual({ state: "outside" });
+  });
+
+  it("shows a link that stays inside as redaction leaves it", () => {
+    const out = [
+      `${marker(NONCE, "before")} none`,
+      `${marker(NONCE, "after")} link`,
+      Buffer.from("b.txt?token=abcdef").toString("base64"),
+      marker(NONCE, "done"),
+    ].join("\n");
+    expect(readFileOutput(out, NONCE, "a/link")?.after).toEqual({
+      state: "link",
+      text: "b.txt?token=[redacted]",
+    });
+  });
+
   it("refuses a reply bigger than the cap whatever the script was told", () => {
     const out = [
       `${marker(NONCE, "before")} none`,

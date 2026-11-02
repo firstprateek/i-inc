@@ -16,7 +16,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeAgent, FakeChat, FakeClock, FakeHelper, FakeMachines } from "@i-inc/core/testing";
 import { describe, expect, it } from "vitest";
-import { redactKnown, redactLast, redactProse, redactText, redactTokens } from "../src/ahp/sanitize.ts";
+import { oneLine } from "../src/ahp/conversation-push.ts";
+import {
+  redactKnown,
+  redactLast,
+  redactProse,
+  redactText,
+  redactTokens,
+  sanitizeAction,
+} from "../src/ahp/sanitize.ts";
+import { shownBrief } from "../src/ahp/ticket-channels.ts";
 import { createApp } from "../src/app.ts";
 import {
   fileScript,
@@ -922,6 +931,8 @@ describe("a search", () => {
         ["a hole that doesn't close", "mysql://root:p#{ss@h", "p#{ss"],
         ["one at the start of one that doesn't close", "mysql://root:#{ss@h", "#{ss"],
         ["a scheme in it", "postgres://u:https://x@h", "https://x"],
+        ["a scheme after a comma in it", "postgres://u:ab,https://x@h", "ab,https://x"],
+        ["a user that is an email on a host's name", "postgres://me@localhost:ab/cd@h", "ab/cd"],
       ])("goes with %s", (_, url, secret) => {
         stopped(`const u = ${url}\n`, secret);
         stopped(`const u = "${url.replace(/"/g, '\\"')}";\n`, secret);
@@ -945,6 +956,14 @@ describe("a search", () => {
         expect(redactText("postgres://u:p@ss/w@h\n")).toBe("postgres://[redacted]@h\n");
       });
 
+      it("goes as far as the last @, past a host that USERINFO couldn't reach", () => {
+        expect(redactFile(`x://u:${"p".repeat(500)}@h/p@q\n`)).toBe("x://[redacted]@q\n");
+      });
+
+      it("keeps what a string left outside it", () => {
+        expect(redactFile('"http://a:b/c@d","me@x"\n')).toBe('"http://[redacted]@d","me@x"\n');
+      });
+
       it("takes each of several in a run", () => {
         const seen = redactFile("a://u:b/c@h,d://v:e/f@i\n");
         expect(seen).not.toContain("b/c");
@@ -961,8 +980,8 @@ describe("a search", () => {
         expect(redactFile(`https://u:${"p".repeat(1000)}@h/x\n`)).toBe("https://[redacted]@h/x\n");
       });
 
-      it("past the old limit, stops at a quote: a string has ended", () => {
-        const packument = `{"a":"https://x.example","b":"${"y".repeat(500)}","c":"me@x.example"}\n`;
+      it.each(['"', "'", "`"])("past the old limit, stops at a %s: a string has ended", (q) => {
+        const packument = `{${q}a${q}:${q}https://x.example${q},${q}b${q}:${q}${"y".repeat(500)}${q},${q}c${q}:${q}me@x.example${q}}\n`;
         expect(redactFile(packument)).toBe(packument);
         expect(holdsCredential(packument)).toBe(false);
       });
@@ -982,6 +1001,57 @@ describe("a search", () => {
     it("takes the note a long run left, as well as the value", () => {
       const seen = redactText(`https://h.example/x?sig=${"a".repeat(5000)}&page=2\n`);
       expect(seen).toBe("https://h.example/x?sig=[redacted]&page=2\n");
+    });
+
+    it.each([
+      [`https://u:${"a".repeat(600)}!SECRETTAIL@h/x`, "https://[redacted]@h/x"],
+      [`postgres://u:p!${"a".repeat(600)}#SECRETTAIL@h/x`, "postgres://[redacted]@h/x"],
+      [
+        `https://h/x?sig=${"a".repeat(2000)}:${"b".repeat(600)}:SECRETTAIL&page=2`,
+        "https://h/x?sig=[redacted]&page=2",
+      ],
+    ])("reads a long run's note as the run it stands for: %s", (text, seen) => {
+      expect(redactText(text)).toBe(seen);
+      expect(redactText(redactText(text))).toBe(seen);
+    });
+
+    it("leaves a note where it was, with its blanks", () => {
+      const text = `see ${"a".repeat(600)} then`;
+      expect(redactText(text)).toBe("see [600 characters in one unbroken run, not kept] then");
+    });
+
+    describe("in a text the usual passes read more than once", () => {
+      const brief = (text: string) => sanitizeAction({ text: shownBrief(text) }).text;
+      const twice = (text: string) => redactText(redactText(text));
+      const thrice = (text: string) => redactText(twice(text));
+
+      it.each([
+        ['https://db.example:?pwd="x"@SECRETTAIL', "https://db.example:?pwd=[redacted]"],
+        ['see https://h:/login?token="x"@SECRETTAIL now', "see https://h:/login?token=[redacted] now"],
+        ['https://h:/x,password="x"@SECRETTAIL', "https://h:/x,password=[redacted]"],
+      ])("takes what the second read finds, on each way out: %s", (text, seen) => {
+        expect(brief(text)).toBe(seen);
+        expect(twice(sanitizeAction({ text }).text)).toBe(seen);
+        expect(oneLine(sanitizeAction({ text }).text)).not.toContain("SECRETTAIL");
+      });
+
+      it("takes what the third read finds, as a suggestion sent back is read three times", () => {
+        const text = `https://h:/x?pwd='secret="x"@='y/z@SECRETTAIL`;
+        expect(thrice(text)).toBe("https://h:/x?pwd=[redacted]");
+      });
+
+      it("takes all of a word with a token in it from a notification, which strips the _ that held a run apart", () => {
+        const live = "sk_li\u0076e_a1b2c3d4e5f6g7h8i9j0k1l2";
+        const seen = oneLine(
+          sanitizeAction({ text: `see Zq73ZFWx${live}Zq73ZGWxZq73ZHWxZq73ZIWx now` }).text,
+        );
+        expect(seen).toBe("see [redacted] now");
+      });
+
+      it("is what one read gives, for a text with nothing more to find", () => {
+        const text = "see https://h.example/x?token=abc and password: hunter2\n";
+        expect(thrice(text)).toBe(redactText(text));
+      });
     });
 
     it.each([
@@ -1011,7 +1081,7 @@ describe("a search", () => {
         ["xoxb", "xoxb-123456789012-abcdefghijkl"],
         ["AKIA", "AKIAIOSFODNN7EXAMPLE"],
         ["sk_live", "sk_li\u0076e_a1b2c3d4e5f6g7h8i9j0k1l2"],
-        ["whsec", "whsec_abcdefghijklmnopqrstuvwx"],
+        ["whsec", "whsec_a1b2c3d4e5f6g7h8i9j0k1l2"],
         ["npm", `npm_${github}`],
         ["jwt", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJl"],
       ];
@@ -1045,11 +1115,33 @@ describe("a search", () => {
         stopped("7sk-admin-abcdefghijklmnopqrstuvwx\n", "sk-admin-abcdefghijklmnopqrstuvwx");
       });
 
+      it.each([
+        ["both cases", "xsk-ant-AbCdEfGhIjKlMnOpQrSt"],
+        ["a digit", "xsk-ant-abcd1234efgh5678ijkl"],
+      ])("a named sk- key after a letter, with %s in a run", (_, key) => {
+        expect(redactFile(`${key}\n`)).toBe("x[redacted]\n");
+      });
+
+      it("a named sk- key after a letter, with capitals and digits at a key's whole length", () => {
+        const key = `sk-proj-${"Ab1-cd_ef".repeat(6)}`.slice(0, 56);
+        expect(redactFile(`x${key}\n`)).toBe("x[redacted]\n");
+        expect(redactFile(`x${key.slice(0, -1)}\n`)).toBe(`x${key.slice(0, -1)}\n`);
+      });
+
+      it("a fine-grained token to its end", () => {
+        expect(redactFile("foo_github_pat_11ABCDEFG0abcdefghijkl_SECRETTAIL\n")).toBe("foo_[redacted]\n");
+      });
+
       it("a Google key with more of its alphabet after it", () => {
         const key = "AIzaSyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q";
         expect(redactFile(`key_${key}_v2\n`)).toBe("key_[redacted]_v2\n");
         expect(redactFile(`key_${key}-prod\n`)).toBe("key_[redacted]-prod\n");
         expect(holdsCredential(`key_${key}_v2\n`)).toBe(true);
+      });
+
+      it("not a Google key's prefix in a run of base64", () => {
+        const blob = `dzaXAIzaU4fGhpnKYHfRZwxymAFsCnTVvM6OBU0z5M9an8k3xYz\n`;
+        expect(redactFile(blob)).toBe(blob);
       });
 
       it("real keys after a letter, at their real lengths", () => {
@@ -1141,7 +1233,7 @@ describe("a search", () => {
       });
 
       it("a file's npm token, which the file pass takes before the last one", () => {
-        const webhook = "whsec_abcdefghijklmnopqrstuvwx";
+        const webhook = "whsec_a1b2c3d4e5f6g7h8i9j0k1l2";
         expect(redactFile(`x${webhook}_authToken=hunter2hunter2\n`)).toBe("x[redacted][redacted]\n");
       });
 
@@ -1198,7 +1290,8 @@ describe("a search", () => {
           "{a}",
           `foo_ghp_${glued}`,
           "xsk-ant-a1B2c3D4e5F6g7H8",
-          "xwhsec_abcdefghijklmnopqrstuvwx",
+          "xwhsec_a1b2c3d4e5f6g7h8i9j0k1l2",
+          "[600 characters in one unbroken run, not kept]",
           "xeyJabcdefgh.eyJabcdefgh.abc",
           "a".repeat(450),
         ];
@@ -1292,7 +1385,7 @@ describe("a search", () => {
       "mask-image-gradient-left-to-right-fade-out",
       "risk-assessment-framework-version-two-final",
       "block_sk-header-navigation-section-left",
-      `const short = "foo_ghp_${"a".repeat(35)}";`,
+      `const short = "foo_ghp_${"z".repeat(35)}";`,
       "task-admin-dashboard-settings",
       "task-admin-internationalization-settings",
       "task-admin-panel-v2-settings-and-more",
@@ -1309,6 +1402,99 @@ describe("a search", () => {
       "disk_live_migrationBandwidthLimitExceeded",
       "test_network_live_ConnectionTimeoutHandlerWithRetry",
       "cache/laughs_0123456789abcdef0123456789abcdef01234567.bin",
+      // The same hashes in capitals
+      "disk_live_5F4DCC3B5AA765D61D8327DEB882CF99",
+      'const key = "task_live_0123456789ABCDEF0123456789ABCDEF";',
+      "cache/laughs_0123456789ABCDEF0123456789ABCDEF01234567.bin",
+      "sighs_DA39A3EE5E6B4B0D3255BFEF95601890AFD80709",
+      // A name with a ticket key, a generated suffix or a bundler's hash
+      "git checkout -b feature/task-admin-JIRA-1234-bulk-actions",
+      "Merge branch 'feature/task-admin-JIRA-1234-bulk-actions'",
+      "arn:aws:iam::123456789012:role/task-admin-TaskRole-1A2B3C4D5E6F",
+      "task-admin-prod-LoadBalancer-1A2B3C4D",
+      "docs/task-admin-Q3-2024-report-final.pdf",
+      "dist/assets/disk-admin-settings-CkL9dE2f.js",
+      '<script type="module" src="/assets/task-admin-dashboard-BxY3k9Qa.js"></script>',
+      "disk-proj-ABC-123-cleanup-old-volumes",
+      "risk-admin-dashboard-Q3-report",
+      "class=task-admin-settings-page-V2",
+      "desk-proj-migration-plan-Q4-2026",
+      "mask-admin-layout-header-H1-title",
+      "dusk-admin-2024-Q3-financial-report",
+      // A webhook name with folders after it
+      'import { verify } from "./verify_whsec_helpers/stripe/webhook/signature";',
+      "src/stripe_whsec_utils/handlers/verify/index.ts",
+      "app/check_whsec_signature/handlers/stripe.rb",
+      // Tokens with something straight after them that a real one doesn't have
+      "fooAKIAIOSFODNN7EXAMPLEbar",
+      `foo_npm_${"a1B2".repeat(9)}x`,
+      `pnpm_${"a1B2".repeat(11)}`,
+      "disk_live_a1b2c3d4e5f6g7h8",
+      "boxoxa-sized-container-class",
+      "task-admin-x_xoxb-1234567890-abcdefghijkl",
+      // A later field's `:`, after a URL with no path that isn't straight after a quote
+      '{"msg":"see https://example.com","path":"/@vite/client"}',
+      '{"level":"info","msg":"GET https://api.example.com","path":"/users/@me"}',
+      "{a:'see https://x.example',b:'/@me'}",
+      'data-props="{&quot;url&quot;:&quot;https://example.com&quot;,&quot;me&quot;:&quot;/users/@me&quot;}"',
+      "https://example.com,2024-01-02T03:04:05Z,/users/@me",
+      "url=https://example.com,ts=12:34:56,path=/x@y",
+      'console.log("Listening at http://"+h+":"+p+"/@vite/client")',
+      "详情见https://example.com，负责人:张三/李四，邮箱me@example.com",
+      "see http://a.example;ts=12:34/x@y",
+      "see http://a.example|ts=12:34/x@y",
+      "see http://a=b:12x/x@y",
+      "see http://a&b:12x/x@y",
+      "see http://a+b:12x/x@y",
+      "see http://a<b:12x/x@y",
+      "see http://a(b:12x/x@y",
+      "see http://a[b:12x/x@y",
+      "see http://a\\b:12x/x@y",
+      "see http://a>b:12x/x@y",
+      "see http://a)b:12x/x@y",
+      "see http://a]b:12x/x@y",
+      "see http://a'b:12x/x@y",
+      'see http://a"b:12x/x@y',
+      "see http://a`b:12x/x@y",
+      "see http://a|b:12x/x@y",
+      "see http://a;b:12x/x@y",
+      "see http://a,b:12x/x@y",
+      "see http://aéb:12x/x@y",
+      // A port with a closer after it
+      "<td>http://staging.example.com:8080</td><td>ops@example.com</td>",
+      "<url>http://nexus.example.com:8081</url><email>dev@example.com</email>",
+      '{"msg":"listening on http://api.example.com:8080","path":"/@vite/client"}',
+      "[api](http://api.example.com:8080)[me](https://discord.com/users/@me)",
+      "ALLOWED=https://a.example:8443;https://cdn.example/react@18",
+      "GOPROXY=https://proxy.example.com:8443|https://proxy.golang.org/x@v1",
+      'echo -e "http://a.example:8080\\nhttp://b.example/@me"',
+      "jdbc:sqlserver://db.example.com:1433;databaseName=app;trustStore=/etc/ssl/truststore.jks;user=svc@corp",
+      "访问http://example.com:8080，然后打开/users/@me页面",
+      "see **http://a.example:8080**/x@y",
+      "see http://a.example:8080&quot;/x@y",
+      "see http://a.example:8080]/x@y",
+      "see http://a.example:8080}/x@y",
+      "see http://a.example:8080`/x@y",
+      "see http://a.example:8080'/x@y",
+      'see http://a.example:8080"/x@y',
+      "see http://a.example:port;/x@y",
+      "see http://a.example:*;/x@y",
+      "see http://a.example:$PORT;/x@y",
+      // The same in strings with escaped quotes
+      '{\\"url\\":\\"https://api.example:8443\\",\\"path\\":\\"/@me\\"}',
+      '"body": "{\\"a\\":\\"https://api.example:8443\\",\\"b\\":\\"/users/@me\\"}"',
+      // A later `://` after a host with a port
+      "[a](https://a.example:8443)[b](https://b.example/@c)",
+      "<https://a.example:8443>,<https://b.example/@c>",
+      "<http://a.example:8080>,<https://b.example/@c>",
+      "http://a.example:8080|https://b.example/@c",
+      // A string that ends at a host's `:`, joined to the port
+      "'https://api.example.com:'+p+'/users/@me'",
+      '"http://example.com:"+port+"/x@y"',
+      "'http://example.com:'.$port.'/x@y'",
+      // The other two quotes, closing before an `@` that isn't in the string
+      "'http://a.example:foo/c','me@x.example'",
+      "`http://a.example:foo/c`,`me@x.example`",
     ])("leaves %s", (line) => {
       const text = `${line}\n`;
       expect(redactFile(text)).toBe(text);
@@ -1319,8 +1505,32 @@ describe("a search", () => {
       expect(isReviewPath("src/task-admin-dashboard-settings.ts")).toBe(true);
     });
 
+    it.each([
+      "docs/task-admin-Q3-2024-report-final.pdf",
+      "dist/assets/disk-admin-settings-CkL9dE2f.js",
+      "src/stripe_whsec_utils/handlers/verify/index.ts",
+    ])("keeps %s in the list", (path) => {
+      expect(isReviewPath(path)).toBe(true);
+    });
+
     describe("in a megabyte built to be slow", () => {
       const fill = (piece: string, n = 1_000_000) => piece.repeat(Math.ceil(n / piece.length)).slice(0, n);
+
+      // Eight megabytes through the last step alone, which takes milliseconds: a pattern that starts from each of a
+      // scheme's letters reads every tail 31 times, and is still linear, so only its cost can show.
+      it.each([
+        ["tails after long schemes", `${`${"a".repeat(31)}://${"x".repeat(4000)}\n`.repeat(2000)}@`],
+        ["a long authority before a scheme", `a://${"c".repeat(8_000_000)}://d/@`],
+        [
+          "authorities that each end in a scheme",
+          `${`${"x".repeat(369)}${"a".repeat(31)}://`.repeat(20_000)}/@`,
+        ],
+      ])("reads %s once", (_, text) => {
+        const at = performance.now();
+        redactLast(text);
+        expect(performance.now() - at).toBeLessThan(300);
+      });
+
       it.each([
         ["URLs with nothing to end them", fill("a://b:c/")],
         ["URLs and one @ at the end", `${fill("a://b:c/", 999_000)}@`],
@@ -1331,11 +1541,11 @@ describe("a search", () => {
         ["strings with no blanks", `${fill('"a://b:c/', 999_000)}@`],
         ["strings of two kinds", `${fill(`"a://b:c/'a://b:c/`, 999_000)}@`],
         ["a host of colons", `a://${fill(":", 999_000)}/@`],
-        ["strings with one end, past escaped quotes", `"a://b:c/@${fill('\\"')}"`],
+        ["strings with one end, past escaped quotes", `"a://b:c/@${fill('\\"', 999_000)}"`],
         ["strings and escaped quotes in turn", fill('"a://b:c/@ \\" ')],
         ["escaped strings and quotes in turn", fill('\\"a://b:c/@ " ')],
         ["a host of brackets", `a://${fill("[", 999_000)}]/@`],
-        ["a host of @ and colons", `a://${fill("@:")}/@`],
+        ["a host of @ and colons", `a://${fill("@:", 999_000)}/@`],
         ["one long authority", `a://${fill("y")}`],
         ["authorities just past the old limit", fill(`x://${"y".repeat(401)}/`)],
         ["one long password", `postgres://u:ab/${fill("c", 999_000)}@h`],
@@ -1346,11 +1556,11 @@ describe("a search", () => {
         ["a prefix one short of a token", fill(`ghp_${"a".repeat(35)} `)],
         ["a prefix of a long kind", fill(`github_pat_${"a".repeat(19)}_`)],
         ["a dash after a prefix", `xoxb-1${fill("-")}`],
-        ["a long webhook secret", `whsec_${fill("a")}_`],
+        ["a long webhook secret", `whsec_${fill("a", 999_000)}_`],
         ["short webhook secrets", fill(`whsec_${"a".repeat(7)}`)],
-        ["a token's end with a long head", `${fill("a")}.eyJabcdefgh.x`],
-        ["token starts before a token's end", `${fill("eyJ-")}.eyJabcdefgh.x`],
-        ["strings closed before the next /", `@ ${fill('"a://b:c",')}/@`],
+        ["a token's end with a long head", `${fill("a", 999_000)}.eyJabcdefgh.x`],
+        ["token starts before a token's end", `${fill("eyJ-", 999_000)}.eyJabcdefgh.x`],
+        ["strings closed before the next /", `@ ${fill('"a://b:c",', 999_000)}/@`],
         ["strings closed before the next /, no blanks", `${fill('"a://b:c",', 999_000)}/@`],
         ["one string past escaped quotes, from the start", `"a://b:c${fill('\\"', 999_000)}"/@`],
         ["holes with a #", `@${fill("a://b:#{c}/", 999_000)}@`],
