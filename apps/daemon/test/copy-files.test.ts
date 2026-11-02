@@ -146,6 +146,29 @@ describe("the file list", () => {
     expect(list.partial).toBe(false);
   });
 
+  it.skipIf(process.getuid?.() === 0)("says when a folder it can't enter may hold files", async () => {
+    const w = rig();
+    w.write("d/tracked.txt", "one\n");
+    git(w.cwd, "add", "-A");
+    git(w.cwd, "-c", "user.name=a", "-c", "user.email=a@example.invalid", "commit", "-q", "-m", "more");
+    w.write("d/new.txt", "new\n");
+    chmodSync(join(w.cwd, "d"), 0);
+    const list = await w.port.tree(w.copy);
+    chmodSync(join(w.cwd, "d"), 0o755);
+    expect(list.partial).toBe(true);
+    expect(list.paths).toContain("keep.txt");
+  });
+
+  it.skipIf(process.getuid?.() === 0)("doesn't mind a shut folder that .gitignore covers", async () => {
+    const w = rig();
+    w.write(".gitignore", "shut/\n");
+    w.write("shut/x.txt", "x\n");
+    chmodSync(join(w.cwd, "shut"), 0);
+    const list = await w.port.tree(w.copy);
+    chmodSync(join(w.cwd, "shut"), 0o755);
+    expect(list.partial).toBe(false);
+  });
+
   it("has what is tracked and what is new, and not what is ignored or has gone", async () => {
     const w = rig();
     w.write("src/new.ts", "x\n");

@@ -70,7 +70,8 @@ export function isSearchQuery(q: unknown): q is string {
 
 /**
  * The files. In a repository: what the commit tracks and what is new, by the scratch index, less what has gone from
- * the folder. With no commit to go on: a bounded `find`. Links are listed and not followed.
+ * the folder. With no commit to go on: a bounded `find`. Links are listed and not followed. What is behind a folder that
+ * can't be entered is missing either way, tracked files too, so the list says it may be.
  */
 export function treeScript(copy: ReviewCopy, nonce: string): string {
   check(copy);
@@ -83,8 +84,10 @@ export function treeScript(copy: ReviewCopy, nonce: string): string {
     ': > "$W/tracked"; : > "$W/gone"',
     'if [ -n "$head" ]; then',
     `  G ls-files -z -c ${HERE} > "$W/tracked" || ${fail}`,
-    `  G ls-files -z -d ${HERE} > "$W/gone" || ${fail}`,
-    `  G ls-files -z -o --exclude-standard ${HERE} > "$W/new" || ${fail}`,
+    `  G ls-files -z -d ${HERE} > "$W/gone" 2>> "$W/said" || ${fail}`,
+    `  G ls-files -z -o --exclude-standard ${HERE} > "$W/new" 2>> "$W/said" || ${fail}`,
+    // Git passes over a folder it can't enter with a warning and a good exit status.
+    `  ! grep -q -E 'could not open|cannot lstat' "$W/said" || echo ${marker(nonce, "partial")}`,
     "else",
     `  find . -maxdepth ${FIND_DEPTH} \\( ${prune} -o -path ./.inc \\) -prune -o \\( -type f -o -type l \\) -print0 | head -c ${LIST_LIMIT + 1} > "$W/new"; p=("\${PIPESTATUS[@]}")`,
     // 1: a folder it couldn't read. 141: the cap closed the pipe. Anything else, and an empty list would be a lie.
