@@ -931,6 +931,127 @@ describe("the pane", () => {
     expect(again.root.querySelector(".side")).toBeNull();
   });
 
+  describe("on a file that can't be read", () => {
+    const place = { path: "new.txt", line: 1, side: "new" as const, quote: "hello" };
+    const reason = "Ada's machine is asleep, so the changes can't be read right now.";
+    const held = (root: ShadowRoot) => root.querySelector<HTMLTextAreaElement>(".moved .box textarea");
+    const words = (text = "still mine") => {
+      commentDrafts.start("c1", place);
+      commentDrafts.write("c1", place, text);
+    };
+    const pick = async (el: IncConvReview, root: ShadowRoot, path = place.path) => {
+      must(root.querySelector<HTMLElement>(`.f[data-path="${path}"]`)).click();
+      await settle(el);
+      await el.updateComplete;
+    };
+
+    it("keeps the box and what it is about, over a list kept through a failed read", async () => {
+      const { el, root } = await mount();
+      await settle(el);
+      words();
+      changes = listing({ state: "asleep", files: [], reason });
+      await el.refresh();
+      await settle(el);
+      fileReply = file({ path: place.path, state: "asleep", reason });
+      await pick(el, root);
+      expect(root.querySelector(".diff .note:not([role=alert])")?.textContent).toContain("is asleep");
+      expect(held(root)?.value).toBe("still mine");
+      expect(root.querySelector(".moved p")?.textContent).toBe(
+        "This file can't be read, so this comment isn't on its line.",
+      );
+      expect(root.querySelector(".moved")?.classList.contains("alone")).toBe(true);
+      expect(root.querySelector(".moved .where")?.textContent).toBe("new.txt:1");
+      expect(root.querySelector(".moved blockquote")?.textContent).toBe("hello");
+      must(root.querySelector<HTMLButtonElement>(".moved .box .primary")).click();
+      await el.updateComplete;
+      expect(reviewComments.list("c1").map((c) => c.text)).toEqual(["still mine"]);
+      expect(commentDrafts.list("c1")).toEqual([]);
+    });
+
+    it("keeps the box when the read throws", async () => {
+      const { el, root } = await mount();
+      await settle(el);
+      words();
+      vi.stubGlobal("fetch", async () => reply({ error: "boom" }, 500));
+      await pick(el, root);
+      expect(root.querySelector(".diff .note")?.textContent).toContain("Couldn't load this file");
+      expect(held(root)?.value).toBe("still mine");
+    });
+
+    it("keeps an empty box too, and counts two as two", async () => {
+      const { el, root } = await mount();
+      await settle(el);
+      words("");
+      commentDrafts.start("c1", { ...place, line: 2, quote: "there" });
+      fileReply = file({ path: place.path, state: "busy", reason: "It is busy." });
+      await pick(el, root);
+      expect(root.querySelectorAll(".moved .box").length).toBe(2);
+      expect(root.querySelector(".moved p")?.textContent).toBe(
+        "This file can't be read, so these comments aren't on their lines.",
+      );
+    });
+
+    it("goes to a comment there from the list, as it does when a line has changed", async () => {
+      const { el, root } = await mount();
+      await settle(el);
+      reviewComments.add("c1", note({ path: place.path, line: 1, quote: "hello" }));
+      fileReply = file({ path: place.path, state: "asleep", reason });
+      await pick(el, root);
+      must(root.querySelector<HTMLButtonElement>(".where.link-btn")).click();
+      await until(() => root.activeElement?.matches(".moved .c"));
+    });
+
+    it("leaves the owner typing through a read that fails, with the box in place all the while", async () => {
+      const { el, root } = await mount();
+      await settle(el);
+      words();
+      vi.stubGlobal("fetch", async () => reply({ error: "boom" }, 500));
+      await pick(el, root);
+      const ta = held(root) as HTMLTextAreaElement;
+      ta.focus();
+      ta.setSelectionRange(2, 4);
+      let land = (_: Response) => {};
+      vi.stubGlobal("fetch", (url: string) =>
+        url.includes("/changes/file")
+          ? new Promise<Response>((done) => {
+              land = done;
+            })
+          : Promise.resolve(reply({ changes })),
+      );
+      const reading = el.refresh();
+      await until(() => el.fileLoading);
+      await el.updateComplete;
+      expect(held(root)).toBe(ta);
+      land(reply({ file: file({ path: place.path, state: "asleep", reason }) }));
+      await reading;
+      await settle(el);
+      expect(held(root)).toBe(ta);
+      expect(root.activeElement).toBe(ta);
+      expect([ta.selectionStart, ta.selectionEnd]).toEqual([2, 4]);
+      expect(root.querySelector(".diff .note")?.textContent).toContain("is asleep");
+    });
+
+    it("takes the box to its line, with focus, once the file can be read", async () => {
+      const { el, root } = await mount();
+      await settle(el);
+      words();
+      fileReply = file({ path: place.path, state: "asleep", reason });
+      await pick(el, root);
+      const ta = must(held(root));
+      ta.focus();
+      fileReply = file({
+        path: place.path,
+        before: { state: "none" },
+        after: { state: "text", text: "hello\n" },
+      });
+      await el.refresh();
+      await settle(el);
+      const now = root.querySelector<HTMLTextAreaElement>(".rows .box textarea");
+      expect(now?.value).toBe("still mine");
+      expect(root.activeElement).toBe(now);
+    });
+  });
+
   it("asks about one box at a time when two files have one on the same line number", async () => {
     const at = { line: 2, side: "new" as const, quote: "2" };
     for (const path of ["a.ts", "b.ts"]) {
@@ -1017,6 +1138,7 @@ describe("the pane", () => {
       const now = root.querySelector(".moved .box textarea") as HTMLTextAreaElement;
       expect(root.activeElement).toBe(now);
       expect([now.selectionStart, now.selectionEnd]).toEqual([4, 6]);
+      expect(root.querySelector(".moved")?.classList.contains("alone")).toBe(false);
     });
 
     it("stays with its own comment when the row's box is drawn for another", async () => {
@@ -1058,6 +1180,95 @@ describe("the pane", () => {
       await el.refresh();
       await settle(el);
       expect(root.activeElement).toBe(root.querySelector(".stray"));
+    });
+
+    describe("in a pane too narrow for two columns, on a screen that isn't a phone", () => {
+      // The container query in the styles, which happy-dom doesn't run.
+      const narrow = (root: ShadowRoot, back = "inline-flex") => {
+        must(root.querySelector<HTMLElement>(".side")).style.display = "none";
+        must(root.querySelector<HTMLElement>(".back")).style.display = back;
+      };
+      const fileGoes = async (el: IncConvReview) => {
+        changes = listing({ files: [{ path: "other.ts", added: 1, removed: 0, status: "modified" }] });
+        await el.refresh();
+        await settle(el);
+      };
+
+      it("goes to the way back, not to a link the list is hiding", async () => {
+        const { el, root } = await mount();
+        await typing(el, root);
+        narrow(root);
+        await fileGoes(el);
+        expect(root.querySelector(".stray")).not.toBeNull();
+        expect(root.activeElement).toBe(root.querySelector(".back"));
+      });
+
+      it("goes to Refresh when nothing nearer is showing", async () => {
+        const { el, root } = await mount();
+        await typing(el, root);
+        narrow(root, "none");
+        await fileGoes(el);
+        expect(root.activeElement).toBe(root.querySelector(".refresh"));
+      });
+    });
+
+    it("keeps focus and the caret in an aside box when a refresh fails", async () => {
+      const place = { path: "src/a.ts", line: 2, side: "new" as const, quote: "2" };
+      commentDrafts.start("c1", place);
+      commentDrafts.write("c1", place, "half a thought");
+      changes = listing({ state: "busy", files: [], reason: "It is busy." });
+      const { el, root } = await mount();
+      await settle(el);
+      const ta = root.querySelector(".side .box textarea") as HTMLTextAreaElement;
+      ta.focus();
+      ta.setSelectionRange(4, 6);
+      vi.stubGlobal("fetch", async () => reply({ error: "boom" }, 500));
+      await el.refresh();
+      await settle(el);
+      expect(root.querySelector('.state[role="alert"]')?.textContent).toContain("Couldn't read the changes");
+      const now = root.querySelector(".side .box textarea") as HTMLTextAreaElement;
+      expect(now.value).toBe("half a thought");
+      expect(root.activeElement).toBe(now);
+      expect([now.selectionStart, now.selectionEnd]).toEqual([4, 6]);
+    });
+
+    describe("in an aside box, emptied to write it again", () => {
+      const emptied = async (el: IncConvReview, root: ShadowRoot) => {
+        await typing(el, root);
+        changes = listing({ files: [] });
+        await el.refresh();
+        await settle(el);
+        const ta = root.querySelector(".side .box textarea") as HTMLTextAreaElement;
+        ta.value = "";
+        ta.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+        return ta;
+      };
+      const turnStarts = async (el: IncConvReview) => {
+        chat = { turns: [], activeTurn: { id: "t", responseParts: [] } };
+        notify(new Set([CHAT]));
+        await el.updateComplete;
+      };
+
+      it("keeps the box, and focus in it, through any render", async () => {
+        const { el, root } = await mount();
+        const ta = await emptied(el, root);
+        await turnStarts(el);
+        expect(root.querySelector(".side .box textarea")).toBe(ta);
+        expect(root.activeElement).toBe(ta);
+        ta.value = "new words";
+        ta.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+        must(root.querySelector<HTMLButtonElement>(".side .box .primary")).click();
+        await el.updateComplete;
+        expect(reviewComments.list("c1").map((c) => c.text)).toEqual(["new words"]);
+      });
+
+      it("lets it go once the owner has left it", async () => {
+        const { el, root } = await mount();
+        const ta = await emptied(el, root);
+        ta.blur();
+        await turnStarts(el);
+        expect(root.querySelector(".side .box")).toBeNull();
+      });
     });
 
     it("leaves focus alone when it isn't in a box", async () => {
