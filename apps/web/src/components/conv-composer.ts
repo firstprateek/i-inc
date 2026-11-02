@@ -327,7 +327,7 @@ export class IncConvComposer extends LitElement {
     this.text = ta.value;
     draftMemo.set(`conv:${this.conversationId}`, this.text);
     this.updateSlash(ta);
-    if (!(e as InputEvent).isComposing) void this.updateMention(ta);
+    void this.updateMention(ta);
   };
 
   private closeMention() {
@@ -358,12 +358,16 @@ export class IncConvComposer extends LitElement {
     return !!this.conversationId && !this.conversationId.startsWith("draft:");
   }
 
-  /** Opens, moves or closes the `@` list. The answer may come after the owner has typed on: it is read for then. */
+  /**
+   * Opens, moves or closes the `@` list. The answer may come after the owner has typed on: it is read for then. It
+   * follows the text during a composition too: a phone's keyboard can compose every word, so there would be no other
+   * time, and the keys that pick from the list stay the IME's until it ends.
+   */
   private async updateMention(ta: HTMLTextAreaElement) {
     const q = this.hasCopy ? mentionQuery(ta.value, ta.selectionStart ?? ta.value.length) : undefined;
     // The `@` the owner dismissed stays shut until it has gone from the box.
     if (q?.start !== this.mentionShut) this.mentionShut = -1;
-    if (!q || this.composing || q.start === this.mentionShut) return this.closeMention();
+    if (!q || q.start === this.mentionShut) return this.closeMention();
     const id = this.conversationId;
     const ask = ++this.mentionAsk;
     const v = await pathsFor(id).catch(() => null);
@@ -444,7 +448,7 @@ export class IncConvComposer extends LitElement {
       }
     }
     const composing = e.isComposing || this.composing || e.keyCode === 229;
-    if (e.key === "Escape" && (this.mention.length || this.mentionNote)) {
+    if (e.key === "Escape" && !composing && (this.mention.length || this.mentionNote)) {
       e.preventDefault();
       e.stopPropagation();
       const ta = e.target as HTMLTextAreaElement;
@@ -687,7 +691,6 @@ export class IncConvComposer extends LitElement {
           @paste=${this.onPaste}
           @compositionstart=${() => {
             this.composing = true;
-            this.closeMention();
           }}
           @compositionend=${() => {
             this.composing = false;

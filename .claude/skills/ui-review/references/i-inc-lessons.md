@@ -144,3 +144,7 @@ paths, branch names, structured briefs).
 37. **Check a phone's header with every control it can hold (layout).** The Files tab's header fit, but Changes adds
     Refresh and pushed the close button into the screen's edge, which the checker didn't report. → Render each tab of a
     tabbed header at 390 px and measure the last control against the gutter.
+38. **A composition isn't only an IME (interaction).** The `@` list shut during composition, which suited Japanese, but a
+    phone's keyboard composes every Latin word, so on Android the list could never be narrowed by typing. → Let what
+    reads the text follow it during a composition; what is held back is the keys that act on it (Enter, Tab, arrows,
+    Escape), which are the IME's until it ends.

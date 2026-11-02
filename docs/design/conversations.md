@@ -317,8 +317,9 @@ changed. Each read follows the Review rules above: it writes nothing, boots noth
   and Search refresh when a turn ends; a search's results stay as they were until the owner searches again. Lists run
   one at a time here too, and a request made during one gets a read that starts after it.
 - **`@file`.** Typing `@` at the start or after a space opens a list of matching paths, built like the slash list.
-  Enter or Tab puts the path in as text (in backticks if it has a space). It stays shut during IME composition, and for an `@` the owner dismissed with
-  Escape, until it has gone from the box. A draft has no working copy, so the list doesn't open there. The list of paths
+  Enter or Tab puts the path in as text (in backticks if it has a space). It follows the text during IME composition, because a phone's keyboard can
+  compose every word, while the keys that pick from it stay the IME's until the composition ends. It stays shut for an
+  `@` the owner dismissed with Escape, until that has gone from the box. A draft has no working copy, so the list doesn't open there. The list of paths
   is remembered for 30 seconds or until a turn ends; a machine that is asleep is said in a sentence, and Enter still sends.
 - **Read cards.** A Read card whose path is in the copy has a button that opens it in Files at the line, and the viewer
   says so if the file has gone since. The path is the call's locations, or its arguments (`file_path`, `offset`) while it

@@ -1161,30 +1161,75 @@ describe("@file in the composer", () => {
     expect(ta.getAttribute("aria-controls")).toBe("slash-list");
   });
 
-  it("stays out of the way of an IME, and looks again when the composition ends", async () => {
-    const { el, root, ta } = await mount();
-    ta.dispatchEvent(new CompositionEvent("compositionstart"));
-    await typeIn(el, ta, "@deep");
-    await new Promise((r) => setTimeout(r, 5));
-    expect(options(root)).toEqual([]);
-    expect(calls).toEqual([]);
-    ta.dispatchEvent(new CompositionEvent("compositionend"));
-    await until(() => options(root).length);
-    press(ta, "ArrowDown", { isComposing: true });
-    await el.updateComplete;
-    expect(el.mentionIndex).toBe(0);
-    const e = press(ta, "Enter", { isComposing: true });
-    expect(e.defaultPrevented).toBe(false);
-    expect(el.text).toBe("@deep");
-  });
+  describe("during a composition, as a phone's keyboard makes every word", () => {
+    const compose = async (el: IncConvComposer, ta: HTMLTextAreaElement, text: string) => {
+      ta.value = text;
+      ta.setSelectionRange(text.length, text.length);
+      ta.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true }));
+      await new Promise((r) => setTimeout(r, 5));
+      await el.updateComplete;
+    };
 
-  it("closes when composition starts on an open list", async () => {
-    const { el, root, ta } = await mount();
-    await typeIn(el, ta, "@deep");
-    await until(() => options(root).length);
-    ta.dispatchEvent(new CompositionEvent("compositionstart"));
-    await el.updateComplete;
-    expect(options(root)).toEqual([]);
+    it("follows the text, and narrows as the word grows", async () => {
+      const { el, root, ta } = await mount();
+      await typeIn(el, ta, "@");
+      await until(() => options(root).length === PATHS.length);
+      ta.dispatchEvent(new CompositionEvent("compositionstart"));
+      await el.updateComplete;
+      expect(options(root).length).toBe(PATHS.length);
+      await compose(el, ta, "@dee");
+      await until(() => options(root).length === 2);
+      await compose(el, ta, "@deep/b");
+      await until(() => options(root).length === 1);
+      await compose(el, ta, "@deep/bnothing");
+      await until(() => options(root).length === 0);
+    });
+
+    it("opens if the first letter of the word starts one", async () => {
+      const { el, root, ta } = await mount();
+      ta.dispatchEvent(new CompositionEvent("compositionstart"));
+      await compose(el, ta, "@dee");
+      await until(() => options(root).length === 2);
+    });
+
+    it("leaves the keys to the IME: nothing is picked, moved, sent or dismissed", async () => {
+      const { el, root, send, ta } = await mount();
+      ta.dispatchEvent(new CompositionEvent("compositionstart"));
+      await compose(el, ta, "@");
+      await until(() => options(root).length > 1);
+      for (const key of ["ArrowDown", "Enter", "Tab", "Escape"]) {
+        expect(press(ta, key, { isComposing: true }).defaultPrevented, key).toBe(false);
+        expect(press(ta, key, { isComposing: false, keyCode: 229 }).defaultPrevented, key).toBe(false);
+      }
+      expect(press(ta, "Enter", { isComposing: false }).defaultPrevented).toBe(false);
+      await el.updateComplete;
+      expect(el.mentionIndex).toBe(0);
+      expect(el.text).toBe("@");
+      expect(send).not.toHaveBeenCalled();
+      expect(options(root).length).toBeGreaterThan(1);
+    });
+
+    it("gets its keys back when the composition ends", async () => {
+      const { el, root, ta } = await mount();
+      ta.dispatchEvent(new CompositionEvent("compositionstart"));
+      await compose(el, ta, "@zebra");
+      await until(() => options(root).length === 1);
+      ta.dispatchEvent(new CompositionEvent("compositionend"));
+      await el.updateComplete;
+      expect(press(ta, "Tab").defaultPrevented).toBe(true);
+      await el.updateComplete;
+      expect(el.text).toBe("zebra.txt ");
+    });
+
+    it("looks again when the composition ends, for a browser that fires its input first", async () => {
+      const { el, root, ta } = await mount();
+      ta.dispatchEvent(new CompositionEvent("compositionstart"));
+      ta.value = "@zebra";
+      ta.setSelectionRange(6, 6);
+      ta.dispatchEvent(new CompositionEvent("compositionend"));
+      await until(() => options(root).length === 1);
+      expect(el.mentionIndex).toBe(0);
+    });
   });
 
   it("drops an answer the owner has typed past", async () => {
