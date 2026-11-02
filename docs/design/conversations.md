@@ -279,8 +279,12 @@ links into it.
   result of `redactTokens` is the starting point and the key blocks only take more out of it, so what that hides stays
   hidden whatever they find. A block keeps its lines, so line numbers hold. Its markers count wherever they sit, in a
   string joined over several lines or after code, once there is a line of key between them; a line in it that doesn't
-  read as key material shows as `redactTokens` left it, which is in sight unless it runs straight on from the key. A
-  block in the change, ship's scan stops. **Known gap:** the pane redacts whole files and the scan reads added lines
+  read as key material shows as `redactTokens` left it, which is in sight unless it runs straight on from the key, and
+  a line that names a marker is cut at it, as a key can run into one. A marker named in a string doesn't end a block or
+  restart it: before a key, an end is passed over for the next one and a
+  later begin is where the block starts, and after a key, the block runs to the last end before another begin, all
+  within 16 KB. So a source file that names a begin and two ends around any line that reads as key material is taken for
+  a key, and the scan stops it: the safe way to be wrong. A block in the change, ship's scan stops. **Known gap:** the pane redacts whole files and the scan reads added lines
   only, so they can disagree. A line added inside a key block already in the file is hidden if it reads as key material
   (base64, or any armor header, which to `redactTokens` is any `Word: text` line in the key's run), and so is a token
   added under an old `Authorization: Bearer` line.
@@ -297,8 +301,8 @@ links into it.
   rather than lines, the box sits above the reason, saying which line it is about, as it does while its file is loading;
   and with no list or diff to show, that section holds the box itself. A box emptied there to write it again stays while
   the owner is in it. When the list comes back, the box they are in opens its own file, in view, whichever file is first
-  and on a list-first phone too. A read that lands while the owner types doesn't take them out of the box: focus and the
-  caret go wherever it is drawn next. A comment sits under its line while the line still reads as it quoted it; after that it is listed above
+  and on a list-first phone too. A read that lands while the owner types, or fails, doesn't take them out of the box: focus
+  and the caret go wherever it is drawn next. A comment sits under its line while the line still reads as it quoted it; after that it is listed above
   the diff as changed, never under whatever took the number. Past about 200 KB the newest are kept for this page only,
   and the pane says so.
 - **Sending them.** Comments are added to the next message as `path:line`, the quoted line and the comment, and cleared
