@@ -105,8 +105,9 @@ export function listScript(copy: ReviewCopy, nonce: string): string {
     ...open(copy),
     ...scratchIndex(fail),
     // What is tracked under a folder that became a link would stop `add` altogether, taking the tracked files with it.
+    // The `/` keeps this to what is under a link: a link's own entry stays, or one `.gitignore` covers would read as deleted.
     'if [ -n "$head" ]; then',
-    '  find . -name .git -prune -o -type l -print0 > "$W/links"',
+    `  find . -name .git -prune -o -type l -exec printf '%s/\\0' {} + > "$W/links"`,
     `  if [ -s "$W/links" ]; then O G --literal-pathspecs rm -r -q -f --cached --ignore-unmatch --pathspec-from-file="$W/links" --pathspec-file-nul || echo ${m("partial")}; fi`,
     "fi",
     `G ls-files -z -m ${here} > "$W/tracked" 2>> "$W/said" || ${fail}`,

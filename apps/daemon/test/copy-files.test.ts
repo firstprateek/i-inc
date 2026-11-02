@@ -114,6 +114,38 @@ describe("the file list", () => {
     expect(list.files.map((f) => f.path)).toContain("d/a.txt");
   });
 
+  it("doesn't call a tracked link deleted because .gitignore covers it", async () => {
+    const w = rig();
+    symlinkSync("keep.txt", join(w.cwd, "tracked-link"));
+    w.write(".gitignore", "ignored.txt\ntracked-link\n");
+    git(w.cwd, "add", "-A", "-f");
+    git(w.cwd, "-c", "user.name=a", "-c", "user.email=a@example.invalid", "commit", "-q", "-m", "more");
+    git(w.cwd, "update-ref", "refs/remotes/origin/main", "HEAD");
+    expect(git(w.cwd, "status", "--porcelain")).toBe("");
+    expect((await w.port.list(w.copy)).files).toEqual([]);
+  });
+
+  it("still sees a tracked link change, go, or turn up where a file was", async () => {
+    const w = rig();
+    symlinkSync("keep.txt", join(w.cwd, "moved"));
+    symlinkSync("keep.txt", join(w.cwd, "removed"));
+    git(w.cwd, "add", "-A");
+    git(w.cwd, "-c", "user.name=a", "-c", "user.email=a@example.invalid", "commit", "-q", "-m", "more");
+    git(w.cwd, "update-ref", "refs/remotes/origin/main", "HEAD");
+    execFileSync("rm", [join(w.cwd, "moved"), join(w.cwd, "removed"), join(w.cwd, "gone.txt")]);
+    symlinkSync(".gitignore", join(w.cwd, "moved"));
+    symlinkSync("keep.txt", join(w.cwd, "gone.txt"));
+    symlinkSync("keep.txt", join(w.cwd, "fresh"));
+    const list = await w.port.list(w.copy);
+    expect(Object.fromEntries(list.files.map((f) => [f.path, f.status]))).toEqual({
+      fresh: "added",
+      "gone.txt": "type-changed",
+      moved: "modified",
+      removed: "deleted",
+    });
+    expect(list.partial).toBe(false);
+  });
+
   it("has what is tracked and what is new, and not what is ignored or has gone", async () => {
     const w = rig();
     w.write("src/new.ts", "x\n");
