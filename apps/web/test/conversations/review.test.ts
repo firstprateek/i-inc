@@ -1079,6 +1079,97 @@ describe("the pane", () => {
     expect(root.querySelector(".send .cbtn")).not.toBeNull();
   });
 
+  it("keeps the list, the diff and a box when a refresh is answered asleep, and says so", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    await typeAt(el, root, ".row.add", "half a thought");
+    const reason = "Ada's machine is asleep, so the changes can't be read right now.";
+    changes = listing({ state: "asleep", files: [], reason });
+    await el.refresh();
+    await settle(el);
+    expect(root.querySelector(".rows")).not.toBeNull();
+    expect(root.querySelector("#h-files")?.textContent).toBe("Files · 2");
+    expect(root.querySelector<HTMLTextAreaElement>(".rows .box textarea")?.value).toBe("half a thought");
+    expect(root.querySelector(".state")).toBeNull();
+    expect(root.querySelector('.say[role="alert"]')?.textContent).toContain(reason);
+    // Its Try again works, and the note goes with the read that worked
+    changes = listing();
+    const again = must(root.querySelector<HTMLButtonElement>('.say[role="alert"] .link-btn'));
+    again.focus();
+    again.click();
+    await until(() => !root.querySelector('.say[role="alert"]'));
+    await settle(el);
+    await until(() => root.activeElement === root.querySelector(".refresh"));
+  });
+
+  it("keeps it for busy and failed too, but takes a copy that has gone at its word", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    for (const state of ["busy", "failed"]) {
+      changes = listing({ state, files: [], reason: `It is ${state}.` });
+      await el.refresh();
+      await settle(el);
+      expect(root.querySelector(".rows")).not.toBeNull();
+      expect(root.querySelector('.say[role="alert"]')?.textContent).toContain(`It is ${state}.`);
+    }
+    changes = listing({ state: "no-copy", files: [], reason: "This working copy was cleaned away." });
+    await el.refresh();
+    await settle(el);
+    expect(root.querySelector(".rows")).toBeNull();
+    expect(root.querySelector(".state")?.textContent).toContain("cleaned away");
+    expect(root.querySelector('.say[role="alert"]')).toBeNull();
+  });
+
+  it("keeps the file showing when it can't be read again, and says so above it", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    await typeAt(el, root, ".row.add", "half a thought");
+    fileReply = file({
+      state: "busy",
+      reason: "Ada's machine is busy, so the changes can't be read right now.",
+    });
+    await el.refresh();
+    await settle(el);
+    expect(root.querySelector(".rows")).not.toBeNull();
+    expect(el.rows.length).toBeGreaterThan(0);
+    expect(root.querySelector<HTMLTextAreaElement>(".rows .box textarea")?.value).toBe("half a thought");
+    expect(root.querySelector('.diff .note[role="alert"]')?.textContent).toContain("is busy");
+    // Its Try again brings the file back, and focus moves on to it
+    fileReply = file();
+    const again = must(root.querySelector<HTMLButtonElement>('.diff .note[role="alert"] .link-btn'));
+    again.focus();
+    again.click();
+    await until(() => !root.querySelector('.diff .note[role="alert"]'));
+    await settle(el);
+    expect(root.querySelector(".rows")).not.toBeNull();
+  });
+
+  it("keeps the file showing when a read again throws", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    vi.stubGlobal("fetch", async (url: string) =>
+      url.includes("/changes/file") ? reply({ error: "boom" }, 500) : reply({ changes }),
+    );
+    await el.refresh();
+    await settle(el);
+    expect(root.querySelector(".rows")).not.toBeNull();
+    expect(root.querySelector('.diff .note[role="alert"]')?.textContent).toContain(
+      "Couldn't read this file again",
+    );
+  });
+
+  it("doesn't keep one conversation's list for another that can't be read", async () => {
+    const { el, root } = await mount();
+    await settle(el);
+    changes = listing({ state: "asleep", files: [], reason: "Grace's machine is asleep." });
+    el.conv = { id: "c2", ahpChat: CHAT, ahpSession: SESSION } as Any;
+    await el.updateComplete;
+    await settle(el);
+    expect(root.querySelector(".rows")).toBeNull();
+    expect(root.querySelector("#h-files")).toBeNull();
+    expect(root.querySelector(".state")?.textContent).toContain("Grace's machine is asleep.");
+  });
+
   it("keeps the comments when the first read fails", async () => {
     reviewComments.add("c1", note());
     vi.stubGlobal("fetch", async () => reply({ error: "boom" }, 500));

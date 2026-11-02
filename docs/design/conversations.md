@@ -245,7 +245,9 @@ links into it.
 - `GET /api/conversations/:id/changes/file?path=`: `{ file: { state, path, before, after, withheld?, reason? } }`. Each side
   is `{ state, text? }`, and state one of none, text, binary, too-big, link, outside, other. A bad path is a 400.
 - `state` is `ok`, or why the read didn't happen, with `reason` in one sentence: `asleep`, `busy` (the read outlasted its
-  wait or its time limit), `no-copy` or `failed`. These are 200s. The pane says the sentence and offers Try again.
+  wait or its time limit), `no-copy` or `failed`. These are 200s. The pane says the sentence and offers Try again. A
+  refresh that gets `asleep`, `busy` or `failed` says so above the list and the diff it already has, and leaves them,
+  and any comment box, where they are; the same goes for the open file when it can't be read again.
 - **Read-only, and the copy's word isn't taken.** No fetch, no token, and nothing in the copy is written:
   `apps/daemon/src/review.ts` lists from a scratch repository outside the folder, which sees the copy's objects and files
   and nothing else of it, not its index (flags and cached stats that hide a change), config, `.git/info/exclude` or

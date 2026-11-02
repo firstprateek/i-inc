@@ -49,12 +49,14 @@ export class IncConvReview extends LitElement {
     phone: { type: Boolean },
     path: { type: String },
     changes: { state: true },
+    listNote: { state: true },
     loadError: { state: true },
     loading: { state: true },
     selected: { state: true },
     reading: { state: true },
     file: { state: true },
     fileError: { state: true },
+    fileStale: { state: true },
     fileLoading: { state: true },
     rows: { state: true },
     showAll: { state: true },
@@ -70,6 +72,8 @@ export class IncConvReview extends LitElement {
   /** The file to open with, when the pane was opened from one. */
   declare path: string;
   declare changes: ChangesView | undefined;
+  /** Why the list showing couldn't be read again. */
+  declare listNote: string | null;
   declare loadError: string | null;
   declare loading: boolean;
   declare selected: string | null;
@@ -77,6 +81,8 @@ export class IncConvReview extends LitElement {
   declare reading: boolean;
   declare file: FileView | undefined;
   declare fileError: string | null;
+  /** Why the file showing couldn't be read again. */
+  declare fileStale: string | null;
   declare fileLoading: boolean;
   declare rows: DiffRow[];
   declare showAll: boolean;
@@ -96,11 +102,13 @@ export class IncConvReview extends LitElement {
     this.name = "";
     this.phone = false;
     this.path = "";
+    this.listNote = null;
     this.loadError = null;
     this.loading = false;
     this.selected = null;
     this.reading = false;
     this.fileError = null;
+    this.fileStale = null;
     this.fileLoading = false;
     this.rows = [];
     this.showAll = false;
@@ -223,6 +231,16 @@ export class IncConvReview extends LitElement {
     if (changed.has("conv") && (changed.get("conv") as Conversation | undefined)?.id !== this.conv?.id) {
       this.comments = this.conv ? reviewComments.list(this.conv.id) : [];
       this.discarding = null;
+      // What was kept through a failed read is another conversation's now.
+      this.changes = undefined;
+      this.listNote = null;
+      this.selected = null;
+      this.file = undefined;
+      this.fileError = null;
+      this.fileStale = null;
+      this.rows = [];
+      this.showAll = false;
+      this.reading = false;
       this.syncChat();
       void this.refresh();
     }
@@ -258,8 +276,15 @@ export class IncConvReview extends LitElement {
     try {
       const changes = await api.changes(conv.id);
       if (token !== this.listToken) return;
-      this.changes = changes;
       this.loadError = null;
+      // A read that didn't work says so above the list it has, and doesn't take that list away.
+      const failed = changes.state === "asleep" || changes.state === "busy" || changes.state === "failed";
+      if (failed && this.changes?.state === "ok") {
+        this.listNote = changes.reason ?? "Couldn't read the changes.";
+        return;
+      }
+      this.listNote = null;
+      this.changes = changes;
       if (changes.state !== "ok") return;
       const wanted = this.selected ?? (this.path || null);
       const there = changes.files.some((f) => f.path === wanted);
@@ -273,7 +298,9 @@ export class IncConvReview extends LitElement {
         this.reading = false;
       }
     } catch (e) {
-      if (token === this.listToken) this.loadError = e instanceof Error ? e.message : String(e);
+      if (token !== this.listToken) return;
+      this.listNote = null;
+      this.loadError = e instanceof Error ? e.message : String(e);
     } finally {
       if (token === this.listToken) this.loading = false;
     }
@@ -298,13 +325,21 @@ export class IncConvReview extends LitElement {
       this.rows = [];
       this.showAll = false;
       this.discarding = null;
+      this.fileStale = null;
     }
+    // A read again of what is showing that doesn't work says so over it, and doesn't take it away.
+    const showing = this.file?.state === "ok";
     this.selected = path;
     this.fileLoading = true;
     this.fileError = null;
     try {
       const file = await api.changedFile(conv.id, path);
       if (token !== this.fileToken) return;
+      if (showing && file.state !== "ok") {
+        this.fileStale = file.reason ?? "This file couldn't be read again.";
+        return;
+      }
+      this.fileStale = null;
       this.file = file;
       this.rows =
         file.state === "ok" && !fileNote(file)
@@ -314,7 +349,10 @@ export class IncConvReview extends LitElement {
       const written = commentDrafts.list(conv.id).filter((d) => d.path === path && d.text.trim());
       if ([...anchor(this.rows, written).at.keys()].some((i) => i >= SHOW_ROWS)) this.showAll = true;
     } catch (e) {
-      if (token === this.fileToken) this.fileError = e instanceof Error ? e.message : String(e);
+      if (token !== this.fileToken) return;
+      const words = e instanceof Error ? e.message : String(e);
+      if (showing) this.fileStale = `Couldn't read this file again (${words}).`;
+      else this.fileError = words;
     } finally {
       if (token === this.fileToken) this.fileLoading = false;
     }
@@ -544,6 +582,7 @@ export class IncConvReview extends LitElement {
     return html`<div class="diff" role="group" aria-label="Changes to ${visible(path)}">
       <div class="dh"><span class="path" title=${visible(path)}>${visible(path)}</span>
         ${this.rows.length ? html`<span class="plus" aria-label="${stats.added} lines added">+${stats.added}</span><span class="minus" aria-label="${stats.removed} lines removed">−${stats.removed}</span>` : nothing}</div>
+      ${this.fileStale ? html`<p class="note" role="alert">${this.fileStale} <button class="link-btn" type="button" @click=${() => void this.retryFile(path)}>Try again</button></p>` : nothing}
       ${
         this.fileError
           ? html`<p class="note">Couldn't load this file (${this.fileError}). <button class="link-btn" type="button" @click=${() => void this.retryFile(path)}>Try again</button></p>`
@@ -670,6 +709,7 @@ export class IncConvReview extends LitElement {
     const files = this.changes?.files ?? [];
     const added = files.reduce((n, f) => n + f.added, 0);
     const removed = files.reduce((n, f) => n + f.removed, 0);
+    const failed = this.loadError ? `Couldn't read the changes (${this.loadError}).` : this.listNote;
     return html`<div class="head"><h2>Changes</h2>
         <span class="sum">${files.length ? `${files.length} ${files.length === 1 ? "file" : "files"} · +${added} −${removed}` : ""}</span>
         <button class="cbtn refresh" type="button" aria-disabled=${this.loading ? "true" : "false"} @click=${this.retry}>${this.loading ? "Reading…" : "Refresh"}</button>
@@ -686,8 +726,8 @@ export class IncConvReview extends LitElement {
             : nothing
       }
       ${
-        this.loadError && this.changes?.state === "ok"
-          ? html`<p class="say" role="alert">Couldn't read the changes (${this.loadError}). <button class="link-btn" type="button" @click=${this.retry}>Try again</button></p>`
+        failed && this.changes?.state === "ok"
+          ? html`<p class="say" role="alert">${failed} <button class="link-btn" type="button" @click=${this.retry}>Try again</button></p>`
           : nothing
       }
       ${this.content()}`;
