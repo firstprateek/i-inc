@@ -277,24 +277,32 @@ const KEY_BEGIN =
   /^[ \t]*(?:(?:#|\/\/|\*|>|;|--)[ \t]*)?-{4,5} ?BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY[A-Z ]{0,10}-{4,5}[ \t]*$/gm;
 const KEY_END =
   /^[ \t]*(?:(?:#|\/\/|\*|>|;|--)[ \t]*)?-{4,5} ?END [A-Z0-9 ]{0,40}PRIVATE KEY[A-Z ]{0,10}-{4,5}[ \t]*$/gm;
-/** A line of a key's body, behind a comment's mark if it has one: base64, or one of the armor's headers. */
+/**
+ * A line of a key's body, behind a comment's mark if it has one: one of the armor's headers, or a run of what
+ * `redactPem` takes for key (base64, with `\\` and `-`), in quotes or before a string's closing marks if it has them.
+ */
 const KEY_LINE =
-  /^[ \t]*(?:(?:#|\/\/|\*|>|;|--)[ \t]*)?(?:[A-Za-z0-9+/=]+|(?:Proc-Type|DEK-Info|Version|Comment|Hash|Charset|Subject): .*)[ \t\r]*$/;
+  /^[ \t]*(?:(?:#|\/\/|\*|>|;|--)[ \t]*)?(?:["'`]?[A-Za-z0-9+/=\\-]+["'`}\]),;<>]*(?:[ \t]*\+)?|(?:Proc-Type|DEK-Info|Version|Comment|Hash|Charset|Subject): .*)[ \t\r]*$/;
+/** A run this long is a key's line, whatever is around it, as it is to `redactPem`. */
+const KEY_LONG_RUN = /[A-Za-z0-9+/=\\-]{60,}/;
+const isKeyLine = (line: string) => KEY_LINE.test(line) || KEY_LONG_RUN.test(line);
 /** The biggest block taken for a key: an 8192-bit RSA key is under 7 KB. Past this it is two markers in a long text. */
 const MAX_KEY_BLOCK = 16_384;
 
 /** A block from its first marker through its last, with the key gone and its lines kept; null if it holds no key. */
 function keyless(block: string): string | null {
   const body = block.split("\n").slice(1, -1);
-  if (!body.some((line) => KEY_LINE.test(line))) return null;
-  return ["[private key]", ...body.map((line) => (KEY_LINE.test(line) ? "" : line)), ""].join("\n");
+  if (!body.some(isKeyLine)) return null;
+  return ["[private key]", ...body.map((line) => (isKeyLine(line) ? "" : line)), ""].join("\n");
 }
 
 /**
  * A key goes with its markers, keeping its lines, wherever it sits: a key in a comment or a quoted block is no less a
- * key. A line between the markers that isn't key material stays, so two markers can't hide code, and with no key
- * there, or no end marker, the block is `redactTokens`' to judge. What this takes, `holdsCredential` stops, so nothing
- * can be hidden from the owner's review and still be pushed. One pass: the next end marker is found once and remembered.
+ * key. A line between the markers that doesn't read as key material stays, and with no key there, or no end marker,
+ * the block is `redactTokens`' to judge. A block in the added lines, `holdsCredential` stops. A block already in the
+ * file it doesn't: the scan reads added lines only and they hold no marker, so a line added inside that block that
+ * reads as key material, as any base64 or armor header does, is hidden from the owner's review and can be pushed.
+ * That is a known gap, pinned in ship-git.test.ts. One pass: the next end marker is found once and remembered.
  */
 function redactKeyBlocks(t: string): string {
   if (!t.includes("PRIVATE KEY")) return t;

@@ -225,6 +225,8 @@ export class IncConvReview extends LitElement {
       .box .acts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
       .box .acts p { margin: 0; flex: 1 1 100%; }
       .moved { flex: none; max-height: 45%; overflow-y: auto; border-bottom: 1px solid var(--line); padding-bottom: 6px; font: 14px/1.4 var(--body); }
+      /* With no diff under it, the room is its own. */
+      .moved.alone { flex: 0 1 auto; min-height: 0; max-height: none; }
       .moved > p { margin: 0; padding: 8px 10px 2px; color: var(--ink-2); }
       .moved > .c { margin: 6px 10px 0; }
       .moved .c:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: -3px; }
@@ -299,7 +301,8 @@ export class IncConvReview extends LitElement {
       this.syncChat();
       if (this.shownTab === "changes") void this.refresh();
     }
-    const read = changed.has("rows") || changed.has("file") || changed.has("changes");
+    const read =
+      changed.has("rows") || changed.has("file") || changed.has("changes") || changed.has("loadError");
     this.typing = read ? this.boxInFocus() : undefined;
   }
 
@@ -315,11 +318,12 @@ export class IncConvReview extends LitElement {
       this.bringIntoView(ta);
       return;
     }
-    // Its file has gone from the diff. A key pressed next lands here, so not on a button that would close the pane.
-    (
-      this.renderRoot.querySelector<HTMLElement>(".stray") ??
-      this.renderRoot.querySelector<HTMLElement>(".refresh")
-    )?.focus({ preventScroll: true });
+    // Its file has gone from the diff. A key pressed next lands here, so not on a button that would close the pane,
+    // and not on one a narrow pane is hiding, which takes no focus.
+    [".stray", ".back", ".refresh"]
+      .map((at) => this.renderRoot.querySelector<HTMLElement>(at))
+      .find((el) => el && el.checkVisibility?.() !== false)
+      ?.focus({ preventScroll: true });
   }
 
   private boxInFocus() {
@@ -452,15 +456,16 @@ export class IncConvReview extends LitElement {
       this.showAll = false;
       this.discarding = null;
       this.fileStale = null;
+      this.fileError = null;
     }
     // A read again of what is showing that doesn't work says so over it, and doesn't take it away.
     const showing = this.file?.state === "ok";
     this.selected = path;
     this.fileLoading = true;
-    this.fileError = null;
     try {
       const file = await api.changedFile(conv.id, path);
       if (token !== this.fileToken) return;
+      this.fileError = null;
       if (showing && file.state !== "ok") {
         this.fileStale = file.reason ?? "This file couldn't be read again.";
         return;
@@ -706,43 +711,50 @@ export class IncConvReview extends LitElement {
       commentDrafts.list(this.conv?.id ?? "").filter((d) => d.path === path),
     );
     const moved = comments.moved.length + drafts.moved.length;
+    const unread = this.fileError
+      ? `Couldn't load this file (${this.fileError}).`
+      : f && f.state !== "ok"
+        ? (f.reason ?? "This file couldn't be read.")
+        : null;
     const changed = moved
-      ? html`<div class="moved"><p>${moved === 1 ? "This line has" : "These lines have"} changed since the comment was written.</p>
-          ${comments.moved.map((c) => this.comment(c, "moved"))}${drafts.moved.map((d) => this.box(d))}</div>`
+      ? html`<div class="moved ${this.rows.length ? "" : "alone"}"><p>${
+          unread === null
+            ? `${moved === 1 ? "This line has" : "These lines have"} changed since the comment was written.`
+            : `This file can't be read, so ${moved === 1 ? "this comment isn't on its line" : "these comments aren't on their lines"}.`
+        }</p>
+          ${comments.moved.map((c) => this.comment(c, "moved"))}${drafts.moved.map((d) => (unread === null ? this.box(d) : this.looseBox(d)))}</div>`
       : nothing;
     return html`<div class="diff" role="group" aria-label="Changes to ${visible(path)}">
       <div class="dh"><span class="path" title=${visible(path)}>${visible(path)}</span>
         ${this.rows.length ? html`<span class="plus" aria-label="${stats.added} lines added">+${stats.added}</span><span class="minus" aria-label="${stats.removed} lines removed">−${stats.removed}</span>` : nothing}</div>
       ${this.fileStale ? html`<p class="note" role="alert">${this.fileStale} <button class="link-btn" type="button" @click=${() => void this.retryFile(path)}>Try again</button></p>` : nothing}
       ${
-        this.fileError
-          ? html`<p class="note">Couldn't load this file (${this.fileError}). <button class="link-btn" type="button" @click=${() => void this.retryFile(path)}>Try again</button></p>`
-          : f && f.state !== "ok"
-            ? html`<p class="note" role="status">${f.reason} <button class="link-btn" type="button" @click=${() => void this.retryFile(path)}>Try again</button></p>`
-            : !f
-              ? html`<p class="note" role="status">Loading the file…</p>`
-              : note
-                ? html`${changed}<p class="note">${note}</p>`
-                : !this.rows.length && !moved
-                  ? html`<p class="note">No line changes.</p>`
-                  : html`
-                    ${changed}
+        unread !== null
+          ? html`${changed}<p class="note" role="status">${unread} <button class="link-btn" type="button" @click=${() => void this.retryFile(path)}>Try again</button></p>`
+          : !f
+            ? html`<p class="note" role="status">Loading the file…</p>`
+            : note
+              ? html`${changed}<p class="note">${note}</p>`
+              : !this.rows.length && !moved
+                ? html`<p class="note">No line changes.</p>`
+                : html`
+                  ${changed}
+                  ${
+                    this.rows.length
+                      ? html`<div class="rows" tabindex="0" aria-label="Diff. Pick a line number to comment on it." @click=${this.onRows}><div class="in">
+                    ${shown.map((r, i) =>
+                      r.kind === "gap"
+                        ? html`<div class="gap">${r.count} unchanged ${r.count === 1 ? "line" : "lines"}</div>`
+                        : this.line(r, i, comments.at.get(i) ?? [], drafts.at.get(i) ?? []),
+                    )}
                     ${
-                      this.rows.length
-                        ? html`<div class="rows" tabindex="0" aria-label="Diff. Pick a line number to comment on it." @click=${this.onRows}><div class="in">
-                      ${shown.map((r, i) =>
-                        r.kind === "gap"
-                          ? html`<div class="gap">${r.count} unchanged ${r.count === 1 ? "line" : "lines"}</div>`
-                          : this.line(r, i, comments.at.get(i) ?? [], drafts.at.get(i) ?? []),
-                      )}
-                      ${
-                        this.rows.length > SHOW_ROWS && !this.showAll
-                          ? html`<div class="more"><button class="link-btn" type="button" @click=${() => this.showRest()}>Show all ${this.rows.length} lines</button></div>`
-                          : nothing
-                      }
-                    </div></div>`
+                      this.rows.length > SHOW_ROWS && !this.showAll
+                        ? html`<div class="more"><button class="link-btn" type="button" @click=${() => this.showRest()}>Show all ${this.rows.length} lines</button></div>`
                         : nothing
-                    }`
+                    }
+                  </div></div>`
+                      : nothing
+                  }`
       }
     </div>`;
   }
@@ -767,18 +779,19 @@ export class IncConvReview extends LitElement {
       .filter((d) => d.text.trim() && !files.some((f) => f.path === d.path));
   }
 
+  /** A box with no line to sit under, so it says which line it is about. */
+  private looseBox(d: LineDraft) {
+    return html`<div class="c"><div class="top"><span class="where">${visible(d.path)}:${d.line}${d.side === "old" ? " (removed)" : ""}</span></div>
+      <blockquote>${visible(d.quote)}</blockquote>${this.box(d, `${visible(d.path)} ${lineName(d)}`)}</div>`;
+  }
+
   /** `link`: going to the box above that file's diff. `box`: the box itself, when no diff can be drawn to hold it. */
   private unfinished(left: LineDraft[], how: "link" | "box") {
     if (!left.length) return nothing;
     return html`<section aria-labelledby="h-unfinished"><h3 id="h-unfinished">Unfinished comments · ${left.length}</h3>
       ${
         how === "box"
-          ? left.map(
-              (
-                d,
-              ) => html`<div class="c"><div class="top"><span class="where">${visible(d.path)}:${d.line}${d.side === "old" ? " (removed)" : ""}</span></div>
-                <blockquote>${visible(d.quote)}</blockquote>${this.box(d, `${visible(d.path)} ${lineName(d)}`)}</div>`,
-            )
+          ? left.map((d) => this.looseBox(d))
           : html`<ul>${left.map(
               (d) =>
                 html`<li><button class="link-btn stray" type="button" @click=${() => this.pick(d.path)}>${visible(d.path)}:${d.line}</button></li>`,
@@ -799,9 +812,13 @@ export class IncConvReview extends LitElement {
         )}>${this.running ? "Queue comments" : "Send comments"}</button></div></section>`;
   }
 
-  /** What is the owner's with no diff to go to: it, and the way to finish or send it, stays whatever the read did. */
+  /**
+   * What is the owner's with no diff to go to: it, and the way to finish or send it, stays whatever the read did.
+   * A box the owner has emptied to write it again stays while they are in it.
+   */
   private asideComments() {
-    const left = this.strays([]);
+    const on = this.boxInFocus()?.key;
+    const left = commentDrafts.list(this.conv?.id ?? "").filter((d) => d.text.trim() || boxKey(d) === on);
     if (!this.comments.length && !left.length) return nothing;
     return html`<div class="side aside">${this.unfinished(left, "box")}${this.commentList("plain")}</div>`;
   }
