@@ -1,6 +1,8 @@
 import { css, html, LitElement, nothing } from "lit";
+import { repeat } from "lit/directives/repeat.js";
 import { logout, refresh, refreshNow } from "../api.ts";
 import { connection, isOffline } from "../connection.ts";
+import { outcomeView, shipOutcomes } from "../conversations/outcomes.ts";
 import { isDismissed, showGettingStarted } from "../first-run.ts";
 import { canInstall, installSignal, needsIosInstall, promptInstall } from "../install.ts";
 import { startLiveUpdates } from "../live.ts";
@@ -105,6 +107,7 @@ export class IncApp extends LitElement {
   private lastView: Route["view"] = "conversations";
   private releaseAhp: (() => void) | undefined;
   private offRoster: (() => void) | undefined;
+  private offOutcomes: (() => void) | undefined;
   /** The connection's opening roster has been heard. */
   private rosterSeen = false;
   private rosterTimer: ReturnType<typeof setTimeout> | undefined;
@@ -143,6 +146,7 @@ export class IncApp extends LitElement {
     connection.addEventListener("change", this.onConnection);
     refresh.addEventListener("refresh", this.loadNeeds);
     needsYouSignal.addEventListener("change", this.loadNeeds);
+    this.offOutcomes = shipOutcomes.subscribe(() => this.requestUpdate());
     // The logo goes home, and home differs between a laptop and a phone: follow a resize across the line.
     this.phoneQuery = matchMedia(`(max-width: ${LAYOUT_BREAKPOINTS.phone}px)`);
     this.phoneQuery.addEventListener?.("change", this.onPhoneChange);
@@ -238,6 +242,7 @@ export class IncApp extends LitElement {
     connection.removeEventListener("change", this.onConnection);
     refresh.removeEventListener("refresh", this.loadNeeds);
     needsYouSignal.removeEventListener("change", this.loadNeeds);
+    this.offOutcomes?.();
     this.offRoster?.();
     this.offRoster = undefined;
     this.releaseAhp?.();
@@ -400,6 +405,29 @@ export class IncApp extends LitElement {
           <button class="btn ghost" type="button" @click=${() => refreshNow()}>Try again</button>
         </div>`
       : nothing;
+  }
+
+  /** How a ticket or PR request ended after the owner left the screen it started on. One each, until dismissed. */
+  private outcomes() {
+    // Keyed: a link takes its banner down as it is pressed, before the browser follows it, and with no key the next
+    // banner would have this one's elements by then, and the browser would follow that banner's address.
+    return repeat(
+      shipOutcomes.list(),
+      (o) => o.id,
+      (o) => {
+        const { text, href, label, external } = outcomeView(o);
+        const dismiss = () => shipOutcomes.dismiss(o.id);
+        return html`<div slot="notice" class="load-error outcome" role=${o.failure === undefined ? "status" : "alert"}>
+        <span>${text}</span>
+        ${
+          href
+            ? html`<a href=${href} target=${external ? "_blank" : nothing} rel=${external ? "noopener" : nothing} @click=${dismiss}>${label}</a>`
+            : nothing
+        }
+        <button class="btn ghost" type="button" @click=${dismiss}>Dismiss</button>
+      </div>`;
+      },
+    );
   }
 
   private onDocumentClick = (e: MouseEvent) => {
@@ -594,6 +622,7 @@ export class IncApp extends LitElement {
       /* The conversation screen: the first-run checklist (when there is one) above the conversations. */
       .conv-host { display: flex; flex-direction: column; gap: 12px; height: 100%; min-height: 0; }
       .conv-host > inc-chat, .conv-host > inc-conversations { flex: 1 1 0; min-height: 0; }
+      .outcome a { display: inline-flex; align-items: center; min-height: 44px; color: var(--reviewing-fg); font-weight: 700; text-underline-offset: 2px; }
       .old-note { align-self: flex-start; min-height: 44px; display: inline-flex; align-items: center; font-weight: 600; font-size: 14px; }
       .stack { display: flex; flex-direction: column; gap: var(--layout-section-gap, 20px); min-width: 0; }
 
@@ -903,6 +932,7 @@ export class IncApp extends LitElement {
           ${this.renderHeadExtras()}
           ${this.renderTabs()}
           ${this.notice()}
+          ${this.outcomes()}
           ${this.view()}
         </inc-layout>
       </main>

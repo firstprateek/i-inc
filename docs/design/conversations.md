@@ -230,6 +230,20 @@ shapes against a real adapter on the mini first.
   agent's plan, the brain pages used for this turn, and usage. Usage has a meter of how full the
   agent's context is, which moves during a turn; "Latest turn" shows only when a turn has reported tokens.
 - **Phone:** the same stream in one column; the context panel becomes a sheet.
+- **Moving on.** Leaving a conversation by Back or a link closes what was open over it: the ship dialog, the
+  phone's sheet and the review pane. The next conversation opens with none of them up. The exception is a ship dialog
+  whose request is under way, or has failed: leaving doesn't stop the request, and it went to the conversation it was
+  started in. The dialog stays up over whatever is showing, still about that conversation, and says how it ended: the
+  link, or the failure with the owner's words in it, and pressing again goes to the same conversation. A dialog showing
+  a success goes when the owner moves on. Whenever a dialog goes before the owner has closed it or followed its link,
+  the shell says how it ended on whatever page they are on, with the link, or a way back to the conversation, until
+  they dismiss it. That includes leaving the screen altogether. What they typed in the dialog goes with the screen.
+  While a dialog is up everything behind it is out of reach, the context panel and a tablet's drawer too, and pressing
+  Ship again can't reach it: a dialog never changes to another conversation or kind under the owner's words.
+- **A link the list doesn't hold** (archived, or stale). The screen reads that one conversation, even if the list
+  itself failed. A 404 says it wasn't found. Any other failure says it couldn't load this conversation, with Try
+  again, and doesn't say it has gone; the next list that loads asks again, once for each list, so a read that goes on
+  failing makes no requests of its own.
 
 ## Review (the Changes pane)
 
