@@ -146,7 +146,8 @@ describe("a conversation's ticket titled by its agent, once the conversation can
       "/api/board",
       "/api/board/summary",
       "/api/projects/Duet",
-      "/api/desk",
+      "/api/needs-you",
+      "/api/office",
     ])
       out.push(...visible(JSON.stringify((await rig.call("GET", p)).body), SHAPES).map((v) => `${p}: ${v}`));
     return out;

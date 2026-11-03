@@ -157,7 +157,7 @@ const SAME = "\u0000same";
 const HASH_KEY_MIN = 256;
 /** The most entries a memo keeps, however short they are. */
 const MEMO_MAX_ENTRIES = 50_000;
-/** How many of the last turned-away or pushed-out keys a memo remembers, to tell that it is thrashing. */
+/** The most the thrash score can reach, so a memo that stops thrashing leaves that state within this many misses. */
 const THRASH_MAX = 32;
 /** Thrashing from this score: misses on keys it just pushed out or turned away outnumber new ones by this much. */
 const THRASH_ON = 16;
