@@ -6,6 +6,7 @@ import { createSign } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { configDir, readOwnerOnly } from "./config.ts";
+import { outsideOf } from "./sinks.ts";
 
 /** Where a session's GitHub token comes from. `repo` is "owner/name". */
 export interface TokenSource {
@@ -427,7 +428,10 @@ export class PullRequests {
     return { authorization: `Bearer ${await this.tokens.token(repo)}` };
   }
 
-  /** Stage 1 opens the PR as a draft, so CI runs from the start (spec §6). */
+  /**
+   * Stage 1 opens the PR as a draft, so CI runs from the start (spec §6). The title and body leave the machine
+   * here, whoever wrote them (a pipeline ticket, a follow-up, a conversation), so they go through the sink.
+   */
   async openDraft(
     repo: string,
     pr: { head: string; base: string; title: string; body: string },
@@ -435,7 +439,7 @@ export class PullRequests {
     const body = await call(this.f, `${this.api}/repos/${checkRepo(repo)}/pulls`, {
       method: "POST",
       headers: await this.auth(repo),
-      body: JSON.stringify({ ...pr, draft: true }),
+      body: JSON.stringify({ ...pr, title: outsideOf(pr.title), body: outsideOf(pr.body), draft: true }),
     });
     return { number: Number(body.number), url: String(body.html_url), nodeId: String(body.node_id) };
   }
@@ -515,12 +519,12 @@ export class PullRequests {
     });
   }
 
-  /** Stage 9: the report becomes the PR body. */
+  /** Stage 9: the report becomes the PR body, through the sink. */
   async setBody(repo: string, number: number, body: string): Promise<void> {
     await call(this.f, `${this.api}/repos/${checkRepo(repo)}/pulls/${number}`, {
       method: "PATCH",
       headers: await this.auth(repo),
-      body: JSON.stringify({ body }),
+      body: JSON.stringify({ body: outsideOf(body) }),
     });
   }
 
@@ -823,7 +827,8 @@ export async function createOrgRepo(
       body: JSON.stringify({
         name: o.name,
         private: o.private,
-        ...(o.description ? { description: o.description.slice(0, 350) } : {}),
+        // Cut where main cuts, then through the sink: hiding more never pulls in text past the cut.
+        ...(o.description ? { description: outsideOf(o.description.slice(0, 350)) } : {}),
         auto_init: false,
       }),
     },

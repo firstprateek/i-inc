@@ -26,6 +26,7 @@ import {
   scopeOfDir,
   serializePage,
 } from "@i-inc/core";
+import { redactProse } from "./ahp/sanitize.ts";
 import {
   type Accepted,
   type CheckContext,
@@ -526,8 +527,10 @@ export class BrainHarvest {
             keep: false,
             silent: false,
             sha: a.sha,
-            base: a.base,
-            text: a.text,
+            // As `reject()` does (brain-check.ts): the base may be the agent's raw text from `brain_bases`, and
+            // this goes into `brain_changes.diff`, which is only ever shown (r131, G6).
+            base: a.base === null ? null : redactProse(a.base).slice(0, 8000),
+            text: a.text === null ? null : redactProse(a.text).slice(0, 8000),
           });
           continue;
         }

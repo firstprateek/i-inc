@@ -101,7 +101,9 @@ Pieces in the daemon:
 3. **State store.** Every channel's actions are appended to SQLite with their host-wide `serverSeq`
    (`ahp_actions`), with periodic snapshots (`ahp_snapshots`), so any client can replay and a restart
    rebuilds the state. The log is pruned behind snapshots (by age and by count), tool output is
-   redacted and capped before it is kept, and big attachments live in content blobs. Ticket stages are on the
+   redacted and capped before it is kept, and big attachments live in content blobs. What is kept is what a frame is
+   made from: every frame goes through one more pass on the way out (`redactLast` on the text keys, sinks.ts), which
+   never writes back, and the owner's own messages are sent as typed. Ticket stages are on the
    same store (T69): each stage session is a read-only chat, watchable live and replayable. `ticket_session_items`
    stays the historical record the ticket page reads; it is not replaced.
 4. **Transport.** A WebSocket endpoint (`/ahp`) on the daemon's own port, behind the same login as the
@@ -284,10 +286,13 @@ links into it.
   past their limits, and a token straight after a word character. It runs only on files, because a file is read once and
   nothing reads the result again: in `redactFile`, so Files, Search, the Changes diff, @file, the ship scan and the
   history and commit message scan all have it, and after `redactTokens` on a held change's diff, whose `+` and `-`
-  `redactFile`'s key blocks would read as key. Transcripts don't: `redactText`, `redactProse` and `redactTokens`
-  stop where they did, so what an agent says, a brain page and a file a tool left in a stage can still show these shapes.
-  Those texts are read again, a later read finds a value by a name or a label the last step would take, and closing them
-  is a separate change. A link is outside or not by its target as written, not by what redaction left of it. A block
+  `redactFile`'s key blocks would read as key. What is kept of a transcript doesn't: `redactText`, `redactProse` and
+  `redactTokens` stop where they did, because those texts are read again and a later read finds a value by a name or a
+  label the last step would take. The last step runs on them where they leave the daemon instead (r131,
+  `apps/daemon/src/sinks.ts`): every WebSocket frame, the owner's REST views, a pull request's title and body, and every
+  push, where nothing reads the result back. So the shapes are stored as before and shown nowhere: the one exception is a
+  shape split across two streamed deltas, which shows live and is hidden once the part is read whole (a reload or a
+  snapshot). A link is outside or not by its target as written, not by what redaction left of it. A block
   keeps its lines, so line numbers hold. Its markers count wherever they sit, in a
   string joined over several lines or after code, once there is a line of key between them; a line in it that doesn't
   read as key material shows as `redactTokens` left it, which is in sight unless it runs straight on from the key, and

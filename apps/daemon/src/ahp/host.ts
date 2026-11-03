@@ -29,6 +29,7 @@ import {
 } from "@microsoft/agent-host-protocol";
 import type { Db } from "../db.ts";
 import { sniffImage } from "../images.ts";
+import { blobText, type Wire, wire } from "../sinks.ts";
 import type { AgentBackend, ToolAnswer, TurnOutcome, TurnRun } from "./backend.ts";
 import { type Caps, defaultCaps, sanitizeAction } from "./sanitize.ts";
 import { AhpStore, defaultLimits, type Limits } from "./store.ts";
@@ -768,17 +769,32 @@ export class AhpHost {
     this.apply(channel, sanitizeAction(action, this.caps));
   }
 
+  /**
+   * Every frame goes out through the sink (sinks.ts): `redactLast` on the text of what was stored, never on what
+   * is stored. A frame is made once, for the first subscriber, and shared; with none, nothing is made.
+   */
+  private readonly readOnlyUri = (uri: string): boolean => this.isReadOnly(uri);
+
   private broadcast(channel: string, env: ActionEnvelope): void {
-    const text = JSON.stringify({ jsonrpc: "2.0", method: "action", params: env });
-    for (const conn of [...this.conns]) if (conn.subs.has(channel)) this.sendText(conn, text);
+    let text: Wire | undefined;
+    for (const conn of [...this.conns]) {
+      if (!conn.subs.has(channel)) continue;
+      text ??= wire({ jsonrpc: "2.0", method: "action", params: env }, this.readOnlyUri);
+      this.sendText(conn, text);
+    }
   }
 
   private notify(channel: string, method: string, params: Json): void {
-    const text = JSON.stringify({ jsonrpc: "2.0", method, params: { channel, ...params } });
-    for (const conn of [...this.conns]) if (conn.subs.has(channel)) this.sendText(conn, text);
+    let text: Wire | undefined;
+    for (const conn of [...this.conns]) {
+      if (!conn.subs.has(channel)) continue;
+      text ??= wire({ jsonrpc: "2.0", method, params: { channel, ...params } }, this.readOnlyUri);
+      this.sendText(conn, text);
+    }
   }
 
-  private sendText(conn: Conn, text: string): void {
+  /** Takes only a frame the sink made: a send path that skips it doesn't compile. */
+  private sendText(conn: Conn, text: Wire): void {
     if (conn.closed) return;
     try {
       // A client that cannot keep up is dropped, not buffered without end: it reconnects and replays.
@@ -793,7 +809,7 @@ export class AhpHost {
   }
 
   private send(conn: Conn, msg: Json): void {
-    this.sendText(conn, JSON.stringify({ jsonrpc: "2.0", ...msg }));
+    this.sendText(conn, wire({ jsonrpc: "2.0", ...msg }, this.readOnlyUri));
   }
 
   // ───────────────────────────── summaries and roll-ups ─────────────────────────────
@@ -1329,9 +1345,17 @@ export class AhpHost {
     const hash = /^ahp-content:\/([0-9a-f]{32})$/.exec(uri)?.[1];
     const blob = hash ? this.store.getBlob(hash) : undefined;
     if (!blob) throw new RpcError(AhpErrorCodes.NotFound, `not found: ${uri}`);
-    const asText = p.encoding !== "base64" && /^(text\/|application\/json)/.test(blob.mime);
+    // Text (a diff side) leaves through the sink, as text or as base64 of the redacted text.
+    const isText = /^(text\/|application\/json)/.test(blob.mime);
+    const asText = p.encoding !== "base64" && isText;
+    const shown = isText ? blobText(new TextDecoder().decode(blob.data), blob.mime) : undefined;
     return {
-      data: asText ? new TextDecoder().decode(blob.data) : Buffer.from(blob.data).toString("base64"),
+      data:
+        shown === undefined
+          ? Buffer.from(blob.data).toString("base64")
+          : asText
+            ? shown
+            : Buffer.from(shown, "utf8").toString("base64"),
       encoding: asText ? "utf-8" : "base64",
       contentType: blob.mime,
     };

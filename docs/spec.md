@@ -441,6 +441,18 @@ interface with a scripted fake in tests, like the ACP agent.
   `tools/host/push-for-owner.sh`).
 - **Audit:** every tool call in the ACP stream is logged, so you audit afterwards instead of approving
   beforehand.
+- **Redaction.** Credentials an agent or a tool writes are taken out in two places.
+  - Where text is kept, as before: a conversation's and a stage's agent actions through the transcript
+    redactor, a ticket session's items through the same set, brain pages at each harvest, and now a retro edit
+    before it is written to a brain or the handbook. The event log keeps a ticket's outputs raw, because the
+    next stage works from them.
+  - Where text leaves the daemon, and nothing reads it back: every WebSocket frame, the owner's views over REST
+    (ticket, board, Needs you, office, proposals, a ticket's events and sessions, Brain changes), a pull
+    request's title and body, and every push. That pass only takes out, and is checked as it runs, so it hides
+    at least what was hidden before, for text stored before it too.
+  - What you typed stays as typed in your own views. Left as they are: text at rest in SQLite and brain git, the
+    daemon's logs, the brief sent to an employee's machine (the agent already holds that text inside its wall),
+    the chat with the helper model, and brain search and pages.
 
 ### The brain
 

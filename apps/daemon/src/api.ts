@@ -82,6 +82,17 @@ import { type NotifySettings, notifyKeys, notifySettings, type PushSubscription 
 import { defaultTeam, type Project } from "./registry.ts";
 import { isReviewPath, isSearchQuery } from "./review.ts";
 import { ShipError } from "./ship.ts";
+import {
+  lastOf,
+  peopleConversation,
+  peopleDeep,
+  peopleEvents,
+  peopleOf,
+  peopleProposal,
+  peopleShip,
+  peopleTitle,
+  peopleView,
+} from "./sinks.ts";
 import { clientKey, GuessLimit } from "./throttle.ts";
 import type { NewAttachment, NewTicket, TicketRecord } from "./tickets.ts";
 import { defaultTimeoutSettings, readTimeoutSettings, timeoutSettings } from "./timeouts.ts";
@@ -257,7 +268,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         waiting.get(r.ticket.id) ?? null,
         daemon.waitingUntil[r.ticket.id] ?? null,
       );
-      return { view, events };
+      // The card as the owner's views show it (sinks.ts); `events` stay raw for the reads made from them here.
+      return { view: peopleView(view), events };
     } catch (err) {
       console.error(`[board] ticket ${r.ticket.id}: ${logLine(err)}`);
       unbuilt.push({ id: r.ticket.id, reason: "it can't be shown; its events could not be read" });
@@ -349,7 +361,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     const lastTicket = last
       ? {
           id: last.ticket.id,
-          title: last.ticket.title,
+          title: peopleTitle(last.ticket.title, last.ticket.createdBy),
           at: last.createdAt,
           status: ticketLine(await daemon.state(last.ticket.id)),
         }
@@ -390,7 +402,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
 
         pendingTickets.push({
           id: record.ticket.id,
-          title: record.ticket.title,
+          title: peopleTitle(record.ticket.title, record.ticket.createdBy),
           ...(state.pushed ? { pushed: state.pushed } : {}),
         });
       }
@@ -500,8 +512,10 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           policies.push(...knowledgeLog(r.ticket.id, item.events as TicketEvent[]).awaiting);
         }
         policies.sort((a, b) => a.at - b.at);
-        const proposals = d.proposals.list("open").map((p) => proposalView(p, d.registry));
-        const conversations = (d.conversations?.list({}) ?? []).filter((c) => c.needsYou);
+        const proposals = d.proposals.list("open").map((p) => peopleProposal(proposalView(p, d.registry)));
+        const conversations = (d.conversations?.list({}) ?? [])
+          .filter((c) => c.needsYou)
+          .map(peopleConversation);
         const count =
           tickets.filter((t) => t.status === "needs-you").length +
           tickets.filter(waitsForAssignee).length +
@@ -1342,7 +1356,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           const st = await daemon.state(r.ticket.id);
           tickets.push({
             id: r.ticket.id,
-            title: r.ticket.title,
+            title: peopleTitle(r.ticket.title, r.ticket.createdBy),
             type: r.ticket.type,
             at: r.createdAt,
             status: ticketLine(st),
@@ -1800,10 +1814,12 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         const archived = q.get("archived");
         const employee = q.get("employee");
         return json({
-          conversations: d.conversations.list({
-            archived: archived === "all" ? "all" : archived === "true" || archived === "1",
-            ...(employee ? { employeeId: employee } : {}),
-          }),
+          conversations: d.conversations
+            .list({
+              archived: archived === "all" ? "all" : archived === "true" || archived === "1",
+              ...(employee ? { employeeId: employee } : {}),
+            })
+            .map(peopleConversation),
         });
       },
     ],
@@ -1813,7 +1829,9 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       "/api/conversations/:id",
       async (_req, p) => {
         const c = d.conversations?.get(p.id ?? "");
-        return c ? json({ conversation: c }) : json({ error: "no such conversation" }, 404);
+        return c
+          ? json({ conversation: peopleConversation(c) })
+          : json({ error: "no such conversation" }, 404);
       },
     ],
 
@@ -1846,7 +1864,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
             ...(typeof b.mode === "string" ? { mode: b.mode } : {}),
             ...(typeof b.engineId === "string" ? { engineId: b.engineId } : {}),
           });
-          return json({ conversation }, 201);
+          return json({ conversation: peopleConversation(conversation) }, 201);
         } catch (e) {
           if (e instanceof ConversationError) return json({ error: e.message }, e.status);
           throw e;
@@ -1864,7 +1882,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           return json({ error: "send a JSON object" }, 400);
         }
         try {
-          return json({ conversation: d.conversations.update(p.id ?? "", b) });
+          return json({ conversation: peopleConversation(d.conversations.update(p.id ?? "", b)) });
         } catch (e) {
           if (e instanceof ConversationError) return json({ error: e.message }, e.status);
           throw e;
@@ -1885,7 +1903,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         const preview = q.get("preview");
         if (preview !== null && preview !== "1") return json({ error: "preview must be 1" }, 400);
         try {
-          return json({ ship: await shipping.view(p.id ?? "", { preview: preview === "1" }) });
+          return json({ ship: peopleShip(await shipping.view(p.id ?? "", { preview: preview === "1" })) });
         } catch (e) {
           return shipFailure(e);
         }
@@ -2347,7 +2365,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           return json({ error: "status must be open, accepted or declined" }, 400);
         }
         const list = d.proposals.list((status as ProposalStatus | null) ?? undefined);
-        return json({ proposals: list.map((p) => proposalView(p, d.registry)) });
+        return json({ proposals: list.map((p) => peopleProposal(proposalView(p, d.registry))) });
       },
     ],
     [
@@ -2417,7 +2435,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         d.log?.(`proposal ${found.id} accepted as ticket ${ticket.id}: ${found.title}`);
         await daemon.tick();
         const proposal = d.proposals.get(found.id) as NonNullable<ReturnType<typeof d.proposals.get>>;
-        return json({ proposal: proposalView(proposal, d.registry), ticket }, 201);
+        return json({ proposal: peopleProposal(proposalView(proposal, d.registry)), ticket }, 201);
       },
     ],
     [
@@ -2434,7 +2452,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         }
         d.log?.(`proposal ${found.id} declined: ${found.title}`);
         const proposal = d.proposals.get(found.id) as NonNullable<ReturnType<typeof d.proposals.get>>;
-        return json({ proposal: proposalView(proposal, d.registry) });
+        return json({ proposal: peopleProposal(proposalView(proposal, d.registry)) });
       },
     ],
 
@@ -2500,7 +2518,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         if (view.fromConversation) {
           view.fromConversation.title = d.conversations?.get(view.fromConversation.id)?.title ?? null;
         }
-        return json({ ticket: view, events });
+        return json({ ticket: peopleView(view), events: peopleEvents(events) });
       },
     ],
 
@@ -2511,10 +2529,21 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         const r = d.tickets.get(p.id ?? "");
         if (!r) return json({ error: "no such ticket" }, 404);
         // Each session also says where its live view is (T69, "Open the session"), while it still has one.
+        // Items were stored through `redactSecrets`; they leave with `redactLast` on top (sinks.ts).
         return json({
           sessions: d.sessions.list(p.id ?? "").map((s) => {
             const channel = s.id === undefined ? undefined : d.ticketChannels?.channelFor(p.id ?? "", s.id);
-            return { ...s, channel: channel ?? null };
+            return {
+              ...s,
+              items: s.items.map((i) => ({
+                ...i,
+                ...(i.text !== undefined ? { text: lastOf(i.text) } : {}),
+                ...(i.title !== undefined ? { title: lastOf(i.title) } : {}),
+                ...(i.status !== undefined ? { status: lastOf(i.status) } : {}),
+              })),
+              ...(s.brain ? { brain: s.brain.map((b) => ({ ...b, title: lastOf(b.title) })) } : {}),
+              channel: channel ?? null,
+            };
           }),
         });
       },
@@ -2814,7 +2843,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       author: nameOf(p.author),
       at: p.at,
       page: p.edit.page,
-      text: p.edit.text,
+      // A policy edit waiting for the owner is an agent's text, held raw in the event log.
+      text: peopleOf(p.edit.text),
     };
   }
 
@@ -2860,8 +2890,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
   /** What the chat composer needs to know about the current ticket: where images would go, and the room left. */
   function currentView(c: Awaited<ReturnType<typeof workOf>>["current"]) {
     if (!c) return null;
-    const { id, title, attachments } = c.r.ticket;
-    return { id, title, images: attachments?.length ?? 0 };
+    const { id, title, attachments, createdBy } = c.r.ticket;
+    return { id, title: peopleTitle(title, createdBy), images: attachments?.length ?? 0 };
   }
 
   /**
@@ -2981,13 +3011,15 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     const wait = daemon.waiting.find((w) => w.ticketId === id);
     return json({
       ok: true,
-      ticket: ticketView(
-        fresh,
-        await daemon.state(id),
-        await d.store.read(id),
-        d.registry,
-        wait?.reason ?? null,
-        daemon.waitingUntil[id] ?? null,
+      ticket: peopleView(
+        ticketView(
+          fresh,
+          await daemon.state(id),
+          await d.store.read(id),
+          d.registry,
+          wait?.reason ?? null,
+          daemon.waitingUntil[id] ?? null,
+        ),
       ),
     });
   }
@@ -3526,10 +3558,14 @@ function shipFailure(e: unknown): Response {
   throw e;
 }
 
-/** A Brain changes feed entry as the API shows it: the same from the list and from a revert. */
+/**
+ * A Brain changes feed entry as the API shows it: the same from the list and from a revert. Its text goes through
+ * the sink (sinks.ts), the diff included: a row stored before the stale-delete fix can hold an agent's raw base.
+ */
 function changeView(c: BrainChange, who: (id: string) => { id: string; name: string }) {
   return {
-    ...c,
+    ...peopleDeep(c),
+    diff: peopleOf(c.diff),
     employee: who(c.employee),
     source: {
       ...c.source,

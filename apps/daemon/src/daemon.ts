@@ -552,7 +552,8 @@ export class Daemon {
         };
         try {
           let outcome = await this.d.agent.run(req);
-          // Whatever agent it was, its words reach the log and the API only redacted and cut.
+          // A stuck or interrupted reason is redacted and cut here. Otherwise the agent's words go into the event
+          // log raw, as on main, and the API redacts them where they leave the daemon (sinks.ts).
           if (outcome.kind === "stuck" || outcome.kind === "interrupted") {
             outcome = { ...outcome, reason: safeReason(outcome.reason) };
           }

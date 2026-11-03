@@ -26,6 +26,7 @@ import {
   repoFor,
   serializePage,
 } from "@i-inc/core";
+import { redactProse } from "./ahp/sanitize.ts";
 import type { Change, Page } from "./view-types.ts";
 
 export type { Change, Page };
@@ -172,7 +173,9 @@ export class KnowledgeStore {
 
     const dir = this.dir(repo);
     const file = join(dir, path);
-    const text = p.edit.text.trim();
+    // A retro edit is agent text going into a brain or the handbook, so it gets the harvest's redactor first,
+    // as every harvested page does (r131, G4). The page's description is made from it too.
+    const text = redactProse(p.edit.text.trim());
     const isNew = !existsSync(file);
     mkdirSync(dirname(file), { recursive: true });
     const title = pageTitle(path);
