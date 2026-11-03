@@ -447,12 +447,15 @@ interface with a scripted fake in tests, like the ACP agent.
     before it is written to a brain or the handbook. The event log keeps a ticket's outputs raw, because the
     next stage works from them.
   - Where text leaves the daemon, and nothing reads it back: every WebSocket frame, the owner's views over REST
-    (ticket, board, Needs you, office, proposals, a ticket's events and sessions, Brain changes), a pull
-    request's title and body, and every push. That pass only takes out, and is checked as it runs, so it hides
-    at least what was hidden before, for text stored before it too.
-  - What you typed stays as typed in your own views. Left as they are: text at rest in SQLite and brain git, the
-    daemon's logs, the brief sent to an employee's machine (the agent already holds that text inside its wall),
-    the chat with the helper model, and brain search and pages.
+    (ticket, board, Needs you, office, proposals and the ticket accepting one makes, a ticket's events and
+    sessions, conversations and their ship dialog, Brain changes), a pull request's title and body, and every
+    push. That pass only takes out, and is checked as it runs, so it hides at least what was hidden before, for
+    text stored before it too.
+  - What you typed stays as typed in your own views: your messages, a ticket you filed, and a conversation's title
+    when you set it (typed, renamed, or the first line of your first message). A title the agent gave a
+    conversation gets the pass. Left as they are, so they can still show what only that pass takes: text at rest
+    in SQLite and brain git, the daemon's logs, the brief sent to an employee's machine (the agent already holds
+    that text inside its wall), the chat with the helper model, and brain search and pages.
 
 ### The brain
 

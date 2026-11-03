@@ -81,8 +81,9 @@ import { type ProposalStatus, RECOVERED_BODY } from "./proposals.ts";
 import { type NotifySettings, notifyKeys, notifySettings, type PushSubscription } from "./push.ts";
 import { defaultTeam, type Project } from "./registry.ts";
 import { isReviewPath, isSearchQuery } from "./review.ts";
-import { ShipError } from "./ship.ts";
+import { agentTitled, ShipError } from "./ship.ts";
 import {
+  conversationTitle,
   lastOf,
   peopleConversation,
   peopleDeep,
@@ -253,6 +254,14 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     ...(d.workspace ? { workspace: d.workspace } : {}),
   };
 
+  /**
+   * Is a ticket's title an agent's words? A follow-up an agent filed, or a conversation's ticket titled with the
+   * title its agent gave the conversation (ship.ts `agentTitled`). The owner's views give those the sink's pass.
+   */
+  const agentsTitle = (t: TicketRecord["ticket"]): boolean =>
+    (!!t.createdBy && t.createdBy !== "owner") ||
+    (!!t.conversation && agentTitled(t.title, d.conversations?.byId(t.conversation)));
+
   /** Tickets whose card couldn't be built in this request, with why: the board lists them. */
   let unbuilt: { id: Id; reason: string }[] = [];
   /** One ticket's card and the events it was built from; null when it can't be shown. */
@@ -269,7 +278,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         daemon.waitingUntil[r.ticket.id] ?? null,
       );
       // The card as the owner's views show it (sinks.ts); `events` stay raw for the reads made from them here.
-      return { view: peopleView(view), events };
+      return { view: peopleView(view, agentsTitle(r.ticket)), events };
     } catch (err) {
       console.error(`[board] ticket ${r.ticket.id}: ${logLine(err)}`);
       unbuilt.push({ id: r.ticket.id, reason: "it can't be shown; its events could not be read" });
@@ -361,7 +370,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     const lastTicket = last
       ? {
           id: last.ticket.id,
-          title: peopleTitle(last.ticket.title, last.ticket.createdBy),
+          title: peopleTitle(last.ticket.title, agentsTitle(last.ticket)),
           at: last.createdAt,
           status: ticketLine(await daemon.state(last.ticket.id)),
         }
@@ -402,7 +411,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
 
         pendingTickets.push({
           id: record.ticket.id,
-          title: peopleTitle(record.ticket.title, record.ticket.createdBy),
+          title: peopleTitle(record.ticket.title, agentsTitle(record.ticket)),
           ...(state.pushed ? { pushed: state.pushed } : {}),
         });
       }
@@ -1356,7 +1365,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           const st = await daemon.state(r.ticket.id);
           tickets.push({
             id: r.ticket.id,
-            title: peopleTitle(r.ticket.title, r.ticket.createdBy),
+            title: peopleTitle(r.ticket.title, agentsTitle(r.ticket)),
             type: r.ticket.type,
             at: r.createdAt,
             status: ticketLine(st),
@@ -1939,7 +1948,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
             ...(Array.isArray(body.doneWhen) ? { doneWhen: body.doneWhen as string[] } : {}),
             ...(body.confirmBinary === true ? { confirmBinary: true } : {}),
           });
-          return json({ ticket: r.ticket, created: r.created }, r.created ? 201 : 200);
+          const ticket = { ...r.ticket, title: peopleTitle(r.ticket.title, agentsTitle(r.ticket)) };
+          return json({ ticket, created: r.created }, r.created ? 201 : 200);
         } catch (e) {
           return shipFailure(e);
         }
@@ -2435,7 +2445,11 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         d.log?.(`proposal ${found.id} accepted as ticket ${ticket.id}: ${found.title}`);
         await daemon.tick();
         const proposal = d.proposals.get(found.id) as NonNullable<ReturnType<typeof d.proposals.get>>;
-        return json({ proposal: peopleProposal(proposalView(proposal, d.registry)), ticket }, 201);
+        // The ticket is all the agent's words (it proposed it), so it gets the owner views' pass too.
+        return json(
+          { proposal: peopleProposal(proposalView(proposal, d.registry)), ticket: peopleDeep(ticket) },
+          201,
+        );
       },
     ],
     [
@@ -2515,10 +2529,16 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           wait?.reason ?? null,
           daemon.waitingUntil[r.ticket.id] ?? null,
         );
+        const shown = peopleView(view, agentsTitle(r.ticket));
         if (view.fromConversation) {
-          view.fromConversation.title = d.conversations?.get(view.fromConversation.id)?.title ?? null;
+          // As the conversation list shows it: the owner's own title as typed, an agent's with its pass.
+          const conv = d.conversations?.get(view.fromConversation.id);
+          shown.fromConversation = {
+            id: view.fromConversation.id,
+            title: conv ? conversationTitle(conv) : null,
+          };
         }
-        return json({ ticket: peopleView(view), events: peopleEvents(events) });
+        return json({ ticket: shown, events: peopleEvents(events) });
       },
     ],
 
@@ -2890,8 +2910,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
   /** What the chat composer needs to know about the current ticket: where images would go, and the room left. */
   function currentView(c: Awaited<ReturnType<typeof workOf>>["current"]) {
     if (!c) return null;
-    const { id, title, attachments, createdBy } = c.r.ticket;
-    return { id, title: peopleTitle(title, createdBy), images: attachments?.length ?? 0 };
+    const { id, title, attachments } = c.r.ticket;
+    return { id, title: peopleTitle(title, agentsTitle(c.r.ticket)), images: attachments?.length ?? 0 };
   }
 
   /**
@@ -3020,6 +3040,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           wait?.reason ?? null,
           daemon.waitingUntil[id] ?? null,
         ),
+        agentsTitle(fresh.ticket),
       ),
     });
   }

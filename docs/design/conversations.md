@@ -290,9 +290,13 @@ links into it.
   `redactTokens` stop where they did, because those texts are read again and a later read finds a value by a name or a
   label the last step would take. The last step runs on them where they leave the daemon instead (r131,
   `apps/daemon/src/sinks.ts`): every WebSocket frame, the owner's REST views, a pull request's title and body, and every
-  push, where nothing reads the result back. So the shapes are stored as before and shown nowhere: the one exception is a
-  shape split across two streamed deltas, which shows live and is hidden once the part is read whole (a reload or a
-  snapshot). A link is outside or not by its target as written, not by what redaction left of it. A block
+  push, where nothing reads the result back. So the shapes are stored as before and hidden where those sinks show text.
+  They still show where no sink runs: brain pages and brain search (a harvest runs `redactProse`, which lets them
+  through), the chat with the helper model, and a shape split across two streamed deltas, which shows live and is
+  hidden once the part is read whole (a reload or a snapshot). A conversation's title is the owner's words when the
+  owner set it (at create, a rename, or the first line of the first message) and is then shown as typed; when its agent
+  named it, it gets the last step, in the row, on the WebSocket, in the ship dialog and in a ticket made from it. The
+  row keeps whose title it is (`title_by`); a row from before that is treated as the agent's. A link is outside or not by its target as written, not by what redaction left of it. A block
   keeps its lines, so line numbers hold. Its markers count wherever they sit, in a
   string joined over several lines or after code, once there is a line of key between them; a line in it that doesn't
   read as key material shows as `redactTokens` left it, which is in sight unless it runs straight on from the key, and

@@ -10,7 +10,7 @@ import { json } from "@i-inc/core/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { redactProse } from "../src/ahp/sanitize.ts";
 import { forDiff, lineDiff } from "../src/brain-check.ts";
-import { PullRequests } from "../src/github.ts";
+import { createOrgRepo, PullRequests } from "../src/github.ts";
 import { generateVapidKeys, WebPushSender } from "../src/push.ts";
 import { sinkMemos, sinkRedactors, sinkStats } from "../src/sinks.ts";
 import { brainRig, cleanRigs, page } from "./brain-rig.ts";
@@ -113,6 +113,24 @@ async function seeded() {
     { type: "ticket-created", at, ticketId: stuck.id },
     { type: "stage-started", at, stage: "build" },
     { type: "needs-you", at, stage: "build", ask: { kind: "stuck", reason: ALL } },
+  ] as TicketEvent[]);
+  // An agent's follow-up, merged and not yet in a release: its title is listed as waiting for one.
+  const merged = d.tickets.create(
+    {
+      title: `Merged ${SHAPES[3]?.text}`,
+      project: "Duet",
+      type: "fix",
+      effort: "low",
+      doneWhen: [],
+      createdBy: "ada",
+      assignee: "ada",
+      hold: true,
+    },
+    now,
+  );
+  await d.store.append(merged.id, [
+    { type: "ticket-created", at, ticketId: merged.id },
+    { type: "closed", at, outcome: "merged" },
   ] as TicketEvent[]);
   d.proposals.add(
     {
@@ -235,6 +253,12 @@ describe("the route sweep", () => {
     expect(served("/api/conversations")).toContain("About db postgres://[redacted]@db.example/app ok");
     expect(served("/api/conversations/:id")).toContain("[redacted]");
     expect(visible(served("/api/chat/:id"))).not.toEqual([]); // the allowed route really holds them
+    // ... but the ticket the chat says Ada is on is not the helper chat: its title has the pass
+    const current = JSON.parse(bodies["/api/chat/:id"]?.[0]?.body ?? "{}").current;
+    expect(current?.title).toContain("Stuck");
+    expect(visible(JSON.stringify(current))).toEqual([]);
+    // the merged follow-up waiting for a release was served
+    expect(served("/api/releases")).toContain("Merged k build9[redacted]");
   });
 
   it("differential: with the sinks off (main's wire) the same routes show the canaries, and storage is the same", async () => {
@@ -277,6 +301,19 @@ describe("the route sweep", () => {
     expect(
       visible(JSON.stringify(t.body.events.filter((e: { type: string }) => e.type !== "owner-message"))),
     ).toEqual([]);
+  });
+
+  it("accepting an agent's proposal answers with its ticket through the sink", async () => {
+    const { app } = await seeded();
+    const list = await app.call("GET", "/api/proposals");
+    const p = list.body.proposals[0];
+    const r = await app.call("POST", `/api/proposals/${p.id}/accept`, {});
+    expect(r.status).toBe(201);
+    expect(r.body.ticket.title).toContain("Proposal");
+    expect(r.body.ticket.createdBy).toBe("ada");
+    expect(visible(JSON.stringify(r.body))).toEqual([]);
+    // stored as the agent wrote it, as on main
+    expect(visible(JSON.stringify(app.deps.tickets.get(r.body.ticket.id)?.ticket))).not.toEqual([]);
   });
 
   it("serves no REST body but through json()", () => {
@@ -340,6 +377,18 @@ describe("what leaves the machine", () => {
       title: "fix: refunds",
       body: "- August drops by the refund",
     });
+  });
+
+  it("a new repository's description holds no canary", async () => {
+    const { calls, fetch } = capture();
+    await createOrgRepo(
+      fakeTokens(),
+      { owner: "acme", name: "app", private: true, description: `App for ${SHAPES[3]?.text}` },
+      { fetch },
+    ).catch(() => undefined); // the fake's answer isn't a repository; the request is what this looks at
+    const sent = calls.map((c) => JSON.parse(c.body || "{}")).find((b) => b.name === "app");
+    expect(sent?.description).toContain("App for");
+    expect(visible(JSON.stringify(sent), SHAPES)).toEqual([]);
   });
 
   it("a push's title and body hold no canary", async () => {

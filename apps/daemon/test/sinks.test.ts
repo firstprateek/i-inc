@@ -8,6 +8,7 @@ import {
   guarded,
   lastDirty,
   lastOf,
+  nextLiteral,
   outsideOf,
   outward,
   peopleEvents,
@@ -17,6 +18,7 @@ import {
   sinkMemos,
   sinkRedactors,
   sinkStats,
+  TextMemo,
   takesOutOnly,
   type Wire,
   wire,
@@ -105,6 +107,18 @@ describe("the guard", () => {
     expect(takesOutOnly("x data:image/png;base64,AAAA y", "x [image/png data, 1 KB] y")).toBe(true);
   });
 
+  it("is linear when redactText made runs of blanks one blank between markers", () => {
+    // Each piece between markers is not in the input whole: looking for it whole read the rest of the input
+    // every time (0.6 s on 1 MB). Matched one character at a time it is one pass.
+    const u = `ab${" ".repeat(210)}cd ghp_${"Ab3".repeat(12)} `;
+    const s = u.repeat(Math.ceil(1_000_000 / u.length)).slice(0, 1_000_000);
+    const out = redactText(s);
+    expect(out).toContain("[redacted]");
+    const at = performance.now();
+    expect(takesOutOnly(s, out)).toBe(true);
+    expect(performance.now() - at).toBeLessThan(60);
+  });
+
   it("catches a sabotaged redactor at every sink, and logs it once", () => {
     const lines: string[] = [];
     setSinkLog((l) => lines.push(l));
@@ -144,6 +158,13 @@ describe("the cheap test before redactLast", () => {
       }
     }
     for (const c of CANARIES) if (redactLast(c.text) !== c.text) expect(lastDirty(c.text), c.name).toBe(true);
+    // the longest secret query name redactLast knows (x-goog- and 40 more): the scan back from `=` reaches its `?`
+    for (const n of [1, 39, 40]) {
+      const q = `https://h.example/o?x-goog-${"a".repeat(n)}=SECRETVALUE`;
+      expect(redactLast(q), q).not.toContain("SECRETVALUE");
+      expect(lastDirty(q), q).toBe(true);
+      expect(lastOf(q), q).not.toContain("SECRETVALUE");
+    }
     // it does skip: a test that skips nothing proves nothing
     expect(skipped).toBeGreaterThan(5000);
   });
@@ -247,6 +268,49 @@ describe("the WebSocket pass", () => {
     expect(() => JSON.parse(lastOf(escaped, true))).not.toThrow();
   });
 
+  it("finds the same JSON string literals as the regex it stands for, in one pass", () => {
+    const LITERAL = /"(?:[^"\\\n]|\\.)*"/g;
+    const r = rand(5);
+    const alphabet = ['"', '"', "\\", "\\", "\n", "\r", "\u2028", "a", "b", ":", " "];
+    for (let i = 0; i < 20_000; i++) {
+      let x = "";
+      const n = Math.floor(r() * 24);
+      for (let j = 0; j < n; j++) x += alphabet[Math.floor(r() * alphabet.length)];
+      const want = [...x.matchAll(LITERAL)].map((m) => [m.index, m.index + m[0].length]);
+      const got: number[][] = [];
+      for (let m = nextLiteral(x, 0); m; m = nextLiteral(x, m[1])) got.push(m);
+      expect(got, JSON.stringify(x)).toEqual(want);
+    }
+  });
+
+  it("redacts a tool input sanitizeAction cut, which ends in an open literal, in linear time", () => {
+    // The cut ends inside a string full of \": the regex retried from every quote to the end (0.5 to 2 s at 64K).
+    const line = '  const url = "https://example.com/api"; // @param task-id "x"\n';
+    const cut = String(
+      sanitizeAction({ toolInput: JSON.stringify({ file_path: "/a.ts", content: line.repeat(2000) }) })
+        .toolInput,
+    );
+    expect(cut).toContain("more characters not kept");
+    const quotes = String(
+      sanitizeAction({ toolInput: JSON.stringify({ c: `task- ${'"'.repeat(40_000)}` }) }).toolInput,
+    );
+    for (const t of [cut, quotes]) {
+      expect(lastDirty(t)).toBe(true);
+      const at = performance.now();
+      expect(lastOf(t, true)).toBe(t);
+      expect(performance.now() - at).toBeLessThan(100);
+    }
+    // and a shape inside the open literal is still hidden
+    const shaped = String(
+      sanitizeAction({
+        toolInput: JSON.stringify({
+          content: `${line.repeat(1100)}${SHAPES[0]?.text}\n${line.repeat(1100)}`,
+        }),
+      }).toolInput,
+    );
+    expect(visible(lastOf(shaped, true), SHAPES)).toEqual([]);
+  });
+
   it("makes the only frame the host can send", () => {
     const frame: Wire = wire({ jsonrpc: "2.0", method: "action", params: { action: { content: "hi" } } });
     expect(JSON.parse(frame).params.action.content).toBe("hi");
@@ -320,6 +384,39 @@ describe("the owner's views", () => {
     ).toEqual([]);
   });
 
+  it("leaves the owner's own done-when lines as typed where the check repeats them", () => {
+    const typed = "Login works when token: is missing";
+    const v = peopleView({
+      ...view(null),
+      doneWhen: [typed],
+      doneCheck: { by: null, note: null, items: [{ doneWhen: typed, verdict: "met", evidence: ALL }] },
+    } as unknown as TicketView) as unknown as {
+      doneCheck: { items: { doneWhen: string; evidence: string }[] };
+    };
+    expect(v.doneCheck.items[0]?.doneWhen).toBe(typed);
+    expect(visible(v.doneCheck.items[0]?.evidence ?? "")).toEqual([]);
+    // an agent's follow-up gets the pass on them
+    const a = peopleView({
+      ...view(person),
+      doneWhen: [ALL],
+      doneCheck: { by: null, note: null, items: [{ doneWhen: ALL, verdict: "met", evidence: "ok" }] },
+    } as unknown as TicketView) as unknown as { doneCheck: { items: { doneWhen: string }[] } };
+    expect(visible(a.doneCheck.items[0]?.doneWhen ?? "")).toEqual([]);
+  });
+
+  it("runs redactLast on an agent's JSON reply one literal at a time, so it stays JSON with every key", () => {
+    const reply = JSON.stringify({
+      plan: "curl http://api:v2/health",
+      owner: "ops@corp.example",
+      steps: [1],
+    });
+    const out = peopleOf(reply);
+    expect(Object.keys(JSON.parse(out))).toEqual(["plan", "owner", "steps"]);
+    const shaped = JSON.stringify({ note: SHAPES[0]?.text, n: 2 });
+    expect(visible(peopleOf(shaped), SHAPES)).toEqual([]);
+    expect(Object.keys(JSON.parse(peopleOf(shaped)))).toEqual(["note", "n"]);
+  });
+
   it("keeps commit ids, and leaves the owner's own events alone", () => {
     const sha = "0123456789abcdef0123456789abcdef01234567";
     expect(peopleOf(`pushed ${sha}`)).toBe(`pushed ${sha}`);
@@ -355,6 +452,39 @@ describe("cost, counted", () => {
     expect(sinkStats.last).toBe(before.last);
     expect(sinkStats.prose).toBe(before.prose);
     expect(sinkMemos.last.hits).toBeGreaterThan(0);
+  });
+
+  it("re-subscribing to a chat with many big tool inputs finds every one in the memo", () => {
+    // About 46 big inputs fitted whole, and a snapshot walks them in the same order every time, so each
+    // re-subscribe pushed out the ones the next one needed. Kept by hash, all of them fit.
+    const line = '  const url = "https://example.com/api"; // @param task-id "x"\n';
+    const parts = [...Array(60)].map((_, i) => ({
+      kind: "toolCall",
+      toolCallId: `c${i}`,
+      toolInput: String(
+        sanitizeAction({ toolInput: JSON.stringify({ file_path: `/f${i}.ts`, content: line.repeat(1800) }) })
+          .toolInput,
+      ),
+    }));
+    const snap = { jsonrpc: "2.0", id: 1, result: { state: { turns: [{ responseParts: parts }] } } };
+    wire(snap);
+    const misses = sinkMemos.lastJson.misses;
+    const last = sinkStats.last;
+    wire(snap);
+    expect(sinkMemos.lastJson.misses).toBe(misses);
+    expect(sinkStats.last).toBe(last);
+    expect(sinkMemos.lastJson.hits).toBeGreaterThanOrEqual(60);
+  });
+
+  it("keeps at most so many entries, however short", () => {
+    const m = new TextMemo(6_000_000, 1000);
+    for (let i = 0; i < 5000; i++) m.set(`sk-${i.toString(36)}`, "[redacted]");
+    expect(m.size.entries).toBe(1000);
+    // the newest are kept, and a set again is not counted twice
+    expect(m.get("sk-3ns")).toBe("[redacted]");
+    const chars = m.size.chars;
+    m.set("sk-3ns", "[redacted]");
+    expect(m.size.chars).toBe(chars);
   });
 
   it("text with nothing to hide never reaches the redactor", () => {

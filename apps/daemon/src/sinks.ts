@@ -12,6 +12,7 @@
 // `redactLast` never runs over serialized JSON (a URL scan would run from one field into the next): objects are
 // walked and their strings redacted one by one, and JSON held in a string is redacted one decoded string literal
 // at a time, so it stays JSON.
+import { createHash } from "node:crypto";
 import type { TicketEvent } from "@i-inc/core";
 import { redactLast, redactProse, redactText, TEXT_KEYS } from "./ahp/sanitize.ts";
 import type { ProposalView, TicketView } from "./view-types.ts";
@@ -48,25 +49,21 @@ const MARKERS =
 
 /**
  * Is `out`, with its markers taken out, made of `input`'s characters in order? Then nothing `out` shows was missing
- * from `input`. The test `copy-files.test.ts` holds `redactLast` to, run on every result. Linear: each piece
- * between markers is first looked for whole, and only character by character when that fails (a run of blanks
- * that `redactText` made one blank). Taking the first place a piece is found never ends later than where it came
- * from, so a masker's output always passes.
+ * from `input`. The test `copy-files.test.ts` holds `redactLast` to, run on every result. Each character is
+ * matched at the first place it can be, which never ends later than any other way of matching it, so a masker's
+ * output always passes (a run of blanks `redactText` made one blank too). Linear: the place in `input` only moves
+ * forward, and a character not found ends the test.
  */
 export function takesOutOnly(input: string, out: string): boolean {
   if (out === input) return true;
   let at = 0;
   const piece = (from: number, to: number): boolean => {
-    if (from === to) return true;
-    const p = out.slice(from, to);
-    const whole = input.indexOf(p, at);
-    if (whole >= 0) {
-      at = whole + p.length;
-      return true;
-    }
     for (let i = from; i < to; i++) {
-      at = input.indexOf(out.charAt(i), at);
-      if (at < 0) return false;
+      const c = out.charCodeAt(i);
+      if (input.charCodeAt(at) !== c) {
+        at = input.indexOf(out.charAt(i), at);
+        if (at < 0) return false;
+      }
       at++;
     }
     return true;
@@ -108,10 +105,12 @@ export function guarded(input: string, out: string): string {
 /** `LONG_SECRET_QUERY`'s names, whole. */
 const QUERY_NAME =
   /^(?:access_token|refresh_token|id_token|token|key|api_key|apikey|sig|signature|secret|client_secret|password|passwd|pwd|pass|passphrase|code|auth|x-amz-[a-z0-9-]{1,40}|x-goog-[a-z0-9-]{1,40})$/i;
+/** The longest of those names (`x-goog-` and 40 more), so the scan back reaches the `?` before it. */
+const QUERY_NAME_MAX = 47;
 /** Is there a `?name=`, `&name=` or `;name=` with one of those names? By hand, back from each `=`. */
 function queryName(s: string): boolean {
   for (let p = s.indexOf("="); p >= 0; p = s.indexOf("=", p + 1)) {
-    for (let i = p - 1; i >= 0 && i >= p - 47; i--) {
+    for (let i = p - 1; i >= 0 && i >= p - QUERY_NAME_MAX - 1; i--) {
       const c = s.charCodeAt(i);
       if (c === 63 || c === 38 || c === 59) {
         if (i < p - 1 && QUERY_NAME.test(s.slice(i + 1, p))) return true;
@@ -142,34 +141,53 @@ export function lastDirty(s: string): boolean {
 /** The result is the input itself: kept as a marker, not a copy. */
 const SAME = "\u0000same";
 
+/** Text this long is kept in the memo by its SHA-256, not whole: a big tool input then costs 65 characters. */
+const HASH_KEY_MIN = 4096;
+/** The most entries a memo keeps, however short they are. */
+const MEMO_MAX_ENTRIES = 50_000;
+
 /**
  * A bounded LRU of text to its sink result, by content (never by object identity), in memory only. Redaction is
- * a pure function of its text, so a hit is exact. `maxChars` counts keys and kept results.
+ * a pure function of its text, so a hit is exact. Long text is keyed by its SHA-256, so a result that is the text
+ * itself (most are) costs one short key: a chat with many big tool inputs fits whole, and a re-subscribe, which
+ * walks them in the same order each time, finds every one. `maxChars` counts keys and kept results.
  */
 export class TextMemo {
   private readonly m = new Map<string, string>();
   private chars = 0;
   hits = 0;
   misses = 0;
-  constructor(private readonly maxChars: number) {}
+  constructor(
+    private readonly maxChars: number,
+    private readonly maxEntries = MEMO_MAX_ENTRIES,
+  ) {}
+  private key(s: string): string {
+    return s.length >= HASH_KEY_MIN ? `#${createHash("sha256").update(s).digest("hex")}` : s;
+  }
   get(s: string): string | undefined {
-    const v = this.m.get(s);
+    const k = this.key(s);
+    const v = this.m.get(k);
     if (v === undefined) return undefined;
     this.hits++;
-    this.m.delete(s);
-    this.m.set(s, v);
+    this.m.delete(k);
+    this.m.set(k, v);
     return v === SAME ? s : v;
   }
   set(s: string, r: string): string {
     this.misses++;
-    if (s.length > this.maxChars / 4) return r; // one string never takes over the memo
     const v = r === s ? SAME : r;
-    this.m.set(s, v);
-    this.chars += s.length + (v === SAME ? 0 : v.length);
-    for (const [k, x] of this.m) {
-      if (this.chars <= this.maxChars) break;
-      this.m.delete(k);
-      this.chars -= k.length + (x === SAME ? 0 : x.length);
+    const k = this.key(s);
+    const size = k.length + (v === SAME ? 0 : v.length);
+    if (size > this.maxChars / 4) return r; // one string never takes over the memo
+    const had = this.m.get(k);
+    if (had !== undefined) this.chars -= k.length + (had === SAME ? 0 : had.length);
+    this.m.delete(k);
+    this.m.set(k, v);
+    this.chars += size;
+    for (const [x, y] of this.m) {
+      if (this.chars <= this.maxChars && this.m.size <= this.maxEntries) break;
+      this.m.delete(x);
+      this.chars -= x.length + (y === SAME ? 0 : y.length);
     }
     return r;
   }
@@ -199,8 +217,34 @@ const PEOPLE_MEMO_MIN = 256;
 
 // ── the passes, one string at a time ─────────────────────────────────────────────────────────────────────
 
-/** A JSON string literal, complete. */
-const LITERAL = /"(?:[^"\\\n]|\\.)*"/g;
+/**
+ * The next complete JSON string literal in `s` from `from`, as `[start, end)`, or undefined: what
+ * `/"(?:[^"\\\n]|\\.)*"/g` finds, in one pass. A literal that never closes (a newline, a backslash before a line
+ * end, or the end of the text comes first) is passed over from where it stopped: a match starting at any quote
+ * inside it reads the same characters from there and stops at the same place, so the regex finds nothing in it
+ * either, only it reads the rest of the text again from every quote (a tool input `sanitizeAction` cut ends inside
+ * an open literal full of `\"`).
+ */
+export function nextLiteral(s: string, from: number): [number, number] | undefined {
+  let q = s.indexOf('"', from);
+  while (q >= 0) {
+    let i = q + 1;
+    for (; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      if (c === 34) return [q, i + 1]; // "
+      if (c === 10) break; // a newline ends it unclosed
+      if (c === 92) {
+        const n = s.charCodeAt(i + 1);
+        // `\\.`: any character but a line end (`.` takes none of \n, \r, U+2028, U+2029)
+        if (Number.isNaN(n) || n === 10 || n === 13 || n === 0x2028 || n === 0x2029) break;
+        i++;
+      }
+    }
+    if (i >= s.length) return undefined;
+    q = s.indexOf('"', i + 1);
+  }
+  return undefined;
+}
 
 /**
  * `redactLast` on each run between quotes, for a piece of JSON whose literals can't be told apart (an unfinished
@@ -224,11 +268,11 @@ function lastInJson(s: string): string {
   let out = "";
   let from = 0;
   let changed = false;
-  LITERAL.lastIndex = 0;
-  for (let m = LITERAL.exec(s); m; m = LITERAL.exec(s)) {
-    const between = s.slice(from, m.index);
+  for (let m = nextLiteral(s, 0); m; m = nextLiteral(s, m[1])) {
+    const between = s.slice(from, m[0]);
     const b = lastLocal(between);
-    let lit = m[0];
+    const whole = s.slice(m[0], m[1]);
+    let lit = whole;
     let v: unknown;
     try {
       v = JSON.parse(lit);
@@ -243,9 +287,9 @@ function lastInJson(s: string): string {
     } else {
       lit = `"${lastLocal(lit.slice(1, -1))}"`;
     }
-    if (b !== between || lit !== m[0]) changed = true;
+    if (b !== between || lit !== whole) changed = true;
     out += b + lit;
-    from = m.index + m[0].length;
+    from = m[1];
   }
   const rest = s.slice(from);
   const r = lastLocal(rest);
@@ -299,7 +343,9 @@ export function peopleOf(s: string): string {
     const hit = memos.people.get(s);
     if (hit !== undefined) return hit;
   }
-  const r = guarded(s, last(prose(s)));
+  const p = prose(s);
+  // An agent's JSON reply (a stage's output) gets `redactLast` literal by literal, never across two.
+  const r = guarded(s, STARTS_JSON.test(p) && isJsonDoc(p) ? lastInJson(p) : last(p));
   return s.length >= PEOPLE_MEMO_MIN ? memos.people.set(s, r) : r;
 }
 
@@ -333,11 +379,16 @@ const ownerMessage = (o: Record<string, unknown>): boolean =>
 /**
  * The WebSocket's copy of an AHP value: `redactLast` on the strings under a text key, everything else as it is
  * (ids, URIs, paths, option values, base64 `data`). A message the owner typed is left as typed, except on a
- * read-only channel (a ticket stage), where the "message" is the daemon's brief. The channel is the nearest
- * `channel` or `resource` above. Only the parts that change are copied: with nothing to change, the same object
- * comes back. Never cuts.
+ * read-only channel (a ticket stage), where the "message" is the daemon's brief. So is a session's title the owner
+ * set (`ownerTitle`: a title they typed, renamed, or the first line of their first message), not one its agent set.
+ * The channel is the nearest `channel` or `resource` above. Only the parts that change are copied: with nothing to
+ * change, the same object comes back. Never cuts.
  */
-export function outward<T>(v: T, readOnly: (uri: string) => boolean = () => false): T {
+export function outward<T>(
+  v: T,
+  readOnly: (uri: string) => boolean = () => false,
+  ownerTitle: (uri: string, title: string) => boolean = () => false,
+): T {
   const ro = new Map<string, boolean>();
   const isReadOnly = (uri: string): boolean => {
     let r = ro.get(uri);
@@ -350,6 +401,7 @@ export function outward<T>(v: T, readOnly: (uri: string) => boolean = () => fals
   const walk = (x: unknown, key: string | undefined, ch: string): unknown => {
     if (typeof x === "string") {
       if (key === undefined || !SINK_TEXT_KEYS.has(key)) return x;
+      if (key === "title" && ch && ownerTitle(ch, x)) return x;
       return lastOf(x, JSON_KEYS.has(key));
     }
     if (Array.isArray(x)) {
@@ -381,8 +433,12 @@ export function outward<T>(v: T, readOnly: (uri: string) => boolean = () => fals
 }
 
 /** A JSON-RPC frame for the WebSocket, through the sink. The only way to make a `Wire`. */
-export function wire(frame: unknown, readOnly?: (uri: string) => boolean): Wire {
-  return JSON.stringify(outward(frame, readOnly)) as Wire;
+export function wire(
+  frame: unknown,
+  readOnly?: (uri: string) => boolean,
+  ownerTitle?: (uri: string, title: string) => boolean,
+): Wire {
+  return JSON.stringify(outward(frame, readOnly, ownerTitle)) as Wire;
 }
 
 /** A stored blob read as text (a diff side): `redactLast`, by literal when it is JSON. */
@@ -435,16 +491,33 @@ export function peopleDeep<T>(v: T, key?: string): T {
 
 /**
  * A ticket as the owner's views show it. The owner's own words stay as typed (decision 1): the title, reason and
- * "done when" of a ticket the owner filed, and its images. An agent's follow-up gets the pass on those too.
+ * "done when" of a ticket the owner filed, and its images. An agent's follow-up gets the pass on those too, and so
+ * does a title that is an agent's words in a ticket the owner filed (`agentsTitle`: a conversation's ticket titled
+ * with the title its agent gave the conversation).
  */
-export function peopleView<V extends TicketView>(v: V): V {
+export function peopleView<V extends TicketView>(v: V, agentsTitle = false): V {
   const ownerFiled = !v.createdBy;
   const out: Record<string, unknown> = { ...(v as Record<string, unknown>) };
+  const typed = new Set(ownerFiled ? v.doneWhen : []);
   for (const [k, x] of Object.entries(v)) {
     if (k === "attachments") continue;
-    if (ownerFiled && (k === "title" || k === "reason" || k === "doneWhen")) continue;
-    if (k === "report" && ownerFiled && isObj(x)) {
+    if (ownerFiled && (k === "reason" || k === "doneWhen" || (k === "title" && !agentsTitle))) continue;
+    if (k === "report" && ownerFiled && !agentsTitle && isObj(x)) {
       out[k] = { ...peopleDeep(x), title: x.title };
+      continue;
+    }
+    if (k === "doneCheck" && typed.size && isObj(x) && Array.isArray(x.items)) {
+      // The check repeats the owner's "done when" lines: those stay as typed, the verdicts and evidence don't.
+      const shown = peopleDeep(x);
+      out[k] = {
+        ...shown,
+        items: (shown.items as unknown[]).map((it, i) => {
+          const was = (x.items as unknown[])[i];
+          return isObj(it) && isObj(was) && typeof was.doneWhen === "string" && typed.has(was.doneWhen)
+            ? { ...it, doneWhen: was.doneWhen }
+            : it;
+        }),
+      };
       continue;
     }
     out[k] = peopleDeep(x, k);
@@ -462,23 +535,45 @@ export function peopleProposal<P extends ProposalView>(p: P): P {
   return peopleDeep(p);
 }
 
-/** A ticket's title where the owner's views list it: the owner's own as typed, an agent's with the pass. */
-export function peopleTitle(title: string, createdBy: string | null | undefined): string {
-  return !createdBy || createdBy === "owner" ? title : peopleOf(title);
+/**
+ * A ticket's title where the owner's views list it: the owner's own as typed, an agent's with the pass. `agents`:
+ * whether it is an agent's words (a follow-up it filed, or a conversation's ticket titled by its agent).
+ */
+export function peopleTitle(title: string, agents: boolean): string {
+  return agents ? peopleOf(title) : title;
 }
 
 /**
- * A conversation's row as the REST API shows it: its title (the owner's first line, or the agent's own) gets
- * `redactLast`, as the WebSocket gives it (decision 6: not redacted where it is stored).
+ * A conversation's title as the owner's views show it, as the WebSocket gives it: the owner's own (typed at create,
+ * a rename, or the first line of their first message) as typed (decision 1), the agent's with `redactLast`. A title
+ * from before whose it was kept is treated as the agent's. Not redacted where it is stored.
  */
-export function peopleConversation<C extends { title: string }>(c: C): C {
-  const title = lastOf(c.title);
-  return title === c.title ? c : { ...c, title };
+export function conversationTitle(c: { title: string; titleBy?: "owner" | "agent" | null }): string {
+  return c.titleBy === "owner" ? c.title : lastOf(c.title);
 }
 
-/** A conversation's shipping view: its ticket's live line and the reasons are the daemon's and the agent's words. */
-export function peopleShip<S extends { suggestion?: unknown }>(s: S): S {
+/** A conversation's row as the REST API shows it: its title through `conversationTitle`, and no `titleBy`. */
+export function peopleConversation<C extends { title: string; titleBy?: "owner" | "agent" | null }>(
+  c: C,
+): Omit<C, "titleBy"> {
+  const { titleBy: _, ...rest } = c;
+  const title = conversationTitle(c);
+  return title === c.title ? rest : { ...rest, title };
+}
+
+/**
+ * A conversation's shipping view: its ticket's live line and the reasons are the daemon's and the agent's words.
+ * What the confirm dialog starts with is the owner's own words (the first ask, the done-when made from it), except a
+ * title the conversation's agent gave it, which gets `redactLast` as the conversation row shows it.
+ */
+export function peopleShip<S extends { suggestion?: { title: string; titleBy?: "owner" | "agent" } }>(
+  s: S,
+): S {
   const { suggestion, ...rest } = s;
-  // What the confirm dialog starts with is made from the owner's own words (decision 1).
-  return { ...peopleDeep(rest), ...(suggestion !== undefined ? { suggestion } : {}) } as unknown as S;
+  let shown: Record<string, unknown> | undefined;
+  if (suggestion) {
+    const { titleBy, ...offered } = suggestion;
+    shown = titleBy === "owner" ? offered : { ...offered, title: lastOf(offered.title) };
+  }
+  return { ...peopleDeep(rest), ...(shown ? { suggestion: shown } : {}) } as unknown as S;
 }

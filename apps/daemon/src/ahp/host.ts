@@ -181,6 +181,13 @@ export interface HostHooks {
   /** Called after a session is disposed. */
   onSessionDisposed?: (session: string) => void;
   /**
+   * A session's title was just set, by its agent (`emit`) or by anyone else (the owner's rename, the first line of
+   * the owner's first message). Called before the action is sent, so the WebSocket sink knows whose title it is.
+   */
+  onTitleSet?: (session: string, by: "agent" | "owner") => void;
+  /** Is this session's title, as it stands, the owner's own words? Absent: no, and the sink redacts it. */
+  ownerTitled?: (session: string) => boolean;
+  /**
    * Why this chat can't take a turn now, said for the owner, or undefined when it can: its working copy
    * belongs to a ticket (T62b). A message sent meanwhile is refused with that sentence, and a queued one
    * waits until `resumeChat`.
@@ -633,6 +640,16 @@ export class AhpHost {
    * write fails. Returns the sequenced envelope.
    */
   apply(channel: string, action: StateAction, origin?: ActionEnvelope["origin"]): ActionEnvelope {
+    return this.applyAs(channel, action, origin, false);
+  }
+
+  /** `apply`, knowing whether the action came from the agent side (`emit`). */
+  private applyAs(
+    channel: string,
+    action: StateAction,
+    origin: ActionEnvelope["origin"] | undefined,
+    fromAgent: boolean,
+  ): ActionEnvelope {
     const ch = this.chans.get(channel);
     if (!ch) throw new RpcError(AhpErrorCodes.NotFound, `no channel ${channel}`);
     this.flushDeltas(channel);
@@ -674,6 +691,13 @@ export class AhpHost {
       setTimeout(() => this.pruneQuietly(), 0).unref?.();
     }
     ch.sinceSnapshot = snapshotDue ? 0 : ch.sinceSnapshot + 1;
+    if (ch.kind === "session" && action.type === ActionType.SessionTitleChanged) {
+      try {
+        this.hooks.onTitleSet?.(channel, fromAgent ? "agent" : "owner");
+      } catch (e) {
+        this.log(`ahp: onTitleSet failed: ${e instanceof Error ? e.message : e}`);
+      }
+    }
     const env: ActionEnvelope = { channel, action, serverSeq: seq, origin };
     this.broadcast(channel, env);
     try {
@@ -710,7 +734,7 @@ export class AhpHost {
       this.queueDelta(channel, action);
       return undefined;
     }
-    return this.apply(channel, sanitizeAction(action, this.caps));
+    return this.applyAs(channel, sanitizeAction(action, this.caps), undefined, true);
   }
 
   // ── streaming text: many small deltas become few actions ─────────────────────────────────────
@@ -775,11 +799,23 @@ export class AhpHost {
    */
   private readonly readOnlyUri = (uri: string): boolean => this.isReadOnly(uri);
 
+  /**
+   * Is `title`, found under `uri` (a session or one of its chats), the session's title as it stands, and that the
+   * owner's own words? Then the sink leaves it as typed (decision 1); an agent's title gets the pass.
+   */
+  private readonly ownerTitle = (uri: string, title: string): boolean => {
+    const ch = this.chans.get(uri);
+    const session =
+      ch?.kind === "session" ? uri : ch?.kind === "chat" ? this.chatSession.get(uri) : undefined;
+    if (!session || this.sessionState(session)?.title !== title) return false;
+    return this.hooks.ownerTitled?.(session) === true;
+  };
+
   private broadcast(channel: string, env: ActionEnvelope): void {
     let text: Wire | undefined;
     for (const conn of [...this.conns]) {
       if (!conn.subs.has(channel)) continue;
-      text ??= wire({ jsonrpc: "2.0", method: "action", params: env }, this.readOnlyUri);
+      text ??= wire({ jsonrpc: "2.0", method: "action", params: env }, this.readOnlyUri, this.ownerTitle);
       this.sendText(conn, text);
     }
   }
@@ -788,7 +824,11 @@ export class AhpHost {
     let text: Wire | undefined;
     for (const conn of [...this.conns]) {
       if (!conn.subs.has(channel)) continue;
-      text ??= wire({ jsonrpc: "2.0", method, params: { channel, ...params } }, this.readOnlyUri);
+      text ??= wire(
+        { jsonrpc: "2.0", method, params: { channel, ...params } },
+        this.readOnlyUri,
+        this.ownerTitle,
+      );
       this.sendText(conn, text);
     }
   }
@@ -809,7 +849,7 @@ export class AhpHost {
   }
 
   private send(conn: Conn, msg: Json): void {
-    this.sendText(conn, wire({ jsonrpc: "2.0", ...msg }, this.readOnlyUri));
+    this.sendText(conn, wire({ jsonrpc: "2.0", ...msg }, this.readOnlyUri, this.ownerTitle));
   }
 
   // ───────────────────────────── summaries and roll-ups ─────────────────────────────
