@@ -289,7 +289,7 @@ describe("the machine harness in direct mode", () => {
     expect(await direct(work).runGates(ticket, okOf(held))).toMatchObject({ ok: true });
   });
 
-  it("shows the owner a held change as the viewer would, with what the scan stops taken out", async () => {
+  it("shows the owner a held change with the shapes only the last step finds taken out", async () => {
     const { work } = directRepos(".github/workflows/ci.yml");
     writeFileSync(join(work, ".github/workflows/ci.yml"), "url: postgres://u:ab/cd@h/app\n");
     git(work, "add", "-A");

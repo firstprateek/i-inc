@@ -285,7 +285,7 @@ links into it.
   nothing reads the result again: in `redactFile`, so Files, Search, the Changes diff, @file, the ship scan and the
   history and commit message scan all have it, and after `redactTokens` on a held change's diff, whose `+` and `-`
   `redactFile`'s key blocks would read as key. Transcripts don't: `redactText`, `redactProse` and `redactTokens`
-  stop where they did, so what an agent says, a brain page and a file a tool left in a stage still show these shapes.
+  stop where they did, so what an agent says, a brain page and a file a tool left in a stage can still show these shapes.
   Those texts are read again, a later read finds a value by a name or a label the last step would take, and closing them
   is a separate change. A link is outside or not by its target as written, not by what redaction left of it. A block
   keeps its lines, so line numbers hold. Its markers count wherever they sit, in a
