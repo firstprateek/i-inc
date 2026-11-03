@@ -81,7 +81,7 @@ import { type ProposalStatus, RECOVERED_BODY } from "./proposals.ts";
 import { type NotifySettings, notifyKeys, notifySettings, type PushSubscription } from "./push.ts";
 import { defaultTeam, type Project } from "./registry.ts";
 import { isReviewPath, isSearchQuery } from "./review.ts";
-import { agentTitled, ShipError } from "./ship.ts";
+import { ShipError } from "./ship.ts";
 import {
   conversationTitle,
   lastOf,
@@ -255,12 +255,14 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
   };
 
   /**
-   * Is a ticket's title an agent's words? A follow-up an agent filed, or a conversation's ticket titled with the
-   * title its agent gave the conversation (ship.ts `agentTitled`). The owner's views give those the sink's pass.
+   * May a ticket's title be an agent's words? A follow-up an agent filed, and any ticket made from a conversation:
+   * one made with no title takes the title its agent gave the conversation, and the ticket doesn't keep whose
+   * words it took. The conversation can't tell later either (the owner renames it, or its row is pruned), so the
+   * owner's views give every conversation's ticket title the sink's pass, a title the owner typed in the ship
+   * dialog too, as the ship dialog shows it.
    */
   const agentsTitle = (t: TicketRecord["ticket"]): boolean =>
-    (!!t.createdBy && t.createdBy !== "owner") ||
-    (!!t.conversation && agentTitled(t.title, d.conversations?.byId(t.conversation)));
+    (!!t.createdBy && t.createdBy !== "owner") || !!t.conversation;
 
   /** Tickets whose card couldn't be built in this request, with why: the board lists them. */
   let unbuilt: { id: Id; reason: string }[] = [];

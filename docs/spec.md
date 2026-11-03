@@ -450,10 +450,12 @@ interface with a scripted fake in tests, like the ACP agent.
     (ticket, board, Needs you, office, proposals and the ticket accepting one makes, a ticket's events and
     sessions, conversations and their ship dialog, Brain changes), a pull request's title and body, and every
     push. That pass only takes out, and is checked as it runs, so it hides at least what was hidden before, for
-    text stored before it too.
+    text stored before it too. A ticket session's items get a narrower pass than its events, so a keyed password
+    the kept text missed (in an agent's JSON reply, say) can still show there.
   - What you typed stays as typed in your own views: your messages, a ticket you filed, and a conversation's title
     when you set it (typed, renamed, or the first line of your first message). A title the agent gave a
-    conversation gets the pass. Left as they are, so they can still show what only that pass takes: text at rest
+    conversation gets the pass, and so does the title of every ticket made from a conversation, which may be the
+    agent's. Left as they are, so they can still show what only that pass takes: text at rest
     in SQLite and brain git, the daemon's logs, the brief sent to an employee's machine (the agent already holds
     that text inside its wall), the chat with the helper model, and brain search and pages.
 

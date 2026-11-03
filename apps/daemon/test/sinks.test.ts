@@ -107,6 +107,21 @@ describe("the guard", () => {
     expect(takesOutOnly("x data:image/png;base64,AAAA y", "x [image/png data, 1 KB] y")).toBe(true);
   });
 
+  it("keeps a text whose long run of tabs or no-break spaces redactText made one blank", () => {
+    for (const blank of ["\t", "\u00a0"]) {
+      const report = `## Report\n\nCol A${blank.repeat(200)}Col B\n\nAll checks green.`;
+      const before = sinkStats.trips;
+      const out = outsideOf(report);
+      expect(out).toContain("All checks green.");
+      expect(out).toContain("Col A Col B");
+      expect(sinkStats.trips).toBe(before);
+    }
+    expect(takesOutOnly("a\t\tb", "a b")).toBe(true);
+    expect(takesOutOnly("a\u00a0b", "a\nb")).toBe(true);
+    expect(takesOutOnly("a\tb", "a x")).toBe(false);
+    expect(takesOutOnly("ab", "a b")).toBe(false);
+  });
+
   it("is linear when redactText made runs of blanks one blank between markers", () => {
     // Each piece between markers is not in the input whole: looking for it whole read the rest of the input
     // every time (0.6 s on 1 MB). Matched one character at a time it is one pass.
@@ -165,6 +180,12 @@ describe("the cheap test before redactLast", () => {
       expect(lastDirty(q), q).toBe(true);
       expect(lastOf(q), q).not.toContain("SECRETVALUE");
     }
+    // a Google key straight after a word character (a diff side as redactTokens kept it): only the cheap test's
+    // AIza term lets redactLast see it
+    const glued = `key x_AIzaSy${"B".repeat(33)} end`;
+    expect(redactLast(glued)).not.toContain("AIza");
+    expect(lastDirty(glued)).toBe(true);
+    expect(lastOf(glued)).not.toContain("AIza");
     // it does skip: a test that skips nothing proves nothing
     expect(skipped).toBeGreaterThan(5000);
   });
@@ -323,6 +344,15 @@ describe("the WebSocket pass", () => {
     const src = join(import.meta.dirname, "../src");
     for (const f of ["ahp/host.ts", "api.ts", "ahp/session-host.ts", "ahp/ticket-channels.ts"])
       expect(readFileSync(join(src, f), "utf8")).not.toMatch(/as Wire\b/);
+    // and the socket's own send, which takes any string, is called only from sendText
+    const sendText = host.slice(
+      host.indexOf("private sendText("),
+      host.indexOf("\n  }\n", host.indexOf("private sendText(")),
+    );
+    expect(sendText).toMatch(/conn\.socket\.send\(text\)/);
+    expect([...host.matchAll(/\.send\(/g)].length - [...host.matchAll(/this\.send\(/g)].length).toBe(1);
+    for (const f of ["api.ts", "ahp/session-host.ts", "ahp/ticket-channels.ts"])
+      expect(readFileSync(join(src, f), "utf8")).not.toMatch(/socket\.send\(/);
   });
 });
 
@@ -404,7 +434,9 @@ describe("the owner's views", () => {
     expect(visible(a.doneCheck.items[0]?.doneWhen ?? "")).toEqual([]);
   });
 
-  it("runs redactLast on an agent's JSON reply one literal at a time, so it stays JSON with every key", () => {
+  it("runs redactLast on an agent's JSON reply one literal at a time, so it stays JSON", () => {
+    // redactProse runs first, on the whole text: a scan of it may still take from one field into the next (a
+    // pathless URL, then an @ in a later field), which hides more, never less. redactLast never does.
     const reply = JSON.stringify({
       plan: "curl http://api:v2/health",
       owner: "ops@corp.example",
@@ -474,6 +506,67 @@ describe("cost, counted", () => {
     expect(sinkMemos.lastJson.misses).toBe(misses);
     expect(sinkStats.last).toBe(last);
     expect(sinkMemos.lastJson.hits).toBeGreaterThanOrEqual(60);
+  });
+
+  it("re-subscribing to a 30-turn window of 1 to 4 KB tool inputs, 3M characters in all, finds every one", () => {
+    // Kept whole, 900 inputs of about 3.4K characters were over the JSON memo's 3M: each re-subscribe pushed out
+    // the ones the next one needed, and redacted every one again.
+    let u = 0;
+    const body = (n: number) => {
+      let s = `v${u++} ping dev@example.com see https://example.com/x `;
+      while (s.length < n) s += "const a = b + c; ";
+      return s.slice(0, n);
+    };
+    const turns = [...Array(30)].map((_, t) => ({
+      id: `t${t}`,
+      toolCalls: [...Array(30)].map((_, k) => ({
+        id: `c${k}`,
+        toolInput: JSON.stringify({
+          file_path: `/w/a${k}.ts`,
+          old_string: body(1500),
+          new_string: body(1800),
+        }),
+      })),
+    }));
+    const state = { resource: "ahp-chat:/x", state: { turns } };
+    expect(turns.flatMap((t) => t.toolCalls).reduce((n, c) => n + c.toolInput.length, 0)).toBeGreaterThan(
+      3_000_000,
+    );
+    outward(state);
+    const last = sinkStats.last;
+    const hits = sinkMemos.lastJson.hits;
+    const misses = sinkMemos.lastJson.misses;
+    outward(state);
+    expect(sinkStats.last).toBe(last);
+    expect(sinkMemos.lastJson.misses).toBe(misses);
+    expect(sinkMemos.lastJson.hits - hits).toBe(900);
+  });
+
+  it("re-read in the same order with more than fits, still finds most of what fits", () => {
+    // Plain LRU finds none: each entry is pushed out just before it is needed again.
+    const m = new TextMemo(6_000_000, 1000);
+    const keys = [...Array(2000)].map((_, i) => `sk-${i}`);
+    let found = 0;
+    for (let pass = 0; pass < 6; pass++) {
+      found = 0;
+      for (const k of keys) {
+        if (m.get(k) !== undefined) found++;
+        else m.set(k, "[redacted]");
+      }
+    }
+    expect(found).toBeGreaterThanOrEqual(800);
+    expect(m.size.entries).toBe(1000);
+  });
+
+  it("still makes way for new text as LRU does, after it thrashed", () => {
+    const m = new TextMemo(6_000_000, 1000);
+    const old = [...Array(2000)].map((_, i) => `sk-old-${i}`);
+    for (let pass = 0; pass < 4; pass++) for (const k of old) if (m.get(k) === undefined) m.set(k, "x");
+    const fresh = [...Array(900)].map((_, i) => `sk-new-${i}`);
+    for (const k of fresh) if (m.get(k) === undefined) m.set(k, "y");
+    let found = 0;
+    for (const k of fresh) if (m.get(k) !== undefined) found++;
+    expect(found).toBeGreaterThanOrEqual(850);
   });
 
   it("keeps at most so many entries, however short", () => {

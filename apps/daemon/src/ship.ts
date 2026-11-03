@@ -39,6 +39,7 @@ import {
   ShipRefusal,
   secretsSentence,
 } from "./ship-git.ts";
+import { conversationTitle } from "./sinks.ts";
 import type { SqliteEventStore } from "./store.ts";
 import type { Tickets } from "./tickets.ts";
 import type { ShipBrief, ShipMode, ShipView } from "./view-types.ts";
@@ -88,23 +89,6 @@ const PR_CACHE_MS = 20_000;
 const RECONCILE_MS = 60_000;
 
 const clean = (s: string, max: number) => redactText(s.replace(/\s+/g, " ").trim()).slice(0, max);
-
-/**
- * Is a conversation ticket's title the one its agent gave the conversation, as a ticket made with no title takes it
- * (`suggest`)? Such a ticket has no `createdBy`, so without this the owner's views would take the agent's words for
- * the owner's. Holds for tickets made before this was asked too, while the conversation keeps that title.
- */
-export function agentTitled(
-  ticketTitle: string,
-  conv: { title: string; titleBy: string | null } | undefined,
-): boolean {
-  return (
-    !!conv &&
-    conv.titleBy !== "owner" &&
-    conv.title !== DEFAULT_TITLE &&
-    ticketTitle === clean(conv.title, 120)
-  );
-}
 
 /** A conventional-commit type for a title: a fix when it says so, else a feature. */
 export function typeOf(title: string): "fix" | "feat" {
@@ -881,7 +865,8 @@ export class Shipping {
     try {
       if (this.d.backend.hold && !this.d.backend.hold(conv.ahpSession)) {
         throw new ShipError(
-          `${conv.title} is working in that folder right now. Stop its turn first, then try the ticket again.`,
+          // The owner's view of the title: an error goes back over REST like any other body (sinks.ts).
+          `${conversationTitle(conv)} is working in that folder right now. Stop its turn first, then try the ticket again.`,
           409,
           "busy",
         );

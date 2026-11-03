@@ -1,6 +1,8 @@
 // The REST, GitHub and push sinks (r131), and the two entry changes (G4 retro edits, G6 stale-delete diffs).
-// The route sweep calls every GET route in api.ts over stores seeded with canaries, so a new route that serves
-// agent text without the sink fails here.
+// The route sweep calls every GET route in api.ts over stores seeded with canaries, so a new GET route over those
+// stores that serves agent text without the sink fails here. It doesn't see a POST's answer (tests below name the
+// ones that serve agent text), a route whose param it doesn't know (it passes "x"), or the brain and handbook
+// stores, which it doesn't seed. Its "main" is this branch with the sinks' redactors made the identity.
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -316,7 +318,38 @@ describe("the route sweep", () => {
     expect(visible(JSON.stringify(app.deps.tickets.get(r.body.ticket.id)?.ticket))).not.toEqual([]);
   });
 
-  it("serves no REST body but through json()", () => {
+  it("declining an agent's proposal answers with it through the sink", async () => {
+    const { app } = await seeded();
+    const p = (await app.call("GET", "/api/proposals")).body.proposals[0];
+    const r = await app.call("POST", `/api/proposals/${p.id}/decline`, {});
+    expect(r.status).toBe(200);
+    expect(r.body.proposal.title).toContain("Proposal");
+    expect(visible(JSON.stringify(r.body))).toEqual([]);
+    expect(visible(JSON.stringify(app.deps.proposals.get(p.id)))).not.toEqual([]); // stored as written
+  });
+
+  it("assigning a ticket nobody started answers with it through the sink", async () => {
+    const { app } = await seeded();
+    const t = app.deps.tickets.create(
+      {
+        title: `Unstarted ${SHAPES[0]?.text}`,
+        project: "Duet",
+        type: "fix",
+        effort: "low",
+        doneWhen: [ALL],
+        reason: ALL,
+        createdBy: "ada",
+        hold: true,
+      },
+      app.clock.now(),
+    );
+    const r = await app.call("POST", `/api/tickets/${t.id}/assign`, { to: "ada" });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.ticket.title).toContain("Unstarted");
+    expect(visible(JSON.stringify(r.body))).toEqual([]);
+  });
+
+  it("serves no REST body but through json() (which serializes only: each route applies the sink)", () => {
     const src = readFileSync(join(import.meta.dirname, "../src/api.ts"), "utf8");
     const raw = [...src.matchAll(/new Response\(JSON\.stringify\(/g)];
     expect(raw.length).toBe(1);

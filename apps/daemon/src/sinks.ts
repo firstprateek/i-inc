@@ -51,8 +51,9 @@ const MARKERS =
  * Is `out`, with its markers taken out, made of `input`'s characters in order? Then nothing `out` shows was missing
  * from `input`. The test `copy-files.test.ts` holds `redactLast` to, run on every result. Each character is
  * matched at the first place it can be, which never ends later than any other way of matching it, so a masker's
- * output always passes (a run of blanks `redactText` made one blank too). Linear: the place in `input` only moves
- * forward, and a character not found ends the test.
+ * output always passes (a run of blanks `redactText` made one blank too). A space or a line end in `out` may stand
+ * for any blank in `input`, as `redactText` folds a long run of tabs or no-break spaces into one: a blank shows
+ * nothing. Linear: the place in `input` only moves forward, and a character not found ends the test.
  */
 export function takesOutOnly(input: string, out: string): boolean {
   if (out === input) return true;
@@ -61,7 +62,7 @@ export function takesOutOnly(input: string, out: string): boolean {
     for (let i = from; i < to; i++) {
       const c = out.charCodeAt(i);
       if (input.charCodeAt(at) !== c) {
-        at = input.indexOf(out.charAt(i), at);
+        at = c === 32 || c === 10 ? nextBlank(input, at) : input.indexOf(out.charAt(i), at);
         if (at < 0) return false;
       }
       at++;
@@ -75,6 +76,13 @@ export function takesOutOnly(input: string, out: string): boolean {
     from = m.index + m[0].length;
   }
   return piece(from, out.length);
+}
+
+const BLANK = /\s/;
+/** The first blank (what `\s` takes, as `redactText`'s runs of blanks are) in `s` from `from`, or -1. */
+function nextBlank(s: string, from: number): number {
+  for (let j = from; j < s.length; j++) if (BLANK.test(s.charAt(j))) return j;
+  return -1;
 }
 
 let sinkLog: (line: string) => void = (line) => console.warn(line);
@@ -141,20 +149,47 @@ export function lastDirty(s: string): boolean {
 /** The result is the input itself: kept as a marker, not a copy. */
 const SAME = "\u0000same";
 
-/** Text this long is kept in the memo by its SHA-256, not whole: a big tool input then costs 65 characters. */
-const HASH_KEY_MIN = 4096;
+/**
+ * Text this long is kept in the memo by its SHA-256, not whole: a big tool input then costs 65 characters, and a
+ * result that is the text itself (most are) costs nothing more. As long as `PEOPLE_MEMO_MIN`, so every string a
+ * people view keeps is keyed by hash, and shorter than `LOOK_FIRST`, so a 1 to 4 KB tool input is too.
+ */
+const HASH_KEY_MIN = 256;
 /** The most entries a memo keeps, however short they are. */
 const MEMO_MAX_ENTRIES = 50_000;
+/** How many of the last turned-away or pushed-out keys a memo remembers, to tell that it is thrashing. */
+const THRASH_MAX = 32;
+/** Thrashing from this score: misses on keys it just pushed out or turned away outnumber new ones by this much. */
+const THRASH_ON = 16;
+/** While thrashing, one miss in this many is let in (pushing out the least recently used), so it still moves on. */
+const ADMIT_ONE_IN = 16;
+
+/** A 32-bit FNV-1a of a memo key: only what the memo remembers it pushed out, so a clash only changes a choice. */
+function fnv(k: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < k.length; i++) h = Math.imul(h ^ k.charCodeAt(i), 0x01000193);
+  return h >>> 0;
+}
 
 /**
  * A bounded LRU of text to its sink result, by content (never by object identity), in memory only. Redaction is
- * a pure function of its text, so a hit is exact. Long text is keyed by its SHA-256, so a result that is the text
- * itself (most are) costs one short key: a chat with many big tool inputs fits whole, and a re-subscribe, which
- * walks them in the same order each time, finds every one. `maxChars` counts keys and kept results.
+ * a pure function of its text, so a hit is exact. Text from `HASH_KEY_MIN` is keyed by its SHA-256, so a result
+ * that is the text itself costs one short key: a 30-turn window of big tool inputs fits whole many times over, and
+ * a re-subscribe, which walks them in the same order each time, finds every one. `maxChars` counts keys and kept
+ * results.
+ *
+ * Past that (more strings than `maxEntries`, or more changed results than `maxChars`), plain LRU would miss every
+ * one on a re-read in the same order: each entry is pushed out just before it is needed. So the memo remembers the
+ * keys it last pushed out or turned away, and when its misses are mostly those, it is thrashing: it then keeps what
+ * it has and lets in only one miss in `ADMIT_ONE_IN`, so a re-read still finds most of what fits. A miss on text
+ * it hasn't seen lowers the score, so a new chat replaces an old one as LRU would.
  */
 export class TextMemo {
   private readonly m = new Map<string, string>();
+  private readonly gone = new Set<number>();
   private chars = 0;
+  private score = 0;
+  private turned = 0;
   hits = 0;
   misses = 0;
   constructor(
@@ -163,6 +198,15 @@ export class TextMemo {
   ) {}
   private key(s: string): string {
     return s.length >= HASH_KEY_MIN ? `#${createHash("sha256").update(s).digest("hex")}` : s;
+  }
+  private forget(k: string): void {
+    const h = fnv(k);
+    this.gone.delete(h);
+    this.gone.add(h);
+    if (this.gone.size > this.maxEntries) {
+      const first = this.gone.values().next();
+      if (!first.done) this.gone.delete(first.value);
+    }
   }
   get(s: string): string | undefined {
     const k = this.key(s);
@@ -180,14 +224,25 @@ export class TextMemo {
     const size = k.length + (v === SAME ? 0 : v.length);
     if (size > this.maxChars / 4) return r; // one string never takes over the memo
     const had = this.m.get(k);
-    if (had !== undefined) this.chars -= k.length + (had === SAME ? 0 : had.length);
-    this.m.delete(k);
+    if (had !== undefined) {
+      this.chars -= k.length + (had === SAME ? 0 : had.length);
+      this.m.delete(k);
+    } else if (this.chars + size > this.maxChars || this.m.size + 1 > this.maxEntries) {
+      // Full: a miss on a key it just let go means a re-read of more than fits.
+      const again = this.gone.delete(fnv(k));
+      this.score = again ? Math.min(this.score + 1, THRASH_MAX) : Math.max(this.score - 1, 0);
+      if (this.score >= THRASH_ON && ++this.turned % ADMIT_ONE_IN !== 0) {
+        this.forget(k);
+        return r;
+      }
+    }
     this.m.set(k, v);
     this.chars += size;
     for (const [x, y] of this.m) {
       if (this.chars <= this.maxChars && this.m.size <= this.maxEntries) break;
       this.m.delete(x);
       this.chars -= x.length + (y === SAME ? 0 : y.length);
+      this.forget(x);
     }
     return r;
   }
@@ -196,7 +251,10 @@ export class TextMemo {
   }
   clear(): void {
     this.m.clear();
+    this.gone.clear();
     this.chars = 0;
+    this.score = 0;
+    this.turned = 0;
     this.hits = 0;
     this.misses = 0;
   }
@@ -344,7 +402,8 @@ export function peopleOf(s: string): string {
     if (hit !== undefined) return hit;
   }
   const p = prose(s);
-  // An agent's JSON reply (a stage's output) gets `redactLast` literal by literal, never across two.
+  // An agent's JSON reply (a stage's output) gets `redactLast` literal by literal, never across two. `redactProse`
+  // ran on the whole of it first, as main's stored passes do, and can take from one field into the next: more hidden.
   const r = guarded(s, STARTS_JSON.test(p) && isJsonDoc(p) ? lastInJson(p) : last(p));
   return s.length >= PEOPLE_MEMO_MIN ? memos.people.set(s, r) : r;
 }
@@ -492,8 +551,8 @@ export function peopleDeep<T>(v: T, key?: string): T {
 /**
  * A ticket as the owner's views show it. The owner's own words stay as typed (decision 1): the title, reason and
  * "done when" of a ticket the owner filed, and its images. An agent's follow-up gets the pass on those too, and so
- * does a title that is an agent's words in a ticket the owner filed (`agentsTitle`: a conversation's ticket titled
- * with the title its agent gave the conversation).
+ * does a title that may be an agent's words in a ticket the owner filed (`agentsTitle`: any conversation's ticket,
+ * which may have taken the title its agent gave the conversation).
  */
 export function peopleView<V extends TicketView>(v: V, agentsTitle = false): V {
   const ownerFiled = !v.createdBy;
@@ -537,7 +596,7 @@ export function peopleProposal<P extends ProposalView>(p: P): P {
 
 /**
  * A ticket's title where the owner's views list it: the owner's own as typed, an agent's with the pass. `agents`:
- * whether it is an agent's words (a follow-up it filed, or a conversation's ticket titled by its agent).
+ * whether it may be an agent's words (a follow-up it filed, or any conversation's ticket).
  */
 export function peopleTitle(title: string, agents: boolean): string {
   return agents ? peopleOf(title) : title;

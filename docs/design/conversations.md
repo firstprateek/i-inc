@@ -295,8 +295,10 @@ links into it.
   through), the chat with the helper model, and a shape split across two streamed deltas, which shows live and is
   hidden once the part is read whole (a reload or a snapshot). A conversation's title is the owner's words when the
   owner set it (at create, a rename, or the first line of the first message) and is then shown as typed; when its agent
-  named it, it gets the last step, in the row, on the WebSocket, in the ship dialog and in a ticket made from it. The
-  row keeps whose title it is (`title_by`); a row from before that is treated as the agent's. A link is outside or not by its target as written, not by what redaction left of it. A block
+  named it, it gets the last step, in the row, on the WebSocket and in the ship dialog. The row keeps whose title it is
+  (`title_by`); a row from before that is treated as the agent's. A ticket made from a conversation doesn't keep
+  whose words its title is, and the conversation can't tell later (the owner renames it, or its row is pruned), so the
+  owner's views give every such ticket's title the sink's pass, one the owner typed in the ship dialog too. A link is outside or not by its target as written, not by what redaction left of it. A block
   keeps its lines, so line numbers hold. Its markers count wherever they sit, in a
   string joined over several lines or after code, once there is a line of key between them; a line in it that doesn't
   read as key material shows as `redactTokens` left it, which is in sight unless it runs straight on from the key, and

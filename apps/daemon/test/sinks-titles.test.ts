@@ -1,6 +1,7 @@
 // Whose words a conversation's title is (r131 review): the owner's own (typed at create, a rename, or the first line
 // of their first message) stays as typed in the owner's views, over REST and on the WebSocket; the agent's own title
-// gets the sink's pass everywhere the owner sees it, the ship dialog and a ticket made without a title included.
+// gets the sink's pass everywhere the owner sees it, the ship dialog included. A ticket made from a conversation
+// can't say whose words its title is, so its title always gets the pass.
 import { afterEach, describe, expect, it } from "vitest";
 import { redactText } from "../src/ahp/sanitize.ts";
 import { ActionType } from "../src/ahp/wire.ts";
@@ -8,7 +9,7 @@ import { sinkMemos } from "../src/sinks.ts";
 import { TestClient } from "./ahp/support.ts";
 import { SHAPES, visible } from "./canaries.ts";
 import { testApp } from "./setup.ts";
-import { shipRig } from "./ship-rig.ts";
+import { shipRig, until } from "./ship-rig.ts";
 
 afterEach(() => {
   for (const m of Object.values(sinkMemos)) m.clear();
@@ -118,8 +119,85 @@ describe("a conversation's title, by whose words it is", () => {
   });
 });
 
+describe("a conversation's ticket titled by its agent, once the conversation can't say so", () => {
+  // The ticket doesn't keep whose words its title is, and the conversation changes: the owner renames it, or its
+  // tombstone is pruned days after it is disposed while its ticket stays on the board.
+  async function made() {
+    const rig = await shipRig({ mode: "owner-merges" });
+    const c = await rig.conversation();
+    c.write("hello.txt", "hello\n");
+    c.git("add", "-A");
+    c.git("-c", "user.name=Ada", "-c", "user.email=ada@i.inc", "commit", "-q", "-m", "feat: greeting");
+    rig.app.ahp.host.emit(c.conv.ahpSession, {
+      type: ActionType.SessionTitleChanged,
+      title: `About ${SHAPE}`,
+    });
+    await rig.app.ahp.host.idle();
+    const t = await rig.call("POST", `/api/conversations/${c.conv.id}/ticket`, {});
+    expect(t.status).toBe(201);
+    const id = t.body.ticket.id as string;
+    expect(visible(rig.app.deps.tickets.get(id)?.ticket.title ?? "", SHAPES)).not.toEqual([]); // stored raw
+    return { rig, c, id };
+  }
+  const shows = async (rig: Rig, id: string) => {
+    const out: string[] = [];
+    for (const p of [
+      `/api/tickets/${id}`,
+      "/api/board",
+      "/api/board/summary",
+      "/api/projects/Duet",
+      "/api/desk",
+    ])
+      out.push(...visible(JSON.stringify((await rig.call("GET", p)).body), SHAPES).map((v) => `${p}: ${v}`));
+    return out;
+  };
+
+  it("stays hidden after the owner renames the conversation", async () => {
+    const { rig, c, id } = await made();
+    expect(await shows(rig, id)).toEqual([]);
+    const r = await rig.call("PATCH", `/api/conversations/${c.conv.id}`, { title: "Greeting work" });
+    expect(r.status).toBe(200);
+    expect(await shows(rig, id)).toEqual([]);
+    expect((await rig.call("GET", `/api/tickets/${id}`)).body.ticket.title).toContain("About");
+  });
+
+  it("stays hidden after the conversation's tombstone is pruned", async () => {
+    const { rig, c, id } = await made();
+    rig.app.deps.db.run("UPDATE conversations SET disposed_at = 1, copy_gone_at = 1 WHERE id = ?", c.conv.id);
+    expect(rig.app.deps.conversations?.pruneTombstones()).toBe(1);
+    expect(rig.app.deps.conversations?.byId(c.conv.id)).toBeUndefined();
+    expect(await shows(rig, id)).toEqual([]);
+  });
+});
+
+describe("a retry refused while the conversation is busy", () => {
+  it("names the conversation by its title as the row shows it", async () => {
+    const rig = await shipRig({ mode: "direct" });
+    rig.agent.on({ stage: "review" }, { kind: "stuck", reason: "the reviewer lost its place" });
+    const c = await rig.conversation();
+    c.write("a.txt", "a\n");
+    const r = await rig.call("POST", `/api/conversations/${c.conv.id}/ticket`, { title: "Owner title" });
+    await rig.settle();
+    await until(
+      async () =>
+        (await rig.call("GET", `/api/conversations/${c.conv.id}`)).body.conversation.ship === undefined,
+    );
+    rig.app.ahp.host.emit(c.conv.ahpSession, {
+      type: ActionType.SessionTitleChanged,
+      title: `About ${SHAPE}`,
+    });
+    c.say("slow going", "t2");
+    await until(() => rig.app.ahp.host.hasActiveTurn(c.conv.ahpChat));
+    const retry = await rig.call("POST", `/api/tickets/${r.body.ticket.id}/retry`, {});
+    expect(retry.status).toBe(409);
+    expect(retry.body.error).toContain("About");
+    expect(retry.body.error).toContain("is working in that folder");
+    expect(visible(JSON.stringify(retry.body), SHAPES)).toEqual([]);
+  });
+});
+
 describe("a conversation's ticket from before, titled by the agent", () => {
-  it("is hidden in the ticket, the board and the lists, while the conversation keeps that title", async () => {
+  it("is hidden in the ticket, the board and the lists", async () => {
     const app = await testApp();
     const d = app.deps;
     const agentTitle = redactText(`About ${SHAPE}`); // the agent's SessionTitleChanged, as sanitizeAction kept it
@@ -150,7 +228,8 @@ describe("a conversation's ticket from before, titled by the agent", () => {
       const r = await app.call("GET", path);
       expect(visible(JSON.stringify(r.body), SHAPES), path).toEqual([]);
     }
-    // an owner-filed ticket from the same conversation, titled in the owner's words, stays as typed
+    // a ticket from the same conversation titled in the owner's words gets the pass too: the ticket can't say whose
+    // words its title is
     const own = d.tickets.create(
       {
         title: `Owner's ${SHAPE}`,
@@ -163,6 +242,8 @@ describe("a conversation's ticket from before, titled by the agent", () => {
       },
       app.clock.now(),
     );
-    expect((await app.call("GET", `/api/tickets/${own.id}`)).body.ticket.title).toBe(`Owner's ${SHAPE}`);
+    const ownShown = (await app.call("GET", `/api/tickets/${own.id}`)).body.ticket.title as string;
+    expect(ownShown).toContain("Owner's");
+    expect(visible(ownShown, SHAPES)).toEqual([]);
   });
 });
