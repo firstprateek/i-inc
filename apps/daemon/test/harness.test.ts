@@ -300,6 +300,19 @@ describe("the machine harness in direct mode", () => {
     expect(diff).not.toContain("ab/cd");
   });
 
+  it("shows the owner every line of a held change between a key's markers", async () => {
+    const { work } = directRepos(".github/workflows/ci.yml");
+    writeFileSync(
+      join(work, ".github/workflows/ci.yml"),
+      'KEY_BEGIN="-----BEGIN PRIVATE KEY-----"\nPATH=/Users/agent/bin\nexit\nKEY_END="-----END PRIVATE KEY-----"\n',
+    );
+    git(work, "add", "-A");
+    git(work, "commit", "-q", "-m", "markers named in a script");
+    const held = await direct(work).runGates(ticket);
+    const diff = held.ok ? "" : (held.approval?.diff ?? "");
+    expect(diff).toContain("\n+PATH=/Users/agent/bin\n+exit\n");
+  });
+
   it("holds a file moved out of a protected folder, and a protected file with a quote in its name", async () => {
     const { work, origin } = directRepos();
     // main has a workflow; the ticket moves it out of .github/ (git sees a rename), and adds an odd name inside.

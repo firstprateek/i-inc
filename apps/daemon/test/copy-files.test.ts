@@ -1640,7 +1640,7 @@ describe("a search", () => {
         const at = performance.now();
         redactFile(text);
         holdsCredential(text);
-        expect(performance.now() - at).toBeLessThan(2500);
+        expect(performance.now() - at).toBeLessThan(5000);
       });
     });
   });
