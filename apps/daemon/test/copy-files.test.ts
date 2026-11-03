@@ -15,8 +15,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeAgent, FakeChat, FakeClock, FakeHelper, FakeMachines } from "@i-inc/core/testing";
-import { describe, expect, it } from "vitest";
-import { redactTokens } from "../src/ahp/sanitize.ts";
+import { describe, expect, it, vi } from "vitest";
+import { redactLast, redactProse, redactText, redactTokens } from "../src/ahp/sanitize.ts";
 import { createApp } from "../src/app.ts";
 import {
   fileScript,
@@ -37,8 +37,14 @@ import { demoReview } from "../src/demo-review.ts";
 import { machineScript, type RunScript } from "../src/harness.ts";
 import { MachineNotRunning, queueFor } from "../src/machine-queue.ts";
 import { defaultMachineSettings } from "../src/machines.ts";
-import { ConversationReview, type ReviewCopy, type ReviewPort, reviewPort } from "../src/review.ts";
-import { holdsCredential, marker, redactFile, scanPatch } from "../src/ship-git.ts";
+import {
+  ConversationReview,
+  isReviewPath,
+  type ReviewCopy,
+  type ReviewPort,
+  reviewPort,
+} from "../src/review.ts";
+import { holdsCredential, marker, redactFile, scanHistory, scanPatch } from "../src/ship-git.ts";
 
 const NONCE = "0123456789abcdef";
 const TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
@@ -687,6 +693,10 @@ describe("a search", () => {
         "sk_live_abcdefghijklmnopqrstsecret_key=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY12",
         "sk_live_abcdefghijklmnop_tail",
         "https://joe:p4ssw0rd@example.com/",
+        "postgres://joe:p4ss/w0rd@example.com/app",
+        "mysql://root:p#ss@example.com",
+        `https://joe:${"p".repeat(500)}@example.com/`,
+        "foo_ghp_abcdefghijklmnopqrstuvwxyz0123456789",
         "x?token=abcdef",
         "Bearer",
         "",
@@ -883,6 +893,755 @@ describe("a search", () => {
       sideOf(Buffer.from(hostile.repeat(62)).toString("base64"));
       holdsCredential(hostile.repeat(500));
       expect(performance.now() - at).toBeLessThan(1000);
+    });
+  });
+
+  describe("a credential in a shape the patterns used to stop short of", () => {
+    const github = "abcdefghijklmnopqrstuvwxyz0123456789";
+    const stopped = (text: string, secret: string) => {
+      expect(redactFile(text)).not.toContain(secret);
+      expect(sideOf(Buffer.from(text).toString("base64")).text).not.toContain(secret);
+      expect(holdsCredential(text), text).toBe(true);
+    };
+
+    describe("a password in a URL", () => {
+      it.each([
+        ["a /", "postgres://u:ab/cd@h", "ab/cd"],
+        ["a #", "mysql://root:p#ss@h", "p#ss"],
+        ["a ?", "https://u:p?q@h", "p?q"],
+        ["all three", "postgres://u:a/b#c?d@h/app", "a/b#c?d"],
+        ["one at the start", "mysql://root:#ss@h", "#ss"],
+        ["an @ as well", "postgres://u:p@ss/word@h", "ss/word"],
+        ["no user", "redis://:ab/cd@h", "ab/cd"],
+        ["an email for a user", "postgres://me@x.example:ab/cd@h", "ab/cd"],
+        ["a dotted user", "mysql://first.last:p#ss@db.example", "p#ss"],
+        ["a pooler's user", "postgres://postgres.abcdefghijkl:pa/ss@h.example:6543/app", "pa/ss"],
+        ["an encoded user", "postgres://appuser%40myserver:pa/ss@h.example/app", "pa/ss"],
+        ["a quote", `postgres://u:a'b/c"d@h`, `a'b/c"d`],
+        ["a host and port after it", "postgres://u:ab/cd@h:5432/app", "ab/cd"],
+        ["a hole that doesn't close", "mysql://root:p#{ss@h", "p#{ss"],
+        ["one at the start of one that doesn't close", "mysql://root:#{ss@h", "#{ss"],
+        ["a scheme in it", "postgres://u:https://x@h", "https://x"],
+        ["a scheme after a comma in it", "postgres://u:ab,https://x@h", "ab,https://x"],
+        ["a user that is an email on a host's name", "postgres://me@localhost:ab/cd@h", "ab/cd"],
+        ["six digits, which is no port", "postgres://u:123456/x@h", "123456"],
+        ["a host and port after it, then the string's end", "postgres://u:ab/cd@h:5432", "ab/cd"],
+        ["a scheme in capitals", "POSTGRES://u:ab/cd@h", "ab/cd"],
+        ["a digit in the scheme", "s3://u:ab/cd@h", "ab/cd"],
+        ["a user whose name starts like a host's", "postgres://localhostuser:ab/cd@h", "ab/cd"],
+        ["a hole with a blank in it, after an @", "mysql://root:p#{s@x y}", "p#{s"],
+        ["a scheme that only ends in file", "profile://u:ab/cd@h", "ab/cd"],
+        ["a scheme that only starts with file", "files://u:ab/cd@h", "ab/cd"],
+      ])("goes with %s", (_, url, secret) => {
+        stopped(`const u = ${url}\n`, secret);
+        stopped(`const u = "${url.replace(/"/g, '\\"')}";\n`, secret);
+      });
+
+      it.each([
+        ["doubled", `'postgres://u:it''s/fine@h'`, "s/fine"],
+        ["doubled, the other kind", `"postgres://u:a""b/c@h"`, "b/c"],
+        ["alone", `DATABASE_URL="postgres://u:a"b/c@h"`, "b/c"],
+        ["after a bare colon, with a letter next", `"postgres://u:"b/c@h"`, "b/c"],
+        ["after a bare colon, with a digit next", `"postgres://u:"1/c@h"`, "1/c"],
+      ])("goes with its own quote in it, %s", (_, url, secret) => {
+        stopped(`${url}\n`, secret);
+      });
+
+      it("leaves the host and path, and the text around it", () => {
+        const text = 'connect("postgres://u:ab/cd@h:5432/app", opts);\n';
+        expect(redactFile(text)).toBe('connect("postgres://[redacted]@h:5432/app", opts);\n');
+      });
+
+      it("goes with an @ in it, once USERINFO has been there", () => {
+        expect(redactFile("postgres://u:p@ss/w@h\n")).toBe("postgres://[redacted]@h\n");
+      });
+
+      it("reads an IPv6 address as a host, whatever its colons", () => {
+        expect(redactFile("postgres://u:p@[::1]:5432/db?x=me@y\n")).toBe(
+          "postgres://[redacted]@[::1]:5432/db?x=me@y\n",
+        );
+        expect(redactFile("http://[::1]:abc/x@y\n")).toBe("http://[redacted]@y\n");
+        expect(holdsCredential("http://[::1]:abc/x@y\n")).toBe(true);
+      });
+
+      it("goes as far as the last @, past a host that USERINFO couldn't reach", () => {
+        expect(redactFile(`x://u:${"p".repeat(500)}@h/p@q\n`)).toBe("x://[redacted]@q\n");
+      });
+
+      it.each(["http", "git+ssh", "x-y", "a.b", "s3", "HTTP"])(
+        "keeps what a string left outside it, after %s://",
+        (scheme) => {
+          expect(redactFile(`"${scheme}://a:b/c@d","me@x"\n`)).toBe(`"${scheme}://[redacted]@d","me@x"\n`);
+        },
+      );
+
+      it("takes a scheme to start with a letter", () => {
+        expect(redactFile('"9http://a:b/c@d","me@x"\n')).toBe('"9http://[redacted]@x"\n');
+      });
+
+      it("takes each of several in a run", () => {
+        const seen = redactFile("a://u:b/c@h,d://v:e/f@i\n");
+        expect(seen).not.toContain("b/c");
+        expect(seen).not.toContain("e/f");
+      });
+
+      it.each([401, 5000, 200_000])("goes at %i characters", (n) => {
+        const secret = `${"p".repeat(n - 2)}zz`;
+        stopped(`https://u:${secret}@h/\n`, "pzz");
+        stopped(`postgres://u:ab/${secret}@h/\n`, "pzz");
+      });
+
+      it("goes in full, with no part left at the end of the pattern", () => {
+        expect(redactFile(`https://u:${"p".repeat(1000)}@h/x\n`)).toBe("https://[redacted]@h/x\n");
+      });
+
+      it.each(['"', "'", "`"])("past the old limit, stops at a %s: a string has ended", (q) => {
+        const packument = `{${q}a${q}:${q}https://x.example${q},${q}b${q}:${q}${"y".repeat(500)}${q},${q}c${q}:${q}me@x.example${q}}\n`;
+        expect(redactFile(packument)).toBe(packument);
+        expect(holdsCredential(packument)).toBe(false);
+      });
+    });
+
+    it.each([2001, 5000, 200_000])("takes a ?token= value of %i characters", (n) => {
+      const secret = `${"a".repeat(n - 2)}zz`;
+      stopped(`curl https://h.example/x?token=${secret}&page=2\n`, "azz");
+      expect(redactFile(`https://h.example/x?token=${secret}&page=2\n`)).toBe(
+        "https://h.example/x?token=[redacted]&page=2\n",
+      );
+    });
+
+    it.each([
+      "postgres://u:ab/cd@h",
+      "mysql://root:p#ss@h",
+      "https://u:p?q@h",
+      `https://u:${"p".repeat(500)}@h/`,
+      `https://h/x?token=${"a".repeat(2500)}`,
+      `foo_ghp_${"a1B2".repeat(9)}`,
+    ])("stops %s in a patch", (line) => {
+      const patch = `diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+${line}\n`;
+      expect(scanPatch(patch)).toBe(true);
+      const commit = (message: string, body: string) =>
+        scanHistory(
+          `@@total 1\n${marker(NONCE, "commit")} ${"a".repeat(40)}\n${marker(NONCE, "msg-begin")}\n${message}\n${marker(NONCE, "msg-end")}\n${body}`,
+          NONCE,
+        ).secrets;
+      expect(commit(line, "")).toHaveLength(1);
+      expect(commit("fix", patch)).toHaveLength(1);
+      expect(commit("fix", "")).toHaveLength(0);
+    });
+
+    // A known gap, which a follow-up owns. What an agent says, a brain page and a tool's output show these shapes as
+    // they always have: a text is read again on those paths, and the last step takes the name or the label a later read
+    // finds a value by. Head 0150b87 in this branch's history is the wider version to start from. When the follow-up
+    // closes one of these, this row has to change.
+    it.each([
+      ["a / in a password", "postgres://u:ab/cd@h", "SAME", "SAME", "SAME"],
+      ["a # in a password", "mysql://root:p#ss@h", "SAME", "SAME", "SAME"],
+      ["a ? in a password", "https://u:p?q@h", "SAME", "SAME", "SAME"],
+      [
+        "userinfo over 400 characters",
+        `https://u:${"p".repeat(500)}@h/`,
+        "https://u:[500 characters in one unbroken run, not kept]@h/",
+        "SAME",
+        "SAME",
+      ],
+      [
+        "a ?token= value past 2,000 characters",
+        `https://h/x?token=${"a".repeat(2500)}`,
+        "https://h/x?token=[redacted]",
+        "https://h/x?token=[redacted]",
+        `https://h/x?token=[redacted]${"a".repeat(500)}`,
+      ],
+      ["a named key after a letter", "xsk-ant-AbCdEfGhIjKlMnOpQrSt", "SAME", "SAME", "SAME"],
+      ["a webhook secret after a _", "foo_whsec_a1b2c3d4e5f6g7h8i9j0k1l2", "SAME", "SAME", "SAME"],
+      ["a GitHub token after a _", `foo_ghp_${"a1B2".repeat(9)}`, "foo_[redacted]", "foo_[redacted]", "SAME"],
+    ])("is not closed in the transcripts: %s", (_, text, viaText, viaProse, viaTokens) => {
+      const same = (seen: string) => (seen === "SAME" ? text : seen);
+      expect(redactText(text)).toBe(same(viaText));
+      expect(redactProse(text)).toBe(same(viaProse));
+      expect(redactTokens(text)).toBe(same(viaTokens));
+    });
+
+    describe("a token straight after a word character", () => {
+      const tokens: [string, string][] = [
+        ["ghp", `ghp_${github}`],
+        ["gho", `gho_${github}`],
+        ["ghs", `ghs_${github}`],
+        ["ghu", `ghu_${github}`],
+        ["github_pat", `github_pat_11ABCDEFG0abcdefghijkl_${github}`],
+        ["sk-ant", "sk-ant-api03-a1B2c3D4e5F6g7H8-qrstuvwx"],
+        ["sk-proj", "sk-proj-a1B2c3D4e5F6g7H8_qrstuvwx"],
+        ["sk-svcacct", "sk-svcacct-a1B2c3D4e5F6g7H8_qrstuvwx"],
+        ["sk-admin", "sk-admin-a1B2c3D4e5F6g7H8_qrstuvwx"],
+        ["AIza", "AIzaSyAbcdefghijklmnopqrstuvwxyz0123456"],
+        ["AIza with marks in it", "AIzaSyA-bcdefghijklm_nopqrstuvwxyz01234"],
+        ["xoxb", "xoxb-123456789012-abcdefghijkl"],
+        ["AKIA", "AKIAIOSFODNN7EXAMPLE"],
+        ["sk_live", "sk_li\u0076e_a1b2c3d4e5f6g7h8i9j0k1l2"],
+        ["whsec", "whsec_a1b2c3d4e5f6g7h8i9j0k1l2"],
+        ["whsec with a capital and no digit", "whsec_abcdefghijklmnopqrstuvwxYZ"],
+        ["whsec with its base64", "whsec_MfKQ9r8+GKYq/rTwjUPD8ILPZIo2LaLa=="],
+        ["npm", `npm_${github}`],
+        ["jwt", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJl"],
+        ["jwt with a short head", "eyJabcdefgh.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJl"],
+      ];
+      for (const [name, token] of tokens) {
+        it.each([
+          ["a name", "foo_"],
+          ["a letter", "x"],
+          ["a digit", "7"],
+          ["a written-out newline", "\\n"],
+        ])(`${name} after %s`, (_, before) => {
+          stopped(`const k = "${before}${token}";\n`, token);
+        });
+      }
+
+      it("an sk- key after a _ or a digit, and not after a letter", () => {
+        const key = "sk-abcdefghijklmnopqrstuvwxyz012345";
+        stopped(`foo_${key}\n`, key);
+        stopped(`1${key}\n`, key);
+        const ordinary = `task-${"0123456789abcdef".repeat(2)}01234567\n`;
+        expect(redactFile(ordinary)).toBe(ordinary);
+      });
+
+      it("an sk- key that is all hex, after a _ or a digit: providers issue those", () => {
+        const key = "sk-0123456789abcdef0123456789abcdef";
+        stopped(`foo_${key}\n`, key);
+        stopped(`7${key}\n`, key);
+      });
+
+      it("a named sk- key after anything but a letter, with or without a key's run", () => {
+        stopped("foo_sk-ant-abcdefghijklmnopqrstuvwx\n", "sk-ant-abcdefghijklmnopqrstuvwx");
+        stopped("7sk-admin-abcdefghijklmnopqrstuvwx\n", "sk-admin-abcdefghijklmnopqrstuvwx");
+      });
+
+      it.each([
+        ["both cases", "xsk-ant-AbCdEfGhIjKlMnOpQrSt"],
+        ["a digit", "xsk-ant-abcd1234efgh5678ijkl"],
+      ])("a named sk- key after a letter, with %s in a run", (_, key) => {
+        expect(redactFile(`${key}\n`)).toBe("x[redacted]\n");
+      });
+
+      it("a named sk- key after a letter, with capitals and digits at a key's whole length", () => {
+        const key = `sk-proj-${"Ab1-cd_ef".repeat(6)}`.slice(0, 56);
+        expect(redactFile(`x${key}\n`)).toBe("x[redacted]\n");
+        expect(redactFile(`x${key.slice(0, -1)}\n`)).toBe(`x${key.slice(0, -1)}\n`);
+      });
+
+      it("a fine-grained token to its end", () => {
+        expect(redactFile("foo_github_pat_11ABCDEFG0abcdefghijkl_SECRETTAIL\n")).toBe("foo_[redacted]\n");
+      });
+
+      it("a live key to its end", () => {
+        expect(redactFile("foo_sk_li\u0076e_a1b2c3d4e5f6g7h8i9j0k1l2_SECRETTAIL\n")).toBe("foo_[redacted]\n");
+      });
+
+      it("a Google key with more of its alphabet after it", () => {
+        const key = "AIzaSyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q";
+        expect(redactFile(`key_${key}_v2\n`)).toBe("key_[redacted]_v2\n");
+        expect(redactFile(`key_${key}-prod\n`)).toBe("key_[redacted]-prod\n");
+        expect(holdsCredential(`key_${key}_v2\n`)).toBe(true);
+      });
+
+      it("not a Google key's prefix in a run of base64", () => {
+        const blob = `dzaXAIzaU4fGhpnKYHfRZwxymAFsCnTVvM6OBU0z5M9an8k3xYz\n`;
+        expect(redactFile(blob)).toBe(blob);
+      });
+
+      it("real keys after a letter, at their real lengths", () => {
+        const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
+        let x = 20_261_102;
+        const body = (n: number) => {
+          let out = "";
+          for (let i = 0; i < n; i++) {
+            x = (x * 1_103_515_245 + 12_345) & 0x7fffffff;
+            out += alphabet[(x >>> 8) % 64];
+          }
+          return out;
+        };
+        const kinds: [string, number][] = [
+          ["sk-ant-api03-", 95],
+          ["sk-ant-admin01-", 95],
+          ["sk-proj-", 48],
+          ["sk-proj-", 156],
+          ["sk-svcacct-", 48],
+          ["sk-svcacct-", 156],
+          ["sk-admin-", 100],
+        ];
+        for (const [prefix, length] of kinds) {
+          for (let i = 0; i < 2000; i++) {
+            const line = `x${prefix}${body(length)}\n`;
+            expect(redactFile(line), line).not.toBe(line);
+          }
+        }
+      });
+
+      it("leaves what is around it", () => {
+        expect(redactFile(`const a_ghp_${github}_b = 1;\n`)).toBe("const a_[redacted]_b = 1;\n");
+      });
+    });
+
+    describe("what the other passes hide, which comes first", () => {
+      const glued = "a1B2".repeat(9);
+
+      it.each([
+        ["https://u:p@h/login?password=p@ssw0rd", "https://[redacted]@h/login?password=[redacted]"],
+        ["https://example.com:/login?token=abc@SECRETTAIL", "https://example.com:/login?token=[redacted]"],
+        [
+          "postgres://a:b@c.example/d?password=p@ssw0rd",
+          "postgres://[redacted]@c.example/d?password=[redacted]",
+        ],
+        ["mongodb://a:b@c/d?e=f&pass=x@yzSECRET", "mongodb://[redacted]@c/d?e=f&pass=[redacted]"],
+      ])("a query value after a password: %s", (text, seen) => {
+        expect(redactFile(text)).toBe(seen);
+      });
+
+      it("keeps a name that only sounds like a live key", () => {
+        const name = "network_live_connectionStringPassword";
+        expect(redactFile(`${name}=X\n`)).toBe(`${name}=X\n`);
+      });
+
+      it("a file's npm token, which the file pass takes before the last one", () => {
+        const webhook = "whsec_a1b2c3d4e5f6g7h8i9j0k1l2";
+        expect(redactFile(`x${webhook}_authToken=hunter2hunter2\n`)).toBe("x[redacted][redacted]\n");
+      });
+
+      it("a URL password that loses its @ to the file pass shows, and the scan still refuses it", () => {
+        const line = "postgres://u:p/_authToken=abcdefgh@h\n";
+        expect(redactFile(line)).toBe("postgres://u:p/_authToken=[redacted]\n");
+        expect(holdsCredential(line)).toBe(true);
+      });
+
+      it.each([100, 400])("a run of %i each side loses only the token", (n) => {
+        const text = `${"a".repeat(n)}1sk-${"b1C2".repeat(6)}_${"c".repeat(n)}`;
+        expect(redactFile(text)).toBe(`${"a".repeat(n)}1[redacted]_${"c".repeat(n)}`);
+      });
+
+      it("a webhook secret with a token in it goes to its end", () => {
+        expect(redactFile(`whsec_AAAAAAAA+xxghp_${glued}+SECRETTAIL`)).toBe("[redacted]");
+      });
+
+      it("a run of dotted parts keeps the JWT main found in it", () => {
+        expect(redactFile("xeyJAAAAAAAA.eyJBBBBBBBB.eyJCCCCCCCC.SECRETTAIL")).toBe("xeyJAAAAAAAA.[redacted]");
+      });
+
+      it("the bounds of the usual passes are what they were", () => {
+        const long = "a".repeat(2500);
+        expect(redactTokens(`?token=${long}`)).toBe(`?token=[redacted]${"a".repeat(500)}`);
+        const user = `https://${"u".repeat(401)}@h/`;
+        expect(redactTokens(user)).toBe(user);
+      });
+
+      it("the last step only takes out", () => {
+        const pieces = [
+          "://",
+          "https",
+          "x://",
+          "u:p",
+          "@",
+          "/",
+          "?",
+          "#",
+          "#{a}",
+          ":",
+          '"',
+          "'",
+          "\\",
+          " ",
+          "\n",
+          ",",
+          "=",
+          "?token=",
+          "&key=",
+          "[redacted]",
+          "[redacted]@",
+          "localhost",
+          "127.0.0.1",
+          "3000",
+          `\${a}`,
+          "{a}",
+          `foo_ghp_${glued}`,
+          "xsk-ant-a1B2c3D4e5F6g7H8",
+          "xwhsec_a1b2c3d4e5f6g7h8i9j0k1l2",
+          "xeyJabcdefgh.eyJabcdefgh.abc",
+          "a".repeat(450),
+        ];
+        const bare = (s: string) => s.replaceAll("[redacted]", "");
+        const within = (small: string, big: string) => {
+          let at = 0;
+          for (const c of small) {
+            at = big.indexOf(c, at) + 1;
+            if (at === 0) return false;
+          }
+          return true;
+        };
+        let x = 20_261_102;
+        const pick = (n: number) => {
+          x = (x * 1_103_515_245 + 12_345) & 0x7fffffff;
+          return (x >>> 8) % n;
+        };
+        for (let i = 0; i < 20_000; i++) {
+          const text = Array.from({ length: 1 + pick(10) }, () => pieces[pick(pieces.length)]).join("");
+          expect(within(bare(redactLast(text)), bare(text)), text).toBe(true);
+        }
+      });
+    });
+
+    it.each([
+      // Paths that hold an `@`, on a host that has a port or none
+      "http://localhost:3000/@vite/client",
+      "http://127.0.0.1:8080/react@18.3.1/index.js",
+      "http://localhost:3000?email=me@x.example",
+      "http://localhost:3000#me@x.example",
+      "http://[::1]:3000/@vite/client",
+      "http://[::1]/react@18",
+      "https://unpkg.com/@scope/pkg@1.2.3/dist/index.js",
+      "https://cdn.jsdelivr.net/npm/react@18.3.1",
+      "https://medium.com/@someone/a-post",
+      "https://x.example/?next=me@x.example",
+      "git+https://github.com/a/b.git@v1.0.0",
+      "jdbc:mysql://db.example:3306/app?user=me@x.example",
+      "mongodb://a.example:27017,b.example:27017/app?user=me@x.example",
+      // A host and port from a template
+      `\`http://\${host}:\${port}/react@18\``,
+      `\`https://\${cfg.host}:\${cfg.port}/users/@me\``,
+      `curl http://\${HOST:-localhost}:\${PORT:-3000}/@vite/client`,
+      'url = "http://localhost:%(port)s/img/logo@2x.png" % cfg',
+      '"http://%(host)s:%(port)s/users/@me" % cfg',
+      'url = f"http://localhost:{ports[0]}/api/users/@me"',
+      'url = f"http://localhost:{port:d}/users/me@example.com"',
+      '"http://localhost:%u/@foo"',
+      'let u = "http://\\(host):\\(port)/users/@me"',
+      '$u = "http://{$host}:{$port}/users/@me";',
+      // A hole with a `#`, which ends an authority
+      'let(:url) { "http://localhost:#{@port}/" }',
+      'uri = URI("http://127.0.0.1:#{@port}/health")',
+      '"http://web:#{@port}/"',
+      'background: url("http://cdn.local:#{$port}/img/logo@2x.png");',
+      '"https://x-access-token:#{GitHub::API.credentials}@github.com/"',
+      // What is before the `:` is a host, whatever follows it
+      "curl http://localhost:$((PORT+1))/users/me@example.com",
+      "Open http://localhost:XXXX/@vite/client in the browser",
+      "see http://localhost:<port-number>/@scope/pkg",
+      "see http://localhost:[port]/@scope/pkg",
+      "see http://127.0.0.1:port_number/@scope/pkg",
+      `postgres://\${user}:ab/cd@h`,
+      'f"http://{host}:{port}/users/@me"',
+      '"http://{{ host }}:{{ port }}/users/@me"',
+      "http://$HOST:$PORT/react@18",
+      "http://$(HOST):$(PORT)/react@18",
+      "http://example.com:$(PORT)/react@18",
+      '"http://example.com:\\(port)/users/@me"',
+      "http://example.com:<port>/react@18",
+      '"http://example.com:%(port)s/users/@me"',
+      "http://example.com:PORT/react@18",
+      '"http://%s:%d/react@18" % (host, port)',
+      "http://<host>:<port>/react@18",
+      "http://host:port/react@18",
+      "https://*.example.com:*/react@18",
+      // A URL that a string closes, and then an `@` that isn't in it
+      '"http://a.example:foo/c","me@x.example"',
+      "'http://'+host+':'+port+'/'+path+'@'+ref",
+      // A URL with no path, in a string closed before the next one's `/`
+      '{"baseUrl":"http://localhost:3000","me":"/users/@me"}',
+      '{"homepage":"https://example.com","logo":"/img/logo@2x.png"}',
+      '["http://localhost:3000","/@vite/client"]',
+      'fetch("https://api.example.com",{path:"/users/@me"}).then(r=>r.json())',
+      "{url:'https://api.example.com',avatar:'/img/logo@2x.png'}",
+      // A URL with no path, then the next one
+      "[https://medium.com](https://medium.com/@someone/a-post)",
+      "ALLOWED=https://a.example,https://cdn.example/react@18",
+      // Names that hold a token's prefix
+      "const highs_and_lows_for_the_entire_year_2026 = 1;",
+      "weighs_item_by_the_largest_value_of_all();",
+      "read_github_pat_from_the_secret_manager();",
+      "const disk_live_migration_status_for_vms = 1;",
+      "const task_live_progress_update = 1;",
+      "const pnpm_lockfile_version_number_goes_here = 1;",
+      "mask-image-gradient-left-to-right-fade-out",
+      "risk-assessment-framework-version-two-final",
+      "block_sk-header-navigation-section-left",
+      `const short = "foo_ghp_${"z".repeat(35)}";`,
+      "task-admin-dashboard-settings",
+      "task-admin-internationalization-settings",
+      "task-admin-panel-v2-settings-and-more",
+      "disk-admin-storage-controller",
+      "task-proj-management-dashboard",
+      "task-ant-colony-optimization-solver",
+      '<div class="task-proj-header-container">',
+      ".helpdesk-admin-sidebar-container { display: flex; }",
+      "flask-admin-sqlalchemy-backend==1.2.3",
+      "verify_whsec_signature",
+      "handle_whsec_verification",
+      "const key = 'task_live_0123456789abcdef0123456789abcdef';",
+      "disk_live_5f4dcc3b5aa765d61d8327deb882cf99",
+      "disk_live_migrationBandwidthLimitExceeded",
+      "test_network_live_ConnectionTimeoutHandlerWithRetry",
+      "cache/laughs_0123456789abcdef0123456789abcdef01234567.bin",
+      // The same hashes in capitals
+      "disk_live_5F4DCC3B5AA765D61D8327DEB882CF99",
+      'const key = "task_live_0123456789ABCDEF0123456789ABCDEF";',
+      "cache/laughs_0123456789ABCDEF0123456789ABCDEF01234567.bin",
+      "sighs_DA39A3EE5E6B4B0D3255BFEF95601890AFD80709",
+      // A name with a ticket key, a generated suffix or a bundler's hash
+      "git checkout -b feature/task-admin-JIRA-1234-bulk-actions",
+      "Merge branch 'feature/task-admin-JIRA-1234-bulk-actions'",
+      "arn:aws:iam::123456789012:role/task-admin-TaskRole-1A2B3C4D5E6F",
+      "task-admin-prod-LoadBalancer-1A2B3C4D",
+      "docs/task-admin-Q3-2024-report-final.pdf",
+      "dist/assets/disk-admin-settings-CkL9dE2f.js",
+      '<script type="module" src="/assets/task-admin-dashboard-BxY3k9Qa.js"></script>',
+      "disk-proj-ABC-123-cleanup-old-volumes",
+      "risk-admin-dashboard-Q3-report",
+      "class=task-admin-settings-page-V2",
+      "desk-proj-migration-plan-Q4-2026",
+      "mask-admin-layout-header-H1-title",
+      "dusk-admin-2024-Q3-financial-report",
+      // A webhook name with folders after it
+      'import { verify } from "./verify_whsec_helpers/stripe/webhook/signature";',
+      "src/stripe_whsec_utils/handlers/verify/index.ts",
+      "app/check_whsec_signature/handlers/stripe.rb",
+      // Tokens with something straight after them that a real one doesn't have
+      "fooAKIAIOSFODNN7EXAMPLEbar",
+      `foo_npm_${"a1B2".repeat(9)}x`,
+      `pnpm_${"a1B2".repeat(11)}`,
+      "disk_live_a1b2c3d4e5f6g7h8",
+      "boxoxa-sized-container-class",
+      "task-admin-x_xoxb-1234567890-abcdefghijkl",
+      // One short of what a real one has
+      "x_whsec_a1b2c3d4e5f6g7h8i9j0k",
+      "foo_github_pat_a1b2c3d4e5f6g7h8i9j",
+      "task-admin-abcdefghij12345-xyz",
+      // A name of a key's length, with a digit or a capital but not both
+      "task-admin-q3-report-for-the-finance-team-and-the-board-2024-final",
+      "task-admin-Quarterly-report-for-the-finance-team-and-the-board-final",
+      // A later field's `:`, after a URL with no path that isn't straight after a quote
+      '{"msg":"see https://example.com","path":"/@vite/client"}',
+      '{"level":"info","msg":"GET https://api.example.com","path":"/users/@me"}',
+      "{a:'see https://x.example',b:'/@me'}",
+      'data-props="{&quot;url&quot;:&quot;https://example.com&quot;,&quot;me&quot;:&quot;/users/@me&quot;}"',
+      "https://example.com,2024-01-02T03:04:05Z,/users/@me",
+      "url=https://example.com,ts=12:34:56,path=/x@y",
+      'console.log("Listening at http://"+h+":"+p+"/@vite/client")',
+      "详情见https://example.com，负责人:张三/李四，邮箱me@example.com",
+      "see http://a.example;ts=12:34/x@y",
+      "see http://a.example|ts=12:34/x@y",
+      "see http://a=b:12x/x@y",
+      "see http://a&b:12x/x@y",
+      "see http://a+b:12x/x@y",
+      "see http://a<b:12x/x@y",
+      "see http://a(b:12x/x@y",
+      "see http://a[b:12x/x@y",
+      "see http://a\\b:12x/x@y",
+      "see http://a>b:12x/x@y",
+      "see http://a)b:12x/x@y",
+      "see http://a]b:12x/x@y",
+      "see http://a'b:12x/x@y",
+      'see http://a"b:12x/x@y',
+      "see http://a`b:12x/x@y",
+      "see http://a|b:12x/x@y",
+      "see http://a;b:12x/x@y",
+      "see http://a,b:12x/x@y",
+      "see http://aéb:12x/x@y",
+      // A port with a closer after it
+      "<td>http://staging.example.com:8080</td><td>ops@example.com</td>",
+      "<url>http://nexus.example.com:8081</url><email>dev@example.com</email>",
+      '{"msg":"listening on http://api.example.com:8080","path":"/@vite/client"}',
+      "[api](http://api.example.com:8080)[me](https://discord.com/users/@me)",
+      "ALLOWED=https://a.example:8443;https://cdn.example/react@18",
+      "GOPROXY=https://proxy.example.com:8443|https://proxy.golang.org/x@v1",
+      'echo -e "http://a.example:8080\\nhttp://b.example/@me"',
+      "jdbc:sqlserver://db.example.com:1433;databaseName=app;trustStore=/etc/ssl/truststore.jks;user=svc@corp",
+      "访问http://example.com:8080，然后打开/users/@me页面",
+      "see **http://a.example:8080**/x@y",
+      "see http://a.example:8080&quot;/x@y",
+      "see http://a.example:8080]/x@y",
+      "see http://a.example:8080}/x@y",
+      "see http://a.example:8080`/x@y",
+      "see http://a.example:8080'/x@y",
+      'see http://a.example:8080"/x@y',
+      "see http://a.example:port;/x@y",
+      "see http://a.example:*;/x@y",
+      "see http://a.example:$PORT;/x@y",
+      // The same in strings with escaped quotes
+      '{\\"url\\":\\"https://api.example:8443\\",\\"path\\":\\"/@me\\"}',
+      '"body": "{\\"a\\":\\"https://api.example:8443\\",\\"b\\":\\"/users/@me\\"}"',
+      // A later `://` after a host with a port
+      "[a](https://a.example:8443)[b](https://b.example/@c)",
+      "<https://a.example:8443>,<https://b.example/@c>",
+      "<http://a.example:8080>,<https://b.example/@c>",
+      "http://a.example:8080|https://b.example/@c",
+      // A string that ends at a host's `:`, joined to the port
+      "'https://api.example.com:'+p+'/users/@me'",
+      '"http://example.com:"+port+"/x@y"',
+      "'http://example.com:'.$port.'/x@y'",
+      'echo "http://api.example.com:"$PORT"/@me"',
+      "SELECT 'http://api.example.com:'||port||'/@'||handle FROM users;",
+      "SELECT CONCAT('http://api.example.com:',port,'/@',handle) FROM users;",
+      'const u=["http://api.example.com:",port,"/@me"].join("");',
+      '="http://api.example.com:"&A2&"/@"&B2',
+      'url = "http://api.example.com:"<>port<>"/@"<>user',
+      '{{ "http://api.example.com:"~port~"/@"~user }}',
+      'url <- paste0("http://api.example.com:",port,"/@",user)',
+      'str("http://api.example.com:")+str(port)+"/@me"',
+      // The price of those: a password that starts with its opening quote and a comma reads the same.
+      '"postgres://u:",b/c@h"',
+      // The other two quotes, closing before an `@` that isn't in the string
+      "'http://a.example:foo/c','me@x.example'",
+      "`http://a.example:foo/c`,`me@x.example`",
+      // An `@` that is in no URL, then a URL with none
+      "me@x.example https://a.example:abc/x",
+      // An `@` after a blank, which ends a URL
+      `x://${"a".repeat(401)} me@x.example`,
+      "http://h.example:ab/cd\tme@x.example",
+      // Past `USERINFO`'s limit, a string that ends before an `@` that isn't in it
+      `"http://${"a".repeat(401)}","b@c:d/e@f"`,
+      // No user at all
+      "https://@example.com/x",
+      // A file has a path and no password
+      "file://C:/Users/first.last@corp/doc.txt",
+      "FILE://C:/Users/first.last@corp/doc.txt",
+      'open("file://D:/share/me@corp/doc.txt")',
+      // A password that starts with `//` after a user that reads as a scheme, with a `/`, `?` or `#` to follow. This is
+      // a limit, not a choice: to anything that reads it, that `//` is the next URL's.
+      "postgres://u://x/y@h",
+      "mysql://root://p#ss@h",
+      "https://u://p?q@h",
+    ])("leaves %s", (line) => {
+      const text = `${line}\n`;
+      expect(redactFile(text)).toBe(text);
+      expect(holdsCredential(text)).toBe(false);
+    });
+
+    it("keeps a file with a name like a key's in the list", () => {
+      expect(isReviewPath("src/task-admin-dashboard-settings.ts")).toBe(true);
+    });
+
+    it.each([
+      "docs/task-admin-Q3-2024-report-final.pdf",
+      "dist/assets/disk-admin-settings-CkL9dE2f.js",
+      "src/stripe_whsec_utils/handlers/verify/index.ts",
+    ])("keeps %s in the list", (path) => {
+      expect(isReviewPath(path)).toBe(true);
+    });
+
+    describe("in a megabyte built to be slow", () => {
+      const fill = (piece: string, n = 1_000_000) => piece.repeat(Math.ceil(n / piece.length)).slice(0, n);
+
+      // Eight megabytes through the last step alone, which takes milliseconds: a pattern that starts from each of a
+      // scheme's letters reads every tail 31 times, and is still linear, so only its cost can show.
+      it.each([
+        ["tails after long schemes", `${`${"a".repeat(31)}://${"x".repeat(4000)}\n`.repeat(2000)}@`],
+        ["a long authority before a scheme", `a://${"c".repeat(8_000_000)}://d/@`],
+        [
+          "authorities that each end in a scheme",
+          `${`${"x".repeat(369)}${"a".repeat(31)}://`.repeat(20_000)}/@`,
+        ],
+      ])("reads %s once", (_, text) => {
+        const at = performance.now();
+        redactLast(text);
+        expect(performance.now() - at).toBeLessThan(500);
+      });
+
+      it.each([
+        ["bare ://", `${"://".repeat(1000)}@`],
+        ["a :// with no scheme before it", "!://x@".repeat(500)],
+      ])("looks no further into %s than where a scheme should be", (_, text) => {
+        const tests = vi.spyOn(RegExp.prototype, "test");
+        redactLast(text);
+        const count = tests.mock.calls.length;
+        tests.mockRestore();
+        expect(count).toBeLessThan(20);
+      });
+
+      it("doesn't look for a URL in a text with no @", () => {
+        const searches = vi.spyOn(String.prototype, "indexOf");
+        redactLast("a://b:c/ ".repeat(100));
+        const count = searches.mock.calls.filter(([what]) => what === "://").length;
+        searches.mockRestore();
+        expect(count).toBe(0);
+      });
+
+      it("looks for the next URL's scheme only at the end of an authority", () => {
+        const replaces = vi.spyOn(String.prototype, "replace");
+        redactLast(`a://${"c".repeat(1000)}://d/@`);
+        const read = replaces.mock.contexts
+          .filter((_, i) => String(replaces.mock.calls[i]?.[0]).endsWith(":$/i"))
+          .map((text) => String(text).length);
+        replaces.mockRestore();
+        expect(read).toEqual([32]);
+      });
+
+      it("looks for a run's last @ once, however many URLs are in it", () => {
+        const searches = vi.spyOn(String.prototype, "lastIndexOf");
+        redactLast(`${"a://b:c/".repeat(1000)}@`);
+        const count = searches.mock.calls.filter(([what]) => what === "@").length;
+        searches.mockRestore();
+        expect(count).toBeLessThan(20);
+      });
+
+      it("looks for a string's end once when it ends past the first /", () => {
+        const text = `"a://u:p/${'\\"'.repeat(1000)}"@`;
+        const searches = vi.spyOn(String.prototype, "indexOf");
+        redactLast(text);
+        const count = searches.mock.calls.length;
+        searches.mockRestore();
+        expect(count).toBeLessThan(1500);
+      });
+
+      it.each([
+        ["URLs with nothing to end them", fill("a://b:c/")],
+        ["URLs and one @ at the end", `${fill("a://b:c/", 999_000)}@`],
+        ["URLs and one @ at the start", `@${fill("a://b:c/")}`],
+        ["URLs between blanks", `@ ${fill("a://b:c/ ")}`],
+        ["URLs between blanks, with no /", `@ ${fill("a://b:c ")}`],
+        ["ports and one @", `${fill("a://b:1/", 999_000)}@`],
+        ["strings, each with a URL", `@ ${fill('"a://b:c/x" ')}`],
+        ["strings with no blanks", `${fill('"a://b:c/', 999_000)}@`],
+        ["strings of two kinds", `${fill(`"a://b:c/'a://b:c/`, 999_000)}@`],
+        ["a host of colons", `a://${fill(":", 999_000)}/@`],
+        ["strings with one end, past escaped quotes", `"a://b:c/@${fill('\\"', 999_000)}"`],
+        ["strings and escaped quotes in turn", fill('"a://b:c/@ \\" ')],
+        ["escaped strings and quotes in turn", fill('\\"a://b:c/@ " ')],
+        ["a host of brackets", `a://${fill("[", 999_000)}]/@`],
+        ["a host of @ and colons", `a://${fill("@:", 999_000)}/@`],
+        ["one long authority", `a://${fill("y")}`],
+        ["authorities just past the old limit", fill(`x://${"y".repeat(401)}/`)],
+        ["one long password", `postgres://u:ab/${fill("c", 999_000)}@h`],
+        ["query names", fill("?token=")],
+        ["one long query value", `?token=${fill("a")}`],
+        ["letters before a scheme", `${fill("a", 999_000)}://b:c/d@e`],
+        ["prefixes", fill("ghp_github_pat_sk-ant-AIzaxoxb-1AKIAnpm_whsec_sk_live_")],
+        ["a prefix one short of a token", fill(`ghp_${"a".repeat(35)} `)],
+        ["a prefix of a long kind", fill(`github_pat_${"a".repeat(19)}_`)],
+        ["a dash after a prefix", `xoxb-1${fill("-")}`],
+        ["a long webhook secret", `whsec_${fill("a", 999_000)}_`],
+        ["short webhook secrets", fill(`whsec_${"a".repeat(7)}`)],
+        ["a token's end with a long head", `${fill("a", 999_000)}.eyJabcdefgh.x`],
+        ["token starts before a token's end", `${fill("eyJ-", 999_000)}.eyJabcdefgh.x`],
+        ["strings closed before the next /", `@ ${fill('"a://b:c",', 999_000)}/@`],
+        ["strings closed before the next /, no blanks", `${fill('"a://b:c",', 999_000)}/@`],
+        ["one string past escaped quotes, from the start", `"a://b:c${fill('\\"', 999_000)}"/@`],
+        ["holes with a #", `@${fill("a://b:#{c}/", 999_000)}@`],
+        ["a # with no end to its hole", `a://b:#{${fill("c", 999_000)}/@`],
+        ["schemes after each other", `${fill("a://b,", 999_000)}/@`],
+        ["one long scheme after a host", `a://b,${fill("c", 999_000)}://d/@`],
+        ["holes for a host", `a://${fill("${", 999_000)}:/@`],
+        ["holes in braces for a host", `a://${fill("{", 999_000)}:/@`],
+        ["an @ over and over after USERINFO", fill("a://b@c/d@")],
+        ["quotes past the old limit", fill(`x://${"y".repeat(401)}"`)],
+        ["hashes after a prefix", fill("ghs_aaaaaaaa")],
+        ["hashes after a live prefix", fill("sk_live_abcdef")],
+        ["letters with no digit after a live prefix", `sk_live_${fill("a")}`],
+        ["named keys", fill("sk-ant-")],
+        ["named keys with no run", fill(`xsk-ant-${"a".repeat(16)} `)],
+        ["one named key", `xsk-ant-${fill("a-")}`],
+      ])("is one pass over %s", (_, text) => {
+        const at = performance.now();
+        redactFile(text);
+        holdsCredential(text);
+        expect(performance.now() - at).toBeLessThan(5000);
+      });
     });
   });
 

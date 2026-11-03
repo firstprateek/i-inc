@@ -51,6 +51,57 @@ const SECRET_QUERY =
   /([?&;](?:access_token|refresh_token|id_token|token|key|api_key|apikey|sig|signature|secret|client_secret|password|passwd|pwd|pass|passphrase|code|auth|x-amz-[a-z0-9-]{1,40}|x-goog-[a-z0-9-]{1,40})=)[^&\s"'#<>]{1,2000}/gi;
 // Everything between `://` and the last `@` before the path: a password may hold an `@`.
 const USERINFO = /([a-z][a-z0-9+.-]{0,30}:\/\/)[^/\s?#]{1,400}@/gi;
+/** Where `redactLongUserinfo` stops: past `USERINFO`'s limit a quote means a string ended, not that a password goes on. */
+const USERINFO_END = /[/\s?#"'`]/g;
+/** What `SECRET_QUERY` stopped short of, at any length. */
+const LONG_SECRET_QUERY = new RegExp(SECRET_QUERY.source.replace("{1,2000}", "+"), "gi");
+/** A template's hole, where a host or a port will go. */
+const HOLE = String.raw`\$\w+|\$\{.*\}|\$\(\w+\)|\\\([\w.]+\)|\{\{?[^{}]*\}?\}|<\w+>|%\(\w+\)[a-z]|%[sduv]`;
+/** What closes a URL or parts one from the next, when it comes straight after a port. A `\` is the start of a `\"` or a `\n`. */
+const AFTER_PORT = String.raw`[,;|)\]}>"'${"`"}<\\&*\u0080-\uffff]`;
+/**
+ * What follows the `:` of a host when no password does: a port, the word, or a hole, on its own or with a closer and
+ * whatever comes next (a list of hosts, `8080</td><td>`).
+ */
+const PORT = new RegExp(`^(?:\\d{1,5}|port|\\*|${HOLE})(?:${AFTER_PORT}.*)?$`, "i");
+/** What before a `:` is a host and no one's user name. A dotted name won't do: `first.last` and `postgres.abcdef` are users. */
+const NOT_A_USER = new RegExp(`^(?:localhost|\\d{1,3}(?:\\.\\d{1,3}){3}|${HOLE})(?::|$)`, "i");
+/**
+ * What a user name rarely holds, so the `:` after it is taken for a later field's: `example.com","time":"12:34/@me`. That
+ * is a judgement: a user name that does hold one, as `user+tag` or `josé` can, isn't caught.
+ */
+const NOT_A_NAME = /["'`<>()[\]|;,=&+\\\u0080-\uffff]/;
+/** A hole in Ruby's or Elixir's way, which starts with the `#` that ends an authority. */
+const HASH_HOLE = /#\{[^}\s]{0,200}\}/y;
+const NEXT_SCHEME = /[a-z][a-z0-9+.-]{0,30}:$/i;
+/** An authority without the scheme it ends in. Only the end is searched: an authority can be as long as the text. */
+const withoutNextScheme = (a: string) => a.slice(0, -32) + a.slice(-32).replace(NEXT_SCHEME, "");
+const URL_BLANK = /\s/g;
+const AUTHORITY_END = /[/?#]/g;
+/**
+ * A token with a word character straight before it (`foo_ghp_...`), which a pattern with a `\b` passes over. Its prefix
+ * won't do alone: `highs_and_lows` holds `ghs_`, `task-` holds `sk-`, `disk_live_` holds `sk_live_` and `pnpm_` holds
+ * `npm_`. So each kind needs its real length and letters. All hex in one case after `gh?_` or `?k_live_` is a hash, which
+ * those vendors don't issue, and a `k_live_` run needs a digit (`network_live_connectionStringPassword`). An `sk-` key
+ * with only that prefix to go on is looked for after a `_` or a digit, not a letter: `task-` then a hash is an ordinary
+ * name. All of this lowers the odds and no more: a name of the right length and letters still matches.
+ */
+const GLUED_TOKEN =
+  /gh[opsu]_(?![0-9a-f]+(?![A-Za-z0-9]))(?![0-9A-F]+(?![A-Za-z0-9]))[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9]{20,}\w*|sk-(?:ant|proj|svcacct|admin)-[A-Za-z0-9_-]{16,}|(?<![A-Za-z])sk-[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z])|xox[baprs]-[0-9][0-9A-Za-z-]{9,}|AKIA[0-9A-Z]{16}(?![0-9A-Za-z])|[sr]k_live_(?![0-9a-f]+(?![A-Za-z0-9]))(?![0-9A-F]+(?![A-Za-z0-9]))(?=[A-Za-z]*[0-9])[A-Za-z0-9]{24,}\w*|npm_[A-Za-z0-9]{36}(?![A-Za-z0-9])/g;
+const NAMED_KEY = /^sk-(?:ant|proj|svcacct|admin)-/;
+/** The shortest key that goes by a prefix alone after a letter: `sk-proj-` and 48 characters. */
+const SHORTEST_NAMED_KEY = 56;
+/**
+ * After a letter, `sk-admin-` is as likely a name's (`task-admin-dashboard-settings`), so it needs what a key has and most
+ * names haven't: 16 letters and digits in a row, among them a digit or both cases. A key's `-` and `_` can break up every
+ * such run, so a key's whole length with capitals and digits anywhere will also do. That lowers the odds and no more:
+ * `flask-admin-UserProfileController-base` has such a run, and a name past 56 characters can have a `Q3` and a capital.
+ */
+const gluedToken = (m: string, at: number, t: string): string => {
+  if (!NAMED_KEY.test(m) || !/[A-Za-z]/.test(t.charAt(at - 1))) return "[redacted]";
+  const run = m.match(/[A-Za-z0-9]{16,}/g)?.some((r) => /\d/.test(r) || (/[a-z]/.test(r) && /[A-Z]/.test(r)));
+  return run || (m.length >= SHORTEST_NAMED_KEY && /[A-Z]/.test(m) && /\d/.test(m)) ? "[redacted]" : m;
+};
 // RSA, EC, OPENSSH and plain PRIVATE KEY blocks, and PGP's `PRIVATE KEY BLOCK`.
 const PEM_BEGIN = /-----BEGIN [A-Z ]{0,30}PRIVATE KEY(?: BLOCK)?-----/g;
 const PEM_END = /-----END [A-Z ]{0,30}PRIVATE KEY(?: BLOCK)?-----/g;
@@ -116,6 +167,144 @@ function redactPem(t: string, keepLines = false): string {
     PEM_BEGIN.lastIndex = stop;
   }
   return out + t.slice(last);
+}
+
+/**
+ * Does what comes before a URL's first `/`, `?` or `#` stop inside a password, not at a host and port? `USERINFO` may
+ * have been here first: after its `[redacted]@`, a name with no port is what's left of a password that held an `@`.
+ */
+function stopsInPassword(authority: string): boolean {
+  const at = authority.lastIndexOf("@");
+  const host = authority.slice(at + 1).replace(/^\[.*\]/, ""); // an IPv6 address is all colons
+  const colon = host.indexOf(":");
+  if (colon >= 0) {
+    if (at < 0 && (NOT_A_USER.test(host) || NOT_A_NAME.test(host.slice(0, colon)))) return false;
+    return !PORT.test(host.slice(colon + 1));
+  }
+  const first = authority.indexOf(":");
+  return (first >= 0 && first < at) || authority.startsWith("[redacted]@");
+}
+
+/**
+ * Where the scheme before a `://` at `at` starts, or -1. By hand, as this runs for each URL and a regular expression here
+ * costs more than the rest of the scanner: `[a-z][a-z0-9+.-]{0,30}` ending at `at`, as long as it will go.
+ */
+function schemeStart(t: string, at: number): number {
+  let start = -1;
+  for (let i = at - 1; i >= 0 && i >= at - 31; i--) {
+    const c = t.charCodeAt(i);
+    if ((c >= 97 && c <= 122) || (c >= 65 && c <= 90)) start = i;
+    else if (!((c >= 48 && c <= 57) || c === 43 || c === 45 || c === 46)) break;
+  }
+  return start;
+}
+
+/**
+ * URL userinfo whose password holds a `/`, `?` or `#`: `postgres://u:ab/cd@h`. Any of those ends the authority, and an `@`
+ * after one is usually the path's (`http://localhost:3000/@vite/client`, `https://x.example/react@18`), so `USERINFO` stops
+ * there. This goes on only where what it stopped at can't be a host and port, and takes all up to the URL's last `@`. A
+ * `file:` URL has a path and no password: `file://C:/Users/first.last@corp/doc.txt`.
+ *
+ * A URL ends at a blank. It ends at the quote that opened it, written the same way (a `\"` doesn't close a `"`), if what
+ * comes before that quote reads as a host: `"https://a.example","/@me"` is two strings, and `"postgres://u:a"b/c@h"` is a
+ * password with a quote in it. A string that ends at a `:` with anything but a letter or digit after it is joined to what
+ * comes next, whichever way the language does that (`'http://h:'+port+'/@me'`, `'http://h:'||port||'/@'`, a list), so that
+ * is a host as well. After a `/`, `?` or `#` any such quote ends it, so `"http://a:b/c","me@x"` keeps what is outside the
+ * string, and a password that holds its opening quote there shows. A URL not straight after a quote has no end to go by:
+ * the `:` of a later field can then read as a password's, unless what is before it is no one's name (`NOT_A_NAME`). A
+ * `://` is the next URL's, and its scheme isn't read as a password: `[a](https://a.example)[b](https://b.example/@c)`. A
+ * password of up to five digits before a `/`, `?` or `#`, or before a closer, reads as a port and stays: that is
+ * `localhost:3000/` to anything that reads it.
+ *
+ * One pass: a run of non-blanks is searched once for its last `@`, an authority ends at the next `://` at the latest, and
+ * strings opened by the same quote don't overlap.
+ */
+function redactCutPasswords(t: string): string {
+  if (!t.includes("@")) return t;
+  let out = "";
+  let last = 0;
+  let run = -1;
+  let lastAt = -1;
+  for (let at = t.indexOf("://"); at >= 0; at = t.indexOf("://", Math.max(at + 3, last))) {
+    const scheme = schemeStart(t, at);
+    if (scheme < 0 || (at - scheme === 4 && t.slice(scheme, at).toLowerCase() === "file")) continue;
+    const from = at + 3;
+    if (from > run) {
+      URL_BLANK.lastIndex = from;
+      run = URL_BLANK.test(t) ? URL_BLANK.lastIndex - 1 : t.length;
+      const found = t.slice(from, run).lastIndexOf("@");
+      lastAt = found < 0 ? -1 : from + found;
+    }
+    AUTHORITY_END.lastIndex = from;
+    const stop = AUTHORITY_END.test(t) ? AUTHORITY_END.lastIndex - 1 : t.length;
+    if (stop >= lastAt) continue;
+    const authority = t.slice(from, stop);
+    if (!stopsInPassword(t.startsWith("//", stop) ? withoutNextScheme(authority) : authority)) continue;
+    HASH_HOLE.lastIndex = stop;
+    if (HASH_HOLE.test(t)) continue;
+    let end = lastAt;
+    const open = scheme - 1;
+    const quote = t[open];
+    if (quote === '"' || quote === "'" || quote === "`") {
+      const closeFrom = (pos: number) => {
+        let close = t.indexOf(quote, pos);
+        while (close >= 0 && (t[close - 1] === "\\") !== (t[open - 1] === "\\"))
+          close = t.indexOf(quote, close + 1);
+        return close;
+      };
+      const first = closeFrom(from);
+      if (first >= 0 && first < stop) {
+        const read = t.slice(from, first);
+        if (!stopsInPassword(read) || (read.endsWith(":") && /[^A-Za-z0-9]/.test(t.charAt(first + 1))))
+          continue;
+      }
+      const close = first >= 0 && first < stop ? closeFrom(stop) : first;
+      if (close >= 0 && close < end) {
+        const inside = t.slice(stop, close).lastIndexOf("@");
+        if (inside < 0) continue;
+        end = stop + inside;
+      }
+    }
+    out += `${t.slice(last, from)}[redacted]`;
+    last = end;
+  }
+  return out + t.slice(last);
+}
+
+/**
+ * What `USERINFO` stopped short of, at any length: everything from a `://` to the last `@` before `USERINFO_END`. A `://`
+ * holds a `/`, where the run after the one before it stops, so no run is searched twice however many there are.
+ */
+function redactLongUserinfo(t: string): string {
+  if (!t.includes("@")) return t;
+  let out = "";
+  let last = 0;
+  for (let at = t.indexOf("://"); at >= 0; at = t.indexOf("://", at + 3)) {
+    if (schemeStart(t, at) < 0) continue;
+    const from = at + 3;
+    USERINFO_END.lastIndex = from;
+    const end = USERINFO_END.test(t) ? USERINFO_END.lastIndex - 1 : t.length;
+    const found = t.slice(from, end).lastIndexOf("@");
+    if (found < 1) continue;
+    out += `${t.slice(last, from)}[redacted]`;
+    last = from + found;
+  }
+  return out + t.slice(last);
+}
+
+/**
+ * The shapes the usual patterns stop short of: a password in a URL that holds a `/`, `?` or `#`, userinfo or a secret
+ * query value past their limits, and a token with a word character straight before it. For a file only, as the last step
+ * of `redactFile` and of a held change's diff: a file is read once and nothing reads the result again. It only takes out: what it leaves, without its
+ * `[redacted]`, was all there before. `redactText`, `redactProse` and `redactTokens` don't run it, so what an agent says
+ * still shows these shapes; running it there takes a name or a label a later read of the text finds a value by.
+ */
+export function redactLast(text: string): string {
+  const t = redactLongUserinfo(redactCutPasswords(text)).replace(LONG_SECRET_QUERY, "$1[redacted]");
+  return redactJwts(t.replace(GLUED_TOKEN, gluedToken), /eyJ[A-Za-z0-9_-]{8,}$/).replace(
+    /whsec_[A-Za-z0-9+/=]{24,}[A-Za-z0-9+/=_-]*/g,
+    (m) => (/[0-9A-Z]/.test(m) ? "[redacted]" : m),
+  );
 }
 
 /**

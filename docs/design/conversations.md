@@ -278,8 +278,17 @@ links into it.
   every file there is new.
 - **Untrusted.** Paths must be relative, with no `..`, NUL, control character, leading `-`, `.git` or `.inc`, and a name
   that fails is left out and counted. Files stop at 1 MB, every kind of credential ship's scan stops is redacted. The
-  result of `redactTokens` is the starting point and the key blocks only take more out of it, so what that hides stays
-  hidden whatever they find. A block keeps its lines, so line numbers hold. Its markers count wherever they sit, in a
+  result of `redactTokens` is the starting point, and the key blocks, `redactFile`'s own passes and then the last step
+  (`redactLast`) only take more out of it, so what that hides stays hidden whatever they find. The last step takes the
+  shapes the usual patterns stop short of: a URL password with a `/`, `?` or `#` in it, userinfo or a secret query value
+  past their limits, and a token straight after a word character. It runs only on files, because a file is read once and
+  nothing reads the result again: in `redactFile`, so Files, Search, the Changes diff, @file, the ship scan and the
+  history and commit message scan all have it, and after `redactTokens` on a held change's diff, whose `+` and `-`
+  `redactFile`'s key blocks would read as key. Transcripts don't: `redactText`, `redactProse` and `redactTokens`
+  stop where they did, so what an agent says, a brain page and a file a tool left in a stage can still show these shapes.
+  Those texts are read again, a later read finds a value by a name or a label the last step would take, and closing them
+  is a separate change. A link is outside or not by its target as written, not by what redaction left of it. A block
+  keeps its lines, so line numbers hold. Its markers count wherever they sit, in a
   string joined over several lines or after code, once there is a line of key between them; a line in it that doesn't
   read as key material shows as `redactTokens` left it, which is in sight unless it runs straight on from the key, and
   a line that names a marker is cut at it, as a key can run into one. A marker named in a string doesn't end a block or

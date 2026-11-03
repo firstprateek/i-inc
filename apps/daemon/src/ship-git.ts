@@ -8,7 +8,7 @@
 // usually holds secrets (.env, a private key) stops it by name. Findings name the file, never the value.
 import { randomBytes } from "node:crypto";
 import type { Employee } from "@i-inc/core";
-import { redactTokens } from "./ahp/sanitize.ts";
+import { redactLast, redactTokens } from "./ahp/sanitize.ts";
 import type { DraftPr, PullRequests, TokenSource } from "./github.ts";
 import type { RunScript } from "./harness.ts";
 import { type HostPush, HostPushError } from "./host-push.ts";
@@ -368,8 +368,11 @@ const cutAt = (line: string, marker: RegExp, keep: (found: RegExpExecArray) => s
  * stops, so what would stop a push is not sent to a browser in clear. Lines stay where they are: a comment on one
  * goes to the agent by its number.
  *
- * What `redactTokens` hides stays hidden by construction: its result is the starting point, and the blocks below can
- * only take more out of it. A key goes with its markers, keeping its lines, wherever it sits: a key in a comment, a
+ * What `redactTokens` hides stays hidden by construction: its result is the starting point, and the blocks below, this
+ * function's own two passes and `redactLast` after them can only take more out of it. That is all it promises for the
+ * shapes only `redactLast` finds: `_authToken=` goes first and can take the `@` of a URL password that holds a `/`, as in
+ * `postgres://u:p/_authToken=abcdefgh@h`, so `u:p` shows here. The scan refuses that line all the same, as the pass
+ * changed it. A key goes with its markers, keeping its lines, wherever it sits: a key in a comment, a
  * quoted block or a string joined over several lines is no less a key. A line between the markers that doesn't read
  * as key material shows as `redactTokens` left it, up to or from any marker it names, as a key can run into one. A
  * block in the added lines, `holdsCredential` stops. A block already in the file it doesn't: the scan reads added lines
@@ -396,10 +399,12 @@ export function redactFile(text: string): string {
     }
     change(line + lines.length - 1, toEnd);
   }
-  return shown
-    .join("\n")
-    .replace(/(_authToken\s*=\s*)(?!\$\{)[^\s"']{8,}/g, "$1[redacted]")
-    .replace(/(\bmachine\s+\S+\s+(?:login\s+\S+\s+)?password\s+)\S{4,}/g, "$1[redacted]");
+  return redactLast(
+    shown
+      .join("\n")
+      .replace(/(_authToken\s*=\s*)(?!\$\{)[^\s"']{8,}/g, "$1[redacted]")
+      .replace(/(\bmachine\s+\S+\s+(?:login\s+\S+\s+)?password\s+)\S{4,}/g, "$1[redacted]"),
+  );
 }
 
 /**
