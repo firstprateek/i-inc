@@ -527,6 +527,19 @@ describe("a search", () => {
       let all = "";
       for (let c = 0xfdd0; c <= 0xfdef; c++) all += String.fromCharCode(c);
       expect(redactLast(`${all} ${note} ${all}`)).toBe(`${all} ${note} ${all}`);
+      const allButLast = all.slice(0, -1);
+      expect(redactLast(`${allButLast} ${note}`)).toBe(`${allButLast} ${note}`);
+      expect(redactLast(`\uFDEF ${note}`)).toBe(`\uFDEF ${note}`);
+    });
+
+    it("is looked for in one pass, not one search for each", () => {
+      let all = "";
+      for (let c = 0xfdd0; c <= 0xfdef; c++) all += String.fromCharCode(c);
+      const searches = vi.spyOn(String.prototype, "includes");
+      redactLast(`[600 characters in one unbroken run, not kept] ${all}`);
+      const count = searches.mock.calls.filter(([what]) => /^[\uFDD0-\uFDEF]$/.test(String(what))).length;
+      searches.mockRestore();
+      expect(count).toBe(0);
     });
   });
 
@@ -951,6 +964,8 @@ describe("a search", () => {
         ["doubled", `'postgres://u:it''s/fine@h'`, "s/fine"],
         ["doubled, the other kind", `"postgres://u:a""b/c@h"`, "b/c"],
         ["alone", `DATABASE_URL="postgres://u:a"b/c@h"`, "b/c"],
+        ["after a bare colon, with a letter next", `"postgres://u:"b/c@h"`, "b/c"],
+        ["after a bare colon, with a digit next", `"postgres://u:"1/c@h"`, "1/c"],
       ])("goes with its own quote in it, %s", (_, url, secret) => {
         stopped(`${url}\n`, secret);
       });
@@ -963,6 +978,14 @@ describe("a search", () => {
       it("goes with an @ in it, once USERINFO has been there", () => {
         expect(redactFile("postgres://u:p@ss/w@h\n")).toBe("postgres://[redacted]@h\n");
         expect(redactText("postgres://u:p@ss/w@h\n")).toBe("postgres://[redacted]@h\n");
+      });
+
+      it("reads an IPv6 address as a host, whatever its colons", () => {
+        expect(redactFile("postgres://u:p@[::1]:5432/db?x=me@y\n")).toBe(
+          "postgres://[redacted]@[::1]:5432/db?x=me@y\n",
+        );
+        expect(redactFile("http://[::1]:abc/x@y\n")).toBe("http://[redacted]@y\n");
+        expect(holdsCredential("http://[::1]:abc/x@y\n")).toBe(true);
       });
 
       it("goes as far as the last @, past a host that USERINFO couldn't reach", () => {
@@ -1156,6 +1179,8 @@ describe("a search", () => {
         it("takes the token all the same", () => {
           expect(redactFile(`x_${key}-password`)).toBe("x_[redacted]-password");
           expect(redactFile(`x_${key}-password2`)).toBe("x_[redacted]");
+          expect(redactFile(`x_${key}---password`)).toBe("x_[redacted]---password");
+          expect(redactFile(`x_${key}_-_api-key-_`)).toBe("x_[redacted]_-_api-key-_");
         });
 
         it("doesn't take a redaction that looks like a link for one", () => {
@@ -1184,22 +1209,85 @@ describe("a search", () => {
         expect(seen.slice(0, 1200)).toBe(redactText(text).slice(0, 1200));
       });
 
-      // A start that shrinks brings the end of what was read into what is kept.
+      // Where it stops reading: at first, and once a blob has shrunk the start.
       const shrunk = `data:image/png;base64,${"A".repeat(3000)} `;
+      const cuts: [string, number][] = [
+        ["", 3000 + 6144],
+        [shrunk, 64 * 1024],
+      ];
       it.each([
         ["a URL before its @", "https://user:SECRETVALUE", `${"x".repeat(300)}@h/`],
         ["a quoted value before its quote", 'password="correct SECRETVALUE', ' horse"'],
         ["a header before its quote", 'Authorization: "Basic SECRETVALUE', ' abc"'],
         ["a long run", `SECRETVALUE${"y".repeat(450)}`, "y".repeat(100)],
       ])("shows no part of %s that the cut falls in", (_, before, after) => {
-        const read = 3000 + 4096;
-        for (let past = 0; past < 5; past++) {
-          const text = `${shrunk}${pad(read - shrunk.length - before.length - past)}${before}${after} ${pad(9000)}`;
-          expect(redactText(text)).not.toContain("SECRETVALUE");
-          const seen = redactHead(text, 3000);
-          expect(seen).not.toContain("SECRETVALUE");
-          expect(seen).toContain("word word");
+        for (const [opening, cut] of cuts) {
+          for (let past = 0; past < 5; past++) {
+            const text = `${opening}${pad(cut - opening.length - before.length - past)}${before}${after} ${pad(70_000)}`;
+            expect(redactText(text)).not.toContain("SECRETVALUE");
+            const seen = redactHead(text, 3000);
+            expect(seen).not.toContain("SECRETVALUE");
+            expect(seen).toContain("word word");
+          }
         }
+      });
+
+      // Both about as long as the first rule of `redactKeyed` reads. The second grows as it is read.
+      const headers = [
+        ["plain", `authorization: "Digest SECRETVALUE ${"a ".repeat(485)}"`],
+        [
+          "full of what redaction makes longer",
+          `authorization: "Digest SECRETVALUE ${"key=a ".repeat(161)}"`,
+        ],
+      ];
+      it.each(headers)("shows no part of a whole header, %s, wherever it lies", (_, header) => {
+        for (let at = 1200; at < 1200 + 6144; at += 64) {
+          const text = `${pad(at)}${header} ${pad(9000)}`;
+          expect(redactText(text)).not.toContain("SECRETVALUE");
+          expect(redactHead(text, 1200)).not.toContain("SECRETVALUE");
+        }
+      });
+
+      it.each(headers)("shows no part of a whole header, %s, after a blob", (_, header) => {
+        for (let blob = 64_000; blob < 65_536; blob += 64) {
+          const text = `${"A".repeat(blob)} ${header} ${pad(70_000)}`;
+          expect(redactHead(text, 1200)).not.toContain("SECRETVALUE");
+        }
+      });
+
+      it("shows no part of a header after a blob that shrinks more than the header grows", () => {
+        const header = `authorization: "Digest SECRETVALUE ${"key=a ".repeat(163)}"`;
+        const text = `${"A1b".repeat(1428)} ${header} please fix the login page ${pad(1500)}`;
+        expect(redactHead(text, 1200)).toBe(redactText(text));
+        expect(redactHead(text, 1200)).toContain("please fix the login page");
+      });
+
+      it("shows no part of a value with a blob in it, whose end it can't reach", () => {
+        const before = `password="SECRETVALUE `;
+        expect(redactText(`${before}${"A".repeat(100_000)} more"`)).not.toContain("SECRETVALUE");
+        expect(redactHead(`${before}${"A".repeat(100_000)} more"`, 120)).toBe("");
+      });
+
+      it("is all of a text up to 64 KB whose start shrinks", () => {
+        const text = `Please fix this.\n${"A".repeat(60_000)}\nThanks!`;
+        expect(redactHead(text, 120)).toBe(redactText(text));
+        expect(redactHead(text, 120)).toContain("Thanks!");
+      });
+
+      it("stops reading at 64 KB, and keeps what the margin leaves of that", () => {
+        expect(redactHead(`${"A".repeat(100_000)} Thanks!`, 120)).toBe("");
+        const text = `${pad(5000)}${"A".repeat(100_000)} Thanks!`;
+        const kept = redactHead(text, 120);
+        expect(kept.length).toBeLessThan(2000);
+        expect(kept).toBe(pad(kept.length));
+      });
+
+      it("reads on only when it has too little", () => {
+        const slices = vi.spyOn(String.prototype, "slice");
+        redactHead(pad(100_000), 1200);
+        const reads = slices.mock.calls.filter(([from, to]) => from === 0 && to === 64 * 1024).length;
+        slices.mockRestore();
+        expect(reads).toBe(0);
       });
 
       it("reads no more of a text built to be slow, however long it is", () => {
@@ -1671,6 +1759,17 @@ describe("a search", () => {
       "'https://api.example.com:'+p+'/users/@me'",
       '"http://example.com:"+port+"/x@y"',
       "'http://example.com:'.$port.'/x@y'",
+      'echo "http://api.example.com:"$PORT"/@me"',
+      "SELECT 'http://api.example.com:'||port||'/@'||handle FROM users;",
+      "SELECT CONCAT('http://api.example.com:',port,'/@',handle) FROM users;",
+      'const u=["http://api.example.com:",port,"/@me"].join("");',
+      '="http://api.example.com:"&A2&"/@"&B2',
+      'url = "http://api.example.com:"<>port<>"/@"<>user',
+      '{{ "http://api.example.com:"~port~"/@"~user }}',
+      'url <- paste0("http://api.example.com:",port,"/@",user)',
+      'str("http://api.example.com:")+str(port)+"/@me"',
+      // The price of those: a password that starts with its opening quote and a comma reads the same.
+      '"postgres://u:",b/c@h"',
       // The other two quotes, closing before an `@` that isn't in the string
       "'http://a.example:foo/c','me@x.example'",
       "`http://a.example:foo/c`,`me@x.example`",

@@ -29,7 +29,7 @@ import {
   titleFromSlug,
   wordCount,
 } from "@i-inc/core";
-import { redactProse } from "./ahp/sanitize.ts";
+import { redactProse, redactProseOnce } from "./ahp/sanitize.ts";
 
 // ---- What the sandbox reports --------------------------------------------------------------------------
 
@@ -269,12 +269,16 @@ export function newSlugOk(slug: string): boolean {
 
 const bytes = (s: string) => Buffer.byteLength(s, "utf8");
 
-/** The share of a text that the credential patterns took out (0 to 1), and how many places they took. */
+/**
+ * The share of a text that the credential patterns took out (0 to 1), and how many places they took. The text kept has
+ * had every read, but the share is of one: a later read runs on past a `[redacted]` to the next blank, which on a long
+ * line of settings is most of a page and no credential.
+ */
 export function secretShare(text: string): { redacted: string; share: number; count: number } {
   const redacted = redactProse(text);
   const markers = redacted.match(/\[redacted\]|\[private key\]/g)?.length ?? 0;
   if (redacted === text) return { redacted, share: 0, count: 0 };
-  const left = redacted.replace(/\[redacted\]|\[private key\]/g, "");
+  const left = redactProseOnce(text).replace(/\[redacted\]|\[private key\]/g, "");
   return { redacted, share: Math.max(0, 1 - left.length / Math.max(1, text.length)), count: markers };
 }
 

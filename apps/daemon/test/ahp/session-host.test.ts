@@ -54,6 +54,19 @@ describe("the brief for a blank agent", () => {
     expect(brief).toContain('"password": "[redacted]"');
   });
 
+  const blob = "QUJD".repeat(1667);
+  it.each([
+    ["a sentence", "Please fix the logo:"],
+    ["a page of prose", `Please fix the logo. ${"Here is what we tried so far. ".repeat(30)}`],
+  ])("keeps %s and what follows a blob pasted after it", (_, before) => {
+    const brief = continuationBrief(chat(`${before}\n\ndata:image/png;base64,${blob}\n\nThanks!`), {
+      text: "and now?",
+    });
+    expect(brief).toContain("Owner: Please fix the logo");
+    expect(brief).toContain("Thanks!");
+    expect(brief).toContain("You: Please fix the logo");
+  });
+
   it("still cuts a long message at 1200 characters and says so", () => {
     const brief = continuationBrief(chat("word ".repeat(2000)), { text: "and now?" });
     expect(brief).toContain(`Owner: ${"word ".repeat(240)}…`);

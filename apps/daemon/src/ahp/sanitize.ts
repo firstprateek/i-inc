@@ -69,7 +69,10 @@ const AFTER_PORT = String.raw`[,;|)\]}>"'${"`"}<\\&*\u0080-\uffff]`;
 const PORT = new RegExp(`^(?:\\d{1,5}|port|\\*|${HOLE})(?:${AFTER_PORT}.*)?$`, "i");
 /** What before a `:` is a host and no one's user name. A dotted name won't do: `first.last` and `postgres.abcdef` are users. */
 const NOT_A_USER = new RegExp(`^(?:localhost|\\d{1,3}(?:\\.\\d{1,3}){3}|${HOLE})(?::|$)`, "i");
-/** What no user name holds, so that the `:` after it is a later field's: `example.com","time":"12:34/@me`. */
+/**
+ * What a user name rarely holds, so the `:` after it is taken for a later field's: `example.com","time":"12:34/@me`. That
+ * is a judgement: a user name that does hold one, as `user+tag` or `josé` can, isn't caught.
+ */
 const NOT_A_NAME = /["'`<>()[\]|;,=&+\\\u0080-\uffff]/;
 /** A hole in Ruby's or Elixir's way, which starts with the `#` that ends an authority. */
 const HASH_HOLE = /#\{[^}\s]{0,200}\}/y;
@@ -94,7 +97,7 @@ const GLUED_TOKEN =
   /gh[opsu]_(?![0-9a-f]+(?![A-Za-z0-9]))(?![0-9A-F]+(?![A-Za-z0-9]))[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9]{20,}\w*|sk-(?:ant|proj|svcacct|admin)-[A-Za-z0-9_-]{16,}|(?<![A-Za-z])sk-[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z])|xox[baprs]-[0-9][0-9A-Za-z-]{9,}|AKIA[0-9A-Z]{16}(?![0-9A-Za-z])|[sr]k_live_(?![0-9a-f]+(?![A-Za-z0-9]))(?![0-9A-F]+(?![A-Za-z0-9]))(?=[A-Za-z]*[0-9])[A-Za-z0-9]{24,}\w*|npm_[A-Za-z0-9]{36}(?![A-Za-z0-9])/g;
 const NAMED_KEY = /^sk-(?:ant|proj|svcacct|admin)-/;
 /** A secret's name at the end of what a token's letters took, as in `x_sk-ant-...-password: hunter2`. */
-const NAME_AT_END = /[-_]*(?:password|token|secret|api[-_]?key|bearer|authorization)[-_]*$/i;
+const NAME_AT_END = /(?<![-_])[-_]*(?:password|token|secret|api[-_]?key|bearer|authorization)[-_]*$/i;
 /**
  * A token goes, and a secret's name it ran into stays: a read after marks or blanks are taken out, as for a notification
  * or a stage title, finds the value by that name. Only the end is searched, as a token can be as long as the text.
@@ -229,13 +232,14 @@ function cutEnd(t: string, from: number, end: number): number {
  *
  * A URL ends at a blank. It ends at the quote that opened it, written the same way (a `\"` doesn't close a `"`), if what
  * comes before that quote reads as a host: `"https://a.example","/@me"` is two strings, and `"postgres://u:a"b/c@h"` is a
- * password with a quote in it. A string that ends at a `:` and is joined to the next, `'http://h:'+port+'/@me'`, is a host
- * as well. After a `/`, `?` or `#` any such quote ends it, so `"http://a:b/c","me@x"` keeps what is outside the string, and
- * a password that holds its opening quote there shows. A URL not straight after a quote has no end to go by: the `:` of
- * a later field can then read as a password's, unless what is before it is no one's name (`NOT_A_NAME`). A `://` is the
- * next URL's, and its scheme isn't read as a password: `[a](https://a.example)[b](https://b.example/@c)`. A password of up
- * to five digits before a `/`, `?` or `#`, or before a closer, reads as a port and stays: that is `localhost:3000/` to
- * anything that reads it.
+ * password with a quote in it. A string that ends at a `:` with anything but a letter or digit after it is joined to what
+ * comes next, whichever way the language does that (`'http://h:'+port+'/@me'`, `'http://h:'||port||'/@'`, a list), so that
+ * is a host as well. After a `/`, `?` or `#` any such quote ends it, so `"http://a:b/c","me@x"` keeps what is outside the
+ * string, and a password that holds its opening quote there shows. A URL not straight after a quote has no end to go by:
+ * the `:` of a later field can then read as a password's, unless what is before it is no one's name (`NOT_A_NAME`). A
+ * `://` is the next URL's, and its scheme isn't read as a password: `[a](https://a.example)[b](https://b.example/@c)`. A
+ * password of up to five digits before a `/`, `?` or `#`, or before a closer, reads as a port and stays: that is
+ * `localhost:3000/` to anything that reads it.
  *
  * One pass: a run of non-blanks is searched once for its last `@`, an authority ends at the next `://` at the latest, and
  * strings opened by the same quote don't overlap.
@@ -276,7 +280,8 @@ function redactCutPasswords(t: string): string {
       const first = closeFrom(from);
       if (first >= 0 && first < stop) {
         const read = t.slice(from, first);
-        if (!stopsInPassword(read) || (read.endsWith(":") && /[+.]/.test(t.charAt(first + 1)))) continue;
+        if (!stopsInPassword(read) || (read.endsWith(":") && /[^A-Za-z0-9]/.test(t.charAt(first + 1))))
+          continue;
       }
       const close = first >= 0 && first < stop ? closeFrom(stop) : first;
       if (close >= 0 && close < end) {
@@ -327,12 +332,17 @@ export function redactLast(text: string): string {
   return lastPasses(text.replaceAll(RUN_NOTE, `${gap}]`)).replaceAll(gap, RUN_NOTE_WORDS);
 }
 
-/** A noncharacter that isn't in the text, or a string that can't be, if it holds all of them. */
+/**
+ * A noncharacter that isn't in the text, or a string that can't be, if it holds all of them. One pass with a bit for each:
+ * a search for each of the 32 stops at every byte they start with, and an agent can write a text full of that byte.
+ */
 function unusedCharacter(text: string): string {
-  for (let c = 0xfdd0; c <= 0xfdef; c++) {
-    const gap = String.fromCharCode(c);
-    if (!text.includes(gap)) return gap;
+  let used = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i) - 0xfdd0;
+    if (c >= 0 && c < 32) used |= 1 << c;
   }
+  for (let c = 0; c < 32; c++) if (!(used & (1 << c))) return String.fromCharCode(0xfdd0 + c);
   return secretCut();
 }
 
@@ -430,22 +440,35 @@ export function redactText(text: string): string {
   return redactLast(t);
 }
 
-/** How far past what it can keep `redactHead` reads, twice over. No usual pass needs to see further to take what it takes. */
-const HEAD_MARGIN = 2048;
+/**
+ * How much of what it read `redactHead` drops. A usual pattern looks 1,000 characters into a quoted value, after a name of
+ * up to 200, and what it would have taken there can come out 2.5 times as long (`key=a ` to `key=[redacted] `).
+ */
+const HEAD_MARGIN = 3072;
+/** The most `redactHead` goes on to when a start shrinks, as much as `keep` reads. */
+const HEAD_MOST = defaultCaps.maxString;
 
 /**
  * `redactText` for a caller that keeps only the first `max` characters, reading no more than it needs: a text can run to
  * megabytes, and each read of it costs. The end of what is read can be the start of something a pattern needs the rest of
- * (a URL before its `@`, a quoted value before its quote, a long run), so `HEAD_MARGIN` of what is left is dropped, which
- * is more than any of them reaches. A text whose start shrinks by more than `HEAD_MARGIN` keeps less than `max`, so one
- * that opens with 5 KB of a blob may keep nothing. The one thing that reaches further is a URL password that holds a `/`,
- * `?` or `#`, which `redactLast` needs the `@` of: its start can show.
+ * (a URL before its `@`, a quoted value before its quote, a long run), so `HEAD_MARGIN` of what is left is dropped. If
+ * that leaves less than `max`, a blob has shrunk the start, so it reads on to `HEAD_MOST`: a text up to there is read
+ * whole, as `redactText` reads it. Past there it keeps what is left, which can be nothing: a blob that runs on past
+ * `HEAD_MOST` is short once redacted, so the margin takes the words before it, as a value could start in them and close
+ * after the blob.
+ *
+ * What reaches further than the margin is a URL password `redactLast` needs the `@` of, one that holds a `/`, `?` or `#`
+ * or runs past `USERINFO`'s limit: its start can show.
  */
 export function redactHead(text: string, max: number): string {
-  const read = max + 2 * HEAD_MARGIN;
-  if (text.length <= read) return redactText(text);
-  const seen = redactText(text.slice(0, read));
-  return seen.slice(0, Math.max(0, seen.length - HEAD_MARGIN));
+  let kept = "";
+  for (const read of [max + 2 * HEAD_MARGIN, HEAD_MOST]) {
+    if (text.length <= read) return redactText(text);
+    const seen = redactText(text.slice(0, read));
+    kept = seen.slice(0, Math.max(0, seen.length - HEAD_MARGIN));
+    if (kept.length >= max) break;
+  }
+  return kept;
 }
 
 function redactUsual(text: string): string {
@@ -547,6 +570,11 @@ export function redactProse(text: string): string {
     t = again;
   }
   return redactLast(t);
+}
+
+/** One read of `redactProse`, which is what credentials take: later reads go on past a `[redacted]`, over whatever is there. */
+export function redactProseOnce(text: string): string {
+  return redactLast(proseUsual(text));
 }
 
 function proseUsual(text: string): string {

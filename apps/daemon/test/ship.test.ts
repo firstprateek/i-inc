@@ -136,6 +136,19 @@ describe("what is taken from an owner's message", () => {
     expect(seen.startsWith('Add a greeting "password": ')).toBe(true);
     expect(seen.length).toBeLessThanOrEqual(400);
   });
+
+  it("is what the owner wrote before a pasted blob or a page of hashes", () => {
+    const sentence = "Please fix the logo on the pricing page, it renders blurry on retina:";
+    const image = `data:image/png;base64,${"QUJD".repeat(1667)}`;
+    expect(clean(`${sentence}\n\n${image}\n\nThanks!`, 120)).toBe(
+      `${sentence} [image/png data, 7 KB] Thanks!`,
+    );
+    const layers = Array.from({ length: 60 }, (_, i) => `  - sha256:${"ab12".repeat(16)} layer-${i}`);
+    expect(clean(`${sentence}\n${layers.join("\n")}`, 120).startsWith(sentence)).toBe(true);
+    expect(clean(`${sentence} ${"QUJD".repeat(15_000)}`, 120)).toBe(
+      `${sentence} [60000 characters in one unbroken run, not kept]`,
+    );
+  });
 });
 
 describe("open a PR", () => {

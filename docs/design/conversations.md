@@ -290,9 +290,12 @@ links into it.
   whole reach, up to a `&`, a blank or a quote, and a token keeps a secret's name it ran into, for a read after marks or
   blanks are taken out. A run of 500 or more goes whole if a token is in it, so its pieces don't pass as short. Ticket
   transcripts' `redactSecrets` doesn't run the last step. A caller that keeps only the start of a text reads only that,
-  plus 4 KB, with `redactHead`: a resumed prompt reads the start of each message, and a title the start of the owner's.
-  A link is outside or not by its target as written, not by what
-  redaction left of it. A block keeps its lines, so line numbers hold. Its markers count wherever they sit, in a
+  plus 6 KB, with `redactHead`: a resumed prompt reads the start of each message, and a title the start of the owner's.
+  It drops the last 3 KB of what it read, and if that leaves too little, because a blob shrank the start, it reads on:
+  a text up to 64 KB is read whole, and a longer one keeps what is left of its first 64 KB, which can be nothing. A brain
+  page is stored after every read, but whether it is mostly credentials goes by one read, so a later read that runs on
+  through a long line hides more of a page without refusing it. A link is outside or not by its target as written, not
+  by what redaction left of it. A block keeps its lines, so line numbers hold. Its markers count wherever they sit, in a
   string joined over several lines or after code, once there is a line of key between them; a line in it that doesn't
   read as key material shows as `redactTokens` left it, which is in sight unless it runs straight on from the key, and
   a line that names a marker is cut at it, as a key can run into one. A marker named in a string doesn't end a block or

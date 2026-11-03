@@ -350,6 +350,33 @@ describe("secrets", () => {
     expect(r).toMatchObject({ code: "secret" });
     expect(r?.text ?? "").not.toContain("MIIEvQ");
   });
+
+  // A second read of a page runs on past a `[redacted]` to the next blank. On a long line that is most of the page, but
+  // none of it is a credential, so it hides more and the page stays.
+  it.each([
+    [
+      'cache_key="session",ttl=3600,maxmemory=2gb,policy=allkeys-lru,hz=10,tcp-keepalive=300,timeout=0,databases=16,appendonly=no,save=900,rdbcompression=yes,rdbchecksum=yes,lazyfree-lazy-eviction=yes,activedefrag=yes,maxclients=4000,latency-monitor-threshold=100',
+    ],
+    [
+      'routing_key="orders",group=orders-worker,topic=orders,partitions=12,replication=3,retention=7d,compression=zstd,acks=all,linger=5,batch=16384,fetch.min=1,fetch.max=52428800,auto.offset.reset=earliest,enable.auto.commit=false,session.timeout=45000',
+    ],
+    [`const theme={password: "x",${Array.from({ length: 40 }, (_, i) => `color${i}:"red"`).join(",")}};`],
+  ])("keeps a page whose first read took little, however much a later read hides: %s", (line) => {
+    const body = `Staging reads these settings from one line of its unit file, so change them together:\n\n${line}`;
+    const { a, r } = one(add("company/facts/line.md", good("Line", body)));
+    expect(r).toBeUndefined();
+    expect(a?.text).toContain("Staging reads these settings");
+    expect(a?.text).toContain("[redacted]");
+    expect(a?.text).not.toContain("=16");
+    expect(a?.text).not.toContain("color39");
+  });
+
+  it("counts a shape only the last step takes", () => {
+    const password = `postgres://u:ab/${"cd".repeat(2000)}@h`;
+    const { r } = one(add("company/facts/url.md", good("Url", `What to connect to:\n\n${password}`)));
+    expect(r).toMatchObject({ code: "secret" });
+    expect(r?.text ?? "").not.toContain("cdcd");
+  });
 });
 
 describe("the write bar", () => {
