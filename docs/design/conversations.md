@@ -278,24 +278,16 @@ links into it.
   every file there is new.
 - **Untrusted.** Paths must be relative, with no `..`, NUL, control character, leading `-`, `.git` or `.inc`, and a name
   that fails is left out and counted. Files stop at 1 MB, every kind of credential ship's scan stops is redacted. The
-  usual patterns' result (`redactKnown`) is the starting point, and the key blocks and then the last step (`redactLast`)
-  only take more out of it, so what those patterns hide stays hidden whatever the rest finds. The last step takes the
-  shapes they stop short of: a URL password with a `/`, `?` or `#` in it, userinfo or a secret query value past their
-  limits, and a token straight after a word character. `redactText`, `redactTokens`, `redactProse` and `redactFile` end
-  with it, after every other pass they run, so it can't take a secret's name or a query's label before the pass that
-  looks for it. `redactText` and `redactProse` run the usual passes up to three times first, until they change nothing,
-  since a brief, a notification, a resumed prompt or a brain page reads its text again and a later read can find what the
-  first uncovered. Three doesn't bound them: a text can need as many reads as it is long, and a suggestion sent back is
-  read up to five times. So when the last step cuts through a value a usual pass has begun on, it takes that value's
-  whole reach, up to a `&`, a blank or a quote, and a token keeps a secret's name it ran into, for a read after marks or
-  blanks are taken out. A run of 500 or more goes whole if a token is in it, so its pieces don't pass as short. Ticket
-  transcripts' `redactSecrets` doesn't run the last step. A caller that keeps only the start of a text reads only that,
-  plus 6 KB, with `redactHead`: a resumed prompt reads the start of each message, and a title the start of the owner's.
-  It drops the last 3 KB of what it read, and if that leaves too little, because a blob shrank the start, it reads on:
-  a text up to 64 KB is read whole, and a longer one keeps what is left of its first 64 KB, which can be nothing. A brain
-  page is stored after every read, but whether it is mostly credentials goes by one read, so a later read that runs on
-  through a long line hides more of a page without refusing it. A link is outside or not by its target as written, not
-  by what redaction left of it. A block keeps its lines, so line numbers hold. Its markers count wherever they sit, in a
+  result of `redactTokens` is the starting point, and the key blocks, `redactFile`'s own passes and then the last step
+  (`redactLast`) only take more out of it, so what that hides stays hidden whatever they find. The last step takes the
+  shapes the usual patterns stop short of: a URL password with a `/`, `?` or `#` in it, userinfo or a secret query value
+  past their limits, and a token straight after a word character. It runs only in `redactFile`, because a file is read
+  once and nothing reads the result again, so Files, Search, the Changes diff, @file, a held change's diff, the ship scan
+  and the history and commit message scan all have it. Transcripts don't: `redactText`, `redactProse` and `redactTokens`
+  stop where they did, so what an agent says, a brain page and a file a tool left in a stage still show these shapes.
+  Those texts are read again, a later read finds a value by a name or a label the last step would take, and closing them
+  is a separate change. A link is outside or not by its target as written, not by what redaction left of it. A block
+  keeps its lines, so line numbers hold. Its markers count wherever they sit, in a
   string joined over several lines or after code, once there is a line of key between them; a line in it that doesn't
   read as key material shows as `redactTokens` left it, which is in sight unless it runs straight on from the key, and
   a line that names a marker is cut at it, as a key can run into one. A marker named in a string doesn't end a block or

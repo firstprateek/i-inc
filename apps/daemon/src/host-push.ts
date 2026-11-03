@@ -15,7 +15,6 @@ import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { redactTokens } from "./ahp/sanitize.ts";
 import { MAX_BUNDLE_BYTES } from "./bundle.ts";
 import { isValidRepo, type TokenSource } from "./github.ts";
 import { isHostExecuted, isProtected } from "./paths.ts";
@@ -23,6 +22,7 @@ import {
   blockers,
   MAX_COMMITS,
   marker,
+  redactFile,
   SCAN_LIMIT,
   scanHistory,
   secretFile,
@@ -748,7 +748,7 @@ export class HostPusher implements HostPush {
       if (diff.length <= DIFF_CAP) diff += `${d.stdout}\n`;
     }
     const patchId = createHash("sha256").update(parts.join("\n")).digest("hex");
-    const redacted = redactTokens(diff);
+    const redacted = redactFile(diff);
     return {
       patchId,
       diff: redacted.slice(0, DIFF_CAP),

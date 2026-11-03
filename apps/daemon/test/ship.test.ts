@@ -2,7 +2,6 @@
 // real bash against real git (a local bare repo is GitHub's remote), so a commit, a push, a rebase onto main
 // and a protected path are the real thing. The agents and GitHub's pull request API are fakes.
 import { afterEach, describe, expect, it } from "vitest";
-import { clean } from "../src/ship.ts";
 import { type ShipRig, shipRig, until } from "./ship-rig.ts";
 
 const rigs: ShipRig[] = [];
@@ -124,30 +123,6 @@ describe("make this a ticket, in owner-merges mode", () => {
     expect(rig.originGit("show", `conv/${c.conv.id}:b.txt`)).toBe("b");
     const s = await rig.app.deps.store.read(t.body.ticket.id);
     expect(s.find((e) => e.type === "pr-opened")).toMatchObject({ pr: { number: 1 } });
-  });
-});
-
-describe("what is taken from an owner's message", () => {
-  it("is the start of it, read and no more, however long the message", () => {
-    const hostile = `"password": "${"x".repeat(1500)}" ${`${"a".repeat(31)}://${"x".repeat(400)} `.repeat(5000)}`;
-    const at = performance.now();
-    const seen = clean(`Add a greeting ${hostile}`, 400);
-    expect(performance.now() - at).toBeLessThan(100);
-    expect(seen.startsWith('Add a greeting "password": ')).toBe(true);
-    expect(seen.length).toBeLessThanOrEqual(400);
-  });
-
-  it("is what the owner wrote before a pasted blob or a page of hashes", () => {
-    const sentence = "Please fix the logo on the pricing page, it renders blurry on retina:";
-    const image = `data:image/png;base64,${"QUJD".repeat(1667)}`;
-    expect(clean(`${sentence}\n\n${image}\n\nThanks!`, 120)).toBe(
-      `${sentence} [image/png data, 7 KB] Thanks!`,
-    );
-    const layers = Array.from({ length: 60 }, (_, i) => `  - sha256:${"ab12".repeat(16)} layer-${i}`);
-    expect(clean(`${sentence}\n${layers.join("\n")}`, 120).startsWith(sentence)).toBe(true);
-    expect(clean(`${sentence} ${"QUJD".repeat(15_000)}`, 120)).toBe(
-      `${sentence} [60000 characters in one unbroken run, not kept]`,
-    );
   });
 });
 

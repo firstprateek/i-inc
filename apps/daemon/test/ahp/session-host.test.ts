@@ -1,16 +1,7 @@
 // The session host against a scripted ACP agent in a fake sandbox: a conversation from creation to
 // suspend and resume, permissions, images, cancel, modes, the cap, the sandbox launch, and crashes.
 import { describe, expect, it } from "vitest";
-import { continuationBrief } from "../../src/ahp/session-host.ts";
-import {
-  ActionType,
-  type ChatState,
-  ResponsePartKind,
-  ROOT,
-  SessionStatus,
-  ToolCallStatus,
-  TurnState,
-} from "../../src/ahp/wire.ts";
+import { ActionType, ROOT, SessionStatus, ToolCallStatus, TurnState } from "../../src/ahp/wire.ts";
 import { defaultMachineSettings, machineLaunch } from "../../src/machines.ts";
 import { upExec } from "../up.ts";
 import { FakeSandbox } from "./fake-acp.ts";
@@ -35,44 +26,6 @@ const confirm = (turnId: string, toolCallId: string, approved: boolean, optionId
         reason: "denied",
         selectedOptionId: optionId,
       };
-
-describe("the brief for a blank agent", () => {
-  const hostile = `"password": "${"x".repeat(1500)}" ${`${"a".repeat(31)}://${"x".repeat(400)} `.repeat(5000)}`;
-  const chat = (text: string) =>
-    ({
-      turns: Array.from({ length: 6 }, () => ({
-        message: { text },
-        responseParts: Array.from({ length: 7 }, () => ({ kind: ResponsePartKind.Markdown, content: text })),
-      })),
-    }) as unknown as ChatState;
-
-  it("reads only the start of a turn, however many parts of 2 MiB it has", () => {
-    const at = performance.now();
-    const brief = continuationBrief(chat(hostile), { text: "and now?" });
-    expect(performance.now() - at).toBeLessThan(200);
-    expect(brief.length).toBeLessThan(16_000);
-    expect(brief).toContain('"password": "[redacted]"');
-  });
-
-  const blob = "QUJD".repeat(1667);
-  it.each([
-    ["a sentence", "Please fix the logo:"],
-    ["a page of prose", `Please fix the logo. ${"Here is what we tried so far. ".repeat(30)}`],
-  ])("keeps %s and what follows a blob pasted after it", (_, before) => {
-    const brief = continuationBrief(chat(`${before}\n\ndata:image/png;base64,${blob}\n\nThanks!`), {
-      text: "and now?",
-    });
-    expect(brief).toContain("Owner: Please fix the logo");
-    expect(brief).toContain("Thanks!");
-    expect(brief).toContain("You: Please fix the logo");
-  });
-
-  it("still cuts a long message at 1200 characters and says so", () => {
-    const brief = continuationBrief(chat("word ".repeat(2000)), { text: "and now?" });
-    expect(brief).toContain(`Owner: ${"word ".repeat(240)}…`);
-    expect(brief).toContain(`You: ${"word ".repeat(240)}…`);
-  });
-});
 
 describe("creating a conversation", () => {
   it("prepares the working copy, starts the agent in it, and takes the agent's own modes as config, in bypass mode", async () => {

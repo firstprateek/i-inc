@@ -289,6 +289,17 @@ describe("the machine harness in direct mode", () => {
     expect(await direct(work).runGates(ticket, okOf(held))).toMatchObject({ ok: true });
   });
 
+  it("shows the owner a held change as the viewer would, with what the scan stops taken out", async () => {
+    const { work } = directRepos(".github/workflows/ci.yml");
+    writeFileSync(join(work, ".github/workflows/ci.yml"), "url: postgres://u:ab/cd@h/app\n");
+    git(work, "add", "-A");
+    git(work, "commit", "-q", "-m", "a password with a / in it");
+    const held = await direct(work).runGates(ticket);
+    const diff = held.ok ? "" : (held.approval?.diff ?? "");
+    expect(diff).toContain("+url: postgres://[redacted]@h/app");
+    expect(diff).not.toContain("ab/cd");
+  });
+
   it("holds a file moved out of a protected folder, and a protected file with a quote in its name", async () => {
     const { work, origin } = directRepos();
     // main has a workflow; the ticket moves it out of .github/ (git sees a rename), and adds an odd name inside.

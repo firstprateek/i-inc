@@ -197,14 +197,7 @@ describe("hostile input costs time linear in its length, of every class", () => 
     userinfoAts: rep("https://a@b@c@d@"),
     shortSchemes: rep("x://"),
     longAuthorities: rep(`x://${"y".repeat(398)}`),
-    pastTheOldLimit: rep(`x://${"y".repeat(401)}/`),
-    oneLongAuthority: `x://${"y".repeat(N)}`,
-    cutPasswords: rep("a://b:c/"),
-    cutPasswordsAndAnAt: `${rep("a://b:c/")}@`,
-    cutPasswordsAfterAnAt: `@ ${rep('"a://b:c/" ')}`,
-    oneLongQuery: `?token=${"a".repeat(N)}`,
     pwdQueries: rep("?pwd=&pass=&"),
-    gluedPrefixes: rep("x_ghp_github_pat_sk-ant-AIzaxoxb-1AKIAnpm_whsec_sk_live_"),
   };
   for (const [name, text] of Object.entries(classes)) {
     it(`redacts 64 KB of ${name} in time linear in its length`, { timeout: LIMIT_MS }, () => {

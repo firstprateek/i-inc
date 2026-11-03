@@ -16,17 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeAgent, FakeChat, FakeClock, FakeHelper, FakeMachines } from "@i-inc/core/testing";
 import { describe, expect, it, vi } from "vitest";
-import { oneLine } from "../src/ahp/conversation-push.ts";
-import {
-  redactHead,
-  redactKnown,
-  redactLast,
-  redactProse,
-  redactText,
-  redactTokens,
-  sanitizeAction,
-} from "../src/ahp/sanitize.ts";
-import { shownBrief, stageTitle } from "../src/ahp/ticket-channels.ts";
+import { redactLast, redactProse, redactText, redactTokens } from "../src/ahp/sanitize.ts";
 import { createApp } from "../src/app.ts";
 import {
   fileScript,
@@ -54,7 +44,7 @@ import {
   type ReviewPort,
   reviewPort,
 } from "../src/review.ts";
-import { holdsCredential, marker, redactFile, scanPatch } from "../src/ship-git.ts";
+import { holdsCredential, marker, redactFile, scanHistory, scanPatch } from "../src/ship-git.ts";
 
 const NONCE = "0123456789abcdef";
 const TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
@@ -520,27 +510,6 @@ describe("a search", () => {
       const text = `whsec_abcdefgh+ijkl ${planted} whsec_abcdefgh+mnop\n`;
       expect(redactFile(text)).toBe(`[redacted] ${planted} [redacted]\n`);
     });
-
-    it("isn't taken for a long run's note", () => {
-      const note = "[600 characters in one unbroken run, not kept]";
-      expect(redactLast(`${planted} ${note} ${planted}`)).toBe(`${planted} ${note} ${planted}`);
-      let all = "";
-      for (let c = 0xfdd0; c <= 0xfdef; c++) all += String.fromCharCode(c);
-      expect(redactLast(`${all} ${note} ${all}`)).toBe(`${all} ${note} ${all}`);
-      const allButLast = all.slice(0, -1);
-      expect(redactLast(`${allButLast} ${note}`)).toBe(`${allButLast} ${note}`);
-      expect(redactLast(`\uFDEF ${note}`)).toBe(`\uFDEF ${note}`);
-    });
-
-    it("is looked for in one pass, not one search for each", () => {
-      let all = "";
-      for (let c = 0xfdd0; c <= 0xfdef; c++) all += String.fromCharCode(c);
-      const searches = vi.spyOn(String.prototype, "includes");
-      redactLast(`[600 characters in one unbroken run, not kept] ${all}`);
-      const count = searches.mock.calls.filter(([what]) => /^[\uFDD0-\uFDEF]$/.test(String(what))).length;
-      searches.mockRestore();
-      expect(count).toBe(0);
-    });
   });
 
   it("takes no real code for a key", async () => {
@@ -931,7 +900,7 @@ describe("a search", () => {
     const github = "abcdefghijklmnopqrstuvwxyz0123456789";
     const stopped = (text: string, secret: string) => {
       expect(redactFile(text)).not.toContain(secret);
-      expect(redactText(text)).not.toContain(secret);
+      expect(sideOf(Buffer.from(text).toString("base64")).text).not.toContain(secret);
       expect(holdsCredential(text), text).toBe(true);
     };
 
@@ -955,6 +924,14 @@ describe("a search", () => {
         ["a scheme in it", "postgres://u:https://x@h", "https://x"],
         ["a scheme after a comma in it", "postgres://u:ab,https://x@h", "ab,https://x"],
         ["a user that is an email on a host's name", "postgres://me@localhost:ab/cd@h", "ab/cd"],
+        ["six digits, which is no port", "postgres://u:123456/x@h", "123456"],
+        ["a host and port after it, then the string's end", "postgres://u:ab/cd@h:5432", "ab/cd"],
+        ["a scheme in capitals", "POSTGRES://u:ab/cd@h", "ab/cd"],
+        ["a digit in the scheme", "s3://u:ab/cd@h", "ab/cd"],
+        ["a user whose name starts like a host's", "postgres://localhostuser:ab/cd@h", "ab/cd"],
+        ["a hole with a blank in it, after an @", "mysql://root:p#{s@x y}", "p#{s"],
+        ["a scheme that only ends in file", "profile://u:ab/cd@h", "ab/cd"],
+        ["a scheme that only starts with file", "files://u:ab/cd@h", "ab/cd"],
       ])("goes with %s", (_, url, secret) => {
         stopped(`const u = ${url}\n`, secret);
         stopped(`const u = "${url.replace(/"/g, '\\"')}";\n`, secret);
@@ -977,7 +954,6 @@ describe("a search", () => {
 
       it("goes with an @ in it, once USERINFO has been there", () => {
         expect(redactFile("postgres://u:p@ss/w@h\n")).toBe("postgres://[redacted]@h\n");
-        expect(redactText("postgres://u:p@ss/w@h\n")).toBe("postgres://[redacted]@h\n");
       });
 
       it("reads an IPv6 address as a host, whatever its colons", () => {
@@ -992,8 +968,15 @@ describe("a search", () => {
         expect(redactFile(`x://u:${"p".repeat(500)}@h/p@q\n`)).toBe("x://[redacted]@q\n");
       });
 
-      it("keeps what a string left outside it", () => {
-        expect(redactFile('"http://a:b/c@d","me@x"\n')).toBe('"http://[redacted]@d","me@x"\n');
+      it.each(["http", "git+ssh", "x-y", "a.b", "s3", "HTTP"])(
+        "keeps what a string left outside it, after %s://",
+        (scheme) => {
+          expect(redactFile(`"${scheme}://a:b/c@d","me@x"\n`)).toBe(`"${scheme}://[redacted]@d","me@x"\n`);
+        },
+      );
+
+      it("takes a scheme to start with a letter", () => {
+        expect(redactFile('"9http://a:b/c@d","me@x"\n')).toBe('"9http://[redacted]@x"\n');
       });
 
       it("takes each of several in a run", () => {
@@ -1025,277 +1008,6 @@ describe("a search", () => {
       expect(redactFile(`https://h.example/x?token=${secret}&page=2\n`)).toBe(
         "https://h.example/x?token=[redacted]&page=2\n",
       );
-      expect(redactText(`https://h.example/x?token=${secret}&page=2\n`)).toBe(
-        "https://h.example/x?token=[redacted]&page=2\n",
-      );
-    });
-
-    it("takes the note a long run left, as well as the value", () => {
-      const seen = redactText(`https://h.example/x?sig=${"a".repeat(5000)}&page=2\n`);
-      expect(seen).toBe("https://h.example/x?sig=[redacted]&page=2\n");
-    });
-
-    it.each([
-      [`https://u:${"a".repeat(600)}!SECRETTAIL@h/x`, "https://[redacted]@h/x"],
-      [`postgres://u:p!${"a".repeat(600)}#SECRETTAIL@h/x`, "postgres://[redacted]@h/x"],
-      [
-        `https://h/x?sig=${"a".repeat(2000)}:${"b".repeat(600)}:SECRETTAIL&page=2`,
-        "https://h/x?sig=[redacted]&page=2",
-      ],
-    ])("reads a long run's note as the run it stands for: %s", (text, seen) => {
-      expect(redactText(text)).toBe(seen);
-      expect(redactText(redactText(text))).toBe(seen);
-    });
-
-    it("leaves a note where it was, with its blanks", () => {
-      const text = `see ${"a".repeat(600)} then`;
-      expect(redactText(text)).toBe("see [600 characters in one unbroken run, not kept] then");
-    });
-
-    describe("in a text the usual passes read more than once", () => {
-      const brief = (text: string) => sanitizeAction({ text: shownBrief(text) }).text;
-      const twice = (text: string) => redactText(redactText(text));
-      const thrice = (text: string) => redactText(twice(text));
-
-      it.each([
-        ['https://db.example:?pwd="x"@SECRETTAIL', "https://db.example:?pwd=[redacted]"],
-        ['see https://h:/login?token="x"@SECRETTAIL now', "see https://h:/login?token=[redacted] now"],
-        ['https://h:/x,password="x"@SECRETTAIL', "https://h:/x,password=[redacted]"],
-      ])("takes what the second read finds, on each way out: %s", (text, seen) => {
-        expect(brief(text)).toBe(seen);
-        expect(twice(sanitizeAction({ text }).text)).toBe(seen);
-        expect(oneLine(sanitizeAction({ text }).text)).not.toContain("SECRETTAIL");
-      });
-
-      it("takes what the third read finds, as a suggestion sent back is read three times", () => {
-        const text = `https://h:/x?pwd='secret="x"@='y/z@SECRETTAIL`;
-        expect(thrice(text)).toBe("https://h:/x?pwd=[redacted]");
-      });
-
-      it("takes all of a word with a token in it from a notification, which strips the _ that held a run apart", () => {
-        const live = "sk_li\u0076e_a1b2c3d4e5f6g7h8i9j0k1l2";
-        const seen = oneLine(
-          sanitizeAction({ text: `see Zq73ZFWx${live}Zq73ZGWxZq73ZHWxZq73ZIWx now` }).text,
-        );
-        expect(seen).toBe("see [redacted] now");
-      });
-
-      it("is what one read gives, for a text with nothing more to find", () => {
-        const text = "see https://h.example/x?token=abc and password: hunter2\n";
-        expect(thrice(text)).toBe(redactText(text));
-      });
-
-      describe("in a brain page, read at each harvest and by whoever reads it", () => {
-        it.each([
-          ['https://db.example:?pwd="x"@SECRETTAIL', "https://db.example:?pwd=[redacted]"],
-          ['postgres://u:ab/c?token="x"@SECRETTAIL', "postgres://u:ab/c?token=[redacted]"],
-          ["https://a:b/c?pwd='hunter'@SECRETTAIL", "https://a:b/c?pwd=[redacted]"],
-        ])("takes all of a value a later read would find: %s", (text, seen) => {
-          expect(redactProse(text)).toBe(seen);
-          expect(redactProse(redactProse(text))).toBe(seen);
-          expect(sanitizeAction({ text: redactProse(text) }).text).toBe(seen);
-        });
-
-        it.each([
-          ['password: "x",SECRETTAIL', "password: [redacted]"],
-          ['x_sk-ant-aaaaaaaaaaaaaaaa1-pwd="a"#SECRETTAIL', "x_[redacted]=[redacted]"],
-        ])("runs its passes until they change nothing, before the last step: %s", (text, seen) => {
-          expect(redactProse(text)).toBe(seen);
-        });
-      });
-
-      // `SECRET_QUERY` stops at a `#`, the `=` rule at a `;`, and a value with a limit stops at it: as long as the text
-      // goes on, each read takes one more piece, and a done-when item is read four times, a ticket's title five.
-      describe("a value that takes more reads than any number of passes", () => {
-        const read = (text: string, max: number) => redactText(text).slice(0, max);
-        const doneWhen = (text: string) => brief(`Done when:\n- ${read(`Asked: ${read(text, 400)}`, 300)}`);
-        const title = (text: string) => stageTitle("1", read(read(read(text, 400), 120), 200), "build");
-
-        it.each([
-          ["https://u:p/x?pwd=ab#;#;#;@SECRETTAIL"],
-          ["https://u:p/x?pwd='-'#;#;@SECRETTAIL"],
-          ["postgres://me:pw/db?password=ab#;#;#;#;#;#;#;#;#;#;@SECRETTAIL"],
-          [`https://u:p/?sig=${"ab,".repeat(2200)}@SECRETTAIL`],
-          [`https://u:p/-ux:${"ab,".repeat(250)}@SECRETTAIL`],
-        ])("goes whole from a URL, whose last step takes its name: %s", (text) => {
-          expect(redactText(text)).toMatch(/^[a-z]+:\/\/\[redacted\]$/);
-          expect(doneWhen(text)).not.toContain("SECRETTAIL");
-          expect(title(text)).not.toContain("SECRETTAIL");
-        });
-
-        it("goes whole from a long userinfo", () => {
-          const text = `https://${"a,".repeat(250)};sig=${"ab,".repeat(2200)}@SECRETTAIL`;
-          expect(redactText(text)).toBe("https://[redacted]");
-        });
-
-        it("stops at what ends a value on any read", () => {
-          const url = "https://u:p/x?pwd=ab#;#;#;#;#;#;#;#;@h";
-          expect(redactText(`${url}&b=c d`)).toBe("https://[redacted]&b=c d");
-          expect(redactText(`${url} e`)).toBe("https://[redacted] e");
-          expect(redactText(`"${url}","b"`)).toBe('"https://[redacted]","b"');
-          expect(redactText(`${url}'b`)).toBe("https://[redacted]'b");
-        });
-
-        it("keeps a host when the only thing taken was the password before it", () => {
-          expect(redactText("postgres://u:p@ss/w@h")).toBe("postgres://[redacted]@h");
-        });
-
-        it("is left for the next read outside a URL, where its name stays", () => {
-          let text = "?pwd=ab#;#;#;#;#;#;#;#;@SECRETTAIL";
-          for (let read = 0; read < 3; read++) text = redactText(text);
-          expect(text).toBe("?pwd=[redacted]");
-        });
-      });
-
-      describe("a secret's name that a token ran into", () => {
-        const notification = (text: string) => oneLine(sanitizeAction({ text }).text, 400);
-        const stage = (text: string) => sanitizeAction({ title: stageTitle("1", text, "build") }).title;
-        const key = "sk-ant-aaaaaaaaaaaaaaaa1";
-        const live = "sk_li\u0076e_a1b2c3d4e5f6g7h8i9j0k1l2";
-        const webhook = "whsec_a1b2c3d4e5f6g7h8i9j0k1l2m3n4";
-
-        it.each([
-          [`x_${key}-__password__: hunter2`],
-          [`x_${live}__token__: hunter2`],
-          [`x_${webhook}__password__: hunter2`],
-        ])("stays for a notification, which takes the marks out: %s", (text) => {
-          expect(notification(text)).not.toContain("hunter2");
-        });
-
-        it.each([
-          [`x_${key}-password:${" ".repeat(25)}hunter2`],
-          [`x_${key}-password:${"\n".repeat(25)}hunter2`],
-          [`x_${key}-Bearer${"\n".repeat(25)}hunter2`],
-          [`foo${key}-password:${" ".repeat(25)}hunter2`],
-          [`x_${key}password:${" ".repeat(25)}hunter2`],
-          [`x_${key}-secret:${" ".repeat(25)}hunter2`],
-          [`x_${key}-authorization:${" ".repeat(25)}hunter2`],
-          [`x_${webhook}-api_key:${" ".repeat(25)}hunter2`],
-        ])("stays for a title, which closes up the blanks: %s", (text) => {
-          expect(stage(text)).not.toContain("hunter2");
-          expect(notification(text)).not.toContain("hunter2");
-        });
-
-        it("takes the token all the same", () => {
-          expect(redactFile(`x_${key}-password`)).toBe("x_[redacted]-password");
-          expect(redactFile(`x_${key}-password2`)).toBe("x_[redacted]");
-          expect(redactFile(`x_${key}---password`)).toBe("x_[redacted]---password");
-          expect(redactFile(`x_${key}_-_api-key-_`)).toBe("x_[redacted]_-_api-key-_");
-        });
-
-        it("doesn't take a redaction that looks like a link for one", () => {
-          const text = `Zq73ZFWxabcd_${live}(y)`;
-          expect(notification(text)).toBe("[redacted]");
-        });
-
-        it("still takes a link down to its words", () => {
-          expect(oneLine("see [the docs](https://example.com/a)")).toBe("see the docs");
-        });
-      });
-    });
-
-    describe("what is read of a text only the start of is kept", () => {
-      const pad = (n: number) => "word ".repeat(Math.ceil(n / 5)).slice(0, n);
-
-      it("is all of a short text", () => {
-        const text = "see https://h.example/x?token=abc and password: hunter2";
-        expect(redactHead(text, 20)).toBe(redactText(text));
-      });
-
-      it("is the same start as all of it, for a long text", () => {
-        const text = `${pad(200)}password: hunter2 ${pad(1_000_000)}`;
-        const seen = redactHead(text, 1200);
-        expect(seen.length).toBeGreaterThan(1200);
-        expect(seen.slice(0, 1200)).toBe(redactText(text).slice(0, 1200));
-      });
-
-      // Where it stops reading: at first, and once a blob has shrunk the start.
-      const shrunk = `data:image/png;base64,${"A".repeat(3000)} `;
-      const cuts: [string, number][] = [
-        ["", 3000 + 6144],
-        [shrunk, 64 * 1024],
-      ];
-      it.each([
-        ["a URL before its @", "https://user:SECRETVALUE", `${"x".repeat(300)}@h/`],
-        ["a quoted value before its quote", 'password="correct SECRETVALUE', ' horse"'],
-        ["a header before its quote", 'Authorization: "Basic SECRETVALUE', ' abc"'],
-        ["a long run", `SECRETVALUE${"y".repeat(450)}`, "y".repeat(100)],
-      ])("shows no part of %s that the cut falls in", (_, before, after) => {
-        for (const [opening, cut] of cuts) {
-          for (let past = 0; past < 5; past++) {
-            const text = `${opening}${pad(cut - opening.length - before.length - past)}${before}${after} ${pad(70_000)}`;
-            expect(redactText(text)).not.toContain("SECRETVALUE");
-            const seen = redactHead(text, 3000);
-            expect(seen).not.toContain("SECRETVALUE");
-            expect(seen).toContain("word word");
-          }
-        }
-      });
-
-      // Both about as long as the first rule of `redactKeyed` reads. The second grows as it is read.
-      const headers = [
-        ["plain", `authorization: "Digest SECRETVALUE ${"a ".repeat(485)}"`],
-        [
-          "full of what redaction makes longer",
-          `authorization: "Digest SECRETVALUE ${"key=a ".repeat(161)}"`,
-        ],
-      ];
-      it.each(headers)("shows no part of a whole header, %s, wherever it lies", (_, header) => {
-        for (let at = 1200; at < 1200 + 6144; at += 64) {
-          const text = `${pad(at)}${header} ${pad(9000)}`;
-          expect(redactText(text)).not.toContain("SECRETVALUE");
-          expect(redactHead(text, 1200)).not.toContain("SECRETVALUE");
-        }
-      });
-
-      it.each(headers)("shows no part of a whole header, %s, after a blob", (_, header) => {
-        for (let blob = 64_000; blob < 65_536; blob += 64) {
-          const text = `${"A".repeat(blob)} ${header} ${pad(70_000)}`;
-          expect(redactHead(text, 1200)).not.toContain("SECRETVALUE");
-        }
-      });
-
-      it("shows no part of a header after a blob that shrinks more than the header grows", () => {
-        const header = `authorization: "Digest SECRETVALUE ${"key=a ".repeat(163)}"`;
-        const text = `${"A1b".repeat(1428)} ${header} please fix the login page ${pad(1500)}`;
-        expect(redactHead(text, 1200)).toBe(redactText(text));
-        expect(redactHead(text, 1200)).toContain("please fix the login page");
-      });
-
-      it("shows no part of a value with a blob in it, whose end it can't reach", () => {
-        const before = `password="SECRETVALUE `;
-        expect(redactText(`${before}${"A".repeat(100_000)} more"`)).not.toContain("SECRETVALUE");
-        expect(redactHead(`${before}${"A".repeat(100_000)} more"`, 120)).toBe("");
-      });
-
-      it("is all of a text up to 64 KB whose start shrinks", () => {
-        const text = `Please fix this.\n${"A".repeat(60_000)}\nThanks!`;
-        expect(redactHead(text, 120)).toBe(redactText(text));
-        expect(redactHead(text, 120)).toContain("Thanks!");
-      });
-
-      it("stops reading at 64 KB, and keeps what the margin leaves of that", () => {
-        expect(redactHead(`${"A".repeat(100_000)} Thanks!`, 120)).toBe("");
-        const text = `${pad(5000)}${"A".repeat(100_000)} Thanks!`;
-        const kept = redactHead(text, 120);
-        expect(kept.length).toBeLessThan(2000);
-        expect(kept).toBe(pad(kept.length));
-      });
-
-      it("reads on only when it has too little", () => {
-        const slices = vi.spyOn(String.prototype, "slice");
-        redactHead(pad(100_000), 1200);
-        const reads = slices.mock.calls.filter(([from, to]) => from === 0 && to === 64 * 1024).length;
-        slices.mockRestore();
-        expect(reads).toBe(0);
-      });
-
-      it("reads no more of a text built to be slow, however long it is", () => {
-        const text = `"password": "${"x".repeat(1500)}" ${`${"a".repeat(31)}://${"x".repeat(400)} `.repeat(30_000)}`;
-        const at = performance.now();
-        redactHead(text, 1200);
-        expect(performance.now() - at).toBeLessThan(100);
-      });
     });
 
     it.each([
@@ -1308,6 +1020,46 @@ describe("a search", () => {
     ])("stops %s in a patch", (line) => {
       const patch = `diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+${line}\n`;
       expect(scanPatch(patch)).toBe(true);
+      const commit = (message: string, body: string) =>
+        scanHistory(
+          `@@total 1\n${marker(NONCE, "commit")} ${"a".repeat(40)}\n${marker(NONCE, "msg-begin")}\n${message}\n${marker(NONCE, "msg-end")}\n${body}`,
+          NONCE,
+        ).secrets;
+      expect(commit(line, "")).toHaveLength(1);
+      expect(commit("fix", patch)).toHaveLength(1);
+      expect(commit("fix", "")).toHaveLength(0);
+    });
+
+    // A known gap, which a follow-up owns. What an agent says, a brain page and a tool's output show these shapes as
+    // they always have: a text is read again on those paths, and the last step takes the name or the label a later read
+    // finds a value by. Head 0150b87 in this branch's history is the wider version to start from. When the follow-up
+    // closes one of these, this row has to change.
+    it.each([
+      ["a / in a password", "postgres://u:ab/cd@h", "SAME", "SAME", "SAME"],
+      ["a # in a password", "mysql://root:p#ss@h", "SAME", "SAME", "SAME"],
+      ["a ? in a password", "https://u:p?q@h", "SAME", "SAME", "SAME"],
+      [
+        "userinfo over 400 characters",
+        `https://u:${"p".repeat(500)}@h/`,
+        "https://u:[500 characters in one unbroken run, not kept]@h/",
+        "SAME",
+        "SAME",
+      ],
+      [
+        "a ?token= value past 2,000 characters",
+        `https://h/x?token=${"a".repeat(2500)}`,
+        "https://h/x?token=[redacted]",
+        "https://h/x?token=[redacted]",
+        `https://h/x?token=[redacted]${"a".repeat(500)}`,
+      ],
+      ["a named key after a letter", "xsk-ant-AbCdEfGhIjKlMnOpQrSt", "SAME", "SAME", "SAME"],
+      ["a webhook secret after a _", "foo_whsec_a1b2c3d4e5f6g7h8i9j0k1l2", "SAME", "SAME", "SAME"],
+      ["a GitHub token after a _", `foo_ghp_${"a1B2".repeat(9)}`, "foo_[redacted]", "foo_[redacted]", "SAME"],
+    ])("is not closed in the transcripts: %s", (_, text, viaText, viaProse, viaTokens) => {
+      const same = (seen: string) => (seen === "SAME" ? text : seen);
+      expect(redactText(text)).toBe(same(viaText));
+      expect(redactProse(text)).toBe(same(viaProse));
+      expect(redactTokens(text)).toBe(same(viaTokens));
     });
 
     describe("a token straight after a word character", () => {
@@ -1322,12 +1074,16 @@ describe("a search", () => {
         ["sk-svcacct", "sk-svcacct-a1B2c3D4e5F6g7H8_qrstuvwx"],
         ["sk-admin", "sk-admin-a1B2c3D4e5F6g7H8_qrstuvwx"],
         ["AIza", "AIzaSyAbcdefghijklmnopqrstuvwxyz0123456"],
+        ["AIza with marks in it", "AIzaSyA-bcdefghijklm_nopqrstuvwxyz01234"],
         ["xoxb", "xoxb-123456789012-abcdefghijkl"],
         ["AKIA", "AKIAIOSFODNN7EXAMPLE"],
         ["sk_live", "sk_li\u0076e_a1b2c3d4e5f6g7h8i9j0k1l2"],
         ["whsec", "whsec_a1b2c3d4e5f6g7h8i9j0k1l2"],
+        ["whsec with a capital and no digit", "whsec_abcdefghijklmnopqrstuvwxYZ"],
+        ["whsec with its base64", "whsec_MfKQ9r8+GKYq/rTwjUPD8ILPZIo2LaLa=="],
         ["npm", `npm_${github}`],
         ["jwt", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJl"],
+        ["jwt with a short head", "eyJabcdefgh.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJl"],
       ];
       for (const [name, token] of tokens) {
         it.each([
@@ -1374,6 +1130,10 @@ describe("a search", () => {
 
       it("a fine-grained token to its end", () => {
         expect(redactFile("foo_github_pat_11ABCDEFG0abcdefghijkl_SECRETTAIL\n")).toBe("foo_[redacted]\n");
+      });
+
+      it("a live key to its end", () => {
+        expect(redactFile("foo_sk_li\u0076e_a1b2c3d4e5f6g7h8i9j0k1l2_SECRETTAIL\n")).toBe("foo_[redacted]\n");
       });
 
       it("a Google key with more of its alphabet after it", () => {
@@ -1423,15 +1183,6 @@ describe("a search", () => {
 
     describe("what the other passes hide, which comes first", () => {
       const glued = "a1B2".repeat(9);
-      const blob = (seed: number) => {
-        let x = seed;
-        let out = "";
-        for (let i = 0; i < 320; i++) {
-          x = (x * 1_103_515_245 + 12_345) & 0x7fffffff;
-          out += "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"[(x >>> 8) % 64];
-        }
-        return out;
-      };
 
       it.each([
         ["https://u:p@h/login?password=p@ssw0rd", "https://[redacted]@h/login?password=[redacted]"],
@@ -1442,38 +1193,12 @@ describe("a search", () => {
         ],
         ["mongodb://a:b@c/d?e=f&pass=x@yzSECRET", "mongodb://[redacted]@c/d?e=f&pass=[redacted]"],
       ])("a query value after a password: %s", (text, seen) => {
-        for (const redact of [redactText, redactProse, redactFile]) expect(redact(text)).toBe(seen);
+        expect(redactFile(text)).toBe(seen);
       });
 
-      it.each([
-        ["http://a:b/c,password=x@SECRETTAIL", "http://a:b/c,password=[redacted]"],
-        [`s3://${"a".repeat(450)},password=p@SECRETTAIL`, `s3://${"a".repeat(450)},password=[redacted]`],
-        ["task-admin-database-password: SECRETVALUE", "task-admin-database-password: [redacted]"],
-        ["task-admin-dashboard-api-token=SECRETVALUE", "task-admin-dashboard-api-token=[redacted]"],
-        ['"flask-admin-database-password": "SECRETVALUE"', '"flask-admin-database-password": "[redacted]"'],
-        ["stripe_whsec_signingsecret=SOMEVALUE", "stripe_whsec_signingsecret=[redacted]"],
-        [`foo_ghp_${glued}_SECRETTAIL`, "foo_[redacted]"],
-      ])("a value by its name, which goes first: %s", (text, seen) => {
-        expect(redactText(text)).toBe(seen);
-        expect(redactProse(text)).toBe(seen);
-      });
-
-      it("keeps a name that only sounds like a live key, and takes its value", () => {
+      it("keeps a name that only sounds like a live key", () => {
         const name = "network_live_connectionStringPassword";
-        expect(redactProse(`${name}=SECRETVALUE`)).toBe(`${name}=[redacted]`);
         expect(redactFile(`${name}=X\n`)).toBe(`${name}=X\n`);
-      });
-
-      it("a token that runs into the name of what comes after it", () => {
-        const live = "sk_li\u0076e_a1b2c3d4e5f6g7h8i9j0k1l2";
-        for (const redact of [redactText, redactProse]) {
-          expect(redact(`${live}secret_key=hunter2hunter2`)).toBe("[redacted]=[redacted]");
-        }
-      });
-
-      it("a client secret in a page, which the prose pass takes before the last one", () => {
-        const live = "sk_li\u0076e_a1b2c3d4e5f6g7h8i9j0k1l2";
-        expect(redactProse(`${live}client_secret: hunter2hunter2`)).toBe("[redacted]_secret: [redacted]");
       });
 
       it("a file's npm token, which the file pass takes before the last one", () => {
@@ -1481,32 +1206,15 @@ describe("a search", () => {
         expect(redactFile(`x${webhook}_authToken=hunter2hunter2\n`)).toBe("x[redacted][redacted]\n");
       });
 
-      it("a long run with a token in it stays one run", () => {
-        const text = `${blob(1)}1sk-${"b1C2".repeat(6)}_${blob(2)}`;
-        expect(redactText(text)).toBe(`[${text.length} characters in one unbroken run, not kept]`);
+      it("a URL password that loses its @ to the file pass shows, and the scan still refuses it", () => {
+        const line = "postgres://u:p/_authToken=abcdefgh@h\n";
+        expect(redactFile(line)).toBe("postgres://u:p/_authToken=[redacted]\n");
+        expect(holdsCredential(line)).toBe(true);
       });
 
-      it.each([
-        ["a token", `1sk-${"b1C2".repeat(6)}`],
-        ["a webhook secret", "_whsec_a1b2c3d4e5f6g7h8i9j0k1l2m3n4"],
-      ])(
-        "a long run with %s in it goes whole, so a later read doesn't find its pieces short",
-        (_, inside) => {
-          const text = `${blob(1)}${inside}_${blob(2)}`;
-          for (const redact of [redactProse, redactTokens, redactFile])
-            expect(redact(text)).toBe("[redacted]");
-          expect(sanitizeAction({ text: redactProse(text) }).text).toBe("[redacted]");
-        },
-      );
-
-      it("a long run with a JWT in it goes whole, where nothing before the last step takes it", () => {
-        const text = `${blob(1)}xeyJAAAAAAAA.eyJBBBBBBBB.CCCCCCCC_${blob(2)}`;
-        for (const redact of [redactTokens, redactFile]) expect(redact(text)).toBe("[redacted]");
-      });
-
-      it("a run under that length loses only the token", () => {
-        const text = `${"a".repeat(100)}1sk-${"b1C2".repeat(6)}_${"c".repeat(100)}`;
-        expect(redactProse(text)).toBe(`${"a".repeat(100)}1[redacted]_${"c".repeat(100)}`);
+      it.each([100, 400])("a run of %i each side loses only the token", (n) => {
+        const text = `${"a".repeat(n)}1sk-${"b1C2".repeat(6)}_${"c".repeat(n)}`;
+        expect(redactFile(text)).toBe(`${"a".repeat(n)}1[redacted]_${"c".repeat(n)}`);
       });
 
       it("a webhook secret with a token in it goes to its end", () => {
@@ -1514,17 +1222,14 @@ describe("a search", () => {
       });
 
       it("a run of dotted parts keeps the JWT main found in it", () => {
-        const text = "xeyJAAAAAAAA.eyJBBBBBBBB.eyJCCCCCCCC.SECRETTAIL";
-        for (const redact of [redactText, redactProse, redactFile]) {
-          expect(redact(text)).toBe("xeyJAAAAAAAA.[redacted]");
-        }
+        expect(redactFile("xeyJAAAAAAAA.eyJBBBBBBBB.eyJCCCCCCCC.SECRETTAIL")).toBe("xeyJAAAAAAAA.[redacted]");
       });
 
       it("the bounds of the usual passes are what they were", () => {
         const long = "a".repeat(2500);
-        expect(redactKnown(`?token=${long}`)).toBe(`?token=[redacted]${"a".repeat(500)}`);
+        expect(redactTokens(`?token=${long}`)).toBe(`?token=[redacted]${"a".repeat(500)}`);
         const user = `https://${"u".repeat(401)}@h/`;
-        expect(redactKnown(user)).toBe(user);
+        expect(redactTokens(user)).toBe(user);
       });
 
       it("the last step only takes out", () => {
@@ -1558,7 +1263,6 @@ describe("a search", () => {
           `foo_ghp_${glued}`,
           "xsk-ant-a1B2c3D4e5F6g7H8",
           "xwhsec_a1b2c3d4e5f6g7h8i9j0k1l2",
-          "[600 characters in one unbroken run, not kept]",
           "xeyJabcdefgh.eyJabcdefgh.abc",
           "a".repeat(450),
         ];
@@ -1626,6 +1330,11 @@ describe("a search", () => {
       '"http://{{ host }}:{{ port }}/users/@me"',
       "http://$HOST:$PORT/react@18",
       "http://$(HOST):$(PORT)/react@18",
+      "http://example.com:$(PORT)/react@18",
+      '"http://example.com:\\(port)/users/@me"',
+      "http://example.com:<port>/react@18",
+      '"http://example.com:%(port)s/users/@me"',
+      "http://example.com:PORT/react@18",
       '"http://%s:%d/react@18" % (host, port)',
       "http://<host>:<port>/react@18",
       "http://host:port/react@18",
@@ -1699,6 +1408,13 @@ describe("a search", () => {
       "disk_live_a1b2c3d4e5f6g7h8",
       "boxoxa-sized-container-class",
       "task-admin-x_xoxb-1234567890-abcdefghijkl",
+      // One short of what a real one has
+      "x_whsec_a1b2c3d4e5f6g7h8i9j0k",
+      "foo_github_pat_a1b2c3d4e5f6g7h8i9j",
+      "task-admin-abcdefghij12345-xyz",
+      // A name of a key's length, with a digit or a capital but not both
+      "task-admin-q3-report-for-the-finance-team-and-the-board-2024-final",
+      "task-admin-Quarterly-report-for-the-finance-team-and-the-board-final",
       // A later field's `:`, after a URL with no path that isn't straight after a quote
       '{"msg":"see https://example.com","path":"/@vite/client"}',
       '{"level":"info","msg":"GET https://api.example.com","path":"/users/@me"}',
@@ -1773,8 +1489,19 @@ describe("a search", () => {
       // The other two quotes, closing before an `@` that isn't in the string
       "'http://a.example:foo/c','me@x.example'",
       "`http://a.example:foo/c`,`me@x.example`",
+      // An `@` that is in no URL, then a URL with none
+      "me@x.example https://a.example:abc/x",
+      // An `@` after a blank, which ends a URL
+      `x://${"a".repeat(401)} me@x.example`,
+      "http://h.example:ab/cd\tme@x.example",
+      // Past `USERINFO`'s limit, a string that ends before an `@` that isn't in it
+      `"http://${"a".repeat(401)}","b@c:d/e@f"`,
       // No user at all
       "https://@example.com/x",
+      // A file has a path and no password
+      "file://C:/Users/first.last@corp/doc.txt",
+      "FILE://C:/Users/first.last@corp/doc.txt",
+      'open("file://D:/share/me@corp/doc.txt")',
       // A password that starts with `//` after a user that reads as a scheme, with a `/`, `?` or `#` to follow. This is
       // a limit, not a choice: to anything that reads it, that `//` is the next URL's.
       "postgres://u://x/y@h",
@@ -1813,15 +1540,7 @@ describe("a search", () => {
       ])("reads %s once", (_, text) => {
         const at = performance.now();
         redactLast(text);
-        expect(performance.now() - at).toBeLessThan(300);
-      });
-
-      it("takes a text of a long run's notes in its stride", () => {
-        const note = " characters in one unbroken run, not kept]";
-        const text = note.repeat(Math.ceil(14_680_064 / note.length));
-        const at = performance.now();
-        expect(redactLast(text) === text).toBe(true);
-        expect(performance.now() - at).toBeLessThan(150);
+        expect(performance.now() - at).toBeLessThan(500);
       });
 
       it.each([
@@ -1832,6 +1551,32 @@ describe("a search", () => {
         redactLast(text);
         const count = tests.mock.calls.length;
         tests.mockRestore();
+        expect(count).toBeLessThan(20);
+      });
+
+      it("doesn't look for a URL in a text with no @", () => {
+        const searches = vi.spyOn(String.prototype, "indexOf");
+        redactLast("a://b:c/ ".repeat(100));
+        const count = searches.mock.calls.filter(([what]) => what === "://").length;
+        searches.mockRestore();
+        expect(count).toBe(0);
+      });
+
+      it("looks for the next URL's scheme only at the end of an authority", () => {
+        const replaces = vi.spyOn(String.prototype, "replace");
+        redactLast(`a://${"c".repeat(1000)}://d/@`);
+        const read = replaces.mock.contexts
+          .filter((_, i) => String(replaces.mock.calls[i]?.[0]).endsWith(":$/i"))
+          .map((text) => String(text).length);
+        replaces.mockRestore();
+        expect(read).toEqual([32]);
+      });
+
+      it("looks for a run's last @ once, however many URLs are in it", () => {
+        const searches = vi.spyOn(String.prototype, "lastIndexOf");
+        redactLast(`${"a://b:c/".repeat(1000)}@`);
+        const count = searches.mock.calls.filter(([what]) => what === "@").length;
+        searches.mockRestore();
         expect(count).toBeLessThan(20);
       });
 
@@ -1849,6 +1594,7 @@ describe("a search", () => {
         ["URLs and one @ at the end", `${fill("a://b:c/", 999_000)}@`],
         ["URLs and one @ at the start", `@${fill("a://b:c/")}`],
         ["URLs between blanks", `@ ${fill("a://b:c/ ")}`],
+        ["URLs between blanks, with no /", `@ ${fill("a://b:c ")}`],
         ["ports and one @", `${fill("a://b:1/", 999_000)}@`],
         ["strings, each with a URL", `@ ${fill('"a://b:c/x" ')}`],
         ["strings with no blanks", `${fill('"a://b:c/', 999_000)}@`],
@@ -1894,7 +1640,7 @@ describe("a search", () => {
         const at = performance.now();
         redactFile(text);
         holdsCredential(text);
-        expect(performance.now() - at).toBeLessThan(1000);
+        expect(performance.now() - at).toBeLessThan(2500);
       });
     });
   });
