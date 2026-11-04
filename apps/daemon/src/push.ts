@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { configDir, readOwnerOnly } from "./config.ts";
 import type { Registry } from "./registry.ts";
+import { outsideOf } from "./sinks.ts";
 
 export interface VapidKeys {
   /** 65-byte uncompressed P-256 EC public point encoded in base64url. */
@@ -207,7 +208,12 @@ export class WebPushSender implements PushService {
     this.registry.removePushSubscription(endpoint);
   }
 
-  async send(notification: NotificationPayload): Promise<void> {
+  /**
+   * Every push leaves through here, so its title and body go through the sink (`redactText`, then `redactLast`):
+   * a ticket's title, a main-red reason, a conversation's question. The url and tag are the daemon's own.
+   */
+  async send(payload: NotificationPayload): Promise<void> {
+    const notification = { ...payload, title: outsideOf(payload.title), body: outsideOf(payload.body) };
     const subs = this.registry.pushSubscriptions();
     const results = await Promise.allSettled(subs.map((sub) => this.sendToSubscription(sub, notification)));
     for (const r of results) {

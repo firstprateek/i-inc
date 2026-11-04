@@ -262,7 +262,8 @@ export interface ShipView {
   /** Only with `?preview=1` and no copy: why the working copy couldn't be read. */
   problem?: string;
   /** Only with `?preview=1`: what the confirm dialog starts with. */
-  suggestion?: { title: string; doneWhen: string[]; description: string };
+  /** `titleBy`: whose words the title is (the conversation's agent can name it); the sink drops it. */
+  suggestion?: { title: string; doneWhen: string[]; description: string; titleBy?: "owner" | "agent" };
 }
 
 /** One entry of the Brain changes feed (contract C19): a change an agent made to its brain copy, committed or refused. */

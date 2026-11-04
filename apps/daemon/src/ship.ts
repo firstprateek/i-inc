@@ -39,6 +39,7 @@ import {
   ShipRefusal,
   secretsSentence,
 } from "./ship-git.ts";
+import { conversationTitle } from "./sinks.ts";
 import type { SqliteEventStore } from "./store.ts";
 import type { Tickets } from "./tickets.ts";
 import type { ShipBrief, ShipMode, ShipView } from "./view-types.ts";
@@ -320,6 +321,9 @@ export class Shipping {
     const first = asked[0] ?? "";
     const fresh = conv.title && conv.title !== DEFAULT_TITLE ? conv.title : "";
     const title = clean(fresh || first || `Work from a conversation with ${employee.name}`, 120);
+    // Whose words the title is: the conversation's agent can name it, and then the owner's views give it the sink's
+    // pass (sinks.ts `peopleShip`). The first ask and the fallback are the owner's and the daemon's.
+    const titleBy: "owner" | "agent" = fresh && conv.titleBy !== "owner" ? "agent" : "owner";
     const changed = report?.files.length
       ? `Changed ${report.files.length} file${report.files.length === 1 ? "" : "s"} (+${report.files.reduce((n, f) => n + f.added, 0)} −${report.files.reduce((n, f) => n + f.removed, 0)}): ${report.files
           .slice(0, 8)
@@ -341,7 +345,7 @@ export class Shipping {
         : "Does what the conversation set out to do",
       "The project's checks pass",
     ];
-    return { title, doneWhen, description };
+    return { title, doneWhen, description, titleBy };
   }
 
   // ───────────────────────────── reading ─────────────────────────────
@@ -861,7 +865,8 @@ export class Shipping {
     try {
       if (this.d.backend.hold && !this.d.backend.hold(conv.ahpSession)) {
         throw new ShipError(
-          `${conv.title} is working in that folder right now. Stop its turn first, then try the ticket again.`,
+          // The owner's view of the title: an error goes back over REST like any other body (sinks.ts).
+          `${conversationTitle(conv)} is working in that folder right now. Stop its turn first, then try the ticket again.`,
           409,
           "busy",
         );

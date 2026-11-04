@@ -9,7 +9,7 @@ import { redactJwts, redactKeyed, redactSecrets } from "../sessions.ts";
 import type { Json } from "./wire.ts";
 
 /** Keys whose string values are free text from an agent or a tool. */
-const TEXT_KEYS = new Set([
+export const TEXT_KEYS: ReadonlySet<string> = new Set([
   "content",
   "text",
   "toolInput",
@@ -296,8 +296,9 @@ function redactLongUserinfo(t: string): string {
  * The shapes the usual patterns stop short of: a password in a URL that holds a `/`, `?` or `#`, userinfo or a secret
  * query value past their limits, and a token with a word character straight before it. For a file only, as the last step
  * of `redactFile` and of a held change's diff: a file is read once and nothing reads the result again. It only takes out: what it leaves, without its
- * `[redacted]`, was all there before. `redactText`, `redactProse` and `redactTokens` don't run it, so what an agent says
- * still shows these shapes; running it there takes a name or a label a later read of the text finds a value by.
+ * `[redacted]`, was all there before. `redactText`, `redactProse` and `redactTokens` don't run it: running it there takes
+ * a name or a label a later read of the text finds a value by. What an agent says gets it only where it leaves the
+ * daemon, and nothing reads it back (sinks.ts).
  */
 export function redactLast(text: string): string {
   const t = redactLongUserinfo(redactCutPasswords(text)).replace(LONG_SECRET_QUERY, "$1[redacted]");

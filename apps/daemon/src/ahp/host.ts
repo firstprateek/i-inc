@@ -29,6 +29,7 @@ import {
 } from "@microsoft/agent-host-protocol";
 import type { Db } from "../db.ts";
 import { sniffImage } from "../images.ts";
+import { blobText, type Wire, wire } from "../sinks.ts";
 import type { AgentBackend, ToolAnswer, TurnOutcome, TurnRun } from "./backend.ts";
 import { type Caps, defaultCaps, sanitizeAction } from "./sanitize.ts";
 import { AhpStore, defaultLimits, type Limits } from "./store.ts";
@@ -179,6 +180,13 @@ export interface HostHooks {
   onApplied?: (channel: string, action: StateAction) => void;
   /** Called after a session is disposed. */
   onSessionDisposed?: (session: string) => void;
+  /**
+   * A session's title was just set, by its agent (`emit`) or by anyone else (the owner's rename, the first line of
+   * the owner's first message). Called before the action is sent, so the WebSocket sink knows whose title it is.
+   */
+  onTitleSet?: (session: string, by: "agent" | "owner") => void;
+  /** Is this session's title, as it stands, the owner's own words? Absent: no, and the sink redacts it. */
+  ownerTitled?: (session: string) => boolean;
   /**
    * Why this chat can't take a turn now, said for the owner, or undefined when it can: its working copy
    * belongs to a ticket (T62b). A message sent meanwhile is refused with that sentence, and a queued one
@@ -632,6 +640,16 @@ export class AhpHost {
    * write fails. Returns the sequenced envelope.
    */
   apply(channel: string, action: StateAction, origin?: ActionEnvelope["origin"]): ActionEnvelope {
+    return this.applyAs(channel, action, origin, false);
+  }
+
+  /** `apply`, knowing whether the action came from the agent side (`emit`). */
+  private applyAs(
+    channel: string,
+    action: StateAction,
+    origin: ActionEnvelope["origin"] | undefined,
+    fromAgent: boolean,
+  ): ActionEnvelope {
     const ch = this.chans.get(channel);
     if (!ch) throw new RpcError(AhpErrorCodes.NotFound, `no channel ${channel}`);
     this.flushDeltas(channel);
@@ -673,6 +691,13 @@ export class AhpHost {
       setTimeout(() => this.pruneQuietly(), 0).unref?.();
     }
     ch.sinceSnapshot = snapshotDue ? 0 : ch.sinceSnapshot + 1;
+    if (ch.kind === "session" && action.type === ActionType.SessionTitleChanged) {
+      try {
+        this.hooks.onTitleSet?.(channel, fromAgent ? "agent" : "owner");
+      } catch (e) {
+        this.log(`ahp: onTitleSet failed: ${e instanceof Error ? e.message : e}`);
+      }
+    }
     const env: ActionEnvelope = { channel, action, serverSeq: seq, origin };
     this.broadcast(channel, env);
     try {
@@ -709,7 +734,7 @@ export class AhpHost {
       this.queueDelta(channel, action);
       return undefined;
     }
-    return this.apply(channel, sanitizeAction(action, this.caps));
+    return this.applyAs(channel, sanitizeAction(action, this.caps), undefined, true);
   }
 
   // ── streaming text: many small deltas become few actions ─────────────────────────────────────
@@ -768,17 +793,48 @@ export class AhpHost {
     this.apply(channel, sanitizeAction(action, this.caps));
   }
 
+  /**
+   * Every frame goes out through the sink (sinks.ts): `redactLast` on the text of what was stored, never on what
+   * is stored. A frame is made once, for the first subscriber, and shared; with none, nothing is made.
+   */
+  private readonly readOnlyUri = (uri: string): boolean => this.isReadOnly(uri);
+
+  /**
+   * Is `title`, found under `uri` (a session or one of its chats), the session's title as it stands, and that the
+   * owner's own words? Then the sink leaves it as typed (decision 1); an agent's title gets the pass.
+   */
+  private readonly ownerTitle = (uri: string, title: string): boolean => {
+    const ch = this.chans.get(uri);
+    const session =
+      ch?.kind === "session" ? uri : ch?.kind === "chat" ? this.chatSession.get(uri) : undefined;
+    if (!session || this.sessionState(session)?.title !== title) return false;
+    return this.hooks.ownerTitled?.(session) === true;
+  };
+
   private broadcast(channel: string, env: ActionEnvelope): void {
-    const text = JSON.stringify({ jsonrpc: "2.0", method: "action", params: env });
-    for (const conn of [...this.conns]) if (conn.subs.has(channel)) this.sendText(conn, text);
+    let text: Wire | undefined;
+    for (const conn of [...this.conns]) {
+      if (!conn.subs.has(channel)) continue;
+      text ??= wire({ jsonrpc: "2.0", method: "action", params: env }, this.readOnlyUri, this.ownerTitle);
+      this.sendText(conn, text);
+    }
   }
 
   private notify(channel: string, method: string, params: Json): void {
-    const text = JSON.stringify({ jsonrpc: "2.0", method, params: { channel, ...params } });
-    for (const conn of [...this.conns]) if (conn.subs.has(channel)) this.sendText(conn, text);
+    let text: Wire | undefined;
+    for (const conn of [...this.conns]) {
+      if (!conn.subs.has(channel)) continue;
+      text ??= wire(
+        { jsonrpc: "2.0", method, params: { channel, ...params } },
+        this.readOnlyUri,
+        this.ownerTitle,
+      );
+      this.sendText(conn, text);
+    }
   }
 
-  private sendText(conn: Conn, text: string): void {
+  /** Takes only a frame the sink made: a send path that skips it doesn't compile. */
+  private sendText(conn: Conn, text: Wire): void {
     if (conn.closed) return;
     try {
       // A client that cannot keep up is dropped, not buffered without end: it reconnects and replays.
@@ -793,7 +849,7 @@ export class AhpHost {
   }
 
   private send(conn: Conn, msg: Json): void {
-    this.sendText(conn, JSON.stringify({ jsonrpc: "2.0", ...msg }));
+    this.sendText(conn, wire({ jsonrpc: "2.0", ...msg }, this.readOnlyUri, this.ownerTitle));
   }
 
   // ───────────────────────────── summaries and roll-ups ─────────────────────────────
@@ -1329,9 +1385,17 @@ export class AhpHost {
     const hash = /^ahp-content:\/([0-9a-f]{32})$/.exec(uri)?.[1];
     const blob = hash ? this.store.getBlob(hash) : undefined;
     if (!blob) throw new RpcError(AhpErrorCodes.NotFound, `not found: ${uri}`);
-    const asText = p.encoding !== "base64" && /^(text\/|application\/json)/.test(blob.mime);
+    // Text (a diff side) leaves through the sink, as text or as base64 of the redacted text.
+    const isText = /^(text\/|application\/json)/.test(blob.mime);
+    const asText = p.encoding !== "base64" && isText;
+    const shown = isText ? blobText(new TextDecoder().decode(blob.data), blob.mime) : undefined;
     return {
-      data: asText ? new TextDecoder().decode(blob.data) : Buffer.from(blob.data).toString("base64"),
+      data:
+        shown === undefined
+          ? Buffer.from(blob.data).toString("base64")
+          : asText
+            ? shown
+            : Buffer.from(shown, "utf8").toString("base64"),
       encoding: asText ? "utf-8" : "base64",
       contentType: blob.mime,
     };

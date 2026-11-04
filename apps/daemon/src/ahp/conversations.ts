@@ -29,6 +29,11 @@ export interface Conversation {
   /** The branch the working copy is on (`conv/<id>`), null with no project. */
   branch: string | null;
   title: string;
+  /**
+   * Who set the title as it stands: the owner (at create, a rename, or the first line of the owner's first message)
+   * or the agent. Null for a row from before this was kept: the views then treat it as the agent's.
+   */
+  titleBy: "owner" | "agent" | null;
   /** The agent's permission mode now (null until the agent has said). */
   mode: string | null;
   engineId: Id;
@@ -80,6 +85,7 @@ type Row = {
   project: string | null;
   branch: string | null;
   title: string;
+  title_by: string | null;
   mode: string | null;
   engine_id: string;
   created_at: number;
@@ -94,6 +100,7 @@ const toConversation = (r: Row): Conversation => ({
   project: r.project,
   branch: r.branch,
   title: r.title,
+  titleBy: r.title_by === "owner" || r.title_by === "agent" ? r.title_by : null,
   mode: r.mode,
   engineId: r.engine_id,
   createdAt: r.created_at,
@@ -149,6 +156,8 @@ export class ConversationService {
     if (!have.includes("machine")) db.exec("ALTER TABLE conversations ADD COLUMN machine TEXT");
     // When a cleanup pass found a disposed conversation's copy gone: the tombstone goes some days later.
     if (!have.includes("copy_gone_at")) db.exec("ALTER TABLE conversations ADD COLUMN copy_gone_at INTEGER");
+    // Whose words the title is (r131), so the owner's own stays as typed in the owner's views.
+    if (!have.includes("title_by")) db.exec("ALTER TABLE conversations ADD COLUMN title_by TEXT");
     this.attach();
     this.reconcile();
   }
@@ -301,6 +310,14 @@ export class ConversationService {
     // the row stays, archived and marked disposed (hidden from the API), and the cleanup removes the
     // copy by the same rules as any archived conversation's.
     hooks.onSessionDisposed = (session) => this.tombstone(session, this.clock.now());
+    // Whose title it is, noted before the change is sent, so the WebSocket sink can tell.
+    hooks.onTitleSet = (session, by) =>
+      this.db.run("UPDATE conversations SET title_by = ? WHERE ahp_session = ?", by, session);
+    hooks.ownerTitled = (session) =>
+      this.db.all<{ title_by: string | null }>(
+        "SELECT title_by FROM conversations WHERE ahp_session = ?",
+        session,
+      )[0]?.title_by === "owner";
   }
 
   private onApplied(channel: string, action: StateAction): void {
@@ -351,6 +368,12 @@ export class ConversationService {
       "SELECT * FROM conversations WHERE ahp_chat = ? AND disposed_at IS NULL",
       chat,
     );
+    return r ? toConversation(r) : undefined;
+  }
+
+  /** A conversation by id, a disposed one (kept as a tombstone) included. */
+  byId(id: string): Conversation | undefined {
+    const [r] = this.db.all<Row>("SELECT * FROM conversations WHERE id = ?", id);
     return r ? toConversation(r) : undefined;
   }
 
@@ -435,8 +458,8 @@ export class ConversationService {
     const session = this.host.sessionState(made.session) as SessionState;
     const mode = typeof session.config?.values.mode === "string" ? session.config.values.mode : null;
     this.db.run(
-      `INSERT INTO conversations (id, employee_id, project, branch, title, mode, engine_id, created_at, archived_at, ahp_session, ahp_chat, machine)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+      `INSERT INTO conversations (id, employee_id, project, branch, title, title_by, mode, engine_id, created_at, archived_at, ahp_session, ahp_chat, machine)
+       VALUES (?, ?, ?, ?, ?, 'owner', ?, ?, ?, NULL, ?, ?, ?)`,
       id,
       employee.id,
       project,
