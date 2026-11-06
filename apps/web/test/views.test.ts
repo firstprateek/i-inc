@@ -1,6 +1,6 @@
 // The views against a fake API: what they render, and what the owner's taps send.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TicketView } from "../src/api.ts";
+import { refreshNow, type TicketView } from "../src/api.ts";
 import "../src/components/app.ts";
 import "../src/components/board.ts";
 import "../src/components/desk.ts";
@@ -574,6 +574,87 @@ describe("the office", () => {
     );
   });
 
+  it.each([null, undefined, 0])(
+    "distinguishes missing five-hour utilization from known zero (%s)",
+    async (value) => {
+      vi.stubGlobal("fetch", async () =>
+        Response.json({
+          employees: [],
+          accounts: [{ id: "claude", name: "Claude Pro" }],
+          rateLimits: {
+            claude: { fiveHourUtilization: value, sevenDayUtilization: 0.5, updatedAt: Date.now() },
+          },
+        }),
+      );
+      const root = await mount("inc-office", { show: "meters" });
+      expect(root.querySelector(".quota-val")?.textContent).toBe(value === 0 ? "0%" : "—");
+      expect(root.querySelector('[aria-label="5-hour utilization"]')?.getAttribute("aria-valuetext")).toBe(
+        value === 0 ? "OK: 0%" : "unknown",
+      );
+      expect(root.textContent).not.toContain("sessions");
+      expect(root.textContent).not.toContain("active");
+    },
+  );
+
+  it("omits missing optional activity values beside utilization", async () => {
+    vi.stubGlobal("fetch", async () =>
+      Response.json({
+        employees: [],
+        accounts: [{ id: "claude", name: "Claude Pro", fiveHourSessions: 1, sevenDayMinutes: 8 }],
+        rateLimits: { claude: { fiveHourUtilization: 0.5, sevenDayUtilization: 0.5, updatedAt: Date.now() } },
+      }),
+    );
+    const root = await mount("inc-office", { show: "meters" });
+    expect([...root.querySelectorAll(".quota-activity")].map((el) => el.textContent)).toEqual([
+      "1 session",
+      "8m active",
+    ]);
+  });
+
+  it("shows singular activity counts when both utilization values are absent", async () => {
+    vi.stubGlobal("fetch", async () =>
+      Response.json({
+        employees: [],
+        accounts: [{ id: "claude", name: "Claude Pro", fiveHourSessions: 1, sevenDaySessions: 2 }],
+        rateLimits: { claude: { fiveHourUtilization: null, updatedAt: Date.now() } },
+      }),
+    );
+    const root = await mount("inc-office", { show: "meters" });
+    expect(root.textContent).toContain("1 session");
+    expect(root.textContent).toContain("2 sessions");
+    expect(root.textContent).not.toContain("active");
+    expect(root.querySelector('[aria-label="5-hour utilization"]')).toBeNull();
+  });
+
+  it.each([false, true])("expires a mounted rejection on refresh (explicit reset: %s)", async (explicit) => {
+    const updatedAt = Date.now();
+    const now = vi.spyOn(Date, "now").mockReturnValue(updatedAt + 3_600_000 - 1);
+    try {
+      vi.stubGlobal("fetch", async () =>
+        Response.json({
+          employees: [],
+          accounts: [{ id: "claude", name: "Claude Pro" }],
+          rateLimits: {
+            claude: {
+              status: "rejected",
+              updatedAt,
+              ...(explicit ? { resetsAt: updatedAt + 3_600_000 } : {}),
+            },
+          },
+        }),
+      );
+      const root = await mount("inc-office", { show: "meters" });
+      expect(root.querySelector(".chip.alarm")?.textContent).toBe("rejected");
+      now.mockReturnValue(updatedAt + 3_600_000);
+      refreshNow();
+      for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+      expect(root.querySelector(".chip.alarm")).toBeNull();
+      expect(root.textContent).not.toContain("allowed");
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it("shows Claude session and minute counts alongside utilization", async () => {
     vi.stubGlobal("fetch", async () =>
       Response.json({
@@ -594,6 +675,10 @@ describe("the office", () => {
       }),
     );
     const root = await mount("inc-office", { show: "meters" });
+    const meter = root.querySelector('[aria-label="5-hour utilization"]');
+    expect(meter?.getAttribute("aria-valuenow")).toBe("100");
+    expect(meter?.getAttribute("aria-valuetext")).toBe("CRIT: 100%");
+    expect(meter?.querySelector<HTMLElement>(".quota-bar")?.style.width).toBe("100%");
     expect(root.textContent).toContain("100%");
     expect(root.textContent).toContain("1 session · 3m active");
     expect(root.textContent).toContain("2 sessions · 8m active");

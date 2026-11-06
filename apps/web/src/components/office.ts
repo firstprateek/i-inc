@@ -1,3 +1,4 @@
+import { rateLimitDeadline } from "@i-inc/daemon/views";
 import { css, html } from "lit";
 import { type AccountCost, type AccountRateLimit, api, type DeskEntry } from "../api.ts";
 import { withResume } from "../time.ts";
@@ -79,6 +80,7 @@ export class IncOffice extends Loader<Data> {
       }
       .activity-meters .quota-bar { background: var(--bar-spend); }
       .quota-val { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--ink-2); white-space: nowrap; }
+      .quota-activity { grid-column: 2 / -1; color: var(--ink-2); overflow-wrap: anywhere; }
       .quota-val.font-small { font-weight: 500; }
       .account-models { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
       .model-tag { font-size: 11px; padding: 1px 6px; border-radius: 6px; background: var(--sunken); color: var(--ink-2); font-family: var(--mono); }
@@ -124,7 +126,7 @@ export class IncOffice extends Loader<Data> {
       <div class="accounts-list">
         ${accounts.map((a) => {
           const rl = rateLimits?.[a.id];
-          const isRejected = rl?.status === "rejected" && (!rl.resetsAt || rl.resetsAt > now);
+          const isRejected = rl?.status === "rejected" && rateLimitDeadline(rl) > now;
           const isAllowed = rl?.status === "allowed";
           const status = isRejected ? "rejected" : isAllowed ? "allowed" : null;
           const statusTone = isRejected ? "alarm" : "done";
@@ -142,14 +144,19 @@ export class IncOffice extends Loader<Data> {
           const health5 = u5 !== null ? (u5 >= 95 ? "crit" : u5 >= 80 ? "warn" : "ok") : "";
           const health7 = u7 !== null ? (u7 >= 95 ? "crit" : u7 >= 80 ? "warn" : "ok") : "";
 
-          const s5 = a.fiveHourSessions ?? 0;
-          const s7 = a.sevenDaySessions ?? 0;
           const m5 = a.fiveHourMinutes ?? 0;
           const m7 = a.sevenDayMinutes ?? 0;
           const bar5 = Math.min(100, Math.max(0, Math.round((m5 / 300) * 100)));
           const bar7 = Math.min(100, Math.max(0, Math.round((m7 / (7 * 24 * 60)) * 100)));
-          const s5Text = `${s5} ${s5 === 1 ? "session" : "sessions"}${a.fiveHourMinutes !== undefined ? ` · ${a.fiveHourMinutes}m active` : ""}`;
-          const s7Text = `${s7} ${s7 === 1 ? "session" : "sessions"}${a.sevenDayMinutes !== undefined ? ` · ${a.sevenDayMinutes}m active` : ""}`;
+          const activityText = (sessions?: number, minutes?: number) =>
+            [
+              sessions !== undefined ? `${sessions} ${sessions === 1 ? "session" : "sessions"}` : "",
+              minutes !== undefined ? `${minutes}m active` : "",
+            ]
+              .filter(Boolean)
+              .join(" · ");
+          const s5Text = activityText(a.fiveHourSessions, a.fiveHourMinutes);
+          const s7Text = activityText(a.sevenDaySessions, a.sevenDayMinutes);
 
           return html`<div class="account-item">
             <div class="account-header">
@@ -163,17 +170,19 @@ export class IncOffice extends Loader<Data> {
                 ? html`<div class="quota-bars">
                   <div class="quota-row">
                     <span class="quota-label">5h</span>
-                    <div class="quota-bar-track" role="meter" aria-label="5-hour utilization" aria-valuenow="${u5 ?? 0}" aria-valuemin="0" aria-valuemax="100" aria-valuetext="${health5.toUpperCase()}: ${u5 ?? 0}%">
+                    <div class="quota-bar-track" role="meter" aria-label="5-hour utilization" aria-valuenow="${u5 ?? 0}" aria-valuemin="0" aria-valuemax="100" aria-valuetext="${u5 === null ? "unknown" : `${health5.toUpperCase()}: ${u5}%`}">
                       <div class="quota-bar ${health5}" style="width: ${u5 ?? 0}%"></div>
                     </div>
                     <span class="quota-val">${u5 !== null ? `${u5}%` : "—"}</span>
+                    ${s5Text ? html`<span class="quota-activity">${s5Text}</span>` : ""}
                   </div>
                   <div class="quota-row">
                     <span class="quota-label">7d</span>
-                    <div class="quota-bar-track" role="meter" aria-label="7-day utilization" aria-valuenow="${u7 ?? 0}" aria-valuemin="0" aria-valuemax="100" aria-valuetext="${health7.toUpperCase()}: ${u7 ?? 0}%">
+                    <div class="quota-bar-track" role="meter" aria-label="7-day utilization" aria-valuenow="${u7 ?? 0}" aria-valuemin="0" aria-valuemax="100" aria-valuetext="${u7 === null ? "unknown" : `${health7.toUpperCase()}: ${u7}%`}">
                       <div class="quota-bar ${health7}" style="width: ${u7 ?? 0}%"></div>
                     </div>
                     <span class="quota-val">${u7 !== null ? `${u7}%` : "—"}</span>
+                    ${s7Text ? html`<span class="quota-activity">${s7Text}</span>` : ""}
                   </div>
                 </div>`
                 : (a.fiveHourSessions !== undefined || a.sevenDaySessions !== undefined)
