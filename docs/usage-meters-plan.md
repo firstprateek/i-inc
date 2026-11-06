@@ -1,6 +1,7 @@
 # Ticket #22: usage meters wording, expiry and tests
 
-Stage: plan. Production code is unchanged. Regression tests intentionally fail before the fixes.
+Stage: build. Implementation is committed locally; see the build validation and PR handoff below.
+The plan-stage findings and red-test results are retained as the baseline.
 
 ## Check against current main
 
@@ -96,3 +97,52 @@ still reports `rejected` at the one-hour deadline. No production fix has been ap
 run does not reach web or host checks. The separate web suite reports exactly the two new failures,
 1,371 passed and 56 skipped. The separate daemon suite likewise reports only the new expiry failure.
 The full command must pass after implementation; this is a deliberately red plan-stage commit.
+
+## Build result and PR description
+
+### Fix usage meter wording, rejection expiry and activity counts (#22)
+
+Missing utilization now announces `unknown` while displaying `—`. Claude's 5h/7d utilization
+rows also show the reported session counts and active minutes, without inventing absent counts.
+Rejected states without a provider reset expire one hour after the report's `updatedAt`, in both
+account APIs and the web's refresh guard. Explicit reset times remain authoritative. A new status
+report no longer inherits an older reset; active rejections remain protected from downgrade.
+Expiry preserves utilization and makes no `allowed` assertion. Scheduling behavior is unchanged.
+
+Rechecked `origin/main` at build start: `768f09f33ffb23e77077c9e42d541453e9d1b7aa`, unchanged
+from the audit above. **Already fixed on main:** metadata-free successful ACP completion makes no
+rate-limit callback; 20-second sessions round to zero minutes after merged intervals are summed;
+empty session fallback invents no active minutes; visible utilization already clamps to 0–100 and
+activity already uses the singular `1 session`. This change adds regression coverage for these
+behaviors and corrects contract C13's stale completion wording. The existing out-of-range Claude
+test fixture had no matching rendered account; the new assertions exercise a rendered card.
+
+New coverage also checks both APIs before/at/after explicit and inferred expiry, persisted legacy
+records, reset replacement, downgrade protection, missing utilization in either window, optional
+activity fields, and a mounted card refreshing across expiry.
+
+### UI review
+
+Applied `.claude/skills/ui-review/SKILL.md`, including both reference documents. Built the web app
+and rendered the real Usage component with representative fixture data in Chromium at 390×844
+and 1440×900, each in light and dark. All four checker runs reported no findings; all four
+screenshots were inspected. Counts remain readable, utilization retains its visual hierarchy,
+and missing values and expired rejection states render correctly. No new UI lesson was needed.
+
+Screenshots are available on this machine under `/tmp/inc22-ui-phone`,
+`/tmp/inc22-ui-phone-dark`, `/tmp/inc22-ui-desktop` and `/tmp/inc22-ui-desktop-dark`.
+The repeatable fixture setup is `/tmp/inc22-ui-setup.js`.
+
+### Final validation
+
+Run in the required order, all successful:
+
+- `pnpm install --frozen-lockfile`
+- `pnpm check` (two pre-existing informational template-literal notices in `brain-prereq.test.ts`)
+- `pnpm typecheck`
+- `pnpm test`: core 306, deployer 147, daemon 2,403, web 1,380 passed / 56 skipped;
+  Codex host helper, launchd and walls checks passed.
+
+`pnpm --filter @i-inc/web build` and `git diff origin/main --check` also pass.
+All changes are committed to `inc/22-usage-meters-wording-expiry-and-missing` locally.
+Nothing was pushed; the PR description above is ready for the review/publish stage.
