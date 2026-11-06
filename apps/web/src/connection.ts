@@ -5,6 +5,8 @@
 // Tailscale serve, the owner's browser did it many times a minute), and every request on it fails at
 // once. So a failure only makes the daemon suspect: a few health probes over a few seconds decide, and
 // any answer meanwhile (a request, the event stream opening, a frame on the AHP socket) calls it off.
+// Views whose load failed meanwhile wait for the verdict (loader.ts): a doubt called off (`cleared`)
+// loads them again, and the daemon found away shows the shell's banner over them.
 
 export const connection = new EventTarget();
 let offline = false;
@@ -17,9 +19,15 @@ export const timing = {
   probesMs: [0, 1000, 2500],
   /** A probe with no answer by then has failed. */
   probeTimeoutMs: 5000,
-  /** An outage at least this long refetches every view once the daemon answers again (app.ts). */
-  refreshAfterMs: 2000,
 };
+
+/** A request the daemon gave no answer to: the connection dropped, or the proxy said 502-504. */
+export class Unreachable extends Error {
+  constructor() {
+    super("Can't reach i.inc");
+    this.name = "Unreachable";
+  }
+}
 
 /** The confirmation running now, if any: its number, so one that was called off can tell. */
 let confirming = 0;
@@ -27,6 +35,8 @@ let round = 0;
 let timers: ReturnType<typeof setTimeout>[] = [];
 
 export const isOffline = (): boolean => offline;
+/** A request failed and the health probes are still deciding whether the daemon is away. */
+export const isDoubted = (): boolean => confirming !== 0;
 
 function set(reachable: boolean): void {
   if (reachable === !offline) return;
@@ -40,9 +50,15 @@ function stopConfirming(): void {
   timers = [];
 }
 
-/** The daemon answered (true), or is known to be gone (false). An answer calls off a confirmation. */
+/**
+ * The daemon answered (true), or is known to be gone (false). An answer calls off a confirmation, and says
+ * so with a `cleared` event: what failed while it ran can load again.
+ */
 export function report(reachable: boolean): void {
-  if (reachable) stopConfirming();
+  if (reachable && confirming) {
+    stopConfirming();
+    connection.dispatchEvent(new Event("cleared"));
+  }
   set(reachable);
 }
 

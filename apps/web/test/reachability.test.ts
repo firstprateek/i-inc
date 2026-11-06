@@ -3,12 +3,21 @@
 // "Can't reach i.inc" banner. Now a read is sent once more, a failure that stays is checked with
 // health probes, an answer from anywhere calls the check off, a write is never sent twice, and what is
 // kept for debugging holds no query string.
+import { html } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { netFailures, refresh, send } from "../src/api.ts";
+import { call, netFailures, refresh, send } from "../src/api.ts";
 import "../src/components/app.ts";
-import { connection, isOffline, report, timing } from "../src/connection.ts";
+import { LOAD_STATE, Loader, type LoadState, UNANSWERED_RETRIES } from "../src/components/loader.ts";
+import { connection, isDoubted, isOffline, report, suspect, timing, Unreachable } from "../src/connection.ts";
 
 const ok = () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+const answer = (n: number) => () =>
+  new Response(JSON.stringify({ n }), { status: 200, headers: { "content-type": "application/json" } });
+/** A request that gets no answer until it is called off (the probe's own timeout, or the caller). */
+const hang = (init?: RequestInit): Promise<Response> =>
+  new Promise((_, reject) =>
+    init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))),
+  );
 const gateway = () => new Response("Bad gateway", { status: 502 });
 const drop = (): Response => {
   throw new TypeError("Failed to fetch");
@@ -173,6 +182,163 @@ describe("the failures kept for debugging", () => {
   });
 });
 
+describe("the doubt itself", () => {
+  it("says it is over with `cleared` when an answer calls it off, and only then", async () => {
+    let cleared = 0;
+    const onCleared = () => cleared++;
+    connection.addEventListener("cleared", onCleared);
+    try {
+      serve({ "/api/board/summary": [drop], "/api/health": [drop] });
+      report(true); // no doubt: nothing to clear
+      expect(cleared).toBe(0);
+      await sent("/api/board/summary");
+      expect(isDoubted()).toBe(true);
+      report(true);
+      expect(isDoubted()).toBe(false);
+      expect(cleared).toBe(1);
+      report(true);
+      expect(cleared).toBe(1);
+    } finally {
+      connection.removeEventListener("cleared", onCleared);
+    }
+  });
+
+  it("is not started by a request its caller called off, which is not sent again", async () => {
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      calls.push({ path: String(url), method: init?.method ?? "GET" });
+      if (init?.signal?.aborted) throw new DOMException("aborted", "AbortError");
+      return ok();
+    });
+    calls = [];
+    const stop = new AbortController();
+    stop.abort();
+    const res = await sent("/api/board/summary", { signal: stop.signal });
+    expect((res as Error).name).toBe("AbortError");
+    expect(callsTo("/api/board/summary")).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(callsTo("/api/health")).toHaveLength(0);
+    expect(isDoubted()).toBe(false);
+  });
+
+  it("gives up on a probe with no answer, so a hung daemon is found away", async () => {
+    vi.stubGlobal("fetch", (_url: string, init?: RequestInit) => hang(init));
+    suspect();
+    await vi.advanceTimersByTimeAsync(timing.probesMs.at(-1) ?? 0);
+    expect(isOffline()).toBe(false);
+    await vi.advanceTimersByTimeAsync(timing.probeTimeoutMs + 10);
+    expect(isOffline()).toBe(true);
+  });
+
+  it("ignores probes from a doubt that was called off when they fail later", async () => {
+    vi.stubGlobal("fetch", (_url: string, init?: RequestInit) => hang(init));
+    suspect();
+    await vi.advanceTimersByTimeAsync((timing.probesMs.at(-1) ?? 0) + 10); // every probe is out
+    report(true); // something else answered
+    await vi.advanceTimersByTimeAsync(timing.probeTimeoutMs * 2); // and then they all time out
+    expect(isOffline()).toBe(false);
+    expect(changes).toBe(0);
+  });
+});
+
+describe("a call the proxy answered for", () => {
+  it("is \"Can't reach i.inc\" after two 502s, not a JSON parse error from the proxy's text", async () => {
+    serve({ "/api/board/summary": [gateway], "/api/health": [ok] });
+    const p = call("GET", "/api/board/summary").catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(timing.retryMs);
+    const e = await p;
+    expect(e).toBeInstanceOf(Unreachable);
+    expect((e as Error).message).toBe("Can't reach i.inc");
+  });
+});
+
+class TestThing extends Loader<{ n: number }> {
+  protected fetch() {
+    return call<{ n: number }>("GET", "/api/thing");
+  }
+  override render() {
+    if (this.data) return html`<p>thing ${this.data.n}</p>`;
+    return this.error !== null ? this.failure("the thing") : html`<p>Loading</p>`;
+  }
+}
+customElements.define("test-reach-thing", TestThing);
+
+describe("a view whose load got no answer", () => {
+  let messages: (string | null)[] = [];
+  const onState = (e: Event) => messages.push((e as CustomEvent<LoadState>).detail.message);
+  beforeEach(() => {
+    messages = [];
+    document.addEventListener(LOAD_STATE, onState);
+  });
+  afterEach(() => document.removeEventListener(LOAD_STATE, onState));
+
+  async function mount(): Promise<TestThing> {
+    const el = document.createElement("test-reach-thing") as TestThing;
+    document.body.append(el);
+    await vi.advanceTimersByTimeAsync(timing.retryMs + 10);
+    await el.updateComplete;
+    return el;
+  }
+  const shown = (el: TestThing) => el.shadowRoot?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+
+  for (const [what, fail] of [
+    ["dropped twice", drop],
+    ["answered 502 twice by the proxy", gateway],
+  ] as const) {
+    it(`loads again, with no banner, once the daemon answers a probe (${what})`, async () => {
+      serve({ "/api/thing": [answer(1)] });
+      const el = await mount();
+      expect(el.data).toEqual({ n: 1 });
+
+      serve({ "/api/thing": [fail, fail, answer(2)], "/api/health": [ok] });
+      void el.reload();
+      await vi.advanceTimersByTimeAsync(timing.retryMs + 50);
+      await el.updateComplete;
+      expect(callsTo("/api/health")).toHaveLength(1);
+      expect(el.data).toEqual({ n: 2 });
+      expect(messages.filter((m) => m !== null)).toEqual([]);
+      expect(isOffline()).toBe(false);
+    });
+  }
+
+  it('loads for the first time once the daemon answers, never showing "Can\'t reach"', async () => {
+    serve({ "/api/thing": [drop, drop, answer(3)], "/api/health": [ok] });
+    const el = await mount();
+    await vi.advanceTimersByTimeAsync(50);
+    await el.updateComplete;
+    expect(el.error).toBeNull();
+    expect(shown(el)).toBe("thing 3");
+  });
+
+  it("waits behind the shell's banner when the daemon is away", async () => {
+    serve({ "/api/thing": [answer(1)] });
+    const kept = await mount();
+    serve({ "/api/thing": [drop], "/api/health": [drop] });
+    const first = document.createElement("test-reach-thing") as TestThing;
+    document.body.append(first);
+    void kept.reload();
+    await vi.advanceTimersByTimeAsync(timing.retryMs + 10);
+    // while the probes decide, neither says anything
+    expect(messages.filter((m) => m !== null)).toEqual([]);
+    expect(first.error).toBeNull();
+    await vi.advanceTimersByTimeAsync((timing.probesMs.at(-1) ?? 0) + 10);
+    await first.updateComplete;
+    expect(isOffline()).toBe(true);
+    // offline: the kept view's failure goes to the shell (its offline banner wins), the new one says why it's empty
+    expect(messages.filter((m) => m !== null)).toEqual(["Can't reach i.inc"]);
+    expect(shown(first)).toMatch(/^Nothing has loaded yet\. The thing loads when i\.inc answers\./);
+  });
+
+  it(`runs again by itself at most ${UNANSWERED_RETRIES} times while the daemon answers but the view's request doesn't`, async () => {
+    serve({ "/api/thing": [drop], "/api/health": [ok] });
+    const el = await mount();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await el.updateComplete;
+    expect(callsTo("/api/thing")).toHaveLength(2 * (1 + UNANSWERED_RETRIES));
+    expect(shown(el)).toMatch(/^Couldn't load the thing: Can't reach i\.inc/);
+    expect(isOffline()).toBe(false);
+  });
+});
+
 // These mount the whole shell, whose own requests can outlive a test: they go last.
 describe("the shell", () => {
   it("shows no banner for a read that failed once", async () => {
@@ -187,14 +353,16 @@ describe("the shell", () => {
     expect(app.shadowRoot?.querySelector("inc-offline")).toBeNull();
   });
 
-  it("refetches every view after an outage of a couple of seconds, but not after a blip", async () => {
+  it("refetches every view when the daemon is back from a confirmed outage, at once", async () => {
     // The shell's own requests never answer here, so only this test says when the daemon comes and goes.
-    vi.stubGlobal("fetch", () => new Promise<Response>(() => {}));
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) =>
+      String(url) === "/api/health" ? Promise.reject(new TypeError("Failed to fetch")) : hang(init),
+    );
     const app = document.createElement("inc-app");
     document.body.append(app);
     await vi.advanceTimersByTimeAsync(50);
-    /** The refetches of every view that coming back (`report(true)`) asks for. */
-    const refetchesOnReturn = (): number => {
+    /** The refetches of every view that the daemon answering (`report(true)`) asks for. */
+    const refetchesOnAnswer = (): number => {
       let n = 0;
       const onRefresh = (e: Event) => {
         if ((e as CustomEvent).detail == null) n++; // everything, not some tickets
@@ -204,12 +372,16 @@ describe("the shell", () => {
       refresh.removeEventListener("refresh", onRefresh);
       return n;
     };
-    report(false);
+    // A doubt called off is no outage: only the views that failed load again (the loader's own tests).
+    suspect();
     await vi.advanceTimersByTimeAsync(500);
-    expect(refetchesOnReturn()).toBe(0);
+    expect(isDoubted()).toBe(true);
+    expect(refetchesOnAnswer()).toBe(0);
 
-    report(false);
-    await vi.advanceTimersByTimeAsync(timing.refreshAfterMs);
-    expect(refetchesOnReturn()).toBe(1);
+    // Every probe failed: offline. An answer right after still refetches everything.
+    suspect();
+    await vi.advanceTimersByTimeAsync(2510);
+    expect(isOffline()).toBe(true);
+    expect(refetchesOnAnswer()).toBe(1);
   });
 });

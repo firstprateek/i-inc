@@ -14,7 +14,7 @@ import { answer } from "./daemon-board.ts";
 
 // Going offline is confirmed with health probes over a few seconds (connection.ts); these tests confirm it at once.
 const realTiming = { ...timing };
-const fastTiming = { retryMs: 0, probesMs: [0], refreshAfterMs: 0 };
+const fastTiming = { retryMs: 0, probesMs: [0] };
 
 const view = (over: Partial<TicketView>): TicketView => ({
   id: "1",

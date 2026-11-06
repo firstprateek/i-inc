@@ -5,9 +5,16 @@
 // above the view, and the next refresh or reconnect fills the data in again. `error` is only for a
 // view that has nothing to show yet because its first load failed, and `failure()` draws that with a
 // retry button too. An answer that arrives out of order (a slow response to an older request) is dropped.
+//
+// A load that got no answer at all (connection.ts's `Unreachable`) says nothing yet: a dropped connection
+// is common behind a proxy. While the health probes decide, the view waits. If the daemon answers, the load
+// runs again; if it is away, the shell's "Can't reach i.inc" banner covers the view until it is back.
 import { html, LitElement, nothing } from "lit";
 import { ApiError, type RefreshScope, refresh, refreshNow } from "../api.ts";
-import { connection, isOffline } from "../connection.ts";
+import { connection, isDoubted, isOffline, Unreachable } from "../connection.ts";
+
+/** How many times in a row a load that got no answer runs again by itself, before its failure shows. */
+export const UNANSWERED_RETRIES = 2;
 
 /** What a view tells the shell, so one banner covers every view: `detail` is the message, or null once it's fine. */
 export const LOAD_STATE = "load-state";
@@ -35,6 +42,10 @@ export abstract class Loader<T> extends LitElement {
   /** The HTTP status behind `error` (404: nothing there), when it was the daemon that refused. */
   protected errorStatus: number | null = null;
   private loadSeq = 0;
+  /** The last load got no answer while the daemon was in doubt: its error, held until the verdict. */
+  private held: Unreachable | null = null;
+  /** Loads run again by themselves since the last one that was answered. */
+  private unanswered = 0;
 
   constructor() {
     super();
@@ -76,21 +87,37 @@ export abstract class Loader<T> extends LitElement {
 
   async reload(): Promise<void> {
     const seq = ++this.loadSeq;
+    this.held = null;
     try {
       const data = await this.fetch();
       if (seq !== this.loadSeq) return; // a newer request has been made: this answer is out of date
+      this.unanswered = 0;
       this.data = data;
       this.error = null;
       this.errorStatus = null;
       this.report(null);
     } catch (e) {
       if (seq !== this.loadSeq) return;
-      const message = e instanceof Error ? e.message : String(e);
-      if (this.data === null) {
-        this.error = message;
-        this.errorStatus = e instanceof ApiError ? e.status : null;
-      } else this.report(message);
+      if (e instanceof Unreachable && !isOffline() && this.unanswered < UNANSWERED_RETRIES) {
+        if (isDoubted()) {
+          this.held = e; // the verdict decides: onCleared, or onConnection
+          return;
+        }
+        // The doubt was already called off: the daemon is there.
+        this.unanswered++;
+        void this.reload();
+        return;
+      }
+      this.fail(e);
     }
+  }
+
+  private fail(e: unknown): void {
+    const message = e instanceof Error ? e.message : String(e);
+    if (this.data === null) {
+      this.error = message;
+      this.errorStatus = e instanceof ApiError ? e.status : null;
+    } else this.report(message);
   }
 
   /** Forgets what's loaded and any failure, for a view that is now about something else (another ticket). */
@@ -158,21 +185,36 @@ export abstract class Loader<T> extends LitElement {
     </div>`;
   }
 
-  /** A failed first load can turn out to be the daemon being away (connection.ts decides a moment later). */
+  /** The daemon is away: a held failure shows now (behind the shell's banner), and a failed first load says so. */
   private onConnection = () => {
+    if (this.held && isOffline()) {
+      const e = this.held;
+      this.held = null;
+      this.fail(e);
+    }
     if (this.error !== null) this.requestUpdate();
+  };
+
+  /** The doubt was called off, so the daemon is there: a load that got no answer meanwhile runs again. */
+  private onCleared = () => {
+    if (!this.held) return;
+    this.held = null;
+    this.unanswered++;
+    void this.reload();
   };
 
   override connectedCallback(): void {
     super.connectedCallback();
     refresh.addEventListener("refresh", this.onRefresh);
     connection.addEventListener("change", this.onConnection);
+    connection.addEventListener("cleared", this.onCleared);
     void this.reload();
   }
 
   override disconnectedCallback(): void {
     refresh.removeEventListener("refresh", this.onRefresh);
     connection.removeEventListener("change", this.onConnection);
+    connection.removeEventListener("cleared", this.onCleared);
     // Answers that land after the view is gone are dropped. (The shell forgets this view's failure itself:
     // an event from a detached element reaches no one.)
     this.loadSeq++;

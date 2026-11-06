@@ -188,7 +188,7 @@ export interface OfficeResponse {
   rateLimits?: Record<string, AccountRateLimit>;
 }
 
-import { isGatewayDown, report, suspect, timing } from "./connection.ts";
+import { isGatewayDown, report, suspect, timing, Unreachable } from "./connection.ts";
 import { draftMemo } from "./drafts.ts";
 import { showLogin } from "./login.ts";
 
@@ -246,7 +246,7 @@ export async function send(path: string, init?: RequestInit): Promise<Response> 
         continue;
       }
       suspect();
-      throw new Error("Can't reach i.inc");
+      throw new Unreachable();
     }
     // The daemon never answers 502-504 (a GitHub problem is a 424 or 429, an agent that won't start a 424), so
     // one of those is a proxy with nothing behind it, on any route.
@@ -263,6 +263,16 @@ export async function send(path: string, init?: RequestInit): Promise<Response> 
     suspect();
     return res;
   }
+}
+
+/**
+ * Throws when the response is the proxy's 502-504, not the daemon's answer: its body is the proxy's text (or
+ * nothing), never the daemon's JSON, so it is "Can't reach i.inc" and not a parse error.
+ */
+function answered(res: Response): void {
+  if (!isGatewayDown(res.status)) return;
+  void res.body?.cancel().catch(() => {});
+  throw new Unreachable();
 }
 
 /** The daemon refused a request: its sentence, and the HTTP status (404: no such thing). */
@@ -288,6 +298,7 @@ export async function call<T>(
     headers: write ? { "content-type": "application/json", ...headers } : headers,
     ...(write ? { body: JSON.stringify(body ?? {}) } : {}),
   });
+  answered(res);
   if (res.status === 401) showLogin();
   const data = (await res.json()) as T & { error?: string };
   if (!res.ok) throw new ApiError(data.error ?? `${method} ${path}: ${res.status}`, res.status);
@@ -296,6 +307,7 @@ export async function call<T>(
 
 export async function authStatus(): Promise<{ initialized: boolean; setupCodeRequired?: boolean }> {
   const res = await send("/api/auth");
+  answered(res);
   return (await res.json()) as { initialized: boolean; setupCodeRequired?: boolean };
 }
 
@@ -337,6 +349,7 @@ export async function logout(): Promise<void> {
 /** The ticket's session transcripts, or null when the daemon has no such endpoint or ticket (404). */
 async function sessions(id: string): Promise<TicketSession[] | null> {
   const res = await send(`/api/tickets/${encodeURIComponent(id)}/sessions`);
+  answered(res);
   if (res.status === 404) return null;
   if (res.status === 401) showLogin();
   if (!res.ok) throw new Error(`GET sessions: ${res.status}`);

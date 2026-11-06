@@ -220,7 +220,7 @@ describe("the offline panel", () => {
   const realTiming = { ...timing };
   beforeEach(() => {
     document.body.innerHTML = "";
-    Object.assign(timing, { retryMs: 0, probesMs: [0], refreshAfterMs: 0 });
+    Object.assign(timing, { retryMs: 0, probesMs: [0] });
     report(true);
   });
   afterEach(() => {
