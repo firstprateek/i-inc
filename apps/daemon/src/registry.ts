@@ -64,7 +64,7 @@ export interface Settings {
 const defaultSettings: Settings = { utcOffsetMinutes: 0, pricePerKWh: 0, currency: "USD" };
 
 import type { StorageSettings } from "./storage-settings.ts";
-import type { AccountRateLimit } from "./view-types.ts";
+import { type AccountRateLimit, rateLimitDeadline } from "./view-types.ts";
 
 export type { AccountRateLimit };
 
@@ -241,18 +241,15 @@ export class Registry implements Company {
   setAccountRateLimit(accountId: Id, limit: AccountRateLimit): void {
     const existing = this.accountRateLimits()[accountId];
     const now = limit.updatedAt ?? Date.now();
-    if (
-      existing?.status === "rejected" &&
-      existing.resetsAt &&
-      existing.resetsAt > now &&
-      limit.status !== "rejected"
-    ) {
+    if (existing?.status === "rejected" && rateLimitDeadline(existing) > now && limit.status !== "rejected") {
       // Do not downgrade an unexpired rejected status
       return;
     }
     this.put("rate_limit", accountId, {
       ...existing,
       ...limit,
+      // A new status report owns its reset; never inherit a previous report's deadline.
+      ...(limit.status !== undefined ? { resetsAt: limit.resetsAt } : {}),
     });
   }
   accountRateLimits(): Record<Id, AccountRateLimit> {

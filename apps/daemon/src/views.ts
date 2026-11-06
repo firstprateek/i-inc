@@ -28,6 +28,7 @@ import type {
   ProposalView,
   TicketView,
 } from "./view-types.ts";
+import { rateLimitDeadline } from "./view-types.ts";
 
 export type {
   AccountRateLimit,
@@ -496,7 +497,7 @@ export function enrichAccounts(
   });
 }
 
-/** Provides rate limits for all accounts, expiring rejected limits past resetsAt without inventing statuses. */
+/** Provides rate limits for all accounts, expiring rejected limits past their deadline without inventing statuses. */
 export function allRateLimits(
   _accounts: AccountCost[],
   registry: Registry,
@@ -505,7 +506,7 @@ export function allRateLimits(
   const existing = registry.accountRateLimits();
   const out: Record<Id, AccountRateLimit> = {};
   for (const [id, rl] of Object.entries(existing)) {
-    if (rl.status === "rejected" && rl.resetsAt && rl.resetsAt <= now) {
+    if (rl.status === "rejected" && rateLimitDeadline(rl) <= now) {
       const { status: _status, resetsAt: _resetsAt, ...rest } = rl;
       out[id] = { ...rest, updatedAt: now };
     } else {

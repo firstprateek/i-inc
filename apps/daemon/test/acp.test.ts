@@ -145,6 +145,24 @@ function agent(
 }
 
 describe("an ACP session", () => {
+  it.each([claude, { ...claude, harness: "antigravity" as const, accountId: "google-pro" }])(
+    "makes no rate-limit assertion on a metadata-free completion ($harness)",
+    async (engine) => {
+      const s = server(
+        claudeLike((reply, id) => {
+          reply(update("agent_message_chunk", { content: { type: "text", text: "Checked." } }));
+          reply({ id, result: { stopReason: "end_turn" } });
+        }),
+      );
+      const rateLimits: { accountId: string; limit: AccountRateLimit }[] = [];
+      expect(await agent(s, [], rateLimits).run(request({ engine }))).toMatchObject({
+        kind: "done",
+        output: "Checked.",
+      });
+      expect(rateLimits).toEqual([]);
+    },
+  );
+
   it("opens a session in the worktree, switches to bypass, approves permissions, and returns the reply", async () => {
     const s = server(
       claudeLike((reply, id) => {

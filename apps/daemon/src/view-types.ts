@@ -139,6 +139,11 @@ export interface AccountRateLimit {
   updatedAt: number;
 }
 
+/** Unknown reset times stop being current one hour after the provider report. */
+export function rateLimitDeadline(limit: AccountRateLimit): number {
+  return limit.resetsAt ?? limit.updatedAt + 3_600_000;
+}
+
 export interface DeskView {
   spend: Spend;
   waits: Wait[];

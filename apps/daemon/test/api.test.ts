@@ -664,6 +664,61 @@ describe("GET /api/office with accounts and rate limits", () => {
     expect(local.fiveHourMinutes).toBe(0);
   });
 
+  it("rounds a 20-second session to zero minutes, summing intervals before rounding", async () => {
+    const app = await testApp();
+    const now = app.clock.now();
+    for (let i = 0; i < 2; i++) {
+      app.db.run(
+        "INSERT INTO ticket_sessions (ticket_id, stage, employee_id, engine_id, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?)",
+        `short-${i}`,
+        "build",
+        "ada",
+        "opus",
+        now - (i + 1) * 60_000,
+        now - (i + 1) * 60_000 + 20_000,
+      );
+      const res = await app.call("GET", "/api/accounts");
+      const account = res.body.accounts.find((a: { id: string }) => a.id === "claude-pro");
+      expect(account.fiveHourSessions).toBe(i + 1);
+      expect(account.sevenDaySessions).toBe(i + 1);
+      expect(account.fiveHourMinutes).toBe(i);
+      expect(account.sevenDayMinutes).toBe(i);
+    }
+  });
+
+  it("returns empty telemetry and uses session-start events without inventing active minutes", async () => {
+    const app = await testApp();
+    const now = app.clock.now();
+    const read = async () =>
+      (await app.call("GET", "/api/accounts")).body.accounts.find(
+        (a: { id: string }) => a.id === "claude-pro",
+      );
+    expect(await read()).toMatchObject({
+      fiveHourSessions: 0,
+      sevenDaySessions: 0,
+      fiveHourMinutes: 0,
+      sevenDayMinutes: 0,
+      lastUsedAt: null,
+    });
+    for (const [seq, at] of [now - 6 * 3_600_000, now - 60_000].entries()) {
+      app.db.run(
+        "INSERT INTO events (ticket_id, seq, at, type, body) VALUES (?, ?, ?, ?, ?)",
+        "fallback",
+        seq,
+        at,
+        "session-started",
+        JSON.stringify({ type: "session-started", engineId: "opus", at }),
+      );
+    }
+    expect(await read()).toMatchObject({
+      fiveHourSessions: 1,
+      sevenDaySessions: 2,
+      fiveHourMinutes: 0,
+      sevenDayMinutes: 0,
+      lastUsedAt: now - 60_000,
+    });
+  });
+
   it("expires a rejection without resetsAt after the one-hour unknown-reset fallback", async () => {
     const app = await testApp();
     const now = app.clock.now();
@@ -681,6 +736,57 @@ describe("GET /api/office with accounts and rate limits", () => {
     expect(res.body.rateLimits["recent-rejection"]?.status).toBe("rejected");
     expect(res.body.rateLimits["unknown-reset"]?.status).toBeUndefined();
     expect(res.body.rateLimits["unknown-reset"]?.fiveHourUtilization).toBe(0.95);
+  });
+
+  it.each([false, true])(
+    "expires persisted rejections at a fixed deadline (explicit reset: %s)",
+    async (explicit) => {
+      const app = await testApp();
+      const updatedAt = app.clock.now();
+      const deadline = updatedAt + (explicit ? 7_200_000 : 3_600_000);
+      // Legacy records are read without a new write or migration.
+      app.db.run(
+        "INSERT INTO company (kind, id, body) VALUES (?, ?, ?)",
+        "rate_limit",
+        "legacy",
+        JSON.stringify({
+          status: "rejected",
+          updatedAt,
+          fiveHourUtilization: 0.95,
+          ...(explicit ? { resetsAt: deadline } : {}),
+        }),
+      );
+      for (const time of [deadline - 1, deadline, deadline + 1]) {
+        app.clock.step((time - app.clock.now()) / 60_000);
+        for (const path of ["/api/accounts", "/api/office"]) {
+          const res = await app.call("GET", path);
+          expect(res.status).toBe(200);
+          expect(res.body.rateLimits.legacy.status).toBe(time < deadline ? "rejected" : undefined);
+          expect(res.body.rateLimits.legacy.fiveHourUtilization).toBe(0.95);
+        }
+      }
+    },
+  );
+
+  it("protects an inferred rejection until expiry and gives a new report its own deadline", async () => {
+    const app = await testApp();
+    const registry = app.deps.registry;
+    const now = app.clock.now();
+    registry.setAccountRateLimit("acc", { status: "rejected", updatedAt: now });
+    registry.setAccountRateLimit("acc", { status: "allowed", updatedAt: now + 1 });
+    expect(registry.accountRateLimits().acc?.status).toBe("rejected");
+    registry.setAccountRateLimit("acc", { status: "allowed", updatedAt: now + 3_600_000 });
+    expect(registry.accountRateLimits().acc?.status).toBe("allowed");
+    registry.setAccountRateLimit("acc", {
+      status: "rejected",
+      resetsAt: now + 9_000_000,
+      updatedAt: now + 4_000_000,
+    });
+    registry.setAccountRateLimit("acc", { status: "rejected", updatedAt: now + 5_000_000 });
+    expect(registry.accountRateLimits().acc?.resetsAt).toBeUndefined();
+    app.clock.step(8_600_000 / 60_000);
+    expect((await app.call("GET", "/api/accounts")).body.rateLimits.acc.status).toBeUndefined();
+    expect(registry.accountRateLimits().acc?.updatedAt).toBe(now + 5_000_000);
   });
 
   it("expires rejected limits past resetsAt and prevents downgrade of active unexpired rejected status", async () => {
