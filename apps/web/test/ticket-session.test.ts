@@ -6,6 +6,7 @@ import { resetAhp, setAhp } from "../src/ahp/hub.ts";
 import { USER_ORIGIN } from "../src/ahp/wire.ts";
 import type { TicketSession } from "../src/api.ts";
 import "../src/components/ticket-session.ts";
+import { report, timing } from "../src/connection.ts";
 import "../src/components/transcript.ts";
 import { hosts, must, until } from "./ahp/fake-host.ts";
 
@@ -433,5 +434,30 @@ describe("the session view", () => {
     await until(() => el.shadowRoot.querySelector(".none h2")?.textContent === "No such session");
     el.ticketId = "404";
     await until(() => el.shadowRoot.querySelector(".none h2")?.textContent === "No such ticket");
+  });
+});
+
+// A first load whose requests were dropped (twice each, the burst a flaky HTTP/2 connection gives) used to heal
+// when the next answer refreshed every view. A doubt called off refreshes nothing globally now, so the session
+// view loads again by itself once the daemon answers a health probe.
+describe("a session view whose first load got no answer", () => {
+  const saved = { ...timing, probesMs: [...timing.probesMs] };
+  afterEach(() => {
+    Object.assign(timing, saved);
+    report(true);
+  });
+
+  it('loads once the daemon answers, instead of staying on "Couldn\'t load the session"', async () => {
+    timing.retryMs = 1;
+    timing.probesMs = [0, 20, 40];
+    const inner = globalThis.fetch;
+    let drops = 2;
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      if (url === "/api/tickets/12" && drops-- > 0) return Promise.reject(new TypeError("Failed to fetch"));
+      return inner(url, init);
+    });
+    const { el } = await mount();
+    expect(el.shadowRoot.textContent).not.toContain("Couldn't load the session");
+    expect(drops).toBeLessThan(0);
   });
 });

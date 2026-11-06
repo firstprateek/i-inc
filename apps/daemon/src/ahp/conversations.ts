@@ -69,7 +69,7 @@ export interface NewConversation {
 export class ConversationError extends Error {
   constructor(
     message: string,
-    readonly status: 400 | 404 | 409 | 502,
+    readonly status: 400 | 404 | 409 | 424,
     /** The AHP error code, when the refusal came from the host. */
     readonly code?: number,
   ) {
@@ -298,7 +298,7 @@ export class ConversationService {
           e.code ??
           (e.status === 409
             ? AhpErrorCodes.Conflict
-            : e.status === 502
+            : e.status === 424
               ? JsonRpcErrorCodes.InternalError
               : JsonRpcErrorCodes.InvalidParams);
         throw new RpcError(code, e.message);
@@ -447,12 +447,13 @@ export class ConversationService {
       });
     } catch (e) {
       const code = e instanceof RpcError ? e.code : undefined;
+      // The agent side failed: 424, never 502-504, which the web app reads as a proxy with nothing behind it.
       const status =
         code === AhpErrorCodes.SessionAlreadyExists || (e instanceof Error && e.name === "NoSlotError")
           ? 409
           : code === JsonRpcErrorCodes.InvalidParams || code === AhpErrorCodes.ProviderNotFound
             ? 400
-            : 502;
+            : 424;
       throw new ConversationError(e instanceof Error ? e.message : String(e), status, code);
     }
     const session = this.host.sessionState(made.session) as SessionState;

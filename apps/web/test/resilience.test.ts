@@ -8,9 +8,13 @@ import "../src/components/inbox.ts";
 import "../src/components/knowledge.ts";
 import type { LoadState } from "../src/components/loader.ts";
 import "../src/components/ticket.ts";
-import { report } from "../src/connection.ts";
+import { report, timing } from "../src/connection.ts";
 import { parse } from "../src/routes.ts";
 import { answer } from "./daemon-board.ts";
+
+// Going offline is confirmed with health probes over a few seconds (connection.ts); these tests confirm it at once.
+const realTiming = { ...timing };
+const fastTiming = { retryMs: 0, probesMs: [0] };
 
 const view = (over: Partial<TicketView>): TicketView => ({
   id: "1",
@@ -73,11 +77,13 @@ async function mount<T extends HTMLElement>(tag: string, props: Record<string, u
 beforeEach(() => {
   document.body.innerHTML = "";
   location.hash = "";
+  Object.assign(timing, fastTiming);
   report(true);
 });
 afterEach(() => {
   vi.unstubAllGlobals();
   report(true);
+  Object.assign(timing, realTiming);
 });
 
 describe("a daemon that goes away and comes back", () => {

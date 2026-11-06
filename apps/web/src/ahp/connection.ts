@@ -81,6 +81,8 @@ export interface ConnectionOptions {
   /** Turns older than this many are paged in with fetchTurns. */
   turnsWindow?: number;
   log?: (message: string) => void;
+  /** Called for every frame the host sends: it is there. */
+  heard?: () => void;
 }
 
 interface Chan {
@@ -525,6 +527,7 @@ export class AhpConnection {
     try {
       for await (const { event } of events) {
         if (gen !== this.gen) return;
+        this.o.heard?.();
         switch (event.type) {
           case "action":
             if (this.syncing) this.held.push(event.params);

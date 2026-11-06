@@ -201,12 +201,12 @@ describe("REST /api/conversations", () => {
     expect(app.ahp.host.serverSeq).toBe(seq);
   });
 
-  it("answers 502 when the agent side cannot open", async () => {
+  it("answers 424, never 502-504, when the agent side cannot open", async () => {
     const backend = new ScriptedBackend();
     const app = await appWith(backend);
     backend.failOpen = new Error("the sandbox did not start");
     const r = await app.call("POST", "/api/conversations", { employeeId: "ada" });
-    expect(r.status).toBe(502);
+    expect(r.status).toBe(424);
     expect(r.body.error).toMatch(/sandbox did not start/);
     expect(app.db.all("SELECT * FROM conversations")).toEqual([]);
   });
@@ -371,6 +371,16 @@ describe("the row and the session stay in step", () => {
         (n) => n.method === "root/sessionAdded" && (n.params as Any).summary.resource === session,
       ),
     ).toBe(true);
+  });
+
+  it("answers an agent side that cannot open over AHP createSession as an internal error, not bad params", async () => {
+    const { backend, client } = await live();
+    backend.failOpen = new Error("the sandbox did not start");
+    const r = await client.rpc("createSession", {
+      channel: "ahp-session:/no-sandbox",
+      _meta: { iinc: { employeeId: "ada" } },
+    });
+    expect(r.error).toMatchObject({ code: -32603, message: expect.stringMatching(/sandbox did not start/) });
   });
 
   it("disposes a session only once it is archived, and the row goes with it", async () => {

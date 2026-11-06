@@ -6,6 +6,7 @@ import type { Employee } from "@i-inc/core";
 import { css, html, LitElement, nothing } from "lit";
 import { ahp, useAhp } from "../ahp/hub.ts";
 import { type AccountRateLimit, ApiError, api, type Conversation, refresh, type ShipView } from "../api.ts";
+import { Unanswered } from "../connection.ts";
 import { friendlyError } from "../conversations/actions.ts";
 import { shipOutcomes } from "../conversations/outcomes.ts";
 import { cardStyles } from "../conversations/styles.ts";
@@ -193,6 +194,7 @@ export class IncConversations extends LitElement {
       c.onRoster(() => this.scheduleReload(500)),
     ];
     refresh.addEventListener("refresh", this.onRefresh);
+    this.listUnanswered.connect();
     // A request from a dialog this screen no longer holds has ended.
     this.offs.push(
       shipOutcomes.subscribe((added) => {
@@ -244,6 +246,7 @@ export class IncConversations extends LitElement {
     for (const [mq, fn] of this.queries) mq.removeEventListener?.("change", fn);
     this.queries = [];
     refresh.removeEventListener("refresh", this.onRefresh);
+    this.listUnanswered.disconnect();
     window.visualViewport?.removeEventListener("resize", this.onViewport);
     removeEventListener("popstate", this.onPop);
     document.removeEventListener("keydown", this.sheetKey, true);
@@ -271,6 +274,8 @@ export class IncConversations extends LitElement {
   };
 
   private onRefresh = () => this.scheduleReload(0);
+  /** A list request that got no answer loads again once the daemon answers a health probe. */
+  private listUnanswered = new Unanswered(() => void this.loadList());
 
   private scheduleReload(ms: number) {
     clearTimeout(this.reloadTimer);
@@ -342,10 +347,12 @@ export class IncConversations extends LitElement {
       const dropped = open && !rows.some((c) => c.id === open.id);
       this.list = dropped ? [open, ...rows] : rows;
       this.listError = "";
+      this.listUnanswered.reset();
       if (dropped) void this.ask(open.id, open);
     } catch (e) {
       if (token !== this.loadToken) return;
       this.listError = e instanceof Error ? e.message : String(e);
+      this.listUnanswered.failed(e);
     } finally {
       if (token === this.loadToken) this.loading = false;
     }
@@ -698,6 +705,7 @@ export class IncConversations extends LitElement {
       }}
       @conv-reload=${() => {
         this.loading = true;
+        this.listUnanswered.reset();
         void this.loadList();
       }}></inc-conv-list>`;
     const thread = html`<section class="pane thread-pane ${reviewing ? "under" : ""}" ?inert=${modal || reviewing} ?hidden=${phone && !this.selectedId && !drafting} aria-label="Conversation">

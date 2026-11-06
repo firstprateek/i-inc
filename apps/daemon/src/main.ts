@@ -20,6 +20,7 @@ import { demoReview } from "./demo-review.ts";
 import { resolveVersion } from "./deploys.ts";
 import { GitHubApp, readGitHubAppConfig } from "./github.ts";
 import { installGuards, serverError } from "./guards.ts";
+import { httpFetch, IDLE_TIMEOUT_SEC } from "./http.ts";
 import { AppleMachines, defaultMachineSettings, wallsUp } from "./machines.ts";
 import { ollamaModelChoice } from "./ollama.ts";
 import { killTracked, stopTracked } from "./proc.ts";
@@ -267,23 +268,17 @@ if (app.ahp.backend instanceof SessionHost) app.ahp.backend.start();
 const server = Bun.serve<WsData>({
   port,
   hostname: host,
-  idleTimeout: 60,
+  idleTimeout: IDLE_TIMEOUT_SEC,
   // Never Bun's development error page: it prints source excerpts and absolute paths. A route that
   // throws answers with a plain JSON error, and the log has the details.
   development: false,
   error: serverError(log),
-  fetch: (req, server) => {
-    // Conversations speak AHP over a WebSocket on this same port (src/ahp/transport.ts).
-    if (app.ahp.transport.matches(req)) {
-      const g = app.ahp.transport.guard(req);
-      if ("refusal" in g) return g.refusal;
-      if (server.upgrade(req, { data: g.data })) return undefined;
-      return new Response("websocket upgrade failed", { status: 400 });
-    }
-    return new URL(req.url).pathname.startsWith("/api/") || !existsSync(web)
-      ? app.handle(req, { peer: server.requestIP(req)?.address })
-      : serveWeb(req);
-  },
+  // Conversations speak AHP over a WebSocket on this same port (src/ahp/transport.ts).
+  fetch: httpFetch<WsData>({
+    ahp: app.ahp.transport,
+    api: (req, o) => app.handle(req, o),
+    web: () => (existsSync(web) ? serveWeb : null),
+  }),
   websocket: app.ahp.transport.websocket,
 });
 
