@@ -1,7 +1,7 @@
 import { css, html, LitElement, nothing } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 import { logout, refresh, refreshNow } from "../api.ts";
-import { connection, isOffline } from "../connection.ts";
+import { connection, isOffline, timing } from "../connection.ts";
 import { outcomeView, shipOutcomes } from "../conversations/outcomes.ts";
 import { isDismissed, showGettingStarted } from "../first-run.ts";
 import { canInstall, installSignal, needsIosInstall, promptInstall } from "../install.ts";
@@ -118,6 +118,7 @@ export class IncApp extends LitElement {
     this.lastView = this.route.view;
     this.theme = readTheme();
     this.offline = isOffline();
+    if (this.offline) this.offlineAt = Date.now();
     this.accountOpen = false;
     this.needsCount = null;
     this.loadFailed = false;
@@ -367,10 +368,19 @@ export class IncApp extends LitElement {
     this.navigate(to);
   }
 
+  /** When the app last went offline (ms). */
+  private offlineAt = 0;
+
   private onConnection = () => {
+    const was = this.offline;
     this.offline = isOffline();
-    // Back online: whatever failed while the daemon was away loads again.
-    if (!this.offline) refreshNow();
+    if (this.offline) {
+      if (!was) this.offlineAt = Date.now();
+      return;
+    }
+    // Back online after a real outage: whatever failed while the daemon was away loads again. After a blip,
+    // a burst of refetches would only give a flaky connection more to drop; the next event or poll catches up.
+    if (was && Date.now() - this.offlineAt >= timing.refreshAfterMs) refreshNow();
   };
 
   /** Views that couldn't refresh (and kept their data), by view: one banner for all of them. */

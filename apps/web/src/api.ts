@@ -188,23 +188,81 @@ export interface OfficeResponse {
   rateLimits?: Record<string, AccountRateLimit>;
 }
 
-import { isGatewayDown, report } from "./connection.ts";
+import { isGatewayDown, report, suspect, timing } from "./connection.ts";
 import { draftMemo } from "./drafts.ts";
 import { showLogin } from "./login.ts";
 
-/** fetch, plus telling the app whether the daemon answered (see connection.ts). */
+/** A request that got no answer from the daemon, for debugging: never a body or a query string. */
+export interface NetFailure {
+  method: string;
+  path: string;
+  /** The proxy's status (502-504), or the name of the error fetch rejected with. */
+  failure: number | string;
+  ms: number;
+  at: number;
+}
+
+const FAILURES_KEPT = 20;
+const failures: NetFailure[] = [];
+
+/** The last few failed requests, oldest first (also `window.__incNet` in the console). */
+export const netFailures = (): readonly NetFailure[] => failures.map((f) => ({ ...f }));
+Object.defineProperty(globalThis, "__incNet", { get: netFailures, configurable: true });
+
+function noteFailure(method: string, path: string, failure: number | string, started: number): void {
+  // Only the path: a query can hold what the owner typed.
+  const f: NetFailure = {
+    method,
+    path: path.split(/[?#]/)[0] ?? "",
+    failure,
+    ms: Date.now() - started,
+    at: Date.now(),
+  };
+  failures.push(f);
+  if (failures.length > FAILURES_KEPT) failures.shift();
+  console.warn(`i.inc: ${f.method} ${f.path} got no answer (${f.failure}) after ${f.ms} ms`);
+}
+
+/**
+ * fetch, plus telling the app whether the daemon answered (see connection.ts). A browser drops an HTTP/2
+ * connection now and then, failing every request on it, so a read that fails is sent once more a moment
+ * later, on a new connection. A write is never sent twice. What still fails only makes the daemon suspect.
+ */
 export async function send(path: string, init?: RequestInit): Promise<Response> {
-  let res: Response;
-  try {
-    res = await fetch(path, init);
-  } catch {
-    report(false);
-    throw new Error("Can't reach i.inc");
+  const method = (init?.method ?? "GET").toUpperCase();
+  const tries = method === "GET" || method === "HEAD" ? 2 : 1;
+  const go = fetch; // a retry goes through the same fetch as the first try
+  for (let attempt = 1; ; attempt++) {
+    const started = Date.now();
+    let res: Response;
+    try {
+      res = await go(path, init);
+    } catch (e) {
+      // Called off by the caller: that says nothing about the daemon.
+      if (init?.signal?.aborted) throw e;
+      noteFailure(method, path, e instanceof Error ? e.name : "Error", started);
+      if (attempt < tries) {
+        await new Promise((r) => setTimeout(r, timing.retryMs));
+        continue;
+      }
+      suspect();
+      throw new Error("Can't reach i.inc");
+    }
+    // The daemon never answers 502-504 (a GitHub problem is a 424 or 429, an agent that won't start a 424), so
+    // one of those is a proxy with nothing behind it, on any route.
+    if (!isGatewayDown(res.status)) {
+      report(true);
+      return res;
+    }
+    noteFailure(method, path, res.status, started);
+    if (attempt < tries) {
+      void res.body?.cancel().catch(() => {});
+      await new Promise((r) => setTimeout(r, timing.retryMs));
+      continue;
+    }
+    suspect();
+    return res;
   }
-  // The daemon never answers 502-504 for a GitHub problem (it sends 424 or 429), so one of those is a proxy
-  // with nothing behind it, on any route.
-  report(!isGatewayDown(res.status));
-  return res;
 }
 
 /** The daemon refused a request: its sentence, and the HTTP status (404: no such thing). */

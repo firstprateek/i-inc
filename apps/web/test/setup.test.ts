@@ -285,7 +285,8 @@ describe("teams", () => {
 describe("projects", () => {
   it("treats a GitHub problem (424, 429) as an answer, but a 502 from a proxy as the daemon being down", async () => {
     const { send } = await import("../src/api.ts");
-    const { isOffline, report } = await import("../src/connection.ts");
+    const { isOffline, report, timing } = await import("../src/connection.ts");
+    const realTiming = { ...timing };
 
     for (const status of [424, 429]) {
       vi.stubGlobal(
@@ -297,10 +298,13 @@ describe("projects", () => {
     }
 
     // The daemon never sends 502-504 for GitHub, so one on a GitHub route is a gateway with nothing behind it.
+    // Once its retry and the health probes get the same, without waiting out the probes' seconds.
+    Object.assign(timing, { retryMs: 0, probesMs: [0] });
     vi.stubGlobal("fetch", async () => new Response("Bad gateway", { status: 502 }));
     await send("/api/github/repos");
-    expect(isOffline()).toBe(true);
+    await vi.waitFor(() => expect(isOffline()).toBe(true));
     report(true);
+    Object.assign(timing, realTiming);
   });
 });
 

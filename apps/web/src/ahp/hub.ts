@@ -3,6 +3,7 @@
 // the last, so switching between views does not thrash it and nothing is left open behind a closed view.
 import { WebSocketTransport } from "@microsoft/agent-host-protocol/ws";
 import { api } from "../api.ts";
+import { report } from "../connection.ts";
 import { AhpConnection } from "./connection.ts";
 
 /** Where the host listens: the page's own origin, `/ahp` (the `i_inc` cookie rides on the upgrade). */
@@ -20,10 +21,13 @@ export const STOP_AFTER_MS = 4000;
 function make(): AhpConnection {
   const c = new AhpConnection({
     log: (m) => console.info(m),
+    // The socket opening, or anything on it, is the daemon answering: it calls off a doubt about the REST API.
+    heard: () => report(true),
     connect: async () => {
       try {
         const t = await WebSocketTransport.connect(ahpUrl());
         failures = 0;
+        report(true);
         return t;
       } catch (e) {
         // A refused upgrade does not say why. After a couple of tries, ask the REST API: a 401 there

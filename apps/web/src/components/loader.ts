@@ -7,7 +7,7 @@
 // retry button too. An answer that arrives out of order (a slow response to an older request) is dropped.
 import { html, LitElement, nothing } from "lit";
 import { ApiError, type RefreshScope, refresh, refreshNow } from "../api.ts";
-import { isOffline } from "../connection.ts";
+import { connection, isOffline } from "../connection.ts";
 
 /** What a view tells the shell, so one banner covers every view: `detail` is the message, or null once it's fine. */
 export const LOAD_STATE = "load-state";
@@ -158,14 +158,21 @@ export abstract class Loader<T> extends LitElement {
     </div>`;
   }
 
+  /** A failed first load can turn out to be the daemon being away (connection.ts decides a moment later). */
+  private onConnection = () => {
+    if (this.error !== null) this.requestUpdate();
+  };
+
   override connectedCallback(): void {
     super.connectedCallback();
     refresh.addEventListener("refresh", this.onRefresh);
+    connection.addEventListener("change", this.onConnection);
     void this.reload();
   }
 
   override disconnectedCallback(): void {
     refresh.removeEventListener("refresh", this.onRefresh);
+    connection.removeEventListener("change", this.onConnection);
     // Answers that land after the view is gone are dropped. (The shell forgets this view's failure itself:
     // an event from a detached element reaches no one.)
     this.loadSeq++;
