@@ -127,6 +127,25 @@ describe("make this a ticket, in owner-merges mode", () => {
 });
 
 describe("open a PR", () => {
+  it("asks GitHub about the PR at most once per 30 s poll of the Ship view", async () => {
+    const rig = await make({ mode: "owner-merges" });
+    const c = await rig.conversation();
+    c.write("a.txt", "a\n");
+    expect((await rig.call("POST", `/api/conversations/${c.conv.id}/pr`, {})).status).toBe(201);
+    const gets = () => rig.prs.calls.filter((x) => x.startsWith("get ")).length;
+    const poll = async () =>
+      expect((await rig.call("GET", `/api/conversations/${c.conv.id}/ship`)).status).toBe(200);
+    await poll();
+    const first = gets();
+    // the web app polls every 30 s while the PR's checks are pending: that one is answered from the cache
+    rig.clock.advance(0.5);
+    await poll();
+    expect(gets()).toBe(first);
+    rig.clock.advance(0.5);
+    await poll();
+    expect(gets()).toBe(first + 1);
+  });
+
   it("commits, pushes through the bot and opens a draft with a generated title and body", async () => {
     const rig = await make({ mode: "owner-merges", files: { ".github/workflows/ci.yml": "name: ci\n" } });
     const c = await rig.conversation();

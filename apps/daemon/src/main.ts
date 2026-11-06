@@ -20,6 +20,7 @@ import { demoReview } from "./demo-review.ts";
 import { resolveVersion } from "./deploys.ts";
 import { GitHubApp, readGitHubAppConfig } from "./github.ts";
 import { installGuards, serverError } from "./guards.ts";
+import { isLongRequest, LONG_REQUEST_SEC } from "./long-requests.ts";
 import { AppleMachines, defaultMachineSettings, wallsUp } from "./machines.ts";
 import { ollamaModelChoice } from "./ollama.ts";
 import { killTracked, stopTracked } from "./proc.ts";
@@ -267,7 +268,10 @@ if (app.ahp.backend instanceof SessionHost) app.ahp.backend.start();
 const server = Bun.serve<WsData>({
   port,
   hostname: host,
-  idleTimeout: 60,
+  // Longer than the 90 s a proxy in front keeps an idle connection (Go's IdleConnTimeout, which Tailscale
+  // serve uses), so the proxy always closes first and never sends a request down a socket Bun is closing;
+  // Bun allows at most 255. The owner's long actions get their own (long-requests.ts).
+  idleTimeout: 120,
   // Never Bun's development error page: it prints source excerpts and absolute paths. A route that
   // throws answers with a plain JSON error, and the log has the details.
   development: false,
@@ -280,9 +284,11 @@ const server = Bun.serve<WsData>({
       if (server.upgrade(req, { data: g.data })) return undefined;
       return new Response("websocket upgrade failed", { status: 400 });
     }
-    return new URL(req.url).pathname.startsWith("/api/") || !existsSync(web)
-      ? app.handle(req, { peer: server.requestIP(req)?.address })
-      : serveWeb(req);
+    const url = new URL(req.url);
+    if (!url.pathname.startsWith("/api/") && existsSync(web)) return serveWeb(req);
+    // A machine boot or GitHub can keep these quiet past the idle timeout, which would cut them silently.
+    if (isLongRequest(req.method, url)) server.timeout(req, LONG_REQUEST_SEC);
+    return app.handle(req, { peer: server.requestIP(req)?.address });
   },
   websocket: app.ahp.transport.websocket,
 });

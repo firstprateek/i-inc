@@ -88,7 +88,7 @@ describe("conversations in real mode", () => {
   it("can't put a conversation on a project until the GitHub App is set up, and says so", async () => {
     const { call, sandbox } = await realApp();
     const r = await call("POST", "/api/conversations", { employeeId: "ada", project: "Duet" });
-    expect(r.status).toBe(502);
+    expect(r.status).toBe(424);
     expect(r.body.error).toMatch(/GitHub App isn't set up/);
     expect(sandbox.live).toHaveLength(0);
   });

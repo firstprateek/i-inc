@@ -201,12 +201,12 @@ describe("REST /api/conversations", () => {
     expect(app.ahp.host.serverSeq).toBe(seq);
   });
 
-  it("answers 502 when the agent side cannot open", async () => {
+  it("answers 424, never 502-504, when the agent side cannot open", async () => {
     const backend = new ScriptedBackend();
     const app = await appWith(backend);
     backend.failOpen = new Error("the sandbox did not start");
     const r = await app.call("POST", "/api/conversations", { employeeId: "ada" });
-    expect(r.status).toBe(502);
+    expect(r.status).toBe(424);
     expect(r.body.error).toMatch(/sandbox did not start/);
     expect(app.db.all("SELECT * FROM conversations")).toEqual([]);
   });
