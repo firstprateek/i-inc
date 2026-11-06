@@ -3,10 +3,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AhpConnection } from "../../src/ahp/connection.ts";
 import { resetAhp, setAhp } from "../../src/ahp/hub.ts";
-import { refreshNow } from "../../src/api.ts";
 import "../../src/components/conversations.ts";
 import type { IncConversations } from "../../src/components/conversations.ts";
-import { isDoubted, isOffline, report, timing } from "../../src/connection.ts";
 import { hosts, must, until } from "../ahp/fake-host.ts";
 
 // biome-ignore lint/suspicious/noExplicitAny: scripted rows.
@@ -41,9 +39,6 @@ let allRows: Any[] = [];
 let listFails: (() => Response) | undefined;
 /** How many times `GET /api/conversations/:id` was asked. */
 let reads = 0;
-/** Set, what `GET /api/health` (connection.ts's probe) says. */
-let health: (() => Promise<Response>) | undefined;
-const realTiming = { ...timing };
 
 beforeEach(() => {
   phone = false;
@@ -53,10 +48,6 @@ beforeEach(() => {
   allRows = [];
   listFails = undefined;
   reads = 0;
-  health = undefined;
-  // A request that fails is sent again soon, and a doubt called off reloads every view at once (api.ts).
-  Object.assign(timing, { retryMs: 5, probesMs: [0, 20, 40], clearedRefreshGapMs: 0 });
-  report(true);
   localStorage.clear();
   location.hash = "";
   vi.stubGlobal("matchMedia", (q: string) => ({
@@ -65,7 +56,6 @@ beforeEach(() => {
     removeEventListener() {},
   }));
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
-    if (url === "/api/health" && health) return health();
     if (url === "/api/conversations" && init?.method === "POST") {
       posted.push(JSON.parse(String(init.body)));
       return json({ conversation: { ...row, id: "99887766", employeeId: posted.at(-1).employeeId } }, 201);
@@ -97,8 +87,6 @@ afterEach(() => {
   document.body.innerHTML = "";
   resetAhp();
   vi.unstubAllGlobals();
-  report(true);
-  Object.assign(timing, realTiming);
 });
 
 const json = (body: unknown, status = 200) =>
@@ -555,101 +543,5 @@ describe("a link to a conversation the list doesn't hold", () => {
       const shown = must<HTMLElement>(thread().querySelector("inc-conv-thread"));
       expect(shown.shadowRoot?.activeElement).toBe(shown.shadowRoot?.querySelector(".context-btn"));
     });
-  });
-});
-
-// Behind a proxy the browser drops a connection now and then, and a request on it gets no answer. That is not the
-// daemon being away (connection.ts): while the health probes decide, the screen keeps what it shows, and when the
-// daemon answers, it loads again. Before, the list said "Can't reach i.inc" until the next refresh, a minute later.
-describe("a load that got no answer while the daemon answers", () => {
-  const dropped = () => {
-    throw new TypeError("Failed to fetch");
-  };
-  /** The probe waits until `answer` (or `refuse`) is called. */
-  function gatedHealth() {
-    let open: (up: boolean) => void = () => {};
-    const gate = new Promise<boolean>((r) => {
-      open = r;
-    });
-    health = async () => ((await gate) ? json({ ok: true }) : dropped());
-    return { answer: () => open(true), refuse: () => open(false) };
-  }
-  const text = (list: () => HTMLElement) => list().shadowRoot?.textContent?.replace(/\s+/g, " ") ?? "";
-
-  it("keeps the list, never saying it can't reach i.inc, and loads it again when a probe is answered", async () => {
-    rows = [row];
-    const { el, list } = await mount();
-    expect(text(list)).toContain("Earlier work");
-    const probe = gatedHealth();
-    let drops = 2;
-    let asked = 0;
-    listFails = () => {
-      asked++;
-      return drops-- > 0
-        ? dropped()
-        : json({ conversations: [row, { ...row, id: "cd34ef56", title: "Later work" }] });
-    };
-    refreshNow();
-    await until(() => isDoubted());
-    await el.updateComplete;
-    await (list() as Any).updateComplete;
-    expect(asked).toBe(2); // sent, and sent once more
-    expect(text(list)).toContain("Earlier work");
-    expect(text(list)).not.toContain("Can't reach");
-    expect((el as Any).listError).toBe("");
-
-    probe.answer();
-    await until(() => text(list).includes("Later work"));
-    expect(asked).toBe(3);
-    expect(text(list)).not.toContain("Can't reach");
-    expect(isOffline()).toBe(false);
-  });
-
-  it("opens a link's conversation, never saying it couldn't load it, once a probe is answered", async () => {
-    const probe = gatedHealth();
-    let drops = 2;
-    byId = () => (drops-- > 0 ? dropped() : json({ conversation: { ...row, archivedAt: 5 } }));
-    const { el, thread } = await mount({ selectedId: row.id });
-    await until(() => isDoubted());
-    await el.updateComplete;
-    expect(reads).toBe(2);
-    expect(thread().textContent).not.toContain("Couldn't load");
-    expect(thread().querySelector("[aria-busy]")).not.toBeNull(); // Loading…
-
-    probe.answer();
-    await until(() => thread().querySelector("inc-conv-thread"));
-    expect(reads).toBe(3);
-  });
-
-  it("says it can't reach i.inc once the daemon is found away, keeping the rows behind the banner", async () => {
-    rows = [row];
-    const { el, list } = await mount();
-    const probe = gatedHealth();
-    listFails = dropped;
-    refreshNow();
-    await until(() => isDoubted());
-    expect((el as Any).listError).toBe("");
-    probe.refuse();
-    await until(() => isOffline());
-    await el.updateComplete;
-    await (list() as Any).updateComplete;
-    expect((el as Any).listError).toBe("Can't reach i.inc");
-    expect(text(list)).toContain("Earlier work");
-  });
-
-  it("shows the failure after waiting twice in a row for a request that never gets an answer", async () => {
-    rows = [row];
-    const { el, list } = await mount();
-    health = async () => json({ ok: true });
-    let asked = 0;
-    listFails = () => {
-      asked++;
-      return dropped();
-    };
-    refreshNow();
-    await until(() => (el as Any).listError !== "");
-    expect(asked).toBe(6); // three loads, each sent twice
-    expect(text(list)).toContain("Can't reach i.inc");
-    expect(isOffline()).toBe(false);
   });
 });

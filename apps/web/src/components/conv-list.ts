@@ -234,10 +234,11 @@ export class IncConvList extends LitElement {
       </div>
       <div class="groups" @keydown=${this.onKeydown}>
         ${
-          // Offline, the shell's banner explains, and a list that had loaded stays as it was (the last branch).
-          this.error && isOffline() && !this.items.length
-            ? html`<p class="muted" role="status">Conversations load when i.inc answers.</p>`
-            : this.error && !isOffline()
+          this.error && isOffline()
+            ? this.items.length
+              ? nothing // the list stays as it was; the shell's banner explains
+              : html`<p class="muted" role="status">Conversations load when i.inc answers.</p>`
+            : this.error
               ? html`<p class="problem" role="alert">${this.error}</p><button class="btn ghost" type="button" @click=${() => this.emit("conv-reload")}>Try again</button>`
               : this.loading && !this.items.length
                 ? html`<div aria-busy="true" aria-label="Loading conversations"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>`

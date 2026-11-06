@@ -188,15 +188,7 @@ export interface OfficeResponse {
   rateLimits?: Record<string, AccountRateLimit>;
 }
 
-import {
-  connection,
-  isGatewayDown,
-  report,
-  suspect,
-  timing,
-  UNANSWERED_RETRIES,
-  Unreachable,
-} from "./connection.ts";
+import { isGatewayDown, report, suspect, timing, Unreachable } from "./connection.ts";
 import { draftMemo } from "./drafts.ts";
 import { showLogin } from "./login.ts";
 
@@ -542,45 +534,3 @@ export interface RefreshScope {
 export const refresh = new EventTarget();
 export const refreshNow = (scope?: RefreshScope) =>
   refresh.dispatchEvent(new CustomEvent<RefreshScope | undefined>("refresh", { detail: scope }));
-
-/**
- * A doubt that is called off (connection.ts) always began with a request that got no answer, and whatever view
- * made it is waiting on it, or showing that it failed. So every view that listens to `refresh` loads again, as
- * after an outage. At most once per `timing.clearedRefreshGapMs`: a request that fails every time, while the
- * daemon answers its probes, must not reload every view as fast as the probes answer.
- *
- * Nor for ever: a doubt called off less than a gap after the last of these reloads began with a request that
- * reload made, failing again. After `UNANSWERED_RETRIES` reloads in a row, by which time a view whose load kept
- * failing shows its failure (loader.ts, conversations.ts), there is no other until a doubt is called off a gap
- * or more after the last. Instead `refresh` says `withheld`, and a view still waiting on a load that got no
- * answer loads again by itself (as many times in a row as it waits at all).
- */
-let clearedRefreshAt = Number.NEGATIVE_INFINITY;
-let clearedInARow = 0;
-let owedAt: number | null = null;
-let owedTimer: ReturnType<typeof setTimeout> | undefined;
-function refreshForCleared(): void {
-  owedAt = null;
-  clearTimeout(owedTimer);
-  clearedRefreshAt = Date.now();
-  refreshNow();
-}
-connection.addEventListener("cleared", () => {
-  const now = Date.now();
-  const gap = timing.clearedRefreshGapMs;
-  // One is already on its way. (One due further off than a gap is from a clock that went back: it is not.)
-  if (owedAt !== null && now < owedAt && owedAt - now <= gap) return;
-  const again = now >= clearedRefreshAt && now - clearedRefreshAt < gap;
-  clearedInARow = again ? clearedInARow + 1 : 1;
-  if (clearedInARow > UNANSWERED_RETRIES) {
-    refresh.dispatchEvent(new Event("withheld"));
-    return;
-  }
-  const wait = clearedRefreshAt + gap - now;
-  if (wait <= 0 || wait > gap) {
-    refreshForCleared();
-    return;
-  }
-  owedAt = now + wait;
-  owedTimer = setTimeout(refreshForCleared, wait);
-});
