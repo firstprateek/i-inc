@@ -14,7 +14,7 @@ import { answer } from "./daemon-board.ts";
 
 // Going offline is confirmed with health probes over a few seconds (connection.ts); these tests confirm it at once.
 const realTiming = { ...timing };
-const fastTiming = { retryMs: 0, probesMs: [0] };
+const fastTiming = { retryMs: 0, probesMs: [0], clearedRefreshGapMs: 0 };
 
 const view = (over: Partial<TicketView>): TicketView => ({
   id: "1",
@@ -214,6 +214,10 @@ describe("the loader", () => {
           else resolve(json({ proposals: [], conversations: [], employees: [] }));
         }),
     );
+    // Requests the tests before left behind fail late, and the doubt they start would, once the board's request
+    // is answered, reload every view (api.ts): let them, and call it off, first.
+    await new Promise((r) => setTimeout(r, 50));
+    report(true);
     const board = await mount<HTMLElement & { reload(): Promise<void> }>("inc-board");
     void board.reload();
     await tick();

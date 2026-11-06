@@ -7,14 +7,13 @@
 // retry button too. An answer that arrives out of order (a slow response to an older request) is dropped.
 //
 // A load that got no answer at all (connection.ts's `Unreachable`) says nothing yet: a dropped connection
-// is common behind a proxy. While the health probes decide, the view waits. If the daemon answers, the load
-// runs again; if it is away, the shell's "Can't reach i.inc" banner covers the view until it is back.
+// is common behind a proxy. While the health probes decide, the view waits. If the daemon answers, every view
+// loads again (api.ts); if it is away, the shell's "Can't reach i.inc" banner covers the view until it is back.
 import { html, LitElement, nothing } from "lit";
 import { ApiError, type RefreshScope, refresh, refreshNow } from "../api.ts";
-import { connection, isDoubted, isOffline, Unreachable } from "../connection.ts";
+import { connection, isDoubted, isOffline, UNANSWERED_RETRIES, Unreachable } from "../connection.ts";
 
-/** How many times in a row a load that got no answer runs again by itself, before its failure shows. */
-export const UNANSWERED_RETRIES = 2;
+export { UNANSWERED_RETRIES };
 
 /** What a view tells the shell, so one banner covers every view: `detail` is the message, or null once it's fine. */
 export const LOAD_STATE = "load-state";
@@ -87,6 +86,8 @@ export abstract class Loader<T> extends LitElement {
 
   async reload(): Promise<void> {
     const seq = ++this.loadSeq;
+    // The load before got no answer, and the verdict (a doubt called off) has asked for this one.
+    if (this.held) this.unanswered++;
     this.held = null;
     try {
       const data = await this.fetch();
@@ -100,7 +101,7 @@ export abstract class Loader<T> extends LitElement {
       if (seq !== this.loadSeq) return;
       if (e instanceof Unreachable && !isOffline() && this.unanswered < UNANSWERED_RETRIES) {
         if (isDoubted()) {
-          this.held = e; // the verdict decides: onCleared, or onConnection
+          this.held = e; // the verdict decides: the refresh for a doubt called off, or onConnection
           return;
         }
         // The doubt was already called off: the daemon is there.
@@ -195,26 +196,16 @@ export abstract class Loader<T> extends LitElement {
     if (this.error !== null) this.requestUpdate();
   };
 
-  /** The doubt was called off, so the daemon is there: a load that got no answer meanwhile runs again. */
-  private onCleared = () => {
-    if (!this.held) return;
-    this.held = null;
-    this.unanswered++;
-    void this.reload();
-  };
-
   override connectedCallback(): void {
     super.connectedCallback();
     refresh.addEventListener("refresh", this.onRefresh);
     connection.addEventListener("change", this.onConnection);
-    connection.addEventListener("cleared", this.onCleared);
     void this.reload();
   }
 
   override disconnectedCallback(): void {
     refresh.removeEventListener("refresh", this.onRefresh);
     connection.removeEventListener("change", this.onConnection);
-    connection.removeEventListener("cleared", this.onCleared);
     // Answers that land after the view is gone are dropped. (The shell forgets this view's failure itself:
     // an event from a detached element reaches no one.)
     this.loadSeq++;

@@ -5,8 +5,8 @@
 // Tailscale serve, the owner's browser did it many times a minute), and every request on it fails at
 // once. So a failure only makes the daemon suspect: a few health probes over a few seconds decide, and
 // any answer meanwhile (a request, the event stream opening, a frame on the AHP socket) calls it off.
-// Views whose load failed meanwhile wait for the verdict (loader.ts): a doubt called off (`cleared`)
-// loads them again, and the daemon found away shows the shell's banner over them.
+// Views whose load failed meanwhile wait for the verdict (loader.ts, conversations.ts): a doubt called off
+// (`cleared`) reloads every view (api.ts), and the daemon found away shows the shell's banner over them.
 
 export const connection = new EventTarget();
 let offline = false;
@@ -19,7 +19,12 @@ export const timing = {
   probesMs: [0, 1000, 2500],
   /** A probe with no answer by then has failed. */
   probeTimeoutMs: 5000,
+  /** The least time between two reloads of every view for a doubt called off (api.ts). */
+  clearedRefreshGapMs: 3000,
 };
+
+/** How many times in a row a view's load that got no answer waits for the verdict, before its failure shows. */
+export const UNANSWERED_RETRIES = 2;
 
 /** A request the daemon gave no answer to: the connection dropped, or the proxy said 502-504. */
 export class Unreachable extends Error {

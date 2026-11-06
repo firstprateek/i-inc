@@ -188,7 +188,7 @@ export interface OfficeResponse {
   rateLimits?: Record<string, AccountRateLimit>;
 }
 
-import { isGatewayDown, report, suspect, timing, Unreachable } from "./connection.ts";
+import { connection, isGatewayDown, report, suspect, timing, Unreachable } from "./connection.ts";
 import { draftMemo } from "./drafts.ts";
 import { showLogin } from "./login.ts";
 
@@ -534,3 +534,32 @@ export interface RefreshScope {
 export const refresh = new EventTarget();
 export const refreshNow = (scope?: RefreshScope) =>
   refresh.dispatchEvent(new CustomEvent<RefreshScope | undefined>("refresh", { detail: scope }));
+
+/**
+ * A doubt that is called off (connection.ts) always began with a request that got no answer, and whatever view
+ * made it is waiting on it, or showing that it failed: Loaders and every other view alike. So every view loads
+ * again, as after an outage. At most once per `timing.clearedRefreshGapMs`: a request that fails every time,
+ * while the daemon answers its probes, must not reload every view as fast as the probes answer.
+ */
+let clearedRefreshAt = Number.NEGATIVE_INFINITY;
+let owedAt: number | null = null;
+let owedTimer: ReturnType<typeof setTimeout> | undefined;
+function refreshForCleared(): void {
+  owedAt = null;
+  clearTimeout(owedTimer);
+  clearedRefreshAt = Date.now();
+  refreshNow();
+}
+connection.addEventListener("cleared", () => {
+  const now = Date.now();
+  const gap = timing.clearedRefreshGapMs;
+  // One is already on its way. (One due further off than a gap is from a clock that went back: it is not.)
+  if (owedAt !== null && now < owedAt && owedAt - now <= gap) return;
+  const wait = clearedRefreshAt + gap - now;
+  if (wait <= 0 || wait > gap) {
+    refreshForCleared();
+    return;
+  }
+  owedAt = now + wait;
+  owedTimer = setTimeout(refreshForCleared, wait);
+});

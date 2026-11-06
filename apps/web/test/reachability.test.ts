@@ -47,8 +47,11 @@ async function sent(path: string, init?: RequestInit): Promise<Response | Error>
 let changes = 0;
 const onChange = () => changes++;
 
+const realTiming = { ...timing };
 beforeEach(() => {
   vi.useFakeTimers();
+  // Every doubt called off reloads every view at once; the gap between two has a test of its own.
+  timing.clearedRefreshGapMs = 0;
   report(true);
   changes = 0;
   connection.addEventListener("change", onChange);
@@ -56,6 +59,7 @@ beforeEach(() => {
 afterEach(() => {
   connection.removeEventListener("change", onChange);
   report(true);
+  Object.assign(timing, realTiming);
   document.body.innerHTML = "";
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -295,6 +299,7 @@ describe("a view whose load got no answer", () => {
       await el.updateComplete;
       expect(callsTo("/api/health")).toHaveLength(1);
       expect(el.data).toEqual({ n: 2 });
+      expect(callsTo("/api/thing")).toHaveLength(3); // loaded once more, not once for each way of hearing of it
       expect(messages.filter((m) => m !== null)).toEqual([]);
       expect(isOffline()).toBe(false);
     });
@@ -328,14 +333,68 @@ describe("a view whose load got no answer", () => {
     expect(shown(first)).toMatch(/^Nothing has loaded yet\. The thing loads when i\.inc answers\./);
   });
 
-  it(`runs again by itself at most ${UNANSWERED_RETRIES} times while the daemon answers but the view's request doesn't`, async () => {
+  it(`waits at most ${UNANSWERED_RETRIES} times in a row while the daemon answers but the view's request doesn't, and reloads no faster than the gap`, async () => {
+    const gap = 3000;
+    timing.clearedRefreshGapMs = gap;
+    await vi.advanceTimersByTimeAsync(gap); // past the last test's reload
     serve({ "/api/thing": [drop], "/api/health": [ok] });
     const el = await mount();
-    await vi.advanceTimersByTimeAsync(10_000);
+    // loads at about +0, +0.25 s and +3.25 s (the gap after the first reload): then it says so
+    await vi.advanceTimersByTimeAsync(gap + 1000);
     await el.updateComplete;
     expect(callsTo("/api/thing")).toHaveLength(2 * (1 + UNANSWERED_RETRIES));
     expect(shown(el)).toMatch(/^Couldn't load the thing: Can't reach i\.inc/);
     expect(isOffline()).toBe(false);
+    // each failure still starts a doubt that the daemon calls off, but every view loads again once a gap at most
+    await vi.advanceTimersByTimeAsync(3 * gap);
+    expect(callsTo("/api/thing").length).toBeLessThanOrEqual(2 * (1 + UNANSWERED_RETRIES) + 2 * 3);
+  });
+});
+
+describe("every view loading again for a doubt called off", () => {
+  let refreshes = 0;
+  const onRefresh = (e: Event) => {
+    if ((e as CustomEvent).detail == null) refreshes++; // everything, not some tickets
+  };
+  beforeEach(() => {
+    refreshes = 0;
+    refresh.addEventListener("refresh", onRefresh);
+  });
+  afterEach(() => refresh.removeEventListener("refresh", onRefresh));
+
+  it("happens at once, for a view that is not a Loader too", async () => {
+    vi.stubGlobal("fetch", (_url: string, init?: RequestInit) => hang(init));
+    suspect();
+    expect(refreshes).toBe(0);
+    report(true);
+    expect(refreshes).toBe(1);
+    report(true); // no doubt: nothing to load again
+    expect(refreshes).toBe(1);
+  });
+
+  it("happens once a gap at most, however many doubts are called off, and none is lost", async () => {
+    const gap = 3000;
+    timing.clearedRefreshGapMs = gap;
+    await vi.advanceTimersByTimeAsync(gap); // past the last test's
+    vi.stubGlobal("fetch", (_url: string, init?: RequestInit) => hang(init));
+    const doubtCalledOff = () => {
+      suspect();
+      report(true);
+    };
+    doubtCalledOff();
+    expect(refreshes).toBe(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    doubtCalledOff();
+    doubtCalledOff();
+    expect(refreshes).toBe(1);
+    await vi.advanceTimersByTimeAsync(gap - 1000 - 10);
+    expect(refreshes).toBe(1);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(refreshes).toBe(2); // the two at +1 s, as one
+    await vi.advanceTimersByTimeAsync(gap * 3);
+    expect(refreshes).toBe(2);
+    doubtCalledOff(); // long after: at once again
+    expect(refreshes).toBe(3);
   });
 });
 
@@ -353,7 +412,7 @@ describe("the shell", () => {
     expect(app.shadowRoot?.querySelector("inc-offline")).toBeNull();
   });
 
-  it("refetches every view when the daemon is back from a confirmed outage, at once", async () => {
+  it("refetches every view when a doubt is called off, and when the daemon is back from a confirmed outage, at once", async () => {
     // The shell's own requests never answer here, so only this test says when the daemon comes and goes.
     vi.stubGlobal("fetch", (url: string, init?: RequestInit) =>
       String(url) === "/api/health" ? Promise.reject(new TypeError("Failed to fetch")) : hang(init),
@@ -372,11 +431,13 @@ describe("the shell", () => {
       refresh.removeEventListener("refresh", onRefresh);
       return n;
     };
-    // A doubt called off is no outage: only the views that failed load again (the loader's own tests).
+    // A doubt called off is no outage, and shows no banner, but it began with a request that got no answer: every
+    // view loads again, as the Conversations list (not a Loader) needs.
     suspect();
     await vi.advanceTimersByTimeAsync(500);
     expect(isDoubted()).toBe(true);
-    expect(refetchesOnAnswer()).toBe(0);
+    expect(refetchesOnAnswer()).toBe(1);
+    expect(isOffline()).toBe(false);
 
     // Every probe failed: offline. An answer right after still refetches everything.
     suspect();

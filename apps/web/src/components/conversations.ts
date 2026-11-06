@@ -6,6 +6,7 @@ import type { Employee } from "@i-inc/core";
 import { css, html, LitElement, nothing } from "lit";
 import { ahp, useAhp } from "../ahp/hub.ts";
 import { type AccountRateLimit, ApiError, api, type Conversation, refresh, type ShipView } from "../api.ts";
+import { connection, isDoubted, isOffline, UNANSWERED_RETRIES, Unreachable } from "../connection.ts";
 import { friendlyError } from "../conversations/actions.ts";
 import { shipOutcomes } from "../conversations/outcomes.ts";
 import { cardStyles } from "../conversations/styles.ts";
@@ -114,6 +115,15 @@ export class IncConversations extends LitElement {
   private reviewOpener: HTMLElement | null = null;
   /** The pane has a history entry of its own (a phone), for back to take away. */
   private reviewEntry = false;
+  /**
+   * The list's last load, and a link's conversation, got no answer while the daemon was in doubt (connection.ts):
+   * the failure, held for the verdict. A doubt called off reloads every view (api.ts), and the daemon found away
+   * shows it, behind the shell's banner (`onConnection`). As in loader.ts, only so many times in a row.
+   */
+  private heldList = "";
+  private heldRead = "";
+  private listUnanswered = 0;
+  private readUnanswered = 0;
 
   constructor() {
     super();
@@ -193,6 +203,7 @@ export class IncConversations extends LitElement {
       c.onRoster(() => this.scheduleReload(500)),
     ];
     refresh.addEventListener("refresh", this.onRefresh);
+    connection.addEventListener("change", this.onConnection);
     // A request from a dialog this screen no longer holds has ended.
     this.offs.push(
       shipOutcomes.subscribe((added) => {
@@ -244,6 +255,7 @@ export class IncConversations extends LitElement {
     for (const [mq, fn] of this.queries) mq.removeEventListener?.("change", fn);
     this.queries = [];
     refresh.removeEventListener("refresh", this.onRefresh);
+    connection.removeEventListener("change", this.onConnection);
     window.visualViewport?.removeEventListener("resize", this.onViewport);
     removeEventListener("popstate", this.onPop);
     document.removeEventListener("keydown", this.sheetKey, true);
@@ -272,6 +284,23 @@ export class IncConversations extends LitElement {
 
   private onRefresh = () => this.scheduleReload(0);
 
+  /** The daemon is away: a held failure shows now, behind the shell's banner. */
+  private onConnection = () => {
+    if (!isOffline()) return;
+    if (this.heldList) {
+      this.listError = this.heldList;
+      this.loading = false;
+    }
+    if (this.heldRead) this.readError = this.heldRead;
+    this.heldList = "";
+    this.heldRead = "";
+  };
+
+  /** A failure that waits for the verdict instead of showing (see `heldList`). */
+  private holds(e: unknown, inARow: number): boolean {
+    return e instanceof Unreachable && isDoubted() && inARow < UNANSWERED_RETRIES;
+  }
+
   private scheduleReload(ms: number) {
     clearTimeout(this.reloadTimer);
     this.reloadTimer = setTimeout(() => {
@@ -285,6 +314,7 @@ export class IncConversations extends LitElement {
     if (changed.has("selectedId") || this.selected()) {
       this.lost = "";
       this.readError = "";
+      this.heldRead = "";
     }
     if (changed.has("selectedId") && changed.get("selectedId") !== undefined) {
       // Back or a link moved on, so what was open over the last one goes with it. The pane's history entry is
@@ -334,9 +364,12 @@ export class IncConversations extends LitElement {
 
   private async loadList(): Promise<void> {
     const token = ++this.loadToken;
+    let held = false;
     try {
       const rows = await api.conversations(this.showArchived ? "all" : undefined);
       if (token !== this.loadToken) return;
+      this.listUnanswered = 0;
+      this.heldList = "";
       // The open conversation stays on screen until the daemon says why the list no longer holds it.
       const open = this.selected();
       const dropped = open && !rows.some((c) => c.id === open.id);
@@ -345,9 +378,17 @@ export class IncConversations extends LitElement {
       if (dropped) void this.ask(open.id, open);
     } catch (e) {
       if (token !== this.loadToken) return;
-      this.listError = e instanceof Error ? e.message : String(e);
+      const message = e instanceof Error ? e.message : String(e);
+      if (this.holds(e, this.listUnanswered)) {
+        // What is on screen stays (the rows, or the skeleton) until the verdict.
+        this.listUnanswered++;
+        this.heldList = message;
+        held = true;
+        return;
+      }
+      this.listError = message;
     } finally {
-      if (token === this.loadToken) this.loading = false;
+      if (token === this.loadToken && !held) this.loading = false;
     }
   }
 
@@ -420,6 +461,8 @@ export class IncConversations extends LitElement {
     try {
       const c = await api.conversation(id);
       if (id !== this.selectedId) return;
+      this.readUnanswered = 0;
+      this.heldRead = "";
       if (open && !open.archivedAt && c.archivedAt) this.leave("That conversation was archived.");
       else this.list = [c, ...this.list.filter((x) => x.id !== c.id)];
     } catch (e) {
@@ -430,7 +473,13 @@ export class IncConversations extends LitElement {
       }
       // Anything else says nothing about the conversation. One already open stays, and a link says it couldn't
       // read it. The next reload asks again, so `list` isn't touched here: that would ask again at once, for ever.
-      if (!open) this.readError = e instanceof Error ? e.message : String(e);
+      const message = e instanceof Error ? e.message : String(e);
+      if (this.holds(e, this.readUnanswered)) {
+        this.readUnanswered++;
+        if (!open) this.heldRead = message;
+        return;
+      }
+      if (!open) this.readError = message;
     } finally {
       this.asking.delete(id);
     }
