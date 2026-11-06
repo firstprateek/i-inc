@@ -1002,6 +1002,52 @@ describe("a search", () => {
       });
     });
 
+    describe("a user name in a URL", () => {
+      it.each([
+        `"dep": "git+ssh://git@github.com/a/b.git"`,
+        "ssh://git@github.com/a/b.git",
+        `{"url":"https://acme.example","email":"me@acme.example"}`,
+        "https://acme.example,Acme,me@acme.example",
+        `\\"https://acme.example\\",\\"email\\":\\"me@acme.example\\"`,
+        `"https://me@acme.example:443","x":"y@z"`,
+        "ssh://git@github.com/a/pkg@1.0",
+        "https://x-access-token@github.com",
+        "https://postgres.abcdefghijkl@h.example",
+      ])("is no credential alone: %s", (line) => {
+        expect(redactFile(`${line}\n`)).toBe(`${line}\n`);
+        expect(holdsCredential(`${line}\n`)).toBe(false);
+        expect(scanPatch(`diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+${line}\n`)).toBe(false);
+        expect(redactTokens(line)).toBe(line);
+      });
+
+      it.each([
+        ["a token's prefix", "https://ghp_xxx@github.com", "ghp_xxx"],
+        ["a token's prefix after a comma", "https://acme.example,ghp_xxx@github.com", "ghp_xxx"],
+        [
+          "a classic GitHub token",
+          `https://${"0123456789abcdef".repeat(2)}01234567@github.com`,
+          "89abcdef01234567",
+        ],
+        ["20 characters with a digit", "https://abcdefghijklmnopqrs1@h", "abcdefghijklmnopqrs1"],
+        ["32 characters", `https://${"a".repeat(32)}@h`, "a".repeat(32)],
+        ["a token's prefix in a quoted URL", `"https://ghp_xxx@github.com","email":"me@x"`, "ghp_xxx"],
+        ["a password in a quoted URL", `"https://u:p@acme.example","x":"y@z"`, "u:p"],
+        ["a password in a quoted URL with a port", `"https://u:p@acme.example:443","x":"y@z"`, "u:p"],
+        ["an encoded colon", "https://u%3Ap@h", "u%3Ap"],
+        ["an empty password", "https://u:@h", "u:"],
+        ["a password with a quote before a field", `"https://u:a","b":"c@h"`, "u:a"],
+        ["a token's prefix past the old limit", `https://ghp_${"x".repeat(500)}@h`, "ghp_x"],
+        ["a long user name past the old limit", `https://${"g".repeat(500)}@h`, "g".repeat(400)],
+      ])("is a credential with %s", (_, line, secret) => {
+        stopped(`${line}\n`, secret);
+      });
+
+      it("is still taken from what an agent says when it is a token", () => {
+        expect(redactTokens("https://ghp_xxx@github.com")).toBe("https://[redacted]@github.com");
+        expect(redactText("https://u:p@h")).toBe("https://[redacted]@h");
+      });
+    });
+
     it.each([2001, 5000, 200_000])("takes a ?token= value of %i characters", (n) => {
       const secret = `${"a".repeat(n - 2)}zz`;
       stopped(`curl https://h.example/x?token=${secret}&page=2\n`, "azz");
@@ -1636,6 +1682,19 @@ describe("a search", () => {
         ["named keys", fill("sk-ant-")],
         ["named keys with no run", fill(`xsk-ant-${"a".repeat(16)} `)],
         ["one named key", `xsk-ant-${fill("a-")}`],
+        ["user names that are no credential", fill("a://git@h/")],
+        ["user names that are no credential, with no /", fill("a://git@h ")],
+        ["user names at the old limit", fill(`a://${"g".repeat(399)}@`)],
+        ["runs one short of a token's length", fill(`a://${`${"g1".repeat(9)}g,`.repeat(20)}@ `)],
+        ["quoted URLs that end at their quote", fill('"a://h","e":"m@')],
+        ["quoted URLs past escaped quotes", fill(`"a://${'\\"'.repeat(198)}@`)],
+        ["escaped URLs past plain quotes", fill(`\\"a://${'"'.repeat(398)}@`)],
+        ["quoted hosts with holes", fill(`"a://h:\${${"}a".repeat(190)}"@`)],
+        ["quoted hosts with ports", fill(`"a://h:1${",".repeat(390)}"@`)],
+        ["prefixes for user names", fill("a://ghp_@")],
+        ["one long user name", `a://${fill("g", 999_000)}@h`],
+        ["one long user name with commas", `a://${fill("g,", 999_000)}@h`],
+        ["an @ after each quote", fill(`'a://h'@`)],
       ])("is one pass over %s", (_, text) => {
         const at = performance.now();
         redactFile(text);
