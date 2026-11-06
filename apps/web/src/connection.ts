@@ -63,6 +63,15 @@ export function report(reachable: boolean): void {
 }
 
 /**
+ * The daemon spoke on another channel (a frame on the AHP socket): that calls off a doubt, but it doesn't end
+ * a confirmed outage. The REST API can fail while the socket still works, and only an answer over HTTP says
+ * the views can load again; otherwise each frame would take the banner down and the next failure put it back.
+ */
+export function heard(): void {
+  if (confirming) report(true);
+}
+
+/**
  * A request failed: find out whether the daemon is gone before saying so. With the device offline that is
  * known at once; otherwise GET /api/health is asked a few times (`timing.probesMs`), and only when every
  * probe fails, with no answer from anywhere else in between, is the daemon unreachable.
