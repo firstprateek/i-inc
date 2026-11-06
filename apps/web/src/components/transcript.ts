@@ -3,6 +3,7 @@
 // hides itself when the daemon has no transcripts to give (404, empty, or unreachable).
 import { css, html, LitElement, nothing } from "lit";
 import { api, refresh, type TicketSession, type TranscriptItem } from "../api.ts";
+import { Unanswered } from "../connection.ts";
 import { brainHref, brainScopeLabel } from "../conversations/model.ts";
 import { clock } from "../time.ts";
 import { base } from "./shared.ts";
@@ -69,14 +70,18 @@ export class IncTranscript extends LitElement {
   }
 
   private onRefresh = () => void this.load();
+  /** A load that got no answer runs again once the daemon answers a health probe. */
+  private unanswered = new Unanswered(() => void this.load());
 
   override connectedCallback(): void {
     super.connectedCallback();
     refresh.addEventListener("refresh", this.onRefresh);
+    this.unanswered.connect();
   }
 
   override disconnectedCallback(): void {
     refresh.removeEventListener("refresh", this.onRefresh);
+    this.unanswered.disconnect();
     super.disconnectedCallback();
   }
 
@@ -93,9 +98,12 @@ export class IncTranscript extends LitElement {
     const id = this.ticketId;
     try {
       const s = await api.sessions(id);
-      if (id === this.ticketId) this.sessions = s;
-    } catch {
+      if (id !== this.ticketId) return;
+      this.sessions = s;
+      this.unanswered.reset();
+    } catch (e) {
       // Keep what we have; a failed refresh is not worth an alarm in a secondary section.
+      if (id === this.ticketId) this.unanswered.failed(e);
     }
   }
 

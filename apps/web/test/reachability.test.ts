@@ -5,10 +5,21 @@
 // kept for debugging holds no query string.
 import { html } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { call, netFailures, refresh, send } from "../src/api.ts";
+import { api, call, login, netFailures, refresh, send, signup } from "../src/api.ts";
 import "../src/components/app.ts";
+import "../src/components/offline.ts";
 import { LOAD_STATE, Loader, type LoadState, UNANSWERED_RETRIES } from "../src/components/loader.ts";
-import { connection, isDoubted, isOffline, report, suspect, timing, Unreachable } from "../src/connection.ts";
+import {
+  connection,
+  isDoubted,
+  isOffline,
+  report,
+  suspect,
+  timing,
+  Unanswered,
+  Unreachable,
+} from "../src/connection.ts";
+import { ghCall } from "../src/github-projects.ts";
 
 const ok = () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
 const answer = (n: number) => () =>
@@ -249,11 +260,39 @@ describe("a call the proxy answered for", () => {
     expect(e).toBeInstanceOf(Unreachable);
     expect((e as Error).message).toBe("Can't reach i.inc");
   });
+
+  // Each of these parses the body itself, so the proxy's text would read as the daemon's (unexplained) refusal.
+  for (const [what, path, go] of [
+    [
+      "a GitHub call (ghCall)",
+      "/api/projects/github/repos",
+      () => ghCall("GET", "/api/projects/github/repos"),
+    ],
+    [
+      "a ticket with images (upload)",
+      "/api/tickets",
+      () => api.createTicket({ title: "t" } as never, [new File(["x"], "a.png")]),
+    ],
+    ["signing in", "/api/login", () => login("me", "pw")],
+    ["signing up", "/api/signup", () => signup("me", "pw")],
+  ] as const) {
+    it(`is "Can't reach i.inc" for ${what}`, async () => {
+      serve({ [path]: [gateway], "/api/health": [ok] });
+      const p = (go as () => Promise<unknown>)().catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(timing.retryMs);
+      expect(await p).toBeInstanceOf(Unreachable);
+    });
+  }
 });
 
 class TestThing extends Loader<{ n: number }> {
   protected fetch() {
     return call<{ n: number }>("GET", "/api/thing");
+  }
+  /** What a view about something else does (another ticket). */
+  switchTo() {
+    this.resetLoad();
+    void this.reload();
   }
   override render() {
     if (this.data) return html`<p>thing ${this.data.n}</p>`;
@@ -335,6 +374,96 @@ describe("a view whose load got no answer", () => {
     await el.updateComplete;
     expect(callsTo("/api/thing")).toHaveLength(2 * (1 + UNANSWERED_RETRIES));
     expect(shown(el)).toMatch(/^Couldn't load the thing: Can't reach i\.inc/);
+    expect(isOffline()).toBe(false);
+  });
+
+  it("waits for the probes again after the owner presses Try again, once it has run out of tries", async () => {
+    serve({ "/api/thing": [drop], "/api/health": [ok] });
+    const el = await mount();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await el.updateComplete;
+    expect(shown(el)).toMatch(/^Couldn't load the thing/);
+
+    serve({ "/api/thing": [drop, drop, answer(5)], "/api/health": [ok] });
+    el.shadowRoot?.querySelector("button")?.click();
+    await vi.advanceTimersByTimeAsync(timing.retryMs + 50);
+    await el.updateComplete;
+    expect(shown(el)).toBe("thing 5");
+  });
+
+  for (const [what, between] of [
+    ["the view is about something else now", (el: TestThing) => el.switchTo()],
+    [
+      "the daemon answered meanwhile, even with a refusal",
+      async (el: TestThing) => {
+        serve({ "/api/thing": [() => new Response('{"error":"busy"}', { status: 500 })] });
+        void el.reload();
+        await vi.advanceTimersByTimeAsync(10);
+      },
+    ],
+  ] as const) {
+    it(`waits for the probes again once ${what}, after running out of tries`, async () => {
+      serve({ "/api/thing": [drop], "/api/health": [ok] });
+      const el = await mount();
+      await vi.advanceTimersByTimeAsync(10_000);
+      await between(el);
+      serve({ "/api/thing": [drop, drop, answer(6)], "/api/health": [ok] });
+      void el.reload();
+      await vi.advanceTimersByTimeAsync(timing.retryMs + 50);
+      await el.updateComplete;
+      expect(shown(el)).toBe("thing 6");
+    });
+  }
+});
+
+describe("a view that isn't a Loader (Unanswered)", () => {
+  /** Fails one load with `e` while a doubt runs, and says whether the doubt called off ran it again. */
+  function failInDoubt(u: Unanswered, e: unknown, ran: { n: number }): boolean {
+    const before = ran.n;
+    vi.stubGlobal("fetch", () => new Promise<Response>(() => {}));
+    suspect();
+    u.failed(e);
+    report(true);
+    return ran.n > before;
+  }
+
+  it(`loads again on a doubt called off, ${UNANSWERED_RETRIES} times in a row at most, until answered or asked again`, () => {
+    const ran = { n: 0 };
+    const u = new Unanswered(() => ran.n++);
+    u.connect();
+    try {
+      expect(failInDoubt(u, new Unreachable(), ran)).toBe(true);
+      expect(failInDoubt(u, new Unreachable(), ran)).toBe(true);
+      expect(failInDoubt(u, new Unreachable(), ran)).toBe(false); // out of tries
+      u.reset(); // the owner pressed Try again
+      expect(failInDoubt(u, new Unreachable(), ran)).toBe(true);
+      expect(failInDoubt(u, new Unreachable(), ran)).toBe(true);
+      expect(failInDoubt(u, new Error("the daemon refused"), ran)).toBe(false); // an answer: the count starts over
+      expect(failInDoubt(u, new Unreachable(), ran)).toBe(true);
+      // a doubt called off with nothing held runs nothing
+      suspect();
+      report(true);
+      expect(ran.n).toBe(5);
+    } finally {
+      u.disconnect();
+    }
+    expect(failInDoubt(u, new Unreachable(), ran)).toBe(false); // gone from the page
+  });
+});
+
+describe("the offline banner's own retry", () => {
+  it("asks /api/health, as the probes do, so a daemon whose health fails doesn't flap back online", async () => {
+    serve({ "/api/health": [drop], "/api/auth": [ok] });
+    report(false);
+    const banner = document.createElement("inc-offline");
+    document.body.append(banner);
+    await vi.advanceTimersByTimeAsync(3000 + timing.retryMs + 10);
+    expect(callsTo("/api/health").length).toBeGreaterThan(0);
+    expect(callsTo("/api/auth")).toHaveLength(0);
+    expect(isOffline()).toBe(true);
+
+    serve({ "/api/health": [ok] });
+    await vi.advanceTimersByTimeAsync(3000);
     expect(isOffline()).toBe(false);
   });
 });

@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TicketSession } from "../src/api.ts";
 import "../src/components/transcript.ts";
+import { report, timing } from "../src/connection.ts";
 
 const long = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join("\n");
 
@@ -189,5 +190,28 @@ describe("<inc-transcript>", () => {
     serve(200, { sessions: [] });
     const root = await mount();
     expect(root.querySelector("section")).toBeNull();
+  });
+});
+
+describe("<inc-transcript> after a load that got no answer", () => {
+  const saved = { ...timing, probesMs: [...timing.probesMs] };
+  afterEach(() => {
+    Object.assign(timing, saved);
+    report(true);
+  });
+
+  it("loads again by itself once the daemon answers a health probe", async () => {
+    timing.retryMs = 1;
+    timing.probesMs = [0, 20, 40];
+    let drops = 2;
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (url.includes("/sessions") && drops-- > 0) throw new TypeError("Failed to fetch");
+      return new Response(JSON.stringify(url.includes("/sessions") ? { sessions } : {}), {
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const root = await mount();
+    for (let i = 0; i < 50 && !root.querySelector("section"); i++) await new Promise((r) => setTimeout(r, 5));
+    expect(root.querySelector("section")).not.toBeNull();
   });
 });

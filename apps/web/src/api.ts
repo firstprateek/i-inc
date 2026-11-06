@@ -130,6 +130,7 @@ async function upload<T>(path: string, images: File[], fields: Record<string, un
   for (const [k, v] of Object.entries(fields)) form.set(k, JSON.stringify(v));
   for (const f of images) form.append("image", f, f.name);
   const res = await send(path, { method: "POST", headers: { "x-i-inc-upload": "1" }, body: form });
+  answered(res);
   if (res.status === 401) showLogin();
   const data = (await res.json().catch(() => ({}))) as T & { error?: string };
   if (!res.ok) throw new Error(data.error ?? `POST ${path}: ${res.status}`);
@@ -226,7 +227,7 @@ function noteFailure(method: string, path: string, failure: number | string, sta
 /**
  * fetch, plus telling the app whether the daemon answered (see connection.ts). A browser drops an HTTP/2
  * connection now and then, failing every request on it, so a read that fails is sent once more a moment
- * later, on a new connection. A write is never sent twice. What still fails only makes the daemon suspect.
+ * later (usually on a new connection, though the browser doesn't promise one). A write is never sent twice. What still fails only makes the daemon suspect.
  */
 export async function send(path: string, init?: RequestInit): Promise<Response> {
   const method = (init?.method ?? "GET").toUpperCase();
@@ -269,7 +270,7 @@ export async function send(path: string, init?: RequestInit): Promise<Response> 
  * Throws when the response is the proxy's 502-504, not the daemon's answer: its body is the proxy's text (or
  * nothing), never the daemon's JSON, so it is "Can't reach i.inc" and not a parse error.
  */
-function answered(res: Response): void {
+export function answered(res: Response): void {
   if (!isGatewayDown(res.status)) return;
   void res.body?.cancel().catch(() => {});
   throw new Unreachable();
@@ -322,6 +323,7 @@ export async function signup(
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username, password, ...(setupCode ? { setupCode } : {}) }),
   });
+  answered(res);
   const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
   return res.ok ? { ok: true } : { ok: false, ...(data.error ? { error: data.error } : {}) };
 }
@@ -332,6 +334,7 @@ export async function login(username: string, password: string): Promise<{ ok: b
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username, password }),
   });
+  answered(res);
   const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
   return res.ok ? { ok: true } : { ok: false, ...(data.error ? { error: data.error } : {}) };
 }

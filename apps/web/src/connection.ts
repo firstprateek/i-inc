@@ -107,3 +107,58 @@ async function probe(): Promise<boolean> {
 
 /** A status that means "nothing is answering behind the proxy", not an answer from the daemon. */
 export const isGatewayDown = (status: number): boolean => status === 502 || status === 503 || status === 504;
+
+/** How many times in a row a load that got no answer runs again by itself, before its failure shows. */
+export const UNANSWERED_RETRIES = 2;
+
+/**
+ * For a view that loads by itself but isn't a Loader (which does the same on its own): a load that got no
+ * answer while the daemon was in doubt runs again when the doubt is called off, at most UNANSWERED_RETRIES
+ * times in a row. Only that view loads again; a doubt called off never refreshes every view.
+ */
+export class Unanswered {
+  private held = false;
+  private runs = 0;
+  constructor(private readonly again: () => void) {}
+
+  /** From connectedCallback. */
+  connect(): void {
+    connection.addEventListener("cleared", this.onCleared);
+  }
+
+  /** From disconnectedCallback. */
+  disconnect(): void {
+    connection.removeEventListener("cleared", this.onCleared);
+    this.held = false;
+  }
+
+  /** The load was answered, or the owner asked for it again: the count starts over. */
+  reset(): void {
+    this.held = false;
+    this.runs = 0;
+  }
+
+  /** The load failed with `e`. Offline, the shell's refresh on the daemon's return loads it again instead. */
+  failed(e: unknown): void {
+    this.held = false;
+    if (!(e instanceof Unreachable)) {
+      this.runs = 0; // the daemon answered
+      return;
+    }
+    if (offline || this.runs >= UNANSWERED_RETRIES) return;
+    if (confirming) {
+      this.held = true; // the verdict decides
+      return;
+    }
+    // The doubt was already called off: the daemon is there.
+    this.runs++;
+    this.again();
+  }
+
+  private onCleared = () => {
+    if (!this.held) return;
+    this.held = false;
+    this.runs++;
+    this.again();
+  };
+}

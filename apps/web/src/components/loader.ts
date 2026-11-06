@@ -11,10 +11,9 @@
 // runs again; if it is away, the shell's "Can't reach i.inc" banner covers the view until it is back.
 import { html, LitElement, nothing } from "lit";
 import { ApiError, type RefreshScope, refresh, refreshNow } from "../api.ts";
-import { connection, isDoubted, isOffline, Unreachable } from "../connection.ts";
+import { connection, isDoubted, isOffline, UNANSWERED_RETRIES, Unreachable } from "../connection.ts";
 
-/** How many times in a row a load that got no answer runs again by itself, before its failure shows. */
-export const UNANSWERED_RETRIES = 2;
+export { UNANSWERED_RETRIES };
 
 /** What a view tells the shell, so one banner covers every view: `detail` is the message, or null once it's fine. */
 export const LOAD_STATE = "load-state";
@@ -44,7 +43,7 @@ export abstract class Loader<T> extends LitElement {
   private loadSeq = 0;
   /** The last load got no answer while the daemon was in doubt: its error, held until the verdict. */
   private held: Unreachable | null = null;
-  /** Loads run again by themselves since the last one that was answered. */
+  /** Loads run again by themselves since the last one that was answered, or the owner's Try again. */
   private unanswered = 0;
 
   constructor() {
@@ -98,6 +97,7 @@ export abstract class Loader<T> extends LitElement {
       this.report(null);
     } catch (e) {
       if (seq !== this.loadSeq) return;
+      if (!(e instanceof Unreachable)) this.unanswered = 0; // the daemon answered
       if (e instanceof Unreachable && !isOffline() && this.unanswered < UNANSWERED_RETRIES) {
         if (isDoubted()) {
           this.held = e; // the verdict decides: onCleared, or onConnection
@@ -123,6 +123,8 @@ export abstract class Loader<T> extends LitElement {
   /** Forgets what's loaded and any failure, for a view that is now about something else (another ticket). */
   protected resetLoad(): void {
     this.loadSeq++; // an answer to the old request must not land
+    this.held = null;
+    this.unanswered = 0;
     this.data = null;
     this.error = null;
     this.errorStatus = null;
@@ -181,9 +183,15 @@ export abstract class Loader<T> extends LitElement {
         : `Couldn't load ${what}: ${this.error}`;
     return html`<div class="load-error" role="alert">
       <span>${text}</span>
-      <button class="btn ghost" type="button" @click=${() => void this.reload()}>Try again</button>
+      <button class="btn ghost" type="button" @click=${this.tryAgain}>Try again</button>
     </div>`;
   }
+
+  /** The owner asked for it: a load that gets no answer waits for the health probes again. */
+  private tryAgain = () => {
+    this.unanswered = 0;
+    void this.reload();
+  };
 
   /** The daemon is away: a held failure shows now (behind the shell's banner), and a failed first load says so. */
   private onConnection = () => {

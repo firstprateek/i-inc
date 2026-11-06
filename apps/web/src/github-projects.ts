@@ -1,7 +1,7 @@
 // The GitHub projects flow's non-visual parts (T62, contract C14): the shapes the daemon answers with, a
 // request helper that keeps GitHub's problems readable, the links to GitHub, names, and the new-project
 // draft that survives a reload. The components are setup-projects.ts, project-flow.ts and project-page.ts.
-import { send } from "./api.ts";
+import { answered, send } from "./api.ts";
 import { showLogin } from "./login.ts";
 import type { GitHubInspectResult, GitHubRepoSummary, MergeMode, Project } from "./setup-api.ts";
 
@@ -55,6 +55,7 @@ export async function ghCall<T>(method: string, path: string, body?: unknown): P
     headers: write ? { "content-type": "application/json" } : {},
     ...(write ? { body: JSON.stringify(body ?? {}) } : {}),
   });
+  answered(res); // the proxy's 502-504 is no answer: "Can't reach i.inc"
   if (res.status === 401) showLogin();
   const data = (await res.json().catch(() => ({}))) as T & Record<string, unknown>;
   if (!res.ok) {

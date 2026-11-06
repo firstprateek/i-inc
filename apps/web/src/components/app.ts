@@ -371,7 +371,8 @@ export class IncApp extends LitElement {
     const was = this.offline;
     this.offline = isOffline();
     // Back online: whatever failed while the daemon was away loads again. Only an outage the health probes
-    // confirmed gets here (connection.ts); a doubt they call off reloads just the views that failed (loader.ts).
+    // confirmed gets here (connection.ts); a doubt they call off reloads only the views whose own load got no
+    // answer (loader.ts, and connection.ts's Unanswered).
     if (was && !this.offline) refreshNow();
   };
 
