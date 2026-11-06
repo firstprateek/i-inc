@@ -7,7 +7,7 @@
 // `authenticate` is accepted too, when `deferredAuth` lets a client in without credentials: it must
 // then push the token within seconds or it is dropped.
 //
-// Everything about the socket's health lives here (keepalive pings under the HTTP idle timeout,
+// Everything about the socket's health lives here (keepalive pings under the WebSocket's own idle timeout,
 // a hard frame size, closing on error); what a frame means is the host's business.
 import { credential, hostAllowed, originAllowed, sessionCookie } from "../auth.ts";
 import type { AhpHost, Conn, Socket } from "./host.ts";

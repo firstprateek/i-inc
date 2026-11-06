@@ -373,6 +373,16 @@ describe("the row and the session stay in step", () => {
     ).toBe(true);
   });
 
+  it("answers an agent side that cannot open over AHP createSession as an internal error, not bad params", async () => {
+    const { backend, client } = await live();
+    backend.failOpen = new Error("the sandbox did not start");
+    const r = await client.rpc("createSession", {
+      channel: "ahp-session:/no-sandbox",
+      _meta: { iinc: { employeeId: "ada" } },
+    });
+    expect(r.error).toMatchObject({ code: -32603, message: expect.stringMatching(/sandbox did not start/) });
+  });
+
   it("disposes a session only once it is archived, and the row goes with it", async () => {
     const { app, c, client } = await live();
     expect((await client.rpc("disposeSession", { channel: c.ahpSession })).error).toMatchObject({

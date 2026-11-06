@@ -77,6 +77,7 @@ import {
 } from "./github-projects.ts";
 import { sniffImage } from "./images.ts";
 import type { Change, Repo } from "./knowledge.ts";
+import { LONG_WRITES } from "./long-requests.ts";
 import { type ProposalStatus, RECOVERED_BODY } from "./proposals.ts";
 import { type NotifySettings, notifyKeys, notifySettings, type PushSubscription } from "./push.ts";
 import { defaultTeam, type Project } from "./registry.ts";
@@ -164,16 +165,6 @@ const validModel = /^[A-Za-z0-9._:/@+ -]{1,100}$/;
 const inFlightBootstraps = new Set<string>();
 /** Repos being bootstrapped right now, by lower-cased owner/name: one project per repo, however it is named. */
 const inFlightRepos = new Set<string>();
-
-/** Writes that can run for minutes: the daemon counts them as busy (the chat turn tracks itself). */
-const longRunning = new Set([
-  "POST /api/conversations/:id/ticket",
-  "POST /api/conversations/:id/pr",
-  "POST /api/conversations/:id/take-back",
-  "POST /api/projects/:id/bootstrap",
-  "POST /api/sandboxes/:team/retry",
-  "POST /api/teams/:id/antigravity-callback",
-]);
 
 export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) {
   const lastSandboxRetry = new Map<string, number>();
@@ -3351,7 +3342,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       // A restart would cut these short, so the deployer waits for them (GET /api/health, busy).
       if (params) {
         try {
-          return await (longRunning.has(`${method} ${pattern}`)
+          return await (LONG_WRITES.has(`${method} ${pattern}`)
             ? daemon.track(handler(req, params))
             : handler(req, params));
         } catch (err) {

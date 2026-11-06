@@ -20,7 +20,7 @@ import { demoReview } from "./demo-review.ts";
 import { resolveVersion } from "./deploys.ts";
 import { GitHubApp, readGitHubAppConfig } from "./github.ts";
 import { installGuards, serverError } from "./guards.ts";
-import { isLongRequest, LONG_REQUEST_SEC } from "./long-requests.ts";
+import { httpFetch, IDLE_TIMEOUT_SEC } from "./http.ts";
 import { AppleMachines, defaultMachineSettings, wallsUp } from "./machines.ts";
 import { ollamaModelChoice } from "./ollama.ts";
 import { killTracked, stopTracked } from "./proc.ts";
@@ -268,28 +268,17 @@ if (app.ahp.backend instanceof SessionHost) app.ahp.backend.start();
 const server = Bun.serve<WsData>({
   port,
   hostname: host,
-  // Longer than the 90 s a proxy in front keeps an idle connection (Go's IdleConnTimeout, which Tailscale
-  // serve uses), so the proxy always closes first and never sends a request down a socket Bun is closing;
-  // Bun allows at most 255. The owner's long actions get their own (long-requests.ts).
-  idleTimeout: 120,
+  idleTimeout: IDLE_TIMEOUT_SEC,
   // Never Bun's development error page: it prints source excerpts and absolute paths. A route that
   // throws answers with a plain JSON error, and the log has the details.
   development: false,
   error: serverError(log),
-  fetch: (req, server) => {
-    // Conversations speak AHP over a WebSocket on this same port (src/ahp/transport.ts).
-    if (app.ahp.transport.matches(req)) {
-      const g = app.ahp.transport.guard(req);
-      if ("refusal" in g) return g.refusal;
-      if (server.upgrade(req, { data: g.data })) return undefined;
-      return new Response("websocket upgrade failed", { status: 400 });
-    }
-    const url = new URL(req.url);
-    if (!url.pathname.startsWith("/api/") && existsSync(web)) return serveWeb(req);
-    // A machine boot or GitHub can keep these quiet past the idle timeout, which would cut them silently.
-    if (isLongRequest(req.method, url)) server.timeout(req, LONG_REQUEST_SEC);
-    return app.handle(req, { peer: server.requestIP(req)?.address });
-  },
+  // Conversations speak AHP over a WebSocket on this same port (src/ahp/transport.ts).
+  fetch: httpFetch<WsData>({
+    ahp: app.ahp.transport,
+    api: (req, o) => app.handle(req, o),
+    web: () => (existsSync(web) ? serveWeb : null),
+  }),
   websocket: app.ahp.transport.websocket,
 });
 
