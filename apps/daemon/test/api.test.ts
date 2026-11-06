@@ -664,6 +664,25 @@ describe("GET /api/office with accounts and rate limits", () => {
     expect(local.fiveHourMinutes).toBe(0);
   });
 
+  it("expires a rejection without resetsAt after the one-hour unknown-reset fallback", async () => {
+    const app = await testApp();
+    const now = app.clock.now();
+    app.deps.registry.setAccountRateLimit("unknown-reset", {
+      status: "rejected",
+      fiveHourUtilization: 0.95,
+      updatedAt: now - 3_600_000,
+    });
+    app.deps.registry.setAccountRateLimit("recent-rejection", {
+      status: "rejected",
+      updatedAt: now - 3_600_000 + 1,
+    });
+    const res = await app.call("GET", "/api/accounts");
+    expect(res.status).toBe(200);
+    expect(res.body.rateLimits["recent-rejection"]?.status).toBe("rejected");
+    expect(res.body.rateLimits["unknown-reset"]?.status).toBeUndefined();
+    expect(res.body.rateLimits["unknown-reset"]?.fiveHourUtilization).toBe(0.95);
+  });
+
   it("expires rejected limits past resetsAt and prevents downgrade of active unexpired rejected status", async () => {
     const app = await testApp();
     const now = app.clock.now();

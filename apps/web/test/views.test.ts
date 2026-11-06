@@ -557,6 +557,48 @@ describe("the office", () => {
     expect(root.textContent).toContain("allowed");
   });
 
+  it("describes missing utilization as unknown to assistive technology", async () => {
+    vi.stubGlobal("fetch", async () =>
+      Response.json({
+        employees: [],
+        accounts: [{ id: "claude", name: "Claude Pro" }],
+        rateLimits: {
+          claude: { fiveHourUtilization: 0.5, sevenDayUtilization: null, updatedAt: Date.now() },
+        },
+      }),
+    );
+    const root = await mount("inc-office", { show: "meters" });
+    expect(root.querySelectorAll(".quota-val")[1]?.textContent).toBe("—");
+    expect(root.querySelector('[aria-label="7-day utilization"]')?.getAttribute("aria-valuetext")).toBe(
+      "unknown",
+    );
+  });
+
+  it("shows Claude session and minute counts alongside utilization", async () => {
+    vi.stubGlobal("fetch", async () =>
+      Response.json({
+        employees: [],
+        accounts: [
+          {
+            id: "claude",
+            name: "Claude Pro",
+            fiveHourSessions: 1,
+            fiveHourMinutes: 3,
+            sevenDaySessions: 2,
+            sevenDayMinutes: 8,
+          },
+        ],
+        rateLimits: {
+          claude: { fiveHourUtilization: 1.5, sevenDayUtilization: 0.5, updatedAt: Date.now() },
+        },
+      }),
+    );
+    const root = await mount("inc-office", { show: "meters" });
+    expect(root.textContent).toContain("100%");
+    expect(root.textContent).toContain("1 session · 3m active");
+    expect(root.textContent).toContain("2 sessions · 8m active");
+  });
+
   it("renders accounts without percentage bars with model badges, activity meters, and status", async () => {
     vi.stubGlobal("fetch", async (url: string) => {
       if (url === "/api/office") {
