@@ -333,7 +333,7 @@ describe("a view whose load got no answer", () => {
     expect(shown(first)).toMatch(/^Nothing has loaded yet\. The thing loads when i\.inc answers\./);
   });
 
-  it(`waits at most ${UNANSWERED_RETRIES} times in a row while the daemon answers but the view's request doesn't, and reloads no faster than the gap`, async () => {
+  it(`waits at most ${UNANSWERED_RETRIES} times in a row while the daemon answers but the view's request doesn't, reloads no faster than the gap, then stops`, async () => {
     const gap = 3000;
     timing.clearedRefreshGapMs = gap;
     await vi.advanceTimersByTimeAsync(gap); // past the last test's reload
@@ -345,9 +345,15 @@ describe("a view whose load got no answer", () => {
     expect(callsTo("/api/thing")).toHaveLength(2 * (1 + UNANSWERED_RETRIES));
     expect(shown(el)).toMatch(/^Couldn't load the thing: Can't reach i\.inc/);
     expect(isOffline()).toBe(false);
-    // each failure still starts a doubt that the daemon calls off, but every view loads again once a gap at most
-    await vi.advanceTimersByTimeAsync(3 * gap);
-    expect(callsTo("/api/thing").length).toBeLessThanOrEqual(2 * (1 + UNANSWERED_RETRIES) + 2 * 3);
+    // its last failure still starts a doubt that the daemon calls off, but no view loads again for it, or after
+    await vi.advanceTimersByTimeAsync(10 * gap);
+    expect(callsTo("/api/thing")).toHaveLength(2 * (1 + UNANSWERED_RETRIES));
+    // a request dropped long after is a doubt of its own: the view loads again for it
+    serve({ "/api/thing": [drop, drop, answer(5)], "/api/health": [ok] });
+    void el.reload();
+    await vi.advanceTimersByTimeAsync(timing.retryMs + 50);
+    await el.updateComplete;
+    expect(shown(el)).toBe("thing 5");
   });
 });
 
@@ -362,7 +368,7 @@ describe("every view loading again for a doubt called off", () => {
   });
   afterEach(() => refresh.removeEventListener("refresh", onRefresh));
 
-  it("happens at once, for a view that is not a Loader too", async () => {
+  it("happens at once when a doubt is called off, and not for an answer with no doubt", async () => {
     vi.stubGlobal("fetch", (_url: string, init?: RequestInit) => hang(init));
     suspect();
     expect(refreshes).toBe(0);
@@ -395,6 +401,35 @@ describe("every view loading again for a doubt called off", () => {
     expect(refreshes).toBe(2);
     doubtCalledOff(); // long after: at once again
     expect(refreshes).toBe(3);
+  });
+
+  it(`stops after ${UNANSWERED_RETRIES} in a row, and a view still waiting loads again by itself`, async () => {
+    const gap = 3000;
+    timing.clearedRefreshGapMs = gap;
+    await vi.advanceTimersByTimeAsync(gap); // past the last test's
+    serve({ "/api/health": [ok] });
+    const doubtCalledOff = () => {
+      suspect();
+      report(true);
+    };
+    doubtCalledOff();
+    await vi.advanceTimersByTimeAsync(100);
+    doubtCalledOff(); // less than a gap after that reload: a request it made failed again
+    await vi.advanceTimersByTimeAsync(gap);
+    expect(refreshes).toBe(UNANSWERED_RETRIES);
+    // a load that gets no answer now begins the next doubt in a row, which no reload of every view follows
+    serve({ "/api/thing": [drop, drop, answer(7)], "/api/health": [ok] });
+    const el = document.createElement("test-reach-thing") as TestThing;
+    document.body.append(el);
+    await vi.advanceTimersByTimeAsync(timing.retryMs + 50);
+    await el.updateComplete;
+    expect(refreshes).toBe(UNANSWERED_RETRIES);
+    expect(el.data).toEqual({ n: 7 });
+    expect(callsTo("/api/thing")).toHaveLength(3);
+    // a gap with no doubt called off, and the next one reloads every view again
+    await vi.advanceTimersByTimeAsync(gap);
+    doubtCalledOff();
+    expect(refreshes).toBe(UNANSWERED_RETRIES + 1);
   });
 });
 

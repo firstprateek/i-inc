@@ -101,7 +101,7 @@ export abstract class Loader<T> extends LitElement {
       if (seq !== this.loadSeq) return;
       if (e instanceof Unreachable && !isOffline() && this.unanswered < UNANSWERED_RETRIES) {
         if (isDoubted()) {
-          this.held = e; // the verdict decides: the refresh for a doubt called off, or onConnection
+          this.held = e; // the verdict decides: the refresh for a doubt called off (or onWithheld), or onConnection
           return;
         }
         // The doubt was already called off: the daemon is there.
@@ -196,15 +196,22 @@ export abstract class Loader<T> extends LitElement {
     if (this.error !== null) this.requestUpdate();
   };
 
+  /** A doubt was called off, but every view isn't loading again for it (api.ts): a held load runs again itself. */
+  private onWithheld = () => {
+    if (this.held) void this.reload();
+  };
+
   override connectedCallback(): void {
     super.connectedCallback();
     refresh.addEventListener("refresh", this.onRefresh);
+    refresh.addEventListener("withheld", this.onWithheld);
     connection.addEventListener("change", this.onConnection);
     void this.reload();
   }
 
   override disconnectedCallback(): void {
     refresh.removeEventListener("refresh", this.onRefresh);
+    refresh.removeEventListener("withheld", this.onWithheld);
     connection.removeEventListener("change", this.onConnection);
     // Answers that land after the view is gone are dropped. (The shell forgets this view's failure itself:
     // an event from a detached element reaches no one.)

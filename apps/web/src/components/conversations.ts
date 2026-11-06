@@ -203,6 +203,7 @@ export class IncConversations extends LitElement {
       c.onRoster(() => this.scheduleReload(500)),
     ];
     refresh.addEventListener("refresh", this.onRefresh);
+    refresh.addEventListener("withheld", this.onWithheld);
     connection.addEventListener("change", this.onConnection);
     // A request from a dialog this screen no longer holds has ended.
     this.offs.push(
@@ -255,6 +256,7 @@ export class IncConversations extends LitElement {
     for (const [mq, fn] of this.queries) mq.removeEventListener?.("change", fn);
     this.queries = [];
     refresh.removeEventListener("refresh", this.onRefresh);
+    refresh.removeEventListener("withheld", this.onWithheld);
     connection.removeEventListener("change", this.onConnection);
     window.visualViewport?.removeEventListener("resize", this.onViewport);
     removeEventListener("popstate", this.onPop);
@@ -283,6 +285,10 @@ export class IncConversations extends LitElement {
   };
 
   private onRefresh = () => this.scheduleReload(0);
+  /** A doubt was called off, but every view isn't loading again for it (api.ts): a held load runs again itself. */
+  private onWithheld = () => {
+    if (this.heldList || this.heldRead) this.scheduleReload(0);
+  };
 
   /** The daemon is away: a held failure shows now, behind the shell's banner. */
   private onConnection = () => {
