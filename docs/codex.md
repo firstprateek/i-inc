@@ -62,8 +62,8 @@ Upstream pins and interfaces: [adapter v2.2.2 release](https://github.com/agentc
 
 In Setup → Engines and accounts, add the subscription account and an engine with the Codex CLI
 harness, a model ID supported by that account, and that account selected. Codex is a cloud engine
-and cannot be marked local. In Hiring, select that engine as the default or for a duty, and choose
-fallbacks as needed. The inline engine creator offers the same provider. Employees retain their
+and cannot be marked local. In Hiring, select that engine as the Engine, or under More settings for a
+duty or as the fallback. Employees retain their
 role, instructions and brain when their engine changes. Interactive employee chat continues to use
 the local chat service, as it does for the other harnesses.
 

@@ -152,6 +152,15 @@ than repeating the route heading. An action button belongs in the frame's action
 component boundary allows it. Hiring remains an independently owned component; the outer Page frame
 constrains its available width without changing hiring-specific markup or behavior.
 
+**Hiring** (`<inc-hiring>`, design case 7) is one column. On top: Name, Role (Senior Engineer first, then Staff
+Engineer, Principal Engineer, Product Manager, UX Designer, QA, Personal Assistant, "Write a role…"), Engine
+(preselected: the first engine that isn't a local model, or for a PA the first local one, so Hire waits only for a
+name), Projects (a checkbox per `GET /api/projects`, none ticked meaning every project; a PA shows Home), Working
+hours (Any time / Nights only) and Team (only when there is more than one open team). Everything else is under a
+closed **More settings** (open when editing): Duties (`verify` reads Prove), Engine per duty, "If it runs out of
+tokens or gets stuck", Default effort and Role prompt. Engines are added in Settings → Engines and accounts, which
+the form links to; the team list lives on Team.
+
 ## The board and ticket (T64)
 
 - **Board:** the kanban is the first thing under the Work header, and its four columns share the whole content width.

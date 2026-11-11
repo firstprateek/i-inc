@@ -215,6 +215,17 @@ describe("POST /api/employees team assignment", () => {
     expect(res.status).toBe(201);
     expect(app.deps.registry.teamOf("nell").id).toBe("company");
   });
+
+  it("keeps the projects the hiring form sends, and none means every project", async () => {
+    const app = await testApp();
+    expect((await app.call("POST", "/api/employees", { ...hire, projects: ["Duet"] })).status).toBe(201);
+    expect((await app.call("POST", "/api/employees", { ...hire, name: "Wren" })).status).toBe(201);
+    const { employees } = (await app.call("GET", "/api/employees")).body as {
+      employees: { id: string; projects?: string[] }[];
+    };
+    expect(employees.find((e) => e.id === "nell")?.projects).toEqual(["Duet"]);
+    expect(employees.find((e) => e.id === "wren")).not.toHaveProperty("projects");
+  });
 });
 
 describe("PUT /api/employees/:id", () => {

@@ -1,7 +1,9 @@
-// Hiring and editing: the engine pickers show harness and "local", and saving sends engines per duty.
+// Hiring and editing: three choices on top (name, role, engine) with projects and working hours, the rest
+// folded under More settings; the engine pickers show harness and "local", and saving sends engines per duty.
 import type { Employee } from "@i-inc/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../src/components/hiring.ts";
+import { standardRoles } from "../src/components/hiring.ts";
 import type { Engine } from "../src/providers.ts";
 
 const engines: Engine[] = [
@@ -11,12 +13,7 @@ const engines: Engine[] = [
   { id: "codex", harness: "codex", model: "owner-entered-model", accountId: "codex-pro", local: true },
 ];
 
-const accounts = [
-  { id: "claude-pro", name: "Claude Pro" },
-  { id: "google", name: "Google AI Pro" },
-  { id: "codex-pro", name: "Codex subscription" },
-  { id: "local", name: "Local" },
-];
+const projects = [{ id: "listy" }, { id: "website" }, { id: "Duet" }];
 
 const ada: Employee = {
   id: "ada",
@@ -36,7 +33,6 @@ function serve(
   available: Engine[] = engines,
 ) {
   calls = [];
-  const createdEngines: Engine[] = [];
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     calls.push({
       method: init?.method ?? "GET",
@@ -45,15 +41,8 @@ function serve(
     });
     const json = (b: unknown, status = 200) =>
       new Response(JSON.stringify(b), { status, headers: { "content-type": "application/json" } });
-    if (url === "/api/engines" && (init?.method ?? "GET") === "GET")
-      return json({ engines: [...available, ...createdEngines] });
-    if (url.startsWith("/api/engines/") && init?.method === "PUT") {
-      const id = decodeURIComponent(url.slice("/api/engines/".length));
-      const saved = { id, ...(JSON.parse(String(init.body)) as Omit<Engine, "id">) } as Engine;
-      createdEngines.push(saved);
-      return json({ engine: saved });
-    }
-    if (url === "/api/accounts") return json({ accounts, rateLimits: {} });
+    if (url === "/api/engines" && (init?.method ?? "GET") === "GET") return json({ engines: available });
+    if (url === "/api/projects") return json({ projects });
     if (url === "/api/teams") return json({ teams: configuredTeams });
     if (url === "/api/employees" && (init?.method ?? "GET") === "GET")
       return failEmployees ? json({ error: "nope" }, 500) : json({ employees: team });
@@ -86,12 +75,184 @@ const submit = async (root: ShadowRoot) => {
   );
   await settle(root.host);
 };
+const typeName = async (root: ShadowRoot, value: string) => {
+  const name = root.querySelector('input[type="text"]') as HTMLInputElement;
+  name.value = value;
+  name.dispatchEvent(new Event("input"));
+  await settle(root.host);
+};
+const hireButton = (root: ShadowRoot) =>
+  root.querySelector('.submit button[type="submit"]') as HTMLButtonElement;
+const posted = () =>
+  calls.find((c) => c.method === "POST" && c.url === "/api/employees")?.body as Record<string, unknown>;
 
 beforeEach(() => {
   document.body.innerHTML = "";
   location.hash = "";
 });
 afterEach(() => vi.unstubAllGlobals());
+
+describe("hiring in three choices", () => {
+  it("lists the spec's roles, Senior Engineer first and chosen, with no CEO", async () => {
+    expect([...standardRoles]).toEqual([
+      "Senior Engineer",
+      "Staff Engineer",
+      "Principal Engineer",
+      "Product Manager",
+      "UX Designer",
+      "QA",
+      "Personal Assistant",
+    ]);
+    serve();
+    const root = await mount();
+    const pills = [...root.querySelectorAll('[aria-labelledby="role-name"] .pill')];
+    expect(pills.map((b) => b.textContent?.trim())).toEqual([...standardRoles, "Write a role…"]);
+    expect(pills[0]?.getAttribute("aria-pressed")).toBe("true");
+    expect(root.textContent).not.toContain("CEO");
+  });
+
+  it("starts on an engine, so a name is all Hire waits for", async () => {
+    serve();
+    const root = await mount();
+    expect(selects(root)[0]?.value).toBe("opus");
+    expect(hireButton(root).disabled).toBe(true);
+    await typeName(root, "Nova");
+    expect(hireButton(root).disabled).toBe(false);
+    expect(hireButton(root).textContent?.trim()).toBe("Hire Nova");
+    await submit(root);
+    expect(posted()).toMatchObject({
+      name: "Nova",
+      role: "Senior Engineer",
+      engines: { default: "opus", fallbacks: [] },
+    });
+  });
+
+  it("preselects the first engine that isn't a local model, whatever the list's order", async () => {
+    serve([ada], false, [], [engines[2], engines[1], engines[0]] as Engine[]);
+    const root = await mount();
+    expect(selects(root)[0]?.value).toBe("gemini");
+  });
+
+  it("folds the rest under More settings, closed, holding the duties and the engine per duty", async () => {
+    serve();
+    const root = await mount();
+    const more = root.querySelector("details.more") as HTMLDetailsElement;
+    expect(more.open).toBe(false);
+    expect(more.querySelector("summary")?.textContent?.trim()).toBe("More settings");
+    const summary = more.querySelector("summary") as HTMLElement;
+    expect(summary.closest("form")).not.toBeNull();
+    expect(more.querySelector("fieldset.duty-set legend")?.textContent).toBe("Duties");
+    expect(more.querySelector("fieldset.duties legend")?.textContent).toBe("Engine per duty");
+    expect(more.querySelector("textarea")).not.toBeNull();
+    const top = root.querySelector("section.card") as HTMLElement;
+    expect(top.querySelector('input[type="checkbox"][name^="duty-"]')).toBeNull();
+    expect(top.querySelector("textarea")).toBeNull();
+  });
+
+  it("uses the spec's words in More settings and no explanatory paragraphs", async () => {
+    serve();
+    const root = await mount();
+    const more = root.querySelector("details.more") as HTMLElement;
+    const text = more.textContent ?? "";
+    for (const words of [
+      "Duties",
+      "Engine per duty",
+      "If it runs out of tokens or gets stuck",
+      "Default effort",
+      "Role prompt",
+      "Reset to the role's default",
+    ]) {
+      expect(text).toContain(words);
+    }
+    const duties = [...more.querySelectorAll(".duty-title")].map((t) => t.textContent?.trim());
+    expect(duties).toEqual(["Plan", "Build", "Prove", "Review", "Librarian"]);
+    expect(more.querySelector('input[name="duty-verify"]')).not.toBeNull();
+    const efforts = [...more.querySelectorAll('.pill[role="radio"]')].map((b) => b.textContent?.trim());
+    expect(efforts).toEqual(["Low", "Medium", "High"]);
+    expect(root.querySelector(".duty-explainer")).toBeNull();
+    expect(root.querySelector(".switching-explainer")).toBeNull();
+    expect(root.textContent).not.toMatch(/How pipeline duties work|Model Switching Rules|System prompt/);
+  });
+
+  it("links to Settings to add an engine instead of an engine creator", async () => {
+    serve();
+    const root = await mount();
+    const link = [...root.querySelectorAll("a")].find((a) => a.textContent === "Add an engine in Settings");
+    expect(link?.getAttribute("href")).toBe("#/company/settings/engines");
+    expect(root.querySelector(".custom-engine-box")).toBeNull();
+    expect(root.textContent).not.toContain("Configure new engine");
+  });
+
+  it("doesn't list the team: that is on Team", async () => {
+    serve();
+    const root = await mount();
+    expect(root.querySelector('[aria-label="Your team"]')).toBeNull();
+    expect(root.querySelector('a[href="#/company/team/hiring/ada"]')).toBeNull();
+  });
+
+  it("sends the ticked projects' ids, in the company's order", async () => {
+    serve();
+    const root = await mount();
+    const boxes = [...root.querySelectorAll<HTMLInputElement>('input[name="project"]')];
+    expect(boxes.map((b) => b.value)).toEqual(["listy", "website", "Duet"]);
+    expect(boxes.every((b) => !b.checked)).toBe(true);
+    await typeName(root, "Juno");
+    for (const id of ["website", "listy"]) {
+      const box = boxes.find((b) => b.value === id) as HTMLInputElement;
+      box.checked = true;
+      box.dispatchEvent(new Event("change"));
+    }
+    await settle(root.host);
+    await submit(root);
+    expect(posted()).toMatchObject({ name: "Juno", projects: ["listy", "website"] });
+  });
+
+  it("leaves projects out when none is ticked, meaning every project", async () => {
+    serve();
+    const root = await mount();
+    expect(root.textContent).toContain("None ticked: every project.");
+    await typeName(root, "Juno");
+    await submit(root);
+    expect(posted()).not.toHaveProperty("projects");
+  });
+
+  it("shows Home for a personal assistant's projects, and no list", async () => {
+    serve();
+    const root = await mount();
+    const pa = [...root.querySelectorAll(".pill")].find((b) => b.textContent === "Personal Assistant");
+    (pa as HTMLElement).click();
+    await settle(root.host);
+    expect(root.querySelector('input[name="project"]')).toBeNull();
+    expect(root.querySelector("section.card")?.textContent).toContain("Home");
+    await typeName(root, "Pip");
+    await submit(root);
+    expect(posted()).not.toHaveProperty("projects");
+  });
+
+  it("sets working hours to nights only, or any time by default", async () => {
+    serve();
+    const root = await mount();
+    await typeName(root, "Owl");
+    const hours = [...root.querySelectorAll<HTMLButtonElement>('[aria-labelledby="hours-name"] .pill')];
+    expect(hours.map((b) => b.textContent?.trim())).toEqual(["Any time", "Nights only (10 pm to 7 am)"]);
+    expect(hours[0]?.getAttribute("aria-pressed")).toBe("true");
+    hours[1]?.click();
+    await settle(root.host);
+    await submit(root);
+    expect(posted()).toMatchObject({ workingHours: { from: 22, to: 7 } });
+  });
+
+  it("keeps the fieldsets inside their cards and gives phones 44px targets", () => {
+    // jsdom has no layout, so this guards the rules.
+    const ctor = customElements.get("inc-hiring") as unknown as { styles: Array<{ cssText?: string }> };
+    const sheet = ctor.styles.map((x) => x.cssText ?? "").join("\n");
+    expect(sheet).toMatch(/fieldset\s*\{[^}]*margin:\s*0;[^}]*min-width:\s*0/);
+    expect(sheet).toMatch(/\.more > summary\s*\{[^}]*min-height:\s*44px/);
+    const phone = sheet.match(/@media \(max-width: 900px\)\s*\{([^@]*)\}\s*$/)?.[1] ?? "";
+    expect(phone).toMatch(/\.btn\.small\s*\{[^}]*min-height:\s*44px/);
+    expect(phone).toMatch(/\.engine-link\s*\{[^}]*min-height:\s*44px/);
+  });
+});
 
 describe("hiring", () => {
   it("offers every engine with its harness, and a local badge on local ones", async () => {
@@ -104,76 +265,27 @@ describe("hiring", () => {
     expect(labels).toContain("owner-entered-model · codex");
 
     await pick(root, def as HTMLSelectElement, "qwen");
-    const chips = [...root.querySelectorAll("label .chips .chip")].map((c) => c.textContent);
+    const chips = [...root.querySelectorAll(".engine-field .chips .chip")].map((c) => c.textContent);
     expect(chips).toEqual(["opencode", "local"]);
   });
 
-  it("keeps the engine creator inside its card and gives phones 44px targets", () => {
-    // jsdom has no layout, so this guards the rules; the widths were measured in a real browser.
-    const ctor = customElements.get("inc-hiring") as unknown as { styles: Array<{ cssText?: string }> };
-    const sheet = ctor.styles.map((x) => x.cssText ?? "").join("\n");
-    expect(sheet).toMatch(
-      /\.custom-engine-grid\s*\{[^}]*repeat\(auto-fit,\s*minmax\(min\(100%,\s*220px\),\s*1fr\)\)/,
-    );
-    expect(sheet).toMatch(/\.custom-engine-grid > \*\s*\{[^}]*min-width:\s*0/);
-    expect(sheet).toMatch(/\.custom-engine-grid input[^{]*\{[^}]*max-width:\s*100%/);
-    const phone = sheet.match(/@media \(max-width: 900px\)\s*\{([^@]*)\}\s*$/)?.[1] ?? "";
-    expect(phone).toMatch(/\.btn\.small\s*\{[^}]*min-height:\s*44px/);
-    expect(phone).toMatch(/\.note-link\s*\{[^}]*min-height:\s*44px/);
-  });
-
-  it("creates a Codex engine on its account without a local badge or stale model default", async () => {
+  it("can hire with Codex as the engine, a per-duty engine, and the fallback", async () => {
     serve();
     const root = await mount();
-    const add = root.querySelector(".engine-header .btn") as HTMLButtonElement;
-    add.click();
-    await settle(root.host);
-    const form = root.querySelector(".custom-engine-box") as HTMLElement;
-    const harness = form.querySelector("select") as HTMLSelectElement;
-    await pick(root, harness, "codex");
-    const model = form.querySelector('input[type="text"]') as HTMLInputElement;
-    expect(model.placeholder).not.toMatch(/claude|gemini|gpt-/i);
-    model.value = "owner-entered-model";
-    model.dispatchEvent(new Event("input"));
-    await settle(root.host);
-    const account = form.querySelectorAll("select")[1] as HTMLSelectElement;
-    await pick(root, account, "codex-pro");
-    expect(form.textContent).toContain("Codex signs in on each team sandbox");
-    expect(form.querySelector('a[href*="docs/codex.md"]')?.textContent).toBe("Owner sign-in instructions");
-    (form.querySelector("button") as HTMLButtonElement).click();
-    await settle(root.host);
-    expect(
-      calls.find((c) => c.method === "PUT" && c.url === "/api/engines/owner-entered-model"),
-    ).toMatchObject({
-      body: { harness: "codex", model: "owner-entered-model", accountId: "codex-pro", local: false },
-    });
-    expect(root.querySelector(".custom-engine-box")).toBeNull();
-    expect(selects(root)[0]?.value).toBe("owner-entered-model");
-    expect([...root.querySelectorAll(".chips .chip")].some((chip) => chip.textContent === "local")).toBe(
-      false,
-    );
-  });
-
-  it("can hire with Codex as the default, per-duty engine, and fallback", async () => {
-    serve();
-    const root = await mount();
-    const name = root.querySelector('input[type="text"]') as HTMLInputElement;
-    name.value = "Nell";
-    name.dispatchEvent(new Event("input"));
-    await settle(root.host);
+    await typeName(root, "Nell");
     const [def, build, review, , fallback] = selects(root);
     await pick(root, def as HTMLSelectElement, "codex");
     await pick(root, build as HTMLSelectElement, "codex");
     await pick(root, review as HTMLSelectElement, "gemini");
     await pick(root, fallback as HTMLSelectElement, "qwen");
     await submit(root);
-    expect(calls.find((c) => c.method === "POST")?.body).toMatchObject({
+    expect(posted()).toMatchObject({
       name: "Nell",
       engines: { default: "codex", perDuty: { build: "codex", review: "gemini" }, fallbacks: ["qwen"] },
     });
   });
 
-  it("has a picker per duty of the role, each defaulting to the default engine", async () => {
+  it("has a picker per duty of the role, each defaulting to the engine", async () => {
     serve();
     const root = await mount();
     const legend = root.querySelector(".duties legend")?.textContent;
@@ -181,17 +293,15 @@ describe("hiring", () => {
     const names = [...root.querySelectorAll(".duties label")].map((l) =>
       l.querySelector("span")?.textContent?.trim(),
     );
-    expect(names).toEqual(["Build", "Review", "Verify"]);
-    expect(root.querySelector(".duties option")?.textContent).toBe("Same as default");
+    expect(names).toEqual(["Build", "Review", "Prove"]);
+    expect(root.querySelector(".duties option")?.textContent).toBe("Same as the engine");
   });
 
   it("sends the default, the duty engines and the fallback", async () => {
     serve();
     const root = await mount();
     const [def, build, review, , fallback] = selects(root);
-    const name = root.querySelector('input[type="text"]') as HTMLInputElement;
-    name.value = "Nell";
-    name.dispatchEvent(new Event("input"));
+    await typeName(root, "Nell");
     await pick(root, def as HTMLSelectElement, "opus");
     await pick(root, build as HTMLSelectElement, "qwen");
     await pick(root, review as HTMLSelectElement, "gemini");
@@ -209,24 +319,21 @@ describe("hiring", () => {
   it("leaves perDuty out when every duty uses the default", async () => {
     serve();
     const root = await mount();
-    const name = root.querySelector('input[type="text"]') as HTMLInputElement;
-    name.value = "Nell";
-    name.dispatchEvent(new Event("input"));
-    await pick(root, selects(root)[0] as HTMLSelectElement, "opus");
+    await typeName(root, "Nell");
     await submit(root);
-    const post = calls.find((c) => c.method === "POST");
-    const sent = post?.body as { engines: object };
+    const sent = posted() as { engines: object };
     expect(sent.engines).toEqual({ default: "opus", fallbacks: [] });
   });
 
-  it("offers only local engines to a personal assistant", async () => {
+  it("offers only local engines to a personal assistant, and starts on the first", async () => {
     serve();
     const root = await mount();
     const pa = [...root.querySelectorAll(".pill")].find((b) => b.textContent === "Personal Assistant");
     (pa as HTMLElement).click();
     await settle(root.host);
-    const ids = [...(selects(root)[0]?.querySelectorAll("option") ?? [])].map((o) => o.value);
-    expect(ids).toEqual(["", "qwen"]);
+    const def = selects(root)[0] as HTMLSelectElement;
+    expect([...def.querySelectorAll("option")].map((o) => o.value)).toEqual(["qwen"]);
+    expect(def.value).toBe("qwen");
   });
 
   it("says no local engine is set up yet when a personal assistant has none to pick", async () => {
@@ -245,6 +352,8 @@ describe("hiring", () => {
     const notes = [...root.querySelectorAll(".note")].map((n) => n.textContent ?? "").join(" ");
     expect(notes).toContain("sandbox has no internet");
     expect(notes).toContain("No local engine is set up yet");
+    await typeName(root, "Pip");
+    expect(hireButton(root).disabled).toBe(true);
   });
 
   const pip: Employee = {
@@ -271,21 +380,15 @@ describe("hiring", () => {
       document.body.innerHTML = "";
       serve([ada], false, teams);
       const root = await mount();
-      expect(root.querySelector('select[aria-label="Team"]')).not.toBeNull();
+      expect(root.querySelector('select[aria-label="Team"]') !== null).toBe(teams.length > 1);
       await pickPa(root);
       expect(root.querySelector('select[aria-label="Team"]')).toBeNull();
       expect(root.textContent).toContain("sandbox of its own");
-      const name = root.querySelector('input[type="text"]') as HTMLInputElement;
-      name.value = "Pip";
-      name.dispatchEvent(new Event("input"));
-      await pick(root, selects(root)[0] as HTMLSelectElement, "qwen");
+      await typeName(root, "Pip");
       // Several teams and none chosen: a normal hire is blocked, a PA's is not.
-      expect((root.querySelector('.submit button[type="submit"]') as HTMLButtonElement).disabled).toBe(false);
+      expect(hireButton(root).disabled).toBe(false);
       await submit(root);
-      const post = calls.find((c) => c.method === "POST" && c.url === "/api/employees")?.body as Record<
-        string,
-        unknown
-      >;
+      const post = posted();
       expect(post).toMatchObject({ name: "Pip", role: "Personal Assistant" });
       expect(post).not.toHaveProperty("teamId");
     }
@@ -301,31 +404,26 @@ describe("hiring", () => {
     expect(put?.body).not.toHaveProperty("teamId");
   });
 
-  it("doesn't offer a personal assistant's home team to anyone else, nor count it as the only team", async () => {
+  it("doesn't count a personal assistant's home team as a second team", async () => {
     serve([ada, pip], false, [
       { id: "engineering", name: "Engineering", members: ["ada"] },
       { id: "home-pip", name: "Pip's home", members: ["pip"] },
     ]);
     const root = await mount();
-    const team = root.querySelector('select[aria-label="Team"]') as HTMLSelectElement;
-    expect([...team.querySelectorAll("option")].map((o) => o.value)).toEqual(["engineering"]);
-    expect(team.value).toBe("engineering");
-    expect(team.disabled).toBe(true);
+    expect(root.querySelector('select[aria-label="Team"]')).toBeNull();
+    await typeName(root, "Nell");
+    expect(hireButton(root).disabled).toBe(false);
+    await submit(root);
+    expect(posted()).toMatchObject({ teamId: "engineering" });
   });
 
-  it("defaults to the only team and sends its id with the hire", async () => {
+  it("shows no team picker for one team, and sends its id with the hire", async () => {
     serve([ada], false, [{ id: "engineering", name: "Engineering", members: ["ada"] }]);
     const root = await mount();
-    const team = root.querySelector('select[aria-label="Team"]') as HTMLSelectElement;
-    expect(team.value).toBe("engineering");
-    expect(team.disabled).toBe(true);
-    const name = root.querySelector('input[type="text"]') as HTMLInputElement;
-    name.value = "Nell";
-    name.dispatchEvent(new Event("input"));
-    await pick(root, selects(root).find((select) => select !== team) as HTMLSelectElement, "opus");
+    expect(root.querySelector('select[aria-label="Team"]')).toBeNull();
+    await typeName(root, "Nell");
     await submit(root);
-    expect(calls.find((call) => call.method === "POST")?.body).toMatchObject({ teamId: "engineering" });
-    expect(team.getAttribute("aria-label")).toBe("Team");
+    expect(posted()).toMatchObject({ teamId: "engineering" });
   });
 
   it("requires a team selection when multiple teams are available", async () => {
@@ -337,17 +435,13 @@ describe("hiring", () => {
     const team = root.querySelector('select[aria-label="Team"]') as HTMLSelectElement;
     expect(team).toBeTruthy();
     expect(team.value).toBe("");
-    expect(root.querySelector('option[value=""]')?.textContent).toBe("Choose a team");
-    const name = root.querySelector('input[type="text"]') as HTMLInputElement;
-    name.value = "Nell";
-    name.dispatchEvent(new Event("input"));
-    await pick(root, selects(root).find((select) => select !== team) as HTMLSelectElement, "opus");
-    const submitButton = root.querySelector('.submit button[type="submit"]') as HTMLButtonElement;
-    expect(submitButton.disabled).toBe(true);
+    expect(team.querySelector('option[value=""]')?.textContent).toBe("Choose a team");
+    await typeName(root, "Nell");
+    expect(hireButton(root).disabled).toBe(true);
     await pick(root, team, "design");
-    expect(submitButton.disabled).toBe(false);
+    expect(hireButton(root).disabled).toBe(false);
     await submit(root);
-    expect(calls.find((call) => call.method === "POST")?.body).toMatchObject({ teamId: "design" });
+    expect(posted()).toMatchObject({ teamId: "design" });
   });
 
   it("does not show the team picker when there are no configured teams", async () => {
@@ -365,16 +459,10 @@ describe("hiring", () => {
 });
 
 describe("editing someone's engines", () => {
-  it("links to each employee from the hiring page", async () => {
-    serve();
-    const root = await mount();
-    const link = root.querySelector('[aria-label="Your team"] a') as HTMLAnchorElement;
-    expect(link.getAttribute("href")).toBe("#/company/team/hiring/ada");
-  });
-
-  it("shows what the employee has now, and the fallback's harness", async () => {
+  it("shows what the employee has now, and the fallback's harness, with More settings open", async () => {
     serve();
     const root = await mount("ada");
+    expect((root.querySelector("details.more") as HTMLDetailsElement).open).toBe(true);
     const [def, build, review, verify, fallback] = selects(root) as HTMLSelectElement[];
     expect(def?.value).toBe("opus");
     expect(build?.value).toBe("");
@@ -402,6 +490,19 @@ describe("editing someone's engines", () => {
       },
     });
     expect(location.hash).toBe("#/company/team");
+  });
+
+  it("ticks the employee's projects and sends them when they change", async () => {
+    serve([{ ...ada, projects: ["listy"] }]);
+    const root = await mount("ada");
+    const boxes = [...root.querySelectorAll<HTMLInputElement>('input[name="project"]')];
+    expect(boxes.filter((b) => b.checked).map((b) => b.value)).toEqual(["listy"]);
+    const duet = boxes.find((b) => b.value === "Duet") as HTMLInputElement;
+    duet.checked = true;
+    duet.dispatchEvent(new Event("change"));
+    await settle(root.host);
+    await submit(root);
+    expect(calls.find((c) => c.method === "PUT")?.body).toMatchObject({ projects: ["listy", "Duet"] });
   });
 
   it("preselects the current team and sends the new team when editing", async () => {
@@ -432,49 +533,37 @@ describe("editing someone's engines", () => {
   });
 });
 
-describe("custom roles, system prompts, effort levels and explainers", () => {
-  it("allows hiring a CEO with CEO system prompt and duties", async () => {
+describe("roles, role prompts and effort", () => {
+  it("hires a Principal Engineer with the role's prompt and duties", async () => {
     serve();
     const root = await mount();
-    const nameInput = root.querySelector('input[type="text"]') as HTMLInputElement;
-    nameInput.value = "Satya";
-    nameInput.dispatchEvent(new Event("input"));
-
-    const ceoPill = [...root.querySelectorAll(".pill")].find((b) => b.textContent?.trim() === "CEO");
-    (ceoPill as HTMLElement).click();
+    await typeName(root, "Lin");
+    const principal = [...root.querySelectorAll(".pill")].find(
+      (b) => b.textContent?.trim() === "Principal Engineer",
+    );
+    (principal as HTMLElement).click();
     await settle(root.host);
-
     const promptArea = root.querySelector("textarea") as HTMLTextAreaElement;
-    expect(promptArea.value).toContain("Chief Executive Officer at i.inc");
-
-    await pick(root, selects(root)[0] as HTMLSelectElement, "opus");
+    expect(promptArea.value).toContain("Principal Engineer at i.inc");
     await submit(root);
-
-    const post = calls.find((c) => c.method === "POST");
-    const body = post?.body as Record<string, unknown>;
-    expect(body.name).toBe("Satya");
-    expect(body.role).toBe("CEO");
+    const body = posted();
+    expect(body.role).toBe("Principal Engineer");
     expect(body.duties).toEqual(["plan", "review"]);
-    expect(body.prompt).toContain("Chief Executive Officer at i.inc");
+    expect(body.prompt).toContain("Principal Engineer at i.inc");
     expect(body.effort).toBe("medium");
+    expect(body.engines).toMatchObject({ default: "opus" });
   });
 
-  it("allows defining a custom role title, prompt, and effort level", async () => {
+  it("allows writing a role, its prompt, and an effort level", async () => {
     serve();
     const root = await mount();
-    const nameInput = root.querySelector('input[type="text"]') as HTMLInputElement;
-    nameInput.value = "Grace";
-    nameInput.dispatchEvent(new Event("input"));
+    await typeName(root, "Grace");
 
-    const customBtn = [...root.querySelectorAll(".pill")].find((b) =>
-      b.textContent?.includes("+ Custom Role"),
-    );
-    (customBtn as HTMLElement).click();
+    const write = [...root.querySelectorAll(".pill")].find((b) => b.textContent?.trim() === "Write a role…");
+    (write as HTMLElement).click();
     await settle(root.host);
 
-    const customRoleInput = root.querySelector(
-      'input[placeholder*="Chief Executive Officer"]',
-    ) as HTMLInputElement;
+    const customRoleInput = root.querySelector("input.custom-role") as HTMLInputElement;
     expect(customRoleInput).not.toBeNull();
     customRoleInput.value = "Security Architect";
     customRoleInput.dispatchEvent(new Event("input"));
@@ -493,23 +582,11 @@ describe("custom roles, system prompts, effort levels and explainers", () => {
     await pick(root, selects(root)[0] as HTMLSelectElement, "gemini");
     await submit(root);
 
-    const post = calls.find((c) => c.method === "POST");
-    const body = post?.body as Record<string, unknown>;
+    const body = posted();
     expect(body.name).toBe("Grace");
     expect(body.role).toBe("Security Architect");
     expect(body.prompt).toBe("You are the Security Architect. Audit all code for vulnerabilities.");
     expect(body.effort).toBe("high");
-  });
-
-  it("renders educational duty explainer and model switching notes", async () => {
-    serve();
-    const root = await mount();
-    const dutyExplainer = root.querySelector(".duty-explainer");
-    expect(dutyExplainer?.textContent).toContain("How pipeline duties work");
-    expect(dutyExplainer?.textContent).toContain("Plan → Build → Verify → Review");
-
-    const switchingExplainer = root.querySelector(".switching-explainer");
-    expect(switchingExplainer?.textContent).toContain("Model Switching Rules");
   });
 
   it("updates prompt and effort when editing an existing employee", async () => {
@@ -534,94 +611,7 @@ describe("custom roles, system prompts, effort levels and explainers", () => {
   });
 });
 
-describe("configure new engine / model form and layout", () => {
-  it("toggles the configure new engine box open and closed", async () => {
-    serve();
-    const root = await mount();
-    expect(root.querySelector(".custom-engine-box")).toBeNull();
-
-    const configBtn = [...root.querySelectorAll(".engine-header button")].find((b) =>
-      b.textContent?.includes("+ Configure new engine / model"),
-    ) as HTMLButtonElement;
-    expect(configBtn).toBeDefined();
-    configBtn.click();
-    await settle(root.host);
-
-    const box = root.querySelector(".custom-engine-box");
-    expect(box).not.toBeNull();
-    expect(box?.querySelector("h4")?.textContent).toBe("Configure new model or engine");
-    expect(configBtn.textContent).toContain("✕ Close");
-
-    // Close via header button
-    configBtn.click();
-    await settle(root.host);
-    expect(root.querySelector(".custom-engine-box")).toBeNull();
-
-    // Reopen and close via Cancel button
-    configBtn.click();
-    await settle(root.host);
-    const cancelBtn = [...root.querySelectorAll(".custom-engine-actions button")].find((b) =>
-      b.textContent?.includes("Cancel"),
-    ) as HTMLButtonElement;
-    expect(cancelBtn).toBeDefined();
-    cancelBtn.click();
-    await settle(root.host);
-    expect(root.querySelector(".custom-engine-box")).toBeNull();
-  });
-
-  it("creates and selects a custom engine without overflowing fields", async () => {
-    serve();
-    const root = await mount();
-
-    const configBtn = [...root.querySelectorAll(".engine-header button")].find((b) =>
-      b.textContent?.includes("+ Configure new engine / model"),
-    ) as HTMLButtonElement;
-    configBtn.click();
-    await settle(root.host);
-
-    const box = root.querySelector(".custom-engine-box") as HTMLElement;
-    expect(box).not.toBeNull();
-
-    const modelInput = box.querySelector('input[type="text"]') as HTMLInputElement;
-    const saveBtn = [...box.querySelectorAll(".custom-engine-actions button")].find((b) =>
-      b.textContent?.includes("Save & select engine"),
-    ) as HTMLButtonElement;
-
-    // Disabled when empty
-    expect(saveBtn.disabled).toBe(true);
-
-    modelInput.value = "claude-3-7-sonnet";
-    modelInput.dispatchEvent(new Event("input"));
-    await settle(root.host);
-    expect(saveBtn.disabled).toBe(false);
-
-    saveBtn.click();
-    await settle(root.host);
-
-    const put = calls.find((c) => c.url === "/api/engines/claude-3-7-sonnet");
-    expect(put).toBeDefined();
-    expect(put?.method).toBe("PUT");
-    expect(put?.body).toMatchObject({
-      model: "claude-3-7-sonnet",
-      harness: "claude-code",
-    });
-  });
-
-  it("enforces layout bounding styles so custom engine controls do not overflow", async () => {
-    serve();
-    await mount();
-    const styles = (customElements.get("inc-hiring") as unknown as { styles: { cssText: string }[] }).styles;
-    const cssText = styles.map((s) => s.cssText).join("\n");
-
-    expect(cssText).toContain(".custom-engine-box");
-    expect(cssText).toContain("max-width: 100%");
-    expect(cssText).toContain("box-sizing: border-box");
-    expect(cssText).toContain(".custom-engine-grid");
-    expect(cssText).toContain("grid-template-columns: 1fr");
-  });
-});
-
-describe("the pipeline duties form group (T63)", () => {
+describe("the duties form group (T63)", () => {
   const boxes = (root: ShadowRoot) => [
     ...root.querySelectorAll<HTMLInputElement>('fieldset.duty-set input[type="checkbox"]'),
   ];
@@ -630,10 +620,10 @@ describe("the pipeline duties form group (T63)", () => {
     box.dispatchEvent(new Event("change"));
   };
 
-  it("is a group named Pipeline Duties, and every checkbox is named by its card", async () => {
+  it("is a group named Duties, and every checkbox is named by its card", async () => {
     serve();
     const root = await mount();
-    expect(root.querySelector("fieldset.duty-set > legend")?.textContent).toBe("Pipeline Duties");
+    expect(root.querySelector("fieldset.duty-set > legend")?.textContent).toBe("Duties");
     const all = boxes(root);
     expect(all).toHaveLength(5);
     for (const box of all) {
@@ -643,9 +633,6 @@ describe("the pipeline duties form group (T63)", () => {
     }
     // The whole card is the label, so the tap target is the card, not an 18px box.
     expect(root.querySelectorAll("fieldset.duty-set label.duty-card")).toHaveLength(5);
-    expect(root.querySelector("fieldset.duty-set .duties-grid")?.getAttribute("aria-describedby")).toBe(
-      "duty-help",
-    );
   });
 
   it("keeps the last duty checked and says why", async () => {
