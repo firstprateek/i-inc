@@ -19,17 +19,26 @@ The app has three areas and one destination of its own. The route model lives in
 | --- | --- | --- |
 | **Conversations** | `#/conversations[/<id>]` | none; hosts the Conversations screen (below). Its centre pane is the New conversation screen when nothing is open, and carries the Getting started checklist under the composer until it is done or dismissed |
 | **Work** | `#/work` (Board) | Board `#/work/board` · Releases `#/work/releases`; a ticket is `#/ticket/<id>` and lights Work |
-| **Company** | `#/company` (Team) | Team `#/company/team` (and `/hiring[/<id>]`) · Brain `#/company/brain[/<id>]` · Projects `#/company/projects` · Usage `#/company/usage` · Settings `#/company/settings[/teams\|engines\|sandboxes\|notifications]` |
+| **Company** | `#/company` (Team) | Team `#/company/team` (and `/hiring[/<id>]`) · Brain `#/company/brain[/<id>]` · Projects `#/company/projects` · My desk `#/company/usage` · Settings `#/company/settings[/teams\|engines\|sandboxes\|notifications]` |
 | **Needs you** (in no area) | `#/needs-you` | none: one page, titled "Needs you" |
 
-Needs you is **one top-level destination**, not a tab: it shows what waits for the owner (conversations asking for a
-permission, tickets at a gate, unassigned tickets, follow-up proposals, brain policy proposals) and what is ready to approve.
+Needs you is **one top-level destination**, not a tab, and the home on every screen. Top to bottom it shows, each under
+an `h2` and only when it has something: **Ready for you** (finished reports; "Read the report" is the primary action and
+Approve the secondary, or Merge on GitHub in owner-merges mode, with the report's byline), **Needs your answer**
+(conversations asking for a permission, tickets at a gate or asking, handbook policy proposals), **Not started** (tickets
+nobody is assigned to, one compact row each with Assign…), **Running** (the board's In progress column, one line per
+ticket with its employee and live line) and, last and folded, **Proposed** (agents' follow-up proposals). "All clear"
+stands in for the first two when both are empty and nothing is unassigned; Running still shows under it.
+
+The count says decisions only: tickets asking or ready, conversations waiting, and policy proposals (`needsYouCount` in
+`@i-inc/core`, used by `GET /api/needs-you`, the badge and the page). Follow-up proposals and unassigned tickets are
+listed but not counted; the page says "N for you to decide" and, under it, "M not started: nobody is assigned".
 
 - **Top bar (laptop):** Conversations · Work · Company, a **Needs you (n)** link to `#/needs-you` (outlined; filled
   and `aria-current="page"` while you are on it, with no area highlighted), and the account menu (theme, sign out).
-  The laptop opens on Conversations.
+  The laptop opens on Needs you, and so does the logo; Conversations is one click away.
 - **Phone tabs (bottom bar):** Conversations · Work · Needs you · Company; Needs you goes to `#/needs-you` and lights
-  there. The phone opens on Needs you. The header keeps only the mark and the account menu.
+  there. The phone opens on Needs you too. The header keeps only the mark and the account menu.
 - **Tab row:** one per area, in the page header (the `tabs` slot of `IncLayout`, so Page, Wide and Split share
   it). It is `role="tablist"` with one tab stop: Left/Right/Home/End move between tabs, Space or Enter opens one.
   Tabs are at least 44px tall; on a narrow screen the strip scrolls sideways rather than wrapping. The
@@ -39,7 +48,7 @@ permission, tickets at a gate, unassigned tickets, follow-up proposals, brain po
   `#/hiring`, `#/setup/*`, `#/more`) are rewritten in place (`history.replaceState`) by `legacyTarget()`. Push
   links (`#/ticket/<id>`, `#/ticket/<id>/assign`) are unchanged.
 - **Templates by route:** Conversations, Brain and Settings are Split; the board and Team are Wide;
-  Needs you, Releases, tickets, hiring, Projects and Usage are Page (`layoutForRoute()`).
+  Needs you, Releases, tickets, hiring, Projects and My desk are Page (`layoutForRoute()`).
 - **Words:** conversation, ticket, employee, team, project, brain. The browser title is
   `<tab> · <area> · i.inc` (for example `Board · Work · i.inc`); Needs you is `Needs you · i.inc`.
 
@@ -89,7 +98,7 @@ the widest content: the shell's content area, 1400px at most and centred on a wi
 change height between tabs or areas**. Only the content below follows its template: Page content is a reading
 band of about 840px centred inside that frame; Wide and Split use the whole frame. So the Conversations, Work and
 Company headings start at the same x (20px at 1440, 260px at 1920) and the same y, and the Company tab row stays
-where it is when you switch Team, Brain, Projects, Usage and Settings. To keep this true:
+where it is when you switch Team, Brain, Projects, My desk and Settings. To keep this true:
 - the title sits in a 44px band at the top of the header (`::slotted([slot="heading"])` in `layout.ts`), whatever the
   route puts beside or under it, and Conversations' shorter heading differs only in font size, so the title is at the
   same y on every route and size (a ticket's too);
@@ -116,7 +125,7 @@ where it is when you switch Team, Brain, Projects, Usage and Settings. To keep t
 
 | Template | Width and use | Scrolling |
 | --- | --- | --- |
-| **Page** | The header spans the frame; the content is a centred band up to `--page-width` (840px). Use for Needs you, Releases, ticket details, Usage, Projects and hiring. | The application shell's `<main>` scrolls. Forms and ticket detail stack within the Page width, even on a wide viewport. |
+| **Page** | The header spans the frame; the content is a centred band up to `--page-width` (840px). Use for Needs you, Releases, ticket details, My desk, Projects and hiring. | The application shell's `<main>` scrolls. Forms and ticket detail stack within the Page width, even on a wide viewport. |
 | **Wide** | The header spans the frame and the content uses it, up to `--wide-width` (1400px). Use for the board and the Team floor, whose columns and floor need room. | The shell's `<main>` scrolls vertically; the wide content may scroll horizontally only where its own data view intentionally does so. |
 | **Split** | A full-width header above a 300px (280–320px) navigation/sidebar and flexible working pane. Use for Conversations, Brain and Settings sections. The header follows the outer frame's left and right tracks so it aligns with the sidebar and work pane. | Sidebar and working pane own their scroll positions. The app shell main stays fixed on Split routes so its scroll position cannot compete with either pane. |
 
