@@ -273,9 +273,11 @@ function redactCutPasswords(t: string): string {
 
 /** A run of what a token is made of, in a URL's user name. */
 const NAME_RUN = /[A-Za-z0-9._~+=%-]+/g;
+/** What may follow a quote that closes a string: a separator, as in JSON, CSV, SQL or a shell, or a space. */
+const STRING_END = /^[\s,;:)\]}>|&+]$/;
 /** The kinds of token that go by their prefix, however short what follows. */
 const TOKEN_PREFIX =
-  /(?<![A-Za-z0-9])(?:gh[opsur]_|github_pat_|glpat-|gldt-|sk-|[sr]k_live_|whsec_|xox[a-z]-|AKIA|AIza|npm_|hf_|pypi-|eyJ)/;
+  /(?<![A-Za-z0-9_-])(?:gh[opsur]_|github_pat_|glpat-|gldt-|sk-|[sr]k_live_|whsec_|xox[a-z]-|AKIA|AIza|npm_|hf_|pypi-|eyJ[A-Za-z0-9_-]{8})/;
 
 /**
  * Does what a URL has before its `@` hold a credential? With a `:` (or `%3A`) it holds a password, which may be empty
@@ -286,8 +288,9 @@ const TOKEN_PREFIX =
  */
 export function userinfoHoldsCredential(userinfo: string): boolean {
   if (/:|%3a/i.test(userinfo) || TOKEN_PREFIX.test(userinfo)) return true;
+  const name = userinfo.replace(/%40/gi, "@"); // `first.last%40gmail.com` is an address, not one long run
   NAME_RUN.lastIndex = 0;
-  for (let m = NAME_RUN.exec(userinfo); m; m = NAME_RUN.exec(userinfo)) {
+  for (let m = NAME_RUN.exec(name); m; m = NAME_RUN.exec(name)) {
     if (m[0].length >= 32 || (m[0].length >= 20 && /\d/.test(m[0]))) return true;
   }
   return false;
@@ -298,7 +301,10 @@ export function userinfoHoldsCredential(userinfo: string): boolean {
  * a quote ends at the same quote, written the same way, if what comes before it reads as a host and port: in
  * `"https://acme.example","email":"me@acme.example"` the `@` is a later string's, and the `:` before it is JSON's. Before
  * a `/`, `?` or `#`, a quote is the URL's only end there is: `"postgres://u:a"b@h"` has a password with a quote in it, as
- * what is before that quote is no host. What the URL has before its own `@`, if any, is then all that is looked at.
+ * what is before that quote is no host. Nor is a quote the URL's end when the string goes straight on after it, as when
+ * a password holds the quote written twice or as a shell writes it: `'https://u:2024'\''x@h'`, `('https://u:it''s@h')`.
+ * Only a quote that something else follows, a separator or a space, closes the string. What the URL has before its own
+ * `@`, if any, is then all that is looked at.
  */
 function redactUserinfo(m: string, scheme: string, at: number, t: string): string {
   const userinfo = m.slice(scheme.length, -1);
@@ -309,7 +315,7 @@ function redactUserinfo(m: string, scheme: string, at: number, t: string): strin
     while (close >= 0 && (userinfo[close - 1] === "\\") !== escaped)
       close = userinfo.indexOf(quote, close + 1);
     const read = close < 0 ? "" : userinfo.slice(0, escaped ? close - 1 : close);
-    if (close >= 0 && !stopsInPassword(read)) {
+    if (close >= 0 && STRING_END.test(userinfo[close + 1] ?? "") && !stopsInPassword(read)) {
       const own = read.lastIndexOf("@");
       return own >= 0 && userinfoHoldsCredential(read.slice(0, own))
         ? `${scheme}[redacted]${m.slice(scheme.length + own)}`

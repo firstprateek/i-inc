@@ -1013,6 +1013,11 @@ describe("a search", () => {
         "ssh://git@github.com/a/pkg@1.0",
         "https://x-access-token@github.com",
         "https://postgres.abcdefghijkl@h.example",
+        "imap://first.last%40gmail.com@imap.gmail.com/INBOX",
+        "https://team_hf_bot@host/x",
+        "https://my-pypi-mirror@host/x",
+        "https://eyJohn@host/x",
+        `['https://acme.example', 'me@acme.example']`,
       ])("is no credential alone: %s", (line) => {
         expect(redactFile(`${line}\n`)).toBe(`${line}\n`);
         expect(holdsCredential(`${line}\n`)).toBe(false);
@@ -1036,6 +1041,22 @@ describe("a search", () => {
         ["an encoded colon", "https://u%3Ap@h", "u%3Ap"],
         ["an empty password", "https://u:@h", "u:"],
         ["a password with a quote before a field", `"https://u:a","b":"c@h"`, "u:a"],
+        ["a password with a shell's quote", `curl 'https://deploy:2024'\\''Spring@api.example/v1'`, "Spring"],
+        [
+          "a password with SQL's quote",
+          `VALUES ('https://ops+deploy:it''s-Secret9@db.example/app');`,
+          "Secret9",
+        ],
+        ["a password with CSV's quote", `"https://admin:12345""abcXYZ@db.example",prod`, "abcXYZ"],
+        ["a password with a backtick", "`https://admin:2024`Winter@db.example`", "Winter"],
+        [
+          "a password with an escaped quote",
+          `"curl \\"https://admin:2024\\\\\\"Winter@db.example\\""`,
+          "Winter",
+        ],
+        ["a user name with a quote", `'https://o'brien:Hunter2pw@db.example/x'`, "Hunter2pw"],
+        ["an encoded colon with a quote", `'https://ci%3Apa'\\''ssW0rd@db.example'`, "ssW0rd"],
+        ["a JWT", "https://eyJhbGciOiJIUzI1NiJ9@h", "eyJhbGciOiJIUzI1NiJ9"],
         ["a token's prefix past the old limit", `https://ghp_${"x".repeat(500)}@h`, "ghp_x"],
         ["a long user name past the old limit", `https://${"g".repeat(500)}@h`, "g".repeat(400)],
       ])("is a credential with %s", (_, line, secret) => {
