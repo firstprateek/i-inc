@@ -97,7 +97,8 @@ describe("Proposed in Needs you", () => {
     expect(head(s).textContent?.replace(/\s+/g, " ").trim()).toBe(
       "Proposed (2) — follow-ups waiting for you",
     );
-    expect(head(s).getAttribute("aria-expanded")).toBe("true");
+    // suggestions, not decisions: folded until the owner opens them
+    expect(head(s).getAttribute("aria-expanded")).toBe("false");
     const r = rows(s);
     expect(r).toHaveLength(2);
     expect(r[0]?.querySelector(".title")?.textContent).toBe("Add retry to the sync");
@@ -106,7 +107,7 @@ describe("Proposed in Needs you", () => {
     expect(r[0]?.querySelector<HTMLAnchorElement>(".meta a")?.getAttribute("href")).toBe("#/ticket/12");
   });
 
-  it("starts collapsed above three proposals, and the header opens and closes it", async () => {
+  it("starts folded, and the header opens and closes it", async () => {
     open = many(4);
     const s = section(await mount("inc-inbox")) as ShadowRoot;
     expect(head(s).getAttribute("aria-expanded")).toBe("false");
@@ -121,10 +122,11 @@ describe("Proposed in Needs you", () => {
     expect(listOf(s).hidden).toBe(true);
   });
 
-  it("stays open for three or fewer", async () => {
-    open = many(3);
+  it("starts folded however few there are", async () => {
+    open = many(1);
     const s = section(await mount("inc-inbox")) as ShadowRoot;
-    expect(head(s).getAttribute("aria-expanded")).toBe("true");
+    expect(head(s).getAttribute("aria-expanded")).toBe("false");
+    expect(listOf(s).hidden).toBe(true);
   });
 
   it("shows five at most, with Show all for the rest", async () => {
@@ -221,6 +223,8 @@ describe("Proposed in Needs you", () => {
     open = many(3);
     const root = await mount("inc-inbox");
     const s = section(root) as ShadowRoot;
+    head(s).click();
+    await tick();
     const first = s.querySelector<HTMLButtonElement>(
       '[data-row="1"] button.btn:not(.ghost)',
     ) as HTMLButtonElement;
@@ -270,17 +274,19 @@ describe("the board has no Proposed band (T64)", () => {
 });
 
 describe("Proposed in the inbox", () => {
-  it("counts proposals as things that need you, and lists them", async () => {
+  it("lists proposals last without counting them (N5): they are suggestions, not decisions", async () => {
     open = [proposal(), proposal({ id: 2, title: "Cache the rates" })];
     const root = await mount("inc-inbox");
-    expect(root.querySelector(".summary")?.textContent).toBe("2 things need you");
-    expect(root.querySelector(".clear")).toBeNull();
+    expect(root.querySelector(".summary")?.textContent).toBe("Nothing for you to decide");
+    expect(root.querySelector(".clear")).not.toBeNull();
     expect(section(root)?.querySelectorAll("li.row")).toHaveLength(2);
+    const children = [...root.children].filter((e) => e.tagName !== "STYLE");
+    expect(children.at(-1)?.tagName).toBe("INC-PROPOSALS");
   });
 
   it("says nothing needs you, and shows no Proposed section, when there are none", async () => {
     const root = await mount("inc-inbox");
-    expect(root.querySelector(".summary")?.textContent).toBe("Nothing needs you");
+    expect(root.querySelector(".summary")?.textContent).toBe("Nothing for you to decide");
     expect(root.querySelector("inc-proposals")).toBeNull();
     expect(root.querySelector(".clear")).not.toBeNull();
   });
@@ -291,6 +297,6 @@ describe("Proposed in the inbox", () => {
     section(root)?.querySelector<HTMLButtonElement>("button.btn:not(.ghost)")?.click();
     await tick();
     expect(calls).toContainEqual({ method: "POST", url: "/api/proposals/1/accept" });
-    expect(root.querySelector(".summary")?.textContent).toBe("Nothing needs you");
+    expect(root.querySelector(".summary")?.textContent).toBe("Nothing for you to decide");
   });
 });

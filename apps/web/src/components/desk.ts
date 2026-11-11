@@ -37,7 +37,7 @@ export class IncDesk extends Loader<DeskView & { learned: NamedChange[] }> {
     ...Loader.properties,
     cutting: { state: true },
     actionError: { state: true },
-    /** Which half of the old desk to show: Company → Usage, or Work → Releases. */
+    /** Which half of the old desk to show: Company → My desk, or Work → Releases. */
     show: { type: String },
   };
   declare show: "usage" | "releases";

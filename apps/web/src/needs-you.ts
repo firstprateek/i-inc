@@ -1,32 +1,12 @@
 // What needs the owner, counted one way for the top-bar badge, the phone tab and the Needs you list.
-import {
-  api,
-  type Conversation,
-  type NeedsYouView,
-  type PolicyProposal,
-  type ProposalView,
-  type TicketView,
-} from "./api.ts";
-import { waitsForAssignee } from "./assign.ts";
+import { api, type Conversation, type NeedsYouView } from "./api.ts";
 
 /**
- * Tickets asking for the owner, tickets nobody can start until the owner picks someone, handbook policy
- * proposals, and open follow-up proposals. The Needs you list, the top-bar badge and the phone tab all use it.
+ * Decisions only: tickets asking for the owner, finished reports, conversations waiting, and handbook policy
+ * proposals; not follow-up proposals or unassigned tickets (`@i-inc/core`'s rule, which the daemon counts with
+ * too). The Needs you page, the top-bar badge and the phone tab all show it.
  */
-export function needsYouCount(
-  tickets: TicketView[],
-  policies: PolicyProposal[] = [],
-  proposals: ProposalView[] = [],
-  conversations: Pick<Conversation, "needsYou">[] = [],
-): number {
-  return (
-    tickets.filter((t) => t.status === "needs-you").length +
-    tickets.filter(waitsForAssignee).length +
-    policies.length +
-    proposals.length +
-    conversations.filter((c) => c.needsYou).length
-  );
-}
+export { needsYouCount } from "@i-inc/core";
 
 /** Tells the shell to recount: a conversation started or stopped waiting for the owner. */
 export const needsYouSignal = new EventTarget();

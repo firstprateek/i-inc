@@ -1,6 +1,6 @@
 // The route model (docs/layout.md): three areas, each with its own tabs. Pure functions only: the shell
 // (components/app.ts) renders from this, and the tests drive it without a DOM.
-import { LAYOUT_BREAKPOINTS, type LayoutKind } from "./components/layout.ts";
+import type { LayoutKind } from "./components/layout.ts";
 
 export type Area = "conversations" | "work" | "company";
 
@@ -17,12 +17,15 @@ export const WORK_TABS = [
 ] as const;
 export type WorkTab = (typeof WORK_TABS)[number][0];
 
-/** Company's tabs: who works here, what they know, where they work, what it costs, and the setup. */
+/**
+ * Company's tabs: who works here, what they know, where they work, how the company is doing, and the setup.
+ * My desk (spec §10) keeps its old address, `#/company/usage`.
+ */
 export const COMPANY_TABS = [
   ["team", "Team"],
   ["brain", "Brain"],
   ["projects", "Projects"],
-  ["usage", "Usage"],
+  ["usage", "My desk"],
   ["settings", "Settings"],
 ] as const;
 export type CompanyTab = (typeof COMPANY_TABS)[number][0];
@@ -123,12 +126,11 @@ export function layoutForRoute(route: Route): LayoutKind {
   }
 }
 
-/** True on a phone-sized screen, where the app opens on what needs the owner. */
-const onPhone = () =>
-  typeof matchMedia === "function" && matchMedia(`(max-width: ${LAYOUT_BREAKPOINTS.phone}px)`).matches;
-
-/** Where the app opens with no hash, and where the logo goes: Conversations on a laptop, Needs you on a phone. */
-export const homeHash = () => (onPhone() ? "#/needs-you" : "#/conversations");
+/**
+ * Where the app opens with no hash, and where the logo goes: Needs you, on a laptop and a phone alike. It says
+ * what is ready, what needs an answer and what is running; Conversations is one click away.
+ */
+export const homeHash = () => "#/needs-you";
 
 /** Old hashes (before the three areas) and the canonical hash each one lands on. */
 export function legacyTarget(hash: string): string | null {
@@ -266,9 +268,9 @@ export const brainHash = (repo: string, page: string): string =>
 /** The query of a hash: `#/conversations?new=1&project=Duet` gives `new=1&project=Duet`. */
 export const hashQuery = (hash: string): URLSearchParams => new URLSearchParams(hash.split("?")[1] ?? "");
 
-/** Where the app opens with no hash. */
+/** Where the app opens with no hash (see homeHash). */
 export function homeRoute(): Route {
-  return onPhone() ? { view: "needs-you" } : { view: "conversations", id: "" };
+  return { view: "needs-you" };
 }
 
 /** The address of a conversation about to start: the first message creates it. */
@@ -416,7 +418,7 @@ function titleParts(r: Route): string[] {
           ? [r.flow === "add" ? "Add a repo" : "New project", "Projects", "Company"]
           : ["Projects", "Company"];
     case "usage":
-      return ["Usage", "Company"];
+      return ["My desk", "Company"];
     case "settings":
       return [tab(sections, r.section), "Settings", "Company"];
   }

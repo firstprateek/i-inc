@@ -162,7 +162,7 @@ describe("My desk view and releases (T33)", () => {
     });
   }
 
-  /** Work → Releases by default; Company → Usage is the other half of the old desk. */
+  /** Work → Releases by default; Company → My desk is the other half of the old desk. */
   async function mount(show: "usage" | "releases" = "releases"): Promise<{ el: IncDesk; root: ShadowRoot }> {
     const el = document.createElement("inc-desk") as IncDesk;
     el.show = show;
@@ -174,7 +174,7 @@ describe("My desk view and releases (T33)", () => {
     return { el, root: el.shadowRoot as ShadowRoot };
   }
 
-  it("Company → Usage renders the bottleneck, spend, waits and lessons learned, and no releases", async () => {
+  it("Company → My desk renders the bottleneck, spend, waits and lessons learned, and no releases", async () => {
     serveDesk();
     const { root } = await mount("usage");
 

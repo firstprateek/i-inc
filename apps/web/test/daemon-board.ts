@@ -1,7 +1,7 @@
 // What the daemon answers for the board and Needs you (T63), worked out from a list of tickets the way
 // apps/daemon/src/board-summary.ts and GET /api/needs-you do, so a view's test can say what exists and
 // leave the paging to this. `answer(url)` returns the JSON body, or undefined for a URL that isn't theirs.
-import { digestRow, type TicketEvent, UNASSIGNED, waitsForAssignee } from "@i-inc/core";
+import { digestRow, needsYouCount, type TicketEvent, UNASSIGNED, waitsForAssignee } from "@i-inc/core";
 
 // biome-ignore lint/suspicious/noExplicitAny: a test's tickets are partial views.
 type T = any;
@@ -85,12 +85,7 @@ export function answer(world: BoardWorld, url: string): unknown | undefined {
       const policies = world.awaiting ?? [];
       const proposals = world.proposals ?? [];
       const conversations = (world.conversations ?? []).filter((c) => c.needsYou);
-      const count =
-        tickets.filter((t) => t.status === "needs-you").length +
-        tickets.filter(waitsForAssignee).length +
-        policies.length +
-        proposals.length +
-        conversations.length;
+      const count = needsYouCount(tickets, policies, conversations);
       return { count, tickets, policies, proposals, conversations };
     }
     default:

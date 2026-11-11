@@ -88,14 +88,14 @@ describe("parse", () => {
     }
   });
 
-  it("opens Conversations on a desktop and Needs you on a phone when there is no hash", () => {
-    phone(true);
-    expect(parse("")).toEqual({ view: "needs-you" });
-    expect(parse("#/")).toEqual({ view: "needs-you" });
-    phone(false);
-    expect(parse("")).toEqual({ view: "conversations", id: "" });
-    expect(parse("#/nothing-here")).toEqual({ view: "conversations", id: "" });
-    expect(parse("#/ticket")).toEqual({ view: "conversations", id: "" });
+  it("opens on Needs you, on a laptop and on a phone, when there is no hash", () => {
+    for (const onPhone of [true, false]) {
+      phone(onPhone);
+      expect(parse("")).toEqual({ view: "needs-you" });
+      expect(parse("#/")).toEqual({ view: "needs-you" });
+      expect(parse("#/nothing-here")).toEqual({ view: "needs-you" });
+      expect(parse("#/ticket")).toEqual({ view: "needs-you" });
+    }
   });
 });
 
@@ -208,10 +208,10 @@ describe("redirectFor: tidying, mistyped and unknown hashes", () => {
     expect(parse(hash)).toEqual(parse(to));
   });
 
-  it("sends a hash the app does not know to the home route: Conversations on a laptop, Needs you on a phone", () => {
+  it("sends a hash the app does not know to the home route, Needs you", () => {
     for (const h of ["#/bogus", "#/ticket", "#//", "#/Bogus/thing", "bogus", "#/ticketing/1"]) {
       phone(false);
-      expect(redirectFor(h), h).toBe("#/conversations");
+      expect(redirectFor(h), h).toBe("#/needs-you");
       phone(true);
       expect(redirectFor(h), h).toBe("#/needs-you");
     }
@@ -237,16 +237,16 @@ describe("redirectFor: tidying, mistyped and unknown hashes", () => {
       expect(redirectFor(h), h).toBeNull();
   });
 
-  it("the home hash is the phone home on a phone and Conversations on a laptop", () => {
+  it("the home hash is Needs you on a phone and on a laptop", () => {
     phone(true);
     expect(homeHash()).toBe("#/needs-you");
     phone(false);
-    expect(homeHash()).toBe("#/conversations");
+    expect(homeHash()).toBe("#/needs-you");
   });
 
   it("the app rewrites a bogus hash to the home route in place, without a new history entry", async () => {
     for (const [onPhone, home] of [
-      [false, "#/conversations"],
+      [false, "#/needs-you"],
       [true, "#/needs-you"],
     ] as const) {
       phone(onPhone);
@@ -311,7 +311,7 @@ describe("areas and tabs", () => {
   it("has the tabs the plan names, in order", () => {
     expect(AREAS.map((a) => a.label)).toEqual(["Conversations", "Work", "Company"]);
     expect(WORK_TABS.map(([, l]) => l)).toEqual(["Board", "Releases"]);
-    expect(COMPANY_TABS.map(([, l]) => l)).toEqual(["Team", "Brain", "Projects", "Usage", "Settings"]);
+    expect(COMPANY_TABS.map(([, l]) => l)).toEqual(["Team", "Brain", "Projects", "My desk", "Settings"]);
   });
 });
 

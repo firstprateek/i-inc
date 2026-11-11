@@ -134,10 +134,12 @@ describe("the top bar", () => {
     expect(current(root, "header .needs-link")).toEqual(area ? [] : [expect.stringContaining("Needs you")]);
   });
 
-  it("opens on Conversations on a laptop and on Needs you on a phone", async () => {
+  it("opens on Needs you on a laptop and on a phone, with Conversations one click away", async () => {
     let { root } = await mount("");
-    expect(current(root, 'header nav[aria-label="Areas"] a')).toEqual(["Conversations"]);
-    expect(root.querySelector("inc-conversations")).not.toBeNull();
+    expect(current(root, 'header nav[aria-label="Areas"] a')).toEqual([]);
+    expect(current(root, "header .needs-link")).toEqual([expect.stringContaining("Needs you")]);
+    expect(root.querySelector("inc-inbox")).not.toBeNull();
+    expect(root.querySelector('header nav[aria-label="Areas"] a[href="#/conversations"]')).not.toBeNull();
     document.body.innerHTML = "";
     phone(true);
     ({ root } = await mount(""));
@@ -147,9 +149,9 @@ describe("the top bar", () => {
 });
 
 describe("the logo", () => {
-  it("goes to Conversations on a laptop and to Needs you on a phone", async () => {
+  it("goes to Needs you on a laptop and on a phone", async () => {
     let { root } = await mount("#/company/team");
-    expect(root.querySelector("header .mark")?.getAttribute("href")).toBe("#/conversations");
+    expect(root.querySelector("header .mark")?.getAttribute("href")).toBe("#/needs-you");
     document.body.innerHTML = "";
     phone(true);
     ({ root } = await mount("#/company/team"));
@@ -185,7 +187,7 @@ describe("the account menu's Show getting started", () => {
 });
 
 describe("the Needs you count", () => {
-  it("counts tickets that need the owner, tickets nobody can start, and policy proposals", () => {
+  it("counts decisions: tickets asking, finished reports, conversations waiting and policy proposals", () => {
     const tickets = [
       ticket({ id: "1", status: "needs-you", needsYou: { kind: "plan-gate", plan: "x" } }),
       ticket({ id: "2", status: "queued", column: "todo", waiting: UNASSIGNED, assignee: null }),
@@ -193,11 +195,12 @@ describe("the Needs you count", () => {
       ticket({ id: "4", status: "ready", column: "review" }),
       ticket({ id: "5" }),
     ];
+    // the plan gate and the report; not the unassigned ticket, nor the running one
     expect(needsYouCount(tickets, [])).toBe(2);
     expect(needsYouCount(tickets, [{ id: "p" } as never])).toBe(3);
+    expect(needsYouCount(tickets, [], [{ needsYou: true }, { needsYou: false }])).toBe(3);
     expect(needsYouCount([])).toBe(0);
-    // open follow-up proposals count too, so the badge matches the Needs you list
-    expect(needsYouCount(tickets, [], [{ id: "a" } as never, { id: "b" } as never])).toBe(4);
+    expect(needsYouCount(tickets.filter((t) => t.id === "2"))).toBe(0);
   });
 
   it("shows the count in the top bar link, which opens the Needs you page", async () => {
@@ -222,10 +225,14 @@ describe("the Needs you count", () => {
     expect(root.querySelector('[role="tablist"] a[href="#/needs-you"]')).toBeNull();
   });
 
-  it("includes open follow-up proposals in the badge", async () => {
+  it("leaves open follow-up proposals and unassigned tickets out of the badge (N5)", async () => {
     openProposals = [{ id: "pr1" }, { id: "pr2" }];
+    serve([
+      ticket({ id: "2", status: "queued", column: "todo", waiting: UNASSIGNED, assignee: null }),
+      ticket({ id: "4", status: "ready", column: "review" }),
+    ]);
     const { root } = await mount("#/work/board");
-    expect(root.querySelector("header .needs-link .count")?.textContent).toBe("2");
+    expect(root.querySelector("header .needs-link .count")?.textContent).toBe("1");
   });
 
   it("shows 0 calmly, and no number until the first answer", async () => {
@@ -285,12 +292,12 @@ describe("each area's tab row", () => {
     expect(root.querySelector("inc-desk")?.getAttribute("show")).toBe("releases");
   });
 
-  it("Company has Team, Brain, Projects, Usage and Settings, and each opens its content", async () => {
+  it("Company has Team, Brain, Projects, My desk and Settings, and each opens its content", async () => {
     const { app, root } = await mount("#/company/team");
     const list = root.querySelector('[role="tablist"].subnav') as HTMLElement;
     expect(list.getAttribute("aria-label")).toBe("Company sections");
     const tabs = [...list.querySelectorAll('a[role="tab"]')];
-    expect(tabs.map((t) => text(t))).toEqual(["Team", "Brain", "Projects", "Usage", "Settings"]);
+    expect(tabs.map((t) => text(t))).toEqual(["Team", "Brain", "Projects", "My desk", "Settings"]);
     const opens: [string, string][] = [
       ["#/company/team", "inc-office"],
       ["#/company/brain", "inc-knowledge"],
@@ -309,7 +316,7 @@ describe("each area's tab row", () => {
     }
   });
 
-  it("Team shows the floor with a Hire someone action, and Usage shows spend with the account meters", async () => {
+  it("Team shows the floor with a Hire someone action, and My desk shows spend with the account meters", async () => {
     const { app, root } = await mount("#/company/team");
     expect(root.querySelector('inc-office[show="floor"]')).not.toBeNull();
     expect(text(root.querySelector('[slot="actions"]'))).toBe("Hire someone");
@@ -378,7 +385,7 @@ describe("the browser title", () => {
     expect(document.title).toBe("Board · Work · i.inc");
     for (const [hash, title] of [
       ["#/needs-you", "Needs you · i.inc"],
-      ["#/company/usage", "Usage · Company · i.inc"],
+      ["#/company/usage", "My desk · Company · i.inc"],
       ["#/conversations/old/ada", "Old chat · Conversations · i.inc"],
       ["#/conversations/ab12cd34", "Conversations · i.inc"],
       ["#/ticket/9", "Ticket #9 · Work · i.inc"],

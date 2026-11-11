@@ -17,6 +17,24 @@ export function waitsForAssignee(t: {
   return t.waiting === UNASSIGNED || /^assignee .+ doesn't work here$/.test(t.waiting ?? "");
 }
 
+/**
+ * The Needs you count: what waits for the owner's decision. Tickets asking a question or at a gate, finished
+ * reports, conversations waiting for a permission or an answer, and handbook policy proposals. Agents' follow-up
+ * proposals are suggestions and an unassigned ticket blocks nobody else's work, so neither counts; Needs you still
+ * lists both. The daemon's `GET /api/needs-you`, the badge and the page all use this one rule.
+ */
+export function needsYouCount(
+  tickets: readonly { status: string }[],
+  policies: readonly unknown[] = [],
+  conversations: readonly { needsYou?: unknown }[] = [],
+): number {
+  return (
+    tickets.filter((t) => t.status === "needs-you" || t.status === "ready").length +
+    conversations.filter((c) => c.needsYou).length +
+    policies.length
+  );
+}
+
 /** One line of the board's report on a finished ticket: how it ended. */
 export interface DigestRow {
   id: Id;

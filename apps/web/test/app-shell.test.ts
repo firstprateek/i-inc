@@ -79,7 +79,7 @@ describe("routeTitle", () => {
     expect(t("#/company/brain")).toBe("Brain · Company · i.inc");
     expect(t("#/company/brain/ada")).toBe("Ada’s brain · Company · i.inc");
     expect(t("#/company/projects")).toBe("Projects · Company · i.inc");
-    expect(t("#/company/usage")).toBe("Usage · Company · i.inc");
+    expect(t("#/company/usage")).toBe("My desk · Company · i.inc");
     expect(t("#/company/settings/engines")).toBe("Engines and accounts · Settings · Company · i.inc");
     expect(t("#/company/settings")).toBe("Teams · Settings · Company · i.inc");
     // an old hash is titled as the page it redirects to
@@ -180,7 +180,7 @@ describe("the shell", () => {
     const focus = vi.spyOn(HTMLElement.prototype, "focus");
     await go("#/company/usage");
     expect(main.scrollTop).toBe(0);
-    expect(document.title).toBe("Usage · Company · i.inc");
+    expect(document.title).toBe("My desk · Company · i.inc");
     expect(root.querySelector("#view-heading")?.textContent?.trim()).toBe("Company");
     expect(focus).toHaveBeenCalledWith({ preventScroll: true });
     expect(root.activeElement?.id).toBe("view-heading");

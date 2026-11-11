@@ -13,7 +13,7 @@ interface Data {
 
 export class IncOffice extends Loader<Data> {
   static override properties = { ...Loader.properties, show: { type: String } };
-  /** Company → Team shows the floor; Company → Usage shows the account meters. */
+  /** Company → Team shows the floor; Company → My desk shows the account meters. */
   declare show: "floor" | "meters";
 
   constructor() {

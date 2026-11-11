@@ -320,6 +320,7 @@ export interface BoardSummaryView {
 
 /** `GET /api/needs-you`: everything waiting for the owner, and the count the badge shows. */
 export interface NeedsYouView {
+  /** Decisions only: tickets asking or ready, conversations waiting, policies (core's `needsYouCount`). */
   count: number;
   /** Tickets asking for the owner, ready for review, or waiting for someone to be assigned. */
   tickets: TicketView[];

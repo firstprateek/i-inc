@@ -344,12 +344,15 @@ describe("saying why a ticket waits", () => {
     expect(root.querySelector("a.assign")).toBeNull();
   });
 
-  it("lists an unassigned ticket in the inbox with the reason and Assign…", async () => {
+  it("lists an unassigned ticket in the inbox under Not started, with Assign…, and does not count it", async () => {
     serve([view()]);
     const root = (await mount("inc-inbox")).shadowRoot as ShadowRoot;
-    expect(root.querySelector(".summary")?.textContent).toBe("1 thing needs you");
-    expect(root.querySelector(".waits")?.textContent).toContain("Waiting: nobody is assigned yet");
-    expect(root.querySelector('a[href="#/ticket/12/assign"]')?.textContent).toBe("Assign…");
+    expect(root.querySelector(".summary")?.textContent).toBe("Nothing for you to decide");
+    expect(root.querySelector(".sub")?.textContent).toBe("1 not started: nobody is assigned");
+    const row = root.querySelector('ul.rows a[href="#/ticket/12/assign"]');
+    expect(row?.textContent?.trim()).toBe("Assign…");
+    // a compact row, not an amber card
+    expect(root.querySelector(".item.waiting")).toBeNull();
     expect(root.textContent).not.toContain("All clear");
   });
 

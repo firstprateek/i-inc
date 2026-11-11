@@ -1,14 +1,11 @@
 // "Proposed": follow-ups an agent suggested after the day's budget was used up (C20, v1-plan §6).
-// The owner accepts one to file it as a ticket, or declines it. It is a compact band so it never
-// pushes the board's columns out of sight: one header line (collapsed when there are more than a
-// few), dense rows, five at a time. The board shows it above the columns and the inbox lists it;
-// nothing is drawn while there are none.
+// The owner accepts one to file it as a ticket, or declines it. They are suggestions, not decisions
+// work waits on, so the band is the last thing on Needs you and starts folded: one header line, then
+// dense rows, five at a time. Nothing is drawn while there are none.
 import { css, html, LitElement, nothing, type PropertyValues } from "lit";
 import { api, type ProposalView, refreshNow } from "../api.ts";
 import { avatar, base, projectBadge } from "./shared.ts";
 
-/** More than this many proposals start collapsed. */
-export const COLLAPSE_ABOVE = 3;
 /** Rows shown before "Show all". */
 export const ROWS_SHOWN = 5;
 
@@ -17,7 +14,7 @@ export class IncProposals extends LitElement {
     proposals: { attribute: false },
     busy: { state: true },
     error: { state: true },
-    /** The owner's choice for the band; null follows the count (collapsed above three). */
+    /** The owner's choice for the band; null is the default, folded. */
     expanded: { state: true },
     showAll: { state: true },
     details: { state: true },
@@ -52,7 +49,7 @@ export class IncProposals extends LitElement {
   }
 
   private get isOpen(): boolean {
-    return this.expanded ?? this.proposals.length <= COLLAPSE_ABOVE;
+    return this.expanded ?? false;
   }
 
   private async decide(p: ProposalView, verb: "accept" | "decline") {
@@ -125,10 +122,12 @@ export class IncProposals extends LitElement {
       .title { grid-area: title; font-size: 14px; font-weight: 700; line-height: 1.3; overflow-wrap: anywhere; min-width: 0; margin: 0; }
       .meta { grid-area: meta; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; line-height: 1.35; color: var(--ink-2); min-width: 0; }
       .meta .name { display: inline-flex; align-items: center; gap: 6px; }
-      .link { display: inline-flex; align-items: center; justify-content: center; min-height: 28px; min-width: 28px; box-sizing: border-box; font-weight: 700; }
+      /* A 44px target padded into the line's own space, so the row stays as tall as its text. */
+      .link { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; min-width: 44px; margin: -10px -8px; box-sizing: border-box; font-weight: 700; }
       .more { all: unset; box-sizing: border-box; display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 6px; border-radius: 8px; cursor: pointer;
         font: 600 13px var(--body); color: var(--ink); touch-action: manipulation; }
       .more .chev { margin: 0 2px 0 0; width: 6px; height: 6px; }
+      .meta .more { padding: 0 12px; }
       .actions { grid-area: actions; display: flex; gap: 6px; align-self: center; }
       .actions .btn { font-size: 14px; min-height: 32px; min-width: 32px; padding: 0 14px; }
       .actions .btn.ghost { border-color: var(--ink-2); }
@@ -144,7 +143,6 @@ export class IncProposals extends LitElement {
       @media (max-width: 900px), (pointer: coarse) {
         .head { min-height: 44px; }
         .more { min-height: 44px; }
-        .link { min-height: 44px; min-width: 44px; }
         .actions .btn { min-height: 44px; min-width: 44px; font-size: 16px; padding: 0 18px; }
         li.row { grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "badge title" "meta meta" "actions actions" "body body"; padding: 10px 6px; }
         .actions { justify-content: flex-start; margin-top: 2px; }

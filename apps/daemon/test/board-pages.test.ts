@@ -139,19 +139,66 @@ describe("GET /api/needs-you", () => {
     expect(res.status).toBe(200);
     const ids = res.body.tickets.map((t: { id: string }) => t.id);
     expect(ids).toContain(unassigned.id);
-    expect(res.body.count).toBeGreaterThanOrEqual(1);
     expect(res.body.count).toBe(
-      res.body.tickets.filter((t: { status: string }) => t.status === "needs-you").length +
-        res.body.tickets.filter(
-          (t: { status: string; waiting: string | null }) =>
-            t.status === "queued" && (t.waiting ?? "").startsWith("unassigned"),
-        ).length +
+      res.body.tickets.filter((t: { status: string }) => t.status === "needs-you" || t.status === "ready")
+        .length +
         res.body.policies.length +
-        res.body.proposals.length +
         res.body.conversations.length,
     );
     expect(Array.isArray(res.body.policies)).toBe(true);
     expect(Array.isArray(res.body.proposals)).toBe(true);
     expect(Array.isArray(res.body.conversations)).toBe(true);
+  });
+
+  it("counts decisions only: an ask and a report, not a follow-up proposal or an unassigned ticket (N5)", async () => {
+    const app = await testApp();
+    const now = app.clock.now();
+    const make = (title: string, assignee?: string) =>
+      app.deps.tickets.create(
+        {
+          title,
+          project: "Duet",
+          type: "fix",
+          effort: "low",
+          doneWhen: ["x"],
+          // held, so the scheduler leaves them where the events below put them
+          ...(assignee ? { assignee, hold: true } : {}),
+        },
+        now,
+      );
+    const unassigned = make("Nobody yet");
+    const asking = make("Asking", "ada");
+    const ready = make("Ready", "ada");
+    await app.deps.store.append(asking.id, [
+      { type: "ticket-created", at: now, ticketId: asking.id },
+      { type: "needs-you", stage: "plan", at: now, ask: { kind: "stuck", reason: "stuck" } },
+    ]);
+    await app.deps.store.append(ready.id, [
+      { type: "ticket-created", at: now, ticketId: ready.id },
+      { type: "report-ready", at: now, summary: "Done." },
+    ]);
+    app.deps.proposals.add(
+      {
+        project: "Duet",
+        title: "A follow-up",
+        body: "Because",
+        proposedBy: "ada",
+        sourceTicket: "",
+        type: "chore",
+        effort: "low",
+        doneWhen: [],
+      },
+      now,
+    );
+    await app.daemon.tick();
+    await app.daemon.idle();
+    const { body } = await app.call("GET", "/api/needs-you");
+    // all four are listed
+    expect(body.tickets.map((t: { id: string }) => t.id).sort()).toEqual(
+      [unassigned.id, asking.id, ready.id].sort(),
+    );
+    expect(body.proposals).toHaveLength(1);
+    // two are counted
+    expect(body.count).toBe(2);
   });
 });

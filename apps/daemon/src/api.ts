@@ -27,6 +27,7 @@ import {
   isHomeEmployee,
   isLocalEngine,
   knowledgeLog,
+  needsYouCount,
   orientationDoneWhen,
   type ProjectRelease,
   type ProposedEdit,
@@ -518,12 +519,8 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
         const conversations = (d.conversations?.list({}) ?? [])
           .filter((c) => c.needsYou)
           .map(peopleConversation);
-        const count =
-          tickets.filter((t) => t.status === "needs-you").length +
-          tickets.filter(waitsForAssignee).length +
-          policies.length +
-          proposals.length +
-          conversations.length;
+        // Decisions only: follow-up proposals and unassigned tickets are listed but not counted (core's rule).
+        const count = needsYouCount(tickets, policies, conversations);
         return json({ count, tickets, policies: policies.map(proposal), proposals, conversations });
       },
     ],

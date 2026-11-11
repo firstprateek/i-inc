@@ -272,7 +272,7 @@ describe("a failed button press", () => {
     await settle(inbox);
     expect(root.querySelector('[role="alert"]')?.textContent).toContain("ticket 3 is not waiting");
     // the list is still there
-    expect(root.querySelector(".summary")?.textContent).toBe("1 thing needs you");
+    expect(root.querySelector(".summary")?.textContent).toBe("2 for you to decide");
     expect(root.textContent).toContain("The plan for “Budget alerts” waits at the gate.");
     expect(root.textContent).toContain("Refunds are counted as spending");
   });

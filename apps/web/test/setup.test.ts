@@ -575,7 +575,7 @@ describe("Company → Settings and Projects", () => {
       "Team",
       "Brain",
       "Projects",
-      "Usage",
+      "My desk",
       "Settings",
     ]);
     expect(companyTabs.find((a) => a.getAttribute("aria-selected") === "true")?.textContent?.trim()).toBe(

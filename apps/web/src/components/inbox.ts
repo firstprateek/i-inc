@@ -1,7 +1,9 @@
-// Work → Needs you (spec §10): what needs you and what's ready, each answerable in one tap.
+// Needs you (spec §10): what is ready for the owner's decision, what needs an answer, what nobody has started,
+// what is running, and, folded last, what the agents suggest. Each ask is answerable in one tap.
+import { UNASSIGNED } from "@i-inc/core";
 import { css, html } from "lit";
 import { api, type Conversation, type PolicyProposal, type ProposalView, type TicketView } from "../api.ts";
-import { waitingLine, waitsForAssignee } from "../assign.ts";
+import { liveText, waitingLine, waitsForAssignee } from "../assign.ts";
 import { visible } from "../conversations/model.ts";
 import { loadNeedsYou, needsYouCount } from "../needs-you.ts";
 import { layoutStyles } from "./layout.ts";
@@ -11,24 +13,39 @@ import { web } from "../links.ts";
 import { protectedOk } from "./protected-card.ts";
 import { avatar, base, projectBadge } from "./shared.ts";
 
+/** Running tickets listed before "more on the board". */
+const RUNNING_SHOWN = 20;
+
 export class IncInbox extends Loader<{
   tickets: TicketView[];
   policies: PolicyProposal[];
   proposals: ProposalView[];
   conversations: Conversation[];
+  /** In progress and not waiting on the owner, and how many In progress has in all (for "more on the board"). */
+  running: TicketView[];
+  inProgress: number;
   names: Record<string, string>;
 }> {
   /** Proposals have been on screen: the component stays after the last is decided, so it can say so and keep focus. */
   private sawProposals = false;
 
   protected fetch = async () => {
-    // One request answers the whole page, shared with the shell's badge (needs-you.ts).
-    const r = await loadNeedsYou();
+    // One request answers what waits for the owner, shared with the shell's badge (needs-you.ts). The Running
+    // strip is the board's In progress column, asked only here so the badge's answer stays small.
+    const [r, column] = await Promise.all([
+      loadNeedsYou(),
+      // The strip is extra: when it can't load, the last one stays (lesson 36) and the rest of the page still shows.
+      api.boardColumn("in-progress", 0, RUNNING_SHOWN).catch(() => null),
+    ]);
     return {
       tickets: r.tickets,
       policies: r.policies,
       proposals: r.proposals,
       conversations: r.conversations,
+      running: column
+        ? (column.tickets ?? []).filter((t) => t.status !== "needs-you")
+        : (this.data?.running ?? []),
+      inProgress: column ? (column.total ?? 0) : (this.data?.inProgress ?? 0),
       names: r.conversations.length
         ? Object.fromEntries((await api.employees().catch(() => [])).map((e) => [e.id, e.name]))
         : {},
@@ -41,6 +58,18 @@ export class IncInbox extends Loader<{
     css`
       :host { width: 100%; min-width: 0; display: block; }
       .summary { margin: 0 0 14px; font-size: 17px; font-weight: 700; }
+      .summary + .sub { margin: -10px 0 14px; font-size: 14px; color: var(--ink-2); }
+      .byline { margin: 0; font-size: 14px; line-height: 1.4; color: var(--ink-2); overflow-wrap: anywhere; }
+      /* Not started and Running: one compact row per ticket, not a card. */
+      .rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; min-width: 0; }
+      .rows li { display: flex; align-items: center; gap: 4px 12px; flex-wrap: wrap; min-height: 44px; padding: 2px 0; border-top: 1px solid var(--line); min-width: 0; }
+      .rows li:last-child { border-bottom: 1px solid var(--line); }
+      .rows .t { flex: 1 1 16rem; min-width: 0; display: flex; align-items: center; gap: 4px 8px; flex-wrap: wrap; font-size: 15px; line-height: 1.35; }
+      .rows .t > a { display: inline-flex; align-items: center; min-height: 44px; color: var(--ink); font-weight: 700; overflow-wrap: anywhere; min-width: 0; }
+      .rows .now { font-size: 14px; color: var(--ink-2); overflow-wrap: anywhere; min-width: 0; }
+      .more { margin: 8px 0 0; font-size: 14px; }
+      .more a { display: inline-flex; align-items: center; min-height: 44px; }
+      .rows .btn { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; text-decoration: none; }
       .list { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
       .item { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; box-sizing: border-box; }
       .item.waiting { background: var(--needs-surface); border: 2px solid var(--needs-edge); padding: 13px 15px; }
@@ -53,7 +82,8 @@ export class IncInbox extends Loader<{
       .q { font-size: 17px; font-weight: 700; line-height: 1.3; overflow-wrap: anywhere; min-width: 0; }
       .actions { display: flex; gap: 8px; flex-wrap: wrap; }
       .actions .btn:first-child { flex-grow: 1; }
-      h2 { font-size: 20px; margin-top: 18px; }
+      h2 { font-size: 20px; margin: 24px 0 12px; }
+      .sections > h2:first-child { margin-top: 0; }
       .proposed { margin-top: 14px; }
       .clear { padding: 28px 20px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; margin-top: 4px; }
       .clear .badge { width: 56px; height: 56px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
@@ -69,22 +99,36 @@ export class IncInbox extends Loader<{
   override render() {
     if (this.error) return this.failure("what needs you");
     if (!this.data) return html`<p class="muted">Loading what needs you…</p>`;
-    const needs = this.data.tickets.filter((t) => t.status === "needs-you");
-    const ready = this.data.tickets.filter((t) => t.status === "ready");
-    const policies = this.data.policies;
-    // A ticket nobody can start until the owner picks someone is the owner's to fix.
-    const unassigned = this.data.tickets.filter(waitsForAssignee);
-    const proposals = this.data.proposals;
-    const conversations = this.data.conversations;
-    const n = needsYouCount(this.data.tickets, policies, proposals, conversations);
+    const { tickets, policies, proposals, conversations, running, inProgress } = this.data;
+    const ready = tickets.filter((t) => t.status === "ready");
+    const needs = tickets.filter((t) => t.status === "needs-you");
+    // A ticket nobody can start until the owner picks someone: listed, but not counted (it blocks no one's work).
+    const unassigned = tickets.filter(waitsForAssignee);
+    const answers = conversations.length + needs.length + policies.length;
+    const n = needsYouCount(tickets, policies, conversations);
     if (proposals.length) this.sawProposals = true;
     return html`
       ${this.actionNotice()}
-      <p class="summary">${n ? `${n} ${n === 1 ? "thing needs" : "things need"} you` : "Nothing needs you"}</p>
-      <div class="list">${conversations.map((c) => this.conversation(c))}${needs.map((t) => this.ask(t))}${unassigned.map((t) => this.unassigned(t))}${policies.map((p) => this.policy(p))}</div>
+      <p class="summary">${n ? `${n} for you to decide` : "Nothing for you to decide"}</p>
+      ${unassigned.length ? html`<p class="sub">${unassigned.length} not started: nobody is assigned</p>` : ""}
+      <div class="sections">
+        ${ready.length ? html`<h2>Ready for you</h2><div class="list">${ready.map((t) => this.ready(t))}</div>` : ""}
+        ${
+          answers
+            ? html`<h2>Needs your answer</h2>
+              <div class="list">${conversations.map((c) => this.conversation(c))}${needs.map((t) => this.ask(t))}${policies.map((p) => this.policy(p))}</div>`
+            : ""
+        }
+        ${!ready.length && !answers && !unassigned.length ? this.allClear() : ""}
+        ${unassigned.length ? html`<h2>Not started</h2><ul class="rows">${unassigned.map((t) => this.unassigned(t))}</ul>` : ""}
+        ${
+          running.length
+            ? html`<h2>Running</h2><ul class="rows">${running.map((t) => this.running(t))}</ul>
+              ${inProgress > RUNNING_SHOWN ? html`<p class="more"><a href="#/work/board">All ${inProgress} in progress on the board</a></p>` : ""}`
+            : ""
+        }
+      </div>
       ${proposals.length || this.sawProposals ? html`<inc-proposals class="proposed" .proposals=${proposals}></inc-proposals>` : ""}
-      ${ready.length ? html`<h2>Ready for you</h2><div class="list">${ready.map((t) => this.ready(t))}</div>` : ""}
-      ${!n && !ready.length ? this.allClear() : ""}
     `;
   }
 
@@ -112,15 +156,21 @@ export class IncInbox extends Loader<{
       : "";
   }
 
+  /** One row: the ticket, its project, and Assign…; the reason only when it is not the usual "nobody is assigned". */
   private unassigned(t: TicketView) {
-    return html`<div class="card item waiting">
-      <div class="who"><span><b>#${t.id}</b> · not started · ${projectBadge(t.project)}</span></div>
-      <div class="q">${t.title}</div>
-      ${this.wait(t)}
-      <div class="actions">
-        <a class="btn" href="#/ticket/${t.id}/assign" aria-label="Assign ticket #${t.id}: ${t.title}">Assign…</a>
-        <a class="btn ghost" href="#/ticket/${t.id}">Open</a>
-      </div></div>`;
+    const why = t.waiting && t.waiting !== UNASSIGNED ? waitingLine(t.waiting, t.waitingUntil) : "";
+    return html`<li>
+      <span class="t"><a href="#/ticket/${t.id}">#${t.id} ${t.title}</a>${projectBadge(t.project)}${why ? html`<span class="now">${why}</span>` : ""}</span>
+      <a class="btn ghost" href="#/ticket/${t.id}/assign" aria-label="Assign ticket #${t.id}: ${t.title}">Assign…</a>
+    </li>`;
+  }
+
+  /** One row of the Running strip: the ticket, who is on it, and its live line. */
+  private running(t: TicketView) {
+    return html`<li>
+      <span class="t"><a href="#/ticket/${t.id}">#${t.id} ${t.title}</a>${projectBadge(t.project)}</span>
+      <span class="now">${t.assignee ? html`<b>${t.assignee.name}</b> · ` : ""}${liveText(t)}</span>
+    </li>`;
   }
 
   private ask(t: TicketView) {
@@ -166,20 +216,24 @@ export class IncInbox extends Loader<{
       </div></div>`;
   }
 
+  /** A finished report. The report is read before approving (design case 1), so reading it is the primary action. */
   private ready(t: TicketView) {
+    const r = t.report;
+    const read = html`<a class="btn ${t.mergeOnGitHub ? "ghost" : ""}" href="#/ticket/${t.id}" aria-label="Read the report: ${t.title}">Read the report</a>`;
     return html`<div class="card item">${this.header(t, "report")}
       <div class="q">${t.title}</div>
+      ${r?.byline ? html`<p class="byline">${r.byline}${r.minutes ? ` · ${r.minutes} min` : ""}</p>` : ""}
       ${
         t.mergeOnGitHub
           ? html`<div class="actions">
-        <a class="btn" href=${web(t.mergeOnGitHub.url)} target="_blank" rel="noopener noreferrer" style="display:inline-flex;align-items:center;text-decoration:none">Merge on GitHub</a>
+        <a class="btn" href=${web(t.mergeOnGitHub.url)} target="_blank" rel="noopener noreferrer">Merge on GitHub</a>
         <button type="button" class="btn ghost" ?disabled=${this.pressing} @click=${() => this.press(() => api.decide(t.id, "reject"))}>Close without merging</button>
-        <a class="btn ghost" href="#/ticket/${t.id}" style="display:inline-flex;align-items:center;text-decoration:none">Report</a>
+        ${read}
       </div>
       <p class="muted" style="font-size:14px">i.inc marks it merged by itself once you merge the PR</p>`
           : html`<div class="actions">
-        <button type="button" class="btn" ?disabled=${this.pressing} @click=${() => this.press(() => api.decide(t.id, "approve"))}>Approve</button>
-        <a class="btn ghost" href="#/ticket/${t.id}" style="display:inline-flex;align-items:center;text-decoration:none">Report</a>
+        ${read}
+        <button type="button" class="btn ghost" ?disabled=${this.pressing} @click=${() => this.press(() => api.decide(t.id, "approve"))}>Approve</button>
       </div>`
       }</div>`;
   }

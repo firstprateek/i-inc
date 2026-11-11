@@ -43,7 +43,7 @@ describe("the shared connection", () => {
 
 describe("the Needs you count", () => {
   it("counts conversations waiting for a permission or an answer", () => {
-    expect(needsYouCount([], [], [], [{ needsYou: true }, { needsYou: false }, { needsYou: true }])).toBe(2);
+    expect(needsYouCount([], [], [{ needsYou: true }, { needsYou: false }, { needsYou: true }])).toBe(2);
     expect(needsYouCount([], [], [])).toBe(0);
   });
 });
