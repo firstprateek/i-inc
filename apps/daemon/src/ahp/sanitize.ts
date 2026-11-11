@@ -273,8 +273,11 @@ function redactCutPasswords(t: string): string {
 
 /** A run of what a token is made of, in a URL's user name. */
 const NAME_RUN = /[A-Za-z0-9._~+=%-]+/g;
-/** What follows a quote that closes a string: separators or spaces, then the next string's quote, as in JSON or a list. */
-const NEXT_STRING = /^[\s,;:)\]}>|&+]+\\?["'`]/;
+/**
+ * What follows a quote that closes a string: a list's separator, then the next string's quote, as in JSON or an array.
+ * Not a join (`+`, `||`, `&`, or two strings side by side), which goes on with the same URL: `'https://u'+':pw@h'`.
+ */
+const NEXT_STRING = /^\s*[,;)\]}][\s,;)\]}]*\\?["'`]/;
 /** A plain host, and a port of digits only: what a quoted URL must hold before its quote for the quote to end it. */
 const HOST_PORT = /^(?:[A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/;
 /** The kinds of token that go by their prefix, however short what follows. */
