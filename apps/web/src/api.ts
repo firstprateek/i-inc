@@ -130,6 +130,7 @@ async function upload<T>(path: string, images: File[], fields: Record<string, un
   for (const [k, v] of Object.entries(fields)) form.set(k, JSON.stringify(v));
   for (const f of images) form.append("image", f, f.name);
   const res = await send(path, { method: "POST", headers: { "x-i-inc-upload": "1" }, body: form });
+  answered(res);
   if (res.status === 401) showLogin();
   const data = (await res.json().catch(() => ({}))) as T & { error?: string };
   if (!res.ok) throw new Error(data.error ?? `POST ${path}: ${res.status}`);
@@ -188,23 +189,91 @@ export interface OfficeResponse {
   rateLimits?: Record<string, AccountRateLimit>;
 }
 
-import { isGatewayDown, report } from "./connection.ts";
+import { isGatewayDown, report, suspect, timing, Unreachable } from "./connection.ts";
 import { draftMemo } from "./drafts.ts";
 import { showLogin } from "./login.ts";
 
-/** fetch, plus telling the app whether the daemon answered (see connection.ts). */
+/** A request that got no answer from the daemon, for debugging: never a body or a query string. */
+export interface NetFailure {
+  method: string;
+  path: string;
+  /** The proxy's status (502-504), or the name of the error fetch rejected with. */
+  failure: number | string;
+  ms: number;
+  at: number;
+}
+
+const FAILURES_KEPT = 20;
+const failures: NetFailure[] = [];
+
+/** The last few failed requests, oldest first (also `window.__incNet` in the console). */
+export const netFailures = (): readonly NetFailure[] => failures.map((f) => ({ ...f }));
+Object.defineProperty(globalThis, "__incNet", { get: netFailures, configurable: true });
+
+function noteFailure(method: string, path: string, failure: number | string, started: number): void {
+  // Only the path: a query can hold what the owner typed.
+  const f: NetFailure = {
+    method,
+    path: path.split(/[?#]/)[0] ?? "",
+    failure,
+    ms: Date.now() - started,
+    at: Date.now(),
+  };
+  failures.push(f);
+  if (failures.length > FAILURES_KEPT) failures.shift();
+  console.warn(`i.inc: ${f.method} ${f.path} got no answer (${f.failure}) after ${f.ms} ms`);
+}
+
+/**
+ * fetch, plus telling the app whether the daemon answered (see connection.ts). A browser drops an HTTP/2
+ * connection now and then, failing every request on it, so a read that fails is sent once more a moment
+ * later (usually on a new connection, though the browser doesn't promise one). A write is never sent twice. What still fails only makes the daemon suspect.
+ */
 export async function send(path: string, init?: RequestInit): Promise<Response> {
-  let res: Response;
-  try {
-    res = await fetch(path, init);
-  } catch {
-    report(false);
-    throw new Error("Can't reach i.inc");
+  const method = (init?.method ?? "GET").toUpperCase();
+  const tries = method === "GET" || method === "HEAD" ? 2 : 1;
+  const go = fetch; // a retry goes through the same fetch as the first try
+  for (let attempt = 1; ; attempt++) {
+    const started = Date.now();
+    let res: Response;
+    try {
+      res = await go(path, init);
+    } catch (e) {
+      // Called off by the caller: that says nothing about the daemon.
+      if (init?.signal?.aborted) throw e;
+      noteFailure(method, path, e instanceof Error ? e.name : "Error", started);
+      if (attempt < tries) {
+        await new Promise((r) => setTimeout(r, timing.retryMs));
+        continue;
+      }
+      suspect();
+      throw new Unreachable();
+    }
+    // The daemon never answers 502-504 (a GitHub problem is a 424 or 429, an agent that won't start a 424), so
+    // one of those is a proxy with nothing behind it, on any route.
+    if (!isGatewayDown(res.status)) {
+      report(true);
+      return res;
+    }
+    noteFailure(method, path, res.status, started);
+    if (attempt < tries) {
+      void res.body?.cancel().catch(() => {});
+      await new Promise((r) => setTimeout(r, timing.retryMs));
+      continue;
+    }
+    suspect();
+    return res;
   }
-  // The daemon never answers 502-504 for a GitHub problem (it sends 424 or 429), so one of those is a proxy
-  // with nothing behind it, on any route.
-  report(!isGatewayDown(res.status));
-  return res;
+}
+
+/**
+ * Throws when the response is the proxy's 502-504, not the daemon's answer: its body is the proxy's text (or
+ * nothing), never the daemon's JSON, so it is "Can't reach i.inc" and not a parse error.
+ */
+export function answered(res: Response): void {
+  if (!isGatewayDown(res.status)) return;
+  void res.body?.cancel().catch(() => {});
+  throw new Unreachable();
 }
 
 /** The daemon refused a request: its sentence, and the HTTP status (404: no such thing). */
@@ -230,6 +299,7 @@ export async function call<T>(
     headers: write ? { "content-type": "application/json", ...headers } : headers,
     ...(write ? { body: JSON.stringify(body ?? {}) } : {}),
   });
+  answered(res);
   if (res.status === 401) showLogin();
   const data = (await res.json()) as T & { error?: string };
   if (!res.ok) throw new ApiError(data.error ?? `${method} ${path}: ${res.status}`, res.status);
@@ -238,6 +308,7 @@ export async function call<T>(
 
 export async function authStatus(): Promise<{ initialized: boolean; setupCodeRequired?: boolean }> {
   const res = await send("/api/auth");
+  answered(res);
   return (await res.json()) as { initialized: boolean; setupCodeRequired?: boolean };
 }
 
@@ -252,6 +323,7 @@ export async function signup(
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username, password, ...(setupCode ? { setupCode } : {}) }),
   });
+  answered(res);
   const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
   return res.ok ? { ok: true } : { ok: false, ...(data.error ? { error: data.error } : {}) };
 }
@@ -262,6 +334,7 @@ export async function login(username: string, password: string): Promise<{ ok: b
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username, password }),
   });
+  answered(res);
   const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
   return res.ok ? { ok: true } : { ok: false, ...(data.error ? { error: data.error } : {}) };
 }
@@ -279,6 +352,7 @@ export async function logout(): Promise<void> {
 /** The ticket's session transcripts, or null when the daemon has no such endpoint or ticket (404). */
 async function sessions(id: string): Promise<TicketSession[] | null> {
   const res = await send(`/api/tickets/${encodeURIComponent(id)}/sessions`);
+  answered(res);
   if (res.status === 404) return null;
   if (res.status === 401) showLogin();
   if (!res.ok) throw new Error(`GET sessions: ${res.status}`);

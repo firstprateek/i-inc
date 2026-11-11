@@ -368,9 +368,12 @@ export class IncApp extends LitElement {
   }
 
   private onConnection = () => {
+    const was = this.offline;
     this.offline = isOffline();
-    // Back online: whatever failed while the daemon was away loads again.
-    if (!this.offline) refreshNow();
+    // Back online: whatever failed while the daemon was away loads again. Only an outage the health probes
+    // confirmed gets here (connection.ts); a doubt they call off reloads only the views whose own load got no
+    // answer (loader.ts, and connection.ts's Unanswered).
+    if (was && !this.offline) refreshNow();
   };
 
   /** Views that couldn't refresh (and kept their data), by view: one banner for all of them. */

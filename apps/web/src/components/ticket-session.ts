@@ -6,6 +6,7 @@ import type { Employee } from "@i-inc/core";
 import { css, html, LitElement, nothing } from "lit";
 import { useAhp } from "../ahp/hub.ts";
 import { ApiError, api, type Conversation, refresh, type TicketSession, type TicketView } from "../api.ts";
+import { Unanswered } from "../connection.ts";
 import { base } from "./shared.ts";
 import "./conv-context.ts";
 import "./conv-thread.ts";
@@ -86,6 +87,7 @@ export class IncTicketSession extends LitElement {
     super.connectedCallback();
     this.release = useAhp();
     refresh.addEventListener("refresh", this.onRefresh);
+    this.unanswered.connect();
     for (const q of [PHONE, WIDE]) {
       const mq = matchMedia(q);
       const fn = () => this.layout();
@@ -104,6 +106,7 @@ export class IncTicketSession extends LitElement {
     this.release?.();
     this.release = undefined;
     refresh.removeEventListener("refresh", this.onRefresh);
+    this.unanswered.disconnect();
     for (const [mq, fn] of this.queries) mq.removeEventListener?.("change", fn);
     this.queries = [];
     document.removeEventListener("keydown", this.sheetKey, true);
@@ -139,6 +142,8 @@ export class IncTicketSession extends LitElement {
   }
 
   private onRefresh = () => void this.load();
+  /** A load that got no answer runs again once the daemon answers a health probe. */
+  private unanswered = new Unanswered(() => void this.load());
 
   private layout() {
     this.phone = matchMedia(PHONE).matches;
@@ -158,6 +163,7 @@ export class IncTicketSession extends LitElement {
           : api.employees().catch(() => [] as Employee[]),
       ]);
       if (token !== this.loadToken) return;
+      this.unanswered.reset();
       this.ticket = ticket;
       this.employees = Array.isArray(employees) ? employees : [];
       const session = (sessions ?? []).find((s) => s.id === want);
@@ -177,6 +183,7 @@ export class IncTicketSession extends LitElement {
           : { kind: "cleared", session };
     } catch (e) {
       if (token !== this.loadToken) return;
+      this.unanswered.failed(e);
       // Whatever is on screen stays; only a first load that failed says so.
       if (this.found.kind === "loading") {
         this.found =
@@ -266,7 +273,10 @@ export class IncTicketSession extends LitElement {
       return html`<div class="none" aria-busy="true"><p>Loading the session…</p></div>`;
     if (f.kind === "error")
       return html`<div class="none"><h2>Couldn't load the session</h2><p>${f.message}</p>
-        <button class="btn ghost" type="button" @click=${() => void this.load()}>Try again</button></div>`;
+        <button class="btn ghost" type="button" @click=${() => {
+          this.unanswered.reset();
+          void this.load();
+        }}>Try again</button></div>`;
     if (f.kind === "no-ticket")
       return this.notFound(
         "No such ticket",

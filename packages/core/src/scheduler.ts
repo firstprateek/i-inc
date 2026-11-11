@@ -12,9 +12,11 @@ export interface BacklogItem {
   project: string;
   type: TicketType;
   labels?: string[];
-  /** Higher goes first; ties go to the older ticket. */
+  /** Standing-order priority; also the fallback for snapshots without queue sequences. */
   priority: number;
   createdAt: number;
+  /** Durable assignment order. Lower goes first, regardless of priority. */
+  queueSequence?: number | null;
   /** The owner's choice. Null means unassigned: a standing order may pick it up. */
   assignee: Id | null;
   /** Kept for the owner: nothing picks it up. */
@@ -150,6 +152,15 @@ export function schedule(snap: Snapshot, company: Pick<Company, "engine" | "engi
     .filter((t) => !t.hold)
     .sort((a, b) => b.priority - a.priority || a.createdAt - b.createdAt);
 
+  // Reserve each explicit queue before considering standing orders. Only its head can start,
+  // even if that head is blocked on a different duty's engine (e.g. the librarian).
+  const heads = new Map<Id, BacklogItem>();
+  for (const t of [...queue].sort(
+    (a, b) => (a.queueSequence ?? Number.MAX_SAFE_INTEGER) - (b.queueSequence ?? Number.MAX_SAFE_INTEGER),
+  )) {
+    if (t.assignee && !heads.has(t.assignee)) heads.set(t.assignee, t);
+  }
+
   for (const t of queue) {
     if (t.assignee) {
       const e = snap.employees.find((x) => x.id === t.assignee);
@@ -159,7 +170,7 @@ export function schedule(snap: Snapshot, company: Pick<Company, "engine" | "engi
       }
       // The daily brain tidy-up is the librarian's work: it runs on the engine chosen for that duty.
       const duty: Duty = t.type === "tidy" ? "librarian" : "build";
-      const why = available(e, duty);
+      const why = heads.get(e.id) !== t ? `${e.name} is busy` : available(e, duty);
       if (why) {
         const until = isReset(why) ? resetAt(e, duty) : undefined;
         if (until) resets[t.id] = until;
@@ -178,14 +189,16 @@ export function schedule(snap: Snapshot, company: Pick<Company, "engine" | "engi
         (picked[e.id] ?? 0) <
           Math.max(...(e.standingOrders ?? []).filter((o) => matches(o, t)).map((o) => o.maxPerDay)),
     );
-    const taker = takers.find((e) => available(e, "build") === null);
+    const taker = takers.find((e) => !heads.has(e.id) && available(e, "build") === null);
     if (taker) {
       taken.add(taker.id);
       picked[taker.id] = (picked[taker.id] ?? 0) + 1;
       starts.push({ employeeId: taker.id, ticketId: t.id, as: "build", by: "standing-order" });
     } else {
       const first = takers[0];
-      const why = first ? (available(first, "build") ?? "") : UNASSIGNED;
+      const why = first
+        ? (available(first, "build") ?? (heads.has(first.id) ? `${first.name} is busy` : ""))
+        : UNASSIGNED;
       const until = first && isReset(why) ? resetAt(first) : undefined;
       if (until) resets[t.id] = until;
       waiting.push({ ticketId: t.id, reason: why });

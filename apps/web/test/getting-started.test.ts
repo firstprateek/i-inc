@@ -35,7 +35,7 @@ function serve(d: Daemon = {}) {
     const ok = (body: unknown, status = 200) =>
       new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     if (url === "/api/github/repos")
-      return d.repos === "fail" ? ok({ error: "no github", repos: [] }, 502) : ok({ repos: d.repos ?? [] });
+      return d.repos === "fail" ? ok({ error: "no github", repos: [] }, 424) : ok({ repos: d.repos ?? [] });
     if (url === "/api/projects") return ok({ projects: d.projects ?? [] });
     if (url.startsWith("/api/conversations")) return ok({ conversations: d.conversations ?? [] });
     if (url === "/api/employees") return ok({ employees });

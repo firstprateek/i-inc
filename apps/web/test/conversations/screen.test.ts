@@ -3,9 +3,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AhpConnection } from "../../src/ahp/connection.ts";
 import { resetAhp, setAhp } from "../../src/ahp/hub.ts";
+import { refreshNow } from "../../src/api.ts";
 import "../../src/components/conversations.ts";
 import type { IncConversations } from "../../src/components/conversations.ts";
-import { hosts, must, until } from "../ahp/fake-host.ts";
+import { report, timing } from "../../src/connection.ts";
+import { hosts, must, tick, until } from "../ahp/fake-host.ts";
 
 // biome-ignore lint/suspicious/noExplicitAny: scripted rows.
 type Any = any;
@@ -543,5 +545,62 @@ describe("a link to a conversation the list doesn't hold", () => {
       const shown = must<HTMLElement>(thread().querySelector("inc-conv-thread"));
       expect(shown.shadowRoot?.activeElement).toBe(shown.shadowRoot?.querySelector(".context-btn"));
     });
+  });
+});
+
+// A blip used to heal at once on main: the failed request turned the app offline, the next answer back online,
+// and that refreshed every view. Now a doubt called off refreshes nothing globally, so the list must load again
+// by itself (connection.ts's Unanswered), and stop after a couple of tries while its own request keeps failing.
+describe("a list request that got no answer", () => {
+  const saved = { ...timing, probesMs: [...timing.probesMs] };
+  beforeEach(() => {
+    timing.retryMs = 1;
+    timing.probesMs = [0, 20, 40];
+  });
+  afterEach(() => {
+    Object.assign(timing, saved);
+    report(true);
+  });
+  const drop = (): Response => {
+    throw new TypeError("Failed to fetch");
+  };
+  const listed = () => calls.filter((u) => /\/api\/conversations(\?|$)/.test(u)).length;
+  let calls: string[] = [];
+  beforeEach(() => {
+    calls = [];
+    const inner = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      calls.push(String(url));
+      return inner(url, init);
+    });
+  });
+
+  it('loads again once the daemon answers a health probe, so the owner never sees "Can\'t reach i.inc" stay', async () => {
+    rows = [row];
+    const { el } = await mount();
+    await until(() => (el as Any).list.length === 1);
+    let drops = 2;
+    rows = [row, { ...row, id: "ef56ab78", title: "Later work" }];
+    listFails = () => {
+      if (drops-- > 0) return drop();
+      listFails = undefined;
+      return json({ conversations: rows });
+    };
+    refreshNow();
+    await until(() => (el as Any).list.length === 2);
+    expect((el as Any).listError).toBe("");
+  });
+
+  it("stops after two more tries while its own request keeps failing and the daemon answers", async () => {
+    rows = [row];
+    const { el } = await mount();
+    await until(() => (el as Any).list.length === 1);
+    listFails = drop;
+    const before = listed();
+    refreshNow();
+    await until(() => listed() - before >= 6);
+    await tick(300);
+    expect(listed() - before).toBe(6); // three loads, each tried twice
+    expect((el as Any).listError).toBe("Can't reach i.inc");
   });
 });

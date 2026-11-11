@@ -83,6 +83,18 @@ describe("AhpConnection", () => {
     expect(conn.lastSeenServerSeq).toBe(host.seq);
   });
 
+  it("tells `heard` about each frame from the host, so the shell knows the daemon is there", async () => {
+    const heard = vi.fn();
+    const { h, conn } = setup({ heard });
+    conn.start();
+    conn.watch(CHAT);
+    await until(() => conn.info.status === "open" && conn.chat(CHAT));
+    const before = heard.mock.calls.length;
+    h.made[0]?.send(CHAT, turnStarted());
+    await until(() => heard.mock.calls.length > before);
+    expect(heard.mock.calls.length).toBeGreaterThan(before);
+  });
+
   it("notifies at most once per animation frame, however many deltas arrive", async () => {
     const frames: (() => void)[] = [];
     const { h, conn } = setup({

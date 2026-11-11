@@ -72,6 +72,8 @@ export interface TicketRecord {
   createdAt: number;
   /** When a standing order picked it up, if one did. */
   pickedAt: number | null;
+  /** Durable assignment order, independent of standing-order daily limits. */
+  queueSequence: number | null;
 }
 
 /**
@@ -156,12 +158,13 @@ export class Tickets {
     // One transaction, so a ticket is never picked up before its images are there.
     this.db.transaction(() => {
       this.db.run(
-        "INSERT INTO tickets (id, body, priority, hold, created_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO tickets (id, body, priority, hold, created_at, queue_sequence) VALUES (?, ?, ?, ?, ?, ?)",
         id,
         JSON.stringify(ticket),
         input.priority ?? 0,
         input.hold ? 1 : 0,
         now,
+        ticket.assignee ? this.nextQueueSequence() : null,
       );
       this.insertImages(id, attachments, images, now);
     });
@@ -227,15 +230,32 @@ export class Tickets {
 
   /** Assigns a ticket; `pickedAt` records a standing order picking it up (for its daily limit). */
   assign(id: Id, assignee: Id, pickedAt: number | null = null): void {
-    const r = this.get(id);
-    if (!r) throw new Error(`no ticket ${id}`);
-    this.db.run(
-      "UPDATE tickets SET body = ?, picked_at = ? WHERE id = ?",
-      JSON.stringify({ ...r.ticket, assignee }),
-      pickedAt,
-      id,
-    );
+    this.db.transaction(() => {
+      const r = this.get(id);
+      if (!r) throw new Error(`no ticket ${id}`);
+      const queueSequence = !assignee
+        ? null
+        : r.ticket.assignee === assignee
+          ? (r.queueSequence ?? this.nextQueueSequence())
+          : this.nextQueueSequence();
+      this.db.run(
+        "UPDATE tickets SET body = ?, picked_at = ?, queue_sequence = ? WHERE id = ?",
+        JSON.stringify({ ...r.ticket, assignee }),
+        pickedAt,
+        queueSequence,
+        id,
+      );
+    });
     this.notifyChange(id);
+  }
+
+  /** Called inside the transaction that assigns the position. Never reuse a removed position. */
+  private nextQueueSequence(): number {
+    const [row] = this.db.all<{ value: number }>(
+      "UPDATE ticket_queue_counter SET value = value + 1 WHERE id = 1 RETURNING value",
+    );
+    if (!row) throw new Error("ticket queue counter is missing");
+    return row.value;
   }
 
   setProject(id: Id, project: string): void {
@@ -259,7 +279,11 @@ export class Tickets {
         hold: number;
         created_at: number;
         picked_at: number | null;
-      }>(`SELECT id, body, priority, hold, created_at, picked_at FROM tickets ${where}`, ...params)
+        queue_sequence: number | null;
+      }>(
+        `SELECT id, body, priority, hold, created_at, picked_at, queue_sequence FROM tickets ${where}`,
+        ...params,
+      )
       .flatMap((r) => {
         const ticket = readTicket(r.id, r.body);
         if (!ticket) {
@@ -277,6 +301,7 @@ export class Tickets {
             hold: r.hold === 1,
             createdAt: r.created_at,
             pickedAt: r.picked_at,
+            queueSequence: r.queue_sequence,
           },
         ];
       });
