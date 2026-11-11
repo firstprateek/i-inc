@@ -68,3 +68,13 @@ describe("an empty list", () => {
     expect(el.shadowRoot?.querySelector("p.none")?.textContent).toBe("No archived conversations.");
   });
 });
+
+describe("the list's footer", () => {
+  it("offers the archived conversations and no Old chat: there is one chat (N2)", async () => {
+    const el = await mount({ items: [], loading: false });
+    const foot = must<HTMLElement>(el.shadowRoot?.querySelector(".foot"));
+    expect(foot.querySelector("button")?.textContent?.trim()).toBe("Show archived");
+    expect(foot.querySelector("a")).toBeNull();
+    expect(el.shadowRoot?.textContent).not.toContain("Old chat");
+  });
+});

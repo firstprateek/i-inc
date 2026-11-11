@@ -282,7 +282,7 @@ describe("the Getting started checklist", () => {
     const start = bar(el.shadowRoot as ShadowRoot).action as HTMLAnchorElement;
     expect(text(start)).toBe("Start");
     expect(start.getAttribute("href")).toBe("#/conversations/new/ada");
-    // and that address is the new form, where the old chat's addresses are redirected to #/conversations/old/...
+    // and that address is the new form (the retired old chat's addresses open the list)
     const { parse } = await import("../src/routes.ts");
     expect(parse(start.getAttribute("href") ?? "")).toMatchObject({
       view: "conversations",

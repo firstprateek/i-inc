@@ -37,7 +37,8 @@ permission, tickets at a gate, unassigned tickets, follow-up proposals, brain po
   the shorter one a ticket has).
 - **Old hashes** (`#/inbox`, `#/work/needs-you`, `#/office`, `#/board`, `#/chat`, `#/desk`, `#/handbook`, `#/brain/<id>`,
   `#/hiring`, `#/setup/*`, `#/more`) are rewritten in place (`history.replaceState`) by `legacyTarget()`. Push
-  links (`#/ticket/<id>`, `#/ticket/<id>/assign`) are unchanged.
+  links (`#/ticket/<id>`, `#/ticket/<id>/assign`) are unchanged. The old chat is retired: `#/chat/*`,
+  `#/conversations/old/*` and an employee's address (`#/conversations/ada`) open `#/conversations`.
 - **Templates by route:** Conversations, Brain and Settings are Split; the board and Team are Wide;
   Needs you, Releases, tickets, hiring, Projects and Usage are Page (`layoutForRoute()`).
 - **Words:** conversation, ticket, employee, team, project, brain. The browser title is
@@ -78,7 +79,12 @@ change.
   phone whose keyboard covers the layout (iOS), the screen lifts by the keyboard's height from `visualViewport`; where
   the viewport resizes with the keyboard (`interactive-widget=resizes-content`) nothing is added.
 - **Focus and keys:** the list is one tab stop (Arrow Up/Down move between rows); rows, cards and the composer have
-  visible focus rings; every control is a button (navigation to the old chat is the one link).
+  visible focus rings; every control is a button.
+- **Waiting for you, said once:** while a permission card waits, the list row and the thread header carry a "Needs
+  you" chip and the card says "Waiting for you"; the turn's "Working" footer steps aside rather than repeat it. When
+  the card is scrolled away, a bar above the composer says "<name> is waiting for you" with **Answer**, which brings
+  the card back. The composer's mode picker reads "Asking: <mode>" on its current choice (just "Asking you" when that
+  mode is the bypass mode, which never asks), so it never says "Bypass permissions" beside a question.
 - **Tokens:** code, diffs and syntax colours are `--code-bg`, `--tk-*` and `--diff-*` in `tokens.css`, with a dark pair,
   each at least 4.5:1 on its background.
 

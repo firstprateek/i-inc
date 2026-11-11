@@ -69,7 +69,7 @@ describe("routeTitle", () => {
     phone(false);
     expect(t("#/conversations")).toBe("Conversations · i.inc");
     expect(t("#/conversations/ab12cd34")).toBe("Conversations · i.inc");
-    expect(t("#/conversations/old/ada")).toBe("Old chat · Conversations · i.inc");
+    expect(t("#/conversations/old/ada")).toBe("Conversations · i.inc");
     expect(t("#/work/board")).toBe("Board · Work · i.inc");
     expect(t("#/needs-you")).toBe("Needs you · i.inc");
     expect(t("#/work/releases")).toBe("Releases · Work · i.inc");

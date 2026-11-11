@@ -37,7 +37,6 @@ describe("the build", () => {
       "group-projects",
       "setup",
       "hiring",
-      "chat",
       "desk",
       "office",
     ]) {

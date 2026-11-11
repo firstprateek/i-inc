@@ -40,11 +40,10 @@ export const isSection = (s: string | undefined): s is Section => sections.some(
 const isWorkTab = (s: string | undefined): s is WorkTab => WORK_TABS.some(([id]) => id === s);
 
 export type Route =
-  /** `id` is a conversation (8 hex), or empty for the list. With `old`, it is the employee of the old chat. */
+  /** `id` is a conversation (8 hex), or empty for the list. */
   | {
       view: "conversations";
       id: string;
-      old?: true;
       /** `#/conversations/<id>?card=<toolCallId or requestId>`: the card a notification opened (T65). */
       card?: string;
       /**
@@ -148,7 +147,8 @@ export function legacyTarget(hash: string): string | null {
     case "brain":
       return id ? `#/company/brain/${id}` : "#/company/brain";
     case "chat":
-      return id ? `#/conversations/old/${id}` : "#/conversations/old";
+      // The old chat is retired (N2): its addresses open Conversations.
+      return "#/conversations";
     case "hiring":
       return id ? `#/company/team/hiring/${id}` : "#/company/team/hiring";
     case "setup":
@@ -172,26 +172,26 @@ export function redirectFor(hash: string): string | null {
   const v = view.toLowerCase();
   const tail = (...parts: (string | undefined)[]) => parts.filter(Boolean).join("/");
   let out = legacyTarget(["#", v, lower(rest[0])].join("/")) ?? null;
-  if (out && (v === "brain" || v === "chat" || v === "hiring") && rest[0])
-    out = out.replace(/[^/]*$/, rest[0]);
+  /** An address of the retired old chat: it moves, so it drops its query. */
+  let retired = false;
+  if (out && (v === "brain" || v === "hiring") && rest[0]) out = out.replace(/[^/]*$/, rest[0]);
   if (!out) {
     switch (v) {
       case "conversations": {
-        // A conversation is 8 hex digits; "old" is the previous chat. Anything else is an employee from the
-        // addresses the chat used to have (#/conversations/ada), which now live under "old".
+        // A conversation is 8 hex digits. The old chat is retired (N2): its addresses (#/conversations/old/ada,
+        // and the employee addresses it had before that, #/conversations/ada) open Conversations.
         const a = rest[0];
         out =
           a === undefined
             ? "#/conversations"
-            : lower(a) === "old"
-              ? `#/${tail(v, "old", rest[1])}`
-              : lower(a) === "new"
-                ? rest[1]
-                  ? `#/${tail(v, "new", rest[1], rest[2])}`
-                  : "#/conversations?new=1"
-                : CONVERSATION_ID.test(a)
-                  ? `#/conversations/${a.toLowerCase()}`
-                  : `#/conversations/old/${a}`;
+            : lower(a) === "new"
+              ? rest[1]
+                ? `#/${tail(v, "new", rest[1], rest[2])}`
+                : "#/conversations?new=1"
+              : CONVERSATION_ID.test(a)
+                ? `#/conversations/${a.toLowerCase()}`
+                : "#/conversations";
+        retired = out === "#/conversations" && a !== undefined;
         break;
       }
       case "needs-you":
@@ -238,7 +238,8 @@ export function redirectFor(hash: string): string | null {
   // when the address is only tidied (case, a trailing slash). Every other address, and an old address that moves
   // to a new one, drops its query.
   const query = hash.includes("?") ? hash.slice(hash.indexOf("?")) : "";
-  let kept = query && queryPages.test(path) && queryPages.test(target) ? `${target}${query}` : target;
+  let kept =
+    query && !retired && queryPages.test(path) && queryPages.test(target) ? `${target}${query}` : target;
   // A brain keeps only the page it names (`?page=`), tidied the same way.
   if (/^#\/company\/brain(?:\/|$)/i.test(target)) {
     const page = brainPage(hashQuery(hash).get("page"));
@@ -298,7 +299,6 @@ function parseHash(hash: string): Route {
   const [, view, a, b, c] = full.split("?")[0]?.split("/") ?? [];
   switch (view) {
     case "conversations": {
-      if (a === "old") return { view: "conversations", id: b ?? "", old: true };
       if (a === "new" && b)
         return {
           view: "conversations",
@@ -390,11 +390,7 @@ function titleParts(r: Route): string[] {
     list.find(([t]) => t === id)?.[1] ?? "";
   switch (r.view) {
     case "conversations":
-      return r.old
-        ? ["Old chat", "Conversations"]
-        : r.draft
-          ? ["New conversation", "Conversations"]
-          : ["Conversations"];
+      return r.draft ? ["New conversation", "Conversations"] : ["Conversations"];
     case "work":
       return [tab(WORK_TABS, r.tab), "Work"];
     case "needs-you":

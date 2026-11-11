@@ -382,8 +382,8 @@ changed. Each read follows the Review rules above: it writes nothing, boots noth
   `server_seq` for the whole host) plus `ahp_snapshots(channel, server_seq, state)`.
 - REST: list, create, rename, archive conversations (`/api/conversations`, contract C22). WebSocket
   `/ahp`: everything live.
-- The old chat is still there, behind "Old chat" in the list, and is meant to go. The local helper model stays
-  for small classification jobs only.
+- The old chat is retired: the list has no "Old chat" link and its addresses open Conversations; its component
+  goes in a later release. The local helper model stays for small classification jobs only.
 
 ## Build order
 

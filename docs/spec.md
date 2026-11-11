@@ -804,8 +804,8 @@ Qwen   Senior Eng · Local qwen3   ✓ Done           #11 Bump deps · fintrack 
 > **As built**, the app has three areas: **Conversations**, **Work** (Board, Releases) and **Company** (Team,
 > Brain, Projects, Usage, Settings), and **Needs you** is a page of its own, not a tab (T61, T64). The names
 > below are the design's: the Office is Company → Team (the floor) and Usage (account meters); the Board is
-> Work → Board; Chat is Conversations (the old small-model chat is still reachable from its list, as
-> "Old chat"); My desk is split into Usage (spend, where work waited) and Releases. Output, quality, your
+> Work → Board; Chat is Conversations (the old small-model chat is retired: its list link is gone and its
+> addresses, `#/conversations/old/*` and `#/chat/*`, open Conversations); My desk is split into Usage (spend, where work waited) and Releases. Output, quality, your
 > time, scorecards and the roadmap are not built. [layout.md](layout.md) has the routes.
 
 There are three main views, plus My desk. Each answers a different question, and each is a way into

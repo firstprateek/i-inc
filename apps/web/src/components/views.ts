@@ -8,7 +8,6 @@ import type { Route } from "../routes.ts";
 
 export type ViewGroup =
   | "conversations"
-  | "chat"
   | "work"
   | "desk"
   | "team"
@@ -20,7 +19,6 @@ export type ViewGroup =
 /** One group: how to load it, and the elements it defines. */
 const GROUPS: Record<ViewGroup, { load: () => Promise<unknown> }> = {
   conversations: { load: () => import("./group-conversations.ts") },
-  chat: { load: () => import("./chat.ts") },
   work: { load: () => import("./group-work.ts") },
   desk: { load: () => import("./desk.ts") },
   team: { load: () => import("./office.ts") },
@@ -39,9 +37,7 @@ export interface Need {
 export function needFor(r: Route): Need {
   switch (r.view) {
     case "conversations":
-      return r.old
-        ? { groups: ["chat"], tags: ["inc-chat"] }
-        : { groups: ["conversations"], tags: ["inc-conversations"] };
+      return { groups: ["conversations"], tags: ["inc-conversations"] };
     case "needs-you":
       return { groups: ["work"], tags: ["inc-inbox"] };
     case "work":

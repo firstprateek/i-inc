@@ -33,7 +33,8 @@ describe("parse", () => {
   it.each([
     ["#/conversations", { view: "conversations", id: "" }],
     ["#/conversations/ab12cd34", { view: "conversations", id: "ab12cd34" }],
-    ["#/conversations/old", { view: "conversations", id: "", old: true }],
+    // the old chat is retired (N2): its addresses open Conversations
+    ["#/conversations/old", { view: "conversations", id: "" }],
     ["#/conversations/new/ada", { view: "conversations", id: "", draft: { employee: "ada", project: "" } }],
     [
       "#/conversations/new/ada/Duet",
@@ -53,9 +54,9 @@ describe("parse", () => {
       { view: "conversations", id: "", draft: { employee: "kit", project: "my repo" } },
     ],
     ["#/conversations?x=1", { view: "conversations", id: "" }],
-    ["#/conversations/old/ada", { view: "conversations", id: "ada", old: true }],
-    // an employee in the old address means the old chat with that employee
-    ["#/conversations/ada", { view: "conversations", id: "ada", old: true }],
+    ["#/conversations/old/ada", { view: "conversations", id: "" }],
+    // an employee in the address the old chat had before that, too
+    ["#/conversations/ada", { view: "conversations", id: "" }],
     ["#/work", { view: "work", tab: "board" }],
     ["#/work/board", { view: "work", tab: "board" }],
     ["#/needs-you", { view: "needs-you" }],
@@ -105,8 +106,8 @@ describe("old hashes keep working", () => {
     ["#/inbox", "#/needs-you"],
     ["#/office", "#/company/team"],
     ["#/board", "#/work/board"],
-    ["#/chat", "#/conversations/old"],
-    ["#/chat/ada", "#/conversations/old/ada"],
+    ["#/chat", "#/conversations"],
+    ["#/chat/ada", "#/conversations"],
     ["#/desk", "#/company/usage"],
     ["#/handbook", "#/company/brain"],
     ["#/brain/ada", "#/company/brain/ada"],
@@ -167,8 +168,8 @@ describe("old hashes keep working", () => {
     location.hash = "#/chat/ada";
     await new Promise((r) => setTimeout(r, 10));
     await app.updateComplete;
-    expect(location.hash).toBe("#/conversations/old/ada");
-    expect(app.route).toEqual({ view: "conversations", id: "ada", old: true });
+    expect(location.hash).toBe("#/conversations");
+    expect(app.route).toEqual({ view: "conversations", id: "" });
     app.remove();
   });
 });
@@ -179,8 +180,8 @@ describe("redirectFor: tidying, mistyped and unknown hashes", () => {
     ["#/INBOX", "#/needs-you"],
     ["#/inbox?x=1", "#/needs-you"],
     ["#/inbox/", "#/needs-you"],
-    ["#/Chat/Ada", "#/conversations/old/Ada"],
-    ["#/chat/ada?draft=1", "#/conversations/old/ada"],
+    ["#/Chat/Ada", "#/conversations"],
+    ["#/chat/ada?draft=1", "#/conversations"],
     ["#/Setup/Projects", "#/company/projects"],
     ["#/Setup/Engines", "#/company/settings/engines"],
     ["#/Work/Board", "#/work/board"],
@@ -199,9 +200,12 @@ describe("redirectFor: tidying, mistyped and unknown hashes", () => {
     ["#/ticket/12/session/7?from=push", "#/ticket/12/session/7"],
     ["#/ticket/12/session/nope", "#/ticket/12"],
     ["#/ticket/12?from=push", "#/ticket/12"],
-    ["#/Conversations/ada/", "#/conversations/old/ada"],
+    ["#/Conversations/ada/", "#/conversations"],
     ["#/Conversations/AB12CD34", "#/conversations/ab12cd34"],
-    ["#/conversations/OLD", "#/conversations/old"],
+    ["#/conversations/OLD", "#/conversations"],
+    ["#/conversations/old", "#/conversations"],
+    ["#/conversations/old/ada", "#/conversations"],
+    ["#/conversations/old/ada?x=1", "#/conversations"],
   ])("%s becomes %s", (hash, to) => {
     expect(redirectFor(hash)).toBe(to);
     phone(false);
@@ -228,7 +232,6 @@ describe("redirectFor: tidying, mistyped and unknown hashes", () => {
       "#/company/team/hiring",
       "#/ticket/12/assign",
       "#/conversations/ab12cd34",
-      "#/conversations/old/ada",
       "#/conversations/new/ada/Duet",
       "#/conversations?new=1",
       "#/conversations?new=1&project=Duet",

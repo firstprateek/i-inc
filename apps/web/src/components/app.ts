@@ -624,9 +624,8 @@ export class IncApp extends LitElement {
 
       /* The conversation screen: the first-run checklist (when there is one) above the conversations. */
       .conv-host { display: flex; flex-direction: column; gap: 12px; height: 100%; min-height: 0; }
-      .conv-host > inc-chat, .conv-host > inc-conversations { flex: 1 1 0; min-height: 0; }
+      .conv-host > inc-conversations { flex: 1 1 0; min-height: 0; }
       .outcome a { display: inline-flex; align-items: center; min-height: 44px; color: var(--reviewing-fg); font-weight: 700; text-underline-offset: 2px; }
-      .old-note { align-self: flex-start; min-height: 44px; display: inline-flex; align-items: center; font-weight: 600; font-size: 14px; }
       .stack { display: flex; flex-direction: column; gap: var(--layout-section-gap, 20px); min-width: 0; }
 
       /* A narrow desktop window: keep the header to one row, since it no longer scrolls away. */
@@ -841,7 +840,7 @@ export class IncApp extends LitElement {
   private threadOnPhone(): boolean {
     const r = this.route;
     const thread =
-      (r.view === "conversations" && !r.old && !!(r.id || r.draft)) || (r.view === "ticket" && !!r.session);
+      (r.view === "conversations" && !!(r.id || r.draft)) || (r.view === "ticket" && !!r.session);
     return thread && !!this.phoneQuery?.matches;
   }
 
@@ -957,9 +956,7 @@ export class IncApp extends LitElement {
     }
     switch (r.view) {
       case "conversations":
-        return r.old
-          ? html`<div class="conv-host"><a class="old-note" href="#/conversations">← Back to conversations</a><inc-chat .employeeId=${r.id}></inc-chat></div>`
-          : html`<div class="conv-host"><inc-conversations .selectedId=${r.id} .card=${r.card ?? ""} .draft=${r.draft}></inc-conversations></div>`;
+        return html`<div class="conv-host"><inc-conversations .selectedId=${r.id} .card=${r.card ?? ""} .draft=${r.draft}></inc-conversations></div>`;
       case "needs-you":
         return html`<inc-inbox></inc-inbox>`;
       case "work":

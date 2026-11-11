@@ -46,7 +46,6 @@ describe("what the shell imports", () => {
     const views = read("src/components/views.ts");
     for (const file of [
       "group-conversations",
-      "chat",
       "group-work",
       "desk",
       "office",
@@ -63,7 +62,6 @@ describe("what the shell imports", () => {
 describe("needFor", () => {
   const routes: Route[] = [
     parse("#/conversations"),
-    parse("#/conversations/old/ada"),
     parse("#/work/board"),
     parse("#/needs-you"),
     parse("#/work/releases"),

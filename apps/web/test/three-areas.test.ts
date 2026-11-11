@@ -379,7 +379,7 @@ describe("the browser title", () => {
     for (const [hash, title] of [
       ["#/needs-you", "Needs you · i.inc"],
       ["#/company/usage", "Usage · Company · i.inc"],
-      ["#/conversations/old/ada", "Old chat · Conversations · i.inc"],
+      ["#/conversations/old/ada", "Conversations · i.inc"],
       ["#/conversations/ab12cd34", "Conversations · i.inc"],
       ["#/ticket/9", "Ticket #9 · Work · i.inc"],
       ["#/company/settings/sandboxes", "Sandboxes · Settings · Company · i.inc"],

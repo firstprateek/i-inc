@@ -99,7 +99,6 @@ export class IncConvList extends LitElement {
       .menu button:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: -3px; }
       .renamer { flex: 1 1 auto; padding: 8px 6px 8px 10px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
       .foot { flex: none; display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 2px 0; border-top: 1px solid var(--line); margin-top: 4px; }
-      .foot a { color: var(--ink-2); font-size: 13px; font-weight: 600; min-height: 44px; display: inline-flex; align-items: center; }
       /* An empty list is one small muted line: the centre pane carries the invitation. */
       .none { margin: 10px 4px; color: var(--ink-2); font-size: 13.5px; }
       .skel { height: 60px; border-radius: 14px; background: var(--sunken); margin: 4px 0; animation: pulse 1.4s ease-in-out infinite; }
@@ -254,7 +253,6 @@ export class IncConvList extends LitElement {
       </div>
       <div class="foot">
         <button class="link-btn" type="button" aria-pressed=${this.showArchived ? "true" : "false"} @click=${() => this.emit("conv-toggle-archived")}>${this.showArchived ? "Hide archived" : "Show archived"}</button>
-        <a href="#/conversations/old">Old chat</a>
       </div>`;
   }
 }

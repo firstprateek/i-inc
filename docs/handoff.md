@@ -650,7 +650,8 @@ answer it when it asks. The screen is the web app's AHP client (`apps/web/src/ah
   (ACP cannot inject into a running one): press Stop to do that.
 - **It asks you:** a permission card shows the command or the file diff and the agent's own options (Allow once, Always
   allow, Deny). The first answer from any device wins; the other devices show "Allowed on another device". A pending
-  card counts in the Needs you badge and is listed on the Needs you page, which opens the conversation at the card.
+  card counts in the Needs you badge and is listed on the Needs you page, whose **Answer** opens the conversation at the
+  card. While it waits, the composer's mode picker reads "Asking: <mode>".
 - **Right panel** (the button in the thread header; remembered): project and branch, the plan, files changed (open one
   for its diff), brain pages used (from the session's `_meta["iinc.brain"]`: each page with its scope, marked "opened"
   when the agent read it itself and "untrusted" when it was built from outside content), usage and the
@@ -664,8 +665,8 @@ answer it when it asks. The screen is the web app's AHP client (`apps/web/src/ah
   in a reply is plain text.
 - **Reconnecting:** if the host goes away a "Reconnecting..." banner shows and sending waits; the screen replays what
   it missed from the last `serverSeq` (or takes a fresh snapshot) and carries on.
-- **Old chat** (the footer of the list, `#/conversations/old/<employee>`) is the previous small-model chat. It is
-  still there and is meant to go.
+- **Old chat** is retired: the list has no link to it, and `#/conversations/old/*` and `#/chat/*` open
+  Conversations. Its component (`components/chat.ts`) is still in the tree for a release and is meant to go.
 - **Trying it without real agents:** `apps/daemon/test/ahp/e2e-server.ts` runs the real daemon over the scripted fake
   agent and a fake Exec (`I_INC_HOME=<scratch dir> PORT=7611 bun apps/daemon/test/ahp/e2e-server.ts`, after building
   `apps/web`). Prompts starting `slow`, `hang`, `markdown`, `burst N` and `longtools` pick what it does.
