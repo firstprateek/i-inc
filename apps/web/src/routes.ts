@@ -413,7 +413,7 @@ function titleParts(r: Route): string[] {
       return r.id
         ? [r.id, "Projects", "Company"]
         : r.flow
-          ? [r.flow === "add" ? "Add a repo" : "New project", "Projects", "Company"]
+          ? [r.flow === "add" ? "Add project" : "New project", "Projects", "Company"]
           : ["Projects", "Company"];
     case "usage":
       return ["Usage", "Company"];

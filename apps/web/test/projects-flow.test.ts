@@ -338,32 +338,38 @@ describe("Company → Projects", () => {
     expect(text(teach)).toContain("A project is a GitHub repository that i.inc employees work on");
     expect(text(teach)).toContain("Checks");
     expect(text(teach)).toContain("Owner merges");
-    expect(link(teach as Element, "New project")?.getAttribute("href")).toBe("#/company/projects/new");
-    expect(link(teach as Element, "Add a repo")?.getAttribute("href")).toBe("#/company/projects/add");
+    // The one way to add is the header's Add project: the card names it and offers no second set of buttons.
+    expect(text(teach)).toContain("Add project");
+    expect(teach?.querySelectorAll("a, button").length).toBe(0);
   });
 
-  it("says the GitHub App isn't set up", async () => {
-    serve({ projects: [], status: orgStatus({ configured: false, installation: null }), repos: [] });
+  it("offers no add control of its own, set up or not: Add project in the header is the one way in", async () => {
+    for (const status of [orgStatus(), orgStatus({ configured: false, installation: null })]) {
+      for (const projects of [[], [duet, listy]]) {
+        document.body.innerHTML = "";
+        serve({ projects, status, ...(status.configured ? {} : { repos: [] }) });
+        const { root } = await mount("inc-setup-projects");
+        const controls = [...root.querySelectorAll("a, button")].map(text);
+        for (const c of controls)
+          expect(c).not.toMatch(/^(Add a repo|Add project|New project|Connect GitHub)/);
+        expect(root.querySelector(".notice")).toBeNull();
+      }
+    }
+  });
+
+  it("without the GitHub App, lists the projects and nothing about repos", async () => {
+    serve({ status: orgStatus({ configured: false, installation: null }), repos: [] });
     const { root } = await mount("inc-setup-projects");
-    // One compact notice and one button, above the list: not the long paragraph and several links
-    const notice = root.querySelector(".notice");
-    expect(text(notice)).toBe("Connect GitHub to add repos Connect GitHub");
-    expect(link(root, "Connect GitHub")?.getAttribute("href")).toBe(
-      "https://github.com/apps/i-inc-bot/installations/new",
-    );
-    expect(root.querySelectorAll("a[href^='https://github.com']").length).toBe(1);
+    expect(root.querySelectorAll("article.project").length).toBe(2);
     expect(root.querySelector(".conn")).toBeNull();
     expect(root.textContent).not.toContain("docs/github-app.md");
     expect(root.textContent).not.toContain("Repos you can add");
     expect(button(root, "Refresh repos")).toBeUndefined();
-    const list = root.querySelector('[aria-label="Your projects"]') as Element;
-    expect((notice as Element).compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("shows no notice once the GitHub App is set up", async () => {
+  it("shows the GitHub access card once the GitHub App is set up", async () => {
     serve({ projects: [], status: orgStatus(), repos: [] });
     const { root } = await mount("inc-setup-projects");
-    expect(root.querySelector(".notice")).toBeNull();
     expect(root.querySelector(".conn")).not.toBeNull();
   });
 
@@ -445,7 +451,7 @@ describe("Company → Projects", () => {
     expect(link(root, "Carry on").getAttribute("href")).toBe("#/company/projects/new");
   });
 
-  it("opens from the Company tab, with the two ways in as header actions", async () => {
+  it("opens from the Company tab, with one header action: Add project", async () => {
     serve();
     location.hash = "#/company/projects";
     const app = document.createElement("inc-app");
@@ -456,7 +462,7 @@ describe("Company → Projects", () => {
     const actions = [...root.querySelectorAll('[slot="actions"]')].map(
       (a) => `${text(a)} ${a.getAttribute("href")}`,
     );
-    expect(actions).toEqual(["Add a repo #/company/projects/add", "New project #/company/projects/new"]);
+    expect(actions).toEqual(["Add project #/company/projects/add"]);
     location.hash = "#/company/projects/add?repo=acme%2Fnotes";
     await settle(app);
     expect(root.querySelector("inc-project-flow")).not.toBeNull();
@@ -478,6 +484,21 @@ describe("add a repo", () => {
     const { root } = await mount<Flow>("inc-project-flow", { flow: "add" });
     expect(text(root)).toContain("Which repo?");
     expect(link(root, "Add")?.getAttribute("href")).toBe("#/company/projects/add?repo=acme%2Fnotes");
+    // Starting a new repo is a link inside the picker, not a second way in on the Projects tab.
+    const pick = root.querySelector('[aria-label="Pick a repo"]') as Element;
+    expect(link(pick, "Start a new repo")?.getAttribute("href")).toBe("#/company/projects/new");
+  });
+
+  it("starts with Connect GitHub when the GitHub App isn't set up", async () => {
+    serve({ projects: [], status: orgStatus({ configured: false, installation: null }), repos: [] });
+    const { root } = await mount<Flow>("inc-project-flow", { flow: "add" });
+    expect(text(root.querySelector("h2"))).toBe("Connect GitHub");
+    const a = link(root, "Connect GitHub");
+    expect(a.getAttribute("href")).toBe("https://github.com/apps/i-inc-bot/installations/new");
+    expect(a.getAttribute("rel")).toContain("noopener");
+    expect(a.getAttribute("target")).toBe("_blank");
+    expect(text(root)).not.toContain("Which repo?");
+    expect(link(root, "Start a new repo")).toBeUndefined();
   });
 
   it("detects the checks, lets you edit the recipe and choose a mode, and adds the project", async () => {

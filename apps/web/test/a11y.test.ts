@@ -322,15 +322,8 @@ describe("the header rule (docs/layout.md)", () => {
     document.body.append(app);
     await app.updateComplete;
     const actions = [...(app.shadowRoot?.querySelectorAll('[slot="actions"]') ?? [])];
-    expect(actions.map((a) => a.textContent?.trim())).toEqual(["Add a repo", "New project"]);
-    expect(actions[0]?.classList.contains("phone-hide")).toBe(true);
-    expect(actions[1]?.classList.contains("phone-hide")).toBe(false);
-    const appCss = IncApp.styles.map((s) => (typeof s === "string" ? s : s.cssText)).join("\n");
-    expect(appCss).toMatch(
-      /@media \(max-width: 600px\)\s*\{\s*\.phone-hide\s*\{\s*display:\s*none !important/,
-    );
-    // The page offers Add a repo itself, on a phone only.
-    expect(read("src/components/setup-projects.ts")).toMatch(/\.only-phone \{ display: none; \}/);
+    // One way to add a project (WP8): the same single action on every size, nothing hidden on a phone.
+    expect(actions.map((a) => a.textContent?.trim())).toEqual(["Add project"]);
     document.body.innerHTML = "";
     vi.unstubAllGlobals();
     location.hash = "";

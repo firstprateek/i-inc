@@ -594,11 +594,11 @@ a project yet, each with **Add**.
   installation's settings on GitHub (**Repository access**: add the repo, save), then press **Refresh repos**
   (the list is cached for 30 seconds; Refresh asks again, at most every 3 seconds). Verify from the mini with
   `node tools/github-app/check.mjs`.
-- **Add a project you already have:** **Add a repo** (or **Add** beside a repo). i.inc reads the repo and suggests the checks
+- **Add a project you already have:** **Add project**, then pick the repo (or **Add** beside a repo). i.inc reads the repo and suggests the checks
   (`GET /api/github/repos/:owner/:name/inspect`); you confirm or edit the recipe and choose **Direct**
   (pushed to the main branch after i.inc's own review; the preselected choice, as in the daemon) or **Owner merges** (finished
   work waits as a pull request and only you merge it). It registers the project (`POST /api/projects/:id/bootstrap` with no template).
-- **Start a new project:** **New project**: a name, a starter (TypeScript + Node, Web app, Python, Minimal) and Private or
+- **Start a new project:** **Add project**, then **Start a new repo**: a name, a starter (TypeScript + Node, Web app, Python, Minimal) and Private or
   Public. What happens next depends on the installation (`GET /api/github/status` says which):
   - *An organization and the App has **Administration: write**:* the bot creates the empty repo
     (`POST /api/github/repos`), then fills it with the starter and adds the project. This permission is **off by default**

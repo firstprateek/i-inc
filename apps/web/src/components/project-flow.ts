@@ -15,6 +15,7 @@ import {
   draftStore,
   type GitHubRepoSummary,
   type GitHubStatus,
+  NEW_PROJECT_HREF,
   type NewProjectDraft,
   newRepoLink,
   projectHref,
@@ -27,7 +28,7 @@ import {
   type TemplateId,
 } from "../github-projects.ts";
 import { web } from "../links.ts";
-import { type MergeMode, policyDefaults, setupApi } from "../setup-api.ts";
+import { GITHUB_INSTALL_URL, type MergeMode, policyDefaults, setupApi } from "../setup-api.ts";
 import { listEditor } from "../setup-shared.ts";
 import { modePicker, problemBox, projectStyles } from "./project-parts.ts";
 import { base } from "./shared.ts";
@@ -39,7 +40,7 @@ type AddPhase = "loading" | "pick" | "missing" | "already" | "inspecting" | "for
 
 const detectedWords = (d: string, empty: boolean) =>
   empty
-    ? "This repo is empty, so there is nothing to detect. i.inc suggests a recipe; change it, or start from a template with New project."
+    ? "This repo is empty, so there is nothing to detect. i.inc suggests a recipe; change it, or start from a template with Start a new repo."
     : ((
         {
           node: "Found a Node project.",
@@ -351,10 +352,25 @@ export class IncProjectFlow extends LitElement {
     }
   }
 
+  /** The first screen of Add project when the GitHub App isn't set up: the one thing to do first. */
+  private connectFirst() {
+    const install = this.status?.links.install ?? GITHUB_INSTALL_URL;
+    return html`<section class="card" aria-label="Connect GitHub">
+      <h2>Connect GitHub</h2>
+      <p>A project is a GitHub repo, and i.inc sees only the repos you give its bot. Install the bot on GitHub, then come back here.</p>
+      <div class="row">
+        <a class="btn" href=${web(install)} target="_blank" rel="noopener noreferrer">Connect GitHub<span class="sr"> (opens GitHub)</span></a>
+        <a class="link" href="#/company/projects">Back to projects</a>
+      </div>
+    </section>`;
+  }
+
   private pickList() {
+    if (this.status && !this.status.configured) return this.connectFirst();
     const open = (this.repos ?? []).filter((r) => !r.alreadyRegistered);
     return html`<section class="card" aria-label="Pick a repo">
       <h2>Which repo?</h2>
+      <p class="muted">Not on GitHub yet? <a class="link" href=${NEW_PROJECT_HREF}>Start a new repo</a> from a template.</p>
       ${
         this.reposProblem
           ? problemBox(

@@ -3,7 +3,6 @@
 // project-flow.ts; one project's page is project-page.ts.
 import { css, html } from "lit";
 import {
-  ADD_PROJECT_HREF,
   addRepoHref,
   ago,
   draftStore,
@@ -80,15 +79,6 @@ export class IncSetupProjects extends Loader<ListData> {
     base,
     projectStyles,
     css`
-      /* On a phone the header has room for one action (New project); Add a repo moves down here. */
-      .only-phone { display: none; }
-      @media (max-width: 600px) {
-        .only-phone { display: inline-flex; align-items: center; justify-content: center; align-self: flex-start;
-          text-decoration: none; box-sizing: border-box; }
-      }
-      .notice { display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; padding: 10px 14px; }
-      .notice .line { margin: 0; font-size: 15px; font-weight: 600; }
-      .notice .btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; box-sizing: border-box; }
       .conn { gap: 8px; }
       .conn .line { font-size: 15px; line-height: 1.45; }
       .project { gap: 10px; }
@@ -187,15 +177,6 @@ export class IncSetupProjects extends Loader<ListData> {
     </section>`;
   }
 
-  /** The GitHub App isn't set up: one compact notice and one button, instead of the long explanation and links. */
-  private notConnected(d: ListData) {
-    const install = d.status?.links.install ?? GITHUB_INSTALL_URL;
-    return html`<section class="card notice" aria-label="GitHub access">
-      <p class="line">Connect GitHub to add repos</p>
-      <a class="btn" href=${web(install)} target="_blank" rel="noopener noreferrer" aria-label="Connect GitHub (opens GitHub)">Connect GitHub</a>
-    </section>`;
-  }
-
   private project(p: ProjectStatus, lost: boolean) {
     const shown = p.checks.slice(0, 3);
     const more = p.checks.length - shown.length;
@@ -246,11 +227,7 @@ export class IncSetupProjects extends Loader<ListData> {
         <li><b>Checks</b>: the commands every change must pass before it counts as done.</li>
         <li><b>A mode</b>: <i>Direct</i> pushes finished work to the main branch after review; <i>Owner merges</i> leaves it as a pull request for you to merge.</li>
       </ul>
-      <p>Add a repo that already exists, or start a new one from a template.</p>
-      <div class="actions">
-        <a class="btn" href=${NEW_PROJECT_HREF}>New project</a>
-        <a class="btn ghost" href=${ADD_PROJECT_HREF}>Add a repo</a>
-      </div>
+      <p><b>Add project</b>, at the top, adds a repo that already exists or starts a new one from a template.</p>
     </section>`;
   }
 
@@ -319,10 +296,9 @@ export class IncSetupProjects extends Loader<ListData> {
             </div>`
           : ""
       }
-      ${connected ? this.connection(d) : this.notConnected(d)}
+      ${connected ? this.connection(d) : ""}
       <section class="block" aria-label="Your projects">
         <h2>Your projects</h2>
-        ${d.projects.length ? html`<a class="btn ghost only-phone" href=${ADD_PROJECT_HREF}>Add a repo</a>` : ""}
         ${
           d.projects.length === 0
             ? this.teach()

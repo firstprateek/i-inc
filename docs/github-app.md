@@ -60,7 +60,7 @@ push of the bot's that touches `.github/workflows/`.
 
 **Creating repos is not on that list, on purpose.** GitHub lets an App create a repo only in an
 *organization* and only with **Administration** (write), and never in a personal account. Administration also lets the
-App change repo settings, so it is **off**, and **Company → Projects → New project** has you create the empty repo on GitHub
+App change repo settings, so it is **off**, and **Company → Projects → Add project → Start a new repo** has you create the empty repo on GitHub
 and give the bot access to it, then fills it. If you run i.inc in an organization and decide the convenience is worth the wider
 permission, add Administration (write) in the App's permissions and accept it on the installation; the page notices
 (`GET /api/github/status`) and creates the repo itself from then on.

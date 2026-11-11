@@ -93,8 +93,8 @@ where it is when you switch Team, Brain, Projects, Usage and Settings. To keep t
 - the title sits in a 44px band at the top of the header (`::slotted([slot="heading"])` in `layout.ts`), whatever the
   route puts beside or under it, and Conversations' shorter heading differs only in font size, so the title is at the
   same y on every route and size (a ticket's too);
-- an area's header holds at most as many actions as fit beside a phone's title: Projects keeps "New project" there and
-  shows "Add a repo" in the page below 600px, so the tab row is at the same y on every Company tab;
+- an area's header holds at most as many actions as fit beside a phone's title (Projects has one, "Add project"), so
+  the tab row is at the same y on every Company tab;
 - every route has the same top padding (`main`, including a route that owns its scrolling);
 - the heading block is at least 44px tall, so a route with an action button and one without place the title alike;
 - put the action in the `actions` slot and the tab row in the `tabs` slot; never add a per-route width or margin to a header;
@@ -166,7 +166,10 @@ constrains its available width without changing hiring-specific markup or behavi
   `resumesAt`; the app words the time).
 - **Releases:** a project with nothing unreleased says "Up to date" and has no Cut release button. "General", the name the
   daemon files tickets under when they belong to no project, shows as "No project" and only while it has something to release.
-- **Projects:** without the GitHub App there is one compact notice ("Connect GitHub to add repos") with one button above the list.
+- **Projects:** one way to add a project: the header's **Add project** (`#/company/projects/add`). Its first screen is
+  "Connect GitHub" with the install link when the GitHub App isn't set up, else the repo picker, with "Start a new repo"
+  as a link inside it. The page itself has no add buttons. "General" is listed only while it has a ticket that is not
+  done (`GET /api/project-overview`), as in Releases.
 
 ## Choosing a layout
 

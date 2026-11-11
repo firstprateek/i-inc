@@ -619,8 +619,6 @@ export class IncApp extends LitElement {
       /* A 44px target that takes the room of a one-line subtitle, so a ticket's header is as tall as any other. */
       .back { display: inline-block; padding: 12px 0; margin: -12px 0; font-weight: 600; font-size: 15px; line-height: 1.4; text-decoration: none; }
       @media (max-width: 600px), (max-height: 520px) { [slot="subtitle"]:not(.back) { display: none; } }
-      /* One action fits beside a phone's title; the second is offered in the page (so the tab row stays put). */
-      @media (max-width: 600px) { .phone-hide { display: none !important; } }
 
       /* The conversation screen: the first-run checklist (when there is one) above the conversations. */
       .conv-host { display: flex; flex-direction: column; gap: 12px; height: 100%; min-height: 0; }
@@ -828,7 +826,7 @@ export class IncApp extends LitElement {
           : r.view === "team"
             ? html`<a slot="actions" class="btn" href="#/company/team/hiring">Hire someone</a>`
             : r.view === "projects" && !r.id && !r.flow
-              ? html`<a slot="actions" class="btn ghost phone-hide" href="#/company/projects/add">Add a repo</a><a slot="actions" class="btn" href="#/company/projects/new">New project</a>`
+              ? html`<a slot="actions" class="btn" href="#/company/projects/add">Add project</a>`
               : r.view === "projects"
                 ? html`<a slot="actions" class="btn ghost" href="#/company/projects">All projects</a>`
                 : r.view === "hiring"
