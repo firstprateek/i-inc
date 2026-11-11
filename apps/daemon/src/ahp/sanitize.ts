@@ -273,8 +273,10 @@ function redactCutPasswords(t: string): string {
 
 /** A run of what a token is made of, in a URL's user name. */
 const NAME_RUN = /[A-Za-z0-9._~+=%-]+/g;
-/** What may follow a quote that closes a string: a separator, as in JSON, CSV, SQL or a shell, or a space. */
-const STRING_END = /^[\s,;:)\]}>|&+]$/;
+/** What follows a quote that closes a string: separators or spaces, then the next string's quote, as in JSON or a list. */
+const NEXT_STRING = /^[\s,;:)\]}>|&+]+\\?["'`]/;
+/** A plain host, and a port of digits only: what a quoted URL must hold before its quote for the quote to end it. */
+const HOST_PORT = /^(?:[A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/;
 /** The kinds of token that go by their prefix, however short what follows. */
 const TOKEN_PREFIX =
   /(?<![A-Za-z0-9_-])(?:gh[opsur]_|github_pat_|glpat-|gldt-|sk-|[sr]k_live_|whsec_|xox[a-z]-|AKIA|AIza|npm_|hf_|pypi-|eyJ[A-Za-z0-9_-]{8})/;
@@ -303,8 +305,10 @@ export function userinfoHoldsCredential(userinfo: string): boolean {
  * a `/`, `?` or `#`, a quote is the URL's only end there is: `"postgres://u:a"b@h"` has a password with a quote in it, as
  * what is before that quote is no host. Nor is a quote the URL's end when the string goes straight on after it, as when
  * a password holds the quote written twice or as a shell writes it: `'https://u:2024'\''x@h'`, `('https://u:it''s@h')`.
- * Only a quote that something else follows, a separator or a space, closes the string. What the URL has before its own
- * `@`, if any, is then all that is looked at.
+ * Only a quote that the next string's quote follows, past separators, closes the string, and only after a plain host
+ * with a port of digits. What the URL has before its own `@`, if any, is then all that is looked at. What still gets
+ * through: a password of digits that holds a quote, a separator and another quote, as in `'https://u:1','x@h'`, which
+ * reads the same as a list of a URL and an address.
  */
 function redactUserinfo(m: string, scheme: string, at: number, t: string): string {
   const userinfo = m.slice(scheme.length, -1);
@@ -315,8 +319,14 @@ function redactUserinfo(m: string, scheme: string, at: number, t: string): strin
     while (close >= 0 && (userinfo[close - 1] === "\\") !== escaped)
       close = userinfo.indexOf(quote, close + 1);
     const read = close < 0 ? "" : userinfo.slice(0, escaped ? close - 1 : close);
-    if (close >= 0 && STRING_END.test(userinfo[close + 1] ?? "") && !stopsInPassword(read)) {
-      const own = read.lastIndexOf("@");
+    const own = read.lastIndexOf("@");
+    const host = read.slice(own + 1);
+    if (
+      close >= 0 &&
+      NEXT_STRING.test(userinfo.slice(close + 1)) &&
+      HOST_PORT.test(host) &&
+      (own >= 0 || !userinfoHoldsCredential(host.replace(/:\d{1,5}$/, "")))
+    ) {
       return own >= 0 && userinfoHoldsCredential(read.slice(0, own))
         ? `${scheme}[redacted]${m.slice(scheme.length + own)}`
         : m;

@@ -1057,6 +1057,11 @@ describe("a search", () => {
         ["a user name with a quote", `'https://o'brien:Hunter2pw@db.example/x'`, "Hunter2pw"],
         ["an encoded colon with a quote", `'https://ci%3Apa'\\''ssW0rd@db.example'`, "ssW0rd"],
         ["a JWT", "https://eyJhbGciOiJIUzI1NiJ9@h", "eyJhbGciOiJIUzI1NiJ9"],
+        ["an encoded colon, a quote and a comma", `'https://u%3Aab',cd@h.example'`, "cd"],
+        ["a name with a plus, a quote and a comma", `'https://user+tag:Secret',x@h.example'`, "Secret"],
+        ["a password of digits, a quote and a comma", `'https://u:12345',Secret9@h.example/x'`, "Secret9"],
+        ["a template password, a quote and a comma", `'https://u:{{a}}',Secret@h.example'`, "Secret"],
+        ["a token's prefix, a quote and a comma", `'https://ghp_abc',x@h.example'`, "ghp_abc"],
         ["a token's prefix past the old limit", `https://ghp_${"x".repeat(500)}@h`, "ghp_x"],
         ["a long user name past the old limit", `https://${"g".repeat(500)}@h`, "g".repeat(400)],
       ])("is a credential with %s", (_, line, secret) => {
