@@ -128,6 +128,24 @@ describe("the thread", () => {
     expect(tool()?.querySelector(".outcome")?.textContent).toBe("Always allow");
   });
 
+  it("says it waits for you once, on the card: no waiting footer, and the bar's button reads Answer", async () => {
+    const { host, root, turn, tool, el } = await setup();
+    host.send(CHAT, started);
+    await until(() => turn()?.querySelector(".foot .working"));
+    expect(turn()?.querySelector(".foot")?.textContent).toContain("Working");
+    host.send(CHAT, toolStart);
+    host.send(CHAT, toolReady);
+    await until(() => tool()?.querySelector(".perm"));
+    await el.updateComplete;
+    expect(tool()?.textContent).toContain("Waiting for you");
+    // The turn's footer steps aside while the card waits: the card says it.
+    expect(turn()?.querySelector(".foot")).toBeNull();
+    expect(turn()?.textContent).not.toContain("Waiting for you");
+    // Off screen (jsdom has no layout), the bar points at the card and names what the button does.
+    const bar = root().querySelector(".needs-bar");
+    expect(bar?.querySelector("button")?.textContent?.trim()).toBe("Answer");
+  });
+
   it('says "Allowed on another device" when another client answered first, and shows no error', async () => {
     const { host, tool, root } = await setup();
     host.send(CHAT, started);

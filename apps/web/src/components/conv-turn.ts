@@ -194,7 +194,10 @@ export class IncConvTurn extends LitElement {
         ${parts.map((p, i) => this.renderPart(p, i === parts.length - 1, turn))}
         ${
           this.active
-            ? html`<div class="foot"><span class="working" aria-hidden="true"><span class="dots"><i></i><i></i><i></i></span>${waiting ? "Waiting for you" : "Working"}</span></div>`
+            ? // While a card waits for the owner, the card says so (list row, header, card: said once each).
+              waiting
+              ? nothing
+              : html`<div class="foot"><span class="working" aria-hidden="true"><span class="dots"><i></i><i></i><i></i></span>Working</span></div>`
             : html`<div class="foot">
                 ${done?.state === TurnState.Cancelled ? html`<span>Stopped</span>` : nothing}
                 ${usage ? html`<span title="Tokens used in this turn">${usage}</span>` : nothing}

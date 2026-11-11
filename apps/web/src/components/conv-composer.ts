@@ -10,8 +10,10 @@ import { forgetPaths, matchPaths, mentionQuery, pathsFor } from "../conversation
 import {
   type Command,
   commandsOf,
+  firstPending,
   matchCommands,
   modePicker,
+  modeShown,
   otherPickers,
   type Picker,
   slashQuery,
@@ -551,11 +553,12 @@ export class IncConvComposer extends LitElement {
     this.dispatchEvent(new CustomEvent<T>(name, { detail, bubbles: true, composed: true }));
   }
 
-  private picked(p: Picker) {
-    const current = p.choices.find((c) => c.value === p.value)?.label ?? "";
+  /** A picker as a select. The mode's (`asking`: a card waits for the owner) shows "Asking: <mode>" on its current choice. */
+  private picked(p: Picker, asking = false) {
+    const current = modeShown(p, asking);
     return html`<label><span class="sr-only">${p.title}</span><select aria-label="${p.title}: ${current}" title="${p.title}: ${current}"
       @change=${(e: Event) => this.emit("conv-config", { key: p.key, value: (e.target as HTMLSelectElement).value })}>
-      ${p.choices.map((c) => html`<option value=${c.value} ?selected=${c.value === p.value} title=${c.description ?? ""}>${c.label}</option>`)}
+      ${p.choices.map((c) => html`<option value=${c.value} ?selected=${c.value === p.value} title=${c.description ?? ""}>${c.value === p.value ? current : c.label}</option>`)}
     </select></label>`;
   }
 
@@ -711,7 +714,7 @@ export class IncConvComposer extends LitElement {
             @click=${() => this.renderRoot.querySelector<HTMLInputElement>("#conv-files-input")?.click()}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l9-9a3.7 3.7 0 0 1 5.2 5.2l-9 9a1.8 1.8 0 0 1-2.6-2.6l8.3-8.3"/></svg>
           </button>
-          <div class="pickers">${mode ? this.picked(mode) : nothing}${others.map((p) => this.picked(p))}</div>
+          <div class="pickers">${mode ? this.picked(mode, !!firstPending(this.chat)) : nothing}${others.map((p) => this.picked(p))}</div>
           <span class="grow"></span>
           ${
             running

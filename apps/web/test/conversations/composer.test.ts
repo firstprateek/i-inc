@@ -243,6 +243,61 @@ describe("while a turn runs", () => {
   });
 });
 
+describe("the mode picker while a card waits", () => {
+  const session = (mode: string): Any => ({
+    config: {
+      schema: {
+        properties: {
+          mode: {
+            type: "string",
+            title: "Mode",
+            sessionMutable: true,
+            enum: ["default", "plan", "bypassPermissions"],
+            enumLabels: ["Always ask", "Plan only", "Bypass permissions"],
+          },
+        },
+      },
+      values: { mode },
+    },
+  });
+  const asking: Any = {
+    turns: [],
+    activeTurn: {
+      id: "t1",
+      responseParts: [{ kind: "toolCall", toolCall: { toolCallId: "tc1", status: "pending-confirmation" } }],
+    },
+  };
+  const shown = (el: IncConvComposer) => {
+    const select = must<HTMLSelectElement>(el.shadowRoot?.querySelector('select[aria-label^="Mode"]'));
+    // the current choice is the one marked selected (jsdom's own selectedness lags behind the attribute)
+    return {
+      text: select.querySelector("option[selected]")?.textContent,
+      label: select.getAttribute("aria-label"),
+    };
+  };
+
+  it("says Asking with the mode, and never Bypass permissions beside a question", async () => {
+    const { el } = await mount({ session: session("bypassPermissions") }, asking);
+    expect(shown(el)).toEqual({ text: "Asking you", label: "Mode: Asking you" });
+    expect(el.shadowRoot?.textContent).not.toContain("Bypass permissions");
+    // the same dropdown: every mode is still there to pick
+    const options = [...(el.shadowRoot?.querySelectorAll('select[aria-label^="Mode"] option') ?? [])];
+    expect(options.map((o) => (o as HTMLOptionElement).value)).toEqual([
+      "default",
+      "plan",
+      "bypassPermissions",
+    ]);
+    el.session = session("plan");
+    await el.updateComplete;
+    expect(shown(el)).toEqual({ text: "Asking: Plan only", label: "Mode: Asking: Plan only" });
+  });
+
+  it("shows the mode itself when nothing waits", async () => {
+    const { el } = await mount({ session: session("bypassPermissions") });
+    expect(shown(el)).toEqual({ text: "Bypass permissions", label: "Mode: Bypass permissions" });
+  });
+});
+
 describe("slash commands", () => {
   const session: Any = {
     _meta: { "iinc.commands": [{ name: "compact", description: "Compact the chat" }, { name: "review" }] },

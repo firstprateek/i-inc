@@ -1071,7 +1071,7 @@ export class IncConvThread extends LitElement {
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12l7 7 7-7"/></svg></button></div>`
             : nothing
         }
-        ${pending && !this.cardVisible ? html`<div class="needs-bar"><span>${name} is waiting for you</span><button class="cbtn" type="button" @click=${() => this.focusPending()}>Review</button></div>` : nothing}
+        ${pending && !this.cardVisible ? html`<div class="needs-bar"><span>${name} is waiting for you</span><button class="cbtn" type="button" @click=${() => this.focusPending()}>Answer</button></div>` : nothing}
         ${
           this.notice
             ? html`<div class="notice" role="alert"><span>${this.notice}</span><button class="link-btn" type="button" @click=${() => {

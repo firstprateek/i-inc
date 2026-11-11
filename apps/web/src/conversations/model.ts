@@ -533,6 +533,17 @@ export function otherPickers(session: SessionState | undefined): Picker[] {
     }));
 }
 
+/**
+ * What the mode picker shows. While a card waits for the owner it says the agent is asking ("Asking: Plan"), so the
+ * composer never reads "Bypass permissions" beside a question: a bypass mode is not named at all then.
+ */
+export function modeShown(p: Picker, asking: boolean): string {
+  const current = p.choices.find((c) => c.value === p.value);
+  const label = current?.label ?? "";
+  if (!asking) return label;
+  return !current || bypassMode(p)?.value === current.value ? "Asking you" : `Asking: ${label}`;
+}
+
 /** The mode the agent calls bypass permissions, if it has one (for the default). */
 export function bypassMode(picker: Picker | undefined): Choice | undefined {
   return picker?.choices.find((c) => /bypass|full[- ]access|yolo/i.test(`${c.value} ${c.label}`));

@@ -255,6 +255,26 @@ describe("the inbox", () => {
     });
   });
 
+  it("opens a waiting conversation with Answer, named for its conversation", async () => {
+    vi.stubGlobal("fetch", async (url: string) => {
+      const body =
+        url === "/api/employees"
+          ? { employees: [{ id: "ada", name: "Ada" }] }
+          : answer(
+              {
+                tickets: [],
+                conversations: [{ id: "ab12cd34", employeeId: "ada", title: "Fix it", needsYou: true }],
+              },
+              url,
+            );
+      return new Response(JSON.stringify(body ?? {}), { headers: { "content-type": "application/json" } });
+    });
+    const root = await mount("inc-inbox");
+    const open = root.querySelector<HTMLAnchorElement>('a.btn[href="#/conversations/ab12cd34"]');
+    expect(open?.textContent?.trim()).toBe("Answer");
+    expect(open?.getAttribute("aria-label")).toBe("Answer in the conversation: Fix it");
+  });
+
   it("says so when nothing needs the owner", async () => {
     serve([view({})]);
     const root = await mount("inc-inbox");

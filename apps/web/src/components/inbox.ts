@@ -153,7 +153,7 @@ export class IncInbox extends Loader<{
       <div class="who"><span><b>${who}</b> · conversation${c.project ? html` · ${projectBadge(c.project)}` : ""}</span></div>
       <div class="q">${visible(c.title, true)}</div>
       <p class="waits"><i aria-hidden="true"></i><span>${who} is waiting for your permission or an answer.</span></p>
-      <div class="actions"><a class="btn" href="#/conversations/${c.id}" aria-label="Open the conversation: ${visible(c.title, true)}">Open the card</a></div></div>`;
+      <div class="actions"><a class="btn" href="#/conversations/${c.id}" aria-label="Answer in the conversation: ${visible(c.title, true)}">Answer</a></div></div>`;
   }
 
   private policy(p: PolicyProposal) {
