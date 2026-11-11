@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../src/components/app.ts";
-import { report } from "../src/connection.ts";
+import { report, timing } from "../src/connection.ts";
 import { registerServiceWorker, shouldRegister } from "../src/register-sw.ts";
 
 const web = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -216,13 +216,17 @@ describe("the service worker", () => {
 });
 
 describe("the offline panel", () => {
+  // Going offline is confirmed with health probes over a few seconds (connection.ts); here, at once.
+  const realTiming = { ...timing };
   beforeEach(() => {
     document.body.innerHTML = "";
+    Object.assign(timing, { retryMs: 0, probesMs: [0] });
     report(true);
   });
   afterEach(() => {
     vi.unstubAllGlobals();
     report(true);
+    Object.assign(timing, realTiming);
   });
 
   async function settle(el: Element) {
@@ -261,6 +265,6 @@ describe("the offline panel", () => {
     expect(isOffline()).toBe(false);
     vi.stubGlobal("fetch", async () => new Response("", { status: 502 }));
     await send("/api/board");
-    expect(isOffline()).toBe(true);
+    await vi.waitFor(() => expect(isOffline()).toBe(true));
   });
 });

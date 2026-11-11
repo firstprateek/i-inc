@@ -85,7 +85,7 @@ interface Handover {
 }
 
 const PENDING_MS = 10 * 60_000;
-const PR_CACHE_MS = 20_000;
+const PR_CACHE_MS = 45_000;
 const RECONCILE_MS = 60_000;
 
 const clean = (s: string, max: number) => redactText(s.replace(/\s+/g, " ").trim()).slice(0, max);

@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type RefreshScope, refresh } from "../src/api.ts";
 import { Loader } from "../src/components/loader.ts";
-import { report } from "../src/connection.ts";
+import { isOffline, report, suspect } from "../src/connection.ts";
 import { DEBOUNCE_MS, Live, startLiveUpdates } from "../src/live.ts";
 
 class FakeEventSource {
@@ -58,6 +58,23 @@ afterEach(() => {
 });
 
 describe("Live", () => {
+  it("counts the stream opening as the daemon answering: a doubt about it is called off", async () => {
+    const probe = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    vi.stubGlobal("fetch", probe);
+    const live = new Live();
+    live.start();
+    suspect(); // a request failed: the health probes start
+    await vi.advanceTimersByTimeAsync(10);
+    expect(probe).toHaveBeenCalledTimes(1);
+    latest().open();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(isOffline()).toBe(false);
+    live.stop();
+  });
+
   it("opens one EventSource on /api/events and dispatches events to subscribers", () => {
     const live = new Live();
     const tickets: unknown[] = [];

@@ -2,7 +2,7 @@
 // when something changes instead of polling. While the stream is down (never connected, 404, the
 // daemon restarting) the old 5 s poll carries on, and a slow safety poll runs even while it is up.
 import { refresh, refreshNow } from "./api.ts";
-import { connection, isOffline } from "./connection.ts";
+import { connection, isOffline, report } from "./connection.ts";
 
 export const EVENTS_URL = "/api/events";
 /** The events the daemon sends (C3). */
@@ -92,6 +92,7 @@ export class Live {
       const reconnected = this.dropped;
       this.up = true;
       this.attempts = 0;
+      report(true); // the daemon answered
       for (const fn of this.statusHandlers) fn(true, reconnected);
     };
     es.onerror = () => {

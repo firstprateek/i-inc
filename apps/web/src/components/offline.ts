@@ -31,12 +31,15 @@ export class IncOffline extends LitElement {
 
   private onOnline = () => void this.retry();
 
-  /** Any answer from the daemon (even a 401) reports it reachable, and the app swaps this panel out. */
+  /**
+   * Any answer from the daemon reports it reachable, and the app swaps this panel out. It asks the route the
+   * health probes ask (connection.ts), so an outage they found is over only when they would say so.
+   */
   private async retry(): Promise<void> {
     if (this.trying) return;
     this.trying = true;
     try {
-      await send("/api/auth");
+      await send("/api/health");
     } catch {
       // Still unreachable; the next tick tries again.
     } finally {
