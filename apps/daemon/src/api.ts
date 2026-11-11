@@ -148,6 +148,9 @@ type Handler = (req: Request, params: Record<string, string>) => Promise<Respons
 /** Project names the web app's addresses use for its own pages (`#/company/projects/add`). */
 const RESERVED_PROJECT_IDS = new Set(["add", "new"]);
 
+/** The project a ticket that belongs to no project is filed under (the daemon's tidy-up, an orientation). */
+const NO_PROJECT = "General";
+
 /** Why a project name can't be used, or null when it can. */
 function projectIdProblem(id: string): string | null {
   if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$/.test(id)) {
@@ -1330,13 +1333,19 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
 
     // Every project with a status line: mode, checks, the last ticket and how many pull requests are open.
     // The counts come from our own tickets (no GitHub call), so the list is cheap to reload.
+    // "General" is where the daemon files a ticket that belongs to no project (the brain tidy-up, an
+    // orientation); it is not a repo, so it is listed only while one of its tickets is not done.
     [
       "GET",
       "/api/project-overview",
       async () => {
         await backfillRepoIds();
         const out = [];
-        for (const p of d.registry.projects()) out.push(await projectStatus(p));
+        for (const p of d.registry.projects()) {
+          const s = await projectStatus(p);
+          if (p.id === NO_PROJECT && s.openTickets === 0) continue;
+          out.push(s);
+        }
         return json({ projects: out });
       },
     ],

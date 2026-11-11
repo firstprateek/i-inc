@@ -520,6 +520,32 @@ describe("project status and detail", () => {
     expect(quiet?.lastTicket).toBeNull();
   });
 
+  it("leaves General out unless it has a ticket that is not done", async () => {
+    const { call, app } = await setup();
+    const ids = async () =>
+      ((await call("GET", "/api/project-overview")).body.projects as { id: string }[]).map((p) => p.id);
+    expect(app.deps.registry.project("General")).toBeTruthy();
+    expect(await ids()).toEqual(["Duet", "fintrack", "listy", "website"]);
+
+    const at = app.clock.now();
+    const t = app.deps.tickets.create(
+      { ...refunds, project: "General", type: "tidy", effort: "low", title: "Tend the brain" },
+      at,
+    );
+    expect(await ids()).toContain("General");
+
+    await app.deps.store.append(t.id, [
+      { type: "ticket-created", at, ticketId: t.id },
+      { type: "closed", at: at + 1, outcome: "merged" },
+    ]);
+    expect(await ids()).not.toContain("General");
+    // Still a project: its page and the pickers that read /api/projects are unchanged.
+    expect((await call("GET", "/api/projects/General")).status).toBe(200);
+    expect(
+      ((await call("GET", "/api/projects")).body.projects as { id: string }[]).map((p) => p.id),
+    ).toContain("General");
+  });
+
   it("gives one project's page its policy, recent tickets and releases", async () => {
     const { call, app } = await setup();
     await call("POST", "/api/tickets", { ...refunds, project: "Duet" });
