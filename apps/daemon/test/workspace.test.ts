@@ -533,6 +533,35 @@ describe("a reviewer's machine", () => {
     expect(existsSync(join(wt("grace"), ".inc/attachments/2-2.png"))).toBe(true);
   });
 
+  it("puts set-aside files back without overwriting the branch's files, and without cp's -n warning", async () => {
+    const { root, origin } = setup();
+    mkdirSync(join(origin, "docs"));
+    writeFileSync(join(origin, "docs/guide.md"), "the branch's guide\n");
+    git(origin, "add", "docs");
+    git(origin, "-c", "user.name=o", "-c", "user.email=o@example.invalid", "commit", "-q", "-m", "docs");
+    git(origin, "branch", "inc-9");
+    const worktree = join(root, "work/inc-9");
+    mkdirSync(join(worktree, ".inc/attachments"), { recursive: true });
+    mkdirSync(join(worktree, "docs"));
+    writeFileSync(join(worktree, "README.md"), "stale\n");
+    writeFileSync(join(worktree, "docs/guide.md"), "stale guide\n");
+    writeFileSync(join(worktree, "docs/notes.md"), "notes\n");
+    writeFileSync(join(worktree, ".inc/attachments/1-1.png"), files[0]?.data ?? "");
+
+    const r = await localScript(
+      "grace",
+      checkoutScript({ remote: origin, repoDir: join(root, "work/duet"), worktree, branch: "inc-9" }),
+    );
+    expect(r.code).toBe(0);
+    expect(r.output).toContain("@@ready");
+    expect(r.output).not.toMatch(/non-portable|cp:/);
+    expect(readFileSync(join(worktree, "README.md"), "utf8")).toBe("duet\n");
+    expect(readFileSync(join(worktree, "docs/guide.md"), "utf8")).toBe("the branch's guide\n");
+    expect(readFileSync(join(worktree, "docs/notes.md"), "utf8")).toBe("notes\n");
+    expect(new Uint8Array(readFileSync(join(worktree, ".inc/attachments/1-1.png")))).toEqual(files[0]?.data);
+    expect(existsSync(`${worktree}.pre-checkout`)).toBe(false);
+  });
+
   it("says what git said when the checkout fails, and refuses a branch name that isn't safe", async () => {
     const { ws } = office({ grace: "machine-b" });
     // No pick-up: the branch isn't on origin.
