@@ -3,6 +3,7 @@ import { repeat } from "lit/directives/repeat.js";
 import { logout, refresh, refreshNow } from "../api.ts";
 import { connection, isOffline } from "../connection.ts";
 import { outcomeView, shipOutcomes } from "../conversations/outcomes.ts";
+import { inDesktopApp, inFullScreen, titlebarEvents, titlebarKind } from "../desktop.ts";
 import { isDismissed, showGettingStarted } from "../first-run.ts";
 import { canInstall, installSignal, needsIosInstall, promptInstall } from "../install.ts";
 import { startLiveUpdates } from "../live.ts";
@@ -44,6 +45,8 @@ const inboxIcon = html`<svg width="20" height="20" viewBox="0 0 24 24" fill="non
 const companyIcon = html`<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 21h18"></path><path d="M5 21V7l8-4v18"></path><path d="M19 21V11l-6-4"></path><line x1="9" y1="9" x2="9" y2="9.01"></line><line x1="9" y1="13" x2="9" y2="13.01"></line><line x1="9" y1="17" x2="9" y2="17.01"></line></svg>`;
 const workIcon = html`<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="5" height="16" rx="1.5"></rect><rect x="10" y="4" width="5" height="10" rx="1.5"></rect><rect x="17" y="4" width="5" height="14" rx="1.5"></rect></svg>`;
 const conversationsIcon = html`<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>`;
+const backIcon = html`<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"></polyline></svg>`;
+const forwardIcon = html`<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>`;
 const accountIcon = html`<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>`;
 
 /** What the phone's bottom bar offers, and which routes light each tab up. */
@@ -140,8 +143,18 @@ export class IncApp extends LitElement {
     return to ?? location.hash;
   }
 
+  /** In the desktop app (../desktop.ts) the header is the window's title bar. */
+  private readonly titlebar = inDesktopApp();
+
+  private onFullScreen = () => this.toggleAttribute("fullscreen", inFullScreen());
+
   override connectedCallback(): void {
     super.connectedCallback();
+    if (this.titlebar) {
+      this.setAttribute("titlebar", titlebarKind());
+      this.onFullScreen();
+      titlebarEvents.addEventListener("change", this.onFullScreen);
+    }
     addEventListener("hashchange", this.onHash);
     connection.addEventListener("change", this.onConnection);
     refresh.addEventListener("refresh", this.loadNeeds);
@@ -238,6 +251,7 @@ export class IncApp extends LitElement {
   }
 
   override disconnectedCallback(): void {
+    titlebarEvents.removeEventListener("change", this.onFullScreen);
     removeEventListener("hashchange", this.onHash);
     connection.removeEventListener("change", this.onConnection);
     refresh.removeEventListener("refresh", this.loadNeeds);
@@ -635,6 +649,25 @@ export class IncApp extends LitElement {
         .mark { font-size: 24px; }
         nav.areas a { padding: 0 12px; }
       }
+      /* The desktop app's title bar (../desktop.ts): the header spans the window, one compact row, and is the
+         window's drag region. On a Mac it starts to the right of the three window buttons, which the app
+         places at the row's middle (apps/desktop/src-tauri/tauri.conf.json), except in full screen. */
+      .history { display: none; }
+      :host([titlebar]) header {
+        min-height: 56px; box-sizing: border-box; gap: 10px; cursor: default;
+        padding: 6px 14px 6px 16px;
+      }
+      :host([titlebar="mac"]:not([fullscreen])) header { padding-left: 86px; }
+      :host([titlebar]) .history { display: inline-flex; gap: 2px; margin-right: 4px; }
+      :host([titlebar]) .history .icon { width: 32px; height: 32px; border: 0; border-radius: 8px; color: var(--ink-2); }
+      :host([titlebar]) .history .icon:hover { background: var(--sunken); color: var(--ink); }
+      :host([titlebar]) .mark { font-size: 22px; min-height: 36px; margin-right: 6px; }
+      :host([titlebar]) nav.areas a, :host([titlebar]) .needs-link { min-height: 36px; font-size: 14px; }
+      :host([titlebar]) nav.areas a { padding: 0 14px; }
+      :host([titlebar]) .needs-link { padding: 0 12px; }
+      :host([titlebar]) .account-wrap .icon { width: 36px; height: 36px; }
+      :host([titlebar]) .skip { top: 10px; left: 90px; }
+
       @media (max-width: ${LAYOUT_BREAKPOINTS.phone}px) {
         /* Phones: header, main, tab bar are three rows of the grid. */
         :host {
@@ -883,8 +916,16 @@ export class IncApp extends LitElement {
     const needsActive = this.route.view === "needs-you";
 
     return html`
-      <header @click=${this.onHeaderClick}>
+      <header @click=${this.onHeaderClick} data-tauri-drag-region=${this.titlebar ? "deep" : nothing}>
         <button class="skip" type="button" @click=${this.skipToContent}>Skip to content</button>
+        ${
+          this.titlebar
+            ? html`<div class="history">
+                <button class="icon" type="button" aria-label="Back" title="Back (⌘[)" @click=${() => history.back()}>${backIcon}</button>
+                <button class="icon" type="button" aria-label="Forward" title="Forward (⌘])" @click=${() => history.forward()}>${forwardIcon}</button>
+              </div>`
+            : nothing
+        }
         <a class="mark" href=${homeHash()}>i.inc</a>
         <nav class="areas" aria-label="Areas">
           ${AREAS.map((a) => html`<a href=${a.href} aria-current=${a.id === area ? "page" : "false"}>${a.label}</a>`)}
@@ -901,7 +942,7 @@ export class IncApp extends LitElement {
             aria-expanded=${this.accountOpen ? "true" : "false"} @click=${this.toggleAccount}>${accountIcon}</button>
           ${
             this.accountOpen
-              ? html`<div class="account-menu" role="menu" aria-label="Account" @keydown=${this.onMenuKey} @click=${(e: Event) => e.stopPropagation()}>
+              ? html`<div class="account-menu" role="menu" aria-label="Account" data-tauri-drag-region=${this.titlebar ? "false" : nothing} @keydown=${this.onMenuKey} @click=${(e: Event) => e.stopPropagation()}>
                   <button type="button" role="menuitem" @click=${() => this.toggleTheme()}>${this.isDark() ? "Switch to light theme" : "Switch to dark theme"}</button>
                   ${
                     isDismissed()

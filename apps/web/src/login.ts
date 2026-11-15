@@ -1,7 +1,8 @@
 // The owner sign-in and first-time signup form, shown when the daemon answers 401.
-import { css, html, LitElement } from "lit";
+import { css, html, LitElement, nothing } from "lit";
 import { authStatus, login, signup } from "./api.ts";
 import { base } from "./components/shared.ts";
+import { inDesktopApp } from "./desktop.ts";
 import "./components/layout.ts";
 import { draftMemo } from "./drafts.ts";
 
@@ -40,6 +41,8 @@ export class IncLogin extends LitElement {
 
   override async connectedCallback(): Promise<void> {
     super.connectedCallback();
+    // The desktop app has no title bar (./desktop.ts): a strip across the top stands in for one.
+    this.toggleAttribute("titlebar", inDesktopApp());
     this.titleNow();
     try {
       const { initialized, setupCodeRequired } = await authStatus();
@@ -90,6 +93,8 @@ export class IncLogin extends LitElement {
           max(var(--layout-mobile-gutter, 16px), env(safe-area-inset-right))
           max(var(--layout-mobile-gutter, 16px), env(safe-area-inset-bottom))
           max(var(--layout-mobile-gutter, 16px), env(safe-area-inset-left)); }
+      :host([titlebar]) { padding-top: 72px; }
+      .titlebar { position: fixed; top: 0; left: 0; right: 0; height: 56px; z-index: 1; }
       form {
         width: 100%;
         max-width: var(--compact-page-width, 24rem);
@@ -171,6 +176,7 @@ export class IncLogin extends LitElement {
     const passwordAutocomplete = this.initialized ? "current-password" : "new-password";
     const submitLabel = this.initialized ? "Sign in" : "Create account";
     return html`
+      ${inDesktopApp() ? html`<div class="titlebar" data-tauri-drag-region></div>` : nothing}
       <inc-layout kind="page" compact>
       <h1 slot="heading">${title}</h1>
       <p slot="subtitle">${subtitle}</p>

@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "drag",
+  "description": "The daemon's pages draw the window's title bar, so they may move the window and nothing else: drag it, and zoom it on a double click.",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*", "http://localhost:*", "https://*.ts.net", "https://*.ts.net:*"]
+  },
+  "permissions": ["core:window:allow-start-dragging", "core:window:allow-internal-toggle-maximize"]
+}
