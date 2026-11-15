@@ -37,20 +37,30 @@ fn installed_copy() -> bool {
         .is_some_and(|p| !p.components().any(|c| c.as_os_str() == "target"))
 }
 
-/// True when a file can be made next to the bundle, so the plugin can swap it without asking for a password.
+/// True when the plugin can swap the bundle without asking for a password: a file can be made next to it, and the
+/// bundle folder itself is writable (moving a folder to another parent needs write access to the folder, so a copy
+/// installed by another account fails there even when /Applications is writable). Nothing is written inside the
+/// bundle, which would break its signature.
 fn bundle_folder_writable() -> bool {
-    let Some(dir) = std::env::current_exe()
+    let Some(app) = std::env::current_exe()
         .ok()
         .and_then(|p| p.canonicalize().ok())
         .and_then(|p| p.ancestors().find(|a| a.extension().is_some_and(|e| e == "app")).map(|a| a.to_path_buf()))
-        .and_then(|app| app.parent().map(|d| d.to_path_buf()))
     else {
         return false;
     };
+    let Some(dir) = app.parent() else { return false };
     let probe = dir.join(format!(".i-inc-write-test-{}", std::process::id()));
     let ok = std::fs::write(&probe, b"").is_ok();
     let _ = std::fs::remove_file(&probe);
-    ok
+    ok && can_write(&app)
+}
+
+fn can_write(path: &std::path::Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) else { return false };
+    // SAFETY: a valid NUL-terminated path; access() only reads it.
+    unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
 }
 
 /// One line for the page to show for a few seconds (apps/web/src/app-update.ts).
