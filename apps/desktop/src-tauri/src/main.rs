@@ -69,18 +69,16 @@ fn push_fullscreen(window: &WebviewWindow) {
     ));
 }
 
-/// Tells the page which build of the app it is in, so a page newer than the app can say the app is out of date
-/// (apps/web/src/desktop.ts, `MIN_APP_VERSION`). A semver string: digits, letters, dots, `-` and `+` only.
-fn push_version(window: &WebviewWindow) {
-    let version = window.app_handle().package_info().version.to_string();
-    if version.chars().all(|c| c.is_ascii_alphanumeric() || ".-+".contains(c)) {
-        let _ = window.eval(format!("window.__I_INC_APP_VERSION__ = \"{version}\";"));
-    }
-}
-
 /// The daemon the launcher connected to (its origin). The window may show only that daemon's pages and the
 /// launcher; any other address opens in the default browser, so no other site ever gets the pages' capability.
-struct Daemon(Mutex<Option<String>>);
+/// `leaving` is true from the launcher's hand-over until the daemon's first page is allowed: a refusal then
+/// means the address leads somewhere else, and the launcher is shown again with the reason.
+#[derive(Default)]
+struct DaemonState {
+    origin: Option<String>,
+    leaving: bool,
+}
+struct Daemon(Mutex<DaemonState>);
 
 /// The launcher names the daemon it is about to open (`launcher.js`); only the bundled launcher may call this.
 #[tauri::command]
@@ -89,8 +87,20 @@ fn use_daemon(origin: String, daemon: tauri::State<'_, Daemon>) -> Result<(), St
     if !matches!(url.scheme(), "http" | "https") {
         return Err("not a web address".to_string());
     }
-    *daemon.0.lock().unwrap() = Some(url.origin().ascii_serialization());
+    let mut state = daemon.0.lock().unwrap();
+    state.origin = Some(url.origin().ascii_serialization());
+    state.leaving = true;
     Ok(())
+}
+
+/// The daemon's origin after `url`, when `url` is the chosen daemon moved from http to https on the same host
+/// and the same or default port (a server that redirects plain http): the same daemon, so it is followed.
+fn upgraded(url: &Url, daemon: &str) -> Option<String> {
+    let chosen = Url::parse(daemon).ok()?;
+    let same_host = chosen.host_str() == url.host_str();
+    let plain_to_tls = chosen.scheme() == "http" && url.scheme() == "https";
+    let port_ok = chosen.port().is_none() || chosen.port() == url.port();
+    (same_host && plain_to_tls && port_ok).then(|| url.origin().ascii_serialization())
 }
 
 /// True for an address the window may show: the bundled launcher, or the chosen daemon's own pages.
@@ -155,14 +165,28 @@ fn open_in_browser(url: &Url) {
     let _ = std::process::Command::new("xdg-open").arg(url.as_str()).spawn();
 }
 
+/// The script the app runs on every page before the page's own: the title-bar mark, and the app's version when it
+/// is a plain semver string (anything else is left out rather than quoted).
+fn init_script(version: &str) -> String {
+    let mut script = "window.__I_INC_TITLEBAR__ = true;".to_string();
+    if !version.is_empty() && version.chars().all(|c| c.is_ascii_alphanumeric() || ".-+".contains(c)) {
+        script.push_str(&format!(" window.__I_INC_APP_VERSION__ = \"{version}\";"));
+    }
+    script
+}
+
 fn main() {
+    let context = tauri::generate_context!();
+    // The page learns the app's version as it starts (apps/web/src/desktop.ts, `MIN_APP_VERSION`), so a page
+    // newer than the app can say the app is out of date. A semver string, checked before it is quoted.
+    let script = init_script(&context.package_info().version.to_string());
     tauri::Builder::default()
         // The window has no system title bar (tauri.conf.json): the web app's header is the title bar. This
         // mark tells the daemon's pages so, on every page load; a browser never sets it, so there the pages keep
         // their plain header (apps/web/src/desktop.ts).
         .plugin(
             tauri::plugin::Builder::<tauri::Wry, ()>::new("titlebar")
-                .js_init_script("window.__I_INC_TITLEBAR__ = true;".to_string())
+                .js_init_script(script)
                 .build(),
         )
         .invoke_handler(tauri::generate_handler![default_daemon, daemon_override, reset_zoom, use_daemon])
@@ -175,7 +199,7 @@ fn main() {
         })
         .setup(|app| {
             app.manage(Zoom(Mutex::new(saved_zoom(app.handle()))));
-            app.manage(Daemon(Mutex::new(None)));
+            app.manage(Daemon(Mutex::new(DaemonState::default())));
             let handle = app.handle().clone();
             let config = app.config().app.windows.first().expect("window config").clone();
             WebviewWindowBuilder::from_config(app.handle(), &config)?
@@ -184,17 +208,40 @@ fn main() {
                     NewWindowResponse::Deny
                 })
                 .on_navigation(move |url| {
-                    let daemon = handle.state::<Daemon>().0.lock().unwrap().clone();
-                    let ok = may_show(url, daemon.as_deref());
+                    let state = handle.state::<Daemon>();
+                    let mut d = state.0.lock().unwrap();
+                    let mut ok = may_show(url, d.origin.as_deref());
                     if !ok {
-                        open_in_browser(url);
+                        if let Some(next) = d.origin.as_deref().and_then(|o| upgraded(url, o)) {
+                            d.origin = Some(next);
+                            ok = true;
+                        }
                     }
-                    ok
+                    if ok {
+                        if matches!(url.scheme(), "http" | "https") && url.host_str() != Some("tauri.localhost") {
+                            d.leaving = false;
+                        }
+                        return true;
+                    }
+                    let stranded = std::mem::take(&mut d.leaving);
+                    drop(d);
+                    open_in_browser(url);
+                    if stranded {
+                        // The chosen address sent the window elsewhere: back to the launcher, which says so.
+                        let h = handle.clone();
+                        let _ = handle.run_on_main_thread(move || {
+                            if let Some(w) = h.get_webview_window("main") {
+                                let mut back = launcher_url(true);
+                                back.query_pairs_mut().append_pair("why", "elsewhere");
+                                let _ = w.navigate(back);
+                            }
+                        });
+                    }
+                    false
                 })
                 .on_page_load(|window, payload| {
                     if payload.event() == PageLoadEvent::Finished {
                         let zoom = *window.app_handle().state::<Zoom>().0.lock().unwrap();
-                        push_version(&window);
                         push_fullscreen(&window);
                         apply_zoom(&window, zoom, false);
                     }
@@ -262,13 +309,23 @@ fn main() {
                 _ => {}
             }
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running i.inc");
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{may_show, step_zoom};
+    use super::{init_script, may_show, step_zoom, upgraded};
+
+    #[test]
+    fn the_init_script_sets_the_mark_and_a_clean_version_only() {
+        assert_eq!(
+            init_script("0.2.202611150130"),
+            "window.__I_INC_TITLEBAR__ = true; window.__I_INC_APP_VERSION__ = \"0.2.202611150130\";"
+        );
+        assert_eq!(init_script("0.2.0\"; alert(1); \""), "window.__I_INC_TITLEBAR__ = true;");
+        assert_eq!(init_script(""), "window.__I_INC_TITLEBAR__ = true;");
+    }
     use tauri::Url;
 
     #[test]
@@ -283,6 +340,15 @@ mod tests {
         assert!(!ok("https://github.com/firstprateek/i-inc"));
         assert!(!ok("http://127.0.0.1:5173/"));
         assert!(!ok("file:///etc/passwd"));
+        // A daemon reached over plain http that redirects to https on the same host is the same daemon…
+        let http = "http://iinc.example.ts.net";
+        assert_eq!(
+            upgraded(&Url::parse("https://iinc.example.ts.net/").unwrap(), http).as_deref(),
+            Some("https://iinc.example.ts.net")
+        );
+        // …but another host, or a move from https down to http, is not.
+        assert!(upgraded(&Url::parse("https://evil.example.ts.net/").unwrap(), http).is_none());
+        assert!(upgraded(&Url::parse("http://iinc.example.ts.net/").unwrap(), "https://iinc.example.ts.net").is_none());
         // Before the launcher has chosen, no web page at all.
         assert!(!may_show(&Url::parse("https://iinc.example.ts.net/").unwrap(), None));
     }
