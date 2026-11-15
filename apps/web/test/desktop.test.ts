@@ -4,7 +4,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IncApp } from "../src/components/app.ts";
 import {
-  APP_VERSION_WAIT_MS,
   appZoom,
   inDesktopApp,
   inFullScreen,
@@ -223,23 +222,21 @@ describe("wiring the document in the app", () => {
     expect(appZoom()).toBe(1.2);
   });
 
-  it("says the app is older than the pages when it does not tell its version", () => {
+  it("says at once that the app is older than the pages when it sets no version", () => {
     wireDesktop();
-    vi.advanceTimersByTime(APP_VERSION_WAIT_MS + 10);
     expect(document.querySelector("inc-app-outdated")).not.toBeNull();
   });
 
-  it("says nothing about an app that is new enough", () => {
-    wireDesktop();
+  it("says nothing about an app that is new enough, however slow the load", () => {
     window.__I_INC_APP_VERSION__ = "0.2.0";
-    vi.advanceTimersByTime(APP_VERSION_WAIT_MS + 10);
+    wireDesktop();
+    vi.advanceTimersByTime(60_000);
     expect(document.querySelector("inc-app-outdated")).toBeNull();
   });
 
   it("says it about an app below the pages' minimum", () => {
-    wireDesktop();
     window.__I_INC_APP_VERSION__ = "0.1.0";
-    vi.advanceTimersByTime(APP_VERSION_WAIT_MS + 10);
+    wireDesktop();
     expect(document.querySelector("inc-app-outdated")).not.toBeNull();
   });
 });

@@ -2,6 +2,7 @@
 // environment) is the only one tried when there is one. Otherwise it tries, in order and until one answers, the
 // one kept in localStorage, the daemon on this machine (the Mac mini, which cannot reach its own Tailscale
 // Service address), and the address this build was made for (I_INC_URL at build time); if none answers, it asks.
+// Only an address typed into the form is saved.
 // Before leaving it tells the app which daemon it chose: the window shows only that daemon's pages.
 const KEY = "i-inc-daemon";
 const LOCAL = "http://127.0.0.1:7420";
@@ -99,8 +100,13 @@ async function start() {
   });
   const remembered = saved();
   input.value = remembered ?? fallback ?? LOCAL;
-  if (new URLSearchParams(location.search).has("change")) {
-    ask();
+  const params = new URLSearchParams(location.search);
+  if (params.has("change")) {
+    ask(
+      params.get("why") === "elsewhere"
+        ? "That address sent the window to another site, which opened in your browser. Check the address."
+        : undefined,
+    );
     return;
   }
   if (given) {
@@ -125,7 +131,9 @@ async function start() {
     tried.push(base);
     input.value = base;
     if (await reachable(base, ms)) {
-      await go(base, true);
+      // Only an address the owner typed is saved: a fallback that happens to answer (a dev daemon on a laptop
+      // while the tailnet is down) must not replace it.
+      await go(base, false);
       return;
     }
   }

@@ -7,9 +7,9 @@
 // event's composed path, so the mark works inside the shell's shadow root). On a Mac the header leaves room for
 // the three window buttons, except in full screen, where macOS hides them.
 //
-// After each page load the app also tells the page its version (`__I_INC_APP_VERSION__`), whether the window is
-// in full screen (`__I_INC_FULLSCREEN__`, again on every resize) and the page zoom (`__I_INC_ZOOM__`, with an
-// `i-inc:zoom` event).
+// The app also sets its version (`__I_INC_APP_VERSION__`) with the mark, and after each page load tells the
+// page whether the window is in full screen (`__I_INC_FULLSCREEN__`, again on every resize) and the page zoom
+// (`__I_INC_ZOOM__`, with an `i-inc:zoom` event).
 
 import { showOutdatedApp } from "./app-outdated.ts";
 import { showZoomPopup } from "./zoom-popup.ts";
@@ -21,7 +21,7 @@ declare global {
     __I_INC_ZOOM__?: number;
     /** Whether the app's window is in full screen, announced with an `i-inc:fullscreen` event. */
     __I_INC_FULLSCREEN__?: boolean;
-    /** The app build's version (semver), set after each page load. Builds before 0.2.0 do not set it. */
+    /** The app build's version (semver), set before the page's own scripts run. Builds before 0.2.0 do not. */
     __I_INC_APP_VERSION__?: string;
   }
 }
@@ -100,9 +100,6 @@ export function inFullScreen(): boolean {
   return document.documentElement.classList.contains("fullscreen");
 }
 
-/** How long after a load an app build that says nothing about itself counts as older than these pages. */
-export const APP_VERSION_WAIT_MS = 4000;
-
 let wired = false;
 
 /**
@@ -137,10 +134,12 @@ export function wireDesktop(): void {
     // ⌘+ / ⌘− / ⌘0 and Reset show the level; a page load reapplying it does not.
     if ((e as CustomEvent<{ show?: boolean }>).detail?.show) showZoomPopup(appZoom());
   });
-  setTimeout(() => {
-    const version = window.__I_INC_APP_VERSION__;
-    if (!version || !versionAtLeast(version, MIN_APP_VERSION)) showOutdatedApp();
-  }, APP_VERSION_WAIT_MS);
+  // The version is set with the mark, before this runs: a build that does not set it is older than 0.2.0.
+  const version = window.__I_INC_APP_VERSION__;
+  if (!version || !versionAtLeast(version, MIN_APP_VERSION)) {
+    if (document.body) showOutdatedApp();
+    else addEventListener("DOMContentLoaded", showOutdatedApp, { once: true });
+  }
 }
 
 /** For tests: forget that the document was wired. */
