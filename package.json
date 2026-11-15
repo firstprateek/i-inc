@@ -22,5 +22,6 @@
     "playwright": "1.63.0",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0"
-  }
+  },
+  "license": "AGPL-3.0-only"
 }

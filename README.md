@@ -26,3 +26,7 @@ talk to each other, and MCP tools and skills are future work.
 The spec ([docs/spec.md](docs/spec.md)) is the design and the source of truth for behavior, words and
 safety. [docs/architecture.md](docs/architecture.md) is what is built, and wins where it differs.
 [docs/audit/T63-report.md](docs/audit/T63-report.md) is the last full audit.
+
+## License
+
+[GNU AGPL v3.0](LICENSE) © 2026 Prateek Joshi. You may use, modify and share this software, but if you run a modified version as a network service you must make its source available to its users.
