@@ -5,6 +5,13 @@ import { createApi } from "../src/api.ts";
 import { RECOVERED_BODY } from "../src/proposals.ts";
 import { testApp } from "./setup.ts";
 
+/** The test app is careful (setup.ts); these cases are lenient, the company's default. */
+async function lenientApp() {
+  const app = await testApp();
+  app.deps.registry.setSettings({ approvals: "lenient" });
+  return app;
+}
+
 const followUp = (title: string, extra: Partial<FollowUp> = {}): FollowUp => ({
   title,
   doneWhen: [`${title} works`],
@@ -144,6 +151,46 @@ async function waiting(app: App, title = "Add retry to the sync") {
   propose(app, t.id, followUp(title));
   return (await open(app))[0].id as number;
 }
+
+describe("lenient approvals: over-budget follow-ups are filed on hold", () => {
+  it("files the rest on hold, as the proposer's, with nothing for the owner to answer", async () => {
+    const app = await lenientApp();
+    limit(app, "Duet", 1);
+    const t = source(app);
+    propose(app, t.id, followUp("one"), followUp("two"));
+    const filed = app.deps.tickets.all().filter((r) => r.ticket.createdBy);
+    expect(filed.map((r) => [r.ticket.title, r.hold, r.ticket.assignee])).toEqual([
+      ["one", false, "ada"],
+      ["two", true, "ada"],
+    ]);
+    expect(await open(app)).toEqual([]);
+    expect((await app.call("GET", "/api/needs-you")).body.count).toBe(0);
+  });
+
+  it("doesn't file the same follow-up on hold twice, and a budget of 0 still asks", async () => {
+    const app = await lenientApp();
+    limit(app, "Duet", 1);
+    propose(app, source(app).id, followUp("one"), followUp("two"));
+    propose(app, source(app).id, followUp("“Two”"));
+    expect(
+      app.deps.tickets
+        .all()
+        .filter((r) => r.hold)
+        .map((r) => r.ticket.title),
+    ).toEqual(["two"]);
+    limit(app, "Duet", 0);
+    propose(app, source(app).id, followUp("three"));
+    expect((await open(app)).map((p: { title: string }) => p.title)).toEqual(["three"]);
+  });
+
+  it("an employee set to careful still has its over-budget follow-ups wait as proposals", async () => {
+    const app = await lenientApp();
+    limit(app, "Duet", 0);
+    app.deps.registry.setEmployeeApprovals("ada", "careful");
+    propose(app, source(app).id, followUp("one"));
+    expect((await open(app)).map((p: { title: string }) => p.title)).toEqual(["one"]);
+  });
+});
 
 describe("GET and POST /api/proposals", () => {
   it("lists by status and rejects an unknown status", async () => {

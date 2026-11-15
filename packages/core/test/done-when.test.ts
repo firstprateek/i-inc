@@ -135,8 +135,9 @@ describe("an orientation's done-when is checked", () => {
     expect(r.ask.kind).toBe("stuck");
     const reason = r.ask.kind === "stuck" ? r.ask.reason : "";
     expect(reason).toContain(`${homePages.help}: you did not write it in this ticket`);
-    expect(reason).toContain(`${homePages.errands}: you did not write it in this ticket`);
     expect(reason).toContain("after 2 sessions");
+    // One short line on the card: the rest of the list is cut (it is on the ticket's done-when record).
+    expect(reason.length).toBeLessThanOrEqual(160);
     expect(p.agent.callsFor("pip", "orient")).toHaveLength(2);
     expect(fold(await p.store.read("o1")).status).toBe("needs-you");
     // "Keep going" gives it two more sessions, and the pages let it close

@@ -530,3 +530,37 @@ describe("a hang does not hold the daemon busy", () => {
     expect(state.failure?.reason).toContain("said nothing");
   });
 });
+
+describe("approvals (decided 2026-11-15)", () => {
+  it("is lenient by default, with a per-employee level that can follow the company's again", async () => {
+    const app = await testApp();
+    app.deps.registry.setSettings({ approvals: undefined }); // the test app is careful (setup.ts); a company starts with none
+    const got = (await app.call("GET", "/api/approvals")).body;
+    expect(got.company).toBe("lenient");
+    expect(got.alwaysAsks.length).toBeGreaterThan(0);
+    expect(got.employees.find((e: { id: string }) => e.id === "ada")).toMatchObject({ approvals: null });
+    expect(app.deps.registry.approvals("ada")).toBe("lenient");
+
+    const set = await app.call("PUT", "/api/approvals", {
+      company: "careful",
+      employees: { ada: "lenient" },
+    });
+    expect(set.status).toBe(200);
+    expect(set.body.company).toBe("careful");
+    expect(app.deps.registry.approvals("ada")).toBe("lenient");
+    expect(app.deps.registry.approvals("grace")).toBe("careful");
+
+    await app.call("PUT", "/api/approvals", { employees: { ada: null } });
+    expect(app.deps.registry.approvals("ada")).toBe("careful");
+    expect(app.deps.registry.employee("ada").approvals).toBeUndefined();
+  });
+
+  it("refuses a bad level, an unknown employee or an unknown setting", async () => {
+    const app = await testApp();
+    expect((await app.call("PUT", "/api/approvals", { company: "yolo" })).status).toBe(400);
+    expect((await app.call("PUT", "/api/approvals", { employees: { nobody: "lenient" } })).status).toBe(400);
+    expect((await app.call("PUT", "/api/approvals", { employees: { ada: "never" } })).status).toBe(400);
+    expect((await app.call("PUT", "/api/approvals", { mode: "lenient" })).status).toBe(400);
+    expect(app.deps.registry.settings().approvals).toBe("careful"); // as the test app set it, unchanged
+  });
+});

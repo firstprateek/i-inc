@@ -35,8 +35,12 @@ export function protectedOk(
   act: (fn: () => Promise<unknown>) => void,
   busy = false,
 ) {
-  return html`<div class="q">“${t.title}” changes protected paths: ${ask.paths.join(", ")}. It reaches main once you OK it.</div>
-    ${protectedDiff(ask)}
+  // One line to answer; the files and the diff are there to check, folded away (decided 2026-11-15).
+  const n = ask.paths.length;
+  // A workflow change needs the owner's push first (tools/host/push-for-owner.sh), so the line says so.
+  const workflow = ask.paths.some((p) => p.startsWith(".github/workflows"));
+  return html`<div class="q">Ship “${t.title}”? It changes protected code (${n} ${n === 1 ? "file" : "files"}${workflow ? ", including a GitHub workflow" : ""}).</div>
+    <details><summary>See the change</summary><p class="muted">${ask.paths.join(", ")}</p>${protectedDiff(ask)}</details>
     <div class="actions">
       <button type="button" class="btn" ?disabled=${busy} @click=${() => act(() => api.answer(t.id, "approve"))}>OK it</button>
       <button type="button" class="btn ghost" ?disabled=${busy} @click=${() => act(() => api.answer(t.id, "reject"))}>Decline</button>

@@ -53,7 +53,13 @@ export function readProof(value: unknown): ProofItem[] | null {
 }
 
 export type DoneWhenVerdict = "met" | "not-met" | "cant-tell";
-export type DoneWhenItem = { doneWhen: string; verdict: DoneWhenVerdict; evidence: string };
+export type DoneWhenItem = {
+  doneWhen: string;
+  verdict: DoneWhenVerdict;
+  evidence: string;
+  /** The checker gave no verdict of its own: no answer, an unreadable reply, or "met" with no evidence. */
+  unanswered?: true;
+};
 
 const verdictOf = (v: unknown): DoneWhenVerdict => {
   const t =
@@ -86,12 +92,23 @@ export function readDoneWhenCheck(value: unknown, expected: string[]): DoneWhenI
   return expected.map((doneWhen) => {
     const at = replied.findIndex((r, i) => !used.has(i) && norm(text(r.doneWhen)) === norm(doneWhen));
     const r = replied[at];
-    if (!r) return { doneWhen, verdict: "cant-tell", evidence: "the checker did not answer for this item" };
+    if (!r)
+      return {
+        doneWhen,
+        verdict: "cant-tell",
+        evidence: "the checker did not answer for this item",
+        unanswered: true,
+      };
     used.add(at);
     const evidence = oneLine(r.evidence);
     const verdict = verdictOf(r.verdict);
     if (verdict === "met" && !evidence) {
-      return { doneWhen, verdict: "cant-tell", evidence: "the checker said met but gave no evidence" };
+      return {
+        doneWhen,
+        verdict: "cant-tell",
+        evidence: "the checker said met but gave no evidence",
+        unanswered: true,
+      };
     }
     return { doneWhen, verdict, evidence };
   });

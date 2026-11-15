@@ -334,6 +334,10 @@ interface with a scripted fake in tests, like the ACP agent.
 
 ### Lenient permissions, hard walls
 
+> Since 2026-11-15, how often the pipeline itself stops for the owner is a setting too: **Company → Settings →
+> Approvals**, company-wide with a per-employee override, lenient by default, and every request is one short
+> line. What lenient skips and what always asks are in [architecture.md](architecture.md), "Approvals".
+
 > Since 2026-10-17, "the machine" is a **team's sandbox**, shared by the team's employees and signed
 > in once to each subscription ([architecture.md](architecture.md)). The walls are unchanged.
 

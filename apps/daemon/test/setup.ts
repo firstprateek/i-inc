@@ -30,6 +30,8 @@ export async function testApp(
   });
   if (app.deps.registry.employees().length === 0) {
     seedDemo(app.deps.registry);
+    // Most cases were written for careful approvals (every gate asks); lenient ones set it themselves.
+    app.deps.registry.setSettings({ approvals: "careful" });
     app.daemon.ensureKnowledge();
   }
   const call = async (method: string, path: string, body?: unknown) => {
