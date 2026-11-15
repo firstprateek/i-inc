@@ -168,6 +168,8 @@ export class IncApp extends LitElement {
     this.phoneQuery.addEventListener?.("change", this.onPhoneChange);
     document.addEventListener("visibilitychange", this.onVisible);
     document.addEventListener("click", this.onDocumentClick);
+    // A press on the title bar's empty part starts a window drag, which swallows the click: close on the press.
+    document.addEventListener("pointerdown", this.onDocumentClick);
     document.addEventListener("keydown", this.onDocumentKeydown);
     this.stopLive = startLiveUpdates();
     this.stopUpdates = watchForUpdates();
@@ -268,6 +270,7 @@ export class IncApp extends LitElement {
     this.phoneQuery?.removeEventListener?.("change", this.onPhoneChange);
     document.removeEventListener("visibilitychange", this.onVisible);
     document.removeEventListener("click", this.onDocumentClick);
+    document.removeEventListener("pointerdown", this.onDocumentClick);
     document.removeEventListener("keydown", this.onDocumentKeydown);
     this.stopLive?.();
     this.stopLive = null;
@@ -450,7 +453,7 @@ export class IncApp extends LitElement {
     );
   }
 
-  private onDocumentClick = (e: MouseEvent) => {
+  private onDocumentClick = (e: Event) => {
     if (!this.accountOpen) return;
     const wrap = this.renderRoot?.querySelector?.(".account-wrap");
     if (wrap && !e.composedPath().includes(wrap)) this.accountOpen = false;
@@ -946,7 +949,8 @@ export class IncApp extends LitElement {
             aria-expanded=${this.accountOpen ? "true" : "false"} @click=${this.toggleAccount}>${accountIcon}</button>
           ${
             this.accountOpen
-              ? html`<div class="account-menu" role="menu" aria-label="Account" data-tauri-drag-region=${this.titlebar ? "false" : nothing} @keydown=${this.onMenuKey} @click=${(e: Event) => e.stopPropagation()}>
+              ? html`<div class="account-menu" role="menu" aria-label="Account" data-tauri-drag-region=${this.titlebar ? "false" : nothing}
+                  style=${this.titlebar && appZoom() !== 1 ? `zoom: ${appZoom()}` : nothing} @keydown=${this.onMenuKey} @click=${(e: Event) => e.stopPropagation()}>
                   <button type="button" role="menuitem" @click=${() => this.toggleTheme()}>${this.isDark() ? "Switch to light theme" : "Switch to dark theme"}</button>
                   ${
                     isDismissed()
