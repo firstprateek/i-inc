@@ -2193,7 +2193,6 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       },
     ],
 
-    // Orientation again (T71): a fresh orientation ticket for an employee whose first one didn't leave what it should.
     [
       "GET",
       "/api/employees/:id/queue",
@@ -2225,7 +2224,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           expected: string[];
         };
         const accepted = await daemon.editQueue(() =>
-          d.tickets.moveQueued(p.id ?? "", ticketId, before, expected),
+          d.tickets.moveQueued(p.id ?? "", ticketId, before, expected, (id) => daemon.isRunning(id)),
         );
         if (!accepted) return json({ error: "The queue changed. Refresh it and try again." }, 409);
         await daemon.tick();
@@ -2233,6 +2232,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       },
     ],
 
+    // Orientation again (T71): a fresh ticket when the first left nothing useful.
     [
       "POST",
       "/api/employees/:id/orientation",
@@ -2992,12 +2992,14 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
 
   function queueView(employeeId: Id) {
     return {
-      tickets: d.tickets.queue(employeeId).map((r) => ({
-        id: r.ticket.id,
-        title: peopleTitle(r.ticket.title, agentsTitle(r.ticket)),
-        project: r.ticket.project,
-        held: r.hold,
-      })),
+      tickets: d.tickets
+        .queue(employeeId, (id) => daemon.isRunning(id))
+        .map((r) => ({
+          id: r.ticket.id,
+          title: peopleTitle(r.ticket.title, agentsTitle(r.ticket)),
+          project: r.ticket.project,
+          held: r.hold,
+        })),
     };
   }
 

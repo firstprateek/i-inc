@@ -229,25 +229,31 @@ export class Tickets {
   }
 
   /** Unstarted assignments, including holds in their saved positions. */
-  queue(employeeId: Id): TicketRecord[] {
+  queue(employeeId: Id, claimed: (id: Id) => boolean = () => false): TicketRecord[] {
     const started = new Set(
       this.db
         .all<{ ticket_id: string }>("SELECT DISTINCT ticket_id FROM events WHERE type = 'ticket-created'")
         .map((r) => r.ticket_id),
     );
     return this.all()
-      .filter((r) => r.ticket.assignee === employeeId && !started.has(r.ticket.id))
+      .filter((r) => r.ticket.assignee === employeeId && !started.has(r.ticket.id) && !claimed(r.ticket.id))
       .sort(
         (a, b) => (a.queueSequence ?? Number.MAX_SAFE_INTEGER) - (b.queueSequence ?? Number.MAX_SAFE_INTEGER),
       );
   }
 
   /** Move within the queue atomically; reject an out-of-date view rather than undo another edit. */
-  moveQueued(employeeId: Id, id: Id, before: Id | null, expected: Id[]): boolean {
+  moveQueued(
+    employeeId: Id,
+    id: Id,
+    before: Id | null,
+    expected: Id[],
+    claimed: (id: Id) => boolean = () => false,
+  ): boolean {
     const changed: Id[] = [];
     let accepted = false;
     this.db.transaction(() => {
-      const queue = this.queue(employeeId);
+      const queue = this.queue(employeeId, claimed);
       if (queue.length !== expected.length || queue.some((r, i) => r.ticket.id !== expected[i])) return;
       if (
         !queue.some((r) => r.ticket.id === id) ||

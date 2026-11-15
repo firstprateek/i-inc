@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { refunds, testApp } from "./setup.ts";
 
 describe("employee queue", () => {
@@ -111,6 +111,39 @@ describe("employee queue", () => {
       expect(app.deps.tickets.queue("ada").map((r) => r.ticket.id)).toEqual(["3", "1"]);
       expect((await app.call("GET", "/api/employees/missing/queue")).status).toBe(404);
       expect((await app.call("PUT", "/api/employees/missing/queue", {})).status).toBe(404);
+    } finally {
+      app.db.close();
+    }
+  });
+  it("preserves a scheduler claim before its first event is written", async () => {
+    const app = await testApp();
+    try {
+      for (let i = 0; i < 3; i++)
+        app.deps.tickets.create({ ...refunds, type: "fix", effort: "medium", hold: true }, 0);
+      const claim = vi.spyOn(app.daemon, "isRunning").mockImplementation((id) => id === "1");
+      expect(
+        (await app.call("GET", "/api/employees/ada/queue")).body.tickets.map((t: { id: string }) => t.id),
+      ).toEqual(["2", "3"]);
+      expect(
+        (
+          await app.call("PUT", "/api/employees/ada/queue", {
+            ticketId: "1",
+            before: null,
+            expected: ["1", "2", "3"],
+          })
+        ).status,
+      ).toBe(409);
+      expect(
+        (
+          await app.call("PUT", "/api/employees/ada/queue", {
+            ticketId: "3",
+            before: "2",
+            expected: ["2", "3"],
+          })
+        ).status,
+      ).toBe(200);
+      expect(app.deps.tickets.get("1")?.queueSequence).toBe(1);
+      claim.mockRestore();
     } finally {
       app.db.close();
     }
