@@ -428,6 +428,11 @@ describe("the shell", () => {
           headers: { "content-type": "application/json" },
         });
       }
+      if (url === "/api/auth") {
+        return new Response(JSON.stringify({ initialized: true }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
       if (url === "/api/office") {
         return new Response(JSON.stringify({ employees: [], accounts: [] }), {
           headers: { "content-type": "application/json" },
@@ -454,13 +459,20 @@ describe("the shell", () => {
     expect(signOutBtn).toBeTruthy();
 
     signOutBtn?.click();
-    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 20));
 
     expect(calls).toContainEqual({
       method: "POST",
       url: "/api/logout",
       body: {},
     });
+
+    const login = document.querySelector("inc-login");
+    expect(login).not.toBeNull();
+    expect(document.title).toBe("Sign in · i.inc");
+    const headingOrField = login?.shadowRoot?.querySelector("h1, input");
+    expect(headingOrField).not.toBeNull();
+    expect(login?.shadowRoot?.activeElement).toBe(headingOrField);
   });
 });
 

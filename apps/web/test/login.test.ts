@@ -85,4 +85,14 @@ describe("first run", () => {
     expect(root.querySelector('input[name="setupCode"]')).toBeNull();
     expect(document.title).toBe("Sign in · i.inc");
   });
+
+  it("sets its own document title and moves focus to its heading or first field", async () => {
+    document.title = "Board · Work · i.inc";
+    serve({ initialized: true });
+    const { root } = await mount();
+    expect(document.title).toBe("Sign in · i.inc");
+    const headingOrField = root.querySelector("h1, input");
+    expect(headingOrField).not.toBeNull();
+    expect(root.activeElement).toBe(headingOrField);
+  });
 });
