@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { render } from "lit";
 import { describe, expect, it } from "vitest";
 import type { IncBoard } from "../src/components/board.ts";
 import "../src/components/board.ts";
@@ -48,6 +49,29 @@ function parseTokens(cssBlock: string): Record<string, string> {
   return tokens;
 }
 
+// Match individual declaration blocks: splitting at data-theme="dark" includes the
+// earlier automatic-dark block in the light section and silently overwrites it.
+const css = readFileSync(resolve(__dirname, "../src/tokens.css"), "utf-8");
+function tokenBlock(selector: string): Record<string, string> {
+  const start = css.indexOf(`${selector} {`);
+  expect(start, selector).toBeGreaterThanOrEqual(0);
+  const end = css.indexOf("}", start);
+  expect(end).toBeGreaterThan(start);
+  return parseTokens(css.slice(start + selector.length + 2, end));
+}
+const lightTokens = tokenBlock(":root");
+const darkTokens = tokenBlock(':root[data-theme="dark"]');
+const mediaTokens = tokenBlock(':root:not([data-theme="light"])');
+
+function tokenColor(tokens: Record<string, string>, key: string): string {
+  const value = tokens[key];
+  expect(value, key).toBeDefined();
+  const alias = value?.match(/^var\((--[\w-]+)\)$/);
+  const color = alias ? tokens[alias[1] ?? ""] : value;
+  expect(color, key).toMatch(/^#[0-9a-f]{6}$/i);
+  return color ?? "";
+}
+
 describe("Rich visual identity and color system (T38)", () => {
   it("computes deterministic project hue indices across strings, emojis, CJK, and empty names", () => {
     expect(projectIndex("")).toBe(0);
@@ -72,23 +96,26 @@ describe("Rich visual identity and color system (T38)", () => {
     const listA = ["alpha", "beta", "gamma", "delta", "i-inc", "duet"];
     const listB = ["duet", "delta", "alpha", "i-inc", "gamma", "beta"];
 
-    const badgesA = listA.map((p) => ({ p, idx: projectIndex(p), badge: projectBadge(p) }));
-    const badgesB = listB.map((p) => ({ p, idx: projectIndex(p), badge: projectBadge(p) }));
-
-    for (const itemA of badgesA) {
-      const itemB = badgesB.find((b) => b.p === itemA.p);
-      expect(itemB).toBeDefined();
-      expect(itemA.idx).toBe(itemB?.idx);
-      expect(itemA.badge.values).toEqual(itemB?.badge.values);
+    const container = document.createElement("div");
+    const expected = new Map([
+      ["alpha", 2],
+      ["beta", 4],
+      ["gamma", 5],
+      ["delta", 0],
+      ["i-inc", 2],
+      ["duet", 2],
+    ]);
+    for (const names of [listA, listB]) {
+      render(names.map(projectBadge), container);
+      const badges = [...container.querySelectorAll(".proj-badge")];
+      expect(badges.map((badge) => badge.querySelector(".proj-name")?.textContent)).toEqual(names);
+      for (const [position, badge] of badges.entries()) {
+        expect(badge.className).toBe(`proj-badge proj-${expected.get(names[position] ?? "")}`);
+      }
     }
   });
 
   it("provides 7 distinct avatar tints with high contrast (≥7:1) in light and dark mode", () => {
-    const cssPath = resolve(__dirname, "../src/tokens.css");
-    const css = readFileSync(cssPath, "utf-8");
-    const [_lightSection = "", darkSection = ""] = css.split(/data-theme="dark"/);
-    const darkTokens = parseTokens(darkSection);
-
     expect(tints).toHaveLength(7);
     for (const [bg, fg] of tints) {
       const ratio = contrastRatio(bg, fg);
@@ -107,33 +134,14 @@ describe("Rich visual identity and color system (T38)", () => {
   });
 
   it("synchronizes prefers-color-scheme: dark tokens with [data-theme='dark'] tokens", () => {
-    const cssPath = resolve(__dirname, "../src/tokens.css");
-    const css = readFileSync(cssPath, "utf-8");
-
-    const mediaMatch = css.match(
-      /@media\s*\(prefers-color-scheme:\s*dark\)\s*\{[\s\S]*?:root:not\(\[data-theme="light"\]\)\s*\{([\s\S]*?)\}\s*\}/,
+    expect(css).toMatch(
+      /@media\s*\(prefers-color-scheme:\s*dark\)\s*\{\s*:root:not\(\[data-theme="light"\]\)\s*\{/,
     );
-    const dataThemeMatch = css.match(/:root\[data-theme="dark"\]\s*\{([\s\S]*?)\}/);
-
-    expect(mediaMatch).toBeTruthy();
-    expect(dataThemeMatch).toBeTruthy();
-
-    const mediaTokens = parseTokens(mediaMatch?.[1] ?? "");
-    const dataThemeTokens = parseTokens(dataThemeMatch?.[1] ?? "");
-
-    // Every token defined in [data-theme="dark"] must be present and identical in prefers-color-scheme
-    for (const [key, val] of Object.entries(dataThemeTokens)) {
-      expect(mediaTokens[key]).toBe(val);
-    }
+    expect(Object.keys(darkTokens).length).toBeGreaterThan(0);
+    expect(mediaTokens).toEqual(darkTokens);
   });
 
   it("tokens.css defines status chips, dark mode overrides, and semantic bars with adequate contrast", () => {
-    const cssPath = resolve(__dirname, "../src/tokens.css");
-    const css = readFileSync(cssPath, "utf-8");
-    const [lightSection = "", darkSection = ""] = css.split(/data-theme="dark"/);
-    const lightTokens = parseTokens(lightSection);
-    const darkTokens = parseTokens(darkSection);
-
     // Chip foreground vs background contrast ≥ 4.5:1
     expect(contrastRatio(lightTokens["--working-bg"], lightTokens["--working-fg"])).toBeGreaterThanOrEqual(
       4.5,
@@ -164,12 +172,6 @@ describe("Rich visual identity and color system (T38)", () => {
   });
 
   it("verifies project badge token contrast in light and dark mode exceeds 7:1", () => {
-    const cssPath = resolve(__dirname, "../src/tokens.css");
-    const css = readFileSync(cssPath, "utf-8");
-    const [lightSection = "", darkSection = ""] = css.split(/data-theme="dark"/);
-    const lightTokens = parseTokens(lightSection);
-    const darkTokens = parseTokens(darkSection);
-
     for (let i = 0; i < 6; i++) {
       // Light
       const lBg = lightTokens[`--proj-${i}-bg`];
@@ -202,23 +204,25 @@ describe("Rich visual identity and color system (T38)", () => {
   });
 
   it("verifies bar pairs contrast against track/line/surface exceeds 3:1 in both light and dark mode", () => {
-    const cssPath = resolve(__dirname, "../src/tokens.css");
-    const css = readFileSync(cssPath, "utf-8");
-    const [lightSection = "", darkSection = ""] = css.split(/data-theme="dark"/);
-    const lightTokens = parseTokens(lightSection);
-    const darkTokens = parseTokens(darkSection);
+    for (const tokens of [lightTokens, darkTokens, mediaTokens]) {
+      for (const bar of ["--bar-ok", "--bar-warn", "--bar-crit", "--bar-spend"]) {
+        for (const background of ["--bar-track", "--surface"]) {
+          expect(
+            contrastRatio(tokenColor(tokens, bar), tokenColor(tokens, background)),
+            `${bar} on ${background}`,
+          ).toBeGreaterThanOrEqual(3);
+        }
+      }
+    }
+  });
 
-    // Light mode bar contrast
-    expect(contrastRatio(lightTokens["--bar-ok"], lightTokens["--line"])).toBeGreaterThanOrEqual(3.0);
-    expect(contrastRatio(lightTokens["--bar-warn"], lightTokens["--line"])).toBeGreaterThanOrEqual(3.0);
-    expect(contrastRatio(lightTokens["--bar-crit"], lightTokens["--line"])).toBeGreaterThanOrEqual(3.0);
-    expect(contrastRatio(lightTokens["--bar-spend"], lightTokens["--surface"])).toBeGreaterThanOrEqual(3.0);
-
-    // Dark mode bar contrast
-    expect(contrastRatio(darkTokens["--bar-ok"], darkTokens["--bar-track"])).toBeGreaterThanOrEqual(3.0);
-    expect(contrastRatio(darkTokens["--bar-warn"], darkTokens["--bar-track"])).toBeGreaterThanOrEqual(3.0);
-    expect(contrastRatio(darkTokens["--bar-crit"], darkTokens["--bar-track"])).toBeGreaterThanOrEqual(3.0);
-    expect(contrastRatio(darkTokens["--bar-spend"], darkTokens["--surface"])).toBeGreaterThanOrEqual(3.0);
+  it("keeps needs-you edges at least 3:1 against their light backgrounds", () => {
+    for (const background of ["--needs-bg", "--needs-surface", "--surface", "--ground"]) {
+      expect(
+        contrastRatio(tokenColor(lightTokens, "--needs-edge"), tokenColor(lightTokens, background)),
+        background,
+      ).toBeGreaterThanOrEqual(3);
+    }
   });
 
   it("board renders status column indicator dots and active card accent classes (including paused)", async () => {
