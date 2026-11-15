@@ -311,6 +311,21 @@ describe("inspect and add a repo", () => {
     });
   });
 
+  it.each([
+    ["npm", "package-lock.json", ["npm ci", "npm run test"]],
+    ["yarn", "yarn.lock", ["yarn install --frozen-lockfile", "yarn run test"]],
+    ["bun", "bun.lock", ["bun install --frozen-lockfile", "bun test"]],
+    ["pnpm", "pnpm-lock.yaml", ["pnpm install --frozen-lockfile", "pnpm test"]],
+  ])("keeps the detected %s recipe and trunk when the import omits them", async (_, lock, checks) => {
+    const { call, app } = await setup({ repos: [{
+      owner: "acme", name: "trunk-app", defaultBranch: "trunk",
+      files: { "package.json": "{}", [lock as string]: "" },
+    }] });
+    const result = await call("POST", "/api/projects/trunk-app/bootstrap", { repo: "acme/trunk-app" });
+    expect(result.status).toBe(201);
+    expect(app.deps.registry.project("trunk-app")).toMatchObject({ checks, defaultBranch: "trunk" });
+  });
+
   it("keeps the names the app's own pages use", async () => {
     const { call } = await setup();
     for (const id of ["add", "New"]) {
