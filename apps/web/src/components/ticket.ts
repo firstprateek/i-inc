@@ -53,7 +53,7 @@ export class IncTicket extends Loader<Data> {
   declare pick: string;
   private anchored = false;
   /** The Close row swaps its buttons: where focus goes after the swap (the safe choice when asked). */
-  private focusClose: "open" | "keep" | null = null;
+  private focusClose: "open" | "keep" | "title" | null = null;
   private onHash = () => {
     this.anchored = false;
     this.requestUpdate();
@@ -125,8 +125,14 @@ export class IncTicket extends Loader<Data> {
 
   override updated(): void {
     if (this.focusClose) {
-      this.renderRoot.querySelector<HTMLButtonElement>(`.close-row .${this.focusClose}`)?.focus();
-      this.focusClose = null;
+      const target = this.renderRoot.querySelector<HTMLElement>(
+        this.focusClose === "title" ? "h2.title" : `.close-row .${this.focusClose}`,
+      );
+      // After a close the row stays until the refresh redraws the ticket; focus the title once it's drawn.
+      if (target && (this.focusClose !== "title" || !this.renderRoot.querySelector(".close-row"))) {
+        target.focus();
+        this.focusClose = null;
+      }
     }
     // "Assign…" on a board card opens #/ticket/<id>/assign: bring the card into view and focus it.
     if (!this.anchored && location.hash.endsWith("/assign")) {
@@ -254,7 +260,7 @@ export class IncTicket extends Loader<Data> {
           <span class="tag">${t.type}</span>${projectBadge(t.project)}<span class="tag">${t.effort}</span>
           <span class="muted" style="font-size:13px;font-weight:700">#${t.id}</span>
         </div>
-        <h2>${t.title}</h2>
+        <h2 class="title" tabindex="-1">${t.title}</h2>
         ${this.fromConversation(t)}
         ${this.asked(t)}
         ${this.images(t)}
@@ -497,6 +503,8 @@ export class IncTicket extends Loader<Data> {
             this.act(async () => {
               await api.close(t.id);
               this.closing = false;
+              // The row goes with the ticket's queued state: focus moves to the ticket itself.
+              this.focusClose = "title";
             })}>Close ticket</button>
           <button type="button" class="btn ghost keep" ?disabled=${this.busy} @click=${() => {
             this.closing = false;

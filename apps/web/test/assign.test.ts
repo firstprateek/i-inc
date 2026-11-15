@@ -343,6 +343,25 @@ describe("the ticket page's Close ticket", () => {
     });
   });
 
+  it("moves focus to the ticket's title once it's closed and the row has gone", async () => {
+    const t = view();
+    const el = await page(t);
+    const r = el.shadowRoot;
+    buttons(r)[0]?.click();
+    await el.updateComplete;
+    // The daemon closes it: the next read of the ticket says it's done.
+    Object.assign(t, { status: "done", column: "done", outcome: "rejected", waiting: null });
+    buttons(r)
+      .find((b) => b.textContent === "Close ticket")
+      ?.click();
+    for (let i = 0; i < 4; i++) {
+      await tick();
+      await el.updateComplete;
+    }
+    expect(r.querySelector(".close-row")).toBeNull();
+    expect(r.activeElement?.matches("h2.title")).toBe(true);
+  });
+
   it("keeps the ticket when the owner changes their mind", async () => {
     const el = await page(view());
     const r = el.shadowRoot;

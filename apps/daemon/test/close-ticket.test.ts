@@ -37,6 +37,46 @@ describe("POST /api/tickets/:id/close", () => {
     expect(ran.has("3")).toBe(true);
   });
 
+  it("takes a held ticket (a draft, or a follow-up over the day's budget) off hold once it's closed", async () => {
+    const app = await testApp();
+    app.agent.on(
+      { employee: "ada", stage: "build" },
+      { kind: "out-of-tokens", resetsAt: app.clock.now() + 3_600_000 },
+    );
+    await app.call("POST", "/api/tickets", refunds);
+    await app.call("POST", "/api/tickets", { ...refunds, title: "A held follow-up" });
+    await app.daemon.idle();
+    app.deps.tickets.setHold("2", true);
+
+    expect((await app.call("POST", "/api/tickets/2/close", {})).status).toBe(200);
+    expect((await app.call("GET", "/api/tickets/2")).body.ticket).toMatchObject({
+      status: "done",
+      outcome: "rejected",
+      held: false,
+    });
+  });
+
+  it("closes once when two requests for the same ticket arrive together", async () => {
+    const app = await testApp();
+    app.agent.on(
+      { employee: "ada", stage: "build" },
+      { kind: "out-of-tokens", resetsAt: app.clock.now() + 3_600_000 },
+    );
+    await app.call("POST", "/api/tickets", refunds);
+    await app.call("POST", "/api/tickets", { ...refunds, title: "Closed twice by a retry" });
+    await app.daemon.idle();
+
+    const [a, b] = await Promise.all([
+      app.call("POST", "/api/tickets/2/close", {}),
+      app.call("POST", "/api/tickets/2/close", {}),
+    ]);
+    expect([a.status, b.status].sort()).toEqual([200, 409]);
+    const events = await app.deps.store.read("2");
+    expect(events.filter((e) => e.type === "closed")).toHaveLength(1);
+    expect(events.filter((e) => e.type === "ticket-created")).toHaveLength(1);
+    expect((await app.call("GET", "/api/tickets/2")).body.ticket.held).toBe(false);
+  });
+
   it("refuses a ticket that has started", async () => {
     const app = await testApp();
     await app.call("POST", "/api/tickets", refunds);
