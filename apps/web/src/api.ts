@@ -459,6 +459,8 @@ export const api = {
   declineProposal: (id: number) =>
     call<{ proposal: ProposalView }>("POST", `/api/proposals/${id}/decline`, {}),
   /** Assigns a ticket that has not started (C17). */
+  /** Closes a ticket nobody has started; it shows as Rejected. */
+  close: (id: string) => call<{ ok: true }>("POST", `/api/tickets/${encodeURIComponent(id)}/close`, {}),
   assign: (id: string, to: string) =>
     call<{ ok: true; ticket: TicketView }>("POST", `/api/tickets/${encodeURIComponent(id)}/assign`, { to }),
   retry: (id: string): Promise<void> => call("POST", `/api/tickets/${id}/retry`, {}),

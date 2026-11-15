@@ -2723,6 +2723,10 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       },
     ],
 
+    // The owner closes a ticket nobody has started (a follow-up that's no longer wanted): it never runs, and
+    // shows as Rejected on the board. A ticket that has started is closed through its own decision instead.
+    ["POST", "/api/tickets/:id/close", async (_req, p) => closeUnstarted(p.id ?? "")],
+
     // C19: the brain's search index, read-only (docs/design/brain.md). Owner-only like every route.
     [
       "GET",
@@ -3061,6 +3065,33 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
 
   /** Appends the owner's action if the ticket is in the right state, then runs the ticket on. */
   /** Assigns a ticket that has not started (C17) and lets the scheduler start it. */
+  async function closeUnstarted(id: Id): Promise<Response> {
+    const r = d.tickets.get(id);
+    if (!r) return json({ error: "no such ticket" }, 404);
+    const started = async () =>
+      (await daemon.state(id)).created || (await d.store.read(id)).some((e) => e.type === "ticket-created");
+    if (await started()) {
+      return json({ error: `ticket ${id} already started, so it closes through its own decision` }, 409);
+    }
+    // Held, the scheduler can't pick it; a pass already under way finishes first, so it can't start it
+    // between this look and the close.
+    d.tickets.setHold(id, true);
+    await daemon.tick();
+    if (await started()) {
+      d.tickets.setHold(id, r.hold);
+      return json({ error: `ticket ${id} started just now, so it closes through its own decision` }, 409);
+    }
+    const at = d.clock.now();
+    await d.store.append(id, [
+      { type: "ticket-created", at, ticketId: id },
+      { type: "closed", at, outcome: "rejected" },
+    ]);
+    // A held ticket is a chat draft; a closed one isn't.
+    d.tickets.setHold(id, r.hold);
+    await daemon.tick();
+    return json({ ok: true });
+  }
+
   async function assignUnstarted(id: Id, to: Id | undefined): Promise<Response> {
     const r = d.tickets.get(id);
     if (!r) return json({ error: "no such ticket" }, 404);

@@ -38,7 +38,10 @@ export class IncTicket extends Loader<Data> {
     pick: { state: true },
     missing: { state: true },
     askedOpen: { state: true },
+    closing: { state: true },
   };
+  /** The owner pressed Close ticket and is asked to confirm. */
+  declare closing: boolean;
   /** The owner's choice for "What was asked"; null follows its length (short stays open, long folds). */
   declare askedOpen: boolean | null;
   declare ticketId: string;
@@ -49,6 +52,8 @@ export class IncTicket extends Loader<Data> {
   /** The employee chosen in "Who should do this?"; empty until the owner picks, then the default shows. */
   declare pick: string;
   private anchored = false;
+  /** The Close row swaps its buttons: where focus goes after the swap (the safe choice when asked). */
+  private focusClose: "open" | "keep" | null = null;
   private onHash = () => {
     this.anchored = false;
     this.requestUpdate();
@@ -69,6 +74,7 @@ export class IncTicket extends Loader<Data> {
     this.pick = "";
     this.missing = false;
     this.askedOpen = null;
+    this.closing = false;
   }
 
   protected fetch = async (): Promise<Data> => {
@@ -109,6 +115,7 @@ export class IncTicket extends Loader<Data> {
     if (changed.has("ticketId") && changed.get("ticketId") !== undefined) {
       this.pick = "";
       this.askedOpen = null;
+      this.closing = false;
       this.anchored = false;
       this.missing = false;
       this.resetLoad();
@@ -117,6 +124,10 @@ export class IncTicket extends Loader<Data> {
   }
 
   override updated(): void {
+    if (this.focusClose) {
+      this.renderRoot.querySelector<HTMLButtonElement>(`.close-row .${this.focusClose}`)?.focus();
+      this.focusClose = null;
+    }
     // "Assign…" on a board card opens #/ticket/<id>/assign: bring the card into view and focus it.
     if (!this.anchored && location.hash.endsWith("/assign")) {
       const card = this.renderRoot.querySelector<HTMLElement>("#assign");
@@ -191,6 +202,8 @@ export class IncTicket extends Loader<Data> {
       .assign .pick { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
       .assign label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 700; color: var(--ink-2); flex: 1 1 240px; min-width: 0; }
       .assign .btn:disabled { opacity: 0.6; cursor: default; }
+      .close-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 14px; }
+      .close-row .btn:disabled { opacity: 0.6; cursor: default; }
       textarea { font: 16px var(--body); padding: 10px 12px; border-radius: 12px; border: 1px solid var(--control-edge);
         background: var(--surface); color: var(--ink); min-height: 44px; flex-grow: 1; min-width: 220px; }
       aside { width: auto; padding: 22px 24px; display: flex; flex-direction: column; gap: 12px; }
@@ -247,7 +260,7 @@ export class IncTicket extends Loader<Data> {
         ${this.images(t)}
         ${t.waiting ? html`<p class="waits"><i aria-hidden="true"></i><span>${waitingLine(t.waiting, t.waitingUntil)}</span></p>` : ""}
         ${this.actionError ? html`<p role="alert">${this.actionError}</p>` : ""}
-        ${notStarted(t) ? this.assignCard(t) : ""}
+        ${notStarted(t) ? html`${this.assignCard(t)}${this.closeRow(t)}` : ""}
         ${this.body(t)}
         ${t.status !== "done" && t.status !== "ready" ? this.addImages(t) : ""}
         <inc-transcript .ticketId=${t.id}></inc-transcript>
@@ -473,6 +486,29 @@ export class IncTicket extends Loader<Data> {
       options[0]?.id ??
       ""
     );
+  }
+
+  /** A ticket nobody has started can be closed without running: it shows as Rejected. */
+  private closeRow(t: TicketView) {
+    return this.closing
+      ? html`<div class="close-row" role="group" aria-label="Close this ticket">
+          <span>Close #${t.id} without working on it?</span>
+          <button type="button" class="btn" ?disabled=${this.busy} @click=${() =>
+            this.act(async () => {
+              await api.close(t.id);
+              this.closing = false;
+            })}>Close ticket</button>
+          <button type="button" class="btn ghost keep" ?disabled=${this.busy} @click=${() => {
+            this.closing = false;
+            this.focusClose = "open";
+          }}>Keep it</button>
+        </div>`
+      : html`<div class="close-row">
+          <button type="button" class="btn ghost open" ?disabled=${this.busy} @click=${() => {
+            this.closing = true;
+            this.focusClose = "keep";
+          }}>Close ticket…</button>
+        </div>`;
   }
 
   /** "Who should do this?" for a ticket that hasn't started: pick an employee on the project and assign. */

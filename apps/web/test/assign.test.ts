@@ -313,6 +313,63 @@ describe("the ticket page's Who should do this?", () => {
   });
 });
 
+describe("the ticket page's Close ticket", () => {
+  const page = async (t: TicketView) => {
+    serve([t]);
+    const el = await mount("inc-ticket", { ticketId: t.id });
+    return el as HTMLElement & { updateComplete: Promise<unknown>; shadowRoot: ShadowRoot };
+  };
+  const buttons = (r: ShadowRoot) => [...r.querySelectorAll<HTMLButtonElement>(".close-row button")];
+
+  it("asks before closing a ticket that has not started, and posts the close", async () => {
+    const el = await page(view());
+    const r = el.shadowRoot;
+    expect(buttons(r).map((b) => b.textContent)).toEqual(["Close ticket…"]);
+    buttons(r)[0]?.click();
+    await el.updateComplete;
+    expect(r.querySelector(".close-row")?.textContent).toContain("Close #12 without working on it?");
+    // The button pressed went away: focus lands on the safe choice, not the page.
+    expect(r.activeElement?.textContent).toBe("Keep it");
+    expect(calls.some((c) => c.url.endsWith("/close"))).toBe(false);
+
+    buttons(r)
+      .find((b) => b.textContent === "Close ticket")
+      ?.click();
+    await tick();
+    expect(calls.find((c) => c.method === "POST")).toEqual({
+      method: "POST",
+      url: "/api/tickets/12/close",
+      body: {},
+    });
+  });
+
+  it("keeps the ticket when the owner changes their mind", async () => {
+    const el = await page(view());
+    const r = el.shadowRoot;
+    buttons(r)[0]?.click();
+    await el.updateComplete;
+    buttons(r)
+      .find((b) => b.textContent === "Keep it")
+      ?.click();
+    await el.updateComplete;
+    expect(buttons(r).map((b) => b.textContent)).toEqual(["Close ticket…"]);
+    expect(calls.some((c) => c.method === "POST")).toBe(false);
+    expect(r.activeElement?.textContent).toBe("Close ticket…");
+  });
+
+  it("is not there once the ticket has started", async () => {
+    const el = await page(
+      view({
+        status: "running",
+        column: "in-progress",
+        waiting: null,
+        assignee: { id: "ada", name: "Ada", tint: 0 },
+      }),
+    );
+    expect(el.shadowRoot.querySelector(".close-row")).toBeNull();
+  });
+});
+
 describe("saying why a ticket waits", () => {
   it("shows the status line and an Assign… link on a board card, beside the card link", async () => {
     serve([
