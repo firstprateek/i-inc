@@ -38,6 +38,7 @@ import {
   type StageId,
   StartupError,
   schedule,
+  stuckAsk,
   type Ticket,
   type TicketEvent,
   type TicketState,
@@ -368,6 +369,7 @@ export class Daemon {
       ...(isContact ? { isContact: (address) => isContact.call(reg, address) } : {}),
       ...(projectPolicy ? { projectPolicy: (project) => projectPolicy.call(reg, project) } : {}),
       projectIds: () => reg.projects().map((p) => p.id),
+      ...(reg.approvals ? { approvals: (employeeId: Id) => reg.approvals(employeeId) } : {}),
       engines: () => reg.engines(),
       engineBlock: (employeeId: Id, engineId: Id, duty: Duty) => {
         // `sandboxFault` is the fault only while its backoff runs (measured on the machines' monotonic clock).
@@ -1077,7 +1079,7 @@ export class Daemon {
           type: "needs-you",
           at: this.d.clock.now(),
           stage: s.active ?? "pickup",
-          ask: { kind: "stuck", reason },
+          ask: stuckAsk(reason),
         },
       ]);
     } catch (err) {
@@ -1379,8 +1381,12 @@ export class Daemon {
               r.createdAt >= dayStart,
           ).length;
         // Filing and marking it filed go together, so a crash between them can't file it twice.
+        // Lenient approvals (the proposer's level): over the budget, it is filed on hold rather than asked about.
+        // Nothing runs, and nothing waits on the owner, until the owner takes the hold off on the board.
+        const overBudget = filedToday >= this.d.registry.projectPolicy(from.project).followUpsPerDay;
+        const holdIt = overBudget && this.d.registry.approvals(e.employeeId) === "lenient";
         this.d.db.transaction(() => {
-          if (filedToday >= this.d.registry.projectPolicy(from.project).followUpsPerDay) {
+          if (overBudget && !holdIt) {
             // Over budget: the owner decides, so it waits as a proposal instead of being dropped.
             const made = this.d.proposals.add(
               {
@@ -1412,10 +1418,13 @@ export class Daemon {
                 createdBy: e.employeeId,
                 ...(f.reason ? { reason: f.reason } : {}),
                 labels: ["follow-up"],
+                ...(holdIt ? { hold: true } : {}),
               },
               now,
             );
-            this.d.log?.(`ticket ${t.id} filed by ${e.employeeId} as a follow-up of ${ticketId}: ${f.title}`);
+            this.d.log?.(
+              `ticket ${t.id} filed by ${e.employeeId} as a follow-up of ${ticketId}${holdIt ? `, on hold (${from.project}'s budget for today is used)` : ""}: ${f.title}`,
+            );
           }
           this.d.db.run("INSERT OR IGNORE INTO knowledge_applied (edit_id, at) VALUES (?, ?)", key, now);
         });

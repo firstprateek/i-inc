@@ -46,7 +46,7 @@ describe("the done-when check", () => {
     const t = (await app.call("GET", "/api/tickets/1")).body.ticket;
     expect(t.status).toBe("needs-you");
     expect(t.needsYou.kind).toBe("stuck");
-    expect(t.needsYou.reason).toContain(`${asked} (not met: still nothing)`);
+    expect(t.needsYou.reason).toBe("1 of 1 done-when item is not met after the fix, says Quinn");
     expect(t.doneCheck.items).toMatchObject([{ verdict: "not-met", evidence: "still nothing" }]);
     expect(app.agent.callsFor("ada", "done-when")).toHaveLength(1);
     expect(app.harness.gateRuns).toBe(0);

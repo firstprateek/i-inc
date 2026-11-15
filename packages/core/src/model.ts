@@ -1,4 +1,5 @@
 // The company's nouns, as plain data. Words follow docs/spec.md.
+import type { ApprovalLevel } from "./approvals.ts";
 
 export type Id = string;
 
@@ -89,6 +90,8 @@ export interface Employee {
   prompt?: string;
   /** Default effort level for tickets assigned to this employee. */
   effort?: Effort;
+  /** How often this employee's work waits for the owner (approvals.ts). Absent: the company's level. */
+  approvals?: ApprovalLevel;
 }
 
 /** Things a PA can propose that would leave the house in the owner's name (spec §7). */

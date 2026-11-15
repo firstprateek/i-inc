@@ -1,5 +1,6 @@
 // The core has no I/O. Everything outside it comes through these ports: the daemon plugs in ACP
 // sessions, Apple container machines and SQLite; tests plug in the fakes in ./testing.
+import type { ApprovalLevel } from "./approvals.ts";
 import type { TicketEvent } from "./events.ts";
 import type {
   AgentHarness,
@@ -366,6 +367,11 @@ export interface Company {
   isContact?(address: string): boolean;
   /** How a project's work reaches main. Absent: the default (direct). */
   projectPolicy?(project: string): ProjectPolicy;
+  /**
+   * How often this employee's work waits for the owner (approvals.ts): its own level, else the company's. Absent:
+   * careful, as before levels existed (the daemon's registry always answers, lenient by default).
+   */
+  approvals?(employeeId: Id): ApprovalLevel;
   /** The company's projects, by id: what an engineer with no project named in its hiring writes pages for. */
   projectIds?(): string[];
   /** Every engine, so a reviewer can run on a different one from the builder's. */

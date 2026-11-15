@@ -177,8 +177,10 @@ describe("hiring a personal assistant", () => {
     const made = await w.call("POST", "/api/employees", hire());
     await w.app.daemon.idle();
     const t = (await w.call("GET", `/api/tickets/${made.body.orientation}`)).body.ticket;
-    expect(t.needsYou.reason).toContain("TODO placeholders");
-    expect(t.needsYou.reason).toContain("the example copied as it is");
+    // The card's line is short; the whole of what is wrong is its detail, on the ticket.
+    expect(t.needsYou.reason.length).toBeLessThanOrEqual(160);
+    expect(t.needsYou.detail).toContain("TODO placeholders");
+    expect(t.needsYou.detail).toContain("the example copied as it is");
   });
 
   it("puts the offline note, with the tools the machine was seen to have, in the PA's brief", async () => {

@@ -565,7 +565,7 @@ describe("sandboxes", () => {
 });
 
 describe("Company → Settings and Projects", () => {
-  it("has Projects as its own Company tab and four sections under Settings, shown in the address", async () => {
+  it("has Projects as its own Company tab and five sections under Settings, shown in the address", async () => {
     serve();
     location.hash = "#/company/settings/engines";
     const root = await mount("inc-app");
@@ -588,12 +588,14 @@ describe("Company → Settings and Projects", () => {
       "Engines and accounts",
       "Sandboxes",
       "Notifications",
+      "Approvals",
     ]);
     expect(tabs.map((a) => a.getAttribute("href"))).toEqual([
       "#/company/settings/teams",
       "#/company/settings/engines",
       "#/company/settings/sandboxes",
       "#/company/settings/notifications",
+      "#/company/settings/approvals",
     ]);
     expect(tabs.find((a) => a.getAttribute("aria-current") === "page")?.textContent).toBe(
       "Engines and accounts",

@@ -1,4 +1,5 @@
-// Company → Settings: where the owner manages teams, engines and accounts, notifications, and checks the sandboxes.
+// Company → Settings: where the owner manages teams, engines and accounts, notifications and approvals, and checks the
+// sandboxes.
 // (Projects have their own tab.)
 import { css, html, LitElement } from "lit";
 import { type Section, sections } from "../routes.ts";
@@ -8,6 +9,7 @@ import "./setup-teams.ts";
 import "./setup-engines.ts";
 import "./setup-sandboxes.ts";
 import "./setup-notifications.ts";
+import "./setup-approvals.ts";
 
 export { isSection, type Section, sections } from "../routes.ts";
 
@@ -61,6 +63,8 @@ export class IncSetup extends LitElement {
         return html`<inc-setup-sandboxes></inc-setup-sandboxes>`;
       case "notifications":
         return html`<inc-setup-notifications></inc-setup-notifications>`;
+      case "approvals":
+        return html`<inc-setup-approvals></inc-setup-approvals>`;
     }
   }
 }

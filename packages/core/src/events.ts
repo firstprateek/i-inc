@@ -6,7 +6,11 @@ import type { StageId } from "./stages.ts";
 export type NeedsYou =
   | { kind: "plan-gate"; plan: string }
   | { kind: "disagreement"; builder: string; reviewer: string }
-  | { kind: "stuck"; reason: string }
+  /**
+   * `reason` is one short line for the Needs you card (at most `maxAskLength`, decided 2026-11-15); a longer
+   * account, when there is one, is `detail`, shown on the ticket.
+   */
+  | { kind: "stuck"; reason: string; detail?: string }
   | { kind: "proposals"; items: Proposal[] }
   /** Direct mode: the change touches protected paths, so it waits for the owner's OK. */
   | {

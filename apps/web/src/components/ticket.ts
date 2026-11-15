@@ -398,7 +398,7 @@ export class IncTicket extends Loader<Data> {
               <button type="button" class="btn ghost" ?disabled=${this.busy} @click=${() => this.act(() => api.answer(id, "reject"))}>Decline</button>
             </div></div>`;
         case "stuck":
-          return html`<div class="ask"><b>Stuck</b><p>${ask.reason}</p>
+          return html`<div class="ask"><b>Stuck</b><p>${ask.detail ?? ask.reason}</p>
             <div class="actions">
               <button type="button" class="btn" ?disabled=${this.busy} @click=${() => this.act(() => api.answer(id, "continue"))}>Keep going</button>
             </div></div>`;

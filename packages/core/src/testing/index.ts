@@ -1,4 +1,5 @@
 // Fakes for every port, so the whole pipeline runs in tests without spending tokens.
+import type { ApprovalLevel } from "../approvals.ts";
 import type { TicketEvent } from "../events.ts";
 import {
   type Duty,
@@ -465,6 +466,11 @@ export class FakeCompany implements Company {
   }
   projectPolicy(_project: string): ProjectPolicy {
     return this.policy;
+  }
+  /** Every employee's approval level. The fakes default to careful, the flow most tests were written for. */
+  approvalLevel: ApprovalLevel = "careful";
+  approvals(_employeeId: Id): ApprovalLevel {
+    return this.approvalLevel;
   }
   engines(): Engine[] {
     return [...this.engineMap.values()];

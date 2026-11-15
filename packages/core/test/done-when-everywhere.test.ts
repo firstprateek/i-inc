@@ -96,9 +96,12 @@ describe("a code ticket without a prove stage gets a done-when check", () => {
     expect(result.status).toBe("needs-you");
     if (result.status !== "needs-you" || result.ask.kind !== "stuck")
       throw new Error("expected a stuck card");
-    expect(result.ask.reason).toContain("after the builder's fix");
-    expect(result.ask.reason).toContain(`${first} (met: evidence 1)`);
-    expect(result.ask.reason).toContain(`${second} (not met: evidence 2)`);
+    // One short line on the card; each item's result is on the ticket.
+    expect(result.ask.reason).toMatch(/^1 of 2 done-when items is not met after the fix, says \w+$/);
+    expect(fold(await p.store.read("42")).doneCheck?.items.map((i) => i.evidence)).toEqual([
+      "evidence 1",
+      "evidence 2",
+    ]);
     expect(p.agent.callsFor("ada", "done-when")).toHaveLength(1); // one retry, no more
     const s = fold(await p.store.read("42"));
     expect(s.status).toBe("needs-you");
@@ -117,8 +120,7 @@ describe("a code ticket without a prove stage gets a done-when check", () => {
     expect(result.status).toBe("needs-you");
     if (result.status !== "needs-you" || result.ask.kind !== "stuck")
       throw new Error("expected a stuck card");
-    expect(result.ask.reason).toContain(`${second} (can't tell: evidence 2)`);
-    expect(result.ask.reason).not.toContain("after the builder's fix");
+    expect(result.ask.reason).toMatch(/^1 of 2 done-when items can't be confirmed, says \w+$/);
     expect(p.agent.callsFor("ada", "done-when")).toHaveLength(0);
     expect(fold(await p.store.read("42")).doneCheck?.items.map((i) => i.verdict)).toEqual([
       "met",

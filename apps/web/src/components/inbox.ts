@@ -7,6 +7,7 @@ import { loadNeedsYou, needsYouCount } from "../needs-you.ts";
 import { layoutStyles } from "./layout.ts";
 import { Loader } from "./loader.ts";
 import "./proposals.ts";
+import { askLine } from "@i-inc/core";
 import { web } from "../links.ts";
 import { protectedOk } from "./protected-card.ts";
 import { avatar, base, projectBadge } from "./shared.ts";
@@ -51,6 +52,9 @@ export class IncInbox extends Loader<{
       .waits i { width: 8px; height: 8px; border-radius: 50%; background: var(--needs-fg); flex-shrink: 0; margin-top: 6px; }
       .actions a.btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; box-sizing: border-box; }
       .q { font-size: 17px; font-weight: 700; line-height: 1.3; overflow-wrap: anywhere; min-width: 0; }
+      .why { margin: 0; font-size: 15px; line-height: 1.4; color: var(--ink-2); overflow-wrap: anywhere; }
+      .why.full { margin-top: 6px; white-space: pre-wrap; }
+      details summary { cursor: pointer; font-size: 14px; color: var(--ink-2); min-height: 32px; display: flex; align-items: center; }
       .actions { display: flex; gap: 8px; flex-wrap: wrap; }
       .actions .btn:first-child { flex-grow: 1; }
       h2 { font-size: 20px; margin-top: 18px; }
@@ -141,8 +145,10 @@ export class IncInbox extends Loader<{
                 <div class="actions">${btn("Approve all", () => api.answer(t.id, "approve"))}${btn("Decline", () => api.answer(t.id, "reject"), true)}</div>`
             : a.kind === "protected-paths"
               ? protectedOk(t, a, (fn) => void this.press(fn))
-              : html`<div class="q">${a.reason}</div>
-                <div class="actions">${btn("Keep going", () => api.answer(t.id, "continue"))}</div>`;
+              : html`<div class="q">${t.title}</div>
+                <p class="why" title=${a.reason}>${askLine(a.reason)}</p>
+                <div class="actions">${btn("Keep going", () => api.answer(t.id, "continue"))}
+                  <a class="btn ghost" href="#/ticket/${t.id}">Details</a></div>`;
     return html`<div class="card item waiting">${this.header(t, a.kind.replace("-", " "))}${body}</div>`;
   }
 
@@ -159,7 +165,9 @@ export class IncInbox extends Loader<{
   private policy(p: PolicyProposal) {
     return html`<div class="card item waiting">
       <div class="who"><span><b>${p.author}</b> · handbook policy · ${p.page}</span></div>
-      <div class="q">${p.text}</div>
+      <div class="q">New handbook rule</div>
+      <p class="why">${askLine(p.text)}</p>
+      ${p.text.length > askLine(p.text).length ? html`<details><summary>Read it all</summary><p class="why full">${p.text}</p></details>` : ""}
       <div class="actions">
         <button type="button" class="btn" ?disabled=${this.pressing} @click=${() => this.press(() => api.decidePolicy(p.id, true))}>Approve</button>
         <button type="button" class="btn ghost" ?disabled=${this.pressing} @click=${() => this.press(() => api.decidePolicy(p.id, false))}>Decline</button>

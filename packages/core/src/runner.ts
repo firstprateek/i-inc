@@ -3,6 +3,7 @@
 // runTicket takes one step at a time: fold the ticket's events, decide the next step, do it, append
 // what happened, repeat. Nothing lives in memory between steps, so after a crash, a quota pause or
 // an owner's answer, calling runTicket again carries on from the last event.
+import { stuckAsk } from "./approvals.ts";
 import { brief, freshBrief } from "./brief.ts";
 import { engineAllowed, engineFor, findEngine, nextFallback } from "./engines.ts";
 import type { Decision, HelperDuty, NeedsYou, TicketEvent } from "./events.ts";
@@ -362,7 +363,10 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
       if (out !== null) await c.emit(checkpoint(c, "plan", out));
       return;
     }
-    const gated = c.plan.planGate === "always" || (c.plan.planGate === "risky" && riskyAreas.test(planText));
+    // Lenient approvals never hold a plan for the owner.
+    const gated =
+      !lenient(c) &&
+      (c.plan.planGate === "always" || (c.plan.planGate === "risky" && riskyAreas.test(planText)));
     if (gated && !c.s.lastAnswer) {
       await c.emit(needsYou(c, "plan", { kind: "plan-gate", plan: planText }));
       return;
@@ -567,13 +571,15 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     const result: DoneWhenItem[] = readDoneWhenCheck(read, items).map((i) =>
       read === null ? { ...i, evidence: `the checker's reply could not be read${quoteOf(out)}` } : i,
     );
-    const unmet = result.filter((i) => i.verdict !== "met");
+    const unmet = result.filter((i) => blocks(c, i.verdict));
     const by = seat.employee.id;
     if (unmet.length === 0) {
+      // Lenient: an item the checker can't confirm doesn't hold the work; the report shows it as not confirmed.
+      const unsure = result.filter((i) => i.verdict !== "met").length;
       await c.emit(
         { type: "done-when-verdict", at, by, items: result, retry: false },
         { type: "done-when-checked", at, stage: "done-when", met: true, missing: [] },
-        finished(c, "done-when"),
+        finished(c, "done-when", unsure ? `went ahead; ${unsure} not confirmed` : undefined),
       );
       return;
     }
@@ -593,12 +599,7 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
         : [
             needsYou(c, "done-when", {
               kind: "stuck",
-              reason: `The done-when is not confirmed${c.s.doneWhen.misses > 0 ? " after the builder's fix" : ""}, checked by ${c.p.company.employee(by).name}: ${result
-                .map(
-                  (i) =>
-                    `${i.doneWhen} (${verdictWords[i.verdict]}${i.evidence ? `: ${i.evidence.slice(0, 300)}` : ""})`,
-                )
-                .join("; ")}`,
+              reason: `${doneWhenLine(unmet, result.length)}${c.s.doneWhen.misses > 0 ? " after the fix" : ""}, says ${c.p.company.employee(by).name}`,
             }),
           ]),
     );
@@ -698,7 +699,7 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
 
     // Addressed and out of rounds. Direct mode goes on after 2 rounds, noting any open disagreement
     // for the report; otherwise it goes to the owner, summarized.
-    if (r.disputed && c.policy.mode === "direct") {
+    if (r.disputed && (c.policy.mode === "direct" || lenient(c))) {
       await c.emit(
         finished(
           c,
@@ -962,6 +963,7 @@ async function fastCheck(c: Step): Promise<void> {
         },
     );
     const unmet = all.filter((i) => i.verdict !== "met");
+    const blocking = unmet.filter((i) => blocks(c, i.verdict));
     const findings = [
       ...verdict.findings,
       ...unmet.map((i) => ({
@@ -970,7 +972,7 @@ async function fastCheck(c: Step): Promise<void> {
         text: `${i.verdict === "not-met" ? "not met" : "can't confirm it from the change; make it easy to confirm (a test, a clear change)"}: ${i.doneWhen}${i.evidence ? ` (${i.evidence})` : ""}`,
       })),
     ];
-    const approved = verdict.approved && unmet.length === 0;
+    const approved = verdict.approved && blocking.length === 0;
     await c.emit(
       {
         type: "review-verdict",
@@ -1008,18 +1010,22 @@ async function fastCheck(c: Step): Promise<void> {
 
   // Out of rounds. A done-when item that is still open goes to the owner (T72); anything else goes on, with an
   // open disagreement noted for the report.
-  const open = openItems(c, items);
+  const checked = c.s.doneCheck?.items ?? [];
+  const open: DoneWhenItem[] = openItems(c, items)
+    .map(
+      (d) =>
+        checked.find((x) => normItem(x.doneWhen) === normItem(d)) ?? {
+          doneWhen: d,
+          verdict: "cant-tell" as const,
+          evidence: "not checked",
+        },
+    )
+    .filter((i) => blocks(c, i.verdict));
   if (open.length) {
-    const checked = c.s.doneCheck?.items ?? [];
     await c.emit(
       needsYou(c, "review", {
         kind: "stuck",
-        reason: `The done-when is not confirmed after ${r.round} check rounds: ${open
-          .map((d) => {
-            const i = checked.find((x) => normItem(x.doneWhen) === normItem(d));
-            return `${d} (${i ? verdictWords[i.verdict] : "not checked"}${i?.evidence ? `: ${i.evidence.slice(0, 300)}` : ""})`;
-          })
-          .join("; ")}`,
+        reason: `${doneWhenLine(open, items.length)} after ${r.round} check rounds`,
       }),
     );
     return;
@@ -1119,7 +1125,6 @@ async function verifySeat(c: Step): Promise<Seat | "none" | "wait"> {
 }
 
 const noDoneWhen = "No done-when to check";
-const verdictWords = { met: "met", "not-met": "not met", "cant-tell": "can't tell" } as const;
 
 /**
  * Who checks the done-when (T72), never the builder's own session: another employee with the verify duty, else one
@@ -1369,9 +1374,8 @@ async function closeIfDone(
   }
   if (unmet !== "skip" && unmet.length > 0) {
     const misses = c.s.doneWhen.misses + 1;
-    const reason = `${c.builder.name} says ${what} is done, but ${unmet.join("; ")}${
-      misses >= maxMisses ? `, after ${misses} sessions` : ""
-    }`;
+    // The count first: the card is one short line, and the list is what gets cut.
+    const reason = `${c.builder.name} says ${what} is done, but${misses >= maxMisses ? ` after ${misses} sessions` : ""} ${unmet.join("; ")}`;
     await c.emit(
       ...before,
       { type: "done-when-checked", at, stage, met: false, missing: unmet },
@@ -1653,8 +1657,35 @@ function checkpoint(c: Step, stage: StageId, note: string): TicketEvent {
   return { type: "checkpoint", at: c.p.clock.now(), stage, note: capPayload(note) };
 }
 
+/** A Needs you card. A stuck card's reason is one short line (`stuckAsk`): the whole of it stays on the ticket. */
 function needsYou(c: Step, stage: StageId, ask: NeedsYou): TicketEvent {
-  return { type: "needs-you", at: c.p.clock.now(), stage, ask };
+  return {
+    type: "needs-you",
+    at: c.p.clock.now(),
+    stage,
+    ask: ask.kind === "stuck" ? stuckAsk(ask.reason) : ask,
+  };
+}
+
+/** Lenient approvals (approvals.ts): the builder's level, or the company's. Careful where the port is absent. */
+function lenient(c: Step): boolean {
+  return c.p.company.approvals?.(c.builder.id) === "lenient";
+}
+
+/** A done-when check's result that should stop the work: not met, and (careful) can't tell too. */
+function blocks(c: Step, verdict: DoneWhenItem["verdict"]): boolean {
+  return verdict === "not-met" || (verdict !== "met" && !lenient(c));
+}
+
+/** "2 of 5 done-when items are not met" (or "can't be confirmed"), for a one-line card. */
+function doneWhenLine(open: DoneWhenItem[], total: number): string {
+  const n = open.length;
+  const verb = open.every((i) => i.verdict === "cant-tell")
+    ? "can't be confirmed"
+    : n === 1
+      ? "is not met"
+      : "are not met";
+  return `${n} of ${total} done-when ${total === 1 ? "item" : "items"} ${verb}`;
 }
 
 /** An honest failure: what went wrong and which engines were tried. */

@@ -176,7 +176,14 @@ describe("the protected-paths OK (T68), now only in Needs you", () => {
     expect(shown).toHaveLength(2);
     expect(shown[0]).not.toContain("THE-END");
     expect(shown[1]).toContain("THE-END");
-    expect(root.querySelector("details summary")?.textContent).toBe("Show all");
+    // One line to answer, the change folded under it, and the rest of a long diff behind Show all.
+    expect(root.querySelector(".q")?.textContent).toBe(
+      "Ship “Change the daemon”? It changes protected code (1 file).",
+    );
+    expect([...root.querySelectorAll("details summary")].map((s) => s.textContent)).toEqual([
+      "See the change",
+      "Show all",
+    ]);
     expect([...root.querySelectorAll("button")].some((b) => b.textContent === "OK it")).toBe(true);
   });
 });

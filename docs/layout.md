@@ -19,7 +19,7 @@ The app has three areas and one destination of its own. The route model lives in
 | --- | --- | --- |
 | **Conversations** | `#/conversations[/<id>]` | none; hosts the Conversations screen (below). Its centre pane is the New conversation screen when nothing is open, and carries the Getting started checklist under the composer until it is done or dismissed |
 | **Work** | `#/work` (Board) | Board `#/work/board` · Releases `#/work/releases`; a ticket is `#/ticket/<id>` and lights Work |
-| **Company** | `#/company` (Team) | Team `#/company/team` (and `/hiring[/<id>]`) · Brain `#/company/brain[/<id>]` · Projects `#/company/projects` · Usage `#/company/usage` · Settings `#/company/settings[/teams\|engines\|sandboxes\|notifications]` |
+| **Company** | `#/company` (Team) | Team `#/company/team` (and `/hiring[/<id>]`) · Brain `#/company/brain[/<id>]` · Projects `#/company/projects` · Usage `#/company/usage` · Settings `#/company/settings[/teams\|engines\|sandboxes\|notifications\|approvals]` |
 | **Needs you** (in no area) | `#/needs-you` | none: one page, titled "Needs you" |
 
 Needs you is **one top-level destination**, not a tab: it shows what waits for the owner (conversations asking for a

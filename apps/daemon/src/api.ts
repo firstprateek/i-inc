@@ -11,9 +11,12 @@ import { dirname } from "node:path";
 import {
   type AccountCost,
   type AgentHarness,
+  type ApprovalLevel,
+  alwaysAsks,
   answer,
   buildQuery,
   decide,
+  defaultApprovalLevel,
   defaultSwitchRules,
   type Employee,
   type Engine,
@@ -24,9 +27,11 @@ import {
   hiringProblems,
   homeSandbox,
   type Id,
+  isApprovalLevel,
   isHomeEmployee,
   isLocalEngine,
   knowledgeLog,
+  lenientSkips,
   orientationDoneWhen,
   type ProjectRelease,
   type ProposedEdit,
@@ -1107,6 +1112,42 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
           settings: timeoutSettings(d.registry.settings().timeouts),
           defaults: defaultTimeoutSettings,
         });
+      },
+    ],
+
+    // Approvals (decided 2026-11-15): how often work waits for the owner, company-wide and per employee.
+    ["GET", "/api/approvals", async () => json(approvalsView())],
+
+    [
+      "PUT",
+      "/api/approvals",
+      async (req) => {
+        const body = await readObject(req);
+        if (body === null) return json({ error: "send a JSON object" }, 400);
+        for (const key of Object.keys(body)) {
+          if (key !== "company" && key !== "employees") return json({ error: `unknown setting ${key}` }, 400);
+        }
+        if (body.company !== undefined && !isApprovalLevel(body.company)) {
+          return json({ error: "company must be lenient or careful" }, 400);
+        }
+        const people = body.employees;
+        if (
+          people !== undefined &&
+          (typeof people !== "object" || people === null || Array.isArray(people))
+        ) {
+          return json({ error: "employees must map an employee to lenient, careful or null" }, 400);
+        }
+        const changes = Object.entries((people ?? {}) as Record<string, unknown>);
+        const known = new Set(d.registry.employees().map((e) => e.id));
+        for (const [id, level] of changes) {
+          if (!known.has(id)) return json({ error: `no employee ${id}` }, 400);
+          if (level !== null && !isApprovalLevel(level)) {
+            return json({ error: `${id} must be lenient, careful or null (the company's)` }, 400);
+          }
+        }
+        if (isApprovalLevel(body.company)) d.registry.setSettings({ approvals: body.company });
+        for (const [id, level] of changes) d.registry.setEmployeeApprovals(id, level as ApprovalLevel | null);
+        return json(approvalsView());
       },
     ],
 
@@ -3073,6 +3114,22 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     if (seen === "open") {
       throw new Error("merge the PR on GitHub first: i.inc marks the ticket merged by itself once you do");
     }
+  }
+
+  /** The approvals settings: the company's level, each employee's own (null: the company's), and the lists. */
+  function approvalsView() {
+    const company = d.registry.settings().approvals;
+    return {
+      company: isApprovalLevel(company) ? company : defaultApprovalLevel,
+      employees: d.registry.employees().map((e) => ({
+        id: e.id,
+        name: e.name,
+        role: e.role,
+        approvals: isApprovalLevel(e.approvals) ? e.approvals : null,
+      })),
+      lenientSkips,
+      alwaysAsks,
+    };
   }
 
   async function act(id: string | undefined, needs: "needs-you" | "ready" | null, fn: () => Promise<void>) {

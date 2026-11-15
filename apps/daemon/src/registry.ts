@@ -2,6 +2,8 @@
 // projects and settings, plus each account's latest usage. It is the Company port the core reads.
 import {
   type AccountCost,
+  type ApprovalLevel,
+  approvalLevel,
   type Company,
   type Duty,
   defaultProjectPolicy,
@@ -9,6 +11,7 @@ import {
   type Engine,
   type HostCost,
   type Id,
+  isApprovalLevel,
   type ProjectPolicy,
   type ProjectRelease,
   pickTint,
@@ -59,6 +62,8 @@ export interface Settings {
   notify?: Partial<NotifySettings>;
   /** How long the daemon waits on a script, a command or an agent before giving up (T63); the rest keep their defaults. */
   timeouts?: Partial<TimeoutSettings>;
+  /** How often work waits for the owner, company-wide (approvals.ts). Absent: lenient. */
+  approvals?: ApprovalLevel | undefined;
 }
 
 const defaultSettings: Settings = { utcOffsetMinutes: 0, pricePerKWh: 0, currency: "USD" };
@@ -223,6 +228,20 @@ export class Registry implements Company {
     return this.employees()
       .filter((e) => e.id !== employeeId && (named ? team.members.includes(e.id) : !claimed.has(e.id)))
       .map((e) => e.id);
+  }
+  /** How often an employee's work waits for the owner: its own level, else the company's, else lenient. */
+  approvals(employeeId: Id): ApprovalLevel {
+    const own = this.employees().find((e) => e.id === employeeId)?.approvals;
+    const company = this.settings().approvals;
+    return approvalLevel(
+      isApprovalLevel(own) ? own : undefined,
+      isApprovalLevel(company) ? company : undefined,
+    );
+  }
+  /** Sets an employee's own level, or (null) has it follow the company's. */
+  setEmployeeApprovals(employeeId: Id, level: ApprovalLevel | null): void {
+    const { approvals: _, ...rest } = this.employee(employeeId);
+    this.hire(level === null ? rest : { ...rest, approvals: level });
   }
   /** How a project's work reaches main: its own settings over the defaults (direct). */
   projectPolicy(project: string): ProjectPolicy {

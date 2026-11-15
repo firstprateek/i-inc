@@ -1,4 +1,11 @@
-import type { AccountCost, DigestRow, Employee, ProjectRelease, TicketEvent } from "@i-inc/core";
+import type {
+  AccountCost,
+  ApprovalLevel,
+  DigestRow,
+  Employee,
+  ProjectRelease,
+  TicketEvent,
+} from "@i-inc/core";
 import type {
   AccountRateLimit,
   BoardSummaryView,
@@ -175,6 +182,14 @@ export interface Conversation {
   modifiedAt: number;
   /** Once the work was handed to a ticket or opened as a PR (C22b). */
   ship?: ShipBrief;
+}
+
+/** `GET /api/approvals`: the company's level, each employee's own, and what lenient skips and what always asks. */
+export interface ApprovalsView {
+  company: ApprovalLevel;
+  employees: { id: string; name: string; role: string; approvals: ApprovalLevel | null }[];
+  lenientSkips: string[];
+  alwaysAsks: string[];
 }
 
 /** What the owner is notified about beyond tickets (C2, T65). One setting for every device. */
@@ -460,6 +475,10 @@ export const api = {
     ),
   createConversation: (c: { employeeId: string; project?: string | null; title?: string; mode?: string }) =>
     call<{ conversation: Conversation }>("POST", "/api/conversations", c).then((r) => r.conversation),
+  /** How often work waits for the owner: company-wide, and each employee's own level (null: the company's). */
+  approvals: () => call<ApprovalsView>("GET", "/api/approvals"),
+  setApprovals: (patch: { company?: ApprovalLevel; employees?: Record<string, ApprovalLevel | null> }) =>
+    call<ApprovalsView>("PUT", "/api/approvals", patch),
   /** What to be notified about (C2): a conversation that needs the owner, a long reply that finished. */
   notifySettings: () =>
     call<{ settings: NotifySettings }>("GET", "/api/push/settings").then((r) => r.settings),

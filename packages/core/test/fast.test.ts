@@ -156,13 +156,20 @@ describe("fast mode", () => {
     const result = await runTicket(p, refundsTicket());
     if (result.status !== "needs-you" || result.ask.kind !== "stuck")
       throw new Error("expected a stuck card");
-    expect(result.ask.reason).toContain("not confirmed after 2 check rounds");
-    expect(result.ask.reason).toContain(`${second} (can't tell: evidence 2)`);
+    expect(result.ask.reason).toBe("1 of 2 done-when items can't be confirmed after 2 check rounds");
     expect(p.harness.gateRuns).toBe(0);
     // Keep going starts the check again from a fresh first round: met this time, and on to the gates.
     await answer(p, "42", "continue");
     const after = await runTicket(p, refundsTicket());
     expect(after, JSON.stringify(after)).toEqual({ status: "done", outcome: "merged" });
+  });
+
+  it("lenient: a check that approves with an item it can't confirm goes on to the gates", async () => {
+    const p = direct(ports());
+    p.company.approvalLevel = "lenient";
+    p.agent.on({ stage: "review", duty: "review" }, check(true, ["met", "can't tell"]));
+    expect(await runTicket(p, refundsTicket())).toEqual({ status: "done", outcome: "merged" });
+    expect(p.agent.calls.filter((c) => c.stage === "review" && c.duty === "review")).toHaveLength(1);
   });
 
   it("a check that changed files has them put back, and the owner decides", async () => {

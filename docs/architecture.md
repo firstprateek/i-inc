@@ -145,7 +145,7 @@ The audit's fixes ([audit/T63-report.md](audit/T63-report.md)), in one place:
 - **Restart and recovery.** A graceful stop (SIGTERM, a deploy) leaves in-flight tickets resumable: `AcpAgent.run` throws `ShuttingDown`, nothing is recorded, and the next start continues them. A push that landed but whose record was lost is recognised on replay (a `push-intended` event, checked against the host's mirror). Retry and any answer on a stuck card reset the failure counters. Machine boot and stop are serialised per machine. Running sandboxes are adopted at startup so they are stopped when idle.
 - **Backups and disk.** A daily `VACUUM INTO ~/.i-inc/i-inc.db.autobak-<date>` when idle (30 days kept, the newest always), `PRAGMA quick_check` at startup (a failure is pushed and logged; the daemon keeps serving), and a low-disk gate: under 5 GB free (`minFreeGb`) no new ticket or conversation turn starts, and the ticket says why.
 - **The container service heals itself (T73).** A machine that will not boot with `hostname(s) already exist` (it recurs after machine stops) makes the daemon wait until every machine is idle, restart the container service once (at most one per 30 minutes), wait for the walls job to confirm the rules, and retry the boots; otherwise the owner gets a Needs you card and a push. The PA's root removal can be repeated safely on every boot. A conversation boots a stopped sandbox first, home or team (T74). See handoff.md, "Sandbox won't boot".
-- **Done-when is checked (T71).** Orientation and tidy tickets close only when their done-when is met, judged against the collected brain copy (one retry with feedback, then Needs you), and an errand is done when it proposes something or says why nothing is needed. **Code tickets (T72):** every one has its done-when checked before the gates: fast mode in its check session, otherwise by the prove stage or, where it didn't run, the done-when stage. An item not confirmed goes to the owner, never to done.
+- **Done-when is checked (T71).** Orientation and tidy tickets close only when their done-when is met, judged against the collected brain copy (one retry with feedback, then Needs you), and an errand is done when it proposes something or says why nothing is needed. **Code tickets (T72):** every one has its done-when checked before the gates: fast mode in its check session, otherwise by the prove stage or, where it didn't run, the done-when stage. An item not met after the builder's fix goes to the owner, never to done; one the checker can't confirm goes to the owner only when approvals are careful (lenient, the default, goes on and records it; see "Approvals").
 - **A PA works offline (T71, T74).** A PA's brief and every turn carry a short note on its machine (no internet, no sudo, no installs, the tools it has), its brain section is cut for its small window, and its model is `qwen3-8b-32k` (`qwen3:8b` with the 32k window set on the model). Its brief gives examples it can copy as they are, and the harvest drops junk frontmatter keys. `apps/daemon/scripts/converse.ts` is the smoke tool (handoff.md, "Checking a PA works").
 - **Retries.** An upstream GitHub 5xx, a rate limit or a network blip is retried (with `retryAfter`) instead of failing the ticket; `waitForCi` no longer treats a failed rules lookup as "no required checks".
 - **Sign-in.** A first-run signup needs a one-time setup code; every login is a revocable server-side session; failed logins and setup guesses are limited (see "Owner authentication").
@@ -241,8 +241,9 @@ quiet ticket, the build and one check.
    main, the checks again, and a push to main made **by the daemon on the host** from a verified bundle of exactly the checked sha. If main moved meanwhile, rebase and try again.
 9. **CI on main:** if it fails, the same ticket becomes the fix, first in line. If main is still red
    2 hours after the push, the push is reverted and the ticket fails honestly.
-10. **Report:** to the board, with up to 3 follow-up tickets the builder noticed (more wait under
-   Needs you as proposals). The ticket closes without waiting for the owner. (In `owner-merges` mode
+10. **Report:** to the board, with up to 3 follow-up tickets the builder noticed (over the daily budget
+   they are filed on hold, or wait under Needs you as proposals when approvals are careful; see
+   "Approvals"). The ticket closes without waiting for the owner. (In `owner-merges` mode
    it waits for the PR to be merged on GitHub instead, and closes by itself when it is.)
 11. **Retro:** lessons go to the brains and the handbook (the agent's edits to its brain copy are harvested with no approval; every change is in Company → Brain → Changes with a revert).
 
@@ -251,6 +252,41 @@ The web app still shows the three effort levels; Low and Medium both mean Fast.
 GitHub refuses the bot any change to `.github/workflows`, which keeps the repo's secrets (Duet's
 release signing key) out of agents' reach. So a reviewed workflow change waits for the owner, who
 pushes it with `tools/host/push-for-owner.sh` and then OKs the ticket.
+
+## Approvals: what waits for the owner
+
+How often work stops to ask is a setting (decided 2026-11-15), in **Company → Settings → Approvals**
+(`#/company/settings/approvals`, `GET`/`PUT /api/approvals`): one level for the company, and a level of
+its own for any employee (absent: the company's). It is stored in the registry (`settings.approvals`,
+`Employee.approvals`); the runner reads it through the Company port (`approvals(employeeId)`;
+`packages/core/src/approvals.ts`).
+
+- **Lenient** (the default) asks only where a mistake is costly or can't be undone. It does not hold a
+  plan at the gate (any mode, any effort); a done-when item the checker can't confirm doesn't stop the
+  work (the check's result for each item is on the ticket and in the report; only "not met", after the
+  builder's one fix, asks); a builder and reviewer who still disagree after the rounds go on, with the
+  dispute in the report (as direct mode always did); and a follow-up over the project's daily budget is
+  filed **on hold** on the board instead of waiting as a proposal (nothing runs and nothing asks until the
+  owner takes the hold off; the proposer's level decides).
+- **Careful** asks as i.inc did before: plan gates in owner-merges mode, can't-tell done-when items,
+  open disagreements in owner-merges mode, and over-budget follow-ups as proposals.
+- **Always asks, at any level:** host-executed code in the repo the mini runs reaching main (the
+  deployer deploys only what the owner OKed) and a project's protected paths; a PA's never-automatic
+  outbound actions (`pay`, `book`, `delete-mail`, `forward`, `share-file`, `account-settings`) and
+  anything sent outside the owner's contacts; new handbook policy; and work that is really stuck.
+
+Conversations never ask (they default to the agent's bypass mode). In the live data up to 2026-11-15 the
+Needs you asks were: 17 done-when cards that couldn't confirm an item (15 of them one ticket asking again
+after each "Keep going"), all answered "Keep going"; 6 protected-path OKs; 23 over-budget follow-up
+proposals, all accepted in one sitting; and 1 handbook policy. Lenient removes the first and third kinds.
+
+**Every request is one short line.** A stuck card's `reason` is at most 160 characters (`maxAskLength`,
+cut at a word by `askLine`), written at a high level ("1 of 4 done-when items is not met after the
+fix, says Codex"); a longer account, when there is one, is the ask's `detail`, shown on the ticket, and
+each done-when item's result is in the ticket's done-when record. On Needs you a card is the ticket's
+title, that line and its buttons; a protected-path OK is one question ("Ship “…”? It changes protected
+code (3 files).") with the files and the diff folded under "See the change"; a handbook policy shows one
+line, with the rest under "Read it all".
 
 ## Knowledge
 

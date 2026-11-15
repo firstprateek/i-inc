@@ -33,6 +33,7 @@ export const sections = [
   ["engines", "Engines and accounts"],
   ["sandboxes", "Sandboxes"],
   ["notifications", "Notifications"],
+  ["approvals", "Approvals"],
 ] as const;
 export type Section = (typeof sections)[number][0];
 export const isSection = (s: string | undefined): s is Section => sections.some(([id]) => id === s);
