@@ -209,6 +209,21 @@ describe("My desk view and releases (T33)", () => {
     expect(phoneRules).toMatch(/\.learned a \{[^}]*min-height:\s*44px/);
   });
 
+  it("guards the release button's min-height of 44px (CSS and computed)", async () => {
+    const css = (customElements.get("inc-desk") as unknown as { styles: { cssText: string }[] }).styles
+      .map((c) => c.cssText)
+      .join("\n");
+    expect(css).toMatch(/\.release-btn\s*\{[^}]*min-height:\s*44px/);
+    const phoneRules = css.slice(css.indexOf("@media (max-width: 900px)"));
+    expect(phoneRules).toMatch(/\.release-btn\s*\{[^}]*min-height:\s*44px/);
+
+    serveDesk();
+    const { root } = await mount();
+    const releaseBtn = root.querySelector<HTMLButtonElement>("button.release-btn");
+    expect(releaseBtn).not.toBeNull();
+    expect(getComputedStyle(releaseBtn!).minHeight).toBe("44px");
+  });
+
   it("links a lesson to the company brain's new address", async () => {
     serveDesk();
     const { root } = await mount("usage");
@@ -479,6 +494,12 @@ describe("My desk view and releases (T33)", () => {
     const dismiss = banner?.querySelector<HTMLButtonElement>("button");
     expect(dismiss?.getAttribute("aria-label")).toBe("Dismiss");
     expect(dismiss?.type).toBe("button");
+    expect(getComputedStyle(dismiss!).width).toBe("44px");
+    expect(getComputedStyle(dismiss!).height).toBe("44px");
+    const css = (customElements.get("inc-desk") as unknown as { styles: { cssText: string }[] }).styles
+      .map((c) => c.cssText)
+      .join("\n");
+    expect(css).toMatch(/\.err button\s*\{[^}]*width:\s*44px;[^}]*height:\s*44px/);
 
     dismiss?.click();
     await el.updateComplete;
