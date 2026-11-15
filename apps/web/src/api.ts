@@ -355,12 +355,16 @@ export async function login(username: string, password: string): Promise<{ ok: b
 }
 
 export async function logout(): Promise<void> {
-  await send("/api/logout", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({}),
-  });
-  draftMemo.clearAll();
+  try {
+    await send("/api/logout", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+  } finally {
+    // Forget drafts even when the daemon can't be reached: one to a PA can hold home data.
+    draftMemo.clearAll();
+  }
   showLogin();
 }
 

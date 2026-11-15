@@ -1,5 +1,6 @@
 // The sign-in screen: a fresh daemon asks for the one-time setup code before it makes the owner account.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SIGNED_OUT } from "../src/drafts.ts";
 import { IncLogin, showLogin } from "../src/login.ts";
 
 let posted: { path: string; body: Record<string, unknown> }[] = [];
@@ -35,9 +36,36 @@ const type = (root: ShadowRoot, name: string, value: string) => {
 
 beforeEach(() => {
   document.body.innerHTML = "";
+  localStorage.clear();
 });
 afterEach(() => {
   vi.unstubAllGlobals();
+  localStorage.clear();
+});
+
+describe("drafts after signing in", () => {
+  const signIn = async () => {
+    const { root } = await mount();
+    type(root, "username", "owner");
+    type(root, "password", "long-enough-password");
+    (root.querySelector("form") as HTMLFormElement).dispatchEvent(new Event("submit", { cancelable: true }));
+    await new Promise((r) => setTimeout(r, 10));
+  };
+
+  it("lets drafts be stored again once the sign-in succeeds", async () => {
+    serve({ initialized: true });
+    localStorage.setItem(SIGNED_OUT, "1");
+    await signIn();
+    expect(location.reload).toHaveBeenCalled();
+    expect(localStorage.getItem(SIGNED_OUT)).toBeNull();
+  });
+
+  it("keeps drafts out of storage while the sign-in is refused", async () => {
+    serve({ initialized: true }, 401);
+    localStorage.setItem(SIGNED_OUT, "1");
+    await signIn();
+    expect(localStorage.getItem(SIGNED_OUT)).toBe("1");
+  });
 });
 
 describe("first run", () => {
