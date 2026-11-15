@@ -878,16 +878,16 @@ describe("records and state stay tidy", () => {
     w.head = B;
     w.ci[B] = { state: "success" };
     w.buildFails[B] =
-      "pnpm install failed (exit 1): ENOENT /Users/padi/i-inc-releases/abc/package.json and /home/owner/x";
+      "pnpm install failed (exit 1): ENOENT /Users/alice/i-inc-releases/abc/package.json and /home/owner/x";
     const d = w.deployer();
     await d.cycle();
     w.clock.t += 3 * 60_000;
     await d.cycle();
     const reason = w.store.records[0]?.reason ?? "";
     expect(reason).toContain("ENOENT");
-    expect(reason).not.toContain("/Users/padi");
+    expect(reason).not.toContain("/Users/alice");
     expect(reason).not.toContain("/home/owner");
-    expect(w.logs.join("\n")).not.toContain("/Users/padi");
+    expect(w.logs.join("\n")).not.toContain("/Users/alice");
   });
 });
 

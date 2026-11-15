@@ -40,8 +40,8 @@ describe("parseDnsQuestionName", () => {
     const q1 = buildDnsQuery("github.com");
     expect(parseDnsQuestionName(q1)).toBe("github.com");
 
-    const q2 = buildDnsQuery("prateeks-mini.local");
-    expect(parseDnsQuestionName(q2)).toBe("prateeks-mini.local");
+    const q2 = buildDnsQuery("studio-mini.local");
+    expect(parseDnsQuestionName(q2)).toBe("studio-mini.local");
 
     const q3 = buildDnsQuery("node.tailnet123.ts.net");
     expect(parseDnsQuestionName(q3)).toBe("node.tailnet123.ts.net");
@@ -74,7 +74,7 @@ describe("isBlockedSandboxDomain", () => {
 
   it("blocks .local domains case-insensitively", () => {
     expect(isBlockedSandboxDomain("local")).toBe(true);
-    expect(isBlockedSandboxDomain("prateeks-mac-mini.local")).toBe(true);
+    expect(isBlockedSandboxDomain("studio-mac-mini.local")).toBe(true);
     expect(isBlockedSandboxDomain("PRINTER.LOCAL")).toBe(true);
     expect(isBlockedSandboxDomain("device.local.")).toBe(true);
 
