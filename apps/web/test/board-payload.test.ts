@@ -113,6 +113,18 @@ describe("opening the board with 1,000 tickets", () => {
     expect(total()).toBeLessThan(150_000);
   });
 
+  it("keeps request counts stable while background polling would be due", async () => {
+    vi.useFakeTimers();
+    try {
+      await open();
+      log = [];
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(paths()).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("shows each column's total, the first cards, and Show more for the rest", async () => {
     const { root } = await open();
     const sections = [...root.querySelectorAll("section")];
