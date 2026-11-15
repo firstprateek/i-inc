@@ -3,7 +3,8 @@
 // host, and the app installs only what its built-in public key verifies).
 //
 // `pnpm --filter @i-inc/desktop release` writes the folder (`~/.i-inc/desktop/`):
-//   release.json             { version, notes, pub_date, file, signature }: the newest build
+//   release.json             { version, notes, pub_date, file, signature, previous? }: the newest build, and the
+//                            one before it (still served, for a copy that read the old latest.json just before)
 //   i.inc_<version>.app.tar.gz  that build, for the updater (Tauri's updater plugin format)
 //   i.inc.zip                the same build zipped, for a first install by hand
 //
@@ -20,6 +21,7 @@ export interface DesktopRelease {
   pub_date?: string;
   file: string;
   signature: string;
+  previous?: string;
 }
 
 /** The platforms one universal macOS build answers for (the plugin asks for `darwin-<arch>` of the slice). */
@@ -42,6 +44,7 @@ export function parseRelease(text: string): DesktopRelease | null {
       signature: r.signature,
       ...(typeof r.notes === "string" ? { notes: r.notes } : {}),
       ...(typeof r.pub_date === "string" ? { pub_date: r.pub_date } : {}),
+      ...(typeof r.previous === "string" && FILE.test(r.previous) ? { previous: r.previous } : {}),
     };
   } catch {
     return null;
@@ -52,7 +55,8 @@ export function parseRelease(text: string): DesktopRelease | null {
 export function originOf(host: string | null): string | null {
   if (!host || !HOST.test(host)) return null;
   const name = host.replace(/:\d+$/, "").toLowerCase();
-  const loopback = name === "127.0.0.1" || name === "localhost" || name === "[::1]";
+  // Plain http only on loopback: the tailnet name is served over HTTPS by Tailscale (an IPv6 literal is refused).
+  const loopback = name === "127.0.0.1" || name === "localhost";
   return `${loopback ? "http" : "https"}://${host}`;
 }
 
@@ -90,8 +94,10 @@ export function serveDesktopUpdates(dir: string): DesktopServer {
         headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
       });
     }
-    // Only the current build and the zip; nothing else in the folder is ever served.
-    const ok = name === ZIP ? current !== null : current !== null && name === current.file;
+    // Only the current build, the one before it and the zip; nothing else in the folder is ever served.
+    const ok =
+      current !== null &&
+      (name === ZIP || name === current.file || (!!current.previous && name === current.previous));
     if (!ok) return new Response("not found", { status: 404 });
     const path = join(dir, name);
     try {

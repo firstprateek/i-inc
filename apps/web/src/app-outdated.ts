@@ -8,6 +8,24 @@ import { base } from "./components/shared.ts";
 const CLOSED_KEY = "i-inc-app-outdated-closed";
 
 export class IncAppOutdated extends LitElement {
+  static override properties = { download: { state: true } };
+  declare download: boolean;
+
+  constructor() {
+    super();
+    this.download = false;
+  }
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    // Offer the download only when the daemon has a build to give (the release is run by hand after a deploy).
+    void fetch("/desktop/i.inc.zip", { method: "HEAD", cache: "no-store" })
+      .then((res) => {
+        this.download = res.ok;
+      })
+      .catch(() => {});
+  }
+
   static override styles = [
     base,
     css`
@@ -34,9 +52,12 @@ export class IncAppOutdated extends LitElement {
 
   override render() {
     return html`<div class="card" role="status">
-      <p><strong>This i.inc app is an older build.</strong> Some things may look wrong.
-        <a href="/desktop/i.inc.zip" target="_blank" rel="noopener">Download the new one</a>; it updates itself from
-        then on.</p>
+      <p><strong>This i.inc app is an older build.</strong> Some things may look wrong.${
+        this.download
+          ? html` <a href="/desktop/i.inc.zip" target="_blank" rel="noopener">Download the new one</a>; it updates
+              itself from then on.`
+          : ""
+      }</p>
       <button type="button" aria-label="Close" @click=${this.close}>×</button>
     </div>`;
   }

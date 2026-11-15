@@ -234,18 +234,33 @@ describe("wiring the document in the app", () => {
     expect(document.querySelector("inc-app-outdated")).toBeNull();
   });
 
-  it("says it about an app below the pages' minimum (0.2 cannot update itself), with a download link", async () => {
+  /** The card asks whether the daemon has a build (HEAD /desktop/i.inc.zip); let that answer land. */
+  async function outdatedCard(status: number) {
+    vi.stubGlobal("fetch", async () => new Response(null, { status }));
     window.__I_INC_APP_VERSION__ = "0.2.0";
     wireDesktop();
     const card = document.querySelector("inc-app-outdated") as HTMLElement & {
       updateComplete: Promise<unknown>;
     };
     expect(card).not.toBeNull();
+    for (let i = 0; i < 5; i++) await Promise.resolve();
     await card.updateComplete;
+    vi.unstubAllGlobals();
+    return card;
+  }
+
+  it("says it about an app below the pages' minimum (0.2 cannot update itself), with a download link", async () => {
+    const card = await outdatedCard(200);
     const link = card.shadowRoot?.querySelector("a") as HTMLAnchorElement;
     expect(link.getAttribute("href")).toBe("/desktop/i.inc.zip");
     // A new window, which the app opens in the default browser, where the zip downloads.
     expect(link.target).toBe("_blank");
+  });
+
+  it("leaves the download link out while the daemon has no build to give", async () => {
+    const card = await outdatedCard(404);
+    expect(card.shadowRoot?.textContent).toContain("older build");
+    expect(card.shadowRoot?.querySelector("a")).toBeNull();
   });
 
   it("offers Restart once the app has installed a newer build, and asks the app to restart", async () => {

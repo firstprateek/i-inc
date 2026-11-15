@@ -220,6 +220,12 @@ fn main() {
             app.manage(Zoom(Mutex::new(saved_zoom(app.handle()))));
             app.manage(Daemon(Mutex::new(DaemonState::default())));
             app.manage(updates::Updates::default());
+            // A window left open has no page loads (the web app routes by #hash): ask on a timer too.
+            let ticker = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(updates::EVERY);
+                check_updates(&ticker, false);
+            });
             let handle = app.handle().clone();
             let config = app.config().app.windows.first().expect("window config").clone();
             WebviewWindowBuilder::from_config(app.handle(), &config)?

@@ -21,7 +21,8 @@ function folder(release: unknown = RELEASE) {
   writeFileSync(join(dir, RELEASE.file), "tarball");
   writeFileSync(join(dir, "i.inc.zip"), "zip");
   writeFileSync(join(dir, "secret.key"), "nope");
-  writeFileSync(join(dir, "i.inc_0.2.1.app.tar.gz"), "old build");
+  writeFileSync(join(dir, "i.inc_0.2.1.app.tar.gz"), "older build");
+  writeFileSync(join(dir, "i.inc_0.3.202611150100.app.tar.gz"), "previous build");
   return dir;
 }
 
@@ -87,11 +88,34 @@ describe("GET /desktop/…", () => {
       "/desktop/secret.key",
       "/desktop/release.json",
       "/desktop/i.inc_0.2.1.app.tar.gz",
-      "/desktop/../i-inc.db",
-      "/desktop/%2e%2e/i-inc.db",
+      "/desktop/i.inc_0.3.202611150100.app.tar.gz", // not named as previous in this release.json
+      "/desktop/..%2fi-inc.db", // an encoded slash stays in the name, which is then no file's name
     ]) {
       expect((await get(serve, path)).status, path).toBe(404);
     }
+  });
+
+  it("still serves the build before, for a copy that read the old latest.json", async () => {
+    const serve = serveDesktopUpdates(folder({ ...RELEASE, previous: "i.inc_0.3.202611150100.app.tar.gz" }));
+    const res = await get(serve, "/desktop/i.inc_0.3.202611150100.app.tar.gz");
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("previous build");
+    // A previous that is not a build's name is ignored.
+    const odd = serveDesktopUpdates(folder({ ...RELEASE, previous: "secret.key" }));
+    expect((await get(odd, "/desktop/secret.key")).status).toBe(404);
+  });
+
+  it("answers HEAD with the size and no body", async () => {
+    const serve = serveDesktopUpdates(folder());
+    const res = await serve(
+      new Request("http://127.0.0.1:7420/desktop/i.inc.zip", {
+        method: "HEAD",
+        headers: { host: "127.0.0.1:7420" },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-length")).toBe("3");
+    expect(await res.text()).toBe("");
   });
 
   it("only reads", async () => {

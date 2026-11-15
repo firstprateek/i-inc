@@ -42,7 +42,7 @@ is deployed (the daemon must have the `/desktop/` route):
     pnpm --filter @i-inc/desktop release
 
 It builds a signed universal app and puts it in `~/.i-inc/desktop/`; every installed copy (0.3 or later) picks it
-up within half an hour, or at once from i.inc › Check for Updates…. A first install on another Mac:
+up within about half an hour while it runs (or at its next launch), or at once from i.inc › Check for Updates…. A first install on another Mac:
 `https://iinc.<tailnet>.ts.net/desktop/i.inc.zip`. **The signing key `~/.config/i-inc/desktop-updater.key` must
 move with the host** (Mac Studio migration): without it no installed copy accepts a new build, and every copy has
 to be reinstalled by hand with a new key. Details: architecture.md, "Desktop app".

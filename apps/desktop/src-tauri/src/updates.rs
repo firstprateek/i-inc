@@ -2,8 +2,9 @@
 // /desktop/, and apps/desktop/scripts/release.ts puts them there). Tauri's updater plugin downloads a build,
 // checks it against the public key in tauri.conf.json (only the host's signing key can make one it accepts, and
 // the signature must name the version announced), and puts it in this app's place. The page then offers a
-// restart (apps/web/src/app-update.ts). It asks when a daemon page loads, at most every half hour, and from
-// i.inc › Check for Updates…; only the daemon the launcher chose is ever asked.
+// restart (apps/web/src/app-update.ts). It asks when a daemon page loads and every half hour while the app runs
+// (the web app routes by #hash, so a window left open has no page loads), and from i.inc › Check for Updates…;
+// only the daemon the launcher chose is ever asked.
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -11,7 +12,10 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, Url, WebviewWindow};
 use tauri_plugin_updater::UpdaterExt;
 
-const EVERY: Duration = Duration::from_secs(30 * 60);
+pub const EVERY: Duration = Duration::from_secs(30 * 60);
+/// The longest a download may take; without it a laptop that sleeps mid-download would keep `busy` set and
+/// drop every later check, the menu's included (the plugin sets no timeout on the download itself).
+const DOWNLOAD_LIMIT: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Default)]
 pub struct Updates {
@@ -64,6 +68,9 @@ pub fn check(app: &AppHandle, origin: String, loud: bool) {
         *last = Some(Instant::now());
     }
     if state.busy.swap(true, Ordering::SeqCst) {
+        if loud {
+            note(app, "Already checking for an update…");
+        }
         return;
     }
     let app = app.clone();
@@ -85,7 +92,8 @@ pub fn check(app: &AppHandle, origin: String, loud: bool) {
                 .map_err(|e| e.to_string())?;
             match updater.check().await.map_err(|e| format!("could not ask the daemon ({e})"))? {
                 None => Ok(Some(format!("The i.inc app is up to date ({}).", app.package_info().version))),
-                Some(update) => {
+                Some(mut update) => {
+                    update.timeout = Some(DOWNLOAD_LIMIT);
                     update
                         .download_and_install(|_, _| {}, || {})
                         .await

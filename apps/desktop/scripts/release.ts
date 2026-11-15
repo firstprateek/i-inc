@@ -9,7 +9,8 @@
 //   tauri.conf.json; a build the key did not sign is refused by every installed copy.
 // - Output: ~/.i-inc/desktop/ (I_INC_HOME): i.inc_<version>.app.tar.gz with release.json for the updater
 //   (apps/daemon/src/desktop-updates.ts serves them under /desktop/), and i.inc.zip for a first install by hand.
-//   The build before this one is kept until the next release, for a copy that is mid-download.
+//   The build before this one is kept and still served until the next release, for a copy that read the old
+//   latest.json just before. Two releases in the same UTC minute would share a name, so the second is refused.
 import { spawnSync } from "node:child_process";
 import {
   copyFileSync,
@@ -60,6 +61,15 @@ const keyPath = process.env.I_INC_UPDATER_KEY ?? join(homedir(), ".config", "i-i
 if (!existsSync(keyPath)) throw new Error(`no signing key at ${keyPath}`);
 const out = join(process.env.I_INC_HOME ?? join(homedir(), ".i-inc"), "desktop");
 
+const file = `i.inc_${version}.app.tar.gz`;
+const previous = (() => {
+  try {
+    return (JSON.parse(readFileSync(join(out, "release.json"), "utf8")) as { file?: string }).file;
+  } catch {
+    return undefined;
+  }
+})();
+if (previous === file) throw new Error(`${version} is already released; wait a minute and run it again`);
 console.log(`▸ i.inc app ${version} for ${url}`);
 run(
   "pnpm",
@@ -91,26 +101,19 @@ if (!comment.includes(`version:${version}`)) {
 }
 
 mkdirSync(out, { recursive: true });
-const file = `i.inc_${version}.app.tar.gz`;
 copyFileSync(tarball, join(out, `${file}.part`));
 renameSync(join(out, `${file}.part`), join(out, file));
 rmSync(join(out, "i.inc.zip.part"), { force: true });
 run("ditto", ["-c", "-k", "--keepParent", join(bundle, "i.inc.app"), join(out, "i.inc.zip.part")]);
 renameSync(join(out, "i.inc.zip.part"), join(out, "i.inc.zip"));
 
-const previous = (() => {
-  try {
-    return (JSON.parse(readFileSync(join(out, "release.json"), "utf8")) as { file?: string }).file;
-  } catch {
-    return undefined;
-  }
-})();
 const release = {
   version,
   notes: process.env.I_INC_RELEASE_NOTES ?? "",
   pub_date: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
   file,
   signature,
+  ...(previous ? { previous } : {}),
 };
 writeFileSync(join(out, "release.json.part"), `${JSON.stringify(release, null, 2)}\n`);
 renameSync(join(out, "release.json.part"), join(out, "release.json"));
@@ -120,6 +123,6 @@ for (const name of readdirSync(out)) {
   if (/^i\.inc_.*\.app\.tar\.gz$/.test(name) && name !== file && name !== previous) rmSync(join(out, name));
 }
 console.log(
-  `✓ released ${version}: installed copies update within half an hour, or from i.inc › Check for Updates…`,
+  `✓ released ${version}: running copies update within about half an hour, or at once from i.inc › Check for Updates…`,
 );
 console.log(`  first install on another Mac: ${url}/desktop/i.inc.zip`);
