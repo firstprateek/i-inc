@@ -1,0 +1,11 @@
+title = "i-inc gitleaks config"
+
+[extend]
+useDefault = true
+
+# Deliberate, fake canary tokens used to test the sanitizer/redaction code.
+[allowlist]
+description = "Test fixtures containing deliberate fake credentials"
+paths = [
+  '''apps/[^/]+/test/''',
+]
