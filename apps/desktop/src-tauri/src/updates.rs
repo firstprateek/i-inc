@@ -37,6 +37,32 @@ fn installed_copy() -> bool {
         .is_some_and(|p| !p.components().any(|c| c.as_os_str() == "target"))
 }
 
+/// True when the plugin can swap the bundle without asking for a password: a file can be made next to it, and the
+/// bundle folder itself is writable (moving a folder to another parent needs write access to the folder, so a copy
+/// installed by another account fails there even when /Applications is writable). Nothing is written inside the
+/// bundle, which would break its signature.
+fn bundle_folder_writable() -> bool {
+    let Some(app) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.canonicalize().ok())
+        .and_then(|p| p.ancestors().find(|a| a.extension().is_some_and(|e| e == "app")).map(|a| a.to_path_buf()))
+    else {
+        return false;
+    };
+    let Some(dir) = app.parent() else { return false };
+    let probe = dir.join(format!(".i-inc-write-test-{}", std::process::id()));
+    let ok = std::fs::write(&probe, b"").is_ok();
+    let _ = std::fs::remove_file(&probe);
+    ok && can_write(&app)
+}
+
+fn can_write(path: &std::path::Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) else { return false };
+    // SAFETY: a valid NUL-terminated path; access() only reads it.
+    unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
+}
+
 /// One line for the page to show for a few seconds (apps/web/src/app-update.ts).
 pub fn note(app: &AppHandle, text: &str) {
     let Some(window) = app.get_webview_window("main") else { return };
@@ -82,12 +108,17 @@ pub fn check(app: &AppHandle, origin: String, loud: bool) {
             if app.state::<Updates>().ready.lock().is_ok_and(|r| r.is_some()) {
                 return Ok(None);
             }
+            // In a folder this account can't write to, the plugin would ask for an administrator password: only
+            // when asked from the menu, never out of the blue on a page load or the timer.
+            if !loud && !bundle_folder_writable() {
+                return Err("the app's folder is not writable".into());
+            }
             let endpoint = Url::parse(&format!("{origin}/desktop/latest.json")).map_err(|e| e.to_string())?;
             let updater = app
                 .updater_builder()
                 .endpoints(vec![endpoint])
                 .map_err(|e| e.to_string())?
-                .timeout(Duration::from_secs(120))
+                .timeout(Duration::from_secs(30))
                 .build()
                 .map_err(|e| e.to_string())?;
             match updater.check().await.map_err(|e| format!("could not ask the daemon ({e})"))? {

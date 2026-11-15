@@ -9,8 +9,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
-tauri-plugin-updater = "2"
+tauri-plugin-updater = "2.14"
 serde_json = "1"
+libc = "0.2"
 
 [profile.release]
 strip = true
