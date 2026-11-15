@@ -10,6 +10,8 @@
 declare global {
   interface Window {
     __I_INC_TITLEBAR__?: boolean;
+    /** The page zoom the app set (⌘+ / ⌘− / ⌘0), announced with an `i-inc:zoom` event. */
+    __I_INC_ZOOM__?: number;
   }
 }
 
@@ -37,7 +39,16 @@ export function isFullScreen(
   return view.innerWidth >= screen.width && view.innerHeight >= screen.height;
 }
 
-/** Says "change" when the window goes into or out of full screen. */
+/**
+ * The app's page zoom. It scales the page but not the window buttons, so the title bar undoes it (CSS `zoom`
+ * of 1/z) to stay the buttons' height and keep clear of them.
+ */
+export function appZoom(): number {
+  const z = typeof window === "undefined" ? undefined : window.__I_INC_ZOOM__;
+  return typeof z === "number" && Number.isFinite(z) && z > 0 ? z : 1;
+}
+
+/** Says "change" when the window goes into or out of full screen, or the app's zoom changes. */
 export const titlebarEvents = new EventTarget();
 
 /** True while the desktop window fills the screen (its window buttons hidden). */
@@ -47,7 +58,11 @@ export function inFullScreen(): boolean {
 
 let wired = false;
 
-/** Marks the document (`in-app`, plus `mac` and `fullscreen` as they apply). Does nothing outside the app. */
+/**
+ * Marks the document (`in-app`, plus `mac` and `fullscreen` as they apply) and follows full screen and zoom.
+ * Does nothing outside the app. (The page never bounces on a two-finger scroll: tokens.css sets
+ * `overscroll-behavior: none` on html and body everywhere.)
+ */
 export function wireDesktop(): void {
   if (wired || !inDesktopApp()) return;
   wired = true;
@@ -62,4 +77,5 @@ export function wireDesktop(): void {
   };
   update();
   addEventListener("resize", update);
+  addEventListener("i-inc:zoom", () => titlebarEvents.dispatchEvent(new Event("change")));
 }

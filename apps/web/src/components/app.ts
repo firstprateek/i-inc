@@ -3,7 +3,7 @@ import { repeat } from "lit/directives/repeat.js";
 import { logout, refresh, refreshNow } from "../api.ts";
 import { connection, isOffline } from "../connection.ts";
 import { outcomeView, shipOutcomes } from "../conversations/outcomes.ts";
-import { inDesktopApp, inFullScreen, titlebarEvents, titlebarKind } from "../desktop.ts";
+import { appZoom, inDesktopApp, inFullScreen, titlebarEvents, titlebarKind } from "../desktop.ts";
 import { isDismissed, showGettingStarted } from "../first-run.ts";
 import { canInstall, installSignal, needsIosInstall, promptInstall } from "../install.ts";
 import { startLiveUpdates } from "../live.ts";
@@ -146,7 +146,10 @@ export class IncApp extends LitElement {
   /** In the desktop app (../desktop.ts) the header is the window's title bar. */
   private readonly titlebar = inDesktopApp();
 
-  private onFullScreen = () => this.toggleAttribute("fullscreen", inFullScreen());
+  private onFullScreen = () => {
+    this.toggleAttribute("fullscreen", inFullScreen());
+    this.requestUpdate();
+  };
 
   override connectedCallback(): void {
     super.connectedCallback();
@@ -916,7 +919,8 @@ export class IncApp extends LitElement {
     const needsActive = this.route.view === "needs-you";
 
     return html`
-      <header @click=${this.onHeaderClick} data-tauri-drag-region=${this.titlebar ? "deep" : nothing}>
+      <header @click=${this.onHeaderClick} data-tauri-drag-region=${this.titlebar ? "deep" : nothing}
+        style=${this.titlebar && appZoom() !== 1 ? `zoom: ${1 / appZoom()}` : nothing}>
         <button class="skip" type="button" @click=${this.skipToContent}>Skip to content</button>
         ${
           this.titlebar

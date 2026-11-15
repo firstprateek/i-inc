@@ -81,6 +81,21 @@ describe("the shell's header", () => {
     expect(header.querySelectorAll("nav.areas a").length).toBe(3);
   });
 
+  it("undoes the app's zoom on the title bar, which must stay the window buttons' size", async () => {
+    window.__I_INC_TITLEBAR__ = true;
+    window.__I_INC_ZOOM__ = 1.25;
+    try {
+      const { root } = await mount();
+      expect((root.querySelector("header") as HTMLElement).getAttribute("style")).toBe("zoom: 0.8");
+    } finally {
+      delete window.__I_INC_ZOOM__;
+    }
+    // At actual size, and in a browser, the header has no zoom of its own.
+    document.body.innerHTML = "";
+    const { root } = await mount();
+    expect((root.querySelector("header") as HTMLElement).hasAttribute("style")).toBe(false);
+  });
+
   it("keeps the open account menu out of the drag region", async () => {
     window.__I_INC_TITLEBAR__ = true;
     const { app, root } = await mount();
