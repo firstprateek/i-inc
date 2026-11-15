@@ -537,8 +537,8 @@ the old heredoc would likely have been slower still. Still to check on the mini:
 
 ## M3: a reviewer's checkout and images (#26)
 
-**Not yet run on the mini.** #26 was worked from an employee machine (Ubuntu 24.04), which can't
-reach the mini. What's below was checked on Linux, and the steps for the mini are at the end.
+**Run on the mini on 2026-11-15: all checks pass** (below, "On the mini"). #26 was worked from an
+employee machine (Ubuntu 24.04), which can't reach the mini, so it was checked on Linux first.
 
 `apps/daemon/scripts/reviewer-check.ts` sends the daemon's own `checkoutScript`, `attachmentScript`
 and `openScript` to a machine the way the daemon does: as `bash -s` on stdin, as `employee`. GitHub
@@ -558,13 +558,15 @@ Checked on Linux on 2026-11-15, with six 10 MB images:
 | --- | --- |
 | `--runtime docker`: an `ubuntu:24.04` container with git and an `employee` user, through `docker exec -i -u employee` | All checks pass. 66–87 ms per 10 MB image |
 | `--runtime local` (`bash -s` on the host), in `apps/daemon/test/reviewer-check.test.ts` | All checks pass in CI. The test also checks that a transport that drops part of an image fails A7 |
+| `--runtime container --machine inc-engineering` on the mini (Apple container, the employee image, coreutils 9.4), run from `main` at `d9ee981` while the team's machine was running | All checks pass (A1–A9, B1–B3), `PASS`. 94–178 ms per 10 MB image (slowest 178), about 2.4 s in all. The machine's `/tmp` was left clean |
 
 `checkoutScript` prints `cp: warning: behavior of -n is non-portable` on Ubuntu 24.04 (coreutils
 9.4). That's harmless there: the images are kept and the script exits 0. On coreutils 9.2, though,
 `cp -n` fails when it skips a file, which would stop the checkout under `set -e`.
 
-This covers the scripts, git and the stdin path through a container runtime. It doesn't cover Apple
-container's own relay or the employee image, which only the mini has. Still to check there:
+On the mini this covered Apple container's own stdin relay and the employee image too. Not yet done
+there: step 3, a sleeping machine, because the only team machine was in use (Ada and Codex had tickets
+running). The steps, for that and for a re-run:
 
 1. **Pull the branch on the mini** and pick a team machine that exists:
    `container machine ls`. Take a team's (`inc-<team>`), and run the check while that team has no
