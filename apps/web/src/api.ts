@@ -239,6 +239,21 @@ function noteFailure(method: string, path: string, failure: number | string, sta
   console.warn(`i.inc: ${f.method} ${f.path} got no answer (${f.failure}) after ${f.ms} ms`);
 }
 
+/** Routes that answer without a session: their success says nothing about being signed in. */
+const openRoutes = new Set(["/api/auth", "/api/login", "/api/signup", "/api/logout", "/api/health"]);
+let seenSignedIn = false;
+/**
+ * The first signed-in answer since the page loaded: drafts may be stored again. A sign-out that never reached the
+ * daemon left the flag behind with the session still valid, so the next load recovers. Once per load, and not
+ * while this tab shows the sign-in, so a late answer in a tab that was just signed out can't lift it.
+ */
+function signedInOnce(path: string): void {
+  if (seenSignedIn || !path.startsWith("/api/") || openRoutes.has(path.split("?")[0] ?? "")) return;
+  if (typeof document !== "undefined" && document.querySelector("inc-login")) return;
+  seenSignedIn = true;
+  draftMemo.signedIn();
+}
+
 /**
  * fetch, plus telling the app whether the daemon answered (see connection.ts). A browser drops an HTTP/2
  * connection now and then, failing every request on it, so a read that fails is sent once more a moment
@@ -268,6 +283,7 @@ export async function send(path: string, init?: RequestInit): Promise<Response> 
     // one of those is a proxy with nothing behind it, on any route.
     if (!isGatewayDown(res.status)) {
       report(true);
+      if (res.ok) signedInOnce(path);
       return res;
     }
     noteFailure(method, path, res.status, started);
@@ -354,12 +370,26 @@ export async function login(username: string, password: string): Promise<{ ok: b
   return res.ok ? { ok: true } : { ok: false, ...(data.error ? { error: data.error } : {}) };
 }
 
+/**
+ * Signs out. When the daemon can't be reached the session is still valid, so this tab stays in the app and
+ * says so, and other tabs aren't sent to the sign-in; this device's drafts are forgotten either way, since one
+ * to a PA can hold home data.
+ */
 export async function logout(): Promise<void> {
-  await send("/api/logout", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({}),
-  });
+  let res: Response;
+  try {
+    res = await send("/api/logout", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    answered(res);
+  } catch {
+    draftMemo.forget();
+    throw new Error(
+      "Couldn't sign out: i.inc can't be reached. Drafts on this device are cleared; try again.",
+    );
+  }
   draftMemo.clearAll();
   showLogin();
 }

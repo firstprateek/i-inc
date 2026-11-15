@@ -434,7 +434,30 @@ export class IncApp extends LitElement {
     return this.stale.values().next().value ?? null;
   }
 
+  /** Why the last sign-out didn't happen (the daemon couldn't be reached), until dismissed or tried again. */
+  private signOutError = "";
+
+  private async signOut(): Promise<void> {
+    this.signOutError = "";
+    try {
+      await logout();
+    } catch (e) {
+      this.signOutError = e instanceof Error ? e.message : String(e);
+      this.requestUpdate();
+    }
+  }
+
   private notice() {
+    if (this.signOutError) {
+      return html`<div slot="notice" class="load-error" role="alert">
+        <span>${this.signOutError}</span>
+        <button class="btn ghost" type="button" @click=${() => void this.signOut()}>Sign out</button>
+        <button class="btn ghost" type="button" @click=${() => {
+          this.signOutError = "";
+          this.requestUpdate();
+        }}>Dismiss</button>
+      </div>`;
+    }
     if (this.offline) return html`<inc-offline slot="notice"></inc-offline>`;
     const message = this.staleMessage();
     return message
@@ -1012,7 +1035,7 @@ export class IncApp extends LitElement {
                           }`
                         : ""
                   }
-                  <button type="button" role="menuitem" @click=${() => logout()}>Sign out</button>
+                  <button type="button" role="menuitem" @click=${() => this.signOut()}>Sign out</button>
                 </div>`
               : ""
           }

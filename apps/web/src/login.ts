@@ -4,7 +4,7 @@ import { authStatus, login, signup } from "./api.ts";
 import { base } from "./components/shared.ts";
 import { inDesktopApp } from "./desktop.ts";
 import "./components/layout.ts";
-import { draftMemo } from "./drafts.ts";
+import { draftMemo, SIGNED_OUT } from "./drafts.ts";
 
 export class IncLogin extends LitElement {
   static override properties = {
@@ -83,6 +83,7 @@ export class IncLogin extends LitElement {
         ? await login(username, password)
         : await signup(username, password, this.setupCodeRequired ? setupCode : undefined);
       if (res.ok) {
+        draftMemo.signedIn();
         location.reload();
       } else {
         this.error = res.error ?? (this.initialized ? "wrong username or password" : "signup failed");
@@ -269,6 +270,13 @@ export class IncLogin extends LitElement {
 
 if (!customElements.get("inc-login")) {
   customElements.define("inc-login", IncLogin);
+}
+
+// Signed out or expired in another tab: this one's session is gone too, so drop its drafts with the page.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (e) => {
+    if (e.key === SIGNED_OUT && e.newValue !== null) showLogin();
+  });
 }
 
 export function showLogin(): void {
