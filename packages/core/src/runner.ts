@@ -118,8 +118,14 @@ export async function runTicket(p: Ports, original: Ticket, opts: RunOptions = {
     }
 
     // After the owner's decision on a code ticket, only the retro is left; errands have it in their plan.
+    // The next stage is the plan's first one not yet finished, not the one at the count of finished stages: a
+    // plan that changed under a running ticket (fast mode replacing plan, prove and done-when) would otherwise
+    // skip the gates or run off the end.
     const stage =
-      s.active ?? (s.decision && !s.finished.includes("retro") ? "retro" : plan.stages[s.finished.length]);
+      s.active ??
+      (s.decision && !s.finished.includes("retro")
+        ? "retro"
+        : plan.stages.find((st) => !s.finished.includes(st)));
     if (!stage) throw new Error(`ticket ${ticket.id} ran out of stages without a report`);
     if (!s.active) {
       await emit({ type: "stage-started", at: now, stage });
@@ -847,6 +853,9 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     // Reject closes the PR, so it doesn't stay open on GitHub after the work was declined.
     const ws = c.p.workspace;
     const pr = c.s.pr;
+    // In direct mode "merged" means the work is on main, which only the gates' push makes true: a ticket that
+    // never pushed closes as done, so the board doesn't claim work landed that didn't.
+    if (outcome === "merged" && c.policy.mode === "direct" && !c.s.pushed) outcome = "done";
     if (ws && pr && pr.number !== undefined && c.policy.mode === "owner-merges") {
       if (outcome === "merged" && ws.prState && (await ws.prState(c.ticket, pr)) !== "merged")
         outcome = "done";

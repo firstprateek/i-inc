@@ -254,6 +254,36 @@ function describe(e: TicketEvent, registry: Registry): string | null {
       return `${stageName(e.stage)} · ${nameOf(registry, e.employeeId)} unavailable: ${e.reason}`;
     case "stage-started":
       return stageName(e.stage);
+    // What happens after the owner answers, and at the gates, so the line never keeps showing a question
+    // that has been answered.
+    case "owner-answered":
+      return e.answer === "reject" ? "You declined" : "Carrying on after your answer";
+    case "owner-decided":
+      return e.decision === "approve"
+        ? "You approved"
+        : e.decision === "changes"
+          ? "You asked for changes"
+          : "You rejected it";
+    case "retried":
+      return "Trying again";
+    case "reassigned":
+      return `Handed to ${nameOf(registry, e.to)}`;
+    case "push-intended":
+      return "Pushing to main";
+    case "gates-ran":
+      return e.ok
+        ? "Gates passed"
+        : e.conflict
+          ? "Gates · conflicts with main"
+          : `Gates · ${e.reason ?? "not passed"}`;
+    case "pushed":
+      return `Pushed ${e.sha.slice(0, 7)} to main · waiting for CI`;
+    case "ci-green":
+      return "CI green on main";
+    case "main-red":
+      return `CI red on main: ${e.reason}`;
+    case "reverted":
+      return `Reverted ${e.sha.slice(0, 7)} on main`;
   }
   return null;
 }

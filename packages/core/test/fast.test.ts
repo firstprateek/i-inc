@@ -114,6 +114,7 @@ describe("fast mode", () => {
 
   it("an unmet item is a blocking finding; round 2 looks only at what changed and at the open item", async () => {
     const p = direct(ports());
+    p.harness.gates.push({ ok: true, pushed: sha(7) }); // direct mode's gates push, as the real harness does
     p.workspace = new FakeWorkspace();
     p.agent.on(
       { stage: "review", duty: "review" },
@@ -148,6 +149,7 @@ describe("fast mode", () => {
 
   it("an item still open after the last round goes to the owner, never to done (T72)", async () => {
     const p = direct(ports());
+    p.harness.gates.push({ ok: true, pushed: sha(7) }); // direct mode's gates push, as the real harness does
     p.agent.on(
       { stage: "review", duty: "review" },
       check(false, ["met", "not met"]),
@@ -166,6 +168,7 @@ describe("fast mode", () => {
 
   it("lenient: a check that approves with an item it can't confirm goes on to the gates", async () => {
     const p = direct(ports());
+    p.harness.gates.push({ ok: true, pushed: sha(7) }); // direct mode's gates push, as the real harness does
     p.company.approvalLevel = "lenient";
     p.agent.on({ stage: "review", duty: "review" }, check(true, ["met", "can't tell"]));
     expect(await runTicket(p, refundsTicket())).toEqual({ status: "done", outcome: "merged" });

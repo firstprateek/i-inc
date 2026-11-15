@@ -190,6 +190,7 @@ describe("a code ticket without a prove stage gets a done-when check", () => {
 describe("a ticket that was already proved is not checked twice", () => {
   it("high (thorough) with a verifier keeps using prove, and the done-when stage only records it", async () => {
     const p = direct(ports());
+    p.harness.gates.push({ ok: true, pushed: "e".repeat(40) }); // direct mode's gates push, as the real harness does
     expect(await runTicket(p, refundsTicket({ effort: "high" }))).toEqual({
       status: "done",
       outcome: "merged",
@@ -205,6 +206,7 @@ describe("a ticket that was already proved is not checked twice", () => {
 
   it("high (thorough) with nobody holding the verify duty runs the check (the prove stage is skipped)", async () => {
     const p = direct(fakePorts([ada, grace], engines));
+    p.harness.gates.push({ ok: true, pushed: "e".repeat(40) }); // direct mode's gates push, as the real harness does
     expect(await runTicket(p, refundsTicket({ effort: "high" }))).toEqual({
       status: "done",
       outcome: "merged",
