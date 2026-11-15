@@ -52,13 +52,9 @@ export const draftMemo = {
   onClearAll(fn: () => void): void {
     onClear.add(fn);
   },
-  clearAll(): void {
+  /** Forget every stored draft on this device, and whoever keeps drafts in memory forgets them too. */
+  forget(): void {
     for (const fn of onClear) fn();
-    try {
-      localStorage.setItem(SIGNED_OUT, "1");
-    } catch {
-      // Storage is blocked, so there is nothing to keep out either.
-    }
     try {
       const keys: string[] = [];
       for (let i = 0; i < localStorage.length; i++) {
@@ -69,6 +65,15 @@ export const draftMemo = {
     } catch {
       // Nothing stored, or storage is blocked.
     }
+  },
+  /** Signed out: forget every draft, and store none in any tab until the owner signs back in. */
+  clearAll(): void {
+    try {
+      localStorage.setItem(SIGNED_OUT, "1");
+    } catch {
+      // Storage is blocked, so there is nothing to keep out either.
+    }
+    draftMemo.forget();
   },
   /** The owner signed in: drafts may be stored again. */
   signedIn(): void {
