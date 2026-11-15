@@ -2723,6 +2723,10 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       },
     ],
 
+    // The owner closes a ticket nobody has started (a follow-up that's no longer wanted): it never runs, and
+    // shows as Rejected on the board. A ticket that has started is closed through its own decision instead.
+    ["POST", "/api/tickets/:id/close", async (_req, p) => closeUnstarted(p.id ?? "")],
+
     // C19: the brain's search index, read-only (docs/design/brain.md). Owner-only like every route.
     [
       "GET",
@@ -3057,6 +3061,49 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       assignee: "",
     };
     return d.registry.pickEmployee("build", stub, [])?.id ?? "";
+  }
+
+  /** Tickets with a close under way: a second request for one of them is refused, not run twice. */
+  const closing = new Set<Id>();
+
+  /**
+   * Closes a ticket nobody has started: it never runs, and shows as Rejected. Held while it closes, so the
+   * scheduler can't pick it, and a pass already under way finishes first, so it can't start in between.
+   */
+  async function closeUnstarted(id: Id): Promise<Response> {
+    const r = d.tickets.get(id);
+    if (!r) return json({ error: "no such ticket" }, 404);
+    if (closing.has(id)) return json({ error: `ticket ${id} is being closed already` }, 409);
+    const started = async () =>
+      daemon.isRunning(id) ||
+      (await daemon.state(id)).created ||
+      (await d.store.read(id)).some((e) => e.type === "ticket-created");
+    closing.add(id);
+    let closed = false;
+    try {
+      if (await started()) {
+        return json({ error: `ticket ${id} already started, so it closes through its own decision` }, 409);
+      }
+      d.tickets.setHold(id, true);
+      await daemon.tick();
+      if (await started()) {
+        return json({ error: `ticket ${id} started just now, so it closes through its own decision` }, 409);
+      }
+      const at = d.clock.now();
+      await d.store.append(id, [
+        { type: "ticket-created", at, ticketId: id },
+        { type: "closed", at, outcome: "rejected" },
+      ]);
+      closed = true;
+      d.log?.(`ticket ${id} closed by the owner before it started`);
+    } finally {
+      // Closed, it's no longer held (a chat draft or a follow-up over the day's budget is held); refused,
+      // it goes back to how it was.
+      d.tickets.setHold(id, closed ? false : r.hold);
+      closing.delete(id);
+    }
+    await daemon.tick();
+    return json({ ok: true });
   }
 
   /** Appends the owner's action if the ticket is in the right state, then runs the ticket on. */

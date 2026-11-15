@@ -458,6 +458,8 @@ export const api = {
     call<{ proposal: ProposalView; ticket: { id: string } }>("POST", `/api/proposals/${id}/accept`, {}),
   declineProposal: (id: number) =>
     call<{ proposal: ProposalView }>("POST", `/api/proposals/${id}/decline`, {}),
+  /** Closes a ticket nobody has started; it shows as Rejected. */
+  close: (id: string) => call<{ ok: true }>("POST", `/api/tickets/${encodeURIComponent(id)}/close`, {}),
   /** Assigns a ticket that has not started (C17). */
   assign: (id: string, to: string) =>
     call<{ ok: true; ticket: TicketView }>("POST", `/api/tickets/${encodeURIComponent(id)}/assign`, { to }),
