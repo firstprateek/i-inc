@@ -14,6 +14,7 @@ import type {
   ChangesView,
   DeskEntry,
   DeskView,
+  EmployeeQueueView,
   FilesView,
   FileView,
   KnowledgeView,
@@ -43,6 +44,7 @@ export type {
   ChangesView,
   DeskEntry,
   DeskView,
+  EmployeeQueueView,
   FilesView,
   FileView,
   KnowledgeView,
@@ -435,6 +437,14 @@ export const api = {
   needsYou: () => call<NeedsYouView>("GET", "/api/needs-you"),
   projects: () => call<{ projects: { id: string }[] }>("GET", "/api/projects").then((r) => r.projects),
   createTicket,
+  employeeQueue: (id: string) =>
+    call<EmployeeQueueView>("GET", `/api/employees/${encodeURIComponent(id)}/queue`),
+  moveQueued: (employeeId: string, ticketId: string, before: string | null, expected: string[]) =>
+    call<EmployeeQueueView>("PUT", `/api/employees/${encodeURIComponent(employeeId)}/queue`, {
+      ticketId,
+      before,
+      expected,
+    }),
   office: () => call<OfficeResponse>("GET", "/api/office"),
   desk: () => call<DeskView>("GET", "/api/desk"),
   releases: () => call<{ releases: ProjectRelease[]; pending: PendingRelease[] }>("GET", "/api/releases"),

@@ -1,3 +1,4 @@
+import "./employee-queue.ts";
 import { rateLimitDeadline } from "@i-inc/daemon/views";
 import { css, html } from "lit";
 import { type AccountCost, type AccountRateLimit, api, type DeskEntry } from "../api.ts";
@@ -13,13 +14,20 @@ interface Data {
 }
 
 export class IncOffice extends Loader<Data> {
-  static override properties = { ...Loader.properties, show: { type: String } };
+  static override properties = {
+    ...Loader.properties,
+    show: { type: String },
+    queueEmployee: { state: true },
+  };
   /** Company → Team shows the floor; Company → Usage shows the account meters. */
   declare show: "floor" | "meters";
+
+  declare queueEmployee: DeskEntry | null;
 
   constructor() {
     super();
     this.show = "floor";
+    this.queueEmployee = null;
   }
 
   protected async fetch(): Promise<Data> {
@@ -40,6 +48,7 @@ export class IncOffice extends Loader<Data> {
       .floor { flex-grow: 1; min-width: 0; background: var(--floor); border-radius: 28px; padding: 20px 22px;
         display: flex; flex-direction: column; gap: 16px; }
       .desks { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 16px; }
+      .desk-link { color: inherit; text-decoration: none; display: flex; flex-direction: column; gap: 8px; }
       .desk { padding: 16px; display: flex; flex-direction: column; gap: 8px; text-decoration: none; }
       .desk.waiting { background: var(--needs-surface); border: 2px solid var(--needs-edge); padding: 15px; }
       .scene { position: relative; height: 150px; }
@@ -115,6 +124,7 @@ export class IncOffice extends Loader<Data> {
             ? html`<div class="desks">${employees.map((e) => this.desk(e))}</div>`
             : html`<p class="empty-note">Nobody works here yet. <a href="#/company/team/hiring">Hire your first employee</a>.</p>`
         }
+        ${this.queueEmployee ? html`<inc-employee-queue id="employee-queue" .employeeId=${this.queueEmployee.id} .employeeName=${this.queueEmployee.name}></inc-employee-queue>` : ""}
       </section>
     </div>`;
   }
@@ -215,7 +225,7 @@ export class IncOffice extends Loader<Data> {
     const needs = e.state === "needs-you";
     const off = e.state === "off" || e.state === "idle";
     const href = e.ticket ? `#/ticket/${e.ticket.id}` : "#/work/board";
-    return html`<a class="card desk ${needs ? "waiting" : ""}" href=${href} aria-label="${e.name}: ${label}">
+    return html`<div class="card desk ${needs ? "waiting" : ""}"><a class="desk-link" href=${href} aria-label="${e.name}: ${label}">
       <div class="scene" aria-hidden="true">
         ${e.state === "off" ? "" : avatar(e, 52)}
         <div class="top"></div>
@@ -224,7 +234,15 @@ export class IncOffice extends Loader<Data> {
       <div class="row"><span class="name">${e.name}</span><span class="grow"></span><span class="chip ${tone}">${label}</span></div>
       <div class="ticket">${e.ticket ? html`#${e.ticket.id} ${e.ticket.title} · ${projectBadge(e.ticket.project)}` : "No ticket right now"}</div>
       <div class="meta">${e.role} · ${e.engine}</div>
-    </a>`;
+    </a><button class="btn ghost" aria-label="Open ${e.name}'s queue" aria-expanded=${this.queueEmployee?.id === e.id} aria-controls="employee-queue" @click=${async () => {
+      this.queueEmployee = e;
+      await this.updateComplete;
+      const queue = this.renderRoot.querySelector("inc-employee-queue");
+      await (queue as import("./employee-queue.ts").IncEmployeeQueue)?.updateComplete;
+      const heading = queue?.shadowRoot?.querySelector("h3");
+      heading?.focus();
+      heading?.scrollIntoView({ block: "nearest" });
+    }}>Queue</button></div>`;
   }
 }
 

@@ -609,6 +609,10 @@ reviews it.
   preserves its position; reassigning to another employee appends to that employee's queue. Held
   tickets are skipped and retain their position when released. Existing queues at upgrade retain
   their previous priority/creation order because earlier assignment times were not recorded.
+- From Company → Team, open an employee's Queue to see unstarted assignments in execution order
+  and move them up or down. Holds are marked and skipped; moving a held ticket changes its saved
+  position for when it is released. Queue edits survive restart, leave started work alone, and
+  reject stale queue views so a concurrent assignment or start cannot be silently overwritten.
 - Each employee does one thing at a time. A builder starts the next queued ticket automatically
   when the previous ticket reaches Report ready, completes or fails; owner approval and merge do
   not hold the queue. Waiting for owner input, helpers or tokens before Report ready holds the
