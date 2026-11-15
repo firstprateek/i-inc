@@ -352,7 +352,7 @@ describe("an update while the app is open", () => {
     stop();
   });
 
-  it("shows a banner with Reload, and never reloads by itself", async () => {
+  it("shows New version with Reload in the header, beside the account button, and never reloads by itself", async () => {
     let running = "aaa111";
     health(() => running);
     vi.stubGlobal("matchMedia", (q: string) => ({
@@ -373,18 +373,20 @@ describe("an update while the app is open", () => {
     document.body.append(app);
     await vi.advanceTimersByTimeAsync(20);
     await app.updateComplete;
-    expect(app.shadowRoot?.querySelector('[slot="notice"]')).toBeNull();
+    expect(app.shadowRoot?.querySelector(".update-chip")).toBeNull();
     running = "bbb222";
     await checkForUpdate();
     await app.updateComplete;
-    const banner = app.shadowRoot?.querySelector('[slot="notice"]');
-    expect(banner?.textContent).toContain("i.inc was updated");
+    const chip = app.shadowRoot?.querySelector("header .update-chip");
+    expect(chip?.textContent?.replace(/\s+/g, " ")).toContain("New version available");
+    expect(chip?.nextElementSibling?.classList.contains("account-wrap")).toBe(true);
+    expect(app.shadowRoot?.querySelector('[slot="notice"]')).toBeNull();
     expect(reload).not.toHaveBeenCalled();
-    banner?.querySelector("button")?.click();
+    chip?.querySelector("button")?.click();
     expect(reload).toHaveBeenCalledTimes(1);
   });
 
-  it("does not stack the update banner on a page whose own code could not load", async () => {
+  it("does not stack New version on a page whose own code could not load", async () => {
     health(() => "aaa111");
     vi.stubGlobal("matchMedia", (q: string) => ({
       matches: false,
@@ -399,10 +401,10 @@ describe("an update while the app is open", () => {
     (app as unknown as { outdated: boolean; loadFailed: boolean }).outdated = true;
     (app as unknown as { outdated: boolean; loadFailed: boolean }).loadFailed = true;
     await app.updateComplete;
-    expect(app.shadowRoot?.querySelector('[slot="notice"]')).toBeNull();
+    expect(app.shadowRoot?.querySelector(".update-chip")).toBeNull();
     (app as unknown as { loadFailed: boolean }).loadFailed = false;
     await app.updateComplete;
-    expect(app.shadowRoot?.querySelector('[slot="notice"]')?.textContent).toContain("i.inc was updated");
+    expect(app.shadowRoot?.querySelector(".update-chip")?.textContent).toContain("New version");
   });
 });
 

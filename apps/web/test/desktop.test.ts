@@ -2,6 +2,7 @@
 // the shell's header become the title bar (a drag region, room for the window buttons, Back and Forward). A
 // browser or the installed PWA never sets the mark, so there the header is unchanged.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetAppUpdate } from "../src/app-update.ts";
 import { IncApp } from "../src/components/app.ts";
 import {
   appZoom,
@@ -263,23 +264,31 @@ describe("wiring the document in the app", () => {
     expect(card.shadowRoot?.querySelector("a")).toBeNull();
   });
 
-  it("offers Restart once the app has installed a newer build, and asks the app to restart", async () => {
+  it("offers Restart in the header once the app has installed a newer build, and asks the app to restart", async () => {
     const invoke = vi.fn(async () => undefined);
     (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke };
+    const app = new IncApp();
     try {
       window.__I_INC_APP_VERSION__ = "0.3.202611150200";
       wireDesktop();
+      document.body.append(app);
+      await app.updateComplete;
+      expect(app.shadowRoot?.querySelector(".update-chip")).toBeNull();
       window.__I_INC_APP_UPDATE__ = { version: "0.3.202611160900" };
       dispatchEvent(new Event("i-inc:app-update"));
-      const card = document.querySelector("inc-app-update") as HTMLElement & {
-        updateComplete: Promise<unknown>;
-      };
-      await card.updateComplete;
-      expect(card.shadowRoot?.textContent).toContain("0.3.202611160900 is ready");
-      const restart = card.shadowRoot?.querySelector("button") as HTMLButtonElement;
+      await app.updateComplete;
+      const chip = app.shadowRoot?.querySelector("header .update-chip") as HTMLElement;
+      expect(chip.textContent).toContain("New version");
+      expect(chip.getAttribute("title")).toContain("0.3.202611160900");
+      // No bottom-corner card any more: the header says it.
+      expect(document.querySelector("inc-app-update")).toBeNull();
+      const restart = chip.querySelector("button") as HTMLButtonElement;
+      expect(restart.textContent).toBe("Restart");
       restart.click();
       expect(invoke).toHaveBeenCalledWith("restart_app");
     } finally {
+      app.remove();
+      resetAppUpdate();
       delete window.__I_INC_APP_UPDATE__;
       delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
     }
