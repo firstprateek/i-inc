@@ -16,7 +16,7 @@ use tauri::{AppHandle, Manager, Url, WebviewWindow, WebviewWindowBuilder};
 /// file in the app's config folder and applied on every page load.
 struct Zoom(Mutex<f64>);
 
-const ZOOM_STEPS: [f64; 9] = [0.75, 0.85, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0];
+const ZOOM_STEPS: [f64; 5] = [0.8, 0.9, 1.0, 1.1, 1.2];
 
 fn zoom_file(app: &AppHandle) -> Option<PathBuf> {
     app.path().app_config_dir().ok().map(|d| d.join("zoom"))
@@ -26,7 +26,16 @@ fn saved_zoom(app: &AppHandle) -> f64 {
     zoom_file(app)
         .and_then(|f| std::fs::read_to_string(f).ok())
         .and_then(|t| t.trim().parse::<f64>().ok())
-        .filter(|z| (0.5..=3.0).contains(z))
+        .map(nearest_step)
+        .unwrap_or(1.0)
+}
+
+/// The step closest to `zoom` (a level saved by an older build may not be one).
+fn nearest_step(zoom: f64) -> f64 {
+    ZOOM_STEPS
+        .iter()
+        .copied()
+        .min_by(|a, b| (a - zoom).abs().total_cmp(&(b - zoom).abs()))
         .unwrap_or(1.0)
 }
 
@@ -40,11 +49,12 @@ fn step_zoom(now: f64, dir: i8) -> f64 {
 }
 
 /// Zooms the page and tells it the level, so the header (the window's title bar) can stay the size of the
-/// window buttons, which do not zoom (apps/web/src/desktop.ts).
-fn apply_zoom(window: &WebviewWindow, zoom: f64) {
+/// window buttons, which do not zoom, and, when `show`, so it shows the level for a moment (apps/web/src/
+/// desktop.ts). A page load reapplies the level without showing it.
+fn apply_zoom(window: &WebviewWindow, zoom: f64, show: bool) {
     let _ = window.set_zoom(zoom);
     let _ = window.eval(format!(
-        "window.__I_INC_ZOOM__ = {zoom}; window.dispatchEvent(new Event('i-inc:zoom'));"
+        "window.__I_INC_ZOOM__ = {zoom}; window.dispatchEvent(new CustomEvent('i-inc:zoom', {{ detail: {{ show: {show} }} }}));"
     ));
 }
 
@@ -52,7 +62,7 @@ fn change_zoom(app: &AppHandle, window: &WebviewWindow, dir: i8) {
     let state = app.state::<Zoom>();
     let mut zoom = state.0.lock().unwrap();
     *zoom = step_zoom(*zoom, dir);
-    apply_zoom(window, *zoom);
+    apply_zoom(window, *zoom, true);
     if let Some(file) = zoom_file(app) {
         let _ = file.parent().map(std::fs::create_dir_all);
         let _ = std::fs::write(file, zoom.to_string());
@@ -71,6 +81,12 @@ fn default_daemon() -> Option<&'static str> {
 #[tauri::command]
 fn daemon_override() -> Option<String> {
     std::env::var("I_INC_URL").ok().filter(|s| !s.is_empty())
+}
+
+/// The zoom popup's Reset button (apps/web/src/desktop.ts): back to 100%, like ⌘0.
+#[tauri::command]
+fn reset_zoom(window: WebviewWindow) {
+    change_zoom(window.app_handle(), &window, 0);
 }
 
 /// The bundled launcher page. `change` keeps it from connecting straight away.
@@ -104,7 +120,7 @@ fn main() {
                 .js_init_script("window.__I_INC_TITLEBAR__ = true;".to_string())
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![default_daemon, daemon_override])
+        .invoke_handler(tauri::generate_handler![default_daemon, daemon_override, reset_zoom])
         .setup(|app| {
             app.manage(Zoom(Mutex::new(saved_zoom(app.handle()))));
             let config = app.config().app.windows.first().expect("window config").clone();
@@ -116,7 +132,7 @@ fn main() {
                 .on_page_load(|window, payload| {
                     if payload.event() == PageLoadEvent::Finished {
                         let zoom = *window.app_handle().state::<Zoom>().0.lock().unwrap();
-                        apply_zoom(&window, zoom);
+                        apply_zoom(&window, zoom, false);
                     }
                 })
                 .build()?;
@@ -190,13 +206,23 @@ fn main() {
 mod tests {
     use super::step_zoom;
 
+
     #[test]
     fn zoom_steps_up_down_and_back_to_actual_size() {
         assert_eq!(step_zoom(1.0, 1), 1.1);
         assert_eq!(step_zoom(1.0, -1), 0.9);
-        assert_eq!(step_zoom(2.0, 1), 2.0);
-        assert_eq!(step_zoom(0.75, -1), 0.75);
-        assert_eq!(step_zoom(1.3, 1), 1.5);
-        assert_eq!(step_zoom(1.75, 0), 1.0);
+        assert_eq!(step_zoom(1.1, 1), 1.2);
+        assert_eq!(step_zoom(1.2, 1), 1.2);
+        assert_eq!(step_zoom(0.9, -1), 0.8);
+        assert_eq!(step_zoom(0.8, -1), 0.8);
+        assert_eq!(step_zoom(1.2, 0), 1.0);
+    }
+
+    #[test]
+    fn a_saved_level_off_the_steps_snaps_to_the_nearest() {
+        use super::nearest_step;
+        assert_eq!(nearest_step(1.5), 1.2);
+        assert_eq!(nearest_step(0.75), 0.8);
+        assert_eq!(nearest_step(1.04), 1.0);
     }
 }

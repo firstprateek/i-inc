@@ -7,6 +7,8 @@
 // event's composed path, so the mark works inside the shell's shadow root). On a Mac the header leaves room for
 // the three window buttons, except in full screen, where macOS hides them.
 
+import { showZoomPopup } from "./zoom-popup.ts";
+
 declare global {
   interface Window {
     __I_INC_TITLEBAR__?: boolean;
@@ -77,5 +79,9 @@ export function wireDesktop(): void {
   };
   update();
   addEventListener("resize", update);
-  addEventListener("i-inc:zoom", () => titlebarEvents.dispatchEvent(new Event("change")));
+  addEventListener("i-inc:zoom", (e) => {
+    titlebarEvents.dispatchEvent(new Event("change"));
+    // ⌘+ / ⌘− / ⌘0 and Reset show the level; a page load reapplying it does not.
+    if ((e as CustomEvent<{ show?: boolean }>).detail?.show) showZoomPopup(appZoom());
+  });
 }
