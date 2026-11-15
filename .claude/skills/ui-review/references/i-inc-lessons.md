@@ -12,7 +12,7 @@ Every colour in i.inc belongs to exactly one role. Never reuse a role's colour f
 | Ink | `#1E2421` (muted `#4E5652`) | Text, primary buttons, done steps, the logo | Status |
 | Working | `#DCEEDF` / `#1D5234` | Working status only | Buttons, categories |
 | Reviewing | `#DDE7F6` / `#1D4476`, strip `#3A68A8` | Reviewing status only | Links, categories |
-| Needs you | `#FCE8B8` / `#5A3A00`, border `#C48A12` | Needs you, unread counts | Decoration |
+| Needs you | `#FCE8B8` / `#5A3A00`, border `#AC780F` | Needs you, unread counts | Decoration |
 | Alarm | `#C4452B`, text `#8A2B17` | Failing checks, limit reached, blocked | Brand, primary actions |
 | Neutral state | `#E6E8E3` / `#3F4642` | Off, coffee break, ticket types, projects | — |
 | Identity | Slate, rose, lilac, stone, sand, clay, periwinkle tints | Avatars only | Any status |
