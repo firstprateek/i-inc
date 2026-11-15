@@ -59,6 +59,16 @@ export class IncLogin extends LitElement {
     document.title = `${this.initialized ? "Sign in" : "Create owner account"} · i.inc`;
   }
 
+  override firstUpdated(): void {
+    this.focusHeadingOrField();
+  }
+
+  /** Puts focus on the page heading (matching route transitions in inc-app) or the first field. */
+  focusHeadingOrField(): void {
+    const target = this.renderRoot?.querySelector<HTMLElement>("h1[tabindex], input");
+    target?.focus({ preventScroll: true });
+  }
+
   private async submit(event: Event) {
     event.preventDefault();
     this.busy = true;
@@ -115,6 +125,7 @@ export class IncLogin extends LitElement {
         letter-spacing: -0.3px;
         margin: 0;
       }
+      h1:focus { outline: none; }
       /* The checkbox is a 44px target with its words. */
       label.reveal { flex-direction: row; align-items: center; gap: 10px; min-height: 44px; font-weight: 600; }
       label.reveal input { width: 22px; min-height: 22px; height: 22px; padding: 0; accent-color: var(--ink); }
@@ -178,7 +189,7 @@ export class IncLogin extends LitElement {
     return html`
       ${inDesktopApp() ? html`<div class="titlebar" data-tauri-drag-region></div>` : nothing}
       <inc-layout kind="page" compact>
-      <h1 slot="heading">${title}</h1>
+      <h1 id="view-heading" tabindex="-1" slot="heading">${title}</h1>
       <p slot="subtitle">${subtitle}</p>
       <form id="login" @submit=${this.submit}>
         <p class="brand" aria-hidden="true">i.inc</p>
@@ -263,6 +274,10 @@ if (!customElements.get("inc-login")) {
 export function showLogin(): void {
   // Signed out or the session expired: forget unsent chat drafts, since one to a PA can hold home data.
   draftMemo.clearAll();
-  if (document.querySelector("inc-login")) return;
+  const existing = document.querySelector<IncLogin>("inc-login");
+  if (existing) {
+    existing.focusHeadingOrField();
+    return;
+  }
   document.body.innerHTML = "<inc-login></inc-login>";
 }
