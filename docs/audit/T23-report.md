@@ -2,8 +2,17 @@
 
 ## Current main comparison
 
+PR handoff: use [T23-pr.md](T23-pr.md) as the PR description when publishing this branch.
+It explicitly identifies the tests already present on main. No GitHub PR exists during this
+local review: the ticket requires committing locally without pushing, and the host publishes
+the reviewed branch afterward. The PR description is therefore committed here for that handoff.
+
 Checked against freshly fetched `origin/main` at `f140938` before editing. The test and token
 files were identical to this branch's starting versions.
+
+Review round 1 rechecked remote main with `git ls-remote origin refs/heads/main`: it remains
+`f1409389ce3a74402d640317dfa268165f88ddcf`. Inspection of that commit's
+`apps/web/test/color-system.test.ts` confirms the baseline below.
 
 - Theme parsing was still broken: the light section included the automatic-dark block.
 - The list-order test still compared repeated calls rather than rendered order.
