@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>i.inc</title>
+    <link rel="stylesheet" href="launcher.css" />
+  </head>
+  <body>
+    <header class="bar" data-tauri-drag-region>i.inc</header>
+    <main>
+      <form id="connect" hidden>
+        <label for="addr">Daemon address</label>
+        <div class="row">
+          <input id="addr" type="url" spellcheck="false" autocomplete="off" required />
+          <button type="submit">Connect</button>
+        </div>
+        <p id="status" class="status" role="status"></p>
+        <p class="hint">
+          The daemon runs on the Mac mini. From another Mac on your tailnet use its Tailscale address,
+          <code>https://iinc.&lt;tailnet&gt;.ts.net</code>. On the Mac mini itself use
+          <code>http://127.0.0.1:7420</code> (a machine cannot reach its own Tailscale Service address).
+        </p>
+      </form>
+      <p id="waiting" class="hint">Connecting…</p>
+    </main>
+    <script src="launcher.js"></script>
+  </body>
+</html>
