@@ -1,6 +1,7 @@
 import { css, html, LitElement, nothing } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 import { logout, refresh, refreshNow } from "../api.ts";
+import { APP_UPDATE_EVENT, appUpdateReady, appUpdates, restartApp } from "../app-update.ts";
 import { connection, isOffline } from "../connection.ts";
 import { outcomeView, shipOutcomes } from "../conversations/outcomes.ts";
 import { appZoom, inDesktopApp, inFullScreen, titlebarEvents, titlebarKind } from "../desktop.ts";
@@ -175,6 +176,7 @@ export class IncApp extends LitElement {
     this.stopLive = startLiveUpdates();
     this.stopUpdates = watchForUpdates();
     updates.addEventListener(UPDATE_EVENT, this.onUpdate);
+    appUpdates.addEventListener(APP_UPDATE_EVENT, this.onAppUpdate);
     installSignal.addEventListener("change", this.onInstall);
     this.outdated = updateAvailable();
     applyTheme(this.theme);
@@ -279,6 +281,7 @@ export class IncApp extends LitElement {
     this.stopUpdates?.();
     this.stopUpdates = null;
     updates.removeEventListener(UPDATE_EVENT, this.onUpdate);
+    appUpdates.removeEventListener(APP_UPDATE_EVENT, this.onAppUpdate);
     installSignal.removeEventListener("change", this.onInstall);
     super.disconnectedCallback();
   }
@@ -376,6 +379,23 @@ export class IncApp extends LitElement {
     this.outdated = true;
   };
 
+  private onAppUpdate = () => this.requestUpdate();
+
+  /** "New version available" in the header, beside the account button (decided 2026-11-15). A newer desktop-app
+   *  build waiting for a restart comes first, since the restart loads the new pages too; otherwise a page older
+   *  than the daemon's release offers a reload. Never shown on a page whose own code couldn't load: that page
+   *  already offers its own Reload. */
+  private updateChip() {
+    const app = appUpdateReady();
+    if (!app && !(this.outdated && !this.loadFailed)) return nothing;
+    return html`<div class="update-chip" role="status" title=${app ? `i.inc ${app} is installed` : nothing}>
+      <span class="update-dot" aria-hidden="true"></span>
+      <span class="update-text">New version<span class="update-long"> available</span></span>
+      <button type="button" @click=${app ? restartApp : () => location.reload()}
+        aria-label=${app ? "Restart the app to use the new version" : "Reload to use the new version"}>${app ? "Restart" : "Reload"}</button>
+    </div>`;
+  }
+
   private onPhoneChange = () => this.requestUpdate();
 
   private onVisible = () => {
@@ -416,13 +436,6 @@ export class IncApp extends LitElement {
 
   private notice() {
     if (this.offline) return html`<inc-offline slot="notice"></inc-offline>`;
-    // A page whose own code couldn't load already says the app may have been updated, with a Reload of its own.
-    if (this.outdated && !this.loadFailed) {
-      return html`<div slot="notice" class="load-error" role="status">
-        <span>i.inc was updated. Reload to use the new version.</span>
-        <button class="btn" type="button" @click=${() => location.reload()}>Reload</button>
-      </div>`;
-    }
     const message = this.staleMessage();
     return message
       ? html`<div slot="notice" class="load-error" role="alert">
@@ -614,6 +627,14 @@ export class IncApp extends LitElement {
       .count.some { background: var(--needs-bg); color: var(--needs-fg); border: 1px solid var(--needs-edge); }
       .spacer { flex-grow: 1; }
       .account-wrap { position: relative; display: inline-flex; }
+      /* "New version available · Reload", beside the account button. */
+      .update-chip { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; min-height: 44px; box-sizing: border-box;
+        padding: 0 4px 0 12px; border-radius: 999px; border: 1px solid var(--line-strong); background: var(--surface);
+        font: 600 14px var(--body); color: var(--ink); white-space: nowrap; }
+      .update-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--reviewing-mark); flex: none; }
+      .update-chip button { all: unset; box-sizing: border-box; display: inline-flex; align-items: center; min-height: 34px;
+        padding: 0 14px; border-radius: 999px; background: var(--ink); color: var(--on-ink); font: 600 13px var(--body); cursor: pointer; }
+      .update-chip button:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 2px; }
       .icon { width: 44px; height: 44px; flex-shrink: 0; border-radius: 50%; border: 1px solid var(--line-strong); background: transparent;
         color: var(--ink); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
       .icon:focus-visible, .account-menu button:focus-visible, nav.areas a:focus-visible, .needs-link:focus-visible,
@@ -674,6 +695,8 @@ export class IncApp extends LitElement {
       :host([titlebar]) nav.areas a { padding: 0 14px; }
       :host([titlebar]) .needs-link { padding: 0 12px; }
       :host([titlebar]) .account-wrap .icon { width: 36px; height: 36px; }
+      :host([titlebar]) .update-chip { min-height: 36px; font-size: 13px; }
+      :host([titlebar]) .update-chip button { min-height: 28px; padding: 0 12px; }
       :host([titlebar]) .skip { top: 10px; left: 90px; }
 
       @media (max-width: ${LAYOUT_BREAKPOINTS.phone}px) {
@@ -695,6 +718,13 @@ export class IncApp extends LitElement {
           }
         }
         header nav.areas, header .needs-link { display: none; }
+        .update-long { display: none; }
+        /* The smallest phones (320 px): the chip gives up its dot and some padding, so the account button fits. */
+        @media (max-width: 374px) {
+          .update-dot { display: none; }
+          .update-chip { gap: 6px; padding-left: 10px; }
+          .update-chip button { padding: 0 10px; }
+        }
         main { padding: 12px max(16px, env(safe-area-inset-right)) 16px max(16px, env(safe-area-inset-left)); }
         .tabs {
           grid-area: tabs;
@@ -953,6 +983,7 @@ export class IncApp extends LitElement {
               : html`<span class="count ${count ? "some" : ""}" aria-hidden="true">${count}</span>`
           }</a>
         <span class="spacer"></span>
+        ${this.updateChip()}
         <div class="account-wrap">
           <button class="icon account-trigger" type="button" aria-label="Account menu" aria-haspopup="menu"
             aria-expanded=${this.accountOpen ? "true" : "false"} @click=${this.toggleAccount}>${accountIcon}</button>

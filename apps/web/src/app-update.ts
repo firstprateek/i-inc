@@ -1,7 +1,8 @@
 // The desktop app's own updates, as the page shows them (apps/desktop/src-tauri/src/updates.rs):
-// - `i-inc:app-update`: a newer build is installed and a restart will run it. A card at the bottom left offers
-//   Restart; the app sends it again after every page load until then. Restart asks the app (the one call the
-//   pages may make besides dragging and Reset, capabilities/page.json).
+// - `i-inc:app-update`: a newer build is installed and a restart will run it. The header's "New version" chip,
+//   next to the account button (components/app.ts), offers Restart; the app sends it again after every page load
+//   until then. Restart asks the app (the one call the pages may make besides dragging and Reset,
+//   capabilities/page.json).
 // - `i-inc:app-note`: one line from i.inc › Check for Updates… ("up to date", or why not), shown for a few seconds.
 import { css, html, LitElement, nothing } from "lit";
 import { base } from "./components/shared.ts";
@@ -18,28 +19,32 @@ export const NOTE_MS = 6000;
 
 type Invoke = (cmd: string) => Promise<unknown>;
 
-function restartApp(): void {
+/** Sent on `appUpdates` when the app has a newer build installed. */
+export const APP_UPDATE_EVENT = "app-update-ready";
+export const appUpdates = new EventTarget();
+let readyVersion: string | null = null;
+
+/** The newer build the app has installed and will run after a restart, if any. */
+export const appUpdateReady = (): string | null => readyVersion;
+
+/** For tests. */
+export function resetAppUpdate(): void {
+  readyVersion = null;
+}
+
+export function restartApp(): void {
   const invoke = (window as { __TAURI_INTERNALS__?: { invoke?: Invoke } }).__TAURI_INTERNALS__?.invoke;
   void invoke?.("restart_app").catch(() => {});
 }
 
 export class IncAppUpdate extends LitElement {
-  static override properties = {
-    version: { state: true },
-    note: { state: true },
-  };
-  declare version: string | null;
+  static override properties = { note: { state: true } };
   declare note: string | null;
   private timer: ReturnType<typeof setTimeout> | undefined;
 
   constructor() {
     super();
-    this.version = null;
     this.note = null;
-  }
-
-  ready(version: string): void {
-    this.version = version;
   }
 
   say(text: string): void {
@@ -47,7 +52,7 @@ export class IncAppUpdate extends LitElement {
     clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       this.note = null;
-      if (!this.version) this.remove();
+      this.remove();
     }, NOTE_MS);
   }
 
@@ -65,22 +70,11 @@ export class IncAppUpdate extends LitElement {
         color: var(--ink); border: 1px solid var(--line); border-radius: 14px;
         box-shadow: 0 12px 32px rgba(0, 0, 0, 0.14), 0 2px 8px rgba(0, 0, 0, 0.06); font: 500 14px/1.4 var(--body); }
       p { margin: 0; flex: 1; }
-      strong { font-weight: 700; }
-      button { flex: none; min-height: 36px; padding: 0 16px; border-radius: 999px; border: 0; background: var(--ink);
-        color: var(--on-ink); font: 600 14px var(--body); cursor: pointer; }
-      button:focus-visible { outline: 3px solid var(--reviewing-mark); outline-offset: 2px; }
     `,
   ];
 
   override render() {
-    return html`${
-      this.version
-        ? html`<div class="card" role="status">
-            <p><strong>i.inc ${this.version} is ready.</strong> Restart the app to use it.</p>
-            <button type="button" @click=${restartApp}>Restart</button>
-          </div>`
-        : nothing
-    }${this.note ? html`<div class="card note" role="status"><p>${this.note}</p></div>` : nothing}`;
+    return this.note ? html`<div class="card note" role="status"><p>${this.note}</p></div>` : nothing;
   }
 }
 
@@ -102,7 +96,10 @@ export function followAppUpdates(): void {
     if (typeof v === "string" && v) {
       // A newer build makes the "older build" card moot.
       document.querySelector("inc-app-outdated")?.remove();
-      card().ready(v);
+      if (v !== readyVersion) {
+        readyVersion = v;
+        appUpdates.dispatchEvent(new Event(APP_UPDATE_EVENT));
+      }
     }
   };
   addEventListener("i-inc:app-update", ready);
