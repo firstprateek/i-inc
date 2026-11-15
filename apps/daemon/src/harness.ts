@@ -226,6 +226,9 @@ export function checksScript(worktree: string, recipe: string[], tail: number): 
   return [
     'export PATH="$HOME/.local/bin:$PATH"',
     `cd ${quote(worktree)} || { echo '@@fail cd into the worktree'; exit 1; }`,
+    // The commit the checks run on, and whether the worktree matched it: a green run on a clean commit lets the
+    // gates skip the same run again when the rebase on main changed nothing.
+    'echo "@@at $(git rev-parse HEAD 2>/dev/null) $(if [ -z "$(git status --porcelain 2>/dev/null)" ]; then echo clean; else echo dirty; fi)"',
     "log=$(mktemp)",
     ...steps,
     "echo @@green",
@@ -282,6 +285,11 @@ export function readChecks(code: number, output: string): ChecksResult {
 export class MachineHarness implements Harness {
   /** Tickets whose commit the credential scan refused and the owner was asked about: the commit it was. */
   private readonly secretsShown = new Map<string, string>();
+  /**
+   * The commit each ticket's last green check run was on, with a clean worktree. In memory only: after a restart
+   * the gates just run the checks again.
+   */
+  private readonly greenAt = new Map<string, string>();
 
   constructor(
     private readonly s: HarnessSettings,
@@ -378,7 +386,11 @@ export class MachineHarness implements Harness {
       {},
       { timeoutMs: this.s.timeouts?.().checksMs ?? defaultTimeoutsMs.checksMs },
     );
-    return readChecks(code, output);
+    const result = readChecks(code, output);
+    const at = /^@@at ([0-9a-f]{40}) clean$/m.exec(output)?.[1];
+    if (result.green && at) this.greenAt.set(ticket.id, at);
+    else this.greenAt.delete(ticket.id);
+    return result;
   }
 
   async runGates(ticket: Ticket, opts: GatesOptions = {}): Promise<GatesResult> {
@@ -515,11 +527,14 @@ export class MachineHarness implements Harness {
         return no(`the branch has no changes beyond ${branch}`);
       }
       if (rebased.code !== 0) return no(`couldn't rebase on ${branch}: ${rebased.output.trim().slice(-300)}`);
-      const checks = await this.runChecks(ticket);
-      if (!checks.green)
-        return no(`the checks fail after rebasing on ${branch}: ${checks.failures.join("; ")}`);
       const head = lines("head")[0] ?? "";
       if (!/^[0-9a-f]{40}$/.test(head)) return no("the rebase gave no commit to push");
+      // Main hadn't moved, so the rebase kept the very commit the last green run checked: no need to run it again.
+      if (this.greenAt.get(ticket.id) !== head) {
+        const checks = await this.runChecks(ticket);
+        if (!checks.green)
+          return no(`the checks fail after rebasing on ${branch}: ${checks.failures.join("; ")}`);
+      }
       // Written first, so a stop after the push but before its record can be told from a push that never happened.
       if (opts.onPushIntended) await opts.onPushIntended(head);
       // The host reads the change from the commits and holds protected paths itself: the machine's say-so

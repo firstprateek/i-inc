@@ -44,17 +44,11 @@ describe("make this a ticket, in direct mode", () => {
     expect(c.git("status", "--porcelain")).toBe("");
 
     await rig.settle();
-    // Plan and build were done by the conversation; the pipeline began at the checks.
+    // The build was done by the conversation (fast mode has no plan stage); the pipeline began at the checks.
     const events = await ticketEvents(rig, id);
-    expect(events.slice(0, 5)).toEqual([
-      "ticket-created",
-      "pr-opened",
-      "stage-finished",
-      "stage-finished",
-      "stage-finished",
-    ]);
+    expect(events.slice(0, 4)).toEqual(["ticket-created", "pr-opened", "stage-finished", "stage-finished"]);
     const s = await rig.app.daemon.state(id);
-    expect(s.finished.slice(0, 3)).toEqual(["pickup", "plan", "build"]);
+    expect(s.finished.slice(0, 2)).toEqual(["pickup", "build"]);
     expect(s.finished).toContain("checks");
     expect(s.finished).toContain("review");
     expect(s.finished).toContain("gates");
@@ -631,7 +625,9 @@ describe("a ticket from a conversation, seen from the ticket", () => {
   it("gives the copy back when the ticket fails, and takes it again when the owner retries it", async () => {
     const rig = await make({ mode: "direct" });
     // The first review gives up; the second (after the owner's retry) works.
-    rig.agent.on({ stage: "review" }, { kind: "stuck", reason: "the reviewer lost its place" });
+    // Fast mode's check runs in the builder's seat, where a stuck session would switch engines: an unreadable
+    // verdict is what fails the ticket.
+    rig.agent.on({ stage: "review", duty: "review" }, { kind: "done", output: "the check lost its place" });
     const c = await rig.conversation();
     c.write("a.txt", "a\n");
     const r = await rig.call("POST", `/api/conversations/${c.conv.id}/ticket`, {});
@@ -662,7 +658,9 @@ describe("a ticket from a conversation, seen from the ticket", () => {
 
   it("refuses a retry while the conversation is mid-turn in that folder", async () => {
     const rig = await make({ mode: "direct" });
-    rig.agent.on({ stage: "review" }, { kind: "stuck", reason: "the reviewer lost its place" });
+    // Fast mode's check runs in the builder's seat, where a stuck session would switch engines: an unreadable
+    // verdict is what fails the ticket.
+    rig.agent.on({ stage: "review", duty: "review" }, { kind: "done", output: "the check lost its place" });
     const c = await rig.conversation();
     c.write("a.txt", "a\n");
     const r = await rig.call("POST", `/api/conversations/${c.conv.id}/ticket`, {});
@@ -720,7 +718,9 @@ describe("what is already committed is scanned too", () => {
 
   it("scans a copy again when the owner retries a failed ticket, and refuses what the conversation added meanwhile", async () => {
     const rig = await make({ mode: "direct" });
-    rig.agent.on({ stage: "review" }, { kind: "stuck", reason: "the reviewer lost its place" });
+    // Fast mode's check runs in the builder's seat, where a stuck session would switch engines: an unreadable
+    // verdict is what fails the ticket.
+    rig.agent.on({ stage: "review", duty: "review" }, { kind: "done", output: "the check lost its place" });
     const c = await rig.conversation();
     c.write("a.txt", "a\n");
     const r = await rig.call("POST", `/api/conversations/${c.conv.id}/ticket`, {});

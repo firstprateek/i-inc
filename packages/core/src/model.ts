@@ -42,7 +42,8 @@ export interface SwitchRules {
 
 export const defaultSwitchRules: SwitchRules = {
   outOfTokens: { action: "wait" },
-  checksFailedBeforeSwitch: 5,
+  // Past three failed runs an agent is usually looping; each try is a turn plus a full check run (2026-11-14).
+  checksFailedBeforeSwitch: 3,
   onStuck: "switch",
 };
 
@@ -173,6 +174,11 @@ export interface ProjectPolicy {
   /** Follow-up tickets agents may file for themselves per day. */
   followUpsPerDay: number;
   autoRelease?: boolean;
+  /**
+   * Opt in to a review on another vendor's engine in fast mode (decided 2026-11-14: off by default). Without
+   * it, fast mode's check session runs in the builder's own seat and engine, with a fresh context.
+   */
+  crossVendorReview?: boolean;
 }
 
 export const defaultProjectPolicy: ProjectPolicy = {

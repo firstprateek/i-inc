@@ -157,6 +157,8 @@ export interface SessionRequest {
   brief: string;
   /** Reasoning effort for this session when it differs from the ticket's (the done-when check runs at "low"). */
   effort?: Effort;
+  /** false: the brief goes without the brain (fast mode's check session sees only the ticket and the diff). */
+  brain?: false;
   /** Aborted when the owner sends an urgent message: stop at once and return "interrupted". */
   signal?: AbortSignal;
   /**

@@ -159,7 +159,11 @@ describe("a second employee reviews a ticket with images", () => {
       const { p, workspace } = withWorkspace();
       p.company.policy = { ...p.company.policy, mode };
       if (mode === "direct") p.harness.gates.push({ ok: true, pushed: "a".repeat(40) });
-      const ticket = refundsTicket({ attachments: [chart, receipt] });
+      // Direct mode's second employees are thorough mode's (High); fast mode checks in the builder's seat.
+      const ticket = refundsTicket({
+        attachments: [chart, receipt],
+        ...(mode === "direct" ? { effort: "high" as const } : {}),
+      });
       expect((await runTicket(p, ticket)).status).toBe(mode === "direct" ? "done" : "ready");
 
       // Ada's pick-up copied both; Grace (review) and Quinn (verify) got the branch, then the images.
@@ -199,7 +203,7 @@ describe("a second employee reviews a ticket with images", () => {
     p.agent.on({ employee: "grace", duty: "review" }, changes);
     // Ada works on the findings while the owner adds an image.
     p.agent.on({ employee: "ada", stage: "review" }, { kind: "hang" });
-    const run = runTicket(p, refundsTicket({ attachments: [chart] }), { signal });
+    const run = runTicket(p, refundsTicket({ attachments: [chart], effort: "high" }), { signal });
     while (!p.agent.callsFor("ada", "review").length) await new Promise((r) => setTimeout(r, 0));
     p.clock.advance(1);
     await p.store.append("42", [attached(p.clock.now(), receipt)]);
@@ -237,7 +241,7 @@ describe("a second employee reviews a ticket with images", () => {
       return attach(t, e, ns);
     };
 
-    expect(await runTicket(p, refundsTicket({ attachments: [chart] }))).toEqual({
+    expect(await runTicket(p, refundsTicket({ attachments: [chart], effort: "high" }))).toEqual({
       status: "done",
       outcome: "merged",
     });

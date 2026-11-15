@@ -375,13 +375,20 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
   },
 
   async build(c) {
+    // Fast mode has no plan stage: the builder plans in the same session, and its closing summary is the report.
     const out = await session(
       c,
       "build",
       c.builder,
-      "Implement the plan in small commits, pushing WIP as checkpoints.",
+      c.plan.fast ? fastBuildTask : "Implement the plan in small commits, pushing WIP as checkpoints.",
     );
-    if (out !== null) await c.emit(checkpoint(c, "build", out), finished(c, "build"));
+    if (out === null) return;
+    // The output is capped at 16 KB, which could cut off a long reply's closing summary: keep the summary itself.
+    const summary = c.plan.fast ? lastJson(out) : null;
+    await c.emit(
+      checkpoint(c, "build", out),
+      c.plan.fast ? finished(c, "build", summary ? JSON.stringify(summary) : out) : finished(c, "build"),
+    );
   },
 
   async checks(c) {
@@ -598,6 +605,7 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
   },
 
   async review(c) {
+    if (c.plan.fast && c.policy.mode === "direct") return fastCheck(c);
     const r = c.s.review;
 
     // The owner settled an open disagreement.
@@ -794,7 +802,12 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     const reviewerId = c.s.sessions.find(
       (x) => x.stage === "review" && x.employeeId !== c.builder.id,
     )?.employeeId;
-    const people = [c.builder, ...(reviewerId ? [c.p.company.employee(reviewerId)] : [])];
+    // Fast mode: only the builder looks back, and only when the ticket had something worth learning from.
+    const people = c.plan.fast
+      ? notable(c)
+        ? [c.builder]
+        : []
+      : [c.builder, ...(reviewerId ? [c.p.company.employee(reviewerId)] : [])];
     const next = people.find((e) => !c.s.retroBy.includes(e.id));
     if (next) {
       const out = await session(
@@ -838,6 +851,246 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     await c.emit(finished(c, "retro"), { type: "closed", at: c.p.clock.now(), outcome });
   },
 };
+
+/** Fast mode's build: plan in the same session, and close with the summary the report is made from. */
+const fastBuildTask =
+  'Start with a short plan in a few lines (the approach, the files, how you will test it), then implement it in small commits on the local branch, and run the project\'s checks yourself before you finish. For a fix, write a failing test that reproduces the bug first. End your reply with a JSON block: {"summary": "what changed, why this way, the risk, and any call the owner might overrule", "followUps":[{"title","doneWhen":["..."],"type":"fix"|"feat"|"chore","effort":"low"|"medium"|"high","reason"}]}, with at most 3 follow-ups you noticed but did not do, only ones worth doing.';
+
+const normItem = (t: string) => t.trim().replace(/\s+/g, " ").toLowerCase();
+
+/** The ticket's done-when items the last check left not met or not confirmed (all of them before any check). */
+function openItems(c: Step, items: string[]): string[] {
+  const checked = c.s.doneCheck?.items;
+  if (!checked) return items;
+  return items.filter((d) => checked.find((i) => normItem(i.doneWhen) === normItem(d))?.verdict !== "met");
+}
+
+/**
+ * Fast mode's check session (decided 2026-11-14): one fresh session reviews the diff and checks each done-when
+ * item together, in the builder's own seat and engine (another vendor's only when the project opts in), at low
+ * effort and without the brain. Round 2 looks only at what changed since round 1, and at the items still open. It
+ * may not change files: one that did has them put back, and its answer goes to the owner. A done-when item still
+ * not met or not confirmed after the last round goes to the owner too, never to done (T72).
+ */
+async function fastCheck(c: Step): Promise<void> {
+  const r = c.s.review;
+  // Fast mode's cards are stuck cards: any answer but a decline starts the check again from a fresh first round.
+  if (c.s.lastAnswer?.answer === "reject") {
+    await c.emit(failed(c, "review", "the owner declined to keep going"));
+    return;
+  }
+
+  const items = c.ticket.doneWhen.map((d) => d.trim()).filter(Boolean);
+  const needsVerdict = r.round === 0 || (r.addressed && r.round < c.plan.reviewRounds);
+  if (needsVerdict) {
+    let reviewer = c.builder;
+    let engineId: Id | undefined;
+    if (c.policy.crossVendorReview === true) {
+      const seat = await reviewSeat(c);
+      if (seat === "wait") return;
+      reviewer = "employee" in seat ? seat.employee : seat;
+      engineId = "employee" in seat ? seat.engineId : undefined;
+    }
+    const open = r.round === 0 ? items : openItems(c, items);
+    const head = r.round > 0 ? r.head : null;
+    const checks = c.s.lastChecks;
+    const checksLine = !checks
+      ? "were not run"
+      : checks.green
+        ? "passed on the builder's last run"
+        : `failed on the builder's last run: ${checks.failures.join("; ")}`;
+    const findingsShape =
+      '"approved": boolean, "findings":[{"severity":"blocking"|"should-fix"|"nit","where","text"}]';
+    const doneShape =
+      ', "doneWhen":[{"doneWhen":"<the item, word for word>","verdict":"met"|"not met"|"can\'t tell","evidence":"..."}]';
+    const shape = `{${findingsShape}${open.length ? doneShape : ""}}`;
+    const doneAsk = open.length
+      ? ` Then, for each done-when item below, answer met, not met or can't tell, with evidence (a file and line, a test, a command's output); say can't tell rather than guess.\nDone-when:\n${open.map((d) => `- ${d}`).join("\n")}\n`
+      : " ";
+    const earlier = r.findings.map((f) => `- [${f.severity}] ${f.where}: ${f.text}`).join("\n");
+    const task =
+      r.round === 0
+        ? `Check this change with fresh eyes, as its reviewer. It is the diff of this folder against main: \`git diff origin/main\`, committed or not. Run what you need, but change no files. The checks ${checksLine}. Look for bugs, missing tests and anything that misses the ticket's intent; keep nits few.${doneAsk}Be brief. Reply as JSON: ${shape}.`
+        : `Re-check this change: the builder addressed the earlier findings below. ${
+            head
+              ? `Look only at what changed since the last check, \`git diff ${head}\` (committed or not), and at whether each earlier finding is resolved; don't review the rest again.`
+              : "Check the diff of this folder against main again (`git diff origin/main`), and whether each earlier finding is resolved."
+          } Change no files. The checks ${checksLine}.${doneAsk}Be brief. Reply as JSON: ${shape}.\nEarlier findings:\n${earlier}`;
+    const guard: Guard = { changed: [], restored: true };
+    const out = await session(c, "review", reviewer, task, {
+      fresh: true,
+      helperFor: "review",
+      effort: "low",
+      guard,
+      brain: false,
+      ...(engineId ? { engineId } : {}),
+    });
+    if (out === null) return;
+    const at = c.p.clock.now();
+    const by = reviewer.id;
+    // "Change no files" is only a request (sessions run with full access), so the worktree was compared before and
+    // after. A check that changed anything has its changes put back and its answer thrown away: the owner decides.
+    if (guard.changed.length) {
+      const what = `the check changed files (${guard.changed.slice(0, 5).join(", ")}${guard.changed.length > 5 ? ", ..." : ""}), so its answer is not used${guard.restored ? "; they were put back" : "; they could not be put back, so look at the worktree"}`;
+      await c.emit(
+        {
+          type: "done-when-verdict",
+          at,
+          by,
+          items: items.map((doneWhen) => ({ doneWhen, verdict: "cant-tell" as const, evidence: what })),
+          retry: false,
+        },
+        needsYou(c, "review", { kind: "stuck", reason: `The change is not checked: ${what}` }),
+      );
+      return;
+    }
+    const reply = parseJson<unknown>(out);
+    const verdict = readVerdict(reply);
+    if (!verdict) {
+      await c.emit(failed(c, "review", `the check could not be read${quoteOf(out)}`));
+      return;
+    }
+    const fresh = open.length ? readDoneWhenCheck(isRecord(reply) ? reply.doneWhen : undefined, open) : [];
+    const before = c.s.doneCheck?.items ?? [];
+    const all: DoneWhenItem[] = items.map(
+      (d) =>
+        fresh.find((i) => normItem(i.doneWhen) === normItem(d)) ??
+        before.find((i) => normItem(i.doneWhen) === normItem(d) && i.verdict === "met") ?? {
+          doneWhen: d,
+          verdict: "cant-tell",
+          evidence: "not checked",
+        },
+    );
+    const unmet = all.filter((i) => i.verdict !== "met");
+    const findings = [
+      ...verdict.findings,
+      ...unmet.map((i) => ({
+        severity: i.verdict === "not-met" ? ("blocking" as const) : ("should-fix" as const),
+        where: "done-when",
+        text: `${i.verdict === "not-met" ? "not met" : "can't confirm it from the change; make it easy to confirm (a test, a clear change)"}: ${i.doneWhen}${i.evidence ? ` (${i.evidence})` : ""}`,
+      })),
+    ];
+    const approved = verdict.approved && unmet.length === 0;
+    await c.emit(
+      {
+        type: "review-verdict",
+        at,
+        reviewerId: by,
+        round: r.round + 1,
+        approved,
+        findings,
+        ...(guard.head ? { head: guard.head } : {}),
+      },
+      items.length
+        ? { type: "done-when-verdict", at, by, items: all, retry: false }
+        : { type: "done-when-verdict", at, by: null, items: [], retry: false, note: noDoneWhen },
+      ...(approved ? [finished(c, "review")] : []),
+    );
+    return;
+  }
+
+  if (!r.addressed) {
+    const out = await session(
+      c,
+      "build",
+      c.builder,
+      'Address each finding of the check: fix it, or say why not, and commit your work to the local branch. Reply as JSON: {"disputed": null or "what you disagree with and why"}.',
+    );
+    if (out === null) return;
+    await c.emit({
+      type: "addressed",
+      at: c.p.clock.now(),
+      round: r.round,
+      disputed: readDisputed(parseJson(out)),
+    });
+    return;
+  }
+
+  // Out of rounds. A done-when item that is still open goes to the owner (T72); anything else goes on, with an
+  // open disagreement noted for the report.
+  const open = openItems(c, items);
+  if (open.length) {
+    const checked = c.s.doneCheck?.items ?? [];
+    await c.emit(
+      needsYou(c, "review", {
+        kind: "stuck",
+        reason: `The done-when is not confirmed after ${r.round} check rounds: ${open
+          .map((d) => {
+            const i = checked.find((x) => normItem(x.doneWhen) === normItem(d));
+            return `${d} (${i ? verdictWords[i.verdict] : "not checked"}${i?.evidence ? `: ${i.evidence.slice(0, 300)}` : ""})`;
+          })
+          .join("; ")}`,
+      }),
+    );
+    return;
+  }
+  await c.emit(
+    finished(
+      c,
+      "review",
+      r.disputed
+        ? `went ahead after ${r.round} check rounds; the builder disputed: ${r.disputed}`
+        : "findings addressed",
+    ),
+  );
+}
+
+/**
+ * Fast mode's report: no session. The builder's closing summary from its build session is the judgment, the
+ * daemon adds the facts (assembleReport), and the follow-ups it listed there are filed.
+ */
+async function fastReport(c: Step): Promise<void> {
+  const reply = lastJson(c.s.outputs.build ?? "");
+  const said = reply && typeof reply.summary === "string" ? reply.summary.trim() : "";
+  const report = said || `${c.builder.name} didn't write a summary; the commits say what changed.`;
+  const read = readFollowUps(reply ? reply.followUps : undefined);
+  const at = c.p.clock.now();
+  await c.emit(
+    ...flagged(c, "report", "follow-ups", read.dropped),
+    finished(c, "report", report),
+    { type: "report-ready", at, summary: report },
+    ...(read.kept.length
+      ? [{ type: "follow-ups" as const, at, employeeId: c.builder.id, tickets: read.kept }]
+      : []),
+    { type: "owner-decided", at, decision: "approve" },
+  );
+}
+
+/**
+ * Whether a fast ticket had something worth a retro: a failed check run, an engine switch, a rebase conflict or a
+ * red CI to fix, pushback from the check, or a handoff. Most tickets have none, and write nothing anyway.
+ */
+function notable(c: Step): boolean {
+  const s = c.s;
+  return (
+    s.switches.length > 0 ||
+    s.handedFrom !== null ||
+    s.review.round > 1 ||
+    s.review.findings.some((f) => f.severity === "blocking") ||
+    s.sessions.some((x) => x.employeeId === c.builder.id && (x.stage === "checks" || x.stage === "gates"))
+  );
+}
+
+/**
+ * The last JSON object in an agent's reply: fenced blocks from the end, then the whole reply, then the outermost
+ * braces. A build reply is prose and code first, with its summary block at the end.
+ */
+function lastJson(text: string): Record<string, unknown> | null {
+  const tries = [...text.matchAll(/```(?:json)?[ \t]*\n([\s\S]*?)```/g)]
+    .map((m) => (m[1] ?? "").trim())
+    .reverse();
+  tries.push(text.trim());
+  const first = text.indexOf("{");
+  const last = text.lastIndexOf("}");
+  if (first >= 0 && last > first) tries.push(text.slice(first, last + 1));
+  for (const t of tries) {
+    try {
+      const v: unknown = JSON.parse(t);
+      if (isRecord(v)) return v;
+    } catch {}
+  }
+  return null;
+}
 
 type Seat = Employee | { employee: Employee; engineId?: Id };
 
@@ -1022,6 +1275,7 @@ async function directGates(c: Step): Promise<void> {
  * tickets the builder noticed, and the ticket closes without waiting for the owner.
  */
 async function directReport(c: Step): Promise<void> {
+  if (c.plan.fast) return fastReport(c);
   const out = await session(
     c,
     "build",
@@ -1140,6 +1394,8 @@ interface Guard {
   changed: string[];
   /** Whether those changes were put back. */
   restored: boolean;
+  /** The commit the worktree was at when the session began, when it could be looked at. */
+  head?: string;
 }
 
 /**
@@ -1184,7 +1440,14 @@ async function session(
   duty: Duty,
   employee: Employee,
   task: string,
-  o: { engineId?: Id; fresh?: boolean; helperFor?: HelperDuty; effort?: Effort; guard?: Guard } = {},
+  o: {
+    engineId?: Id;
+    fresh?: boolean;
+    helperFor?: HelperDuty;
+    effort?: Effort;
+    guard?: Guard;
+    brain?: false;
+  } = {},
 ): Promise<string | null> {
   const stage = c.s.active as StageId;
   const isAssignee = employee.id === c.ticket.assignee;
@@ -1246,6 +1509,7 @@ async function session(
     } catch (err) {
       if (isPassing(err)) throw err; // anything else: the look is advisory, the session still runs
     }
+    if (before) o.guard.head = before.head;
   }
   const text = o.fresh
     ? freshBrief(c.ticket, stage, task, c.p.harness.describe?.(c.ticket))
@@ -1286,6 +1550,7 @@ async function session(
       engine,
       brief: text,
       ...(o.effort ? { effort: o.effort } : {}),
+      ...(o.brain === false ? { brain: false as const } : {}),
       ...(signal ? { signal } : {}),
       ...(c.p.agent.reportsLaunch ? { onLaunched: recordStart } : {}),
     });

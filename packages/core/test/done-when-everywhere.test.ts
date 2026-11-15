@@ -1,5 +1,6 @@
-// Every ticket's done-when is checked before it closes (T72). A code ticket with no prove stage (low effort, or
-// nobody to verify) gets a light, read-only check by a session that is never the builder's own: all met goes on,
+// Every ticket's done-when is checked before it closes (T72). Fast mode checks it inside its check session (see
+// fast.test.ts); here, the done-when stage: a code ticket with no prove stage (owner-merges at low effort, or
+// thorough with nobody to verify) gets a light, read-only check by a session that is never the builder's own: all met goes on,
 // something not met goes back to the builder once, and a second miss or a "can't tell" goes to the owner with the
 // result for each item. A ticket proved by the prove stage is not checked twice; one with no done-when says so.
 import { describe, expect, it } from "vitest";
@@ -38,9 +39,9 @@ const verdicts = async (p: { store: { read: (id: string) => Promise<TicketEvent[
 
 describe("a code ticket without a prove stage gets a done-when check", () => {
   it("low effort, all items met: a session that is not the builder's checks, then the ticket goes on", async () => {
-    const p = direct(ports());
+    const p = ports();
     const result = await runTicket(p, low());
-    expect(result).toEqual({ status: "done", outcome: "merged" });
+    expect(result).toMatchObject({ status: "ready" });
     const s = fold(await p.store.read("42"));
     expect(s.finished).toContain("done-when");
     expect(s.finished).not.toContain("prove");
@@ -65,13 +66,13 @@ describe("a code ticket without a prove stage gets a done-when check", () => {
   });
 
   it("an unmet item goes back to the builder once with the item, then it is checked again and met", async () => {
-    const p = direct(ports());
+    const p = ports();
     p.agent.on(
       { stage: "done-when", duty: "verify" },
       say(reply("met", "not met")),
       say(reply("met", "met")),
     );
-    expect(await runTicket(p, low())).toEqual({ status: "done", outcome: "merged" });
+    expect(await runTicket(p, low())).toMatchObject({ status: "ready" });
     const fix = p.agent.callsFor("ada", "done-when");
     expect(fix).toHaveLength(1);
     expect(fix[0]?.duty).toBe("build");
@@ -85,7 +86,7 @@ describe("a code ticket without a prove stage gets a done-when check", () => {
   });
 
   it("still unmet after the builder's fix goes to needs-you with the result for each item, never done", async () => {
-    const p = direct(ports());
+    const p = ports();
     p.agent.on(
       { stage: "done-when", duty: "verify" },
       say(reply("met", "not met")),
@@ -106,11 +107,11 @@ describe("a code ticket without a prove stage gets a done-when check", () => {
     expect(p.harness.gateRuns).toBe(0); // nothing was pushed
     // "Keep going" starts the stage again: checked, and met this time
     await answer(p, "42", "continue");
-    expect(await runTicket(p, low())).toEqual({ status: "done", outcome: "merged" });
+    expect(await runTicket(p, low())).toMatchObject({ status: "ready" });
   });
 
   it("can't tell goes to needs-you at once, with no retry for the builder", async () => {
-    const p = direct(ports());
+    const p = ports();
     p.agent.on({ stage: "done-when", duty: "verify" }, say(reply("met", "can't tell")));
     const result = await runTicket(p, low());
     expect(result.status).toBe("needs-you");
@@ -126,7 +127,7 @@ describe("a code ticket without a prove stage gets a done-when check", () => {
   });
 
   it("a reply that cannot be read, or says met without evidence, is can't tell, not done", async () => {
-    const p = direct(ports());
+    const p = ports();
     p.agent.on({ stage: "done-when" }, say("looks fine to me"));
     const result = await runTicket(p, low());
     expect(result.status).toBe("needs-you");
@@ -142,13 +143,13 @@ describe("a code ticket without a prove stage gets a done-when check", () => {
   });
 
   it("with no verifier available the check still runs: another reviewer first, then the builder's seat on another engine", async () => {
-    const withReviewer = direct(fakePorts([ada, grace], engines));
+    const withReviewer = fakePorts([ada, grace], engines);
     await runTicket(withReviewer, low());
     const call = checks(withReviewer)[0] as ReturnType<typeof withReviewer.agent.callsFor>[number];
     expect(call.employee.id).toBe("grace"); // a different employee, who holds the review duty
 
-    const alone = direct(fakePorts([ada], engines));
-    expect(await runTicket(alone, low())).toEqual({ status: "done", outcome: "merged" });
+    const alone = fakePorts([ada], engines);
+    expect(await runTicket(alone, low())).toMatchObject({ status: "ready" });
     const own = checks(alone) as ReturnType<typeof alone.agent.callsFor>;
     expect(own).toHaveLength(1);
     expect(own[0]?.employee.id).toBe("ada"); // the builder's seat ...
@@ -158,13 +159,11 @@ describe("a code ticket without a prove stage gets a done-when check", () => {
   });
 
   it("with one engine and no one else, a fresh session on the builder's own engine checks", async () => {
-    const solo = direct(
-      fakePorts(
-        [ada],
-        engines.filter((e) => e.id === "opus"),
-      ),
+    const solo = fakePorts(
+      [ada],
+      engines.filter((e) => e.id === "opus"),
     );
-    expect(await runTicket(solo, low())).toEqual({ status: "done", outcome: "merged" });
+    expect(await runTicket(solo, low())).toMatchObject({ status: "ready" });
     const own = checks(solo) as ReturnType<typeof solo.agent.callsFor>;
     expect(own).toHaveLength(1);
     expect(own[0]?.engine.id).toBe("opus");
@@ -182,9 +181,12 @@ describe("a code ticket without a prove stage gets a done-when check", () => {
 });
 
 describe("a ticket that was already proved is not checked twice", () => {
-  it("medium with a verifier keeps using prove, and the done-when stage only records it", async () => {
+  it("high (thorough) with a verifier keeps using prove, and the done-when stage only records it", async () => {
     const p = direct(ports());
-    expect(await runTicket(p, refundsTicket())).toEqual({ status: "done", outcome: "merged" });
+    expect(await runTicket(p, refundsTicket({ effort: "high" }))).toEqual({
+      status: "done",
+      outcome: "merged",
+    });
     expect(p.agent.callsFor("quinn", "prove")).toHaveLength(1);
     expect(checks(p)).toHaveLength(0);
     const s = fold(await p.store.read("42"));
@@ -194,9 +196,12 @@ describe("a ticket that was already proved is not checked twice", () => {
     expect(s.doneCheck?.items.map((i) => i.verdict)).toEqual(["met", "met"]);
   });
 
-  it("medium with nobody holding the verify duty runs the check (the prove stage is skipped)", async () => {
+  it("high (thorough) with nobody holding the verify duty runs the check (the prove stage is skipped)", async () => {
     const p = direct(fakePorts([ada, grace], engines));
-    expect(await runTicket(p, refundsTicket())).toEqual({ status: "done", outcome: "merged" });
+    expect(await runTicket(p, refundsTicket({ effort: "high" }))).toEqual({
+      status: "done",
+      outcome: "merged",
+    });
     const s = fold(await p.store.read("42"));
     expect(s.outputs.prove).toContain("no one on the team has the verify duty");
     expect(checks(p)).toHaveLength(1);
@@ -206,8 +211,8 @@ describe("a ticket that was already proved is not checked twice", () => {
 
 describe("a ticket with no done-when", () => {
   it("skips the check and says so, with no session", async () => {
-    const p = direct(ports());
-    expect(await runTicket(p, low({ doneWhen: [] }))).toEqual({ status: "done", outcome: "merged" });
+    const p = ports();
+    expect(await runTicket(p, low({ doneWhen: [] }))).toMatchObject({ status: "ready" });
     expect(checks(p)).toHaveLength(0);
     const s = fold(await p.store.read("42"));
     expect(s.finished).toContain("done-when");
@@ -336,7 +341,7 @@ describe("read-only is checked, not trusted", () => {
   }
 
   it("a checker that changed files gets them put back, its answer is dropped, and the owner is asked", async () => {
-    const p = direct(ports());
+    const p = ports();
     const ws = new FakeWorkspace();
     p.workspace = ws;
     meddling(p, ws, "quinn", { status: [" M src/refunds.ts", "?? notes.txt"] });
@@ -358,7 +363,7 @@ describe("read-only is checked, not trusted", () => {
   });
 
   it("a commit by the checker counts too, and a restore that fails is said", async () => {
-    const p = direct(ports());
+    const p = ports();
     const ws = new FakeWorkspace();
     ws.failRestore = true;
     p.workspace = ws;
@@ -372,7 +377,7 @@ describe("read-only is checked, not trusted", () => {
   });
 
   it("says 'put back' only when the restore verified: one that ran but did not match is not claimed", async () => {
-    const p = direct(ports());
+    const p = ports();
     const ws = new FakeWorkspace();
     ws.unverified = true;
     p.workspace = ws;
@@ -385,11 +390,11 @@ describe("read-only is checked, not trusted", () => {
   });
 
   it("a checker that touched nothing, and the builder's own dirty files from before, are no change", async () => {
-    const p = direct(ports());
+    const p = ports();
     const ws = new FakeWorkspace();
     ws.trees.set("quinn", { head: "c".repeat(40), status: [" M the-builders-work.ts"] });
     p.workspace = ws;
-    expect(await runTicket(p, low())).toEqual({ status: "done", outcome: "merged" });
+    expect(await runTicket(p, low())).toMatchObject({ status: "ready" });
     expect(ws.restored).toEqual([]);
   });
 });
@@ -427,10 +432,12 @@ describe("owner-merges: the checker reads what the builder pushed", () => {
   });
 
   it("direct mode never pushes for the check (the branch stays local)", async () => {
-    const p = direct(ports());
+    // Thorough (High) with nobody holding the verify duty: the done-when check runs in direct mode.
+    const p = direct(fakePorts([ada, grace], engines));
     const ws = new FakeWorkspace();
     p.workspace = ws;
-    await runTicket(p, low());
+    await runTicket(p, refundsTicket({ effort: "high" }));
+    expect(checks(p)).toHaveLength(1);
     expect(ws.pushed).toEqual([]);
   });
 });

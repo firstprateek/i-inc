@@ -174,7 +174,9 @@ describe("a conversation's ticket titled by its agent, once the conversation can
 describe("a retry refused while the conversation is busy", () => {
   it("names the conversation by its title as the row shows it", async () => {
     const rig = await shipRig({ mode: "direct" });
-    rig.agent.on({ stage: "review" }, { kind: "stuck", reason: "the reviewer lost its place" });
+    // Fast mode's check runs in the builder's seat, where a stuck session would switch engines: an unreadable
+    // verdict is what fails the ticket.
+    rig.agent.on({ stage: "review", duty: "review" }, { kind: "done", output: "the check lost its place" });
     const c = await rig.conversation();
     c.write("a.txt", "a\n");
     const r = await rig.call("POST", `/api/conversations/${c.conv.id}/ticket`, { title: "Owner title" });

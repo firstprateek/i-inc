@@ -53,6 +53,8 @@ export type TicketEvent =
       round: number;
       approved: boolean;
       findings: Finding[];
+      /** Fast mode: the commit the check session looked at, so the next round can look only at what changed. */
+      head?: string;
     }
   | { type: "addressed"; at: number; round: number; disputed: string | null }
   | { type: "gates-ran"; at: number; ok: boolean; conflict: boolean; reason?: string }

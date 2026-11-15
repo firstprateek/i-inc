@@ -35,6 +35,8 @@ export interface TicketState {
     findings: Finding[];
     disputed: string | null;
     addressed: boolean;
+    /** Fast mode: the commit the last check session looked at. */
+    head: string | null;
   };
   gateConflicts: number;
   proofFailures: number;
@@ -138,7 +140,7 @@ export function emptyState(): TicketState {
     interrupted: false,
     lastChecks: null,
     lastProof: null,
-    review: { round: 0, approved: false, findings: [], disputed: null, addressed: false },
+    review: { round: 0, approved: false, findings: [], disputed: null, addressed: false, head: null },
     gateConflicts: 0,
     proofFailures: 0,
     sessions: [],
@@ -265,6 +267,7 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
           findings: readFindings(e.findings),
           disputed: null,
           addressed: false,
+          head: typeof e.head === "string" && /^[0-9a-f]{7,40}$/.test(e.head) ? e.head : null,
         },
       };
     case "addressed":
@@ -311,6 +314,11 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
           proofFailures: 0,
           gateConflicts: 0,
           doneWhen: { ...s.doneWhen, misses: 0 },
+          // Fast mode's check is stuck in the review stage: starting it again means a fresh first round.
+          review:
+            s.active === "review"
+              ? { round: 0, approved: false, findings: [], disputed: null, addressed: false, head: null }
+              : s.review,
           lastAnswer: e.answer === "reject" ? answered : null,
         };
       }

@@ -337,7 +337,19 @@ function defaultOutcome(r: SessionRequest): SessionOutcome {
       json({ items: r.ticket.doneWhen.map((d) => ({ doneWhen: d, pass: true, evidence: "screenshot" })) }),
     );
   }
-  if (r.duty === "review") return done(json({ approved: true, findings: [] }));
+  // A review approves; fast mode's check also finds every done-when item met.
+  if (r.duty === "review")
+    return done(
+      json({
+        approved: true,
+        findings: [],
+        doneWhen: r.ticket.doneWhen.map((d) => ({
+          doneWhen: d,
+          verdict: "met",
+          evidence: "the diff and a test",
+        })),
+      }),
+    );
   if (r.stage === "review") return done(json({ disputed: null }));
   if (r.stage === "report") return done("What changed: refunds are subtracted from spending.");
   if (r.stage === "work") return done(json({ proposals: [], nothing: "nothing to prepare" }));

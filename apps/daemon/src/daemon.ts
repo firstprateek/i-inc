@@ -452,7 +452,8 @@ export class Daemon {
         // after the employee's copy in the sandbox is brought up to date. A failure here never stops
         // the session: it just goes without.
         const feed = this.d.brainFeed;
-        if (feed?.enabled) {
+        // Fast mode's check session goes without it: it sees only the ticket and the diff.
+        if (feed?.enabled && req.brain !== false) {
           try {
             const st = await this.state(req.ticket.id);
             const blind = req.stage === "review" || req.stage === "prove" || req.stage === "done-when";

@@ -43,6 +43,14 @@ export interface StagePlan {
   reviewRounds: number;
   /** Plan gate: whether the plan always waits for the owner. */
   planGate: "always" | "risky" | "never";
+  /**
+   * Fast mode (decided 2026-11-14, direct mode's default): the builder plans inside its build session; one fresh
+   * check session, in the builder's own seat and engine unless the project opts in to another vendor, reviews the
+   * diff and checks every done-when item together, without the brain and at low effort; round 2 looks only at what
+   * changed; the daemon writes the report from the builder's own summary; and the retro runs only when something
+   * happened worth learning from.
+   */
+  fast?: true;
 }
 
 export const stagePlans: Record<Effort, StagePlan> = {
@@ -87,18 +95,21 @@ export const tidyPlan: StagePlan = {
 /**
  * Direct mode (decided 2026-10-17): every code ticket is reviewed by a fresh pair of eyes, for at
  * most 2 rounds, and nothing waits for the owner except protected paths. The gates push to main.
+ *
+ * Low and Medium run fast (decided 2026-11-14): build, checks, one check session that reviews the diff
+ * and the done-when together, the gates and a report. High is thorough: a plan, a separate proof and
+ * done-when check, and a review on another vendor's engine where there is one.
  */
+const fastPlan: StagePlan = {
+  stages: ["pickup", "build", "checks", "review", "gates", "report"],
+  reviewRounds: 2,
+  planGate: "never",
+  fast: true,
+};
+
 export const directPlans: Record<Effort, StagePlan> = {
-  low: {
-    stages: ["pickup", "build", "checks", "review", "done-when", "gates", "report"],
-    reviewRounds: 2,
-    planGate: "never",
-  },
-  medium: {
-    stages: ["pickup", "plan", "build", "checks", "prove", "review", "done-when", "gates", "report"],
-    reviewRounds: 2,
-    planGate: "never",
-  },
+  low: fastPlan,
+  medium: fastPlan,
   high: {
     stages: ["pickup", "plan", "build", "checks", "prove", "review", "done-when", "gates", "report"],
     reviewRounds: 2,
