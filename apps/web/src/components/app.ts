@@ -21,6 +21,7 @@ import {
   redirectFor,
   routeName,
   routeTitle,
+  sidebarRoute,
   tabOf,
   WORK_TABS,
   workTabHref,
@@ -214,6 +215,7 @@ export class IncApp extends LitElement {
   override willUpdate(changed: Map<string, unknown>): void {
     // Split routes own their pane scrolling. Every other route scrolls <main>.
     this.toggleAttribute("own-scroll", layoutForRoute(this.route) === "split");
+    this.toggleAttribute("sidebar-route", sidebarRoute(this.route));
     if (changed.has("route")) this.fetchViews();
   }
 
@@ -807,6 +809,13 @@ export class IncApp extends LitElement {
         padding-top: 20px;
         padding-bottom: 20px;
       }
+      /* A route with a sidebar spans the window: the sidebar stays at the left edge however wide the window is (or
+         however far out the desktop app is zoomed), never centred in the 1400px frame (docs/layout.md). The top
+         bar is left as it is on every route. The phone rule below still wins on a phone. */
+      :host([sidebar-route]) main {
+        padding-left: max(var(--layout-gutter), env(safe-area-inset-left));
+        padding-right: max(var(--layout-gutter), env(safe-area-inset-right));
+      }
       :host([own-scroll]) inc-layout { flex: 1 1 0; min-height: 0; }
       @media (max-width: ${LAYOUT_BREAKPOINTS.phone}px) {
         /* No padding of its own, but the notch's side insets stay (the bars handle top and bottom). */
@@ -979,7 +988,7 @@ export class IncApp extends LitElement {
         </div>
       </header>
       <main tabindex="-1" @session-stage=${this.onSessionStage} @conv-focus=${this.onComposerFocus} @load-state=${this.onLoadState}>
-        <inc-layout .kind=${layoutForRoute(this.route)} ?dense=${this.route.view === "conversations" || (this.route.view === "ticket" && !!this.route.session)} ?hide-heading=${this.threadOnPhone()}>
+        <inc-layout .kind=${layoutForRoute(this.route)} ?full-width=${sidebarRoute(this.route)} ?dense=${this.route.view === "conversations" || (this.route.view === "ticket" && !!this.route.session)} ?hide-heading=${this.threadOnPhone()}>
           <h1 id="view-heading" tabindex="-1" slot="heading">${routeName(this.route, this.stageOfRoute()).long}</h1>
           ${this.renderHeadExtras()}
           ${this.renderTabs()}
