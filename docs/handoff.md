@@ -971,8 +971,9 @@ read every ticket's events every 30 seconds; since T63 it folds only tickets tha
 1. **Verify on a real phone:** PWA install, push (tickets and conversations, T65), live updates, the Needs you
    page and Open the session. Everything is tested against fakes and desktop Chromium; none of it has been tried on
    an iPhone or Android device.
-2. **Check ticket images on the mini and an iPhone (#14):** checked on Linux, but not yet on the mini.
-   The two steps are in [m1-findings.md, "M3: ticket images"](m1-findings.md#m3-ticket-images-14).
+2. **Check ticket images on the mini and an iPhone (#14, #34):** checked on Linux, but not yet on the mini.
+   The two steps are in [m1-findings.md, "M3: ticket images"](m1-findings.md#m3-ticket-images-14); the
+   first is one command on the mini, `bun apps/daemon/scripts/ticket-images.ts --assignee <id> --project <id>`.
 3. **Audit leftovers:** see [audit/T63-report.md](audit/T63-report.md) ("Left on purpose"), and T72 in
    [coord.md](coord.md) (done-when for low-effort and no-verifier tickets).
 5. **Future work (not built):** agents asking questions mid-conversation, agent teams, MCP tools and skills, the

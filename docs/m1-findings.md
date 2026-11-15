@@ -504,9 +504,9 @@ like this.
 
 ## M3: ticket images (#14)
 
-**Not yet run on the mini or an iPhone.** #14 was worked from an employee machine (Ubuntu 24.04),
-which can't reach the mini, so what's below was checked on Linux. The two checks that need the real
-hardware are at the end.
+**Not yet run on the mini or an iPhone.** #14 and #34 were worked from an employee machine (Ubuntu
+24.04), which can't reach the mini or a phone, so what's below was checked on Linux. The two checks
+that need the real hardware are at the end, with a script for the first.
 
 Checked on Linux on 2026-10-19:
 
@@ -522,18 +522,53 @@ Checked on Linux on 2026-10-19:
 for six 10 MB images.
 
 Over `container machine run -i`, stdin also goes through the container's relay into the machine, so
-the old heredoc would likely have been slower still. Still to check on the mini:
+the old heredoc would likely have been slower still.
 
-1. **Six 10 MB images at pick-up.** File a ticket with six photos of about 10 MB each, from the web
-   app on the mini, and let an employee pick it up. Then compare the hashes:
-   `shasum -a 256 <the originals>` on the Mac, and
-   `container machine run -n <machine> -u employee -- sha256sum <worktree>/.inc/attachments/*`.
-   Also note how long pick-up took after the draft PR's push.
-2. **An iPhone photo in Safari.** On the iPhone, with the Camera format left at High Efficiency, use
-   the app over the tailnet and add a photo three ways: from Photo Library, Take Photo and Choose File
-   (Files). Expected: the first two arrive as JPEG (the ticket's thumbnail shows it, and the file in
-   `.inc/attachments/` ends in `.jpg`), and the third is refused with the message above. Note any 48 MP photo
-   whose JPEG comes out over 10 MB; the form refuses it as "over 10 MB".
+Checked on Linux on 2026-11-15 (#34), with `apps/daemon/scripts/ticket-images.ts` against the
+in-process daemon: six 10 MB images in one upload, read back from the daemon, copied by the real
+`attachmentScript` into a temp root and hashed there by the script's own `sha256sum`. All six were
+the same, and the whole run took about half a second. Its tests
+(`apps/daemon/test/scripts/ticket-images.test.ts`) also cover a copy that differs, one that is
+missing, a ticket that fails, a timeout and a stopped machine.
+
+Still to check on the mini and an iPhone:
+
+1. **Six 10 MB images at pick-up, on the mini.** On the mini, with the daemon running, pick an
+   employee with an engine signed in and a project they work on, and run from the repo:
+
+   ```bash
+   bun apps/daemon/scripts/ticket-images.ts --assignee ada --project Duet
+   #   --count 6 --mb 10   how many images and how big (the defaults, and the most a ticket takes)
+   #   --timeout 900       seconds to wait for pick-up
+   ```
+
+   It files a low-effort chore titled "Device check: 6 images of 10.0 MB arrive in the worktree", with
+   six random images of exactly 10 MB, through `POST /api/tickets` as the web app does. It reads each
+   one back from the daemon, waits for the ticket's `attachments-copied` event, and then runs
+   `sha256sum` in `/home/employee/work/inc-<ticket>/.inc/attachments` inside `inc-<team>`, only if
+   `container machine ls` shows that machine running (it never boots one: T75). Expected: twelve
+   `same` lines (six `stored`, six `copied`), then `all 6 images arrived intact in inc-<team>`, and
+   exit code 0. Write down the line `picked up: draft PR after X s, images in the worktree after Y s`:
+   on Linux the copy took about 25 ms per image, and Y minus X is the time over the relay.
+   Then close the ticket in the app (it asks the employee to change nothing).
+   If it fails: exit 1 names each image that `DIFFERS` or is `MISSING`, or says the ticket failed and
+   why; exit 2 means a timeout, a machine that isn't running, or the daemon or the token file couldn't
+   be reached. The token comes from `~/.config/i-inc/web-token`, as for `converse.ts`. (The old
+   hand-run command, `container machine run … sha256sum <worktree>/.inc/attachments/*`, would have
+   expanded the `*` on the Mac, and would boot a stopped machine.)
+2. **An iPhone photo in Safari.** On the iPhone, leave Settings > Camera > Formats at High
+   Efficiency. Open the app over the tailnet, start a new ticket, and add a photo three ways from the
+   image button: Photo Library, Take Photo, and Choose File (pick a `.HEIC` from Files). Expected:
+   - Photo Library and Take Photo: the picker shows a thumbnail, the ticket files, and its page shows
+     both thumbnails. After pick-up, while the team's machine is running, their names in the worktree
+     end in `.jpg` or `.jpeg`. Check on the mini:
+     `echo 'ls -l /home/employee/work/inc-<ticket>/.inc/attachments' | container machine run -i -u employee -n inc-<team> -- bash -s`
+   - Choose File with a HEIC: refused in the form, before upload, with "<name> is a HEIC photo, which
+     a ticket can't take. Pick it from Photo Library, which sends it as JPEG, or set Settings > Camera
+     > Formats to Most Compatible."
+   - A 48 MP photo (an iPhone 14 Pro or later, with 48 MP on) whose JPEG comes out over 10 MB is
+     refused as "over 10 MB". Write down its size if that happens: it decides whether the limit
+     should move.
 
 ## M3: a reviewer's checkout and images (#26)
 
