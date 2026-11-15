@@ -1,7 +1,8 @@
 // The launcher: find the daemon, then hand the window to it. An address given at launch (I_INC_URL in the
-// environment) comes first; then the one kept in localStorage; with none saved it tries the daemon on this
-// machine (the Mac mini, which cannot reach its own Tailscale Service address), then the address this build was
-// made for (I_INC_URL at build time), and otherwise asks.
+// environment) is the only one tried when there is one. Otherwise it tries, in order and until one answers, the
+// one kept in localStorage, the daemon on this machine (the Mac mini, which cannot reach its own Tailscale
+// Service address), and the address this build was made for (I_INC_URL at build time); if none answers, it asks.
+// Before leaving it tells the app which daemon it chose: the window shows only that daemon's pages.
 const KEY = "i-inc-daemon";
 const LOCAL = "http://127.0.0.1:7420";
 
@@ -68,14 +69,24 @@ async function connect(raw, keep = true) {
     base = origin(raw);
   } catch {
     ask("That is not an address.");
-    return;
+    return false;
   }
   statusLine.textContent = "Connecting…";
   if (!(await reachable(base))) {
     ask(`Can't reach ${base}. Is the daemon running, and is this Mac on the tailnet?`);
-    return;
+    return false;
   }
+  await go(base, keep);
+  return true;
+}
+
+async function go(base, keep) {
   if (keep) save(base);
+  try {
+    await window.__TAURI__?.core.invoke("use_daemon", { origin: base });
+  } catch {
+    // An app build without the command shows any address; nothing to tell it.
+  }
   location.replace(`${base}/`);
 }
 
@@ -97,17 +108,29 @@ async function start() {
     await connect(given, false);
     return;
   }
-  if (remembered) {
-    await connect(remembered);
-    return;
+  const tried = [];
+  for (const [raw, ms] of [
+    [remembered, 4000],
+    [LOCAL, 1500],
+    [fallback, 4000],
+  ]) {
+    if (!raw) continue;
+    let base;
+    try {
+      base = origin(raw);
+    } catch {
+      continue;
+    }
+    if (tried.includes(base)) continue;
+    tried.push(base);
+    input.value = base;
+    if (await reachable(base, ms)) {
+      await go(base, true);
+      return;
+    }
   }
-  if (await reachable(LOCAL, 1500)) {
-    input.value = LOCAL;
-    await connect(LOCAL);
-    return;
-  }
-  if (fallback) await connect(fallback);
-  else ask();
+  input.value = remembered ?? fallback ?? LOCAL;
+  ask(tried.length ? `Can't reach ${tried.join(" or ")}. Is this Mac on the tailnet?` : undefined);
 }
 
 void start();

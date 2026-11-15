@@ -8,6 +8,7 @@
     "core:window:allow-start-dragging",
     "core:window:allow-internal-toggle-maximize",
     "allow-default-daemon",
-    "allow-daemon-override"
+    "allow-daemon-override",
+    "allow-use-daemon"
   ]
 }

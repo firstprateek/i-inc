@@ -3,7 +3,17 @@
 // browser or the installed PWA never sets the mark, so there the header is unchanged.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IncApp } from "../src/components/app.ts";
-import { inDesktopApp, isFullScreen, titlebarKind } from "../src/desktop.ts";
+import {
+  APP_VERSION_WAIT_MS,
+  appZoom,
+  inDesktopApp,
+  inFullScreen,
+  isFullScreen,
+  resetDesktopForTests,
+  titlebarKind,
+  versionAtLeast,
+  wireDesktop,
+} from "../src/desktop.ts";
 import { IncLogin } from "../src/login.ts";
 
 const MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)";
@@ -24,12 +34,20 @@ describe("desktop marks", () => {
     expect(titlebarKind("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")).toBe("plain");
   });
 
-  it("calls a window that fills the screen full screen, and a zoomed one not", () => {
+  it("guesses full screen from the window's outer size, which page zoom does not change", () => {
     const screen = { width: 1920, height: 1080 };
-    expect(isFullScreen({ innerWidth: 1920, innerHeight: 1080 }, screen)).toBe(true);
+    expect(isFullScreen({ outerWidth: 1920, outerHeight: 1080 }, screen)).toBe(true);
     // Zoomed: as wide as the screen, short of it by the menu bar.
-    expect(isFullScreen({ innerWidth: 1920, innerHeight: 1055 }, screen)).toBe(false);
-    expect(isFullScreen({ innerWidth: 1320, innerHeight: 880 }, screen)).toBe(false);
+    expect(isFullScreen({ outerWidth: 1920, outerHeight: 1055 }, screen)).toBe(false);
+    expect(isFullScreen({ outerWidth: 1320, outerHeight: 880 }, screen)).toBe(false);
+  });
+
+  it("compares app versions by their numbers", () => {
+    expect(versionAtLeast("0.2.0", "0.2.0")).toBe(true);
+    expect(versionAtLeast("0.10.0", "0.2.0")).toBe(true);
+    expect(versionAtLeast("1.0.0", "0.9.9")).toBe(true);
+    expect(versionAtLeast("0.1.9", "0.2.0")).toBe(false);
+    expect(versionAtLeast("0.2.0-beta", "0.2.0")).toBe(true);
   });
 });
 
@@ -90,10 +108,46 @@ describe("the shell's header", () => {
     } finally {
       delete window.__I_INC_ZOOM__;
     }
-    // At actual size, and in a browser, the header has no zoom of its own.
+    // At actual size the header has no zoom of its own…
     document.body.innerHTML = "";
-    const { root } = await mount();
-    expect((root.querySelector("header") as HTMLElement).hasAttribute("style")).toBe(false);
+    const atOne = await mount();
+    expect((atOne.root.querySelector("header") as HTMLElement).hasAttribute("style")).toBe(false);
+    // …and in a browser it never has, whatever zoom a page might report.
+    document.body.innerHTML = "";
+    delete window.__I_INC_TITLEBAR__;
+    window.__I_INC_ZOOM__ = 1.25;
+    try {
+      const browser = await mount();
+      expect((browser.root.querySelector("header") as HTMLElement).hasAttribute("style")).toBe(false);
+    } finally {
+      delete window.__I_INC_ZOOM__;
+    }
+  });
+
+  it("zooms the account menu back up, since it sits inside the counter-zoomed header", async () => {
+    window.__I_INC_TITLEBAR__ = true;
+    window.__I_INC_ZOOM__ = 1.2;
+    try {
+      const { app, root } = await mount();
+      (root.querySelector(".account-trigger") as HTMLButtonElement).click();
+      await app.updateComplete;
+      expect(root.querySelector(".account-menu")?.getAttribute("style")).toBe("zoom: 1.2");
+    } finally {
+      delete window.__I_INC_ZOOM__;
+    }
+  });
+
+  it("closes the account menu on a press elsewhere, which on the title bar starts a drag and never clicks", async () => {
+    window.__I_INC_TITLEBAR__ = true;
+    const { app, root } = await mount();
+    (root.querySelector(".account-trigger") as HTMLButtonElement).click();
+    await app.updateComplete;
+    expect(root.querySelector(".account-menu")).not.toBeNull();
+    (root.querySelector(".spacer") as HTMLElement).dispatchEvent(
+      new PointerEvent("pointerdown", { bubbles: true, composed: true }),
+    );
+    await app.updateComplete;
+    expect(root.querySelector(".account-menu")).toBeNull();
   });
 
   it("keeps the open account menu out of the drag region", async () => {
@@ -126,5 +180,66 @@ describe("the sign-in screen", () => {
       expect(strip?.hasAttribute("data-tauri-drag-region") ?? false).toBe(app);
       el.remove();
     }
+  });
+});
+
+describe("wiring the document in the app", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    resetDesktopForTests();
+    window.__I_INC_TITLEBAR__ = true;
+    localStorage.clear();
+    sessionStorage.clear();
+    document.documentElement.className = "";
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    delete window.__I_INC_TITLEBAR__;
+    delete window.__I_INC_FULLSCREEN__;
+    delete window.__I_INC_ZOOM__;
+    delete window.__I_INC_APP_VERSION__;
+    document.body.innerHTML = "";
+    document.documentElement.className = "";
+    resetDesktopForTests();
+  });
+
+  it("takes full screen from the app when it says, not from the page's size", () => {
+    wireDesktop();
+    window.__I_INC_FULLSCREEN__ = true;
+    dispatchEvent(new Event("i-inc:fullscreen"));
+    expect(inFullScreen()).toBe(true);
+    window.__I_INC_FULLSCREEN__ = false;
+    dispatchEvent(new Event("i-inc:fullscreen"));
+    // A resize no longer guesses once the app has said.
+    dispatchEvent(new Event("resize"));
+    expect(inFullScreen()).toBe(false);
+  });
+
+  it("starts a reload at the zoom the app said last, until it says again", () => {
+    wireDesktop();
+    window.__I_INC_ZOOM__ = 1.2;
+    dispatchEvent(new CustomEvent("i-inc:zoom", { detail: { show: false } }));
+    delete window.__I_INC_ZOOM__;
+    expect(appZoom()).toBe(1.2);
+  });
+
+  it("says the app is older than the pages when it does not tell its version", () => {
+    wireDesktop();
+    vi.advanceTimersByTime(APP_VERSION_WAIT_MS + 10);
+    expect(document.querySelector("inc-app-outdated")).not.toBeNull();
+  });
+
+  it("says nothing about an app that is new enough", () => {
+    wireDesktop();
+    window.__I_INC_APP_VERSION__ = "0.2.0";
+    vi.advanceTimersByTime(APP_VERSION_WAIT_MS + 10);
+    expect(document.querySelector("inc-app-outdated")).toBeNull();
+  });
+
+  it("says it about an app below the pages' minimum", () => {
+    wireDesktop();
+    window.__I_INC_APP_VERSION__ = "0.1.0";
+    vi.advanceTimersByTime(APP_VERSION_WAIT_MS + 10);
+    expect(document.querySelector("inc-app-outdated")).not.toBeNull();
   });
 });

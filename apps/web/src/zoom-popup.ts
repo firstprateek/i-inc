@@ -71,6 +71,8 @@ export class IncZoomPopup extends LitElement {
     base,
     css`
       :host { position: fixed; right: 16px; bottom: 16px; z-index: 1000; }
+      /* Closed, the host still has the card's size; it must not catch clicks meant for the page under it. */
+      :host(:not([open])) { pointer-events: none; }
       .pop {
         display: flex; align-items: center; gap: 12px; padding: 6px 6px 6px 16px;
         background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 14px;
