@@ -103,6 +103,15 @@ export function tabOf(r: Route): WorkTab | CompanyTab | null {
   }
 }
 
+/**
+ * True for a Split route with a sidebar (Conversations, Brain, Settings): it spans the window, so the sidebar stays
+ * at the left edge on a wide window or in the desktop app zoomed out, instead of floating in the centred 1400px
+ * frame. A ticket's session is Split for its scrolling but has no sidebar, so it stays centred.
+ */
+export function sidebarRoute(route: Route): boolean {
+  return layoutForRoute(route) === "split" && route.view !== "ticket";
+}
+
 /** The single route-to-template map, also used by the layout regression test. */
 export function layoutForRoute(route: Route): LayoutKind {
   switch (route.view) {

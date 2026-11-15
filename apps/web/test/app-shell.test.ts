@@ -4,8 +4,9 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IncApp, parse, routeName, routeTitle } from "../src/components/app.ts";
+import { IncApp, layoutForRoute, parse, routeName, routeTitle } from "../src/components/app.ts";
 import { IncLayout } from "../src/components/layout.ts";
+import { sidebarRoute } from "../src/routes.ts";
 import { arrive, entryKey, MAX_REMEMBERED, ScrollMemory, stampEntry } from "../src/scroll-memory.ts";
 
 const phone = (matches: boolean) =>
@@ -402,15 +403,33 @@ describe("the shell's layout rules", () => {
     expect(top(plain)).toBe("20");
   });
 
-  it("a Split route spans the window, so its sidebar stays at the left edge on a wide window or zoomed out", () => {
-    // The ordinary routes centre in the 1400px frame; a sidebar must not float in the middle with them.
+  it("a route with a sidebar spans the window, so its sidebar stays at the left edge on a wide window or zoomed out", () => {
+    // Ordinary routes centre in the 1400px frame; a sidebar must not float in the middle with them.
     const gutter = (side: string) =>
       new RegExp(`padding-${side}:\\s*max\\(var\\(--layout-gutter\\), env\\(safe-area-inset-${side}\\)\\)`);
-    has(appCss, ":host([own-scroll]) main", gutter("left"), gutter("right"));
-    has(appCss, ":host([own-scroll]) header", gutter("left"), gutter("right"));
-    expect(bodies(appCss, ":host([own-scroll]) main").join(" ")).not.toMatch(/wide-width/);
+    has(appCss, ":host([sidebar-route]) main", gutter("left"), gutter("right"));
+    // The phone rule comes after it with the same specificity, so a phone keeps its own padding.
+    const phoneAt = appCss.lastIndexOf(":host([own-scroll]) main { padding: 0");
+    expect(phoneAt).toBeGreaterThan(appCss.indexOf(":host([sidebar-route]) main"));
+    // The top bar is the same on every route: no route-specific padding.
+    expect(bodies(appCss, ":host([sidebar-route]) header")).toEqual([]);
+    expect(bodies(appCss, ":host([own-scroll]) header")).toEqual([]);
     const layoutCss = (IncLayout.styles as unknown as { cssText: string }[]).map((c) => c.cssText).join("\n");
-    has(layoutCss, ".frame.split", /max-width:\s*none/);
+    has(layoutCss, ":host([full-width]) .frame", /max-width:\s*none/);
+  });
+
+  it("only the routes with a sidebar are full width; a ticket's session stays centred", () => {
+    for (const hash of ["#/conversations", "#/company/brain", "#/company/settings"]) {
+      const route = parse(hash);
+      expect(sidebarRoute(route), hash).toBe(true);
+      expect(layoutForRoute(route), hash).toBe("split");
+    }
+    for (const hash of ["#/work/board", "#/company/team", "#/needs-you", "#/company/brain/changes"]) {
+      expect(sidebarRoute(parse(hash)), hash).toBe(false);
+    }
+    const session = parse("#/ticket/7/session/2");
+    expect(layoutForRoute(session)).toBe("split");
+    expect(sidebarRoute(session)).toBe(false);
   });
 
   it("main is the one scroller, and a route that owns its scrolling clips it", () => {

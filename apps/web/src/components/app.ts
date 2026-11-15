@@ -21,6 +21,7 @@ import {
   redirectFor,
   routeName,
   routeTitle,
+  sidebarRoute,
   tabOf,
   WORK_TABS,
   workTabHref,
@@ -214,6 +215,7 @@ export class IncApp extends LitElement {
   override willUpdate(changed: Map<string, unknown>): void {
     // Split routes own their pane scrolling. Every other route scrolls <main>.
     this.toggleAttribute("own-scroll", layoutForRoute(this.route) === "split");
+    this.toggleAttribute("sidebar-route", sidebarRoute(this.route));
     if (changed.has("route")) this.fetchViews();
   }
 
@@ -659,11 +661,6 @@ export class IncApp extends LitElement {
          window's drag region. On a Mac it starts to the right of the three window buttons, which the app
          places at the row's middle (apps/desktop/src-tauri/tauri.conf.json), except in full screen. */
       .history { display: none; }
-      /* On a Split route the header spans the window too, so its edges line up with the sidebar and work pane. */
-      :host([own-scroll]) header {
-        padding-left: max(var(--layout-gutter), env(safe-area-inset-left));
-        padding-right: max(var(--layout-gutter), env(safe-area-inset-right));
-      }
       :host([titlebar]) header {
         min-height: 56px; box-sizing: border-box; gap: 10px; cursor: default;
         padding: 6px 14px 6px 16px;
@@ -811,8 +808,11 @@ export class IncApp extends LitElement {
         /* The same top padding as every other route, so the heading sits at the same height. */
         padding-top: 20px;
         padding-bottom: 20px;
-        /* A Split route spans the window: its sidebar stays at the left edge however wide the window is
-           (or however far out it is zoomed), never centred in the 1400px frame. */
+      }
+      /* A route with a sidebar spans the window: the sidebar stays at the left edge however wide the window is (or
+         however far out the desktop app is zoomed), never centred in the 1400px frame (docs/layout.md). The top
+         bar is left as it is on every route. The phone rule below still wins on a phone. */
+      :host([sidebar-route]) main {
         padding-left: max(var(--layout-gutter), env(safe-area-inset-left));
         padding-right: max(var(--layout-gutter), env(safe-area-inset-right));
       }
@@ -988,7 +988,7 @@ export class IncApp extends LitElement {
         </div>
       </header>
       <main tabindex="-1" @session-stage=${this.onSessionStage} @conv-focus=${this.onComposerFocus} @load-state=${this.onLoadState}>
-        <inc-layout .kind=${layoutForRoute(this.route)} ?dense=${this.route.view === "conversations" || (this.route.view === "ticket" && !!this.route.session)} ?hide-heading=${this.threadOnPhone()}>
+        <inc-layout .kind=${layoutForRoute(this.route)} ?full-width=${sidebarRoute(this.route)} ?dense=${this.route.view === "conversations" || (this.route.view === "ticket" && !!this.route.session)} ?hide-heading=${this.threadOnPhone()}>
           <h1 id="view-heading" tabindex="-1" slot="heading">${routeName(this.route, this.stageOfRoute()).long}</h1>
           ${this.renderHeadExtras()}
           ${this.renderTabs()}
