@@ -148,4 +148,20 @@ describe("employee queue", () => {
       app.db.close();
     }
   });
+  it("returns a client error for malformed JSON without changing the queue", async () => {
+    const app = await testApp();
+    try {
+      const response = await app.handle(
+        new Request("http://i.inc/api/employees/ada/queue", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: "{broken",
+        }),
+      );
+      expect(response.status).toBe(400);
+      expect(app.deps.tickets.queue("ada")).toEqual([]);
+    } finally {
+      app.db.close();
+    }
+  });
 });

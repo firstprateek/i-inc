@@ -2208,7 +2208,7 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
       async (req, p) => {
         if (!d.registry.employees().some((e) => e.id === p.id))
           return json({ error: "no such employee" }, 404);
-        const body = (await req.json()) as { ticketId?: unknown; before?: unknown; expected?: unknown };
+        const body = await readObject(req);
         if (
           !body ||
           typeof body.ticketId !== "string" ||

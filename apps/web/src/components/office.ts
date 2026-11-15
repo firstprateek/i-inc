@@ -241,7 +241,6 @@ export class IncOffice extends Loader<Data> {
       await (queue as import("./employee-queue.ts").IncEmployeeQueue)?.updateComplete;
       const heading = queue?.shadowRoot?.querySelector("h3");
       heading?.focus();
-      heading?.scrollIntoView({ block: "nearest" });
     }}>Queue</button></div>`;
   }
 }
