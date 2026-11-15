@@ -167,6 +167,22 @@ describe("lenient approvals: over-budget follow-ups are filed on hold", () => {
     expect((await app.call("GET", "/api/needs-you")).body.count).toBe(0);
   });
 
+  it("doesn't file the same follow-up on hold twice, and a budget of 0 still asks", async () => {
+    const app = await lenientApp();
+    limit(app, "Duet", 1);
+    propose(app, source(app).id, followUp("one"), followUp("two"));
+    propose(app, source(app).id, followUp("“Two”"));
+    expect(
+      app.deps.tickets
+        .all()
+        .filter((r) => r.hold)
+        .map((r) => r.ticket.title),
+    ).toEqual(["two"]);
+    limit(app, "Duet", 0);
+    propose(app, source(app).id, followUp("three"));
+    expect((await open(app)).map((p: { title: string }) => p.title)).toEqual(["three"]);
+  });
+
   it("an employee set to careful still has its over-budget follow-ups wait as proposals", async () => {
     const app = await lenientApp();
     limit(app, "Duet", 0);

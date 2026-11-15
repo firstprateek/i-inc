@@ -140,7 +140,12 @@ describe("a code ticket without a prove stage gets a done-when check", () => {
     expect(
       readDoneWhenCheck({ items: [{ doneWhen: first, verdict: "met", evidence: " " }] }, [first]),
     ).toEqual([
-      { doneWhen: first, verdict: "cant-tell", evidence: "the checker said met but gave no evidence" },
+      {
+        doneWhen: first,
+        verdict: "cant-tell",
+        evidence: "the checker said met but gave no evidence",
+        unanswered: true,
+      },
     ]);
   });
 

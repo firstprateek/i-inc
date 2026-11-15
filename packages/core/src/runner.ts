@@ -568,10 +568,17 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
       return;
     }
     const read = parseJson<unknown>(out);
+    const earlier = c.s.doneCheck?.items ?? [];
     const result: DoneWhenItem[] = readDoneWhenCheck(read, items).map((i) =>
-      read === null ? { ...i, evidence: `the checker's reply could not be read${quoteOf(out)}` } : i,
+      read === null
+        ? {
+            ...i,
+            evidence: `the checker's reply could not be read${quoteOf(out)}`,
+            unanswered: true as const,
+          }
+        : stillNotMet(c, i, earlier),
     );
-    const unmet = result.filter((i) => blocks(c, i.verdict));
+    const unmet = result.filter((i) => blocks(c, i));
     const by = seat.employee.id;
     if (unmet.length === 0) {
       // Lenient: an item the checker can't confirm doesn't hold the work; the report shows it as not confirmed.
@@ -953,17 +960,20 @@ async function fastCheck(c: Step): Promise<void> {
     }
     const fresh = open.length ? readDoneWhenCheck(isRecord(reply) ? reply.doneWhen : undefined, open) : [];
     const before = c.s.doneCheck?.items ?? [];
-    const all: DoneWhenItem[] = items.map(
-      (d) =>
-        fresh.find((i) => normItem(i.doneWhen) === normItem(d)) ??
+    const all: DoneWhenItem[] = items.map((d) => {
+      const now = fresh.find((i) => normItem(i.doneWhen) === normItem(d));
+      if (now) return stillNotMet(c, now, before);
+      return (
         before.find((i) => normItem(i.doneWhen) === normItem(d) && i.verdict === "met") ?? {
           doneWhen: d,
           verdict: "cant-tell",
           evidence: "not checked",
-        },
-    );
+          unanswered: true,
+        }
+      );
+    });
     const unmet = all.filter((i) => i.verdict !== "met");
-    const blocking = unmet.filter((i) => blocks(c, i.verdict));
+    const blocking = unmet.filter((i) => blocks(c, i));
     const findings = [
       ...verdict.findings,
       ...unmet.map((i) => ({
@@ -1018,9 +1028,10 @@ async function fastCheck(c: Step): Promise<void> {
           doneWhen: d,
           verdict: "cant-tell" as const,
           evidence: "not checked",
+          unanswered: true as const,
         },
     )
-    .filter((i) => blocks(c, i.verdict));
+    .filter((i) => blocks(c, i));
   if (open.length) {
     await c.emit(
       needsYou(c, "review", {
@@ -1672,20 +1683,40 @@ function lenient(c: Step): boolean {
   return c.p.company.approvals?.(c.builder.id) === "lenient";
 }
 
-/** A done-when check's result that should stop the work: not met, and (careful) can't tell too. */
-function blocks(c: Step, verdict: DoneWhenItem["verdict"]): boolean {
-  return verdict === "not-met" || (verdict !== "met" && !lenient(c));
+/**
+ * A done-when check's result that should stop the work: not met; and can't tell, unless approvals are lenient and
+ * it is the checker's own judgment, with evidence (an unanswered item or an unreadable reply always stops it).
+ */
+function blocks(c: Step, item: DoneWhenItem): boolean {
+  if (item.verdict === "met") return false;
+  if (item.verdict === "not-met") return true;
+  return !lenient(c) || item.unanswered === true || !item.evidence.trim();
+}
+
+/**
+ * Lenient: once an item was not met on this ticket, only "met" clears it, so a recheck that can't tell keeps it not
+ * met (careful asks on both anyway, so it records the checker's answer as it was).
+ */
+function stillNotMet(c: Step, item: DoneWhenItem, earlier: DoneWhenItem[]): DoneWhenItem {
+  if (item.verdict !== "cant-tell" || !lenient(c)) return item;
+  const was = earlier.find((i) => normItem(i.doneWhen) === normItem(item.doneWhen));
+  return was?.verdict === "not-met"
+    ? {
+        ...item,
+        verdict: "not-met",
+        evidence: `not met before, and can't be confirmed now: ${item.evidence}`,
+      }
+    : item;
 }
 
 /** "2 of 5 done-when items are not met" (or "can't be confirmed"), for a one-line card. */
 function doneWhenLine(open: DoneWhenItem[], total: number): string {
   const n = open.length;
-  const verb = open.every((i) => i.verdict === "cant-tell")
-    ? "can't be confirmed"
-    : n === 1
-      ? "is not met"
-      : "are not met";
-  return `${n} of ${total} done-when ${total === 1 ? "item" : "items"} ${verb}`;
+  const notMet = open.filter((i) => i.verdict === "not-met").length;
+  const items = total === 1 ? "item" : "items";
+  if (notMet === 0) return `${n} of ${total} done-when ${items} can't be confirmed`;
+  const line = `${notMet} of ${total} done-when ${items} ${notMet === 1 ? "is" : "are"} not met`;
+  return notMet === n ? line : `${line}, ${n - notMet} can't be confirmed`;
 }
 
 /** An honest failure: what went wrong and which engines were tried. */

@@ -263,12 +263,13 @@ its own for any employee (absent: the company's). It is stored in the registry (
 
 - **Lenient** (the default) asks only where a mistake is costly or can't be undone. It does not hold a
   plan at the gate (any mode, any effort); a done-when item the checker can't confirm doesn't stop the
-  work (the check's result for each item is on the ticket and in the report; only "not met", after the
-  builder's one fix, asks); a builder and reviewer who still disagree after the rounds go on, with the
+  work when it is the checker's own judgment with evidence (the check's result for each item is on the ticket
+  and in the report). "Not met", after the builder's one fix, still asks; so does an item the checker didn't
+  answer for or a reply that can't be read, and an item once not met is cleared only by "met"; a builder and reviewer who still disagree after the rounds go on, with the
   dispute in the report (as direct mode always did); and a follow-up over the project's daily budget is
   filed **on hold** on the board instead of waiting as a proposal (nothing runs and nothing asks until the
   owner takes the hold off; the proposer's level decides).
-- **Careful** asks as i.inc did before: plan gates in owner-merges mode, can't-tell done-when items,
+- **Careful** asks as i.inc did before: plan gates (wherever a plan stage runs), can't-tell done-when items,
   open disagreements in owner-merges mode, and over-budget follow-ups as proposals.
 - **Always asks, at any level:** host-executed code in the repo the mini runs reaching main (the
   deployer deploys only what the owner OKed) and a project's protected paths; a PA's never-automatic

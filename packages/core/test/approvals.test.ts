@@ -46,6 +46,52 @@ describe("approval levels", () => {
     expect(s.doneCheck?.items.map((i) => i.verdict)).toEqual(["met", "cant-tell"]);
   });
 
+  it("lenient: a recheck that doesn't answer for an item that was not met still asks", async () => {
+    const p = lenient();
+    const onlyFirst = say(json({ items: [{ doneWhen: first, verdict: "met", evidence: "a test" }] }));
+    p.agent.on({ stage: "done-when", duty: "verify" }, doneWhen("met", "not met"), onlyFirst);
+    const r = await runTicket(p, refundsTicket({ effort: "low" }));
+    expect(r.status).toBe("needs-you");
+  });
+
+  it("lenient: a recheck that can't tell an item that was not met keeps it not met", async () => {
+    const p = lenient();
+    p.agent.on(
+      { stage: "done-when", duty: "verify" },
+      doneWhen("met", "not met"),
+      doneWhen("met", "can't tell"),
+    );
+    const r = await runTicket(p, refundsTicket({ effort: "low" }));
+    expect(r.status).toBe("needs-you");
+    expect(fold(await p.store.read("42")).doneCheck?.items.map((i) => i.verdict)).toEqual(["met", "not-met"]);
+  });
+
+  it("lenient: a checker reply that can't be read never passes", async () => {
+    const p = lenient();
+    p.agent.on({ stage: "done-when", duty: "verify" }, say("looks fine to me"));
+    expect((await runTicket(p, refundsTicket({ effort: "low" }))).status).toBe("needs-you");
+  });
+
+  it("lenient, fast mode: a second round that approves without a done-when list doesn't clear a not-met item", async () => {
+    const p = lenient();
+    p.company.policy = { ...p.company.policy, mode: "direct" };
+    const round1 = say(
+      json({
+        approved: false,
+        findings: [],
+        doneWhen: [first, second].map((d, n) => ({
+          doneWhen: d,
+          verdict: n ? "not met" : "met",
+          evidence: `evidence ${n + 1}`,
+        })),
+      }),
+    );
+    p.agent.on({ stage: "review", duty: "review" }, round1, say(json({ approved: true, findings: [] })));
+    const r = await runTicket(p, refundsTicket());
+    expect(r.status).toBe("needs-you");
+    expect(p.harness.gateRuns).toBe(0);
+  });
+
   it("lenient: an item still not met after the builder's fix asks, in one short line", async () => {
     const p = lenient();
     p.agent.on(

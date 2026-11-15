@@ -56,7 +56,7 @@ import type { Db } from "./db.ts";
 import type { TokenSource } from "./github.ts";
 import type { KnowledgeStore } from "./knowledge.ts";
 import type { LiveEvents } from "./live.ts";
-import type { Proposals } from "./proposals.ts";
+import { normalTitle, type Proposals } from "./proposals.ts";
 import type { NotificationPayload, PushService } from "./push.ts";
 import type { Registry } from "./registry.ts";
 import type { ConversationReview } from "./review.ts";
@@ -1383,8 +1383,29 @@ export class Daemon {
         // Filing and marking it filed go together, so a crash between them can't file it twice.
         // Lenient approvals (the proposer's level): over the budget, it is filed on hold rather than asked about.
         // Nothing runs, and nothing waits on the owner, until the owner takes the hold off on the board.
-        const overBudget = filedToday >= this.d.registry.projectPolicy(from.project).followUpsPerDay;
-        const holdIt = overBudget && this.d.registry.approvals(e.employeeId) === "lenient";
+        // A budget of 0 means the owner wants to be asked about every one, at any level.
+        const budget = this.d.registry.projectPolicy(from.project).followUpsPerDay;
+        const overBudget = filedToday >= budget;
+        const holdIt = overBudget && budget > 0 && this.d.registry.approvals(e.employeeId) === "lenient";
+        // The same follow-up already waiting (on hold, or as an open proposal) isn't filed again.
+        const title = normalTitle(f.title);
+        if (
+          holdIt &&
+          (this.d.tickets
+            .all()
+            .some(
+              (r) => r.hold && r.ticket.project === from.project && normalTitle(r.ticket.title) === title,
+            ) ||
+            this.d.proposals
+              .list("open")
+              .some((p) => p.project === from.project && normalTitle(p.title) === title))
+        ) {
+          this.d.db.run("INSERT OR IGNORE INTO knowledge_applied (edit_id, at) VALUES (?, ?)", key, now);
+          this.d.log?.(
+            `follow-up "${f.title}" from ${e.employeeId} is already waiting in ${from.project}, so it is not filed again`,
+          );
+          return;
+        }
         this.d.db.transaction(() => {
           if (overBudget && !holdIt) {
             // Over budget: the owner decides, so it waits as a proposal instead of being dropped.

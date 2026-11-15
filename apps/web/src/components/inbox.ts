@@ -146,9 +146,9 @@ export class IncInbox extends Loader<{
             : a.kind === "protected-paths"
               ? protectedOk(t, a, (fn) => void this.press(fn))
               : html`<div class="q">${t.title}</div>
-                <p class="why" title=${a.reason}>${askLine(a.reason)}</p>
+                <p class="why">${askLine(a.reason)}</p>
                 <div class="actions">${btn("Keep going", () => api.answer(t.id, "continue"))}
-                  <a class="btn ghost" href="#/ticket/${t.id}">Details</a></div>`;
+                  <a class="btn ghost" href="#/ticket/${t.id}" aria-label="Details of ticket #${t.id}: ${t.title}">Details</a></div>`;
     return html`<div class="card item waiting">${this.header(t, a.kind.replace("-", " "))}${body}</div>`;
   }
 

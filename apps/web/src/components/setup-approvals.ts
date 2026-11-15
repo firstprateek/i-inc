@@ -2,6 +2,7 @@
 // company, and an override for anyone who should ask more (or less). Lenient is the default.
 import type { ApprovalLevel } from "@i-inc/core";
 import { css, html, LitElement } from "lit";
+import { live } from "lit/directives/live.js";
 import { type ApprovalsView, api } from "../api.ts";
 import { message, type Note, noteLine, setupStyles } from "../setup-shared.ts";
 import { base } from "./shared.ts";
@@ -16,6 +17,8 @@ export class IncSetupApprovals extends LitElement {
   declare view: ApprovalsView | null;
   declare busy: boolean;
   declare note: Note | undefined;
+  /** Which card the last save came from, so its note shows there. */
+  private noteFor: "company" | "people" = "company";
 
   constructor() {
     super();
@@ -51,6 +54,7 @@ export class IncSetupApprovals extends LitElement {
 
   private async save(patch: Parameters<typeof api.setApprovals>[0]) {
     if (this.busy) return;
+    this.noteFor = patch.employees ? "people" : "company";
     this.busy = true;
     this.note = undefined;
     try {
@@ -58,6 +62,8 @@ export class IncSetupApprovals extends LitElement {
       this.note = { ok: true, text: "Saved." };
     } catch (e) {
       this.note = { ok: false, text: message(e) };
+      // A select keeps what was picked; `live` puts the saved level back on this render.
+      if (this.view) this.view = { ...this.view };
     } finally {
       this.busy = false;
     }
@@ -79,7 +85,7 @@ export class IncSetupApprovals extends LitElement {
           )}
         </div>
         <p class="sub">${levels.find(([id]) => id === v.company)?.[2]}</p>
-        ${noteLine(this.note)}
+        ${this.noteFor === "company" ? noteLine(this.note) : ""}
       </section>
 
       <section class="card" aria-labelledby="people-level">
@@ -88,7 +94,7 @@ export class IncSetupApprovals extends LitElement {
         ${v.employees.map(
           (e) => html`<div class="person">
             <div><b id="who-${e.id}">${e.name}</b><span>${e.role}</span></div>
-            <select aria-labelledby="who-${e.id}" ?disabled=${this.busy}
+            <select aria-labelledby="who-${e.id}" ?disabled=${this.busy} .value=${live(e.approvals ?? "company")}
               @change=${(ev: Event) => {
                 const value = (ev.target as HTMLSelectElement).value;
                 void this.save({
@@ -100,6 +106,7 @@ export class IncSetupApprovals extends LitElement {
             </select>
           </div>`,
         )}
+        ${this.noteFor === "people" ? noteLine(this.note) : ""}
       </section>
 
       <section class="card" aria-labelledby="always-asks">

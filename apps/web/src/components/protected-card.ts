@@ -19,8 +19,7 @@ export const DIFF_PREVIEW = 3000;
 /** The commit and the diff, for the card: a preview, the rest behind "Show all". */
 export function protectedDiff(ask: ProtectedAsk) {
   const diff = ask.diff ?? "";
-  return html`<p class="muted">${ask.paths.join(", ")}</p>
-    ${ask.sha ? html`<p class="muted">This OK is for commit <code>${ask.sha.slice(0, 7)}</code> and the change below: anything else asks again.</p>` : ""}
+  return html`${ask.sha ? html`<p class="muted">This OK is for commit <code>${ask.sha.slice(0, 7)}</code> and the change below: anything else asks again.</p>` : ""}
     ${
       diff
         ? html`<pre class="diff" style="white-space:pre-wrap;overflow:auto;max-height:24em;font-size:12px">${diff.slice(0, DIFF_PREVIEW)}</pre>
@@ -38,8 +37,10 @@ export function protectedOk(
 ) {
   // One line to answer; the files and the diff are there to check, folded away (decided 2026-11-15).
   const n = ask.paths.length;
-  return html`<div class="q">Ship “${t.title}”? It changes protected code (${n} ${n === 1 ? "file" : "files"}).</div>
-    <details><summary>See the change</summary>${protectedDiff(ask)}</details>
+  // A workflow change needs the owner's push first (tools/host/push-for-owner.sh), so the line says so.
+  const workflow = ask.paths.some((p) => p.startsWith(".github/workflows"));
+  return html`<div class="q">Ship “${t.title}”? It changes protected code (${n} ${n === 1 ? "file" : "files"}${workflow ? ", including a GitHub workflow" : ""}).</div>
+    <details><summary>See the change</summary><p class="muted">${ask.paths.join(", ")}</p>${protectedDiff(ask)}</details>
     <div class="actions">
       <button type="button" class="btn" ?disabled=${busy} @click=${() => act(() => api.answer(t.id, "approve"))}>OK it</button>
       <button type="button" class="btn ghost" ?disabled=${busy} @click=${() => act(() => api.answer(t.id, "reject"))}>Decline</button>
