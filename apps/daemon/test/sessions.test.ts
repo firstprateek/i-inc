@@ -485,8 +485,8 @@ describe("Secret redaction", () => {
     // Unpadded base64 string (32+ chars, mixed casing and digits)
     expect(redactSecrets("token: dGhpcyBpcyBhIHNhbXBsZSB1bnBhZGRlZCBiYXNlNjQ")).toBe("token: [redacted]");
     expect(
-      redactSecrets("/Users/padi/Documents/projects/ai-projects/i-inc/apps/daemon/src/sessions.ts"),
-    ).toBe("/Users/padi/Documents/projects/ai-projects/i-inc/apps/daemon/src/sessions.ts");
+      redactSecrets("/Users/alice/Documents/projects/ai-projects/i-inc/apps/daemon/src/sessions.ts"),
+    ).toBe("/Users/alice/Documents/projects/ai-projects/i-inc/apps/daemon/src/sessions.ts");
   });
 
   it("redacts items stored in SessionStore automatically", async () => {

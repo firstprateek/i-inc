@@ -346,13 +346,13 @@ describe("push for a failed deploy", () => {
     const { app, push, send, authed } = await guarded({ deploysPath: path });
     writeFileSync(
       path,
-      jsonl(entry({ outcome: "failed-build", reason: "ENOENT /Users/padi/i-inc-releases/x/package.json" })),
+      jsonl(entry({ outcome: "failed-build", reason: "ENOENT /Users/alice/i-inc-releases/x/package.json" })),
     );
     const shown = JSON.stringify((await send("GET", "/api/deploys", authed)).body);
-    expect(shown).not.toContain("/Users/padi");
+    expect(shown).not.toContain("/Users/alice");
     expect(shown).toContain("~/i-inc-releases/x/package.json");
     await make(path, push, app).check();
-    expect(push.sent[0]?.body).not.toContain("/Users/padi");
+    expect(push.sent[0]?.body).not.toContain("/Users/alice");
   });
 
   it("tells the owner when a deploy went ahead to recover a daemon that was down", async () => {

@@ -397,11 +397,11 @@ describe("startup and requests survive bad data", () => {
     const app = await testApp();
     const projects = app.deps.registry.projects.bind(app.deps.registry);
     app.deps.registry.projects = () => {
-      throw new Error("/Users/padi/secret/path.ts exploded");
+      throw new Error("/Users/alice/secret/path.ts exploded");
     };
     const res = await app.call("GET", "/api/projects");
     expect(res.status).toBe(500);
-    expect(JSON.stringify(res.body)).not.toContain("/Users/padi");
+    expect(JSON.stringify(res.body)).not.toContain("/Users/alice");
     app.deps.registry.projects = projects;
     expect((await app.call("GET", "/api/projects")).status).toBe(200);
   });

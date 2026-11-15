@@ -133,11 +133,11 @@ describe("process-level handlers", () => {
 
   it("a request whose handler throws gets plain JSON, not Bun's development page with paths", async () => {
     const logs: string[] = [];
-    const res = serverError((m) => logs.push(m))(new Error("boom at /Users/padi/secret.ts"));
+    const res = serverError((m) => logs.push(m))(new Error("boom at /Users/alice/secret.ts"));
     expect(res.status).toBe(500);
     expect(res.headers.get("content-type")).toContain("application/json");
     expect(await res.json()).toEqual({ error: "something went wrong on our side" });
-    expect(logs.join("\n")).toContain("/Users/padi/secret.ts");
+    expect(logs.join("\n")).toContain("/Users/alice/secret.ts");
   });
 
   it("leave for a state they cannot work in", () => {

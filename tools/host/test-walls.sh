@@ -211,7 +211,7 @@ mkdir -p "$tmp/rootbin"
 cat >"$tmp/rootbin/id" <<'FAKE'
 #!/bin/sh
 [ "${1:-}" = "-u" ] && { echo 0; exit 0; }
-[ "${1:-}" = "padi" ] && exit 0
+[ "${1:-}" = "alice" ] && exit 0
 exit 1
 FAKE
 cat >"$tmp/rootbin/chown" <<'FAKE'
@@ -221,9 +221,9 @@ FAKE
 chmod +x "$tmp/rootbin/id" "$tmp/rootbin/chown"
 export FAKE_CHOWN_LOG="$tmp/chown.log"
 fresh
-echo padi >"$lib/owner"; : >"$FAKE_CHOWN_LOG"
+echo alice >"$lib/owner"; : >"$FAKE_CHOWN_LOG"
 (PATH="$tmp/rootbin:$PATH"; walls) || true
-grep -q "chown padi $run/i-inc" "$FAKE_CHOWN_LOG" && ok "the folder is the owner's" || bad "the folder is the owner's"
+grep -q "chown alice $run/i-inc" "$FAKE_CHOWN_LOG" && ok "the folder is the owner's" || bad "the folder is the owner's"
 fresh
 echo 'x; touch /tmp/pwned' >"$lib/owner"; : >"$FAKE_CHOWN_LOG"
 (PATH="$tmp/rootbin:$PATH"; walls) || true
