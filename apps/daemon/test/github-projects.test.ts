@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createApi } from "../src/api.ts";
 import {
   bootstrapRepo,
@@ -21,6 +21,76 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
       return "ghs_fake_installation_token";
     },
   };
+
+  it.each([
+    ["pnpm", "pnpm-lock.yaml", "pnpm install --frozen-lockfile", "pnpm test"],
+    ["npm", "package-lock.json", "npm ci", "npm run test"],
+    ["yarn", "yarn.lock", "yarn install --frozen-lockfile", "yarn run test"],
+    ["bun", "bun.lock", "bun install --frozen-lockfile", "bun test"],
+  ])("uses %s for a package with no scripts, with and without a lock", async (manager, lock, install, test) => {
+    for (const locked of [true, false]) {
+      const f = (async (url: string | URL | Request) => {
+        const u = String(url);
+        const data = u.endsWith("/contents/package.json")
+          ? { content: Buffer.from(JSON.stringify({ packageManager: `${manager}@1.0.0` })).toString("base64") }
+          : u.endsWith("/contents")
+            ? [{ name: "package.json" }, ...(locked ? [{ name: lock }] : [])]
+            : { default_branch: "trunk", size: 1, pushed_at: "2026-01-01" };
+        return new Response(JSON.stringify(data));
+      }) as typeof fetch;
+      const result = await inspectRepo(fakeTokenSource, "o", "r", { fetch: f });
+      expect(result.defaultBranch).toBe("trunk");
+      expect(result.checks).toEqual([locked ? install : `${manager} install`, test]);
+    }
+  });
+
+  it("reports a contents failure on a repository known to have commits", async () => {
+    const f = (async (url: string | URL | Request) =>
+      String(url).endsWith("/contents")
+        ? new Response("{}", { status: 404 })
+        : new Response(JSON.stringify({ size: 1, pushed_at: "2026-01-01" }))) as typeof fetch;
+    await expect(inspectRepo(fakeTokenSource, "o", "r", { fetch: f })).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("bounds a hung response body even when it ignores the abort signal", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = (async () => new Response(new ReadableStream({ start() {} }))) as typeof fetch;
+      const result = inspectRepo(fakeTokenSource, "o", "r", { fetch: f });
+      const rejected = expect(result).rejects.toMatchObject({ status: 504 });
+      await vi.advanceTimersByTimeAsync(10_000);
+      // A broken timeout must fail promptly instead of hanging this test.
+      await Promise.race([rejected, Promise.resolve().then(() => vi.advanceTimersByTimeAsync(1))]);
+      let settled = false;
+      void result.catch(() => { settled = true; });
+      await Promise.resolve();
+      expect(settled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("treats an empty 200 body as an empty object without calling json", async () => {
+    const f = (async () => {
+      const res = new Response("");
+      res.json = async () => { throw new Error("Bun empty-body json must not be used"); };
+      return res;
+    }) as typeof fetch;
+    expect(await inspectRepo(fakeTokenSource, "o", "r", { fetch: f })).toMatchObject({ empty: true });
+  });
+
+  it("escapes TOML control characters without losing description text", async () => {
+    let toml = "";
+    const f = (async (url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method !== "PUT") return new Response("[]");
+      if (String(url).endsWith("/pyproject.toml")) {
+        toml = Buffer.from(JSON.parse(String(init.body)).content, "base64").toString("utf8");
+      }
+      return new Response(JSON.stringify({ commit: {} }), { status: 201 });
+    }) as typeof fetch;
+    await bootstrapRepo(fakeTokenSource, { repo: "o/r", template: "python", description: 'a\n\t\r\b\f\u0000\u001f\u007f"\\z' }, { fetch: f });
+    expect(toml).toContain('description = "a\\u000a\\u0009\\u000d\\u0008\\u000c\\u0000\\u001f\\u007f\\"\\\\z"');
+  });
 
   it("lists installation repositories and flags already registered ones", async () => {
     const fakeFetch = (async (url: string | URL | Request) => {
