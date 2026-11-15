@@ -1,6 +1,6 @@
 // The sign-in screen: a fresh daemon asks for the one-time setup code before it makes the owner account.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IncLogin } from "../src/login.ts";
+import { IncLogin, showLogin } from "../src/login.ts";
 
 let posted: { path: string; body: Record<string, unknown> }[] = [];
 
@@ -93,6 +93,19 @@ describe("first run", () => {
     expect(document.title).toBe("Sign in · i.inc");
     const headingOrField = root.querySelector("h1, input");
     expect(headingOrField).not.toBeNull();
+    expect(root.activeElement).toBe(headingOrField);
+  });
+
+  it("re-synchronizes document title and moves focus when showLogin runs with login already in DOM", async () => {
+    serve({ initialized: true });
+    const { root } = await mount();
+    document.title = "Tickets · Work · i.inc";
+    const headingOrField = root.querySelector("h1, input") as HTMLElement | null;
+    headingOrField?.blur();
+
+    showLogin();
+
+    expect(document.title).toBe("Sign in · i.inc");
     expect(root.activeElement).toBe(headingOrField);
   });
 });

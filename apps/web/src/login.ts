@@ -55,7 +55,7 @@ export class IncLogin extends LitElement {
   }
 
   /** The tab says where you are: the app's last route title would be wrong here. */
-  private titleNow() {
+  titleNow(): void {
     document.title = `${this.initialized ? "Sign in" : "Create owner account"} · i.inc`;
   }
 
@@ -276,6 +276,7 @@ export function showLogin(): void {
   draftMemo.clearAll();
   const existing = document.querySelector<IncLogin>("inc-login");
   if (existing) {
+    existing.titleNow();
     existing.focusHeadingOrField();
     return;
   }
