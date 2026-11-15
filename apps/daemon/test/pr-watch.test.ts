@@ -26,6 +26,8 @@ async function ready(o: { mode?: "owner-merges" | "direct"; limited?: { on: bool
     return look(t);
   };
   app.deps.workspace = ws;
+  // Direct mode's gates push the work to main, as the real harness does.
+  if (o.mode === "direct") app.harness.gates.push({ ok: true, pushed: "d".repeat(40) });
   await app.call("POST", "/api/tickets", refunds);
   await app.daemon.idle();
   const status = (await app.call("GET", "/api/tickets/1")).body.ticket.status;

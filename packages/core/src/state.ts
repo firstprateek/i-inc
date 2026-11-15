@@ -351,7 +351,9 @@ export function apply(s: TicketState, e: TicketEvent): TicketState {
         },
       };
     case "reverted":
-      return { ...s, mainRed: null, fixDue: false };
+      // The push is undone on main: nothing of this ticket is there now, so a retry rebases and pushes again,
+      // and the ticket can't close as merged on the strength of a reverted commit.
+      return { ...s, mainRed: null, fixDue: false, pushed: null, pushIntended: null };
     case "ci-green":
       return { ...s, mainRed: null };
     case "follow-ups":

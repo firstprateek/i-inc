@@ -596,6 +596,35 @@ describe("chat", () => {
     expect(line).toBe("Review · Kit unavailable: the sandbox can't start");
   });
 
+  it("moves the live line on once the owner answers and the gates push (#24)", async () => {
+    const app = await testApp();
+    const asked: TicketEvent[] = [
+      { type: "stage-started", at: 1, stage: "gates" },
+      { type: "push-intended", at: 2, headSha: "a".repeat(40) },
+      {
+        type: "needs-you",
+        at: 3,
+        stage: "gates",
+        ask: { kind: "protected-paths", paths: ["apps/daemon/src/api.ts"] },
+      } as TicketEvent,
+    ];
+    const line = (more: TicketEvent[]) => liveLine([...asked, ...more], app.deps.registry);
+    expect(line([])).toBe("Protected paths wait for your OK: apps/daemon/src/api.ts");
+    expect(line([{ type: "owner-answered", at: 4, answer: "approve" }])).toBe("Going on after your OK");
+    expect(
+      line([
+        { type: "owner-answered", at: 4, answer: "approve" },
+        { type: "push-intended", at: 5, headSha: "a".repeat(40) },
+        { type: "gates-ran", at: 6, ok: true, conflict: false },
+        { type: "pushed", at: 7, sha: "a".repeat(40) },
+      ]),
+    ).toBe("Pushed aaaaaaa to main · waiting for CI");
+    expect(line([{ type: "ci-green", at: 8, sha: "a".repeat(40) }])).toBe("CI green on main");
+    expect(line([{ type: "gates-ran", at: 6, ok: false, conflict: true }])).toBe(
+      "Gates · conflicts with main",
+    );
+  });
+
   describe("performance and indexing (Group 5)", () => {
     it("uses indexed lookup for knowledge and avoids queries on unchanged tickets", async () => {
       const app = await testApp();
@@ -692,7 +721,8 @@ describe("clocks, schedules and critical paths (T63 groups 7 and 8)", () => {
       commits: [],
     });
 
-    // Complete a ticket so it is merged
+    // Complete a ticket so it is merged (the gates push it, as the real harness does in direct mode)
+    app.harness.gates.push({ ok: true, pushed: "d".repeat(40) });
     await app.call("POST", "/api/tickets", refunds);
     await app.daemon.idle();
     await app.call("POST", "/api/tickets/1/decide", { decision: "approve" });

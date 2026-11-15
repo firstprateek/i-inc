@@ -118,8 +118,11 @@ export async function runTicket(p: Ports, original: Ticket, opts: RunOptions = {
     }
 
     // After the owner's decision on a code ticket, only the retro is left; errands have it in their plan.
-    const stage =
-      s.active ?? (s.decision && !s.finished.includes("retro") ? "retro" : plan.stages[s.finished.length]);
+    // The next stage is the plan's first unfinished one after the furthest it has finished, not the one at the
+    // count of finished stages: a plan that changed under a running ticket (fast mode replacing plan, prove and
+    // done-when, or a project switching mode) would otherwise skip the gates, run off the end, or plan work
+    // that is already built.
+    const stage = s.active ?? (s.decision && !s.finished.includes("retro") ? "retro" : nextStage(plan, s));
     if (!stage) throw new Error(`ticket ${ticket.id} ran out of stages without a report`);
     if (!s.active) {
       await emit({ type: "stage-started", at: now, stage });
@@ -128,6 +131,12 @@ export async function runTicket(p: Ports, original: Ticket, opts: RunOptions = {
     await stageSteps[stage]({ p, opts, ticket, plan, policy, s, builder, emit });
   }
   throw new Error(`ticket ${original.id} made no progress in ${maxSteps} steps`);
+}
+
+/** The plan's first unfinished stage after the furthest one this ticket has finished. */
+export function nextStage(plan: StagePlan, s: Pick<TicketState, "finished">): StageId | undefined {
+  const furthest = Math.max(-1, ...s.finished.map((st) => plan.stages.indexOf(st)));
+  return plan.stages.slice(furthest + 1).find((st) => !s.finished.includes(st));
 }
 
 /**
@@ -847,7 +856,13 @@ const stageSteps: Record<StageId, (c: Step) => Promise<void>> = {
     // Reject closes the PR, so it doesn't stay open on GitHub after the work was declined.
     const ws = c.p.workspace;
     const pr = c.s.pr;
-    if (ws && pr && pr.number !== undefined && c.policy.mode === "owner-merges") {
+    // In direct mode "merged" means the work is on main, which only the gates' push makes true: a ticket that
+    // never pushed closes as done, so the board doesn't claim work landed that didn't.
+    // A ticket with a numbered PR ran the owner-merges way, whatever the project's mode is now: GitHub decides
+    // below.
+    const hasPr = c.s.pr?.number !== undefined;
+    if (outcome === "merged" && c.policy.mode === "direct" && !c.s.pushed && !hasPr) outcome = "done";
+    if (ws && pr && pr.number !== undefined && (c.policy.mode === "owner-merges" || !c.s.pushed)) {
       if (outcome === "merged" && ws.prState && (await ws.prState(c.ticket, pr)) !== "merged")
         outcome = "done";
       // "Close without merging" after the owner already merged the PR (within the daemon's watch window) is
@@ -1291,7 +1306,8 @@ async function directGates(c: Step): Promise<void> {
  * tickets the builder noticed, and the ticket closes without waiting for the owner.
  */
 async function directReport(c: Step): Promise<void> {
-  if (c.plan.fast) return fastReport(c);
+  // A ticket built under a fuller plan (it has a plan stage) wrote no summary for a fast report: ask for one.
+  if (c.plan.fast && !c.s.finished.includes("plan")) return fastReport(c);
   const out = await session(
     c,
     "build",
