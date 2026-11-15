@@ -37,6 +37,22 @@ fn installed_copy() -> bool {
         .is_some_and(|p| !p.components().any(|c| c.as_os_str() == "target"))
 }
 
+/// True when a file can be made next to the bundle, so the plugin can swap it without asking for a password.
+fn bundle_folder_writable() -> bool {
+    let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.canonicalize().ok())
+        .and_then(|p| p.ancestors().find(|a| a.extension().is_some_and(|e| e == "app")).map(|a| a.to_path_buf()))
+        .and_then(|app| app.parent().map(|d| d.to_path_buf()))
+    else {
+        return false;
+    };
+    let probe = dir.join(format!(".i-inc-write-test-{}", std::process::id()));
+    let ok = std::fs::write(&probe, b"").is_ok();
+    let _ = std::fs::remove_file(&probe);
+    ok
+}
+
 /// One line for the page to show for a few seconds (apps/web/src/app-update.ts).
 pub fn note(app: &AppHandle, text: &str) {
     let Some(window) = app.get_webview_window("main") else { return };
@@ -82,12 +98,17 @@ pub fn check(app: &AppHandle, origin: String, loud: bool) {
             if app.state::<Updates>().ready.lock().is_ok_and(|r| r.is_some()) {
                 return Ok(None);
             }
+            // In a folder this account can't write to, the plugin would ask for an administrator password: only
+            // when asked from the menu, never out of the blue on a page load or the timer.
+            if !loud && !bundle_folder_writable() {
+                return Err("the app's folder is not writable".into());
+            }
             let endpoint = Url::parse(&format!("{origin}/desktop/latest.json")).map_err(|e| e.to_string())?;
             let updater = app
                 .updater_builder()
                 .endpoints(vec![endpoint])
                 .map_err(|e| e.to_string())?
-                .timeout(Duration::from_secs(120))
+                .timeout(Duration::from_secs(30))
                 .build()
                 .map_err(|e| e.to_string())?;
             match updater.check().await.map_err(|e| format!("could not ask the daemon ({e})"))? {
