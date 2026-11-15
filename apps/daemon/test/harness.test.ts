@@ -277,6 +277,25 @@ describe("the machine harness in direct mode", () => {
     expect(git(origin, "log", "--format=%s", "main").trim().split("\n")).toEqual(["ours", "theirs", "base"]);
   });
 
+  it("skips the checks when the rebase kept the commit the last green run checked, and runs them when main moved", async () => {
+    const runs = join(mkdtempSync(join(tmpdir(), "inc-runs-")), "runs");
+    const count = `echo run >> ${runs}`;
+    const ran = () => readFileSync(runs, "utf8").trim().split("\n").length;
+
+    const still = repos("ours");
+    git(join(still, "..", "origin"), "config", "receive.denyCurrentBranch", "updateInstead");
+    const h = direct(still, [count]);
+    expect((await h.runChecks(ticket)).green).toBe(true);
+    expect(await h.runGates(ticket)).toMatchObject({ ok: true });
+    expect(ran()).toBe(1); // main hadn't moved: the same commit, checked once
+
+    const { work } = directRepos();
+    const moved = direct(work, [count]);
+    expect((await moved.runChecks(ticket)).green).toBe(true);
+    expect(await moved.runGates(ticket)).toMatchObject({ ok: true });
+    expect(ran()).toBe(3); // main moved: the rebased commit is checked again
+  });
+
   it("holds a change to protected paths for the owner, and pushes it once approved", async () => {
     const { work, origin } = directRepos(".github/workflows/ci.yml");
     const before = git(origin, "rev-parse", "main").trim();

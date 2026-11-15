@@ -25,6 +25,11 @@ const didntStart = {
 const juno: Employee = { ...grace, id: "juno", name: "Juno" };
 const sha = "a".repeat(40);
 
+/**
+ * Direct mode's helpers are thorough mode's (High effort): fast mode checks in the builder's own seat (fast.test.ts).
+ */
+const thorough = () => refundsTicket({ effort: "high" });
+
 /** The cast, with Juno as a second reviewer, in direct mode (reviews are fresh-context, 2 rounds). */
 const cast = (
   roster: Employee[] = [ada, kit, grace, juno, quinn],
@@ -46,7 +51,7 @@ describe("a reviewer whose engine can't start", () => {
     p.agent.on({ employee: "grace", stage: "review" }, didntStart);
     p.harness.gates.push({ ok: true, pushed: sha });
 
-    expect(await runTicket(p, refundsTicket())).toEqual({ status: "done", outcome: "merged" });
+    expect(await runTicket(p, thorough())).toEqual({ status: "done", outcome: "merged" });
 
     const events = await p.store.read("42");
     expect(unavailable(events)).toMatchObject([{ duty: "review", employeeId: "grace", stage: "review" }]);
@@ -62,7 +67,7 @@ describe("a reviewer whose engine can't start", () => {
     p.agent.on({ employee: "grace", stage: "review" }, didntStart);
     p.harness.gates.push({ ok: true, pushed: sha });
 
-    expect(await runTicket(p, refundsTicket())).toEqual({ status: "done", outcome: "merged" });
+    expect(await runTicket(p, thorough())).toEqual({ status: "done", outcome: "merged" });
 
     const events = await p.store.read("42");
     expect(unavailable(events)).toHaveLength(1);
@@ -76,7 +81,7 @@ describe("a reviewer whose engine can't start", () => {
     const p = cast([ada, grace, quinn]);
     p.agent.on({ employee: "grace", stage: "review" }, didntStart);
     p.harness.gates.push({ ok: true, pushed: sha });
-    await runTicket(p, refundsTicket());
+    await runTicket(p, thorough());
     // Grace is excluded for review; the builder's own seat reviews on another engine.
     expect(p.agent.callsFor("grace", "review")).toHaveLength(1);
     const own = p.agent.calls.find((c) => c.stage === "review" && c.employee.id === "ada");
@@ -89,7 +94,7 @@ describe("a reviewer whose engine can't start", () => {
     // The builder's seat on the first other engine (gemini) can't start either.
     p.agent.on({ employee: "ada", stage: "review", engine: "gemini" }, didntStart);
     p.harness.gates.push({ ok: true, pushed: sha });
-    expect(await runTicket(p, refundsTicket())).toEqual({ status: "done", outcome: "merged" });
+    expect(await runTicket(p, thorough())).toEqual({ status: "done", outcome: "merged" });
     const events = await p.store.read("42");
     expect(unavailable(events).map((u) => [u.employeeId, u.engineId])).toEqual([
       ["grace", undefined],
@@ -147,7 +152,7 @@ describe("a verifier that can't start", () => {
     const p = cast();
     p.agent.on({ employee: "quinn", stage: "prove" }, didntStart);
     p.harness.gates.push({ ok: true, pushed: sha });
-    expect(await runTicket(p, refundsTicket())).toEqual({ status: "done", outcome: "merged" });
+    expect(await runTicket(p, thorough())).toEqual({ status: "done", outcome: "merged" });
     const proof = p.agent.calls.find((c) => c.stage === "prove" && c.employee.id === "ada");
     expect(proof?.engine.harness).not.toBe("claude-code");
     expect(unavailable(await p.store.read("42"))).toMatchObject([{ duty: "verify", employeeId: "quinn" }]);
@@ -161,7 +166,7 @@ describe("a verifier that can't start", () => {
     );
     p.company.policy = { ...p.company.policy, mode: "direct" };
     p.agent.on({ employee: "quinn", stage: "prove" }, didntStart);
-    const ticket = refundsTicket();
+    const ticket = thorough();
     expect(await runTicket(p, ticket, { helpers: "scheduler" })).toEqual({
       status: "waiting",
       duty: "verify",
@@ -184,7 +189,7 @@ describe("what still fails or switches as before", () => {
   it("a reviewer that started and then got stuck fails the ticket", async () => {
     const p = cast();
     p.agent.on({ employee: "grace", stage: "review" }, { kind: "stuck", reason: "tool crashed mid-review" });
-    const result = await runTicket(p, refundsTicket());
+    const result = await runTicket(p, thorough());
     expect(result.status).toBe("failed");
     expect(unavailable(await p.store.read("42"))).toEqual([]);
   });
@@ -192,7 +197,7 @@ describe("what still fails or switches as before", () => {
   it("the builder's own engine failing to start follows the switch rules, not the helper path", async () => {
     const p = cast();
     p.agent.on({ employee: "ada", stage: "plan" }, didntStart);
-    await runTicket(p, refundsTicket());
+    await runTicket(p, thorough());
     const events = await p.store.read("42");
     expect(unavailable(events)).toEqual([]);
     expect(events.some((e) => e.type === "engine-switched")).toBe(true);
@@ -229,7 +234,7 @@ describe("helper readiness", () => {
       block: { reason: "Grace's antigravity isn't signed in" },
     });
     p.harness.gates.push({ ok: true, pushed: sha });
-    expect(await runTicket(p, refundsTicket())).toEqual({ status: "done", outcome: "merged" });
+    expect(await runTicket(p, thorough())).toEqual({ status: "done", outcome: "merged" });
     expect(p.agent.callsFor("grace", "review")).toHaveLength(0);
     expect(p.agent.callsFor("juno", "review")).toHaveLength(1);
     // Blocked is not a failure: nothing is recorded as unavailable.
@@ -241,7 +246,7 @@ describe("helper readiness", () => {
     p.company.blocks.push({ duty: "review", employee: "grace", block: { reason: "x" } });
     p.company.blocks.push({ duty: "review", employee: "juno", block: { reason: "x" } });
     p.harness.gates.push({ ok: true, pushed: sha });
-    await runTicket(p, refundsTicket());
+    await runTicket(p, thorough());
     const own = p.agent.calls.find((c) => c.stage === "review");
     expect(own?.employee.id).toBe("ada");
     expect(own?.engine.harness).not.toBe("claude-code");
@@ -251,7 +256,7 @@ describe("helper readiness", () => {
     const p = cast([ada, quinn]);
     p.company.blocks.push({ employee: "ada", engine: "gemini", duty: "review", block: { reason: "x" } });
     p.harness.gates.push({ ok: true, pushed: sha });
-    await runTicket(p, refundsTicket());
+    await runTicket(p, thorough());
     const own = p.agent.calls.find((c) => c.stage === "review");
     expect(own?.engine.id).toBe("flash");
   });
@@ -260,7 +265,7 @@ describe("helper readiness", () => {
     const p = cast();
     p.machines.bootFailures.set("grace", new StartupError("the sandbox can't start", 5_000));
     p.harness.gates.push({ ok: true, pushed: sha });
-    expect(await runTicket(p, refundsTicket())).toEqual({ status: "done", outcome: "merged" });
+    expect(await runTicket(p, thorough())).toEqual({ status: "done", outcome: "merged" });
     const events = await p.store.read("42");
     expect(unavailable(events)).toMatchObject([{ employeeId: "grace", reason: "the sandbox can't start" }]);
     expect(p.agent.callsFor("juno", "review")).toHaveLength(1);
@@ -269,7 +274,7 @@ describe("helper readiness", () => {
   it("but the builder's own sandbox failing to boot propagates for the daemon to wait on", async () => {
     const p = cast();
     p.machines.bootFailures.set("ada", new StartupError("the sandbox can't start", 5_000));
-    await expect(runTicket(p, refundsTicket())).rejects.toBeInstanceOf(StartupError);
+    await expect(runTicket(p, thorough())).rejects.toBeInstanceOf(StartupError);
   });
 });
 

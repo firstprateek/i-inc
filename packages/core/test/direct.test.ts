@@ -12,7 +12,7 @@ const direct = <T extends { company: { policy: { mode: string } } }>(p: T) => {
 };
 
 describe("direct mode", () => {
-  it("reviews with fresh eyes, pushes to main, files follow-ups, and closes without the owner", async () => {
+  it("thorough (High): reviews with fresh eyes, pushes to main, files follow-ups, and closes without the owner", async () => {
     const p = direct(ports());
     p.harness.gates.push({ ok: true, pushed: sha(1) });
     p.agent.on(
@@ -33,7 +33,7 @@ describe("direct mode", () => {
         }),
       },
     );
-    const result = await runTicket(p, refundsTicket());
+    const result = await runTicket(p, refundsTicket({ effort: "high" }));
     expect(result).toEqual({ status: "done", outcome: "merged" });
 
     const s = fold(await p.store.read("42"));
@@ -62,9 +62,9 @@ describe("direct mode", () => {
     expect(events.some((e) => e.type === "needs-you")).toBe(false);
   });
 
-  it("with no reviewer on the team, reviews in the builder's seat on a different engine", async () => {
+  it("thorough (High), with no reviewer on the team, reviews in the builder's seat on a different engine", async () => {
     const p = direct(fakePorts([ada], engines));
-    await runTicket(p, refundsTicket({ effort: "low" }));
+    await runTicket(p, refundsTicket({ effort: "high" }));
     const review = p.agent.calls.find((c) => c.stage === "review");
     expect(review?.employee.id).toBe("ada");
     expect(review?.engine.id).not.toBe("opus");

@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import {
   decide,
+  defaultProjectPolicy,
   fold,
   knowledgeLog,
   planFor,
@@ -53,9 +54,9 @@ describe("agent replies are checked before they are stored", () => {
     p.agent.on({ duty: "review" }, { kind: "done", output: '{"approved": false}' });
     await runTicket(p, refundsTicket());
     const verdicts = (await p.store.read("42")).filter((e) => e.type === "review-verdict");
-    expect(verdicts[0]).toMatchObject({
-      approved: false,
-      findings: [{ severity: "blocking" }],
+    expect(verdicts[0]).toMatchObject({ approved: false });
+    expect((verdicts[0] as { findings: { severity: string }[] }).findings[0]).toMatchObject({
+      severity: "blocking",
     });
     // The loop carried on (the builder addressed it) instead of throwing on `findings.map`.
     expect(fold(await p.store.read("42")).status).not.toBe("running");
@@ -81,12 +82,13 @@ describe("agent replies are checked before they are stored", () => {
     const p = direct(ports());
     p.harness.gates.push({ ok: true, pushed: "1".repeat(40) });
     const good = { title: "Good", doneWhen: ["x"], type: "chore", effort: "low", reason: "r" };
+    // Fast mode: the follow-ups come with the builder's closing summary, at the end of its build session.
     p.agent.on(
-      { stage: "report" },
+      { stage: "build" },
       {
         kind: "done",
         output: JSON.stringify({
-          report: "done",
+          summary: "done",
           followUps: [
             good,
             { ...good, title: "Huge", effort: "huge" },
@@ -205,8 +207,11 @@ describe("a bad event already in a log never breaks the fold", () => {
   });
 
   it("an effort this version does not know plans as Medium", () => {
-    const plan = planFor(refundsTicket({ effort: "huge" as never }));
-    expect(plan.stages).toContain("plan");
+    expect(planFor(refundsTicket({ effort: "huge" as never }))).toBe(
+      planFor(refundsTicket({ effort: "medium" })),
+    );
+    const ownerMerges = { ...defaultProjectPolicy, mode: "owner-merges" as const };
+    expect(planFor(refundsTicket({ effort: "huge" as never }), ownerMerges).stages).toContain("plan");
   });
 });
 

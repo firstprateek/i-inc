@@ -52,6 +52,7 @@ The **deployer** is a separate LaunchAgent (see "The host") that puts `main` on 
 | `protectedPaths` | `.github/`, Release Please's config | Changes there wait for the owner's OK |
 | `followUpsPerDay` | 3 | Tickets agents may file for themselves |
 | `autoRelease` | `false` | Whether merged tickets trigger an automatic project release |
+| `crossVendorReview` | `false` | Fast mode only: run the check on another vendor's engine (another employee with the review duty first) instead of the builder's own seat and engine |
 
 ## Access
 
@@ -144,7 +145,7 @@ The audit's fixes ([audit/T63-report.md](audit/T63-report.md)), in one place:
 - **Restart and recovery.** A graceful stop (SIGTERM, a deploy) leaves in-flight tickets resumable: `AcpAgent.run` throws `ShuttingDown`, nothing is recorded, and the next start continues them. A push that landed but whose record was lost is recognised on replay (a `push-intended` event, checked against the host's mirror). Retry and any answer on a stuck card reset the failure counters. Machine boot and stop are serialised per machine. Running sandboxes are adopted at startup so they are stopped when idle.
 - **Backups and disk.** A daily `VACUUM INTO ~/.i-inc/i-inc.db.autobak-<date>` when idle (30 days kept, the newest always), `PRAGMA quick_check` at startup (a failure is pushed and logged; the daemon keeps serving), and a low-disk gate: under 5 GB free (`minFreeGb`) no new ticket or conversation turn starts, and the ticket says why.
 - **The container service heals itself (T73).** A machine that will not boot with `hostname(s) already exist` (it recurs after machine stops) makes the daemon wait until every machine is idle, restart the container service once (at most one per 30 minutes), wait for the walls job to confirm the rules, and retry the boots; otherwise the owner gets a Needs you card and a push. The PA's root removal can be repeated safely on every boot. A conversation boots a stopped sandbox first, home or team (T74). See handoff.md, "Sandbox won't boot".
-- **Done-when is checked (T71).** Orientation and tidy tickets close only when their done-when is met, judged against the collected brain copy (one retry with feedback, then Needs you), and an errand is done when it proposes something or says why nothing is needed. **Not yet (T72, in progress):** a low-effort code ticket has no `prove` stage, and a medium or high ticket skips `prove` when nobody on the team has the verify duty, so both can close without their done-when being verified.
+- **Done-when is checked (T71).** Orientation and tidy tickets close only when their done-when is met, judged against the collected brain copy (one retry with feedback, then Needs you), and an errand is done when it proposes something or says why nothing is needed. **Code tickets (T72):** every one has its done-when checked before the gates: fast mode in its check session, otherwise by the prove stage or, where it didn't run, the done-when stage. An item not confirmed goes to the owner, never to done.
 - **A PA works offline (T71, T74).** A PA's brief and every turn carry a short note on its machine (no internet, no sudo, no installs, the tools it has), its brain section is cut for its small window, and its model is `qwen3-8b-32k` (`qwen3:8b` with the 32k window set on the model). Its brief gives examples it can copy as they are, and the harvest drops junk frontmatter keys. `apps/daemon/scripts/converse.ts` is the smoke tool (handoff.md, "Checking a PA works").
 - **Retries.** An upstream GitHub 5xx, a rate limit or a network blip is retried (with `retryAfter`) instead of failing the ticket; `waitForCi` no longer treats a failed rules lookup as "no required checks".
 - **Sign-in.** A first-run signup needs a one-time setup code; every login is a revocable server-side session; failed logins and setup guesses are limited (see "Owner authentication").
@@ -165,23 +166,57 @@ The frontend is an installable, mobile-responsive single-page app built with Lit
 
 ## A ticket, in direct mode
 
+Direct mode has two paces (decided 2026-11-14). **Fast** is the default: Low and Medium effort tickets run
+it. **Thorough** is High effort.
+
+**Fast** (`directPlans.low`/`medium` in `packages/core/src/stages.ts`, `fast: true`): two agent sessions on a
+quiet ticket, the build and one check.
+
 1. **Pick up:** a fresh branch from main in the team's sandbox, kept local.
-2. **Plan** (Medium and High effort): no gate; nothing waits for the owner.
+2. **Build:** the builder writes a short plan first, in the same session (there is no plan stage), builds,
+   and ends its reply with a JSON summary and up to 3 follow-ups.
+3. **Checks:** the project's recipe, with up to 3 fix attempts before an engine switch
+   (`defaultSwitchRules.checksFailedBeforeSwitch`; employees hired before 2026-11-14 keep the 5 they were
+   saved with).
+4. **Check** (the `review` stage): one fresh session **in the builder's own seat and engine** reviews the
+   diff and checks every done-when item together, at low effort and **without the brain** (the ticket and the
+   diff only). A done-when item not met is a blocking finding; one it can't confirm is a should-fix one. The
+   builder addresses them, and round 2 looks only at what changed since round 1 (`git diff <round-1 head>`)
+   and at the items still open. At most 2 rounds. An item still open after them goes to the owner as a Needs
+   you card, never to done (T72); answering it starts the check again from round 1. The worktree is compared
+   before and after, and a check that changed files has them put back and its answer goes to the owner. With
+   `crossVendorReview` on, the check runs on another vendor's engine as Thorough's review does.
+5. **Gates:** as below. The checks are not run again when the rebase on main kept the very commit the last
+   green run checked (main hadn't moved); the harness remembers that commit in memory, so after a restart
+   they just run again.
+6. **CI on main**, as below.
+7. **Report:** written by the daemon, with no session: the builder's summary from step 2, the facts, and its
+   follow-ups.
+8. **Retro:** only when something happened worth learning from (a failed check run, an engine switch, a
+   rebase conflict or red CI to fix, pushback from the check, a handoff), and only the builder's.
+
+**Thorough** (High):
+
+1. **Pick up:** a fresh branch from main in the team's sandbox, kept local.
+2. **Plan:** no gate; nothing waits for the owner.
 3. **Build.**
-4. **Checks:** the project's recipe, with up to 5 fix attempts before an engine switch.
-5. **Prove** (Medium and High): a verifier checks each done-when item.
+4. **Checks:** the project's recipe, with up to 3 fix attempts before an engine switch.
+5. **Prove:** a verifier checks each done-when item.
 6. **Review:** with fresh eyes, seeing only the ticket and the diff. The reviewer is another employee
    with the review duty if there is one; otherwise the builder's seat on a different engine, so a
    different AI reviews; otherwise a fresh session. At most 2 rounds, then the work goes on, with
    any open disagreement in the report.
-7. **Gates:** if the change touches protected paths (in the repo the mini runs, any host-executed code), it waits for the owner's OK, bound to the exact commit and diff. Then rebase on
+7. **Done-when check** (when the prove stage didn't run).
+8. **Gates:** if the change touches protected paths (in the repo the mini runs, any host-executed code), it waits for the owner's OK, bound to the exact commit and diff. Then rebase on
    main, the checks again, and a push to main made **by the daemon on the host** from a verified bundle of exactly the checked sha. If main moved meanwhile, rebase and try again.
-8. **CI on main:** if it fails, the same ticket becomes the fix, first in line. If main is still red
+9. **CI on main:** if it fails, the same ticket becomes the fix, first in line. If main is still red
    2 hours after the push, the push is reverted and the ticket fails honestly.
-9. **Report:** to the board, with up to 3 follow-up tickets the builder noticed (more wait under
+10. **Report:** to the board, with up to 3 follow-up tickets the builder noticed (more wait under
    Needs you as proposals). The ticket closes without waiting for the owner. (In `owner-merges` mode
    it waits for the PR to be merged on GitHub instead, and closes by itself when it is.)
-10. **Retro:** lessons go to the brains and the handbook (the agent's edits to its brain copy are harvested with no approval; every change is in Company → Brain → Changes with a revert).
+11. **Retro:** lessons go to the brains and the handbook (the agent's edits to its brain copy are harvested with no approval; every change is in Company → Brain → Changes with a revert).
+
+The web app still shows the three effort levels; Low and Medium both mean Fast.
 
 GitHub refuses the bot any change to `.github/workflows`, which keeps the repo's secrets (Duet's
 release signing key) out of agents' reach. So a reviewed workflow change waits for the owner, who
