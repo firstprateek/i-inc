@@ -10,6 +10,10 @@ import "../src/components/inbox.ts";
 import { hosts } from "./ahp/fake-host.ts";
 import { answer } from "./daemon-board.ts";
 
+// Request budgets cover opening and explicit refreshes. Live polling has its own tests;
+// letting it run here makes counts depend on how long rendering takes on the test machine.
+vi.mock("../src/live.ts", () => ({ startLiveUpdates: () => () => {} }));
+
 const COLUMNS = ["todo", "in-progress", "review", "done"] as const;
 
 const ticket = (n: number): TicketView =>
@@ -37,6 +41,9 @@ let tickets: TicketView[] = [];
 let log: { url: string; bytes: number }[] = [];
 
 beforeEach(() => {
+  // The shell follows the roster too: use an in-memory host, never a real socket/retry loop.
+  const h = hosts();
+  setAhp(new AhpConnection({ connect: h.connect, pingMs: 0, backoff: () => 5 }));
   tickets = Array.from({ length: 1000 }, (_, i) => ticket(i + 1));
   log = [];
   history.replaceState(null, "", "/");
@@ -56,8 +63,9 @@ beforeEach(() => {
   });
 });
 afterEach(() => {
-  vi.unstubAllGlobals();
   document.body.innerHTML = "";
+  resetAhp();
+  vi.unstubAllGlobals();
   location.hash = "";
 });
 
@@ -235,7 +243,7 @@ describe("the Needs you count and the AHP connection's opening roster", () => {
         session: "ahp-session:/chat/ab12cd34",
         summary: { resource: "ahp-session:/chat/ab12cd34", status: 24 },
       });
-      // The roster is debounced (600 ms); the 5 s fallback poll (no event stream here) is not reached.
+      // The roster is debounced (600 ms).
       await vi.advanceTimersByTimeAsync(1000);
       expect(paths()).toEqual(["/api/needs-you"]);
     } finally {
