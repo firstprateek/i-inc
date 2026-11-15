@@ -1,12 +1,13 @@
 {
   "name": "@i-inc/desktop",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",
     "build:universal": "tauri build --target universal-apple-darwin",
+    "release": "bun scripts/release.ts",
     "icon": "tauri icon icon.png -o src-tauri/icons"
   },
   "devDependencies": {

@@ -12,6 +12,7 @@
 // (`__I_INC_ZOOM__`, with an `i-inc:zoom` event).
 
 import { showOutdatedApp } from "./app-outdated.ts";
+import { followAppUpdates } from "./app-update.ts";
 import { showZoomPopup } from "./zoom-popup.ts";
 
 declare global {
@@ -29,9 +30,10 @@ declare global {
 /**
  * The oldest app build these pages are made for. The pages deploy at once; the app on a laptop does not, so a
  * page newer than the app says so instead of looking broken (a title bar under the window buttons, a zoom with
- * no indicator). Raise it when the pages start to rely on something a newer app build does.
+ * no indicator). Raise it when the pages start to rely on something a newer app build does. 0.3.0 is the first
+ * build that updates itself, so every older copy is asked to install it once by hand.
  */
-export const MIN_APP_VERSION = "0.2.0";
+export const MIN_APP_VERSION = "0.3.0";
 
 /** True in the desktop app, which draws no title bar of its own. */
 export function inDesktopApp(): boolean {
@@ -134,6 +136,7 @@ export function wireDesktop(): void {
     // ⌘+ / ⌘− / ⌘0 and Reset show the level; a page load reapplying it does not.
     if ((e as CustomEvent<{ show?: boolean }>).detail?.show) showZoomPopup(appZoom());
   });
+  followAppUpdates();
   // The version is set with the mark, before this runs: a build that does not set it is older than 0.2.0.
   const version = window.__I_INC_APP_VERSION__;
   if (!version || !versionAtLeast(version, MIN_APP_VERSION)) {

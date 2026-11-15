@@ -23,6 +23,8 @@ export interface HttpRoutes<D> {
   ahp: { matches(req: Request): boolean; guard(req: Request): { refusal: Response } | { data: D } };
   /** The REST API. */
   api: (req: Request, o: { peer: string | undefined }) => Response | Promise<Response>;
+  /** The desktop app's updates under /desktop/ (desktop-updates.ts); no login, like the web app's files. */
+  desktop?: (req: Request) => Response | Promise<Response>;
   /** The web app's build, or null while there is none (the API answers every path then). */
   web: () => ((req: Request) => Response | Promise<Response>) | null;
 }
@@ -36,6 +38,7 @@ export function httpFetch<D>(r: HttpRoutes<D>) {
       return new Response("websocket upgrade failed", { status: 400 });
     }
     const url = new URL(req.url);
+    if (r.desktop && url.pathname.startsWith("/desktop/")) return r.desktop(req);
     const web = url.pathname.startsWith("/api/") ? null : r.web();
     if (web) return web(req);
     // A machine boot or GitHub can keep these quiet past the idle timeout, which would cut them silently.

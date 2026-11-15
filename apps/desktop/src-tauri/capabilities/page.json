@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "page",
-  "description": "The daemon's pages draw the window's title bar and the zoom popup, so they may move the window (drag it, zoom it on a double click) and set the page zoom back to 100%, and nothing else.",
+  "description": "The daemon's pages draw the window's title bar and the zoom popup, so they may move the window (drag it, zoom it on a double click), set the page zoom back to 100%, and restart the app to run an installed update, and nothing else.",
   "windows": ["main"],
   "remote": {
     "urls": ["http://127.0.0.1:*", "http://localhost:*", "https://*.ts.net", "https://*.ts.net:*"]
@@ -9,6 +9,7 @@
   "permissions": [
     "core:window:allow-start-dragging",
     "core:window:allow-internal-toggle-maximize",
-    "allow-reset-zoom"
+    "allow-reset-zoom",
+    "allow-restart-app"
   ]
 }
