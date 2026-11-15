@@ -715,6 +715,16 @@ export class Daemon {
     return next;
   }
 
+  /** Queue edits wait for any scheduling snapshot already in use to finish. */
+  editQueue<T>(edit: () => T): Promise<T> {
+    const next = this.chain.then(edit);
+    this.chain = next.then(
+      () => {},
+      () => {},
+    );
+    return next;
+  }
+
   /** Runs one piece of a ticket's housekeeping; a failure is logged and stops nothing else. */
   private async guarded(id: Id, what: string, fn: () => void | Promise<void>): Promise<void> {
     try {

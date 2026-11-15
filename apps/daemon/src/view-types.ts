@@ -430,3 +430,8 @@ export interface FileView {
   withheld?: true;
   reason?: string;
 }
+
+/** Unstarted assignments in saved execution order; held rows are skipped until released. */
+export interface EmployeeQueueView {
+  tickets: { id: Id; title: string; project: string; held: boolean }[];
+}

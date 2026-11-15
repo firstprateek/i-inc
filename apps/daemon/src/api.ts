@@ -2195,6 +2195,45 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
 
     // Orientation again (T71): a fresh orientation ticket for an employee whose first one didn't leave what it should.
     [
+      "GET",
+      "/api/employees/:id/queue",
+      async (_req, p) => {
+        if (!d.registry.employees().some((e) => e.id === p.id))
+          return json({ error: "no such employee" }, 404);
+        return json(queueView(p.id ?? ""));
+      },
+    ],
+    [
+      "PUT",
+      "/api/employees/:id/queue",
+      async (req, p) => {
+        if (!d.registry.employees().some((e) => e.id === p.id))
+          return json({ error: "no such employee" }, 404);
+        const body = (await req.json()) as { ticketId?: unknown; before?: unknown; expected?: unknown };
+        if (
+          !body ||
+          typeof body.ticketId !== "string" ||
+          (body.before !== null && typeof body.before !== "string") ||
+          !Array.isArray(body.expected) ||
+          !body.expected.every((id) => typeof id === "string")
+        ) {
+          return json({ error: "provide ticketId, before (ticket id or null), and expected queue ids" }, 400);
+        }
+        const { ticketId, before, expected } = body as {
+          ticketId: string;
+          before: string | null;
+          expected: string[];
+        };
+        const accepted = await daemon.editQueue(() =>
+          d.tickets.moveQueued(p.id ?? "", ticketId, before, expected),
+        );
+        if (!accepted) return json({ error: "The queue changed. Refresh it and try again." }, 409);
+        await daemon.tick();
+        return json(queueView(p.id ?? ""));
+      },
+    ],
+
+    [
       "POST",
       "/api/employees/:id/orientation",
       async (_req, { id = "" }) => {
@@ -2949,6 +2988,17 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
     if (key === "handbook") return { kind: "handbook" };
     const id = key.startsWith("brain:") ? key.slice(6) : null;
     return id && d.registry.employees().some((e) => e.id === id) ? { kind: "brain", id } : null;
+  }
+
+  function queueView(employeeId: Id) {
+    return {
+      tickets: d.tickets.queue(employeeId).map((r) => ({
+        id: r.ticket.id,
+        title: peopleTitle(r.ticket.title, agentsTitle(r.ticket)),
+        project: r.ticket.project,
+        held: r.hold,
+      })),
+    };
   }
 
   /** The employee's tickets, oldest first, and the one it is on now (running, paused or waiting on the owner). */

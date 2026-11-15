@@ -228,6 +228,50 @@ export class Tickets {
     return this.rows("ORDER BY created_at, CAST(id AS INTEGER)");
   }
 
+  /** Unstarted assignments, including holds in their saved positions. */
+  queue(employeeId: Id): TicketRecord[] {
+    const started = new Set(
+      this.db
+        .all<{ ticket_id: string }>("SELECT DISTINCT ticket_id FROM events WHERE type = 'ticket-created'")
+        .map((r) => r.ticket_id),
+    );
+    return this.all()
+      .filter((r) => r.ticket.assignee === employeeId && !started.has(r.ticket.id))
+      .sort(
+        (a, b) => (a.queueSequence ?? Number.MAX_SAFE_INTEGER) - (b.queueSequence ?? Number.MAX_SAFE_INTEGER),
+      );
+  }
+
+  /** Move within the queue atomically; reject an out-of-date view rather than undo another edit. */
+  moveQueued(employeeId: Id, id: Id, before: Id | null, expected: Id[]): boolean {
+    const changed: Id[] = [];
+    let accepted = false;
+    this.db.transaction(() => {
+      const queue = this.queue(employeeId);
+      if (queue.length !== expected.length || queue.some((r, i) => r.ticket.id !== expected[i])) return;
+      if (
+        !queue.some((r) => r.ticket.id === id) ||
+        (before !== null && !queue.some((r) => r.ticket.id === before))
+      )
+        return;
+      accepted = true;
+      if (id === before) return;
+      const order = queue.filter((r) => r.ticket.id !== id);
+      const moved = queue.find((r) => r.ticket.id === id);
+      if (!moved) return;
+      order.splice(before === null ? order.length : order.findIndex((r) => r.ticket.id === before), 0, moved);
+      order.forEach((r, i) => {
+        const sequence = queue[i]?.queueSequence;
+        if (sequence === undefined || sequence === null) throw new Error("ticket queue position is missing");
+        if (r.queueSequence === sequence) return;
+        this.db.run("UPDATE tickets SET queue_sequence = ? WHERE id = ?", sequence, r.ticket.id);
+        changed.push(r.ticket.id);
+      });
+    });
+    for (const ticketId of changed) this.notifyChange(ticketId);
+    return accepted;
+  }
+
   /** Assigns a ticket; `pickedAt` records a standing order picking it up (for its daily limit). */
   assign(id: Id, assignee: Id, pickedAt: number | null = null): void {
     this.db.transaction(() => {
