@@ -162,24 +162,34 @@ async function call(
   timeoutMs = 10_000,
 ): Promise<Record<string, unknown>> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let rejectTimeout: (err: Error) => void = () => {};
+  const timeout = new Promise<never>((_, reject) => {
+    rejectTimeout = reject;
+  });
+  const timer = setTimeout(() => {
+    controller.abort();
+    rejectTimeout(new UpstreamGitHubError(504, init.method ?? "GET", sanitizedEndpoint(url), "timeout"));
+  }, timeoutMs);
   const method = init.method ?? "GET";
   const sanitized = sanitizedEndpoint(url);
 
   try {
-    const res = await f(url, {
-      ...init,
-      signal: init.signal ?? controller.signal,
-      headers: {
-        accept: "application/vnd.github+json",
-        "x-github-api-version": "2022-11-28",
-        "user-agent": "i-inc",
-        ...init.headers,
-      },
-    });
+    const res = await Promise.race([
+      f(url, {
+        ...init,
+        signal: init.signal ?? controller.signal,
+        headers: {
+          accept: "application/vnd.github+json",
+          "x-github-api-version": "2022-11-28",
+          "user-agent": "i-inc",
+          ...init.headers,
+        },
+      }),
+      timeout,
+    ]);
 
     let body: Record<string, unknown> = {};
-    const text = await res.text();
+    const text = await Promise.race([res.text(), timeout]);
     if (text.trim()) {
       try {
         const parsed = JSON.parse(text);
@@ -950,27 +960,12 @@ export async function inspectRepo(
     };
   }
 
-  let contents: Record<string, unknown>[] = [];
-  try {
-    const list = await call(f, `${api}/repos/${repo}/contents`, {
-      method: "GET",
-      headers: authHeader,
-    });
-    contents = Array.isArray(list) ? (list as Record<string, unknown>[]) : [];
-  } catch (err) {
-    if (err instanceof UpstreamGitHubError && err.status === 404) {
-      return {
-        id,
-        repo,
-        defaultBranch,
-        empty: true,
-        checks: ["pnpm install", "pnpm test"],
-        protectedPaths: [],
-        detected: "empty",
-      };
-    }
-    throw err;
-  }
+  // A repo with commits is not empty just because its root cannot be read.
+  const list = await call(f, `${api}/repos/${repo}/contents`, {
+    method: "GET",
+    headers: authHeader,
+  });
+  const contents = Array.isArray(list) ? (list as Record<string, unknown>[]) : [];
 
   const fileNames = new Set(contents.map((c) => String(c.name ?? "")));
 
@@ -981,47 +976,49 @@ export async function inspectRepo(
     const hasPackageLock = fileNames.has("package-lock.json");
     const hasBunLock = fileNames.has("bun.lock") || fileNames.has("bun.lockb");
 
-    const installCmd = hasBunLock
-      ? "bun install --frozen-lockfile"
-      : hasPnpmLock
-        ? "pnpm install --frozen-lockfile"
-        : hasYarnLock
-          ? "yarn install --frozen-lockfile"
-          : hasPackageLock
-            ? "npm ci"
-            : "pnpm install";
-
-    checks.push(installCmd);
-
-    const runner = hasBunLock ? "bun run" : hasPnpmLock ? "pnpm" : hasYarnLock ? "yarn run" : "npm run";
-
+    let pkg: { scripts?: Record<string, string>; packageManager?: string } = {};
+    const pkgFile = await call(f, `${api}/repos/${repo}/contents/package.json`, {
+      method: "GET",
+      headers: authHeader,
+    });
+    const content =
+      typeof pkgFile.content === "string" ? Buffer.from(pkgFile.content, "base64").toString("utf8") : "";
     try {
-      const pkgFile = await call(f, `${api}/repos/${repo}/contents/package.json`, {
-        method: "GET",
-        headers: authHeader,
-      });
-      const content =
-        typeof pkgFile.content === "string" ? Buffer.from(pkgFile.content, "base64").toString("utf8") : "";
-      const pkg = JSON.parse(content) as { scripts?: Record<string, string> };
-      const scripts = pkg.scripts ?? {};
-
-      if (scripts.check) checks.push(`${runner} check`);
-      if (scripts.typecheck) checks.push(`${runner} typecheck`);
-      if (scripts.test) checks.push(hasBunLock ? "bun test" : `${runner} test`);
-      if (!scripts.check && !scripts.typecheck && !scripts.test && scripts.build) {
-        checks.push(`${runner} build`);
-      }
+      const parsed = JSON.parse(content);
+      if (parsed && typeof parsed === "object") pkg = parsed;
     } catch (err) {
-      if (err instanceof SyntaxError) {
-        checks.push(hasBunLock ? "bun test" : "pnpm test");
-      } else {
-        throw err;
-      }
+      if (!(err instanceof SyntaxError)) throw err;
     }
-
-    if (checks.length === 1) {
-      checks.push(hasBunLock ? "bun test" : "pnpm test");
+    const declared = typeof pkg.packageManager === "string" ? pkg.packageManager.split("@")[0] : "";
+    // Lockfiles take precedence; a declaration also works before the first install.
+    const manager = hasBunLock
+      ? "bun"
+      : hasPnpmLock
+        ? "pnpm"
+        : hasYarnLock
+          ? "yarn"
+          : hasPackageLock
+            ? "npm"
+            : ["npm", "yarn", "bun", "pnpm"].includes(declared ?? "")
+              ? declared
+              : "pnpm";
+    const locked = hasBunLock || hasPnpmLock || hasYarnLock || hasPackageLock;
+    const installCmd = !locked
+      ? `${manager} install`
+      : manager === "npm"
+        ? "npm ci"
+        : `${manager} install --frozen-lockfile`;
+    const runner = manager === "pnpm" ? "pnpm" : `${manager} run`;
+    const test = manager === "bun" ? "bun test" : `${runner} test`;
+    checks.push(installCmd);
+    const scripts = pkg.scripts ?? {};
+    if (scripts.check) checks.push(`${runner} check`);
+    if (scripts.typecheck) checks.push(`${runner} typecheck`);
+    if (scripts.test) checks.push(test);
+    if (!scripts.check && !scripts.typecheck && !scripts.test && scripts.build) {
+      checks.push(`${runner} build`);
     }
+    if (checks.length === 1) checks.push(test);
 
     return {
       id,
@@ -1043,7 +1040,7 @@ export async function inspectRepo(
                 ? ["package-lock.json"]
                 : []),
       ],
-      detected: hasBunLock ? "bun" : "node",
+      detected: manager === "bun" ? "bun" : "node",
     };
   }
 
@@ -1114,14 +1111,11 @@ export async function bootstrapRepo(
       ? opts.description.trim()
       : "Project managed by i.inc";
   const description = rawDesc.slice(0, 500);
-  const sanitizeToml = (s: string) => {
-    let clean = "";
-    for (let i = 0; i < s.length; i++) {
-      const code = s.charCodeAt(i);
-      clean += code < 32 || code === 127 ? " " : s[i];
-    }
-    return clean.replace(/\\/g, "\\\\").replace(/"/g, '\\"').trim().slice(0, 500);
-  };
+  const sanitizeToml = (s: string) =>
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: TOML requires escaping these characters.
+    s.replace(/[\\"\x00-\x1f\x7f]/g, (c) =>
+      c === "\\" ? "\\\\" : c === '"' ? '\\"' : `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+    );
 
   const tomlDesc = sanitizeToml(description);
   const tomlName = sanitizeToml(name).slice(0, 100);

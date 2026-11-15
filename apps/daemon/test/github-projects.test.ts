@@ -27,22 +27,29 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
     ["npm", "package-lock.json", "npm ci", "npm run test"],
     ["yarn", "yarn.lock", "yarn install --frozen-lockfile", "yarn run test"],
     ["bun", "bun.lock", "bun install --frozen-lockfile", "bun test"],
-  ])("uses %s for a package with no scripts, with and without a lock", async (manager, lock, install, test) => {
-    for (const locked of [true, false]) {
-      const f = (async (url: string | URL | Request) => {
-        const u = String(url);
-        const data = u.endsWith("/contents/package.json")
-          ? { content: Buffer.from(JSON.stringify({ packageManager: `${manager}@1.0.0` })).toString("base64") }
-          : u.endsWith("/contents")
-            ? [{ name: "package.json" }, ...(locked ? [{ name: lock }] : [])]
-            : { default_branch: "trunk", size: 1, pushed_at: "2026-01-01" };
-        return new Response(JSON.stringify(data));
-      }) as typeof fetch;
-      const result = await inspectRepo(fakeTokenSource, "o", "r", { fetch: f });
-      expect(result.defaultBranch).toBe("trunk");
-      expect(result.checks).toEqual([locked ? install : `${manager} install`, test]);
-    }
-  });
+  ])(
+    "uses %s for a package with no scripts, with and without a lock",
+    async (manager, lock, install, test) => {
+      for (const locked of [true, false]) {
+        const f = (async (url: string | URL | Request) => {
+          const u = String(url);
+          const data = u.endsWith("/contents/package.json")
+            ? {
+                content: Buffer.from(JSON.stringify({ packageManager: `${manager}@1.0.0` })).toString(
+                  "base64",
+                ),
+              }
+            : u.endsWith("/contents")
+              ? [{ name: "package.json" }, ...(locked ? [{ name: lock }] : [])]
+              : { default_branch: "trunk", size: 1, pushed_at: "2026-01-01" };
+          return new Response(JSON.stringify(data));
+        }) as typeof fetch;
+        const result = await inspectRepo(fakeTokenSource, "o", "r", { fetch: f });
+        expect(result.defaultBranch).toBe("trunk");
+        expect(result.checks).toEqual([locked ? install : `${manager} install`, test]);
+      }
+    },
+  );
 
   it("reports a contents failure on a repository known to have commits", async () => {
     const f = (async (url: string | URL | Request) =>
@@ -62,7 +69,9 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
       // A broken timeout must fail promptly instead of hanging this test.
       await Promise.race([rejected, Promise.resolve().then(() => vi.advanceTimersByTimeAsync(1))]);
       let settled = false;
-      void result.catch(() => { settled = true; });
+      void result.catch(() => {
+        settled = true;
+      });
       await Promise.resolve();
       expect(settled).toBe(true);
     } finally {
@@ -73,7 +82,9 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
   it("treats an empty 200 body as an empty object without calling json", async () => {
     const f = (async () => {
       const res = new Response("");
-      res.json = async () => { throw new Error("Bun empty-body json must not be used"); };
+      res.json = async () => {
+        throw new Error("Bun empty-body json must not be used");
+      };
       return res;
     }) as typeof fetch;
     expect(await inspectRepo(fakeTokenSource, "o", "r", { fetch: f })).toMatchObject({ empty: true });
@@ -88,8 +99,14 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
       }
       return new Response(JSON.stringify({ commit: {} }), { status: 201 });
     }) as typeof fetch;
-    await bootstrapRepo(fakeTokenSource, { repo: "o/r", template: "python", description: 'a\n\t\r\b\f\u0000\u001f\u007f"\\z' }, { fetch: f });
-    expect(toml).toContain('description = "a\\u000a\\u0009\\u000d\\u0008\\u000c\\u0000\\u001f\\u007f\\"\\\\z"');
+    await bootstrapRepo(
+      fakeTokenSource,
+      { repo: "o/r", template: "python", description: 'a\n\t\r\b\f\u0000\u001f\u007f"\\z' },
+      { fetch: f },
+    );
+    expect(toml).toContain(
+      'description = "a\\u000a\\u0009\\u000d\\u0008\\u000c\\u0000\\u001f\\u007f\\"\\\\z"',
+    );
   });
 
   it("lists installation repositories and flags already registered ones", async () => {
