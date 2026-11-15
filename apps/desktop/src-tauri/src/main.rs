@@ -10,7 +10,7 @@ use std::sync::Mutex;
 
 use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
 use tauri::webview::{NewWindowResponse, PageLoadEvent};
-use tauri::{AppHandle, Manager, Url, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, Url, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
 /// The page zoom (⌘+ / ⌘− / ⌘0): WebKit has no zoom shortcuts of its own in an app window. It is kept in a
 /// file in the app's config folder and applied on every page load.
@@ -50,12 +50,57 @@ fn step_zoom(now: f64, dir: i8) -> f64 {
 
 /// Zooms the page and tells it the level, so the header (the window's title bar) can stay the size of the
 /// window buttons, which do not zoom, and, when `show`, so it shows the level for a moment (apps/web/src/
-/// desktop.ts). A page load reapplies the level without showing it.
+/// desktop.ts). A page load reapplies the level without showing it. Only an `f64` and a `bool` are formatted
+/// into the script.
 fn apply_zoom(window: &WebviewWindow, zoom: f64, show: bool) {
     let _ = window.set_zoom(zoom);
     let _ = window.eval(format!(
         "window.__I_INC_ZOOM__ = {zoom}; window.dispatchEvent(new CustomEvent('i-inc:zoom', {{ detail: {{ show: {show} }} }}));"
     ));
+}
+
+/// Tells the page whether the window is in full screen, where macOS hides the window buttons and the header
+/// needs no room for them. The page cannot tell by itself: page zoom changes its own size, and on a Mac with a
+/// notch a full-screen window is shorter than the screen.
+fn push_fullscreen(window: &WebviewWindow) {
+    let full = window.is_fullscreen().unwrap_or(false);
+    let _ = window.eval(format!(
+        "window.__I_INC_FULLSCREEN__ = {full}; window.dispatchEvent(new Event('i-inc:fullscreen'));"
+    ));
+}
+
+/// Tells the page which build of the app it is in, so a page newer than the app can say the app is out of date
+/// (apps/web/src/desktop.ts, `MIN_APP_VERSION`). A semver string: digits, letters, dots, `-` and `+` only.
+fn push_version(window: &WebviewWindow) {
+    let version = window.app_handle().package_info().version.to_string();
+    if version.chars().all(|c| c.is_ascii_alphanumeric() || ".-+".contains(c)) {
+        let _ = window.eval(format!("window.__I_INC_APP_VERSION__ = \"{version}\";"));
+    }
+}
+
+/// The daemon the launcher connected to (its origin). The window may show only that daemon's pages and the
+/// launcher; any other address opens in the default browser, so no other site ever gets the pages' capability.
+struct Daemon(Mutex<Option<String>>);
+
+/// The launcher names the daemon it is about to open (`launcher.js`); only the bundled launcher may call this.
+#[tauri::command]
+fn use_daemon(origin: String, daemon: tauri::State<'_, Daemon>) -> Result<(), String> {
+    let url = Url::parse(&origin).map_err(|_| "not an address".to_string())?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("not a web address".to_string());
+    }
+    *daemon.0.lock().unwrap() = Some(url.origin().ascii_serialization());
+    Ok(())
+}
+
+/// True for an address the window may show: the bundled launcher, or the chosen daemon's own pages.
+fn may_show(url: &Url, daemon: Option<&str>) -> bool {
+    match url.scheme() {
+        "tauri" | "about" => true,
+        "http" | "https" if url.host_str() == Some("tauri.localhost") => true,
+        "http" | "https" => daemon.is_some_and(|d| url.origin().ascii_serialization() == d),
+        _ => false,
+    }
 }
 
 fn change_zoom(app: &AppHandle, window: &WebviewWindow, dir: i8) {
@@ -120,18 +165,37 @@ fn main() {
                 .js_init_script("window.__I_INC_TITLEBAR__ = true;".to_string())
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![default_daemon, daemon_override, reset_zoom])
+        .invoke_handler(tauri::generate_handler![default_daemon, daemon_override, reset_zoom, use_daemon])
+        .on_window_event(|window, event| {
+            if let WindowEvent::Resized(_) = event {
+                if let Some(w) = window.app_handle().get_webview_window(window.label()) {
+                    push_fullscreen(&w);
+                }
+            }
+        })
         .setup(|app| {
             app.manage(Zoom(Mutex::new(saved_zoom(app.handle()))));
+            app.manage(Daemon(Mutex::new(None)));
+            let handle = app.handle().clone();
             let config = app.config().app.windows.first().expect("window config").clone();
             WebviewWindowBuilder::from_config(app.handle(), &config)?
                 .on_new_window(|url, _| {
                     open_in_browser(&url);
                     NewWindowResponse::Deny
                 })
+                .on_navigation(move |url| {
+                    let daemon = handle.state::<Daemon>().0.lock().unwrap().clone();
+                    let ok = may_show(url, daemon.as_deref());
+                    if !ok {
+                        open_in_browser(url);
+                    }
+                    ok
+                })
                 .on_page_load(|window, payload| {
                     if payload.event() == PageLoadEvent::Finished {
                         let zoom = *window.app_handle().state::<Zoom>().0.lock().unwrap();
+                        push_version(&window);
+                        push_fullscreen(&window);
                         apply_zoom(&window, zoom, false);
                     }
                 })
@@ -204,8 +268,24 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::step_zoom;
+    use super::{may_show, step_zoom};
+    use tauri::Url;
 
+    #[test]
+    fn the_window_shows_only_the_launcher_and_the_chosen_daemon() {
+        let d = Some("https://iinc.example.ts.net");
+        let ok = |u: &str| may_show(&Url::parse(u).unwrap(), d);
+        assert!(ok("tauri://localhost/?change=1"));
+        assert!(ok("http://tauri.localhost/"));
+        assert!(ok("https://iinc.example.ts.net/#/work/board"));
+        assert!(!ok("https://iinc.example.ts.net:8443/"));
+        assert!(!ok("https://other.example.ts.net/"));
+        assert!(!ok("https://github.com/firstprateek/i-inc"));
+        assert!(!ok("http://127.0.0.1:5173/"));
+        assert!(!ok("file:///etc/passwd"));
+        // Before the launcher has chosen, no web page at all.
+        assert!(!may_show(&Url::parse("https://iinc.example.ts.net/").unwrap(), None));
+    }
 
     #[test]
     fn zoom_steps_up_down_and_back_to_actual_size() {
