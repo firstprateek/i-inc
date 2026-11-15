@@ -535,6 +535,51 @@ the old heredoc would likely have been slower still. Still to check on the mini:
    `.inc/attachments/` ends in `.jpg`), and the third is refused with the message above. Note any 48 MP photo
    whose JPEG comes out over 10 MB; the form refuses it as "over 10 MB".
 
+## M3: a reviewer's checkout and images (#26)
+
+**Not yet run on the mini.** #26 was worked from an employee machine (Ubuntu 24.04), which can't
+reach the mini. What's below was checked on Linux, and the steps for the mini are at the end.
+
+`apps/daemon/scripts/reviewer-check.ts` sends the daemon's own `checkoutScript`, `attachmentScript`
+and `openScript` to a machine the way the daemon does: as `bash -s` on stdin, as `employee`. GitHub
+is stood in for by a bare repo inside the machine, filled from a bundle the host streams in, so the
+check needs no token and nothing crosses the walls. It checks:
+
+- **A, a reviewer on another team:** an image copied into the launcher's plain folder before the
+  checkout is kept. The checkout lands on the branch's pushed commit, is marked
+  `i-inc.copy=review` and has no author. Every image arrives with the uploaded SHA-256, each copy is
+  timed, and `git status` stays clean. A later push moves the copy along and keeps the images.
+- **B, a reviewer on the builder's team (a shared machine):** the builder's worktree, author and
+  unpushed commit are left alone, and the image still lands.
+
+Checked on Linux on 2026-11-15, with six 10 MB images:
+
+| Where | Result |
+| --- | --- |
+| `--runtime docker`: an `ubuntu:24.04` container with git and an `employee` user, through `docker exec -i -u employee` | All checks pass. 66–87 ms per 10 MB image |
+| `--runtime local` (`bash -s` on the host), in `apps/daemon/test/reviewer-check.test.ts` | All checks pass in CI. The test also checks that a transport that drops part of an image fails A7 |
+
+`checkoutScript` prints `cp: warning: behavior of -n is non-portable` on Ubuntu 24.04 (coreutils
+9.4). That's harmless there: the images are kept and the script exits 0. On coreutils 9.2, though,
+`cp -n` fails when it skips a file, which would stop the checkout under `set -e`.
+
+This covers the scripts, git and the stdin path through a container runtime. It doesn't cover Apple
+container's own relay or the employee image, which only the mini has. Still to check there:
+
+1. **Pull the branch on the mini** and pick a team machine that exists:
+   `container machine ls`. Take a team's (`inc-<team>`), and run the check while that team has no
+   ticket in progress, because it wakes the machine.
+2. **Run it, from the repo on the mini:**
+   `bun apps/daemon/scripts/reviewer-check.ts --runtime container --machine inc-<team>`.
+   Expected: every line `ok`, then `PASS` and exit 0. Each image copy should take well under a
+   second. Note the slowest image copy it prints, next to the 66–87 ms Docker gave on Linux.
+   Exit 2 means the machine couldn't be reached (see "M3: machine commands").
+3. **A sleeping machine:** `container machine stop inc-<team>`, then run step 2 again. The first
+   script boots the machine (`machine run`, about 0.6 s), and every check should still pass.
+4. **If anything fails,** run it again with `--keep --images 1` and look at the folder it names
+   (`container machine run -n inc-<team> -u employee -- ls -la /tmp/i-inc-reviewer-check-*/work/inc-26`).
+   Then remove it with `rm -rf` in the same way.
+
 ## What the spec should change
 
 **Changed in this PR** (docs/spec.md):
