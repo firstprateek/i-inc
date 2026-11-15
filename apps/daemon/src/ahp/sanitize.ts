@@ -271,6 +271,73 @@ function redactCutPasswords(t: string): string {
   return out + t.slice(last);
 }
 
+/** A run of what a token is made of, in a URL's user name. */
+const NAME_RUN = /[A-Za-z0-9._~+=%-]+/g;
+/**
+ * What follows a quote that closes a string: a list's separator, then the next string's quote, as in JSON or an array.
+ * Not a join (`+`, `||`, `&`, or two strings side by side), which goes on with the same URL: `'https://u'+':pw@h'`.
+ */
+const NEXT_STRING = /^\s*[,;)\]}][\s,;)\]}]*\\?["'`]/;
+/** A plain host, and a port of digits only: what a quoted URL must hold before its quote for the quote to end it. */
+const HOST_PORT = /^(?:[A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/;
+/** The kinds of token that go by their prefix, however short what follows. */
+const TOKEN_PREFIX =
+  /(?<![A-Za-z0-9_-])(?:gh[opsur]_|github_pat_|glpat-|gldt-|sk-|[sr]k_live_|whsec_|xox[a-z]-|AKIA|AIza|npm_|hf_|pypi-|eyJ[A-Za-z0-9_-]{8})/;
+
+/**
+ * Does what a URL has before its `@` hold a credential? With a `:` (or `%3A`) it holds a password, which may be empty
+ * or a placeholder: that is still refused. With none it is a user name alone, as in `ssh://git@github.com`, and is one
+ * only when the name is a token: a kind known by its prefix (`https://ghp_...@github.com`), or a run of 20 token
+ * characters or more with a digit, or of 32 or more of any (a classic GitHub token is 40 hex). The rest of what reads as
+ * a user name, such as `acme.example,Acme,me` in a line of CSV, is not one.
+ */
+export function userinfoHoldsCredential(userinfo: string): boolean {
+  if (/:|%3a/i.test(userinfo) || TOKEN_PREFIX.test(userinfo)) return true;
+  const name = userinfo.replace(/%40/gi, "@"); // `first.last%40gmail.com` is an address, not one long run
+  NAME_RUN.lastIndex = 0;
+  for (let m = NAME_RUN.exec(name); m; m = NAME_RUN.exec(name)) {
+    if (m[0].length >= 32 || (m[0].length >= 20 && /\d/.test(m[0]))) return true;
+  }
+  return false;
+}
+
+/**
+ * `USERINFO`'s match, at `at`, with what is before its last `@` taken out if it holds a credential. A URL straight after
+ * a quote ends at the same quote, written the same way, if what comes before it reads as a host and port: in
+ * `"https://acme.example","email":"me@acme.example"` the `@` is a later string's, and the `:` before it is JSON's. Before
+ * a `/`, `?` or `#`, a quote is the URL's only end there is: `"postgres://u:a"b@h"` has a password with a quote in it, as
+ * what is before that quote is no host. Nor is a quote the URL's end when the string goes straight on after it, as when
+ * a password holds the quote written twice or as a shell writes it: `'https://u:2024'\''x@h'`, `('https://u:it''s@h')`.
+ * Only a quote that the next string's quote follows, past separators, closes the string, and only after a plain host
+ * with a port of digits. What the URL has before its own `@`, if any, is then all that is looked at. What still gets
+ * through: a password of digits that holds a quote, a separator and another quote, as in `'https://u:1','x@h'`, which
+ * reads the same as a list of a URL and an address.
+ */
+function redactUserinfo(m: string, scheme: string, at: number, t: string): string {
+  const userinfo = m.slice(scheme.length, -1);
+  const quote = t[at - 1];
+  if (quote === '"' || quote === "'" || quote === "`") {
+    const escaped = t[at - 2] === "\\";
+    let close = userinfo.indexOf(quote);
+    while (close >= 0 && (userinfo[close - 1] === "\\") !== escaped)
+      close = userinfo.indexOf(quote, close + 1);
+    const read = close < 0 ? "" : userinfo.slice(0, escaped ? close - 1 : close);
+    const own = read.lastIndexOf("@");
+    const host = read.slice(own + 1);
+    if (
+      close >= 0 &&
+      NEXT_STRING.test(userinfo.slice(close + 1)) &&
+      HOST_PORT.test(host) &&
+      (own >= 0 || !userinfoHoldsCredential(host.replace(/:\d{1,5}$/, "")))
+    ) {
+      return own >= 0 && userinfoHoldsCredential(read.slice(0, own))
+        ? `${scheme}[redacted]${m.slice(scheme.length + own)}`
+        : m;
+    }
+  }
+  return userinfoHoldsCredential(userinfo) ? `${scheme}[redacted]@` : m;
+}
+
 /**
  * What `USERINFO` stopped short of, at any length: everything from a `://` to the last `@` before `USERINFO_END`. A `://`
  * holds a `/`, where the run after the one before it stops, so no run is searched twice however many there are.
@@ -285,7 +352,7 @@ function redactLongUserinfo(t: string): string {
     USERINFO_END.lastIndex = from;
     const end = USERINFO_END.test(t) ? USERINFO_END.lastIndex - 1 : t.length;
     const found = t.slice(from, end).lastIndexOf("@");
-    if (found < 1) continue;
+    if (found < 1 || !userinfoHoldsCredential(t.slice(from, from + found))) continue;
     out += `${t.slice(last, from)}[redacted]`;
     last = from + found;
   }
@@ -324,7 +391,7 @@ const secretCut = () => `\uFDD0${crypto.randomUUID()}\uFDD0`;
 function redactCredentials(text: string, keepLines = false, whole = false): string {
   const cut = whole ? secretCut() : "";
   let t = redactPem(text, keepLines);
-  t = t.replace(USERINFO, "$1[redacted]@").replace(SECRET_QUERY, "$1[redacted]");
+  t = t.replace(USERINFO, redactUserinfo).replace(SECRET_QUERY, "$1[redacted]");
   t = t.replace(/(bearer\s+)[A-Za-z0-9._~+/=-]{16,}/gi, "$1[redacted]");
   t = t.replace(/\b(?:ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]{20,}\b/g, "[redacted]");
   t = t.replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, "[redacted]");

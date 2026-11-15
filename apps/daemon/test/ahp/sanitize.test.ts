@@ -285,13 +285,18 @@ describe("what redaction keeps and what it takes", () => {
 
   it("keeps a URL but takes its userinfo and the values of secret-looking parameters", () => {
     const out = redactText(
-      "GET https://deploy@example.com/x?id=7&token=abc123&sig=deadbeef&X-Amz-Signature=0123abcd&code=9&page=2&access_token=zzz#frag and https://u:pw@h.io/",
+      "GET https://deploy:hunter2@example.com/x?id=7&token=abc123&sig=deadbeef&X-Amz-Signature=0123abcd&code=9&page=2&access_token=zzz#frag and https://u:pw@h.io/",
     );
     expect(out).toContain(
       "https://[redacted]@example.com/x?id=7&token=[redacted]&sig=[redacted]&X-Amz-Signature=[redacted]&code=[redacted]&page=2&access_token=[redacted]",
     );
     expect(out).toContain("https://[redacted]@h.io/");
-    expect(out).not.toMatch(/abc123|deadbeef|0123abcd|zzz|deploy@|:pw@/);
+    expect(out).not.toMatch(/abc123|deadbeef|0123abcd|zzz|hunter2|:pw@/);
+  });
+
+  it("keeps a user name with no password, unless it is a token", () => {
+    expect(redactText("GET https://deploy@example.com/x")).toBe("GET https://deploy@example.com/x");
+    expect(redactText("GET https://ghp_xxx@example.com/x")).toBe("GET https://[redacted]@example.com/x");
   });
 
   it("takes a private key block whole, PGP's too, however long, and stops where the key does", () => {
