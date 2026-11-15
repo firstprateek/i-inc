@@ -87,9 +87,12 @@ change.
 An area's page header (title, subtitle, actions) and its tab row **always span the frame** (the same box as
 the widest content: the shell's content area, 1400px at most and centred on a wider screen) and **never move or
 change height between tabs or areas**. Only the content below follows its template: Page content is a reading
-band of about 840px centred inside that frame; Wide and Split use the whole frame. So the Conversations, Work and
-Company headings start at the same x (20px at 1440, 260px at 1920) and the same y, and the Company tab row stays
-where it is when you switch Team, Brain, Projects, Usage and Settings. To keep this true:
+band of about 840px centred inside that frame; Wide uses the whole frame. A Split route's frame is the whole
+window instead (owner, 2026-11-15): a sidebar stays against the left edge, never floating in the middle of a wide
+window or of the desktop app zoomed out to 80%, and its header spans the window with it. So up to 1440px wide the
+Conversations, Work and Company headings start at the same x (20px) and the same y, and the Company tab row stays
+where it is when you switch Team, Brain, Projects, Usage and Settings; on a wider window a Split route's heading
+starts at the left gutter while the others are centred. To keep this true:
 - the title sits in a 44px band at the top of the header (`::slotted([slot="heading"])` in `layout.ts`), whatever the
   route puts beside or under it, and Conversations' shorter heading differs only in font size, so the title is at the
   same y on every route and size (a ticket's too);
@@ -118,7 +121,7 @@ where it is when you switch Team, Brain, Projects, Usage and Settings. To keep t
 | --- | --- | --- |
 | **Page** | The header spans the frame; the content is a centred band up to `--page-width` (840px). Use for Needs you, Releases, ticket details, Usage, Projects and hiring. | The application shell's `<main>` scrolls. Forms and ticket detail stack within the Page width, even on a wide viewport. |
 | **Wide** | The header spans the frame and the content uses it, up to `--wide-width` (1400px). Use for the board and the Team floor, whose columns and floor need room. | The shell's `<main>` scrolls vertically; the wide content may scroll horizontally only where its own data view intentionally does so. |
-| **Split** | A full-width header above a 300px (280–320px) navigation/sidebar and flexible working pane. Use for Conversations, Brain and Settings sections. The header follows the outer frame's left and right tracks so it aligns with the sidebar and work pane. | Sidebar and working pane own their scroll positions. The app shell main stays fixed on Split routes so its scroll position cannot compete with either pane. |
+| **Split** | A header spanning the window above a 300px (280–320px) navigation/sidebar at the window's left edge and a working pane that fills the rest, however wide the window. Use for Conversations, Brain and Settings sections. The header follows the outer frame's left and right tracks so it aligns with the sidebar and work pane. | Sidebar and working pane own their scroll positions. The app shell main stays fixed on Split routes so its scroll position cannot compete with either pane. |
 
 Login opts into a compact Page frame at `--compact-page-width` (24rem) so its title and form share
 one centred reading band. Its standalone host owns a bounded scroller and applies the shared

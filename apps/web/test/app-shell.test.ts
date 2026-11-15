@@ -5,6 +5,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IncApp, parse, routeName, routeTitle } from "../src/components/app.ts";
+import { IncLayout } from "../src/components/layout.ts";
 import { arrive, entryKey, MAX_REMEMBERED, ScrollMemory, stampEntry } from "../src/scroll-memory.ts";
 
 const phone = (matches: boolean) =>
@@ -399,6 +400,17 @@ describe("the shell's layout rules", () => {
     const top = (b: string) => /padding(?:-top)?:\s*(\d+)px/.exec(b)?.[1];
     expect(own).toMatch(/padding-top:\s*20px/);
     expect(top(plain)).toBe("20");
+  });
+
+  it("a Split route spans the window, so its sidebar stays at the left edge on a wide window or zoomed out", () => {
+    // The ordinary routes centre in the 1400px frame; a sidebar must not float in the middle with them.
+    const gutter = (side: string) =>
+      new RegExp(`padding-${side}:\\s*max\\(var\\(--layout-gutter\\), env\\(safe-area-inset-${side}\\)\\)`);
+    has(appCss, ":host([own-scroll]) main", gutter("left"), gutter("right"));
+    has(appCss, ":host([own-scroll]) header", gutter("left"), gutter("right"));
+    expect(bodies(appCss, ":host([own-scroll]) main").join(" ")).not.toMatch(/wide-width/);
+    const layoutCss = (IncLayout.styles as unknown as { cssText: string }[]).map((c) => c.cssText).join("\n");
+    has(layoutCss, ".frame.split", /max-width:\s*none/);
   });
 
   it("main is the one scroller, and a route that owns its scrolling clips it", () => {

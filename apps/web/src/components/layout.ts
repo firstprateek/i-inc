@@ -101,12 +101,13 @@ export class IncLayout extends LitElement {
       :host { display: block; min-width: 0; }
       :host([kind="split"]) { display: flex; flex: 1 1 0; flex-direction: column; min-height: 0; height: 100%; }
       /* One frame for every template: the header and tab row span it, and the content below follows its
-         template (Page: a centred reading band; Wide and Split: the whole frame). */
+         template (Page: a centred reading band; Wide: the whole frame, 1400px at most). A Split frame spans the
+         window, so its sidebar stays at the left edge on a wide window or at a low zoom. */
       .frame { width: 100%; max-width: var(--wide-width, 1400px); margin-inline: auto; min-width: 0; box-sizing: border-box; }
       .frame.page .content { max-width: var(--page-width, 840px); margin-inline: auto; }
       .frame.page.compact { max-width: var(--compact-page-width, 24rem); }
       .frame.page.compact .page-header { max-width: var(--compact-page-width, 24rem); }
-      .frame.split { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+      .frame.split { max-width: none; display: flex; flex-direction: column; height: 100%; min-height: 0; }
       /* The title sits in a 44px band at the top of the header on every route, whether or not the route has a
          subtitle, an action or a tab row, so it is at the same y everywhere (docs/layout.md, the header rule). */
       ::slotted([slot="heading"]) {

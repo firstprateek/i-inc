@@ -659,6 +659,11 @@ export class IncApp extends LitElement {
          window's drag region. On a Mac it starts to the right of the three window buttons, which the app
          places at the row's middle (apps/desktop/src-tauri/tauri.conf.json), except in full screen. */
       .history { display: none; }
+      /* On a Split route the header spans the window too, so its edges line up with the sidebar and work pane. */
+      :host([own-scroll]) header {
+        padding-left: max(var(--layout-gutter), env(safe-area-inset-left));
+        padding-right: max(var(--layout-gutter), env(safe-area-inset-right));
+      }
       :host([titlebar]) header {
         min-height: 56px; box-sizing: border-box; gap: 10px; cursor: default;
         padding: 6px 14px 6px 16px;
@@ -806,6 +811,10 @@ export class IncApp extends LitElement {
         /* The same top padding as every other route, so the heading sits at the same height. */
         padding-top: 20px;
         padding-bottom: 20px;
+        /* A Split route spans the window: its sidebar stays at the left edge however wide the window is
+           (or however far out it is zoomed), never centred in the 1400px frame. */
+        padding-left: max(var(--layout-gutter), env(safe-area-inset-left));
+        padding-right: max(var(--layout-gutter), env(safe-area-inset-right));
       }
       :host([own-scroll]) inc-layout { flex: 1 1 0; min-height: 0; }
       @media (max-width: ${LAYOUT_BREAKPOINTS.phone}px) {
