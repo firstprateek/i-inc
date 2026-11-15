@@ -238,7 +238,16 @@ export function checkoutScript(o: {
     `EXCLUDE=$(git -C ${worktree} rev-parse --path-format=absolute --git-path info/exclude)`,
     'mkdir -p "$(dirname "$EXCLUDE")"',
     `grep -qxF .inc/ "$EXCLUDE" 2>/dev/null || echo .inc/ >> "$EXCLUDE"`,
-    `if [ -e ${aside} ]; then cp -an ${aside}/. ${worktree}/; rm -rf ${aside}; fi`,
+    // Path by path, parents first, copying only what the checkout lacks: `cp -n` warns from coreutils 9.4 and
+    // fails on a skipped file in 9.2, and `--update=none` needs 9.3.
+    `if [ -e ${aside} ]; then`,
+    `  (cd ${aside} && find . -mindepth 1 -print0) | while IFS= read -r -d '' p; do`,
+    `    if [ -d ${worktree}/"$(dirname "$p")" ] && [ ! -e ${worktree}/"$p" ] && [ ! -L ${worktree}/"$p" ]; then`,
+    `      cp -a ${aside}/"$p" ${worktree}/"$p"`,
+    "    fi",
+    "  done",
+    `  rm -rf ${aside}`,
+    "fi",
     "echo @@ready",
   ].join("\n");
 }
