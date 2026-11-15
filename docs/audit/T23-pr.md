@@ -9,7 +9,7 @@ contrast is 3.19:1.
 
 All ticket items were checked against main at
 `f1409389ce3a74402d640317dfa268165f88ddcf` before implementation; remote main still points
-there at review round 1.
+there at review rounds 1 and 2.
 
 | Ticket item | Main baseline | Result |
 | --- | --- | --- |

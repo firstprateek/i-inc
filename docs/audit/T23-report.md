@@ -42,3 +42,22 @@ darker amber border in light mode.
 Required checks all passed on this worktree: `pnpm install --frozen-lockfile`, `pnpm check`,
 `pnpm typecheck`, and `pnpm test` (including host scripts). Biome emitted two informational
 suggestions in unchanged daemon tests; no errors. No branch was pushed.
+
+## Review round 2 — publication finding
+
+Rechecked `git ls-remote origin refs/heads/main`: main remains
+`f1409389ce3a74402d640317dfa268165f88ddcf`. `gh pr view --json url,body` reports
+`no pull requests found for branch "inc/23-colour-system-tests-that-test-something"`.
+The baseline comparison above and the already-present bar-pair/media-block notes in
+[T23-pr.md](T23-pr.md) remain applicable.
+
+Both round 2 findings ask for verification of a published PR description. That verification
+is pending the host's publication step: this ticket explicitly says “Commit to it, but don't
+push” and that i.inc pushes after review. Publishing a branch or PR here would exceed that
+instruction. The committed description is ready for that step; it does not prove publication.
+After publication, use `gh pr view --json url,body` to confirm that the body includes the
+comparison table, especially the two “Already present on main” entries. If the host publishes
+directly to main, no PR description exists to verify; retain these notes with the commit.
+
+Round 2 validation: reran `pnpm install --frozen-lockfile`, `pnpm check`,
+`pnpm typecheck`, and `pnpm test`; all passed, including host script tests.
