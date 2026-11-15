@@ -610,9 +610,7 @@ describe("chat", () => {
     ];
     const line = (more: TicketEvent[]) => liveLine([...asked, ...more], app.deps.registry);
     expect(line([])).toBe("Protected paths wait for your OK: apps/daemon/src/api.ts");
-    expect(line([{ type: "owner-answered", at: 4, answer: "approve" }])).toBe(
-      "Carrying on after your answer",
-    );
+    expect(line([{ type: "owner-answered", at: 4, answer: "approve" }])).toBe("Going on after your OK");
     expect(
       line([
         { type: "owner-answered", at: 4, answer: "approve" },

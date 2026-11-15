@@ -257,13 +257,18 @@ function describe(e: TicketEvent, registry: Registry): string | null {
     // What happens after the owner answers, and at the gates, so the line never keeps showing a question
     // that has been answered.
     case "owner-answered":
-      return e.answer === "reject" ? "You declined" : "Carrying on after your answer";
+      return e.answer === "reject"
+        ? "You declined"
+        : e.answer === "approve"
+          ? "Going on after your OK"
+          : "Carrying on after your answer";
     case "owner-decided":
+      // Direct mode approves on its own once the report is written, so this says what happens, not who.
       return e.decision === "approve"
-        ? "You approved"
+        ? "Approved · closing up"
         : e.decision === "changes"
-          ? "You asked for changes"
-          : "You rejected it";
+          ? "Changes asked for"
+          : "Rejected · closing up";
     case "retried":
       return "Trying again";
     case "reassigned":
@@ -277,13 +282,13 @@ function describe(e: TicketEvent, registry: Registry): string | null {
           ? "Gates · conflicts with main"
           : `Gates · ${e.reason ?? "not passed"}`;
     case "pushed":
-      return `Pushed ${e.sha.slice(0, 7)} to main · waiting for CI`;
+      return `Pushed ${String(e.sha ?? "").slice(0, 7)} to main · waiting for CI`;
     case "ci-green":
       return "CI green on main";
     case "main-red":
       return `CI red on main: ${e.reason}`;
     case "reverted":
-      return `Reverted ${e.sha.slice(0, 7)} on main`;
+      return `Reverted ${String(e.sha ?? "").slice(0, 7)} on main`;
   }
   return null;
 }
