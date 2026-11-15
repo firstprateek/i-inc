@@ -563,6 +563,17 @@ describe("add a repo", () => {
     expect(calls.some((c) => c.url === "/api/projects/notes/bootstrap")).toBe(true);
   });
 
+  it("clears the previous detection when a different repo cannot be inspected", async () => {
+    serve();
+    const { el, root } = await mount<Flow>("inc-project-flow", { flow: "add", repo: "acme/notes" });
+    expect(text(root)).toContain("Found a Node project");
+    world.inspect = "fail";
+    el.setAttribute("repo", "acme/blank");
+    await settle(el);
+    expect(text(root)).not.toContain("Found a Node project");
+    expect(text(root)).toContain("GitHub didn't answer in time");
+  });
+
   it("explains an empty repo", async () => {
     serve({ inspect: "empty" });
     const { root } = await mount<Flow>("inc-project-flow", { flow: "add", repo: "acme/blank" });

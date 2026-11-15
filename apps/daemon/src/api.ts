@@ -1619,9 +1619,26 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
             }
           }
 
+          // API callers may omit the recipe; use the repo's tools rather than assuming pnpm.
+          let detected: Awaited<ReturnType<typeof inspectRepo>> | undefined;
+          if (
+            !isTemplate(body.template) &&
+            gh.configured &&
+            (!Array.isArray(body.checks) || body.checks.length === 0)
+          ) {
+            const [owner = "", name = ""] = repo.split("/");
+            try {
+              detected = await inspectRepo(gh.source, owner, name, gh.fetchDeps);
+            } catch (e) {
+              return upstream(e, "failed to detect import recipe");
+            }
+          }
+
           let checks: string[] = [];
           if (Array.isArray(body.checks) && body.checks.length > 0) {
             checks = body.checks.filter((c): c is string => typeof c === "string" && Boolean(c.trim()));
+          } else if (detected) {
+            checks = detected.checks;
           } else if (body.template === "python") {
             checks = ["pytest"];
           } else if (body.template === "web") {
@@ -1634,12 +1651,12 @@ export function createApi(daemon: Daemon, d: DaemonDeps, opts: ApiOptions = {}) 
 
           const protectedPaths = Array.isArray(body.protectedPaths)
             ? body.protectedPaths.filter((p): p is string => typeof p === "string" && Boolean(p.trim()))
-            : [".github/"];
+            : [".github/", ...(detected?.protectedPaths ?? [])];
 
           const defaultBranch =
             typeof body.defaultBranch === "string" && body.defaultBranch.trim()
               ? body.defaultBranch.trim()
-              : undefined;
+              : detected?.defaultBranch;
 
           d.registry.addProject({
             id,

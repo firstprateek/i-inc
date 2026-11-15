@@ -43,7 +43,7 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
               ? [{ name: "package.json" }, ...(locked ? [{ name: lock }] : [])]
               : { default_branch: "trunk", size: 1, pushed_at: "2026-01-01" };
           return new Response(JSON.stringify(data));
-        }) as typeof fetch;
+        }) as unknown as typeof fetch;
         const result = await inspectRepo(fakeTokenSource, "o", "r", { fetch: f });
         expect(result.defaultBranch).toBe("trunk");
         expect(result.checks).toEqual([locked ? install : `${manager} install`, test]);
@@ -55,25 +55,22 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
     const f = (async (url: string | URL | Request) =>
       String(url).endsWith("/contents")
         ? new Response("{}", { status: 404 })
-        : new Response(JSON.stringify({ size: 1, pushed_at: "2026-01-01" }))) as typeof fetch;
+        : new Response(JSON.stringify({ size: 1, pushed_at: "2026-01-01" }))) as unknown as typeof fetch;
     await expect(inspectRepo(fakeTokenSource, "o", "r", { fetch: f })).rejects.toMatchObject({ status: 404 });
   });
 
   it("bounds a hung response body even when it ignores the abort signal", async () => {
     vi.useFakeTimers();
     try {
-      const f = (async () => new Response(new ReadableStream({ start() {} }))) as typeof fetch;
-      const result = inspectRepo(fakeTokenSource, "o", "r", { fetch: f });
-      const rejected = expect(result).rejects.toMatchObject({ status: 504 });
-      await vi.advanceTimersByTimeAsync(10_000);
-      // A broken timeout must fail promptly instead of hanging this test.
-      await Promise.race([rejected, Promise.resolve().then(() => vi.advanceTimersByTimeAsync(1))]);
-      let settled = false;
-      void result.catch(() => {
-        settled = true;
+      const f = (async () => new Response(new ReadableStream({ start() {} }))) as unknown as typeof fetch;
+      let failure: unknown;
+      const result = inspectRepo(fakeTokenSource, "o", "r", { fetch: f }).catch((err: unknown) => {
+        failure = err;
       });
-      await Promise.resolve();
-      expect(settled).toBe(true);
+      await vi.advanceTimersByTimeAsync(10_000);
+      // Assert settlement before awaiting, so a broken timeout fails instead of hanging the test.
+      expect(failure).toMatchObject({ status: 504 });
+      await result;
     } finally {
       vi.useRealTimers();
     }
@@ -86,7 +83,7 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
         throw new Error("Bun empty-body json must not be used");
       };
       return res;
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
     expect(await inspectRepo(fakeTokenSource, "o", "r", { fetch: f })).toMatchObject({ empty: true });
   });
 
@@ -98,7 +95,7 @@ describe("GitHub project discovery, recipe inspection, and bootstrapping", () =>
         toml = Buffer.from(JSON.parse(String(init.body)).content, "base64").toString("utf8");
       }
       return new Response(JSON.stringify({ commit: {} }), { status: 201 });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
     await bootstrapRepo(
       fakeTokenSource,
       { repo: "o/r", template: "python", description: 'a\n\t\r\b\f\u0000\u001f\u007f"\\z' },
