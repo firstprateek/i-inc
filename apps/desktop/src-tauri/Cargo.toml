@@ -1,6 +1,6 @@
 [package]
 name = "i-inc-desktop"
-version = "0.2.0"
+version = "0.3.0"
 description = "i.inc desktop: a window onto the daemon on the Mac mini"
 edition = "2021"
 
@@ -9,6 +9,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+tauri-plugin-updater = "2"
+serde_json = "1"
 
 [profile.release]
 strip = true

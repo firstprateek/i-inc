@@ -33,6 +33,20 @@ the Office is now Company → Team, the Board is Work → Board, and Setup is Co
 ### Coordination source of truth
 [docs/coord.md](coord.md) is the single source of truth for who does what between agents (Claude, Antigravity and Codex). All task claiming, PR reviews, deploy locks, and heartbeats are recorded there. Edits to `coord.md` go straight to `main`; all other code changes go through a feature branch and PR.
 
+### Releasing the desktop app
+
+The deployer ships the daemon and the web app, which is everything the desktop app shows. A change under
+`apps/desktop` (the native window, menus, updater) also needs a release, run by hand on the mini after the merge
+is deployed (the daemon must have the `/desktop/` route):
+
+    pnpm --filter @i-inc/desktop release
+
+It builds a signed universal app and puts it in `~/.i-inc/desktop/`; every installed copy (0.3 or later) picks it
+up within about half an hour while it runs (or at its next launch), or at once from i.inc › Check for Updates…. A first install on another Mac:
+`https://iinc.<tailnet>.ts.net/desktop/i.inc.zip`. **The signing key `~/.config/i-inc/desktop-updater.key` must
+move with the host** (Mac Studio migration): without it no installed copy accepts a new build, and every copy has
+to be reinstalled by hand with a new key. Details: architecture.md, "Desktop app".
+
 ### Deploying to the mini
 
 **Once the deployer is installed, deploys are automatic** (T54, [v1-plan §5](design/v1-plan.md)): you do

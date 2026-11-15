@@ -18,6 +18,7 @@ import { seedDemo, seedDemoLater, seedDemoProposals, seedDemoTickets } from "./d
 import { demoLaunch } from "./demo-agent.ts";
 import { demoReview } from "./demo-review.ts";
 import { resolveVersion } from "./deploys.ts";
+import { serveDesktopUpdates } from "./desktop-updates.ts";
 import { GitHubApp, readGitHubAppConfig } from "./github.ts";
 import { installGuards, serverError } from "./guards.ts";
 import { httpFetch, IDLE_TIMEOUT_SEC } from "./http.ts";
@@ -277,6 +278,7 @@ const server = Bun.serve<WsData>({
   fetch: httpFetch<WsData>({
     ahp: app.ahp.transport,
     api: (req, o) => app.handle(req, o),
+    desktop: serveDesktopUpdates(join(home, "desktop")),
     web: () => (existsSync(web) ? serveWeb : null),
   }),
   websocket: app.ahp.transport.websocket,

@@ -141,4 +141,9 @@ async function start() {
   ask(tried.length ? `Can't reach ${tried.join(" or ")}. Is this Mac on the tailnet?` : undefined);
 }
 
+// i.inc › Check for Updates… says what happened in the page it finds; on the launcher that is this line.
+addEventListener("i-inc:app-note", (e) => {
+  if (typeof e.detail === "string") document.getElementById("note").textContent = e.detail;
+});
+
 void start();

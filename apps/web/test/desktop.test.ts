@@ -228,15 +228,73 @@ describe("wiring the document in the app", () => {
   });
 
   it("says nothing about an app that is new enough, however slow the load", () => {
-    window.__I_INC_APP_VERSION__ = "0.2.0";
+    window.__I_INC_APP_VERSION__ = "0.3.202611150200";
     wireDesktop();
     vi.advanceTimersByTime(60_000);
     expect(document.querySelector("inc-app-outdated")).toBeNull();
   });
 
-  it("says it about an app below the pages' minimum", () => {
-    window.__I_INC_APP_VERSION__ = "0.1.0";
+  /** The card asks whether the daemon has a build (HEAD /desktop/i.inc.zip); let that answer land. */
+  async function outdatedCard(status: number) {
+    vi.stubGlobal("fetch", async () => new Response(null, { status }));
+    window.__I_INC_APP_VERSION__ = "0.2.0";
     wireDesktop();
-    expect(document.querySelector("inc-app-outdated")).not.toBeNull();
+    const card = document.querySelector("inc-app-outdated") as HTMLElement & {
+      updateComplete: Promise<unknown>;
+    };
+    expect(card).not.toBeNull();
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    await card.updateComplete;
+    vi.unstubAllGlobals();
+    return card;
+  }
+
+  it("says it about an app below the pages' minimum (0.2 cannot update itself), with a download link", async () => {
+    const card = await outdatedCard(200);
+    const link = card.shadowRoot?.querySelector("a") as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe("/desktop/i.inc.zip");
+    // A new window, which the app opens in the default browser, where the zip downloads.
+    expect(link.target).toBe("_blank");
+  });
+
+  it("leaves the download link out while the daemon has no build to give", async () => {
+    const card = await outdatedCard(404);
+    expect(card.shadowRoot?.textContent).toContain("older build");
+    expect(card.shadowRoot?.querySelector("a")).toBeNull();
+  });
+
+  it("offers Restart once the app has installed a newer build, and asks the app to restart", async () => {
+    const invoke = vi.fn(async () => undefined);
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke };
+    try {
+      window.__I_INC_APP_VERSION__ = "0.3.202611150200";
+      wireDesktop();
+      window.__I_INC_APP_UPDATE__ = { version: "0.3.202611160900" };
+      dispatchEvent(new Event("i-inc:app-update"));
+      const card = document.querySelector("inc-app-update") as HTMLElement & {
+        updateComplete: Promise<unknown>;
+      };
+      await card.updateComplete;
+      expect(card.shadowRoot?.textContent).toContain("0.3.202611160900 is ready");
+      const restart = card.shadowRoot?.querySelector("button") as HTMLButtonElement;
+      restart.click();
+      expect(invoke).toHaveBeenCalledWith("restart_app");
+    } finally {
+      delete window.__I_INC_APP_UPDATE__;
+      delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    }
+  });
+
+  it("shows a note from Check for Updates for a few seconds", async () => {
+    window.__I_INC_APP_VERSION__ = "0.3.202611150200";
+    wireDesktop();
+    dispatchEvent(new CustomEvent("i-inc:app-note", { detail: "The i.inc app is up to date (0.3.1)." }));
+    const card = document.querySelector("inc-app-update") as HTMLElement & {
+      updateComplete: Promise<unknown>;
+    };
+    await card.updateComplete;
+    expect(card.shadowRoot?.textContent).toContain("up to date");
+    vi.advanceTimersByTime(7000);
+    expect(document.querySelector("inc-app-update")).toBeNull();
   });
 });

@@ -110,3 +110,9 @@ button {
 code {
   color: var(--ink);
 }
+#note:empty {
+  display: none;
+}
+#note {
+  margin-top: 12px;
+}

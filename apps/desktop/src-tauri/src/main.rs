@@ -5,6 +5,8 @@
 // on the Mac mini itself the launcher finds the daemon on loopback first.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod updates;
+
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -144,6 +146,22 @@ fn reset_zoom(window: WebviewWindow) {
     change_zoom(window.app_handle(), &window, 0);
 }
 
+/// The update card's Restart (apps/web/src/app-update.ts): runs the build the updater installed.
+#[tauri::command]
+fn restart_app(app: AppHandle) {
+    app.restart();
+}
+
+/// Checks the chosen daemon for a newer build of the app (`updates.rs`).
+fn check_updates(app: &AppHandle, loud: bool) {
+    let origin = app.state::<Daemon>().0.lock().unwrap().origin.clone();
+    match origin {
+        Some(origin) => updates::check(app, origin, loud),
+        None if loud => updates::note(app, "No update: connect to the daemon first."),
+        None => {}
+    }
+}
+
 /// The bundled launcher page. `change` keeps it from connecting straight away.
 fn launcher_url(change: bool) -> Url {
     let base = if cfg!(windows) { "http://tauri.localhost/" } else { "tauri://localhost/" };
@@ -189,7 +207,8 @@ fn main() {
                 .js_init_script(script)
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![default_daemon, daemon_override, reset_zoom, use_daemon])
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .invoke_handler(tauri::generate_handler![default_daemon, daemon_override, reset_zoom, use_daemon, restart_app])
         .on_window_event(|window, event| {
             if let WindowEvent::Resized(_) = event {
                 if let Some(w) = window.app_handle().get_webview_window(window.label()) {
@@ -200,6 +219,13 @@ fn main() {
         .setup(|app| {
             app.manage(Zoom(Mutex::new(saved_zoom(app.handle()))));
             app.manage(Daemon(Mutex::new(DaemonState::default())));
+            app.manage(updates::Updates::default());
+            // A window left open has no page loads (the web app routes by #hash): ask on a timer too.
+            let ticker = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(updates::EVERY);
+                check_updates(&ticker, false);
+            });
             let handle = app.handle().clone();
             let config = app.config().app.windows.first().expect("window config").clone();
             WebviewWindowBuilder::from_config(app.handle(), &config)?
@@ -241,15 +267,22 @@ fn main() {
                 })
                 .on_page_load(|window, payload| {
                     if payload.event() == PageLoadEvent::Finished {
-                        let zoom = *window.app_handle().state::<Zoom>().0.lock().unwrap();
+                        let app = window.app_handle().clone();
+                        let zoom = *app.state::<Zoom>().0.lock().unwrap();
                         push_fullscreen(&window);
                         apply_zoom(&window, zoom, false);
+                        updates::push_ready(&window);
+                        let chosen = app.state::<Daemon>().0.lock().unwrap().origin.clone();
+                        if chosen.is_some_and(|o| payload.url().origin().ascii_serialization() == o) {
+                            check_updates(&app, false);
+                        }
                     }
                 })
                 .build()?;
 
             let menu = Menu::default(app.handle())?;
             let change = MenuItem::with_id(app, "change-daemon", "Change Daemon…", true, None::<&str>)?;
+            let update = MenuItem::with_id(app, "check-update", "Check for Updates…", true, None::<&str>)?;
             let reload = MenuItem::with_id(app, "reload", "Reload", true, Some("CmdOrCtrl+R"))?;
             let back = MenuItem::with_id(app, "back", "Back", true, Some("CmdOrCtrl+["))?;
             let forward = MenuItem::with_id(app, "forward", "Forward", true, Some("CmdOrCtrl+]"))?;
@@ -258,8 +291,9 @@ fn main() {
             let zoom_reset = MenuItem::with_id(app, "zoom-reset", "Actual Size", true, Some("CmdOrCtrl+0"))?;
             let items = menu.items()?;
             if let Some(MenuItemKind::Submenu(first)) = items.first() {
-                first.insert(&PredefinedMenuItem::separator(app)?, 1)?;
-                first.insert(&change, 2)?;
+                first.insert(&update, 1)?;
+                first.insert(&PredefinedMenuItem::separator(app)?, 2)?;
+                first.insert(&change, 3)?;
             }
             // The View menu gets Reload, Back, Forward and the zoom (a window with no browser around it has no
             // buttons or shortcuts for them besides the header's own).
@@ -291,6 +325,7 @@ fn main() {
         .on_menu_event(|app, event| {
             let Some(window) = app.get_webview_window("main") else { return };
             match event.id().as_ref() {
+                "check-update" => check_updates(app, true),
                 "change-daemon" => {
                     let _ = window.navigate(launcher_url(true));
                 }
